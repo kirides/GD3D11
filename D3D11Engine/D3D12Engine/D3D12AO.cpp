@@ -174,7 +174,7 @@ void D3D12GraphicsEngine::UploadAoReprojConstants() {
     // Publishes the reprojection block the lit World/Vob/Skeletal pixel shaders read out of the shadow CB they
     // already bind. Written UNCONDITIONALLY every frame (including the "no valid snapshot" state) — a frame
     // that skipped the write would reproject this frame's geometry through a stale camera.
-    // The three writers of m_ShadowCB must tile exactly: PrepareSunShadows owns [0, kWetnessCbOffset),
+    // The writers of m_ShadowCB must tile exactly: D3D12ShadowMap::Prepare owns [0, kWetnessCbOffset),
     // UploadWetnessConstants [kWetnessCbOffset, kAoReprojCbOffset), and this the rest (the CB is 512 bytes).
     static_assert( kWetnessCbOffset + sizeof( WetnessCBData ) == kAoReprojCbOffset,
         "AO-reprojection CB block must start right after the wetness block" );

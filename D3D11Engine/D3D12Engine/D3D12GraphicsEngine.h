@@ -14,6 +14,8 @@
 #include "D3D12Texture.h"
 #include "D3D12ShaderBackend.h"
 #include "D3D12PipelineState.h"
+#include "D3D12ShadowMap.h"
+#include "D3D12PointShadows.h"
 
 struct RenderBucket;
 class D3D12LineRenderer;
@@ -35,6 +37,13 @@ class zCVobLight;
     D3D11 remains the default backend and the fallback: if device or swapchain creation fails,
     Engine::CreateGraphicsEngine keeps D3D11. */
 class D3D12GraphicsEngine : public BaseGraphicsEngine {
+    // The two shadow subsystems are self-contained passes that still need the engine's frame plumbing (device,
+    // allocator, SRV heap, the frame index + the shared upload rings, the indirect command signatures and the
+    // shared mesh/skeletal collectors). They are extracted modules, not external clients — hence friendship
+    // rather than widening the engine's public surface for them.
+    friend class D3D12ShadowMap;
+    friend class D3D12PointShadows;
+
 public:
     static constexpr UINT kBackBufferCount = 2;
 
@@ -226,7 +235,7 @@ private:
     // morph branch). Morphing costs a CPU vertex re-upload per animation frame, so this bounds crowd cost.
     static constexpr float kMorphMeshMaxDistance = 1000.0f;
     // cascadeCount > 1 (only valid with shadowCascade >= 0) switches to the MULTI-cascade mode: cullFrustum is
-    // read as an ARRAY of cascadeCount frusta (i.e. &m_CascadeFrustum[0]) and each prepared vob is appended to
+    // read as an ARRAY of cascadeCount frusta (i.e. D3D12ShadowMap::CascadeFrusta()) and each prepared vob is appended to
     // every cascade list whose frustum it intersects. One pass over the registered skeletal-vob list instead of
     // kShadowCascades passes — and, more importantly, it keeps every Gothic-touching part of the skeletal
     // preparation (animation update, morph meshes, texani, bone palette, ring uploads) on the main thread while
@@ -598,8 +607,8 @@ private:
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
     unsigned int m_VobDrawnTriangles = 0;            // triangles in this frame's main-view VOB command set (stats)
     bool m_VobDrawArgsOverflowLogged = false;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobIndirectPSO;   // VSDepth + PSShadowClipBindless
-    // Per-cascade VOB arg rings (m_ShadowVobDrawArgs*) live in the CSM section below (kShadowCascades not yet declared here).
+    // The shadow-caster variant of this pipeline (VSDepth + PSShadowClipBindless) and the per-cascade arg rings
+    // it submits from live in D3D12ShadowMap; this signature is shared by both.
     bool CreateVobIndirect();                         // command signature + per-frame arg rings + shadow-caster PSO (once, at init)
     // Fill an arg buffer from the given VOB uploads; returns command count. resolveMaps=false leaves normal/orm at
     // defaults (depth/shadow passes only alpha-clip on diffuse), true resolves the full PBR material set (color pass).
@@ -675,56 +684,15 @@ private:
 
     // Forward+ opaque depth-prepass PSOs/blobs (world + instanced VOB) live in m_Pipelines.World
     // (DepthPrepassPSO/VsBlob/PsBlob, DepthPrepassVobPSO/VobVsBlob/VobPsBlob). The skeletal depth-prepass PSO
-    // + blobs live in m_Pipelines.Skeletal (DepthPrepassPSO/DepthPrepassVsBlob/DepthPrepassPsBlob). The shadow-
-    // caster PSOs below still reuse those blobs via m_Pipelines.World.DepthPrepass* / m_Pipelines.Skeletal.DepthPrepass*.
+    // + blobs live in m_Pipelines.Skeletal (DepthPrepassPSO/DepthPrepassVsBlob/DepthPrepassPsBlob). D3D12ShadowMap's
+    // caster PSOs reuse those blobs via m_Pipelines.World.DepthPrepass* / m_Pipelines.Skeletal.DepthPrepass*.
 
-    // CSM sun shadows (P2.9c). Directional shadow map = a Texture2DArray (one slice per cascade), R32_TYPELESS
-    // so each slice serves a D32_FLOAT DSV and the whole array serves one R32_FLOAT SRV for later PCF sampling.
-    // NORMAL-Z here (clear 1.0, LESS_EQUAL) — NOT reversed-Z like the main camera (mirrors the D3D11 caster).
-    static constexpr UINT kShadowCascades = 3;
-    UINT m_ShadowMapSize = 2048;   // per-cascade slice resolution; mirrors RendererSettings.ShadowMapSize (clamped 512..8192,
-                                    // power-of-two steps only), re-checked every frame in OnBeginFrame and resized live via ResizeShadowMap
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_ShadowMap;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_ShadowMapAlloc;   // backing D3D12MA allocation
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_ShadowDsvHeap;    // one D32 DSV per cascade slice
-    UINT m_ShadowDsvSize = 0;
-    UINT m_ShadowSrvSlot = UINT_MAX;    // R32_FLOAT Texture2DArray SRV (all cascades), for the lit-pass sampler (later increment)
-    bool m_ShadowInPixelState = false;  // DEPTH_WRITE (caster writes) <-> PIXEL_SHADER_RESOURCE (lit reads) round-trip
-    // Reuses the depth-prepass world VS/PS (VSWorld + PSClip, b0 = a view-proj) with a normal-Z, front-cull,
-    // depth-biased state. Fed the per-cascade light view-proj instead of the camera's.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterWorldPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterPsBlob;   // PSShadowClip (void PS, alpha-clip only)
-    // VOB + skeletal casters (P2.9c-2): reuse the VOB/skeletal depth-prepass VSDepth blobs + their void
-    // PSShadowClip, with the same normal-Z/front-cull/bias caster state. Attachments ride the VOB caster PSO.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterVobPsBlob;
-    // Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling instead of wind — see Vob.hlsl and
-    // World.VobAttachPSO/DepthPrepassVobAttachPSO). Reuses m_ShadowCasterVobPsBlob (PSShadowClip unchanged).
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobAttachPSO;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterSkeletalPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterSkeletalPsBlob;
-    // Grass caster (built by CreateGrassShadowCaster, called from Init() AFTER m_Pipelines.CreateGrass() —
-    // reuses Grass.RootSig, so it can't be built inside CreateShadowMap() like the three above). CULL_NONE
-    // (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterGrassPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterGrassVsBlob;   // VSDepth (Vegetation.hlsl)
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterGrassPsBlob;   // PSShadowClip (Vegetation.hlsl)
-    bool CreateGrassShadowCaster();
-    DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
-    Frustum m_CascadeFrustum[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
-    float m_CascadeTexelWorld[kShadowCascades] = {};   // world units / shadow texel per cascade (for the sampling normal bias)
-    
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowWorldDrawArgs[kShadowCascades][kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowWorldDrawArgsAlloc[kShadowCascades][kBackBufferCount];
-    uint8_t*  m_ShadowWorldDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_ShadowWorldDrawArgsGpu[kShadowCascades][kBackBufferCount] = {};
-    UINT      m_ShadowWorldDrawCount[kShadowCascades] = {};
-    // Per-cascade instanced-VOB ExecuteIndirect arg rings (P2.12) — the VOB analogue of m_ShadowWorldDrawArgs.
-    // Command sig/PSO are m_VobIndirectCmdSig / m_ShadowCasterVobIndirectPSO (declared above the CSM section).
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobDrawArgs[kShadowCascades][kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobDrawArgsAlloc[kShadowCascades][kBackBufferCount];
-    uint8_t* m_ShadowVobDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
-    UINT     m_ShadowVobDrawCount[kShadowCascades] = {};   // filled by PrepareSunShadows' serial build phase, consumed by RecordShadowCascade
+    // ---- CSM sun shadows + point-light shadow cubes: both are self-contained modules now (D3D12ShadowMap.h /
+    // D3D12PointShadows.h). The engine only owns the frame ORCHESTRATION below (the deferred-recording driver,
+    // the per-slot command lists, and the shared shadow CB the lit passes bind).
+    D3D12ShadowMap     m_ShadowMap;
+    D3D12PointShadows  m_PointShadows;
+
 
     // ---- Multi-threaded shadow culling + DEFERRED shadow command recording (plan item #7 + the overlap pass) ----
     // One command allocator AND one command list per (recording slot x frame-in-flight). An allocator may never
@@ -734,7 +702,7 @@ private:
     // and rain-shadowmap passes, which now record concurrently with them instead of serially on the main thread.
     // Created once in Init(); if creation fails m_ShadowCmdListsReady stays false and every pass silently records
     // inline on m_CmdList (degrade, don't lose shadows).
-    static constexpr UINT kPointShadowListIndex = kShadowCascades;
+    static constexpr UINT kPointShadowListIndex = kShadowCascades;       // (from D3D12ShadowMap.h)
     static constexpr UINT kRainShadowListIndex  = kShadowCascades + 1;
     static constexpr UINT kShadowRecordSlots    = kShadowCascades + 2;
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferCount];
@@ -764,143 +732,25 @@ private:
     // failure. Public to the recording lambdas only in the sense that they are defined inside member functions.
     ID3D12GraphicsCommandList* BeginShadowList( UINT slot );
     bool m_ShadowListRecorded[kShadowRecordSlots] = {};   // per slot: recorded AND closed successfully this frame
-    // Per-cascade phases of the CSM pass, split so the same bodies serve both the serial and the MT driver.
-    // CullShadowCascade touches ONLY per-cascade state and read-only engine data (safe on a pool thread);
-    // RecordShadowCascade issues D3D12 calls into the list it is given and reads only data resolved earlier on
-    // the main thread (also pool-thread safe). Everything that mutates Gothic state or a shared upload ring
-    // happens between them, serially, in PrepareSunShadows itself.
-    void CullShadowCascade( UINT cascade );
-    void RecordShadowCascade( UINT cascade, ID3D12GraphicsCommandList* cmdList, bool sunUp );
-    // The cascade cull is LAUNCHED by PrepareSunShadows (early, before DrawSky) and JOINED here, at the very end
-    // of the frame's CPU work — mirroring D3D11ShadowMap's PrepareRender()/WaitShadowCullingComplete() split, so
-    // the BSP walks overlap everything the main thread does in between. FinishSunShadowPrepare is the join plus
-    // the serial build that depends on the results (per-cascade VOB uploads + indirect args + skeletal casters).
-    void WaitShadowCullingComplete();
-    void FinishSunShadowPrepare();
-    bool m_ShadowCullingPending = false;   // cull jobs are in flight and must be joined before the results are read
     bool m_ShadowThreadedRecord = false;   // this frame's BeginShadowRecording took the pooled-recording path
-    bool m_ShadowSunUp = false;      // resolved in PrepareSunShadows, consumed by the (possibly pooled) recorders
-    bool m_ShadowPassReady = false;  // PrepareSunShadows ran to completion this frame — cascades have something to record
-    bool m_PointShadowPassReady = false;  // PreparePointShadows produced records this frame
     bool m_RainShadowPassReady = false;   // PrepareRainShadowmap produced a valid camera + caster set this frame
     bool m_ShadowRecordingPending = false;   // BeginShadowRecording fanned work out; FinishShadowPasses must join
     bool m_ShadowRecordFailureLogged = false;   // one warning per session, not per frame
 
-    DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame, smoothed)
-    // Temporal light-direction smoothing (P2.9c-3c): the origin-anchored texel-snap grid amplifies tiny per-frame
-    // sun-direction drift into a large lateral texel shift for players far from the origin (lever arm) → crawl.
-    // Lerp the sun direction toward the live value so the grid orientation changes gradually, not per-frame.
-    DirectX::XMFLOAT3 m_SmoothedSunDir = { 0.0f, 1.0f, 0.0f };
-    bool m_SunDirInitialized = false;
-    // Per-frame-in-flight shadow-sampling constant buffer (b3 in the lit passes): the cascade view-projs +
-    // sun dir + strength + texel sizes, uploaded once per frame in PrepareSunShadows and bound by DrawWorldMesh.
+    // Per-frame-in-flight shadow constant buffer, bound by every lit pass. FOUR disjoint byte ranges written by
+    // four owners: D3D12ShadowMap::Prepare owns the head [0, kWetnessCbOffset) (cascade view-projs + sun dir +
+    // strength + texel sizes), then UploadWetnessConstants, UploadAoReprojConstants and UploadSkyIblConstants
+    // each own a tail block. The buffer lives here because it is shared; see kWetnessCbOffset below.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferCount];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferCount];
     uint8_t* m_ShadowCBMapped[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferCount] = {};
-    bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSOs + CB ring (once, at init)
-    bool CreateShadowMapTextureAndViews( UINT size );   // (re)creates just the sized resource + its DSVs/SRV; shared by CreateShadowMap and ResizeShadowMap
-    bool ResizeShadowMap( UINT newSize );               // live resolution change: WaitForGpuIdle then recreate the texture in place (DSV heap + SRV slot are reused)
-    static UINT ClampShadowMapSize( int desired );       // snap to the shared {512,1024,2048,4096,8192} step set (matches D3D11's ImGui combo)
-    void ComputeCascadeMatrices();     // fill m_CascadeViewProj/m_CascadeTexelWorld/m_SunDirWS from the sun + camera (simple ortho for now)
-    void PrepareSunShadows();           // resolve the cascade matrices + sampling CB + per-cascade caster sets (main thread; RecordShadowCascade issues the draws)
+    bool CreateShadowConstantBuffer();   // the shared per-frame shadow CB ring (once, at init)
     // Diffuse-SRV resolution for the shadow / alpha-cutout paths: the material's cached-in engine texture, or
     // the 1x1 black fallback. Uses GetCacheState (NOT CacheIn) so it stays a pure read — no Gothic texture load
     // is triggered from a pass that only needs an alpha cutout, which also makes it callable off the main thread.
     D3D12_GPU_DESCRIPTOR_HANDLE ResolveShadowDiffuseSrv( zCTexture* tex ) const;
 
-    // ---- Point-light shadow cubes (P2.10) — mirrors D3D11's shared TextureCubeArray Forward+ path. Up to
-    // kMaxShadowCubes shadowed point lights, each a 6-face 128^2 cube slot in one array. NORMAL-Z (clear 1.0,
-    // LESS_EQUAL) like the CSM. Faces rendered single-pass via an instanced layered VS (6 instances → the 6
-    // faces via SV_RenderTargetArrayIndex, no geometry shader — needs VPAndRTArrayIndexFromAnyShaderFeeding
-    // Rasterizer, present on the target AMD GPU). Sampled in the tiled point-light loop when ShadowCubeIndex>=0.
-    static constexpr UINT kPointShadowCubeSize = 128;
-    static constexpr UINT kMaxShadowCubes      = 128;   // matches D3D11's persisted-light ceiling; each = 6 slices @128^2 R16 (~6MB@32 -> ~24MB@128)
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowCube;      // Texture2DArray(R16_TYPELESS), kMaxShadowCubes*6 slices
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PointShadowCubeAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowDsvHeap;   // one D16 Texture2DArray DSV (6 slices) per cube slot
-    UINT m_PointShadowDsvSize = 0;
-    UINT m_PointShadowSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV (all cubes), for the point-light sampler
-    // PER-SLOT resource state for both cube arrays (6 subresources per slot move together — a slot's DSV views
-    // exactly its 6 faces). These MUST stay per-slot rather than one whole-resource state: an ALL_SUBRESOURCES
-    // transition out of DEPTH_WRITE makes the driver decompress/resummarize depth metadata for every one of the
-    // kMaxShadowCubes*6 = 768 slices (24 MB) whether the frame touched 5 slots or 128 — a ~0.6 ms FIXED cost that
-    // dwarfed the 192 KB/slot copies it was guarding and did not scale down with the light count. Scoping each
-    // barrier to the 6 subresources actually being copied makes the cost proportional to the work done.
-    // Consequence: EVERY barrier on these two resources must be per-subresource. A single ALL_SUBRESOURCES
-    // transition asserts all 768 slices share one state, which they no longer do.
-    D3D12_RESOURCE_STATES m_PointShadowActiveSlotState[kMaxShadowCubes] = {};   // active cube; PIXEL_SHADER_RESOURCE at rest
-    D3D12_RESOURCE_STATES m_PointShadowStaticSlotState[kMaxShadowCubes] = {};   // static-aside cube; DEPTH_WRITE at rest
-    // Point-shadow caster PIPELINES (both root sigs, the four VS/PS blobs, and the three caster PSOs) now live in
-    // m_Pipelines.PointShadow (RootSig/SkeletalRootSig, VsBlob/VobVsBlob/SkelVsBlob/PsBlob, CasterWorldPSO/
-    // CasterVobPSO/CasterSkeletalPSO). The cube textures, DSV heaps, SRV, and per-frame rings below stay here.
-    // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_PointShadowCBAlloc[kBackBufferCount];
-    uint8_t* m_PointShadowCBMapped[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_PointShadowCBGpu[kBackBufferCount] = {};
-    // Per-frame TIGHT (64-byte world matrix) VOB-instance ring for the point-shadow VOB caster: only the instances
-    // range-culled into a shadowed light's sphere get packed here, so cube draws stay proportional to near casters.
-    static constexpr UINT kPointShadowMaxVobInstances = 8192;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowVobInst[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_PointShadowVobInstAlloc[kBackBufferCount];
-    uint8_t* m_PointShadowVobInstPtr[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_PointShadowVobInstGpu[kBackBufferCount] = {};
-    UINT m_PointShadowVobInstCapacity = 0;         // bytes
-    UINT m_PointShadowVobInstOffset = 0;           // reset each frame at the top of PreparePointShadows
-    bool m_PointShadowVobInstOverflowLogged = false;
-
-    // ---- Static/dynamic split point-shadow caching (P2.10g) — the D3D11 static-aside model that lets hundreds
-    // of shadowed lights update their MOVING casters every frame without re-rendering static geometry. Two
-    // persistent cube arrays: m_PointShadowStaticCube holds ONLY static-caster depth (world mesh + instanced
-    // VOBs), rendered per slot at most once (on slot assign / light move / range change). m_PointShadowCube is
-    // the ACTIVE cube the lit pass samples: each frame the slots that can receive a dynamic overlay are copied
-    // from the static cube (6 subresources, 192 KB), then the DYNAMIC casters (skeletal NPCs) are overlaid (depth
-    // LESS_EQUAL, no clear). So the per-frame cost is a few per-slot depth copies + the handful of near dynamic
-    // draws — the expensive static cull/draw is amortized. Slots that can NEVER receive an overlay (static lights,
-    // or every light when PointlightShadows is PLS_STATIC_ONLY) skip the aside cube and the copy entirely: their
-    // static casters are rendered straight into the active cube, which then just persists (usesAside below).
-    // Slots are owned by light Vob identity and kept stable across frames (not reassigned by proximity).
-    struct PointShadowSlot {
-        zCVobLight*       owner = nullptr;   // light identity owning this slot (nullptr = free)
-        DirectX::XMFLOAT3 pos = {};          // last static-rendered light position (move detection)
-        float             range = 0.0f;      // last static-rendered range (range-change detection)
-        bool              isStatic = false;  // Vob->IsStatic(): gates PreparePointShadows — static lights get a
-                                              // world-mesh-only static-aside cache (no VOB casters) and never
-                                              // receive the per-frame skeletal dynamic overlay (mirrors D3D11's
-                                              // GetCurrentShadowMode forcing PLS_STATIC_ONLY for static lights).
-        bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
-                                              // cube itself) holds valid static-only depth; false => must re-render static
-        bool              usesAside = false;  // last frame's routing for this slot: true = static goes to the aside cube
-                                              // and is copied into active each frame (the slot can receive a dynamic
-                                              // overlay); false = static is rendered DIRECTLY into the active cube and
-                                              // never copied (no overlay possible — static light, or PLS_STATIC_ONLY).
-                                              // A change here invalidates staticValid: the depth lives in the other cube.
-        UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
-    };
-    PointShadowSlot m_PointShadowSlots[kMaxShadowCubes];
-    // Static-aside cube (P2.10g): second persistent cube array, static-caster depth only. No SRV (never sampled);
-    // the slots routed through it are copied into the active cube each frame. Only slots that can receive a dynamic
-    // overlay live here at all — see PointShadowSlot::usesAside. Its per-slot resource state (DEPTH_WRITE while
-    // rendering static, COPY_SOURCE while feeding a copy) is m_PointShadowStaticSlotState.
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowStaticCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PointShadowStaticCubeAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowStaticDsvHeap; // one D16 6-slice DSV per slot (mirrors active)
-    bool CreatePointShadowResources(); // both cube arrays + per-slot DSVs + array SRV + face-CB/VOB-instance rings (once, at init; PSOs in m_Pipelines.CreatePointShadow)
-    // Point-shadow cubes, split for deferred recording: PreparePointShadows does every Gothic-touching step
-    // (section/instance range culls, CacheIn, PrepareFrameSkeletals, UpdateMeshLibTexAniState, the face-CB and
-    // VOB-instance ring writes) and flattens the result into pure-D3D12 draw records; RecordPointShadows issues
-    // them — static pass (dirty slots) -> copy static->active -> dynamic overlay -> PSR — into whichever list it
-    // is handed, on a pool thread or on m_CmdList when the pool path is unavailable.
-    void PreparePointShadows();
-    void RecordPointShadows( ID3D12GraphicsCommandList* cmdList );
-    // Self-shadow exclusion for point lights attached to a carried item/NPC — without this, e.g. a torch light
-    // held in an NPC's hand casts a huge shadow blob from that NPC's own body onto itself. Mirrors D3D11's
-    // GetHasOriginVob + SetupVobsToExclude/CollectVobTreeToExclude (D3D11PointLight.cpp). Populates excludeOut
-    // with the light vob's ancestor chain (+ any oCVisualFX origin) and returns true when non-empty; returns
-    // false (excludeOut left empty) when self-shadowing is allowed, the light isn't attached to a carried item,
-    // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
-    bool BuildPointShadowExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
@@ -1044,7 +894,7 @@ private:
     XMFLOAT4X4 m_PrevDepthViewProj = {};  // the camera that produced m_PrevDepth — the reprojection matrix
     XMFLOAT4X4 m_PrevDepthProj = {};      // ...and its projection, for the AO pass's depth -> view-position math
     // Reprojection tail of the shared shadow CB, written every frame by UploadAoReprojConstants (the third
-    // disjoint byte range of m_ShadowCB, after the PrepareSunShadows head and the UploadWetnessConstants block).
+    // disjoint byte range of m_ShadowCB, after the D3D12ShadowMap::Prepare head and the UploadWetnessConstants block).
     static constexpr UINT kAoReprojCbOffset = 352;
     struct AoReprojCBData {
         XMFLOAT4X4 PrevViewProj;
@@ -1096,7 +946,7 @@ private:
     SkyIblParams m_SkyLastParams;
     bool m_SkyEnvInReadState = false;              // tracks the rest state of m_SkyEnvCube (see RenderSkyIBL's barriers)
     // Sky-IBL tail of the shared shadow CB — the FOURTH disjoint byte range of m_ShadowCB, after the
-    // PrepareSunShadows head [0,256), UploadWetnessConstants [256,352) and UploadAoReprojConstants [352,432).
+    // D3D12ShadowMap::Prepare head [0,256), UploadWetnessConstants [256,352) and UploadAoReprojConstants [352,432).
     // Riding the CB the lit shaders already bind is what keeps this feature free of root-signature churn:
     // World/Vob/Skeletal/Vegetation all declare ShadowCB at their own register and just gained four fields.
     static constexpr UINT kSkyIblCbOffset = 432;
@@ -1106,7 +956,7 @@ private:
         float SpecularMips;      // == kSkyEnvMips, so the PS can map roughness -> mip
         // The COMPLETE ambient scale for the IBL path, premultiplied on the CPU:
         //   SkyIblIntensity (user knob) * kSkyIblNormalize (radiance unit conversion) * ShadowStrength.
-        // ShadowStrength enters UNHALVED — unlike AmbientStrength, which PrepareSunShadows halves at night.
+        // ShadowStrength enters UNHALVED — unlike AmbientStrength, which D3D12ShadowMap::Prepare halves at night.
         // The IBL branch in ComputeSunLightingPBR therefore multiplies by this and nothing else; only the flat
         // fallback branch still uses AmbientStrength. See UploadSkyIblConstants for the reasoning.
         float Intensity;
@@ -1237,7 +1087,7 @@ private:
     // orthographic camera looking along the (inverted) rain-velocity direction, world-mesh casters only
     // (VOB/grass rain self-shadowing not covered by this increment — see D3D12Rain.cpp). Lets Rain.hlsl's
     // VS zero out indoor/roofed raindrops (real IsWet), mirroring D3D11Effect::DrawRainShadowmap. Reuses
-    // m_ShadowCasterWorldPSO/m_Pipelines.World.RootSig (per-draw root consts, no ExecuteIndirect needed —
+    // D3D12ShadowMap::GetWorldCasterPSO()/m_Pipelines.World.RootSig (per-draw root consts, no ExecuteIndirect needed —
     // see the comment in PrepareRainShadowmap for why that's safe).
     static constexpr UINT kRainShadowMapSize = 2048;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainShadowMap;
@@ -1247,7 +1097,7 @@ private:
     UINT m_RainShadowSrvSlot = UINT_MAX;
     bool m_RainShadowResourcesReady = false;
     // Round-trips DEPTH_WRITE (PrepareRainShadowmap writes it) -> ALL_SHADER_RESOURCE each frame, mirroring
-    // m_ShadowInPixelState. ALL_ (not NON_PIXEL_) because two stages read it the same frame: DrawRainParticles'
+    // the CSM map's own DEPTH_WRITE<->read round-trip. ALL_ (not NON_PIXEL_) because two stages read it the same frame: DrawRainParticles'
     // VS (via ResourceDescriptorHeap) and the lit World/Vob/Skeletal PS wetness lookup.
     bool m_RainShadowInReadState = false;
     XMFLOAT4X4 m_RainShadowViewProj = {};   // this frame's combined rain-shadow view*proj (see CB layout note)
@@ -1264,7 +1114,7 @@ private:
 
     // Scene wetness ("wet ground"): the port of D3D11's deferred ApplySceneWettness into the Forward+ lit
     // pixel shaders (Shaders/D3D12/include/Wetness.hlsl). All of its inputs ride in the TAIL of the shared
-    // per-frame shadow CB (m_ShadowCB), starting at kWetnessCbOffset — PrepareSunShadows owns bytes
+    // per-frame shadow CB (m_ShadowCB), starting at kWetnessCbOffset — D3D12ShadowMap::Prepare owns bytes
     // [0, kWetnessCbOffset) and this owns [kWetnessCbOffset, ...). It must run AFTER PrepareRainShadowmap
     // (which computes m_RainShadowViewProj for this frame) but before any lit draw binds the CB.
     static constexpr UINT kWetnessCbOffset = 256;

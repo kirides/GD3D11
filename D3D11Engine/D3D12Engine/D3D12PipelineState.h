@@ -122,7 +122,7 @@ public:
     // Skinned skeletal meshes (animated NPCs/monsters): own root sig (b0 ViewProj consts, b1 instance CBV,
     // b2 bone-palette CBV, Forward+ light SRVs, CSM + point-shadow tables, bindless material indices). Lit PSO +
     // a depth-prepass PSO (color masked off). The depth-prepass VS also drives the CSM skeletal shadow caster
-    // (built in the engine's CreateShadowMap). The per-frame skeletal CB ring (instance + bones) stays in the engine.
+    // (built in D3D12ShadowMap::Init). The per-frame skeletal CB ring (instance + bones) stays in the engine.
     struct SkeletalPipeline {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;                // lit opaque skinned

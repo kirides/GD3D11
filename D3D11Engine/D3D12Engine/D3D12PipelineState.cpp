@@ -633,7 +633,7 @@ bool D3D12PipelineState::CreateGrass() {
     // 12 = simple-SSAO mask bindless SRV-heap index (b5 AOCB, PS only), set once per frame by
     // DrawVegetation. Grass gets real AO now that RenderSSAO builds the mask from the PREVIOUS frame's COMPLETE
     // depth rather than the depth prepass grass never joins — see Vegetation.hlsl's PSMain. The grass shadow
-    // CASTER (m_ShadowCasterGrassPSO, CreateGrassShadowCaster) shares this root sig but reads none of this.
+    // CASTER (D3D12ShadowMap::CreateGrassCaster) shares this root sig but reads none of this.
     rs.AddConstants( 5, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b5 AOCB { AoMaskIndex }
 
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );      // s0 diffuse
@@ -1483,7 +1483,7 @@ bool D3D12PipelineState::CreateSkeletal() {
 
 bool D3D12PipelineState::CreatePointShadow() {
     // P2.10a: the point-light shadow cube caster PIPELINES only (the cube array textures, per-slot DSVs, array
-    // SRV, and per-frame CB/instance rings are GPU resources built in the engine's CreatePointShadowResources).
+    // SRV, and per-frame CB/instance rings are GPU resources built in D3D12PointShadows::Init).
     // Two root sigs (world/VOB share one; skeletal has its own with the 6-face CBV at b0), four VS/PS blobs, and
     // three single-pass-6-face caster PSOs. Non-fatal at init: on failure the point lights simply stay unshadowed.
     ID3D12Device* device = m_Device->GetDevice();

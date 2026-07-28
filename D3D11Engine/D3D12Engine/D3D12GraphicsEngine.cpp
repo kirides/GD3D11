@@ -33,6 +33,13 @@ namespace {
 D3D12GraphicsEngine::D3D12GraphicsEngine() {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
     m_Resolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
+    // Hand the shadow modules their engine back-reference HERE, not in their Init(): Init() has ordering
+    // constraints (the caster PSOs need the depth-prepass shader blobs, so the CSM map is created well into
+    // Init()), but the engine calls into the modules BEFORE that — CreateWorldIndirect/CreateVobIndirect ask
+    // them to build their per-cascade argument rings while defining the shared command-signature layout. So
+    // the back-reference must be valid from construction, independent of any Init() ordering.
+    m_ShadowMap.Attach( *this );
+    m_PointShadows.Attach( *this );
 }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
@@ -131,14 +138,14 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateShadowMap() ) {
+    if ( !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
         // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
         // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).
         // Runs after the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map.";
         return XR_FAILED;
     }
-    if ( !m_Pipelines.CreatePointShadow() || !CreatePointShadowResources() ) {
+    if ( !m_Pipelines.CreatePointShadow() || !m_PointShadows.Init() ) {
         // Fatal: the lit PSOs sample the cube array (t5) unconditionally once P2.10d lands, so a missing resource
         // would leave that root slot unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create point-light shadow cubes.";
@@ -200,8 +207,8 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Non-fatal: vegetation boxes are an optional decoration layer. DrawVegetation() guards on
         // Grass.PSO existing and just skips the pass (grass simply doesn't render) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass pipeline (vegetation boxes will not render).";
-    } else if ( !CreateGrassShadowCaster() ) {
-        // Non-fatal: PrepareSunShadows() guards on m_ShadowCasterGrassPSO and just skips grass's shadow
+    } else if ( !m_ShadowMap.CreateGrassCaster() ) {
+        // Non-fatal: the CSM pass guards on the grass caster PSO and just skips grass's shadow
         // contribution (it still renders lit, just casts no shadow) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass shadow-caster pipeline (grass will not cast shadows).";
     }
@@ -824,6 +831,45 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) co
 }
 
 
+bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
+    // The per-frame-in-flight shadow CB every lit pass binds (b3 on the world/VOB root sig). Small and written
+    // once per frame, so a persistently-mapped UPLOAD buffer per frame context — no ring offset needed.
+    //
+    // 512, not 256: FOUR owners write four DISJOINT byte ranges of the same buffer, so none clobbers another.
+    // [0, kWetnessCbOffset)  D3D12ShadowMap::Prepare       — cascade view-projs + sun dir/color/strength + texels
+    // [kWetnessCbOffset, ..) UploadWetnessConstants        — scene wetness (needs the rain-shadow camera first)
+    // [kAoReprojCbOffset,..) UploadAoReprojConstants       — previous-frame depth reprojection for the AO mask
+    // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
+    // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
+    // ShadowCB declaration.
+    D3D12MA::ALLOCATION_DESC uploadAlloc = {};
+    uploadAlloc.HeapType = DefaultUploadHeapType;
+
+    D3D12_RESOURCE_DESC cbDesc = {};
+    cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    cbDesc.Width = 512;
+    cbDesc.Height = 1;
+    cbDesc.DepthOrArraySize = 1;
+    cbDesc.MipLevels = 1;
+    cbDesc.Format = DXGI_FORMAT_UNKNOWN;
+    cbDesc.SampleDesc.Count = 1;
+    cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowCBAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_ShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_ShadowCB[i]->SetName( L"ShadowSamplingCB" );
+        D3D12_RANGE noRead = { 0, 0 };
+        void* mapped = nullptr;
+        if ( FAILED( m_ShadowCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+        m_ShadowCBMapped[i] = static_cast<uint8_t*>( mapped );
+        m_ShadowCBGpu[i] = m_ShadowCB[i]->GetGPUVirtualAddress();
+    }
+    return true;
+}
+
+
 bool D3D12GraphicsEngine::CreateWhiteTexture() {
 	CreateTexture( m_WhiteTexture );
 	const uint32_t white = 0xFFFFFFFFu;
@@ -1290,13 +1336,13 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     // Same spot, same reasoning, for the shadow-map quality setting (mirrors D3D11ShadowMap::PrepareRender's
     // per-frame settings check). Clamp+snap here too so the ImGui slider/ini can't leave an in-between size.
-    if ( m_ShadowDsvHeap ) {
+    if ( m_ShadowMap.HasResources() ) {
         auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        const UINT desiredShadowSize = ClampShadowMapSize( settings.ShadowMapSize );
-        if ( desiredShadowSize != m_ShadowMapSize ) {
-            ResizeShadowMap( desiredShadowSize );
+        const UINT desiredShadowSize = D3D12ShadowMap::ClampSize( settings.ShadowMapSize );
+        if ( desiredShadowSize != m_ShadowMap.GetSize() ) {
+            m_ShadowMap.Resize( desiredShadowSize );
         }
-        settings.ShadowMapSize = static_cast<int>( m_ShadowMapSize );
+        settings.ShadowMapSize = static_cast<int>( m_ShadowMap.GetSize() );
     }
 
     {

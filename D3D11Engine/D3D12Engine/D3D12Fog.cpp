@@ -59,7 +59,7 @@ namespace {
 bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
     // One persistently-mapped UPLOAD buffer per frame-in-flight, 512 B: [0,256) the height-fog CB (b0),
     // [256,512) the atmosphere CB (b1). Both root CBV addresses must be 256-byte aligned, hence the split
-    // rather than one packed struct. Same pattern as the shadow-sampling CB (CreateShadowMap).
+    // rather than one packed struct. Same pattern as the shared shadow CB (CreateShadowConstantBuffer).
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
     uploadAlloc.HeapType = DefaultUploadHeapType;
 

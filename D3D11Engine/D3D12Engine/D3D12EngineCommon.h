@@ -8,11 +8,83 @@
 #include <unordered_map>
 #include <vector>
 #include <d3d12.h>
+#include <DirectXMath.h>
 #include <wrl/client.h>
 #include "D3D12TracyDebug.h"
 
 class zCTexture;
+class zCVob;
+class zCVobLight;
 struct MeshInfo;
+struct MeshVisualInfo;
+struct SkeletalVobInfo;
+struct SkeletalMeshVisualInfo;
+
+// ---- Per-frame draw records shared between the geometry collectors (D3D12Scene.cpp) and the shadow
+// modules (D3D12ShadowMap.cpp / D3D12PointShadows.cpp). They used to be file-local to the scene TU; the
+// shadow passes consume the very same records (one collection pass feeds the main view, the CSM cascades
+// and the point-light cubes), so the declarations live here now. All three are pure D3D12 handles +
+// non-owning Gothic pointers — a record is valid for exactly the frame that built it.
+
+// culledInstView / cullVisualIndex are the GPU-culling half (D3D12Cull.cpp): the same byte range as instView
+// but based at m_VobCulledInstances (where CSCull compacts the survivors), plus this visual's index into the
+// per-frame VobCullVisual record buffer. cullVisualIndex == 0xFFFFFFFF means "not culled" (the visual didn't
+// fit the record cap, or GPU culling is off) and the command keeps instView + the CPU's instance count.
+struct FrameVobUpload {
+    MeshVisualInfo* visual;
+    D3D12_VERTEX_BUFFER_VIEW instView;
+    D3D12_VERTEX_BUFFER_VIEW culledInstView;
+    UINT numInstances;
+    uint32_t cullVisualIndex;
+};
+
+// matSrvIndex indexes g_SkelMatSrvs (below): the per-material diffuse descriptor handles for this vob's
+// visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
+// set for THIS instance. A pool-thread recorder (the MT cascades) must use it instead of calling
+// UpdateMeshLibTexAniState + GetAniTexture itself (Gothic's texani state is per-MODEL shared, not thread-safe).
+struct FrameSkelDraw {
+    SkeletalVobInfo*          vobInfo;
+    SkeletalMeshVisualInfo*   visual;
+    D3D12_GPU_VIRTUAL_ADDRESS instCb;
+    D3D12_GPU_VIRTUAL_ADDRESS boneCb;
+    uint32_t                  matSrvIndex;
+};
+
+// owner = the skeletal vob this attachment hangs off of (its NPC/MOB) — needed so point-shadow self-shadow
+// exclusion (D3D12PointShadows::BuildExcludeList) can skip a torch-holding NPC's own attachments too, not
+// just its base mesh; unused (nullptr-safe) by the main-view/CSM consumers, which don't exclude anything.
+// srv = the same main-thread-resolved diffuse handle as FrameSkelDraw::matSrvIndex, for the same reason —
+// the main-view prepass/color paths still resolve `tex` themselves (they CacheIn, which the shadow paths
+// deliberately don't), so both fields stay live.
+struct FrameAttachDraw {
+    MeshInfo*                   mesh;
+    zCTexture*                  tex;
+    D3D12_VERTEX_BUFFER_VIEW    instView;
+    const zCVob*                owner;
+    D3D12_GPU_DESCRIPTOR_HANDLE srv;
+};
+
+// Per-frame GPU point light — byte-identical to D3D11 TiledPointLight (48 B). Filled by
+// BuildFrameLightBuffer (D3D12Scene.cpp); the point-shadow slot selection
+// (D3D12PointShadows::SelectShadowedLights) reads Range/PositionWorld/Color.w and writes ShadowCubeIndex.
+struct GPULight {
+    DirectX::XMFLOAT3 PositionView;    // 0
+    float             Range;           // 12
+    DirectX::XMFLOAT4 Color;           // 16 (.w = static flag 0/1)
+    DirectX::XMFLOAT3 PositionWorld;   // 32
+    int32_t           ShadowCubeIndex; // 44 (-1 = no shadow)
+};
+static_assert( sizeof( GPULight ) == 48, "GPULight must match D3D11 TiledPointLight (48 bytes)" );
+
+// This frame's visible-VOB instance-ring snapshot (UploadFrameVobInstances) — the depth prepass, the color
+// pass AND the point-shadow static-VOB gather all draw from it. Defined in D3D12Scene.cpp.
+extern std::vector<FrameVobUpload> g_FrameVobUploads;
+
+// Per-vob snapshot of the diffuse descriptor handle for each entry of visual->SkeletalMeshes, in that map's
+// iteration order — see FrameSkelDraw::matSrvIndex. Only the live prefix [0, g_SkelMatSrvCount) is valid each
+// frame. Defined in D3D12Scene.cpp (PrepareFrameSkeletals owns it); read by the CSM cascade recorder.
+extern std::vector<std::vector<D3D12_GPU_DESCRIPTOR_HANDLE>> g_SkelMatSrvs;
+extern size_t g_SkelMatSrvCount;
 
 // Water surfaces peeled out of the opaque world pass (BuildWorldDrawCommands, D3D12Scene.cpp) and drawn
 // later by DrawWaterSurfaces (D3D12Water.cpp), grouped by texture to minimize SRV binds. Both run on the

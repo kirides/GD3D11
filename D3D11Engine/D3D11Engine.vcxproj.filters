@@ -771,6 +771,12 @@
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12ShadowMap.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12PointShadows.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -968,6 +974,12 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Scene.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12ShadowMap.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PointShadows.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Engine2D.cpp">

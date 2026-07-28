@@ -501,7 +501,7 @@ namespace {
 
 void D3D12GraphicsEngine::PrepareRainShadowmap() {
     // World-mesh-only rain shadowmap (see the header comment for the VOB/grass scope cut). Reuses
-    // m_ShadowCasterWorldPSO/m_Pipelines.World.RootSig with PER-DRAW (non-indirect) binds — the shared
+    // D3D12ShadowMap's world caster PSO + m_Pipelines.World.RootSig with PER-DRAW (non-indirect) binds — the shared
     // root sig's b6 MaterialCB (params[10] in CreateWorld) is a plain root-constants parameter, so
     // ExecuteIndirect is purely an optimization the main CSM/color passes use, not a requirement; a
     // single low-frequency pass like this one is fine issuing one SetGraphicsRoot32BitConstants +
@@ -514,7 +514,8 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     g_RainShadowVb = nullptr;
     g_RainShadowIb = nullptr;
 
-    if ( !m_FrameOpen || !m_ShadowCasterWorldPSO || !m_Pipelines.World.RootSig || !m_BlackTexture || !m_DefaultOrmTexture )
+    ID3D12PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
+    if ( !m_FrameOpen || !casterPso || !m_Pipelines.World.RootSig || !m_BlackTexture || !m_DefaultOrmTexture )
         return;
 
     auto& state = Engine::GAPI->GetRendererState();
@@ -546,7 +547,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     XMVECTOR right = XMVector3Normalize( XMVector3Cross( up, forward ) );
     up = XMVector3Cross( forward, right );
 
-    // Pull the eye back along -forward by halfRange (same idea as ComputeCascadeMatrices' pullBack,
+    // Pull the eye back along -forward by halfRange (same idea as the CSM cascades' pullBack,
     // D3D12Scene.cpp:1088-1089) so the [0, 2*halfRange] depth range brackets halfRange ABOVE camPos
     // (catching roofs overhead) through halfRange BELOW it (catching terrain) — placing the eye AT
     // camPos with NearZ=1 clipped everything above the player (roofs) out of the depth map entirely,
@@ -574,7 +575,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     // occluder"), it just has no casters in it.
     if ( !m_RainShadowFrustum.IsValid() ) return;
 
-    // Matches ComputeCascadeMatrices' CascadeViewProj construction EXACTLY (D3D12Scene.cpp) — both feed the
+    // Matches D3D12ShadowMap::ComputeCascadeMatrices' CascadeViewProj construction EXACTLY — both feed the
     // SAME shader (DepthPrepassVsBlob / m_Pipelines.World.RootSig's b0, "default column-major packing", plain
     // mul(pos, ViewProj)) and Rain.hlsl's mul(wsPos, RainShadowViewProj) sampling, which need the identical
     // convention: transpose(view*proj), NOT the (proj,view)-without-transpose this used before. That mismatch
@@ -670,7 +671,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
         cmdList->RSSetScissorRects( 1, &sc );
         cmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-        cmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
+        cmdList->SetPipelineState( m_ShadowMap.GetWorldCasterPSO() );
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
 
