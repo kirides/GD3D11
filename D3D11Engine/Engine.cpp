@@ -40,7 +40,7 @@ namespace Engine {
         }
 
         // For implementation purposes force dx12
-        requested = GothicRendererSettings::GRAPHICS_API_D3D12;
+        // requested = GothicRendererSettings::GRAPHICS_API_D3D12;
         
         return requested;
     }
