@@ -206,6 +206,12 @@ struct GothicMemoryLocations {
         static const unsigned int OBJ_ActivezCSkyController = 0x0099AC8C;
 
         static const unsigned int Offset_Sun = 0x5F4; // First of the two planets
+        // Same address as Offset_Sun, named for the array it actually is: zCSkyPlanet planets[2], [0] sun,
+        // [1] moon (verified against ZenGin/Gothic_II_Addon/API/zSky_Outdoor.h: `planets[NUM_PLANETS];
+        // // sizeof 80h offset 5F4h`, i.e. 2 x sizeof(zCSkyPlanet)==0x40).
+        static const unsigned int Offset_Planets = 0x5F4;
+        // float resultFogScale — fades the planets out on foggy days (zCSkyControler_Outdoor::RenderPlanets).
+        static const unsigned int Offset_ResultFogScale = 0x574;
         static const unsigned int Offset_MasterTime = 0x80;
         static const unsigned int Offset_LastMasterTime = 0x84;
         static const unsigned int Offset_MasterState = 0x88;

@@ -100,6 +100,9 @@ struct GothicMemoryLocations {
         static const unsigned int OBJ_ActivezCSkyController = 0x00B186AC;
 
         static const unsigned int Offset_Sun = 0x5F4; // First of the two planets
+        // zCSkyPlanet planets[2] — [0] sun, [1] moon. Same member layout as the retail 2.6fix build.
+        static const unsigned int Offset_Planets = 0x5F4;
+        static const unsigned int Offset_ResultFogScale = 0x574;
         static const unsigned int Offset_MasterTime = 0x80;
         static const unsigned int Offset_MasterState = 0x88;
         static const unsigned int Offset_SkyLayer1 = 0x5A8;

@@ -2664,11 +2664,16 @@ bool D3D12PipelineState::CreateSky() {
     // it is the same struct D3D11 uploads, filled once per frame by GSky::RenderSky().
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL );
     rs.AddConstants( 2, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: b2 World (dome scale + camera translation)
-    rs.AddConstants( 3, 4, D3D12_SHADER_VISIBILITY_PIXEL );     // 3: b3 { cloud slot, night slot, pad, pad }
+    // 3: b3 SkyMaterialCB — { cloud/night/moon SRV slots + pad, moon centre px, moon half-size px, moon colour }
+    rs.AddConstants( 3, 12, D3D12_SHADER_VISIBILITY_PIXEL );
     // s0: linear WRAP — both sky layers are scrolled by world XZ well outside [0,1] and are authored to tile
     // (D3D11 samples them through its SS_Linear wrap sampler).
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
+    // s1: linear CLAMP for the moon sprite — it is a bounded decal, not a tiling layer, so wrapping would
+    // smear the opposite edge back in along the sprite border.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP ) );
 
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
                           | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )

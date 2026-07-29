@@ -123,6 +123,11 @@ struct GothicMemoryLocations {
     struct zCSkyController_Outdoor {
         static const unsigned int OBJ_ActivezCSkyController = 0x0099AC8C;
 
+        // Same MEMBER layout as 1.08k (only code addresses moved between the two G1 builds — note this header
+        // shares its Offset_MasterTime/Offset_FarZ/Offset_OutdoorRainFXWeight values with it verbatim), so the
+        // planet/fog-scale offsets verified against ZenGin/Gothic_I_Classic/API/zSky.h apply here too.
+        static const unsigned int Offset_Planets = 0x5DC;
+        static const unsigned int Offset_ResultFogScale = 0x560;
         static const unsigned int Offset_MasterTime = 0x6C;
         static const unsigned int Offset_LastMasterTime = 0x70;
         static const unsigned int Offset_MasterState = 0x74;

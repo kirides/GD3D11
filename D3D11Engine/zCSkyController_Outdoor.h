@@ -7,16 +7,24 @@
 //#include "zCWorld.h"
 #include "zCObject.h"
 
+class zCMesh;
+
+/** One entry of zCSkyControler_Outdoor::planets[2] — [0] is the sun, [1] the moon.
+    Layout verified against ZenGin/Gothic_{I_Classic,II_Addon}/API/zSky{,_Outdoor}.h; zCSkyPlanet has no
+    virtual functions (its destructor is non-virtual), so there is NO vtable pointer here — an earlier
+    version of this declaration had a leading `int vtbl` which shifted every field by 4. It was dead code
+    (nothing referenced the class), so fixing it changed no behaviour, but do not reintroduce it. */
 class zCSkyPlanet {
 public:
-    int vtbl;
-    void* mesh; // 0
-    XMFLOAT4 color0; // 4 
-    XMFLOAT4 color1; // 20
-    float		size; // 36
-    XMFLOAT3 pos; // 40
-    XMFLOAT3 rotAxis; // 52
+    zCMesh* mesh;       // 0x00 — a 100x100 unit quad (zCMesh::CreateQuadMesh); poly 0 carries the material
+    XMFLOAT4 color0;    // 0x04 — RGBA 0..255, tint near the horizon
+    XMFLOAT4 color1;    // 0x14 — RGBA 0..255, tint high in the sky
+    float    size;      // 0x24 — VIEW-SPACE DEPTH the quad is placed at, not a pixel size: apparent angular
+                        //        half-size is atan(50/size). Gothic.ini [SKY_OUTDOOR] zSunSize/zMoonSize.
+    XMFLOAT3 pos;       // 0x28 — normalized base direction, rotated about rotAxis by the time-of-day angle
+    XMFLOAT3 rotAxis;   // 0x34
 };
+static_assert( sizeof( zCSkyPlanet ) == 0x40, "zCSkyPlanet must match ZenGin's 0x40-byte layout" );
 
 enum zESkyLayerMode {
     zSKY_LAYER_MODE_POLY,
@@ -323,6 +331,55 @@ public:
         const XMMATRIX sunRotation = Alg_Rotation3DNRad( rotAxis, -angle );
         MatrixVector3Multiply( pos, sunPosNormalized, sunRotation );
         return pos;
+    }
+
+    /** Direction of the moon, i.e. GetSunWorldPosition's twin. Identical time remap and rotation; the two
+        differ only in the half-turn offset (-PI/2 vs +PI/2) and the base direction, exactly as
+        zCSkyControler_Outdoor::RenderPlanets distinguishes planets[1] from planets[0] — and consistently
+        with FixMoonWorldPosition below, which is what this mod patches into RenderPlanets' own angle math.
+        Used by the D3D12 procedural sky to place the moon (D3D12Sky.cpp); the FF sky gets it from the patch. */
+    XMFLOAT3 GetMoonWorldPosition( float timeScale = 1.0f ) {
+        float skyTime = GetMasterTime();
+        if ( skyTime >= 0.708f ) {
+            skyTime = Toolbox::lerp( 0.75f, 1.0f, (skyTime - 0.708f) / 0.292f );
+        } else if ( skyTime <= 0.292f ) {
+            skyTime = Toolbox::lerp( 0.0f, 0.25f, skyTime / 0.292f );
+        } else if ( skyTime >= 0.5f ) {
+            skyTime = Toolbox::lerp( 0.5f, 0.75f, (skyTime - 0.5f) / 0.208f );
+        } else {
+            skyTime = Toolbox::lerp( 0.25f, 0.5f, (skyTime - 0.292f) / 0.208f );
+        }
+
+        float angle;
+        if ( timeScale <= -1 ) {
+            angle = 4.71375f;
+        } else {
+            angle = skyTime * timeScale * XM_2PI - XM_PIDIV2;
+        }
+
+        // zCSkyControler_Outdoor::Init: planets[1].pos = normalize( zVEC3( -30, 0, 80 ) ), rotAxis = (1,0,0).
+        // Pre-normalized here the same way GetSunWorldPosition pre-normalizes the sun's (-60,0,100).
+        constexpr XMVECTORF32 moonPosNormalized = { -0.351123273f, 0.0f, 0.936328739f, 0.0f };
+        constexpr XMVECTORF32 rotAxis = { 1.0f, 0.0f, 0.0f, 0.0f };
+
+        XMFLOAT3 pos;
+        const XMMATRIX moonRotation = Alg_Rotation3DNRad( rotAxis, -angle );
+        MatrixVector3Multiply( pos, moonPosNormalized, moonRotation );
+        return pos;
+    }
+
+    /** planets[i] — [0] sun, [1] moon. Live engine data, so Gothic.ini's zMoonSize/zMoonName and any
+        script/mod tweak to the tint or size are picked up automatically. */
+    zCSkyPlanet* GetPlanet( int index ) {
+        return reinterpret_cast<zCSkyPlanet*>(
+            THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Planets
+                + index * sizeof( zCSkyPlanet ) ) );
+    }
+
+    /** resultFogScale — RenderPlanets uses it to fade the planets out on foggy days. */
+    float GetResultFogScale() {
+        return *reinterpret_cast<float*>(
+            THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_ResultFogScale ));
     }
 
     static float __fastcall FixSunWorldPosition( zCSkyController_Outdoor* _THIS ) {
