@@ -2022,7 +2022,14 @@ void GothicAPI::LeaveResourceCriticalSection() {
 /** Called when a VOB got removed from the world */
 void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     //LogInfo() << "Removing vob: " << vob;
-    Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
+
+    // Symmetric to the OnAddVob side: an inventory preview vob never entered the engine's world-scoped state, so
+    // it must not tear it down either. Skipping this matters, not just for symmetry - ZenGin adds and removes the
+    // item once per slot per frame at world position (0,0,0), and the notification invalidates the cached static
+    // shadow cube of every point light reaching that position, forcing a re-render every frame the container is
+    // open. A null world means we can't tell, so keep the old behavior there.
+    if ( !world || world == LoadedWorldInfo->MainWorld )
+        Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
 
     auto it = RegisteredVobs.find( vob );
     if ( it == RegisteredVobs.end() ) {
@@ -2300,14 +2307,21 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                     // It's not, chose this as a dynamically added vob
                     DynamicallyAddedVobs.push_back( vi );
                 }
+                // Add to map
+                VobsByVisual[vob->GetVisual()].push_back( vi );
+
+                // Inventory vobs are deliberately left out of this: they are added and removed once per slot per
+                // frame while a container is open, and the engine-side notification is world-scoped work
+                // (D3D12 invalidates every cached point-light static shadow cube reaching the vob, and grows a
+                // permanent instancing bucket per visual). DrawVobSingle draws them without any of it.
+                Engine::GraphicsEngine->OnAddVob( vi );
             } else {
                 // Must be inventory
                 Inventory->OnAddVob( vi, world );
+
+                // Add to map
+                VobsByVisual[vob->GetVisual()].push_back( vi );
             }
-            
-            // Add to map
-            VobsByVisual[vob->GetVisual()].push_back( vi );
-            Engine::GraphicsEngine->OnAddVob(vi);
 
             break;
         } else if ( ext == ".MDS" || ext == ".ASC" ) {
@@ -5584,6 +5598,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
 
     WritePrivateProfileStringA( "FontRendering", "Enable", to_string_locale_independent( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
 
+    WritePrivateProfileStringA( "Inventory", "FastInventoryRendering", to_string_locale_independent( s.FastInventoryRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
+
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5778,6 +5794,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SaoSettings.BlurSharpness = GetPrivateProfileFloatA( "SAO", "BlurSharpness", defaultSAOSettings.BlurSharpness, ini );
 
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
+
+        s.FastInventoryRendering = GetPrivateProfileBoolA( "Inventory", "FastInventoryRendering", ds.FastInventoryRendering, ini );
 
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );

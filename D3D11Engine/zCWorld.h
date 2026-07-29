@@ -190,10 +190,25 @@ public:
 
     static void __fastcall hooked_Render( zCWorld* thisptr, void* unknwn, zCCamera& camera ) {
         if ( thisptr != Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
-            // This needs to be called to init the camera and everything for the inventory vobs
-            // The PresentPending-Guard will stop the renderer from rendering the world into one of the cells here
-            // TODO: This can be implemented better.
-            HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
+            // Inventory. ZenGin draws every single item slot by spinning up a throwaway pseudo-world and running
+            // a *full* zCWorld::Render on it (oCItem::RenderItem: zNEW camvob -> AddVob -> Render -> RemoveVobSubtree),
+            // once per slot per frame. We draw the item ourselves in DrawVobSingle below, so all that world render
+            // buys us is the camera setup - everything else is pure overhead paid N times per frame:
+            //   zCCacheBase::S_PurgeCaches()      - drops *all* frame-to-frame coherence caches, globally
+            //   GetActiveSkyControler()->Activate(), zCPolygon::PrepareRendering(), bspTree.Render(),
+            //   zrenderer->FlushPolys(), MoveVobs(), zCVertex::ResetVertexTransforms()
+            //   zCTexAniCtrl::IncMasterFrameCtr() - bumps the *global* texture-ani counter once per slot,
+            //                                       which is why animated item textures run N times too fast
+            // zCCamera::Activate() is the only part DrawVobSingle depends on: it pushes the view + projection
+            // transforms and the slot viewport through zrenderer, which lands in our renderer state.
+            // The PresentPending-Guard still stops the world geometry from being drawn into a cell if the
+            // original path is taken.
+            if ( Engine::GAPI->GetRendererState().RendererSettings.FastInventoryRendering ) {
+                camera.UpdateViewport();
+                camera.Activate();
+            } else {
+                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
+            }
         }
 
         hook_infunc
@@ -202,12 +217,10 @@ public:
 
         if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
             Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
-            if ( Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
-                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
-            } else {
+            if ( !Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
                 camera.SetFarPlane( 25000.0f );
-                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
             }
+            HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
         }
     }
 
