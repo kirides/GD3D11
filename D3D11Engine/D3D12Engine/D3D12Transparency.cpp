@@ -52,6 +52,10 @@ std::vector<WorldTransparencyMesh> g_FrameWorldTransparency;
 std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyPortal;
 std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyFoam;
 
+// Declared in D3D12EngineCommon.h; filled by BuildVobDrawCommands (D3D12Scene.cpp), drained by
+// DrawVobAlphaMeshes at the bottom of this file.
+std::vector<VobAlphaMesh> g_FrameVobAlpha;
+
 namespace {
     // D3D11 spec: DrawMeshInfoListAlphablended's `alphaFunc == 0` fixup. zMAT_ALPHA_FUNC_MAT_DEFAULT (0)
     // means "whatever the material color says": translucent color -> blend, opaque color -> leave it alone.
@@ -334,6 +338,91 @@ void D3D12GraphicsEngine::DrawWorldTransparencyMeshes() {
     }
 
     clearLists();
+}
+
+
+void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
+    // Port of D3D11GraphicsEngine::DrawFrameAlphaMeshes (D3D11GraphicsEngine.cpp:7741) for the instanced-VOB
+    // path: the cobwebs, hanging cloth and magic sheets whose material carries a BLEND/ADD alpha func.
+    //
+    // Why they need their own pass: the opaque VOB set is one ExecuteIndirect through a single PSO that alpha-
+    // CLIPS at 0.5, writes depth and returns alpha 1 — so a spider web's soft, half-transparent texel became a
+    // fully opaque white one. D3D11 peels exactly these two alpha funcs out of its instanced pass and re-draws
+    // them here: blended, unlit (PS_Simple), depth-tested but NOT depth-writing. BuildVobDrawCommands does the
+    // peeling (they are consequently absent from the VOB depth prepass too, which is what a blended surface
+    // wants) and resolves every buffer view / bindless index, so this is a short CPU draw loop — same shape as
+    // D3D11's, and the entry count is a handful per frame.
+    //
+    // Not sorted, exactly like D3D11's m_AlphaMeshes: the list comes out in visual/material order. Sorting it
+    // back-to-front is the obvious follow-up if inter-web overlap ever reads wrong.
+    if ( g_FrameVobAlpha.empty() ) return;
+    if ( !m_FrameOpen || !m_Pipelines.World.RootSig || !m_Pipelines.World.VobAlphaBlendPSO || !m_DepthBuffer ) {
+        g_FrameVobAlpha.clear();
+        return;
+    }
+
+    DX_ZONE( m_CmdList, "DrawVobAlphaMeshes" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw Vobs (blended)" );
+
+    // ViewProj — identical derivation to DrawVobsInstanced, so a peeled mesh lands on exactly the pixels it
+    // would have landed on in the opaque pass.
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+    // b1 FogCB: VSMain reads CamPosWS out of it for the fogDist interpolant, which PSAlphaBlendBindless (unlit,
+    // like D3D11's PS_Simple) never reads. Zeroed rather than left at whatever the previous pass set, so the
+    // unused interpolant can't carry a NaN through the rasterizer.
+    const float zeroFog[8] = {};
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, zeroFog, 0 );
+    // b4 WindCB: the frame-global half (dir/time/playerPos); min/maxHeight (@4,5) are stamped per entry below,
+    // exactly as the indirect commands do. Must be bound before the first draw — VSMain reads b4 for the sway.
+    m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
+    // The lighting/shadow root parameters are deliberately left unbound: the pixel shader samples nothing but
+    // its bindless diffuse.
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // ADD falls back to the plain blend PSO when its own failed to create (see CreateVob) — a slightly wrong
+    // blend beats dropping the geometry.
+    ID3D12PipelineState* const blendPso = m_Pipelines.World.VobAlphaBlendPSO.Get();
+    ID3D12PipelineState* const addPso = m_Pipelines.World.VobAlphaAddPSO
+        ? m_Pipelines.World.VobAlphaAddPSO.Get() : blendPso;
+
+    ID3D12PipelineState* current = nullptr;
+    unsigned int drawnTriangles = 0;
+    for ( const VobAlphaMesh& e : g_FrameVobAlpha ) {
+        if ( e.NumInstances == 0 || e.IndexCount == 0 ) continue;
+
+        ID3D12PipelineState* want = e.Additive ? addPso : blendPso;
+        if ( want != current ) {
+            m_CmdList->SetPipelineState( want );
+            current = want;
+        }
+
+        const float windHeights[2] = { e.WindMinHeight, e.WindMaxHeight };
+        m_CmdList->SetGraphicsRoot32BitConstants( 10, 3, e.MatIndices, 0 );              // b6 MaterialCB
+        m_CmdList->SetGraphicsRoot32BitConstants( 11, 2, windHeights, 4 );               // b4[4..5] per visual
+
+        const D3D12_VERTEX_BUFFER_VIEW vbs[2] = { e.MeshVBV, e.InstVBV };
+        m_CmdList->IASetVertexBuffers( 0, 2, vbs );
+        m_CmdList->IASetIndexBuffer( &e.IBV );
+        m_CmdList->DrawIndexedInstanced( e.IndexCount, e.NumInstances, 0, 0, 0 );
+        drawnTriangles += ( e.IndexCount / 3 ) * e.NumInstances;
+    }
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnTriangles;
+    g_FrameVobAlpha.clear();
 }
 
 

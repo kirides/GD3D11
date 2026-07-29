@@ -128,6 +128,25 @@ extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparency;
 extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyPortal;   // MT_Portal (gated on DrawG1ForestPortals)
 extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyFoam;     // MT_WaterfallFoam
 
+// Blended instanced VOBs (cobwebs, hanging cloth, magic sheets) peeled out of the opaque VOB ExecuteIndirect
+// set by BuildVobDrawCommands (D3D12Scene.cpp) and replayed by DrawVobAlphaMeshes (D3D12Transparency.cpp,
+// which owns the definition). Mirrors D3D11's m_AlphaMeshes / DrawFrameAlphaMeshes. Everything is resolved at
+// build time so the pass itself only switches PSO + a handful of root constants per entry; the buffer views
+// point into this frame's instance ring, so the list is strictly single-frame (same lifetime as
+// g_FrameWaterSurfaces above) and is cleared by UploadFrameVobInstances as well as by the pass.
+struct VobAlphaMesh {
+    D3D12_VERTEX_BUFFER_VIEW MeshVBV;        // packed ExVertexStruct
+    D3D12_VERTEX_BUFFER_VIEW InstVBV;        // per-instance VobInstanceInfo (UNculled — see BuildVobDrawCommands)
+    D3D12_INDEX_BUFFER_VIEW  IBV;
+    uint32_t MatIndices[3];                  // b6 MaterialCB { normal, orm, diffuse }, same order as VobDrawCommand
+    float    WindMinHeight;                  // b4[4..5], per visual
+    float    WindMaxHeight;
+    UINT     IndexCount;
+    UINT     NumInstances;
+    bool     Additive;                       // zMAT_ALPHA_FUNC_ADD -> additive blend, else plain alpha blending
+};
+extern std::vector<VobAlphaMesh> g_FrameVobAlpha;
+
 // Upload-heap type used by every persistently-mapped ring / staging allocation. A single knob (kept
 // as an inline variable so all split TUs see the same value); the GPU_UPLOAD path is future work.
 inline D3D12_HEAP_TYPE DefaultUploadHeapType = D3D12_HEAP_TYPE_UPLOAD;

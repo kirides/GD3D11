@@ -68,6 +68,14 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VobIndirectPsBlob;         // PSMainBindless
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobIndirectPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobIndirectPsBlob; // PSDepthClipBindless
+        // Unlit BLENDED instanced VOBs (cobwebs, hanging cloth) — port of D3D11's DrawFrameAlphaMeshes. Same
+        // VSMain + input layout as VobIndirectPSO, but PSAlphaBlendBindless (no alpha clip, real alpha out) and
+        // blended without depth-write. Two PSOs for the two blend alpha funcs D3D11 peels VOB materials out for
+        // (BLEND / ADD). Optional: if the shader fails to compile these stay null and BuildVobDrawCommands
+        // leaves the materials in the opaque set rather than dropping them.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobAlphaPsBlob;            // PSAlphaBlendBindless
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobAlphaBlendPSO;          // zMAT_ALPHA_FUNC_BLEND
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobAlphaAddPSO;            // zMAT_ALPHA_FUNC_ADD
         // Lit quad marks (zCQuadMark). Reuses RootSig AND PsBlob (World.hlsl PSMain) — only the VS and the
         // input layout differ (unpacked ExVertexStruct, CPU-transformed to world space; see VSQuadMark).
         // Blend-keyed like the FX cache because the marks carry Gothic's per-material alpha funcs.

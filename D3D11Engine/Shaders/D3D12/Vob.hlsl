@@ -243,6 +243,25 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
 
+// --- Unlit BLENDED instanced VOBs (cobwebs, hanging cloth, magic sheets) ---
+// Port of D3D11's DrawFrameAlphaMeshes (VS_ExInstancedObj + PS_Simple). Every VOB material whose alpha func is
+// a real blend mode (BLEND/ADD) is peeled out of the opaque ExecuteIndirect set by BuildVobDrawCommands and
+// drawn here instead, blended and WITHOUT writing depth. It must not go through PSMainBindless: that one
+// clip()s at a - 0.5 and returns alpha 1, which is exactly what made Gothic's spider webs read as solid slabs.
+//
+// Unlit, like the PS_Simple D3D11 binds for this pass — the surface keeps only its per-instance static
+// lighting. That comes from i.col.g, the same scalar PSMainBindless feeds ComputeSunLightingPBR: the DWORD
+// behind INSTANCE_COLOR is Gothic's BGRA colour read through an R8G8B8A8_UNORM element, so only .g and .a are
+// channel-order-safe. The texel is linearized because D3D12's scene target is linear HDR (D3D11's PS_Simple
+// writes its sRGB texel straight out; same deliberate divergence the world-transparency pass documents).
+// No fog term, also matching PS_Simple — fogging an ADD-blended surface would brighten it, not fade it.
+float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    float4 t = difTex.Sample( smp, i.uv );
+    return float4( SrgbToLinear( t.rgb ) * i.col.g, t.a * i.col.a );
+}
+
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET
 {
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];

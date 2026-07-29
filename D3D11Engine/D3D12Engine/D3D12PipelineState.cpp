@@ -994,6 +994,43 @@ bool D3D12PipelineState::CreateVob() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, indirect).";
         return false;
     }
+
+    // Unlit blended instanced VOBs (cobwebs, hanging cloth) — D3D11's DrawFrameAlphaMeshes. Same VSMain + wind
+    // layout as the indirect color PSO above (so a peeled material sways exactly as it did in the opaque set),
+    // but PSAlphaBlendBindless and blended-without-depth-write state. Non-fatal on failure: both PSOs stay null
+    // and BuildVobDrawCommands then leaves these materials in the opaque set (i.e. today's behaviour).
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSAlphaBlendBindless", Shadermodel_PS, World.VobAlphaPsBlob.ReleaseAndGetAddressOf() ) ) {
+        LogWarn() << "D3D12: PSAlphaBlendBindless failed to compile — blended VOBs stay alpha-clipped in the opaque pass.";
+        World.VobAlphaPsBlob.Reset();
+        return true;
+    }
+    pso.PS = { World.VobAlphaPsBlob->GetBufferPointer(), World.VobAlphaPsBlob->GetBufferSize() };
+    // Depth-tested against the finished opaque scene but never written — blended geometry must not occlude the
+    // blended geometry behind it (and these were already excluded from the VOB depth prepass).
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+
+    // Gothic's GothicBlendStateInfo::SetAlphaBlending, verbatim (its enum values are the D3D11/D3D12 ones).
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAlphaBlendPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, alpha-blended).";
+        World.VobAlphaBlendPSO.Reset();
+        return true;
+    }
+
+    // ...and SetAdditiveBlending: same, with DestBlend = ONE.
+    rt.DestBlend = D3D12_BLEND_ONE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAlphaAddPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, additive).";
+        World.VobAlphaAddPSO.Reset();
+        // The BLEND PSO survives; DrawVobAlphaMeshes falls back to it for ADD materials.
+    }
     return true;
 }
 

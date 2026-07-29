@@ -639,6 +639,12 @@ private:
     void DrawWorldTransparencyList( std::vector<struct WorldTransparencyMesh>& list,
         D3D12PipelineState::WorldTransparencyPipeline::EKind kind, bool depthFill );   // one sub-pass
 
+    // ---- Blended instanced VOBs (cobwebs, hanging cloth) — port of D3D11's DrawFrameAlphaMeshes.
+    // BuildVobDrawCommands peels every VOB material with a BLEND/ADD alpha func out of the opaque
+    // ExecuteIndirect set into g_FrameVobAlpha (D3D12EngineCommon.h); this pass replays them unlit and blended,
+    // depth-tested but never depth-writing. Also in D3D12Transparency.cpp.
+    void DrawVobAlphaMeshes();
+
     // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse. Unlike the world mesh (one
     // shared VB/IB, so a command only carries material indices + DrawIndexed), every VOB visual/mesh has its OWN
     // vertex/index buffer and its own per-instance stream — so each command ALSO sets the two vertex-buffer views

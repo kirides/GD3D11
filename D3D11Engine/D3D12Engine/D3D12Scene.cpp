@@ -2167,6 +2167,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	    DrawVegetation();
     }
 
+	// Blended instanced VOBs (cobwebs, hanging cloth) that BuildVobDrawCommands peeled out of the opaque VOB
+	// command set: unlit and blended over the finished lit scene, depth-tested but not depth-writing. Same slot
+	// D3D11 draws its "Draw Frame AlphaMeshes" pass in — straight after the lit geometry, before the decals
+	// and water. See D3D12Transparency.cpp.
+	DrawVobAlphaMeshes();
+
 	// Decals (blood, arrows, sprites): collect the visible, back-to-front-sorted list once, then draw the
 	// opaque/alpha-test ones here (with the opaque scene, depth-write) and the transparent ones after water
 	// (blended over the finished scene). Mirrors D3D11's two-pass DrawDecalList.
@@ -2673,6 +2679,11 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     // on the GPU after CSPatchArgs, and reading them back would cost a stall for a statistic.
     if ( resolveMaps ) m_VobDrawnTriangles = 0;
 
+    // Blended VOB materials are peeled out of the opaque set below and replayed by DrawVobAlphaMeshes; only the
+    // main-view build (resolveMaps) collects them, so clear the list in lockstep with that build.
+    const bool peelBlended = resolveMaps && m_Pipelines.World.VobAlphaBlendPSO != nullptr;
+    if ( resolveMaps ) g_FrameVobAlpha.clear();
+
     for ( const FrameVobUpload& up : uploads ) {
         MeshVisualInfo* visual = up.visual;
         if ( !visual ) continue;
@@ -2697,12 +2708,41 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 }
             }
 
+            // Blended VOB materials must never land in the opaque command set: its PSO alpha-CLIPS at 0.5,
+            // writes depth and forces alpha 1 — which renders a spider web as a solid slab. D3D11 peels exactly
+            // these two alpha funcs out of DrawVOBsInstanced into m_AlphaMeshes and draws them blended and
+            // unlit afterwards (DrawFrameAlphaMeshes); g_FrameVobAlpha + DrawVobAlphaMeshes are that pass.
+            // Main view only: the shadow cascades and the rain map keep alpha-clipping them, as D3D11 does.
+            const int alphaFunc = meshKey.Material ? meshKey.Material->GetAlphaFunc() : zMAT_ALPHA_FUNC_NONE;
+            const bool blended = peelBlended
+                && ( alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD );
+
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
                     continue;
                 D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
                 D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
                 if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                if ( blended ) {
+                    // Draws from the UNcompacted instance stream: the GPU cull only patches instance counts
+                    // inside the indirect arg buffer, and this pass is a plain CPU draw loop that never sees
+                    // that patch. A handful of cobweb draws is not worth a second GPU-culled command set.
+                    VobAlphaMesh a;
+                    a.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+                    a.InstVBV = up.instView;
+                    a.IBV = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    a.MatIndices[0] = normalIdx;
+                    a.MatIndices[1] = ormIdx;
+                    a.MatIndices[2] = diffuseIdx;
+                    a.WindMinHeight = minH;
+                    a.WindMaxHeight = maxH;
+                    a.IndexCount = static_cast<UINT>( mi->Indices.size() );
+                    a.NumInstances = up.numInstances;
+                    a.Additive = ( alphaFunc == zMAT_ALPHA_FUNC_ADD );
+                    g_FrameVobAlpha.push_back( a );
+                    continue;
+                }
 
                 if ( count >= maxCommands ) {
                     if ( !m_VobDrawArgsOverflowLogged ) {
@@ -3255,6 +3295,9 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
     // DrawVOBs so that with VOBs disabled neither their depth nor their color is laid down (the cull must never
     // tighten a tile to geometry that isn't actually drawn). The per-frame ring offset was reset in OnBeginFrame.
     g_FrameVobUploads.clear();
+    // Cleared here too, not just in BuildVobDrawCommands: its buffer views point into the instance ring this
+    // function is about to overwrite, and with DrawVOBs off the build never runs at all.
+    g_FrameVobAlpha.clear();
     if ( !m_FrameOpen || !m_VobInstanceBuffer[m_FrameIndex] || !m_VobInstanceBufferPtr[m_FrameIndex] )
         return;
 
