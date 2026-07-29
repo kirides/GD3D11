@@ -874,14 +874,64 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// so the view space this fills matches what the cull shader's frustum is built in.
 	const XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
 
+	// ---- Light priority trim: order by distance, and never let a static light starve a dynamic one of a cube ----
+	// A point light that wins no shadow cube is shaded UNSHADOWED: it lights straight through walls and fights
+	// the tiled cull with contributions that should have been occluded. Cubes are the scarce resource
+	// (D3D12PointShadows::kMaxCubes of them) and SelectShadowedLights hands them out by distance, so a cluster
+	// of nearby STATIC torches could push a dynamic light out of the cube set and bleed into the room behind it.
+	// So the competing set is capped here, before the buffer is filled: sort by distance to camera, count the
+	// lights that can actually contest a cube (mirroring SelectShadowedLights' own candidacy gate — a positive
+	// range, inside D3D11's distMaxShadowSq = (range*9)^2), and if there are more of those than cubes, drop the
+	// losers from the frame buffer ENTIRELY — statics first, farthest-first (the TODO's two static passes: a
+	// distant static goes before a near one), then dynamics farthest-first only if the statics alone didn't free
+	// enough. Dropping a static outright is the deliberate choice: an unshadowed light bleeding through geometry
+	// looks worse than an absent one. Lights outside the shadow gate contest nothing and are never evicted here.
+	// Skipped when point-light shadows are off — nothing wins a cube then, so nothing is starved.
+	// The distance sort also fixes the overflow case below: the buffer now keeps the NEAREST
+	// m_LightBufferCapacity lights instead of whatever BSP order CollectVisibleVobs happened to emit first.
+	struct FrameLightCand { zCVobLight* vob; XMFLOAT3 pos; float range; float distSq; bool isStatic; bool contestsCube; };
+	static std::vector<FrameLightCand> s_cands;   // static: capacity is reused, no per-frame allocation
+	s_cands.clear();
+
+	const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
 	for ( VobLightInfo* li : g_FrameLights ) {
 		if ( !li || !li->Vob ) continue;
 		zCVobLight* vob = li->Vob;
 		if ( !vob->IsEnabled() ) continue;
+
+		const XMFLOAT3 pw = vob->GetPositionWorld();
+		const float range = vob->GetLightRange();
+		const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &pw ), camPos ) ) );
+		const float maxSq = (range * 9.0f) * (range * 9.0f);   // D3D11 distMaxShadowSq
+		s_cands.push_back( { vob, pw, range, distSq, vob->IsStatic(), range > 0.0f && distSq < maxSq } );
+	}
+	std::sort( s_cands.begin(), s_cands.end(),
+		[]( const FrameLightCand& a, const FrameLightCand& b ) { return a.distSq < b.distSq; } );
+
+	if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows
+		!= GothicRendererSettings::PLS_DISABLED ) {
+		UINT contesting = 0;
+		for ( const FrameLightCand& c : s_cands ) if ( c.contestsCube ) ++contesting;
+		// Pass 0 evicts statics, pass 1 dynamics; both walk the sorted list back-to-front, so within a pass the
+		// farthest light always goes first. A dropped light keeps its slot in s_cands with vob = nullptr.
+		for ( int pass = 0; pass < 2 && contesting > D3D12PointShadows::kMaxCubes; ++pass ) {
+			const bool evictStatic = (pass == 0);
+			for ( auto it = s_cands.rbegin(); it != s_cands.rend(); ++it ) {
+				if ( contesting <= D3D12PointShadows::kMaxCubes ) break;
+				if ( !it->vob || !it->contestsCube || it->isStatic != evictStatic ) continue;
+				it->vob = nullptr;
+				--contesting;
+			}
+		}
+	}
+
+	for ( const FrameLightCand& cand : s_cands ) {
+		zCVobLight* vob = cand.vob;
+		if ( !vob ) continue;   // evicted above so a dynamic light could keep its shadow cube
 		if ( count >= m_LightBufferCapacity ) {
 			if ( !m_LightOverflowLogged ) {
 				LogWarn() << "D3D12: point-light buffer overflow (" << m_LightBufferCapacity
-					<< " lights/frame). Excess lights dropped this frame.";
+					<< " lights/frame). Excess (farthest) lights dropped this frame.";
 				m_LightOverflowLogged = true;
 			}
 			break;
@@ -890,12 +940,12 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		const float r = ((c >> 16) & 0xFF) / 255.0f;
 		const float g = ((c >> 8) & 0xFF) / 255.0f;
 		const float b = (c & 0xFF) / 255.0f;
-		const XMFLOAT3 pw = vob->GetPositionWorld();
+		const XMFLOAT3& pw = cand.pos;
 
 		GPULight& L = dst[count];
 		XMStoreFloat3( &L.PositionView, XMVector3TransformCoord( XMLoadFloat3( &pw ), view ) );
-		L.Range = vob->GetLightRange();
-		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, vob->IsStatic() ? 0.0f : 1.0f );
+		L.Range = cand.range;
+		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, cand.isStatic ? 0.0f : 1.0f );
 		L.PositionWorld = pw;
 		L.ShadowCubeIndex = -1;
 		s_lightVobs.push_back( vob );
