@@ -58,8 +58,10 @@ std::vector<FrameVobUpload> g_FrameVobUploads;
 // slots actually describe this instance. Grown monotonically and reused: only the live prefix
 // [0, g_SkelMatSrvCount) is valid each frame and the inner vectors keep their capacity, so this settles into
 // zero per-frame allocations. Indexed (never pointed into) by FrameSkelDraw::matSrvIndex so a rehash of
-// g_SkelUploadCache or a growth of this vector can't dangle a record.
-std::vector<std::vector<UINT>> g_SkelMatSrvs;
+// g_SkelUploadCache or a growth of this container can't dangle a record.
+// Deque rather than vector so that growing it cannot invalidate the element pointers the concurrent CSM
+// cascade recorders are holding — see the declaration in D3D12EngineCommon.h.
+std::deque<std::vector<UINT>> g_SkelMatSrvs;
 size_t g_SkelMatSrvCount = 0;
 
 namespace {
@@ -70,6 +72,12 @@ namespace {
     // linear-ish FLOAT (values may exceed 1.0 — bright sun + additive point lights no longer clip to white), then
     // a fullscreen tonemap resolves it into the swapchain. R16F 4-channel = 64bpp intermediate (recreated on resize).
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
+    // Per-SLOT size of the separate shadow-caster instance ring (see m_ShadowVobInstanceBuffer). One slot per
+    // cascade plus one for the rain map, so the whole buffer is this x kShadowInstanceRingSlots per frame index.
+    // Deliberately smaller per slot than the main ring: a cascade collects one pass's casters, not the whole
+    // frame's geometry. Overflow is logged per slot (never silently truncated) — if that warning shows up in
+    // practice this is the number to raise, at 2 x kShadowInstanceRingSlots bytes of 32-bit VA per increment.
+    constexpr UINT kShadowInstanceSliceBytes = 2 * 1024 * 1024; // ~14k instances @144B, per cascade per frame
     constexpr UINT kParticleInstanceBufferBytes = 8 * 1024 * 1024; // per-frame particle instance ring (~150k @56B)
     constexpr UINT kDecalInstanceBufferBytes = 4 * 1024 * 1024; // per-frame decal instance ring (~52k decals @80B)
 
@@ -544,7 +552,11 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 	// [part A][cascades][point cubes][rain map][part B] even though the CPU recorded part B first.
 	m_ShadowRecordingPending = false;
 	m_ShadowThreadedRecord = false;
-	for ( bool& r : m_ShadowListRecorded ) r = false;
+	// ONLY the point/rain slots. The cascade slots belong to the per-cascade jobs launched way back in
+	// D3D12ShadowMap::Prepare (which clears them itself before launching) — a fast cascade may already have
+	// recorded and flagged itself by now, and clearing it here would silently drop that cascade's list.
+	m_ShadowListRecorded[kPointShadowListIndex] = false;
+	m_ShadowListRecorded[kRainShadowListIndex] = false;
 	if ( !m_FrameOpen ) return;
 	if ( !m_ShadowMap.IsPassReady() && !m_PointShadows.IsPassReady() && !m_RainShadowPassReady ) return;
 
@@ -603,45 +615,32 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 
 
 void D3D12GraphicsEngine::FinishShadowPasses() {
-	// Step 3, run immediately before the lit geometry pass. Three things happen here, in order:
-	//   1. Join the concurrent cascade culls and do the serial Phase-C build that depends on them
-	//      (D3D12ShadowMap::FinishPrepare). This is the "wait as late as possible" point — the culls have had
-	//      DrawSky,
-	//      the point/rain prepares, the indirect-arg builds and the whole prepass/cull/SSAO recording block to
-	//      run in.
-	//   2. Record the cascades (now that their data exists) and join the point/rain recorders launched back in
-	//      BeginShadowRecording.
+	// Step 3, run immediately before the lit geometry pass — which samples the cascade array and the point-light
+	// cubes, so this is the last possible moment. Three things happen here, in order:
+	//   1. Join the per-cascade cull -> build -> record chains (D3D12ShadowMap::WaitCascadeJobs) and the
+	//      point/rain recorders launched in BeginShadowRecording. This USED to be where the cascades were first
+	//      recorded, because a main-thread-only Phase C sat between their cull and their draws; that step is
+	//      gone (its Gothic-mutating half moved into Prepare, its per-cascade half into BuildCascade), so the
+	//      chains have been running since Prepare and this join should find them already finished.
+	//   2. Emit inline anything that could not record into its own list.
 	//   3. Execute every finished list. m_CmdList part B (prepass, culls, SSAO) is still OPEN and unsubmitted,
 	//      so the GPU order stays [part A][shadows][part B] even though the CPU recorded part B first.
 	// Anything that failed to record is re-issued inline rather than dropped: skipping a pass would desync its
 	// cross-frame resource-state tracking (D3D12PointShadows' per-slot cube states, m_RainShadowInReadState).
 	if ( !m_FrameOpen ) return;
 
-	// --- 1. the late join + the build that depends on it ---
-	m_ShadowMap.FinishPrepare();
+	// --- 1. join the per-cascade cull -> build -> record chains ---
+	// These were launched all the way back in D3D12ShadowMap::Prepare and have had DrawSky, the point/rain
+	// prepares, the indirect-arg builds and the whole prepass/cull/SSAO recording block to run in — so unlike
+	// the old split (where recording could not start until the main thread got here) this should return without
+	// blocking. It cannot move any later regardless: the lit geometry pass below samples the cascade array.
+	m_ShadowMap.WaitCascadeJobs();
 
-	// --- 2a. cascade recording. Unlike the point/rain passes this cannot overlap the prepass (the data did not
-	// exist until a moment ago), but it is pure draw emission from pre-resolved records — a fraction of the cull
-	// it displaced off the critical path. Fanned out across the cascades when threading is on.
+	// --- 2a. cascades that could NOT record inside their job (threading off, sun down, or the per-slot command
+	// lists don't exist) still need their draws — and, when the sun is down, their clear — emitted somewhere.
+	// Do it inline on the main list, exactly as the serial path always did.
 	if ( m_ShadowMap.IsPassReady() ) {
-		if ( m_ShadowThreadedRecord ) {
-			std::array<std::future<void>, kShadowCascades> jobs;
-			for ( UINT c = 0; c < kShadowCascades; ++c ) {
-				jobs[c] = Engine::RenderingThreadPool->enqueue(
-					[]( const std::stop_token& token, D3D12GraphicsEngine* self, UINT cascade, bool sunUp ) {
-						if ( token.stop_requested() ) return;
-						ZoneScopedN( "Record shadow cascade" );
-						ID3D12GraphicsCommandList* cl = self->BeginShadowList( cascade );
-						if ( !cl ) return;
-						self->m_ShadowMap.RecordCascade( cascade, cl, sunUp );
-						// Only a successfully closed list may be executed; a failed Close leaves it unusable.
-						self->m_ShadowListRecorded[cascade] = SUCCEEDED( cl->Close() );
-					}, this, c, m_ShadowMap.IsSunUp() ).future;
-			}
-			{
-				ZoneScopedN( "Join shadow cascade recording" );
-				for ( auto& j : jobs ) if ( j.valid() ) j.get();
-			}
+		if ( m_ShadowMap.RecordedInJob() ) {
 			m_ShadowRecordingPending = true;   // there is now at least one own-list batch to execute below
 		} else {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
@@ -666,7 +665,9 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 			m_Device.GetDirectQueue()->ExecuteCommandLists( numLists, lists );
 
 		bool anyFailed = false;
-		if ( m_ShadowMap.IsPassReady() ) {
+		// Only when the jobs were SUPPOSED to record into their own lists — otherwise 2a already emitted every
+		// cascade inline and re-issuing here would draw each of them twice.
+		if ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() ) {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
 				if ( !m_ShadowListRecorded[c] ) { m_ShadowMap.RecordCascade( c, m_CmdList.Get(), m_ShadowMap.IsSunUp() ); anyFailed = true; }
 		}
@@ -814,6 +815,23 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 			return false;
 	}
 	m_VobInstanceBufferCapacity = kVobInstanceBufferBytes;
+
+	// The shadow-caster ring: same upload-heap layout, but statically partitioned so each CSM cascade (and the
+	// rain shadowmap) writes its own slice with a local cursor instead of sharing m_VobInstanceBufferOffset.
+	// That is what makes a cascade's instance upload safe on its own worker thread.
+	bufDesc.Width = static_cast<UINT64>( kShadowInstanceSliceBytes ) * kShadowInstanceRingSlots;
+	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+		if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowVobInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
+			IID_PPV_ARGS( m_ShadowVobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+			return false;
+		m_ShadowVobInstanceBuffer[i]->SetName( i == 0 ? L"ShadowVobInstanceRing0" : L"ShadowVobInstanceRing1" );
+		m_ShadowVobInstanceBufferAlloc[i]->SetName( i == 0 ? L"AllocShadowVobInstanceRing0" : L"AllocShadowVobInstanceRing1" );
+		D3D12_RANGE noRead = { 0, 0 };
+		if ( FAILED( m_ShadowVobInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_ShadowVobInstanceBufferPtr[i] ) ) ) )
+			return false;
+	}
+	m_ShadowInstanceSliceCapacity = kShadowInstanceSliceBytes;
 	return true;
 }
 
@@ -2668,7 +2686,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
 
 UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-    UINT maxCommands, bool culled ) {
+    UINT maxCommands, bool culled, bool cacheIn ) {
     // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
     // indices (diffuse always; normal/ORM only when resolveMaps — the depth/shadow passes just alpha-clip on
     // diffuse), pack the mesh + instance VB views + IB view, the per-visual wind min/max, and DrawIndexedInstanced.
@@ -2700,7 +2718,12 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             uint32_t diffuseIdx = whiteSlot;
             uint32_t normalIdx  = 0xFFFFFFFFu;
             uint32_t ormIdx     = defaultOrm;
-            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            // cacheIn=false (cascade casters): a pure GetCacheState read, so this build is safe on a worker
+            // thread — CacheIn mutates Gothic's resource manager. See the declaration for why the resulting
+            // one-frame inaccuracy is invisible in a shadow pass.
+            const bool texReady = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
+                                                   : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+            if ( texReady ) {
                 if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
                     if ( GfxTexture* gfx = s->GetEngineTexture() ) {
                         D3D12Texture* d = D3D12Texture::From( gfx );
@@ -3242,18 +3265,24 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
 
 bool D3D12GraphicsEngine::UploadVobs(
     const std::vector<RenderBucket>& vobs,
-    std::vector<FrameVobUpload>& uploads) {
-    if ( !m_FrameOpen || !m_VobInstanceBuffer[m_FrameIndex] || !m_VobInstanceBufferPtr[m_FrameIndex] )
+    std::vector<FrameVobUpload>& uploads,
+    UINT ringSlot) {
+    if ( !m_FrameOpen || !m_ShadowVobInstanceBuffer[m_FrameIndex] || !m_ShadowVobInstanceBufferPtr[m_FrameIndex] )
         return false;
+    if ( ringSlot >= kShadowInstanceRingSlots ) return false;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
     if ( !rs.RendererSettings.DrawVOBs )
         return false;
 
     const UINT frame = m_FrameIndex;
-    
+
+    // This slot's private slice. sliceCursor is a LOCAL, not a member: that is the whole point of the
+    // partitioning — a cascade's upload runs on its own worker thread and must not touch a shared cursor.
+    const UINT sliceBase = ringSlot * m_ShadowInstanceSliceCapacity;
+    UINT sliceCursor = 0;
+
     bool hasInstances = false;
-    thread_local std::vector<VobInstanceInfo> instances;
     for ( size_t i = 0; i < vobs.size(); ++i) {
         auto& bucket = vobs[i];
         auto& instances = bucket.instances;
@@ -3264,23 +3293,23 @@ bool D3D12GraphicsEngine::UploadVobs(
         const UINT numInstances = instances.size();
         const UINT instBytes = numInstances * sizeof( VobInstanceInfo );
 
-        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
-            if ( !m_VobInstanceOverflowLogged ) {
-                LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
-                    << " bytes/frame). Some VOBs dropped this frame.";
-                m_VobInstanceOverflowLogged = true;
+        if ( sliceCursor + instBytes > m_ShadowInstanceSliceCapacity ) {
+            if ( !m_ShadowInstanceOverflowLogged[ringSlot] ) {
+                LogWarn() << "D3D12: shadow VOB instance ring slot " << ringSlot << " overflow ("
+                    << m_ShadowInstanceSliceCapacity << " bytes/slot/frame). Some shadow casters dropped.";
+                m_ShadowInstanceOverflowLogged[ringSlot] = true;
             }
             break;
         }
         hasInstances = true;
 
-        const UINT instOffset = m_VobInstanceBufferOffset;
-        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
-        m_VobInstanceBufferOffset += instBytes;
+        const UINT instOffset = sliceBase + sliceCursor;
+        memcpy( m_ShadowVobInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
+        sliceCursor += instBytes;
 
         FrameVobUpload up;
         up.visual = reinterpret_cast<MeshVisualInfo*>(g_vobInfoVisualIndexToVisualInfo[i]);
-        up.instView = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+        up.instView = { m_ShadowVobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
         // Shadow cascades are CPU-culled and never GPU-compacted (BuildVobDrawCommands culled=false), so these
         // two only exist to keep the struct fully initialised.
         up.culledInstView = up.instView;

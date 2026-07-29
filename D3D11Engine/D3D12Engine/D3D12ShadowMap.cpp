@@ -690,6 +690,9 @@ void D3D12ShadowMap::Prepare() {
 	// it (see the phase table in D3D12ShadowMap.h).
 	m_PassReady = false;
 	m_CullingPending = false;
+	// Stays false on every path that launches no jobs (guard bail, sun down, threading off) — FinishShadowPasses
+	// reads it to decide whether the cascades already recorded into their own lists or still need inline draws.
+	m_RecordedInJob = false;
 	if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_Pipelines.World.RootSig )
 		return;
 
@@ -789,93 +792,124 @@ void D3D12ShadowMap::Prepare() {
 		return;
 	}
 
-	// --- Phase B: per-cascade culling — LAUNCHED HERE, JOINED IN FinishPrepare -------------------
+	// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
+	// skeletal-vob list against the cascade frusta, not the player's view frustum — a caster invisible to the
+	// player can still cast a visible shadow. This is the ONE part of the cascade preparation that mutates
+	// Gothic state (the once/frame animation update, texani, morph meshes) and writes the shared skeletal CB
+	// ring, so it has to be a single MAIN-THREAD pass and cannot move into the per-cascade jobs launched below.
+	// It therefore runs HERE, ahead of them, rather than in a join step the cascades would have to wait on.
+	// Restricted to the near cascades (kSkeletalShadowCascades) — the far slices then have empty lists and
+	// RecordCascade skips its per-mesh skeletal/attachment loops for them entirely.
+	// Safe at this point in the frame: the main view already populated g_SkelUploadCache (PrepareFrameSkeletals
+	// in OnStartWorldRendering), so the per-vob uploads this walk needs are cached rather than redone.
+	for ( UINT c = 0; c < kShadowCascades; ++c ) { SkelDraws[c].clear(); AttachDraws[c].clear(); }
+	m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f,
+		kSkeletalShadowCascades );
+
+	// --- Phase B+C+D: per-cascade cull -> build -> record — LAUNCHED HERE, JOINED IN FinishShadowPasses ----
 	// Mirrors D3D11ShadowMap: PrepareRender() enqueues one CollectVisibleVobs job per cascade on the WORKER
 	// pool and returns immediately; WaitShadowCullingComplete() is called at the top of DrawWorldShadow(), i.e.
 	// right before the cascades are actually drawn. So the BSP walks overlap everything the main thread does in
 	// between — here that is DrawSky, the point-cube/rain prepares, the indirect-arg builds and the whole depth
 	// prepass / GPU cull / light cull / SSAO recording block.
 	//
-	// The worker pool (not RenderingThreadPool) on purpose, again matching D3D11: the render pool is what
-	// BeginShadowRecording fans the command recording onto, and the two must not queue behind each other.
+	// The RENDERING pool, not the worker pool. D3D11 culls on the worker pool and this used to match it, back
+	// when the job stopped after the cull — a cull that ran late had the whole prepass as slack. Now the job
+	// runs on to the recording the join actually waits for, so it must not share a pool with the long,
+	// unpredictable jobs: WorkerThreadPool also carries async texture decodes, skeletal loads and world
+	// conversion, any one of which can hold a thread for tens of milliseconds and would then show up as a
+	// blocked join. RenderingThreadPool only ever carries this and the two short point/rain recorders.
 	//
 	// Running this concurrently with the main thread's own Gothic work is exactly what the D3D11 backend has
 	// always done (its PrepareRender fires before DrawWorldMeshNaive, which walks and animates the main view),
 	// so the same safety argument applies: CollectVisibleVobs is re-entrant for the SHADOW config —
 	// BspTreeVobVisitor is thread_local and dedupes through a per-visitor atomic bit on
 	// VobInfo::VisibleInRenderPass, and CollectLights=false keeps it off the one mutating branch.
-	const bool threadedCull = rsA.ThreadedShadowCulling && Engine::WorkerThreadPool != nullptr;
+	const bool threadedCull = rsA.ThreadedShadowCulling && Engine::RenderingThreadPool != nullptr;
+	// Record inside the job too, not just cull+build — but only if the per-slot command lists exist. When they
+	// don't, the job still does the cull and the build and FinishShadowPasses emits the draws inline onto
+	// m_CmdList (degrade, don't lose shadows).
+	const bool recordInJob = threadedCull && m_E->m_ShadowCmdListsReady;
+	m_RecordedInJob = recordInJob;
 
 	g_CullJobs.clear();
 	if ( threadedCull ) {
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
-			g_CullJobs.push_back( Engine::WorkerThreadPool->enqueue(
-				[]( const std::stop_token& token, D3D12ShadowMap* self, UINT cascade ) {
+			// Cleared HERE, before the jobs can set it. BeginShadowRecording deliberately no longer touches the
+			// cascade slots: it runs later in the frame, by which point a fast cascade may already have recorded
+			// and flagged itself, and resetting the flag there would silently drop that cascade's list.
+			m_E->m_ShadowListRecorded[c] = false;
+			g_CullJobs.push_back( Engine::RenderingThreadPool->enqueue(
+				[]( const std::stop_token& token, D3D12ShadowMap* self, UINT cascade, bool record ) {
 					if ( token.stop_requested() ) return;
-					ZoneScopedN( "Cull shadow cascade" );
-					self->CullCascade( cascade );
-				}, this, c ).future );
+					{ ZoneScopedN( "Cull shadow cascade" );  self->CullCascade( cascade ); }
+					{ ZoneScopedN( "Build shadow cascade" ); self->BuildCascade( cascade ); }
+					if ( !record ) return;
+					ZoneScopedN( "Record shadow cascade" );
+					ID3D12GraphicsCommandList* cl = self->m_E->BeginShadowList( cascade );
+					if ( !cl ) return;   // slot unusable — FinishShadowPasses re-issues this cascade inline
+					self->RecordCascade( cascade, cl, self->m_SunUp );
+					// Only a successfully closed list may be executed; a failed Close leaves it unusable.
+					self->m_E->m_ShadowListRecorded[cascade] = SUCCEEDED( cl->Close() );
+				}, this, c, recordInJob ).future );
 		}
 		m_CullingPending = true;
 	} else {
-		for ( UINT c = 0; c < kShadowCascades; ++c )
+		for ( UINT c = 0; c < kShadowCascades; ++c ) {
 			CullCascade( c );
+			BuildCascade( c );
+		}
 	}
 	m_PassReady = true;
 }
 
 
-void D3D12ShadowMap::WaitCullingComplete() {
-	// The single join point for the per-cascade culls (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
-	// Called from FinishPrepare, which the frame runs immediately before the lit geometry pass.
+void D3D12ShadowMap::WaitCascadeJobs() {
+	// The single join point for the per-cascade cull -> build -> record chains (mirrors
+	// D3D11ShadowMap::WaitShadowCullingComplete). Called from FinishShadowPasses, immediately before the lit
+	// geometry pass — which samples the cascade array, so it genuinely cannot move any later. The point of the
+	// chain is that by the time the frame gets here the jobs have long since finished and this returns without
+	// blocking; it used to block for the entire recording because recording could not even START until the
+	// main thread arrived (Phase C sat between the cull and the record).
 	if ( !m_CullingPending ) return;
-	ZoneScopedN( "WaitShadowCullingComplete" );
+	ZoneScopedN( "Join shadow cascade jobs" );
 	for ( auto& j : g_CullJobs ) if ( j.valid() ) j.get();
 	g_CullJobs.clear();
 	m_CullingPending = false;
 }
 
 
-void D3D12ShadowMap::FinishPrepare() {
-	// Phase C: everything that mutates Gothic state or writes a SHARED upload ring, and therefore cannot be part
-	// of the concurrent cull. Deliberately deferred to here (just before the cascades are recorded and drawn)
-	// rather than run right after launching the cull — that is what lets the cull overlap the entire prepass.
-	WaitCullingComplete();
-	// Sun down, or Prepare() bailed at its guards: nothing was culled and the per-cascade lists were already
-	// emptied (or were never valid this frame).
-	if ( !m_PassReady || !m_SunUp ) return;
-
-	ZoneScopedN( "Finish sun shadow prepare" );
-
-	// The VOB instance ring and the indirect-arg build both bump m_VobInstanceBufferOffset / call
-	// zCTexture::CacheIn, so they stay serial; they are cheap next to the BSP walk Phase B just parallelized.
-	static std::vector<FrameVobUpload> cascadeUploads;
+void D3D12ShadowMap::BuildCascade( UINT cascade ) {
+	// Phase C for ONE cascade: turn its culled VOB set into an instance upload + an ExecuteIndirect command set.
+	// This used to be a serial main-thread loop over all cascades (FinishPrepare) because it shared the main
+	// view's instance-ring cursor and called zCTexture::CacheIn. Both are gone:
+	//   - the upload goes into this cascade's PRIVATE slice of the shadow instance ring (ringSlot = cascade),
+	//     which has a local cursor instead of the shared m_VobInstanceBufferOffset;
+	//   - the arg build runs with cacheIn=false, so material diffuse resolution is a pure GetCacheState read.
+	// What remains touches only cascade-private state, so it runs inside the cascade's own job, between its
+	// cull and its recording — which is what lets recording start without a main-thread rendezvous.
+	const UINT c = cascade;
 	const UINT frame = m_E->m_FrameIndex;
-	for ( UINT c = 0; c < kShadowCascades; ++c ) {
-		m_VobDrawCount[c] = 0;
-		cascadeUploads.clear();
-		if ( !m_E->UploadVobs( PassVobs[c].buckets, cascadeUploads ) ) continue;
-		// GPU-driven VOB casters (P2.12): build this cascade's command set from the uploads (diffuse-only
-		// material resolution — the void PSShadowClipBindless just alpha-clips), submitted as ONE
-		// ExecuteIndirect by RecordCascade. Same command signature/PSO family as the main-view VOB pass;
-		// the per-command b4 min/max makes wind-flagged casters sway their silhouette identically to their lit
-		// geometry (VSDepth reads b4 unconditionally).
-		if ( !m_CasterVobIndirectPSO || !m_E->m_VobIndirectCmdSig || !m_VobDrawArgsPtr[c][frame] )
-			continue;
-		// culled=false: the cascades CPU-cull against their own frustum (a caster invisible to the player can
-		// still cast into view), so they draw the uncompacted ring with the CPU's instance counts.
-		m_VobDrawCount[c] = m_E->BuildVobDrawCommands( cascadeUploads, m_VobDrawArgsPtr[c][frame], false,
-			D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false );
-	}
+	m_VobDrawCount[c] = 0;
+	if ( !m_SunUp ) return;
 
-	// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
-	// skeletal-vob list against the cascade frusta, not the player's view frustum — a caster invisible to the
-	// player can still cast a visible shadow. ONE multi-cascade pass (cascadeCount = kShadowCascades) instead of
-	// one pass per cascade: the per-vob upload was already cached across passes (g_SkelUploadCache), but the list
-	// walk, the distance cull and the Gothic animation/texani/morph work were not. It also has to be a single
-	// MAIN-THREAD pass — all of that mutates Gothic state and the skeletal CB / VOB instance rings.
-	for ( UINT c = 0; c < kShadowCascades; ++c ) { SkelDraws[c].clear(); AttachDraws[c].clear(); }
-	m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f, kShadowCascades );
+	// thread_local, not static: one of these exists per worker now that cascades build concurrently. Cleared
+	// rather than reconstructed so it keeps its capacity across frames.
+	thread_local std::vector<FrameVobUpload> cascadeUploads;
+	cascadeUploads.clear();
+	if ( !m_E->UploadVobs( PassVobs[c].buckets, cascadeUploads, c ) ) return;
+	// GPU-driven VOB casters (P2.12): build this cascade's command set from the uploads (diffuse-only
+	// material resolution — the void PSShadowClipBindless just alpha-clips), submitted as ONE
+	// ExecuteIndirect by RecordCascade. Same command signature/PSO family as the main-view VOB pass;
+	// the per-command b4 min/max makes wind-flagged casters sway their silhouette identically to their lit
+	// geometry (VSDepth reads b4 unconditionally).
+	if ( !m_CasterVobIndirectPSO || !m_E->m_VobIndirectCmdSig || !m_VobDrawArgsPtr[c][frame] )
+		return;
+	// culled=false: the cascades CPU-cull against their own frustum (a caster invisible to the player can
+	// still cast into view), so they draw the uncompacted ring with the CPU's instance counts.
+	// cacheIn=false: see above — this runs on a worker thread and must not mutate Gothic.
+	m_VobDrawCount[c] = m_E->BuildVobDrawCommands( cascadeUploads, m_VobDrawArgsPtr[c][frame], false,
+		D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false, false );
 }
 
 

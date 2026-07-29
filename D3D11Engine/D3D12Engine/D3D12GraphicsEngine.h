@@ -245,7 +245,11 @@ private:
     // Vob pipeline creation now lives in m_Pipelines.CreateVob (buffers stay: CreateVobInstanceBuffers).
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     void UploadFrameVobInstances();   // snapshot visible VOB instances into the ring ONCE (prepass + color share it)
-    bool UploadVobs(const std::vector<RenderBucket>& vobs, std::vector<FrameVobUpload>& uploads);
+    // Shadow-caster instance upload. ringSlot selects this pass's private slice of the shadow instance ring
+    // (cascade index, or kRainInstanceRingSlot) — see m_ShadowVobInstanceBuffer. Because the slice and its
+    // cursor are private to the slot, this is safe to call from a cascade's worker thread; it touches no
+    // shared engine state beyond the read-only g_vobInfoVisualIndexToVisualInfo lookup.
+    bool UploadVobs(const std::vector<RenderBucket>& vobs, std::vector<FrameVobUpload>& uploads, UINT ringSlot);
     void DrawVobDepthPrepass();       // lay down instanced VOB depth (alpha-clipped) into the Forward+ prepass
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     // Set a lit draw's per-material bindless normal/ORM indices (b6 root consts). matRootParam = 10 (world/VOB
@@ -690,8 +694,12 @@ private:
     // defaults (depth/shadow passes only alpha-clip on diffuse), true resolves the full PBR material set (color pass).
     // culled=true points each command's instance stream at the GPU-compacted output buffer and stamps
     // VisualIndex so CSPatchArgs can overwrite the instance count (main view only — the cascades CPU-cull).
+    // cacheIn=false resolves each material's diffuse with zCTexture::GetCacheState instead of CacheIn, making
+    // the build a pure read so it can run on a cascade's worker thread (CacheIn mutates Gothic's resource
+    // manager). A texture that has not been pulled in yet simply alpha-clips against black for that frame —
+    // a caster silhouette, not a visible surface, so the inaccuracy never reaches the screen as a wrong pixel.
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-        UINT maxCommands, bool culled = false );
+        UINT maxCommands, bool culled = false, bool cacheIn = true );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
     // The prerequisite was the bindless-skeletal / bindless-attachment work: neither Skeletal.RootSig nor the
@@ -844,6 +852,9 @@ private:
     //                          cull, the light cull and SSAO into the reopened m_CmdList while the pool works.
     //   FinishShadowPasses   — join, execute the finished lists (they land in the queue ahead of the still-open
     //                          part B), re-record any slot that failed, then the post-barriers + RT rebind.
+    // NOTE the CSM cascades do NOT go through this driver: each cascade is one self-contained job (cull ->
+    // build -> record -> close) launched by D3D12ShadowMap::Prepare, far earlier in the frame. Only the join
+    // is shared, in FinishShadowPasses. See the phase table in D3D12ShadowMap.h.
     void PrepareShadowPasses();
     void BeginShadowRecording();
     void FinishShadowPasses();
@@ -1308,6 +1319,24 @@ private:
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
     bool m_VobInstanceOverflowLogged = false;
+
+    // ---- Shadow-caster VOB instance ring ----------------------------------------------------------------
+    // A SEPARATE ring from the main-view one above, statically partitioned into kShadowInstanceRingSlots equal
+    // slices: one per CSM cascade, plus one for the rain shadowmap. Each shadow pass writes only its own slice
+    // with a LOCAL cursor, which is what lets a cascade's instance upload run on its own worker thread — the
+    // main ring's m_VobInstanceBufferOffset is a shared non-atomic cursor and could never be bumped
+    // concurrently. Also keeps the shadow passes out of m_VobInstanceBuffer entirely, which the GPU VOB cull
+    // binds as an SRV (D3D12Cull.cpp) and sizes its own buffers against.
+    // Slice index: cascade c uses slot c; the rain shadowmap uses kRainInstanceRingSlot.
+    static constexpr UINT kShadowInstanceRingSlots = kShadowCascades + 1;
+    static constexpr UINT kRainInstanceRingSlot    = kShadowCascades;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobInstanceBuffer[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobInstanceBufferAlloc[kBackBufferCount];
+    uint8_t* m_ShadowVobInstanceBufferPtr[kBackBufferCount] = {};
+    UINT m_ShadowInstanceSliceCapacity = 0;   // bytes per slot (NOT the whole buffer)
+    // Per-slot, so one busy cascade overflowing doesn't silence the warning for the others. Reset each
+    // OnBeginFrame like the other ring warn-once flags — a drop is never silent.
+    bool m_ShadowInstanceOverflowLogged[kShadowInstanceRingSlots] = {};
 
     // Wind sway (flags/foliage) global state — windDir/globalTime advanced once per frame in OnBeginFrame via
     // the shared UpdateWindAnimation() (WindAnimation.h, also used by D3D11GraphicsEngine::ApplyWindProps);

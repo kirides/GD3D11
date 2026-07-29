@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
+#include <deque>
 #include <d3d12.h>
 #include <DirectXMath.h>
 #include <wrl/client.h>
@@ -103,7 +104,12 @@ extern std::vector<FrameVobUpload> g_FrameVobUploads;
 // has no diffuse table any more, the shaders index ResourceDescriptorHeap[] with these. Only the live prefix
 // [0, g_SkelMatSrvCount) is valid each frame. Defined in D3D12Scene.cpp (PrepareFrameSkeletals owns it);
 // read by the CSM cascade recorder.
-extern std::vector<std::vector<UINT>> g_SkelMatSrvs;
+// DEQUE, not vector, and that matters: the CSM cascades now record on worker threads that hold a
+// `const std::vector<UINT>*` into this container (D3D12ShadowMap::RecordCascade), while the main thread is
+// still appending to it — the point-shadow prepare runs its own PrepareFrameSkeletals after the cascade jobs
+// have launched. A vector's push_back would reallocate and turn those pointers into use-after-free; deque
+// guarantees references to existing elements survive a push_back.
+extern std::deque<std::vector<UINT>> g_SkelMatSrvs;
 extern size_t g_SkelMatSrvCount;
 
 // Water surfaces peeled out of the opaque world pass (BuildWorldDrawCommands, D3D12Scene.cpp) and drawn

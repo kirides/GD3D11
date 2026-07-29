@@ -1682,6 +1682,9 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_FxOverflowLogged = false;
     m_VobInstanceBufferOffset = 0;
     m_VobInstanceOverflowLogged = false;
+    // The shadow ring has no shared cursor to reset (each slot's cursor is local to its UploadVobs call), just
+    // the per-slot warn-once flags.
+    for ( bool& logged : m_ShadowInstanceOverflowLogged ) logged = false;
     m_SkeletalCBBufferOffset = 0;
     m_SkeletalCBOverflowLogged = false;
     m_ParticleInstanceBufferOffset = 0;

@@ -9,14 +9,18 @@
 // #7); the engine's shadow driver (PrepareShadowPasses / BeginShadowRecording / FinishShadowPasses) is what
 // sequences them against the rest of the frame:
 //   A) Prepare()             main thread: cascade matrices, the sampling CB, everything identical across
-//                            cascades (the world-mesh caster set + its bindless materials, the grass wind CB),
-//                            then LAUNCHES the per-cascade culls on the worker pool.
+//                            cascades (the world-mesh caster set + its bindless materials, the grass wind CB)
+//                            plus the ONE Gothic-mutating step that cannot be per-cascade — the near-cascade
+//                            skeletal caster walk (see kSkeletalShadowCascades). Then LAUNCHES one job per
+//                            cascade on the worker pool.
 //   B) CullCascade(c)        concurrent: frustum tests + CollectVisibleVobs + grass box cull. Touches only
 //                            cascade c's own state and read-only engine data.
-//   C) FinishPrepare()       main thread: joins B, then the steps that mutate Gothic state or a SHARED upload
-//                            ring — per-cascade VOB instance uploads + indirect args + one multi-cascade
-//                            skeletal preparation pass.
+//   C) BuildCascade(c)       concurrent: cascade c's VOB instance upload (into its OWN sub-range of the shadow
+//                            instance ring, so there is no shared cursor) + its indirect-arg build.
 //   D) RecordCascade(c,list) concurrent: the actual draws, into one command list per cascade.
+// B, C and D run back-to-back as a SINGLE job per cascade, so recording starts the moment that cascade's cull
+// finishes instead of waiting for the main thread to reach the join. The join itself stays where it always
+// was — immediately before the lit geometry pass, which samples these cascades — but by then the work is done.
 // Everything degrades to a serial in-order run when RendererSettings.ThreadedShadowCulling is off (or the
 // per-slot command lists don't exist) — same output, same queue order, just no overlap.
 #include <d3d12.h>
@@ -36,6 +40,16 @@ class zCTexture;
 // Cascade count. Free-standing (not a class member) because the shared skeletal collector in D3D12Scene.cpp
 // sizes its multi-cascade mode against it.
 inline constexpr UINT kShadowCascades = 3;
+
+// How many of the NEAR cascades get skeletal (NPC/monster) casters. The skeletal caster walk is the one part
+// of the cascade preparation that mutates Gothic state (animation update, texani, morph meshes) and writes the
+// shared skeletal CB ring, so it cannot live inside the concurrent per-cascade job — it runs once on the main
+// thread in Prepare(). Restricting it to the near cascade(s) keeps that walk cheap AND lets the far cascades
+// skip RecordCascade's per-mesh skeletal/attachment draw loops entirely, which is most of their record cost.
+// An NPC only shadows itself and its immediate surroundings at any believable size; by cascade 1+ the caster
+// is a couple of texels. Raise to 2 if NPC shadows visibly pop at the cascade boundary.
+inline constexpr UINT kSkeletalShadowCascades = 1;
+static_assert( kSkeletalShadowCascades <= kShadowCascades );
 
 class D3D12ShadowMap {
 public:
@@ -67,13 +81,17 @@ public:
     UINT GetSize() const { return m_MapSize; }
     UINT GetSrvSlot() const { return m_SrvSlot; }
 
-    // ---- The four phases (see the header comment) ----
+    // ---- The four phases (see the header comment). B/C/D run back-to-back inside ONE job per cascade. ----
     void Prepare();
     void CullCascade( UINT cascade );
-    void FinishPrepare();
+    void BuildCascade( UINT cascade );
     void RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmdList, bool sunUp );
-    // The single join point for the concurrent culls (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
-    void WaitCullingComplete();
+    // The single join point for the concurrent per-cascade jobs (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
+    void WaitCascadeJobs();
+    // True when this frame's cascades recorded into their OWN command lists inside their jobs. False whenever
+    // no job could do that (threading off, sun down, per-slot lists missing, or Prepare() bailed), in which
+    // case FinishShadowPasses still has to emit each cascade's draws inline on the main command list.
+    bool RecordedInJob() const { return m_RecordedInJob; }
     // Hand the cascade array to PIXEL_SHADER_RESOURCE for the lit-pass sampling (reverted at the top of the
     // next Prepare()). Issued on the main command list, after every cascade list has been executed.
     void TransitionToReadState( ID3D12GraphicsCommandList* cmdList );
@@ -157,7 +175,8 @@ private:
     uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
 
-    bool m_CullingPending = false;   // cull jobs are in flight and must be joined before the results are read
+    bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read
+    bool m_RecordedInJob = false;    // this frame's jobs also RECORDED (not just culled/built) — see RecordedInJob()
     bool m_SunUp = false;            // resolved in Prepare(); RecordCascade may run on a pool thread and can't re-read the sky
     bool m_PassReady = false;        // Prepare() ran to completion this frame — the cascades have something to record
 };

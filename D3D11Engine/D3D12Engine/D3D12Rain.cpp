@@ -596,7 +596,7 @@ void D3D12GraphicsEngine::CollectRainShadowVobs() {
 
     static std::vector<FrameVobUpload> rainUploads;
     rainUploads.clear();
-    if ( !UploadVobs( m_RainShadowVobs.buckets, rainUploads ) ) return;
+    if ( !UploadVobs( m_RainShadowVobs.buckets, rainUploads, kRainInstanceRingSlot ) ) return;
 
     // culled=false, resolveMaps=false: CPU-culled like the cascades (never GPU-compacted), and the void
     // alpha-clip PS reads nothing but the diffuse, so normal/ORM resolution is pure waste here.
