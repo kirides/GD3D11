@@ -729,7 +729,7 @@ struct GothicRendererSettings {
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
-        SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
+        SkyOcclusionStrength = 0.0f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
         SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
 
         BloomStrength = 1.0f;
@@ -744,13 +744,13 @@ struct GothicRendererSettings {
 
         EnableOcclusionCulling = false;
         EnablePortalCulling = true;
-        PortalCullingNearRadius = 2500.0f;
+        PortalCullingNearRadius = 1500.0f;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
         ThreadedShadowCulling = false;
-        GpuVobCulling = true;
-        GpuVobOcclusionCulling = true;
+        GpuVobCulling = false;
+        GpuVobOcclusionCulling = false;
         EnableVSync = true;
         DoZPrepass = false;
         SortRenderQueue = false;
@@ -851,6 +851,15 @@ struct GothicRendererSettings {
         ApplyAssaoPreset(1);
 
         ResetDebugSettings();
+    }
+    
+    void ApplyDx12Defaults()
+    {
+        EnableHDR = true;
+        HDRToneMap = ACESFittedTonemap;
+        ThreadedShadowCulling = true;
+        
+        ShadowStrength = 0.20f;
     }
 
     void ApplyGraphicsPreset();
