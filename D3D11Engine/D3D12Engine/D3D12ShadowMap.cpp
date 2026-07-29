@@ -628,7 +628,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		XMFLOAT3   SunDirWS;          float ShadowMapSize;
 		XMFLOAT3   SunColor;          float SunIntensity;
 		XMFLOAT3   CascadeTexelWorld; float AmbientStrength;
-		float ShadowAOStrength; float WorldAOStrength; float _pad0; float _pad1;
+		float ShadowAOStrength; float WorldAOStrength; float SkyOccStrength; float _pad1;
 	} cb;
 	static_assert( sizeof( cb ) == D3D12GraphicsEngine::kWetnessCbOffset, "ShadowCB head size must match the HLSL layout" );
 	const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
@@ -666,7 +666,10 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		cb.WorldAOStrength = set.WorldAOStrength;
 	}
 	cb.ShadowAOStrength = set.ShadowAOStrength;
-	cb._pad0 = 0.0f;
+	// Gates the sky-IBL ambient by the baked vertex light so interiors stop catching the open sky — see
+	// PBRLighting.hlsl ComputeSunLightingPBR. Only the IBL branch reads it; the flat fallback already carries
+	// vertLighting through shadowAO.
+	cb.SkyOccStrength = std::clamp( set.SkyOcclusionStrength, 0.0f, 1.0f );
 	cb._pad1 = 0.0f;
 	memcpy( mapped, &cb, sizeof( cb ) );
 }

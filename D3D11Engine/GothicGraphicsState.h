@@ -729,6 +729,7 @@ struct GothicRendererSettings {
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
+        SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
         SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
 
         BloomStrength = 1.0f;
@@ -1064,6 +1065,15 @@ struct GothicRendererSettings {
     // D3D12 only (the D3D11 backend has no PBR path): scale on the sky-IBL indirect term that replaced the
     // flat ambient floor in Shaders/D3D12/include/PBRLighting.hlsl. 0 falls back to that flat term entirely.
     float SkyIblIntensity;
+    // D3D12 only: how strongly Gothic's baked vertex light gates the sky-IBL indirect term — see
+    // Shaders/D3D12/include/PBRLighting.hlsl ComputeSunLightingPBR. The IBL is the OPEN SKY's radiance, and
+    // without this it is added with no visibility term at all, so caves and portal rooms read as sunlit at
+    // noon and only go dark at night. ShadowAOStrength cannot do this job: it floors at 1-ShadowAOStrength
+    // (0.5 by default), which still let a pitch-black cave catch half the daytime sky. 0 = off (the old
+    // behaviour); 1 = interiors receive no sky ambient at all. The default leaves a small floor so cave
+    // ceilings keep a trace of bounce light rather than crushing to black. Applies ONLY to the IBL branch —
+    // the flat ambient fallback already carries vertLighting through shadowAO and matches D3D11 verbatim.
+    float SkyOcclusionStrength;
     // D3D12 only: minimum LINEAR sky radiance (green channel; R/B follow a fixed blue-weighted ratio) used as a
     // night floor for the sky IBL. Gothic's night is not physically lit — zCSkyState's night fogColor is
     // (5,5,20), i.e. ~0.002 linear — so a faithful IBL leaves horizontal/downward normals with nothing. This is

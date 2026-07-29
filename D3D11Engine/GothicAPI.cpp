@@ -5489,6 +5489,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", to_string_locale_independent( s.ShadowAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldAOStrength", to_string_locale_independent( s.WorldAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SkyIblIntensity", to_string_locale_independent( s.SkyIblIntensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SkyOcclusionStrength", to_string_locale_independent( s.SkyOcclusionStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SkyIblNightFloor", to_string_locale_independent( s.SkyIblNightFloor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5618,6 +5619,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", ds.ShadowAOStrength, ini );
         s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", ds.WorldAOStrength, ini );
         s.SkyIblIntensity = GetPrivateProfileFloatA( "Shadows", "SkyIblIntensity", ds.SkyIblIntensity, ini );
+        s.SkyOcclusionStrength = GetPrivateProfileFloatA( "Shadows", "SkyOcclusionStrength", ds.SkyOcclusionStrength, ini );
         s.SkyIblNightFloor = GetPrivateProfileFloatA( "Shadows", "SkyIblNightFloor", ds.SkyIblNightFloor, ini );
         s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias = GetPrivateProfileFloatA( "Shadows", "ShadowDepthSlopeBias", ds.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, ini );
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );

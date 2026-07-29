@@ -376,16 +376,19 @@ void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
-    // b1 FogCB: VSMain reads CamPosWS out of it for the fogDist interpolant, which PSAlphaBlendBindless (unlit,
-    // like D3D11's PS_Simple) never reads. Zeroed rather than left at whatever the previous pass set, so the
-    // unused interpolant can't carry a NaN through the rasterizer.
-    const float zeroFog[8] = {};
-    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, zeroFog, 0 );
+    // The full Forward+ set: PSAlphaBlendBindless shades exactly like the opaque PSMainBindless (see Vob.hlsl
+    // for why these surfaces have to be lit rather than emitted at full albedo), so it needs every root
+    // parameter DrawVobsInstanced binds. Fog is bound for the VS's CamPosWS even though the PS drops the term.
+    const FogConstants fog = MakeSceneFogConstants();
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );                                       // b1 fog
+    BindFrameLights();                                                                               // 3..6
+    m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );                  // b3 shadow CB
+    m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
+    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );  // t5 cubes
     // b4 WindCB: the frame-global half (dir/time/playerPos); min/maxHeight (@4,5) are stamped per entry below,
     // exactly as the indirect commands do. Must be bound before the first draw — VSMain reads b4 for the sway.
     m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
-    // The lighting/shadow root parameters are deliberately left unbound: the pixel shader samples nothing but
-    // its bindless diffuse.
+    m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );                    // b7 AOCB
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

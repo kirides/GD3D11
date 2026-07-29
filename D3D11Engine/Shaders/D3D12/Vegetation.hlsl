@@ -31,7 +31,10 @@ cbuffer ShadowCB : register(b4)
     float3   SunDirWS;          float ShadowMapSize;
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
+    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
+    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
+    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
+    float    SkyOccStrength;    float _shpad;
     // Scene-wetness (rain) block. Grass applies no wetness (no Wetness.hlsl include here), but the fields must
     // be declared so the AO tail below lands at the byte offset UploadAoReprojConstants writes it to — this CB
     // is the same 512-byte resource World/Vob/Skeletal bind, three disjoint writers into one layout.
@@ -146,7 +149,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // sqrt(1 - dot(N,SunDir)^2), and feeding it the up-bent normal under a high sun drove that to ~0 — the
     // blades then self-shadowed into a uniform black mask (no shadow shape, just "fully occluded"), stepping
     // hard at every cascade split. Ngeo is near-edge-on to the sun, so the bias gets its full magnitude here.
-    float shadow = ComputeSunShadow( i.wpos, Ngeo );
+    float shadow = ComputeSunShadow( i.wpos, Ngeo, 1.0 );
     // orm: AO=1 (g_full), roughness=0.9 (matte), metallic=0 — grass has no ORM map, so a diffuse-leaning default.
     // Screen-space AO applies here now: the mask is built from the PREVIOUS frame's COMPLETE depth (which the
     // grass DID write, in the lit color pass), not from the depth prepass grass never joins. So the mask at a

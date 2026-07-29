@@ -245,17 +245,7 @@ namespace {
     // CBV addresses to be 256-byte aligned).
     UINT AlignCB( UINT offset ) { return ( offset + 255u ) & ~255u; }
 
-    // Per-frame linear-fog parameters, bound to the 3D shaders as 8 root 32-bit constants. Field order
-    // MUST match the HLSL `cbuffer FogCB { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; }`
-    // (root constants map by DWORD offset). The VS computes distance(worldPos, CamPosWS) (== view-space
-    // distance for a rigid view transform), the PS lerps toward FogColor over [FogNear, FogFar].
-    struct FogConstants {
-        float FogColor[3];
-        float FogNear;
-        float CamPos[3];
-        float FogFar;
-    };
-    static_assert( sizeof( FogConstants ) == 32, "FogConstants must be 8 DWORDs to match the fog root constants" );
+    // FogConstants now lives in D3D12EngineCommon.h — the split-out passes bind the same b1.
 
     // The color to clear/fill the sky and per-pixel distance-fog with, mirroring D3D11's background-clear
     // formula (D3D11GraphicsEngine::OnStartWorldRendering, ~line 4180): GetFogColor() (== FogColorMod, a
@@ -352,6 +342,11 @@ namespace {
     std::vector<BaseVisualInfo*> g_vobInfoVisualIndexToVisualInfo;
     RenderView g_GeometryPassVobs;
 }
+
+// Externally-linked shim over the file-local MakeFogConstants above, for the split-out passes that need the
+// same b1 FogCB (D3D12Transparency.cpp's blended-VOB pass). Declared in D3D12EngineCommon.h. A shim rather
+// than a move because MakeFogConstants leans on this TU's GetSceneFogColorXM/g_HeightFogActive.
+FogConstants MakeSceneFogConstants() { return MakeFogConstants(); }
 
 
 void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
@@ -1501,6 +1496,16 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Decal.RootSig.Get() );
 	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+
+	// Forward+ lighting state — decals are lit (Decal.hlsl's ShadeDecal), so this is the same set the world
+	// and VOB passes bind, at the same root-parameter indices (the Decal layout mirrors World's order).
+	const FogConstants decalFog = MakeFogConstants();
+	m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &decalFog, 0 );                                  // b1 fog
+	BindFrameLights();                                                                               // 3..6
+	m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[frame] );                         // b3 shadow CB
+	m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
+	m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );  // t5 cubes
+	m_CmdList->SetGraphicsRoot32BitConstants( 10, 1, &m_ActiveAOMaskSrvSlot, 0 );                    // b7 AOCB
 
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

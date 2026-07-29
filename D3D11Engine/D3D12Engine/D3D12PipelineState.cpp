@@ -1298,12 +1298,31 @@ bool D3D12PipelineState::CreateDecal() {
 
     // Root signature: b0 = ViewProj (16 root consts, VS), t0 = diffuse SRV table (PS), static linear-clamp
     // sampler s0 (PS). CLAMP because a decal is a single [0,1] sprite; wrap would bleed the opposite edge.
+    // Params 2..10 are the Forward+ lighting set, laid out in the SAME order as the World layout so both can
+    // be bound by the same call sequence (BindFrameLights's default 3/4/5/6 lands correctly here too). Decals
+    // are lit as of the "cobwebs blazing white" fix — see the header comment in Decal.hlsl.
     D3D12RootLayout& rs = Layout( "Decal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 diffuse
+    rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );      // 2: b1 fog — VS: CamPosWS; PS: color/near/far
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 3: t1 light StructuredBuffer
+    rs.AddConstants( 2, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 { LightCount, NumTilesX, ... }
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 per-tile LightGrid
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t3 per-tile light-index list
+    rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: b3 shadow CB
+    rs.AddTable( D3D12RootLayout::SRVRange( 4 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
+    rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t5 point-shadow cubes
+    rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 10: b7 AOCB { AoMaskIndex }
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
+    // s2 PCF comparison for the CSM, s1 point-clamp for the SSAO mask — same roles as in the World layout;
+    // ComputeSunShadow / SampleScreenSpaceAO hard-code those registers.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED: the shared lighting helpers reach the SSAO mask, the sky-IBL cubes
+    // and the sky-occlusion map through ResourceDescriptorHeap[...].
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     Decal.RootSig = rs.RootSig();
 

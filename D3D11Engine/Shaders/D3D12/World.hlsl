@@ -26,7 +26,10 @@ cbuffer ShadowCB : register(b3)
     float3   SunDirWS;          float ShadowMapSize;    // dir TOWARD sun; shadow-map resolution
     float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
     float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;   // vertLighting -> AO modulation weights
+    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
+    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
+    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
+    float    SkyOccStrength;    float _shpad;
     // --- Scene wetness (rain) tail, uploaded separately by UploadWetnessConstants after the rain shadow
     // pass has computed this frame's rain camera. Keep in sync with Vob.hlsl/Skeletal.hlsl and the
     // WetnessCBData struct on the CPU side. RainShadowIndex/DistortionIndex are 0xFFFFFFFF when the rain
@@ -156,7 +159,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
-    float shadow = ComputeSunShadow( i.wpos, N );
+    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain). Deliberately AFTER the cascade lookup: D3D11 also samples the sun shadow with
     // the undeformed normal and only then runs ApplySceneWettness. Perturbs N/albedo/roughness in place.
     float3 V = normalize( CamPosWS - i.wpos );

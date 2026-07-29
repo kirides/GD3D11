@@ -135,7 +135,12 @@ float SampleCascadePCF( int c, float2 uv, float depth )
 // self-shadow z-fighting at zero slope — NOT a general-purpose bias. This cascade's ortho depth range
 // (orthoFar-orthoNear, see ComputeCascadeMatrices) commonly spans several thousand world units, so the old
 // 0.0015 constant here was ~500x too large — worth 10+ world units of erroneous depth offset on its own.
-float ComputeSunShadow( float3 wpos, float3 N )
+//
+// `vertLighting` is Gothic's baked static vertex light, and it is what this returns when NO cascade claims the
+// point — exactly D3D11's scheme, where `float shadow = vertLighting;` is the initialiser of both PS_Diffuse's
+// shadow and ComputeCascadedShadowValueSoft's (ShadowSampling.h), surviving whenever the cascade search
+// fails. Returning a flat 1.0 here (as this used to) hands full sun to any interior past the CSM range.
+float ComputeSunShadow( float3 wpos, float3 N, float vertLighting )
 {
     const float margin = 1.5 / ShadowMapSize;   // (the kernel step now lives in SampleCascadePCF)
     const float constantDepthBias = 0.000003;
@@ -186,7 +191,7 @@ float ComputeSunShadow( float3 wpos, float3 N )
             return sh;
         }
     }
-    return 1.0;   // outside all cascades → treat as lit
+    return vertLighting;   // outside all cascades → fall back to baked light (see the header note)
 }
 
 // The bindless ORM SRV index (MatOrmIndex, b6) packs the FxMap's channel layout into its top 2 bits — see
@@ -417,7 +422,26 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     // because its below-horizon hemisphere carries a real ground-bounce colour for those normals to catch.
     float3 ambientSun;
     if ( SkySpecularIndex != 0xFFFFFFFFu )
+    {
         ambientSun = EvaluateSkyIBL( N, V, albedo, roughness, metallic, shadowAO * ssao );
+
+        // SKY VISIBILITY. The IBL is the OPEN SKY's radiance, so it must not reach anything the sky cannot
+        // see. Measured in-game: with this off, a cave at noon is lit to daylight and only goes dark at night
+        // (the sky cubes collapse after dusk) — the classic "sun bleeds into caves" report.
+        //
+        // shadowAO above cannot do this job: it is lerp(1, vertLighting, ShadowAOStrength), which FLOORS at
+        // 1-ShadowAOStrength (0.5 by default), so a pitch-black cave still caught half the daytime sky. This
+        // is the same baked-vertex-light signal applied at its own full strength instead.
+        //
+        // The zBSP_MODE_INDOOR overrides in D3D12ShadowMap::UploadSampling / RenderSkyIBL do not help here:
+        // that flag is a whole-WORLD dungeon-level marker, and Gothic's caves and portal rooms live inside
+        // OUTDOOR-mode worlds, so it never fires for them.
+        //
+        // Applied ONLY to this branch. The flat fallback below already carries vertLighting through shadowAO
+        // and is D3D11's formula verbatim (ForwardPlusLighting.hlsl FP_ComputeSunLighting) — gating it too
+        // would apply the baked light twice and push interiors darker than the D3D11 reference.
+        ambientSun *= lerp( 1.0, vertLighting, SkyOccStrength );
+    }
     else
         ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 

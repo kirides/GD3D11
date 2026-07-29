@@ -396,6 +396,8 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
     // frame, unconditionally, and AFTER PrepareRainShadowmap — the lit World/Vob/Skeletal PS read these
     // constants out of the same CB they already bind for the cascades, so a frame that skipped the write
     // would sample last frame's rain camera against this frame's geometry.
+    static_assert( kWetnessCbOffset + sizeof( WetnessCBData ) == kAoReprojCbOffset,
+        "wetness CB block must end exactly where the AO-reprojection block starts" );
     if ( !m_ShadowCBMapped[m_FrameIndex] ) return;
 
     WetnessCBData cb = {};

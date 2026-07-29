@@ -24,7 +24,10 @@ cbuffer ShadowCB : register(b5)
     float3   SunDirWS;          float ShadowMapSize;
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
+    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
+    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
+    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
+    float    SkyOccStrength;    float _shpad;
     // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
     // lit shaders and in the CPU-side WetnessCBData.
     float4x4 RainViewProj;
@@ -125,7 +128,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
-    float shadow = ComputeSunShadow( i.wpos, N );
+    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;

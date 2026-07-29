@@ -28,7 +28,10 @@ cbuffer ShadowCB : register(b3)
     float3   SunDirWS;          float ShadowMapSize;
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
+    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
+    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
+    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
+    float    SkyOccStrength;    float _shpad;
     // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
     // lit shaders and in the CPU-side WetnessCBData.
     float4x4 RainViewProj;
@@ -132,7 +135,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, N );
+    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
@@ -229,7 +232,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, N );
+    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
@@ -243,23 +246,41 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
 
-// --- Unlit BLENDED instanced VOBs (cobwebs, hanging cloth, magic sheets) ---
-// Port of D3D11's DrawFrameAlphaMeshes (VS_ExInstancedObj + PS_Simple). Every VOB material whose alpha func is
-// a real blend mode (BLEND/ADD) is peeled out of the opaque ExecuteIndirect set by BuildVobDrawCommands and
-// drawn here instead, blended and WITHOUT writing depth. It must not go through PSMainBindless: that one
-// clip()s at a - 0.5 and returns alpha 1, which is exactly what made Gothic's spider webs read as solid slabs.
+// --- BLENDED instanced VOBs (cobwebs, hanging cloth, magic sheets) ---
+// Port of D3D11's DrawFrameAlphaMeshes. Every VOB material whose alpha func is a real blend mode (BLEND/ADD)
+// is peeled out of the opaque ExecuteIndirect set by BuildVobDrawCommands and drawn here instead, blended and
+// WITHOUT writing depth. It cannot go through PSMainBindless: that one clip()s at a - 0.5 and returns alpha 1,
+// which is exactly what makes a spider web read as a solid slab.
 //
-// Unlit, like the PS_Simple D3D11 binds for this pass — the surface keeps only its per-instance static
-// lighting. That comes from i.col.g, the same scalar PSMainBindless feeds ComputeSunLightingPBR: the DWORD
-// behind INSTANCE_COLOR is Gothic's BGRA colour read through an R8G8B8A8_UNORM element, so only .g and .a are
-// channel-order-safe. The texel is linearized because D3D12's scene target is linear HDR (D3D11's PS_Simple
-// writes its sRGB texel straight out; same deliberate divergence the world-transparency pass documents).
-// No fog term, also matching PS_Simple — fogging an ADD-blended surface would brighten it, not fade it.
+// LIT, unlike D3D11's PS_Simple for this pass. D3D11 can leave these unlit because of how its transparency
+// pass is exposed; on this backend the scene target holds linear radiance that is auto-exposed and tonemapped
+// later, so an unlit surface at full albedo blows out against the dimly-lit room around it (the same defect
+// the decal pass had). Modulating by the raw per-instance ground colour instead is no fix either — indoor
+// vobs carry a flat 0.05 grey there (DEFAULT_LIGHTMAP_POLY_COLOR) because indoor light comes entirely from the
+// point lights, so that would render cobwebs nearly black. So: the full Forward+ evaluation, identical to
+// PSMainBindless apart from the alpha handling, which keeps a peeled material shading exactly as it did while
+// it was still in the opaque set.
+//
+// No fog term: this one PS serves both BLEND and ADD, and lerping toward the fog colour brightens an additive
+// surface rather than fading it. D3D11 doesn't fog its alpha meshes either.
 float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
 {
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
     float4 t = difTex.Sample( smp, i.uv );
-    return float4( SrgbToLinear( t.rgb ) * i.col.g, t.a * i.col.a );
+    float3 N = normalize( i.wnrm );
+    if ( MatNormalIndex != 0xffffffff )
+    {
+        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
+    }
+    float3 orm = SampleOrm( MatOrmIndex, i.uv );
+    float3 albedo = SrgbToLinear( t.rgb );
+    albedo = DelightDiffuse( albedo );
+    float shadow = ComputeSunShadow( i.wpos, N, i.col.g );
+    float ssao = SampleScreenSpaceAO( i.wpos );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    return float4( rgb, t.a * i.col.a );
 }
 
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET

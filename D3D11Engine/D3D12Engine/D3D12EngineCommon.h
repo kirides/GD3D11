@@ -147,6 +147,21 @@ struct VobAlphaMesh {
 };
 extern std::vector<VobAlphaMesh> g_FrameVobAlpha;
 
+// Per-frame linear-fog parameters, bound to the 3D shaders as 8 root 32-bit constants. Field order MUST match
+// the HLSL `cbuffer FogCB { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; }` (root constants
+// map by DWORD offset). The VS computes distance(worldPos, CamPosWS) (== view-space distance for a rigid view
+// transform), the PS lerps toward FogColor over [FogNear, FogFar].
+struct FogConstants {
+    float FogColor[3];
+    float FogNear;
+    float CamPos[3];
+    float FogFar;
+};
+static_assert( sizeof( FogConstants ) == 32, "FogConstants must be 8 DWORDs to match the fog root constants" );
+// Built from Gothic's sky state in D3D12Scene.cpp (which owns the sky-color/height-fog state it reads);
+// exported for the passes that live in their own TU and bind the same b1.
+FogConstants MakeSceneFogConstants();
+
 // Upload-heap type used by every persistently-mapped ring / staging allocation. A single knob (kept
 // as an inline variable so all split TUs see the same value); the GPU_UPLOAD path is future work.
 inline D3D12_HEAP_TYPE DefaultUploadHeapType = D3D12_HEAP_TYPE_UPLOAD;
