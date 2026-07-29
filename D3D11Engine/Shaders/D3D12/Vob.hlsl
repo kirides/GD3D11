@@ -1,6 +1,6 @@
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint _lpad; };
+cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; };
 // Wind sway for instanced VOBs (flags/foliage). Mirrors D3D11's WindParams cbuffer (VS_ExInstancedObj.hlsl);
 // minHeight/maxHeight are the flat (non-WIND_META_SRV) per-visual bounding-box fallback, refreshed per visual
 // by DrawVobsInstanced before each visual's draw calls (see WindMinHeight/WindMaxHeight below).

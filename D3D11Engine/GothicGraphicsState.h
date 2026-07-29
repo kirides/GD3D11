@@ -837,6 +837,7 @@ struct GothicRendererSettings {
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
         AllowSelfShadowingPointlights = false;
+        DisableStaticPointlights = false;
         
         ApplyAssaoPreset(1);
 
@@ -1111,6 +1112,10 @@ struct GothicRendererSettings {
     E_GraphicsPreset GraphicsPreset;
     bool CompressedNormalsSupport;
     bool AllowSelfShadowingPointlights;
+    // Drop every zCVobLight with IsStatic() from the frame's point-light set. Gothic lights its rooms and caves
+    // with 10-30 co-located "atmospheric" static fill lights that exist only to raise the ambient level; under
+    // an HDR pipeline they stack into a badly over-bright interior. D3D12 backend only (see BuildFrameLightBuffer).
+    bool DisableStaticPointlights;
     
     struct {
         struct {

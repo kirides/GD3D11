@@ -12,7 +12,7 @@ cbuffer GrassCB : register(b1)
     float3 G_PlayerPosWS;     float _gpad1;
 };
 cbuffer FogCB : register(b2) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b3) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint _lpad; };
+cbuffer LightCB : register(b3) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; };
 
 #include "include/ForwardPlusTypes.hlsl"
 

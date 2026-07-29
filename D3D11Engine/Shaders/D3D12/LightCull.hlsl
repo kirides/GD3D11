@@ -1,7 +1,15 @@
 #define TILE_SIZE 16
 #define MAX_LIGHTS_PER_TILE 32
 
-struct TiledPointLight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
+// MUST stay layout-identical to GPULight (C++ D3D12EngineCommon.h / HLSL include/ForwardPlusTypes.hlsl) — this
+// is a StructuredBuffer, so a stride mismatch silently misindexes EVERY light. The cull only reads
+// PositionView/Range; the trailing fields are here purely to keep the 64-byte stride.
+struct TiledPointLight {
+    float3 PositionView; float Range;
+    float4 Color;
+    float3 PositionWorld; int ShadowCubeIndex;
+    float3 ShadowOrigin;  float ShadowRange;
+};
 struct LightGrid { uint Offset; uint Count; };
 
 StructuredBuffer<TiledPointLight> SB_Lights       : register(t0);

@@ -14,6 +14,9 @@
 //                      float ShadowAOStrength; float WorldAOStrength; ...; }
 //   StructuredBuffer<GPULight> Lights; StructuredBuffer<LightGrid> LightGridBuf; StructuredBuffer<uint> LightIndexBuf;
 //   Texture2DArray ShadowMap; SamplerComparisonState shadowCmp; TextureCubeArray PointShadowCubes;
+// The LOW-RES static cube array is not a declared binding: it is fetched bindlessly (SM6.6
+// ResourceDescriptorHeap) from LightCB's PointShadowLowIndex, so adding the second tier cost no root
+// signature changes — LightCB already had a spare 4th root constant in every one of these shaders.
 // (HLSL globals are visible by name across the whole translation unit regardless of #include position, but
 // they must be DECLARED — i.e. appear earlier in the file — before this header's functions reference them.)
 
@@ -31,14 +34,28 @@ float3 DelightDiffuse( float3 linearAlbedo )
 // face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
 // apply the LH projection z-map. Most acne bias is the PSO's hardware slope bias; add a small normal offset +
 // constant. 4-tap rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
-float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, float range )
+// `encodedIndex` is GPULight::ShadowCubeIndex: the low 30 bits are the cube slot, bit 30 (kShadowTierLow)
+// selects the LOW-RES static cube array (kStaticCubeSize^2, fetched bindlessly via LightCB's
+// PointShadowLowIndex) over the full-res dynamic one (PointShadowCubes). `lightPos`/`range` are the CUBE's
+// origin and far-plane basis — GPULight::ShadowOrigin /
+// ShadowRange, NOT the light's own position/range, because co-located static lights share one clustered cube.
+//
+// The low-res tier is 4x coarser per axis, so its texels cover 4x more world space at the same distance: the
+// normal-offset bias and the PCF disk are scaled to match, otherwise a 32^2 cube acnes badly on the flat walls
+// it exists to occlude. It is deliberately blurrier — the static tier is there to stop room-to-room bleed, not
+// to resolve shadow detail.
+float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPos, float range )
 {
-    float3 d  = ( wpos + N * ( range * 0.01 ) ) - lightPos;   // normal-offset bias (world-space, uniform)
+    int   slot   = encodedIndex & kShadowSlotMask;
+    bool  lowRes = ( encodedIndex & kShadowTierLow ) != 0;
+    float coarse = lowRes ? 4.0 : 1.0;
+
+    float3 d  = ( wpos + N * ( range * 0.01 * coarse ) ) - lightPos;   // normal-offset bias (world-space, uniform)
     float3 ad = abs( d );
     float  zView = max( ad.x, max( ad.y, ad.z ) );            // dominant cube-axis depth = the face's view-space z
     const float n = 15.0;
     float  f = range * 2.0;
-    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001;   // same LH hyperbolic z the caster wrote
+    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001 * coarse;   // same LH hyperbolic z the caster wrote
     float3 L = normalize( d );
 
     // P2.10e polish: 4-tap rotated-disk PCF on a basis perpendicular to L (cube sampling follows the offset dir,
@@ -47,14 +64,22 @@ float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, 
     float3 up = abs( L.y ) < 0.99 ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
     float3 t  = normalize( cross( up, L ) );
     float3 bt = cross( L, t );
-    float  r  = 0.006 + 0.010 * saturate( zView / f );
+    float  r  = ( 0.006 + 0.010 * saturate( zView / f ) ) * coarse;
     static const float2 kDisk[4] = { float2( 0.7, 0.7 ), float2( -0.7, 0.7 ), float2( 0.7, -0.7 ), float2( -0.7, -0.7 ) };
     float sh = 0.0;
     [unroll]
     for ( int s = 0; s < 4; ++s )
     {
         float3 o = normalize( L + ( kDisk[s].x * t + kDisk[s].y * bt ) * r );
-        sh += PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)cubeIndex ), compareDepth );
+        if ( lowRes )
+        {
+            TextureCubeArray lowCubes = ResourceDescriptorHeap[PointShadowLowIndex];
+            sh += lowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
+        }
+        else
+        {
+            sh += PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
+        }
     }
     return sh * 0.25;
 }
@@ -430,7 +455,9 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
         float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
         if ( L.ShadowCubeIndex >= 0 )
         {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
+            // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube
+            // centred on its cluster, while its own position/range still drive the shading above.
+            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.ShadowOrigin, L.ShadowRange );
             float camDist = length( L.PositionView );
             float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
             lit *= lerp( sh, 1.0, fade );

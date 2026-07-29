@@ -38,7 +38,37 @@ struct zTBBox3D;
 class D3D12PointShadows {
 public:
     static constexpr UINT kCubeSize = 128;
-    static constexpr UINT kMaxCubes = 128;   // matches D3D11's persisted-light ceiling; each = 6 slices @128^2 R16
+    static constexpr UINT kMaxCubes = 64;   // matches D3D11's persisted-light ceiling; each = 6 slices @128^2 R16
+
+    // ---- Low-resolution STATIC tier -------------------------------------------------------------------------
+    // Static lights (and the clusters they are merged into) get their own, much coarser cube array. A cube-less
+    // point light is shaded UNSHADOWED, so it bleeds through walls and fights the tiled cull — which made the
+    // 128-cube ceiling the binding constraint on how many lights a room could have. But a static light's cube is
+    // rendered ONCE and cached forever (the light and the world it occludes both never move), and it exists only
+    // to stop room-to-room bleed, not to resolve shadow detail. So it does not need 128^2:
+    //     dynamic tier: 128 slots @128^2 = 25 MB      static tier: 340 slots @32^2 = 4 MB
+    // i.e. ~2.7x the shadowed-light budget for a sixth of the memory. See SamplePointShadow in PBRLighting.hlsl
+    // for the matching bias/PCF widening the coarser texels need.
+    //
+    // 340 is a HARD CEILING, not a tuning choice: a cube array is a Texture2DArray of slot*6 slices, and D3D12
+    // caps a Texture2D array at D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices regardless of how small
+    // the faces are — 2048/6 = 341. Going past it fails resource creation outright (CREATERESOURCE_INVALIDDIMENSIONS,
+    // which is exactly how the first 512-slot attempt died), and since Init() is fail-closed that takes the whole
+    // point-shadow system down with it. More static cubes than this would need a SECOND array, not a bigger one.
+    //
+    // The two pools share ONE slot index space so all the ownership/retention bookkeeping below stays single-pool:
+    // global slot < kMaxCubes is the dynamic array, >= kMaxCubes is the static array at (slot - kMaxCubes). What
+    // reaches the SHADER is the re-encoded GPULight::ShadowCubeIndex (kShadowTierLow | localIndex), not this.
+    static constexpr UINT kStaticCubeSize = 32;
+    static constexpr UINT kMaxStaticCubes = 128;
+    static constexpr UINT kMaxSlots = kMaxCubes + kMaxStaticCubes;
+    // Both arrays are Texture2DArrays of slot*6 slices — see the ceiling note above. Asserted for BOTH tiers so
+    // raising either one can never silently produce an undersized/failed resource again.
+    static_assert( kMaxCubes * 6 <= 2048, "dynamic cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
+    static_assert( kMaxStaticCubes * 6 <= 2048, "static cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
+    static bool IsLowSlot( UINT globalSlot ) { return globalSlot >= kMaxCubes; }
+    static UINT LowIndex( UINT globalSlot ) { return globalSlot - kMaxCubes; }
+
     static constexpr UINT kBackBufferCount = 2;   // must match D3D12GraphicsEngine::kBackBufferCount (asserted in the .cpp)
 
     // The engine back-reference, handed over in the engine's CONSTRUCTOR so it is valid before Init() runs
@@ -51,13 +81,26 @@ public:
     bool Init();
 
     UINT GetSrvSlot() const { return m_SrvSlot; }
+    UINT GetLowSrvSlot() const { return m_LowSrvSlot; }   // bindless heap slot of the low-res static cube array
     bool IsPassReady() const { return m_PassReady; }
 
+    // Slot-ownership identity for one entry of the GPU light buffer, parallel to `lights` in
+    // SelectShadowedLights. Several lights may share a `key`: that is exactly how a CLUSTER of co-located static
+    // lights ends up sharing one cube — they are one candidate for slot selection, and every member gets the
+    // winner's ShadowCubeIndex written back.
+    struct LightShadowKey {
+        uint64_t    key;      // 0 = never shadowed. Else the light's own vob pointer, or a tagged cluster cell id.
+        zCVobLight* vob;      // nullptr for clusters — only ever dereferenced for the dynamic overlay's exclude
+                              // list, which a static/clustered (low-tier) slot never reaches.
+        bool        lowRes;   // take the slot from the low-res static pool
+        bool        isStatic;
+    };
+
     // Picks this frame's shadowed lights out of the filled GPU light buffer and writes each winner's
-    // ShadowCubeIndex back into it. Called from BuildFrameLightBuffer once the buffer is populated;
-    // `lightVobs` is parallel to `lights` (the owning light Vob per GPULight index) and supplies the identity
-    // that keys stable per-light slot ownership.
-    void SelectShadowedLights( GPULight* lights, UINT count, const std::vector<zCVobLight*>& lightVobs );
+    // ShadowCubeIndex back into it. Called from BuildFrameLightBuffer once the buffer is populated. Candidates
+    // are ranked on GPULight::ShadowOrigin/ShadowRange (the CUBE's placement, which for a clustered static light
+    // is its cluster's, not its own), so one cube is selected per cluster rather than per member light.
+    void SelectShadowedLights( GPULight* lights, UINT count, const std::vector<LightShadowKey>& keys );
 
     void Prepare();
     void Record( ID3D12GraphicsCommandList* cmdList );
@@ -115,6 +158,17 @@ private:
     D3D12_RESOURCE_STATES m_ActiveSlotState[kMaxCubes] = {};   // active cube; PIXEL_SHADER_RESOURCE at rest
     D3D12_RESOURCE_STATES m_StaticSlotState[kMaxCubes] = {};   // static-aside cube; DEPTH_WRITE at rest
 
+    // ---- Low-res static cube array (kStaticCubeSize^2, kMaxStaticCubes slots) -------------------------------
+    // ONE array, no aside twin: everything routed here is a static light or a static cluster, and those are never
+    // overlay-eligible (D3D11's GetCurrentShadowMode forces static lights to PLS_STATIC_ONLY). Their static depth
+    // therefore renders straight into this array and stays there — no per-frame copy, no dynamic overlay. Phases
+    // B and C skip these slots entirely; only Phase A (on a cache miss) and Phase D ever touch them.
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_LowCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LowCubeAlloc;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_LowDsvHeap;   // one D16 6-slice DSV per low-res slot
+    UINT m_LowSrvSlot = UINT_MAX;                                // R16_UNORM TextureCubeArray SRV, fetched bindlessly
+    D3D12_RESOURCE_STATES m_LowSlotState[kMaxStaticCubes] = {};  // PIXEL_SHADER_RESOURCE at rest, per-slot like above
+
     // Static-aside cube: second persistent cube array, static-caster depth only. No SRV (never sampled); the
     // slots routed through it are copied into the active cube each frame. Only slots that can receive a dynamic
     // overlay live here at all — see Slot::usesAside.
@@ -144,8 +198,13 @@ private:
     // Slots are owned by light Vob identity and kept stable across frames (not reassigned by proximity), so a
     // static winner whose light didn't move reuses its cached cube instead of re-culling + re-rendering.
     struct Slot {
-        zCVobLight*       owner = nullptr;   // light identity owning this slot (nullptr = free)
-        DirectX::XMFLOAT3 pos = {};          // last static-rendered light position (move detection)
+        uint64_t          ownerKey = 0;      // identity owning this slot (0 = free). A light's own vob pointer, or
+                                             // a tagged cluster-cell id when several co-located static lights share
+                                             // this cube. Compared for identity only; never dereferenced.
+        zCVobLight*       owner = nullptr;   // the owning vob when ownerKey is a single light, else nullptr. Read
+                                             // ONLY by the dynamic-overlay exclude list, which no clustered or
+                                             // low-tier slot ever reaches — so a cluster leaving it null is safe.
+        DirectX::XMFLOAT3 pos = {};          // last static-rendered cube origin (move detection)
         float             range = 0.0f;      // last static-rendered range (range-change detection)
         bool              isStatic = false;  // Vob->IsStatic(): gates Prepare() — static lights get a
                                              // world-mesh-only static-aside cache (no VOB casters) and never
@@ -173,7 +232,7 @@ private:
     // is only ever compared for identity while absent (never dereferenced — BuildExcludeList only ever sees a
     // current winner), but a vob freed and its address reused would otherwise inherit the slot's stale cache.
     static constexpr UINT32 kSlotRetentionFrames = 600;   // ~10 s at 60 fps
-    Slot m_Slots[kMaxCubes];
+    Slot m_Slots[kMaxSlots];   // [0,kMaxCubes) = full-res dynamic pool, [kMaxCubes,kMaxSlots) = low-res static pool
 
     // Slots whose static target was (re)rendered by THIS frame's records, pending the CommitStaticCache() that
     // turns them into cache hits. Kept out of Slot so an uncommitted frame simply leaves staticValid false and
@@ -190,6 +249,7 @@ private:
     // list against every shadowed light every frame.
     // overlayEligible: whether this light can EVER receive a dynamic overlay (not a static light, and the
     // global PointlightShadows setting is >= PLS_UPDATE_DYNAMIC).
+    // `slot` is the GLOBAL slot index (see kMaxSlots); IsLowSlot(slot) picks the array/DSV heap/viewport.
     struct FrameLight { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; bool overlayEligible; };
     std::vector<FrameLight> m_FrameLights;
 

@@ -817,6 +817,113 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 }
 
 
+// ---- Static point-light clustering ------------------------------------------------------------------------
+// Gothic lights a room or cave with 10-30 co-located STATIC "atmospheric" lights whose only job is to raise the
+// ambient level. Giving each one a shadow cube is impossible (there aren't that many cubes) and giving none of
+// them a cube means the whole set bleeds through the walls. Since they are all in the same room, ONE cube placed
+// between them occludes them all about equally well — so static lights are bucketed by a coarse world-space grid
+// and every member of a bucket shares its cube. Each light still shades from its OWN position/colour/range; only
+// the cube lookup (GPULight::ShadowOrigin/ShadowRange) is redirected to the cluster.
+//
+// EVERYTHING about a cluster is derived from the CELL and only ever grows, never shrinks. That is deliberate and
+// load-bearing: the cluster is the identity that owns a cube slot, and the point-shadow static cache re-renders a
+// slot whenever its origin or range changes. Deriving either from the currently VISIBLE members would make both
+// churn every time the camera turned (members enter and leave the frustum constantly), re-rendering the static
+// cube every frame and defeating the cache entirely. Grow-only means a cluster settles within a few frames of
+// first being seen and then never invalidates again.
+namespace {
+	// One visible point light on its way into the GPU light buffer. Built and distance-sorted by
+	// BuildFrameLightBuffer, then clustered here; it stays parallel to the filled GPULight array so the
+	// post-selection range clamp can look back at each light's static/indoor flags.
+	struct FrameLightCand {
+		zCVobLight* vob;
+		XMFLOAT3    pos;
+		float       range;
+		float       distSq;
+		bool        isStatic;
+		bool        isIndoor;
+		XMFLOAT3    shadowOrigin;   // the CUBE's centre — the light's own, or its cluster's
+		float       shadowRange;    // the CUBE's far-plane basis — likewise
+		uint64_t    key;            // slot-ownership identity: the vob pointer, or a tagged cluster cell
+	};
+
+	constexpr float    kStaticClusterCell = 400.0f;   // Gothic world units; ~one room
+	constexpr float    kClusterRangeQuantum = 128.0f; // cluster range snaps up to this, so it settles quickly
+	// Tag bit marking a cluster key apart from a light's own identity (its zCVobLight*). The game is 32-bit, so a
+	// real pointer widened to uint64 can never reach bit 63 — no collision is possible.
+	constexpr uint64_t kClusterKeyTag = 0x8000000000000000ull;
+
+	struct StaticCluster {
+		XMFLOAT3 centre = {};      // cell centre — fixed for the lifetime of the cell
+		float    range = 0.0f;     // grow-only: covers every member ever seen, quantized up
+		UINT     seenCount = 0;    // grow-only: most static lights ever seen at once in this cell
+	};
+	std::unordered_map<uint64_t, StaticCluster> g_StaticClusters;
+
+	XMINT3 ClusterCellOf( const XMFLOAT3& p ) {
+		return XMINT3( static_cast<int>( std::floor( p.x / kStaticClusterCell ) ),
+			static_cast<int>( std::floor( p.y / kStaticClusterCell ) ),
+			static_cast<int>( std::floor( p.z / kStaticClusterCell ) ) );
+	}
+	uint64_t ClusterKeyOf( const XMINT3& c ) {
+		uint64_t h = 1469598103934665603ull;   // FNV-1a over the three cell coords
+		h = (h ^ static_cast<uint32_t>( c.x )) * 1099511628211ull;
+		h = (h ^ static_cast<uint32_t>( c.y )) * 1099511628211ull;
+		h = (h ^ static_cast<uint32_t>( c.z )) * 1099511628211ull;
+		return h | kClusterKeyTag;
+	}
+	XMFLOAT3 ClusterCentreOf( const XMINT3& c ) {
+		return XMFLOAT3( (c.x + 0.5f) * kStaticClusterCell,
+			(c.y + 0.5f) * kStaticClusterCell,
+			(c.z + 0.5f) * kStaticClusterCell );
+	}
+
+	void AssignStaticLightClusters( std::vector<FrameLightCand>& cands ) {
+		// Cell coordinates are world-space, so the cache must not survive a world change (a different world would
+		// inherit another world's cluster extents). The BSP tree pointer is the cheapest available world identity.
+		static const void* s_clusterWorld = nullptr;
+		const void* world = Engine::GAPI->GetLoadedWorldInfo() ? Engine::GAPI->GetLoadedWorldInfo()->BspTree : nullptr;
+		if ( world != s_clusterWorld ) { g_StaticClusters.clear(); s_clusterWorld = world; }
+
+		// Pass 1 — fold this frame's visible static lights into the per-cell state (all grow-only).
+		static std::unordered_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
+		s_cellCount.clear();
+		for ( const FrameLightCand& c : cands ) {
+			if ( !c.isStatic ) continue;
+			const XMINT3 cell = ClusterCellOf( c.pos );
+			const uint64_t key = ClusterKeyOf( cell );
+			++s_cellCount[key];
+			StaticCluster& cl = g_StaticClusters[key];
+			if ( cl.range == 0.0f ) cl.centre = ClusterCentreOf( cell );
+			// How far the shared cube has to reach to still occlude THIS member: its distance off the cell centre
+			// plus its own radius. A member whose range vastly exceeds the cell would inflate the shared cube, but
+			// that is the safe direction — an undersized cube reads as "fully shadowed" past its far plane.
+			const float dx = c.pos.x - cl.centre.x, dy = c.pos.y - cl.centre.y, dz = c.pos.z - cl.centre.z;
+			const float reach = std::sqrt( dx * dx + dy * dy + dz * dz ) + c.range;
+			if ( reach > cl.range ) cl.range = std::ceil( reach / kClusterRangeQuantum ) * kClusterRangeQuantum;
+		}
+		for ( const auto& [key, n] : s_cellCount ) {
+			StaticCluster& cl = g_StaticClusters[key];
+			if ( n > cl.seenCount ) cl.seenCount = n;
+		}
+
+		// Pass 2 — redirect the members of any cell that has EVER held two or more static lights. A cell that has
+		// only ever held ONE keeps that light's own, better-centred cube: clustering a lone light would move its
+		// cube up to a half-diagonal away and inflate its range for no benefit. seenCount is monotonic, so a cell
+		// never flips back and forth as members come in and out of view.
+		for ( FrameLightCand& c : cands ) {
+			if ( !c.isStatic ) continue;
+			const uint64_t key = ClusterKeyOf( ClusterCellOf( c.pos ) );
+			const auto it = g_StaticClusters.find( key );
+			if ( it == g_StaticClusters.end() || it->second.seenCount < 2 ) continue;
+			c.key = key;
+			c.shadowOrigin = it->second.centre;
+			c.shadowRange = it->second.range;
+		}
+	}
+}
+
+
 bool D3D12GraphicsEngine::CreateLightBuffer() {
 	// Per-frame point-light StructuredBuffers (one per in-flight frame). The whole visible-light list is
 	// rewritten from offset 0 each frame, so these are plain persistently-mapped UPLOAD snapshots, bound
@@ -864,32 +971,49 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	UINT count = 0;
 	constexpr float lightFactor = 1.2f;   // matches D3D11 CullLights RGB scale
 
-	// Parallel to dst[]: the owning light Vob per GPULight index, so the shadow selection below can map a
+	// Parallel to dst[]: the slot-ownership identity per GPULight index, so the shadow selection below can map a
 	// chosen light back to its identity for STABLE per-light cube-slot ownership (static-aside cache, P2.10f).
-	static std::vector<zCVobLight*> s_lightVobs;
-	s_lightVobs.clear();
+	// For a CLUSTERED static light this key is its cluster's, not its own — that is what makes several lights
+	// share one cube (see the clustering below).
+	static std::vector<D3D12PointShadows::LightShadowKey> s_lightKeys;
+	s_lightKeys.clear();
 
 	// View-space transform for PositionView (consumed by the tiled light-culling CS). Mirrors D3D11
 	// CullLights EXACTLY: transpose(GetViewMatrixXM()) then a row-vector transform of the world position,
 	// so the view space this fills matches what the cull shader's frustum is built in.
 	const XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
 
-	// ---- Light priority trim: order by distance, and never let a static light starve a dynamic one of a cube ----
+	// ================= Static-light policy ==========================================================
 	// A point light that wins no shadow cube is shaded UNSHADOWED: it lights straight through walls and fights
-	// the tiled cull with contributions that should have been occluded. Cubes are the scarce resource
-	// (D3D12PointShadows::kMaxCubes of them) and SelectShadowedLights hands them out by distance, so a cluster
-	// of nearby STATIC torches could push a dynamic light out of the cube set and bleed into the room behind it.
-	// So the competing set is capped here, before the buffer is filled: sort by distance to camera, count the
-	// lights that can actually contest a cube (mirroring SelectShadowedLights' own candidacy gate — a positive
-	// range, inside D3D11's distMaxShadowSq = (range*9)^2), and if there are more of those than cubes, drop the
-	// losers from the frame buffer ENTIRELY — statics first, farthest-first (the TODO's two static passes: a
-	// distant static goes before a near one), then dynamics farthest-first only if the statics alone didn't free
-	// enough. Dropping a static outright is the deliberate choice: an unshadowed light bleeding through geometry
-	// looks worse than an absent one. Lights outside the shadow gate contest nothing and are never evicted here.
-	// Skipped when point-light shadows are off — nothing wins a cube then, so nothing is starved.
-	// The distance sort also fixes the overflow case below: the buffer now keeps the NEAREST
-	// m_LightBufferCapacity lights instead of whatever BSP order CollectVisibleVobs happened to emit first.
-	struct FrameLightCand { zCVobLight* vob; XMFLOAT3 pos; float range; float distSq; bool isStatic; bool contestsCube; };
+	// the tiled cull with contributions that should have been occluded. Forward+ makes MANY lights cheap, but it
+	// says nothing about visibility — cubes do, and they are the scarce resource. Gothic makes this acute by
+	// lighting a room or cave with 10-30 co-located STATIC "atmospheric" lights that exist only to raise the
+	// ambient level. Four mechanisms, in the order they apply:
+	//
+	//   1. DisableStaticPointlights — drop every static light outright. Under HDR output those fill lights stack
+	//      into a badly over-bright interior, and some players simply want them gone.
+	//   2. CLUSTERING — static lights are grouped by a world-space grid cell and share ONE cube per cell, so a
+	//      30-torch room costs one cube instead of 30 (or instead of bleeding). Each light still shades with its
+	//      own position/colour/range; only the cube lookup (ShadowOrigin/ShadowRange) is the cluster's.
+	//   3. The LOW-RES TIER — every static/clustered cube comes from the 32^2 pool, never the 128^2 one, so
+	//      static lights can never starve a dynamic torch of a full-res cube. Static visibility is static, so
+	//      those cubes are rendered once and cached forever; they exist to stop room-to-room bleed, not to
+	//      resolve detail. See D3D12PointShadows' kStaticCubeSize block.
+	//   4. RANGE CLAMPING (after selection, below) — a static light that still ends up without a cube keeps its
+	//      slot in the buffer but has its shading range cut, so it lights its own alcove instead of reaching
+	//      through a wall. Clamping beats deleting it: an absent light is a visible hole, a range-limited one
+	//      is not.
+	//
+	// Sorting by distance also fixes the overflow case: the buffer now keeps the NEAREST m_LightBufferCapacity
+	// lights rather than whatever BSP order CollectVisibleVobs happened to emit first.
+	const GothicRendererSettings& lightSettings = Engine::GAPI->GetRendererState().RendererSettings;
+	const bool dropStaticLights = lightSettings.DisableStaticPointlights;
+	const bool pointShadowsOn = lightSettings.EnablePointlightShadows != GothicRendererSettings::PLS_DISABLED;
+	// "Is the camera indoors" for the indoor/outdoor gate below. The player vob carries Gothic's own indoor flag
+	// (the same sector state D3D11 keys its indoor/outdoor vob filtering off).
+	const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
+	const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
+
 	static std::vector<FrameLightCand> s_cands;   // static: capacity is reused, no per-frame allocation
 	s_cands.clear();
 
@@ -898,36 +1022,24 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		if ( !li || !li->Vob ) continue;
 		zCVobLight* vob = li->Vob;
 		if ( !vob->IsEnabled() ) continue;
+		const bool isStatic = vob->IsStatic();
+		if ( isStatic && dropStaticLights ) continue;
 
 		const XMFLOAT3 pw = vob->GetPositionWorld();
 		const float range = vob->GetLightRange();
 		const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &pw ), camPos ) ) );
-		const float maxSq = (range * 9.0f) * (range * 9.0f);   // D3D11 distMaxShadowSq
-		s_cands.push_back( { vob, pw, range, distSq, vob->IsStatic(), range > 0.0f && distSq < maxSq } );
+		// shadowOrigin/shadowRange start as the light's own and are redirected to a cluster's below; `key`
+		// likewise starts as the light's own identity.
+		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
+			pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
 	std::sort( s_cands.begin(), s_cands.end(),
 		[]( const FrameLightCand& a, const FrameLightCand& b ) { return a.distSq < b.distSq; } );
 
-	if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows
-		!= GothicRendererSettings::PLS_DISABLED ) {
-		UINT contesting = 0;
-		for ( const FrameLightCand& c : s_cands ) if ( c.contestsCube ) ++contesting;
-		// Pass 0 evicts statics, pass 1 dynamics; both walk the sorted list back-to-front, so within a pass the
-		// farthest light always goes first. A dropped light keeps its slot in s_cands with vob = nullptr.
-		for ( int pass = 0; pass < 2 && contesting > D3D12PointShadows::kMaxCubes; ++pass ) {
-			const bool evictStatic = (pass == 0);
-			for ( auto it = s_cands.rbegin(); it != s_cands.rend(); ++it ) {
-				if ( contesting <= D3D12PointShadows::kMaxCubes ) break;
-				if ( !it->vob || !it->contestsCube || it->isStatic != evictStatic ) continue;
-				it->vob = nullptr;
-				--contesting;
-			}
-		}
-	}
+	AssignStaticLightClusters( s_cands );
 
 	for ( const FrameLightCand& cand : s_cands ) {
 		zCVobLight* vob = cand.vob;
-		if ( !vob ) continue;   // evicted above so a dynamic light could keep its shadow cube
 		if ( count >= m_LightBufferCapacity ) {
 			if ( !m_LightOverflowLogged ) {
 				LogWarn() << "D3D12: point-light buffer overflow (" << m_LightBufferCapacity
@@ -948,7 +1060,14 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, cand.isStatic ? 0.0f : 1.0f );
 		L.PositionWorld = pw;
 		L.ShadowCubeIndex = -1;
-		s_lightVobs.push_back( vob );
+		L.ShadowOrigin = cand.shadowOrigin;
+		L.ShadowRange = cand.shadowRange;
+		// key 0 = "never give this light a cube" — what point-shadows-off means for every light. `vob` is only
+		// passed for an UNclustered light: a cluster has no single owning vob, and the field exists purely for
+		// the dynamic-overlay exclude list, which no static/clustered slot reaches.
+		s_lightKeys.push_back( { pointShadowsOn ? cand.key : 0ull,
+			cand.key == reinterpret_cast<uint64_t>( vob ) ? vob : nullptr,
+			cand.isStatic, cand.isStatic } );
 		++count;
 	}
 	m_FrameLightCount = count;
@@ -956,7 +1075,25 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// Point-light shadow selection: hand the filled buffer to the point-shadow module, which picks this
 	// frame's shadowed lights (stable per-light cube slots, static-cache + round-robin scheduling) and writes
 	// each winner's ShadowCubeIndex back into the GPU light struct. See D3D12PointShadows.h.
-	m_PointShadows.SelectShadowedLights( dst, count, s_lightVobs );
+	m_PointShadows.SelectShadowedLights( dst, count, s_lightKeys );
+
+	// ---- Range clamp for static lights that ended up WITHOUT a cube --------------------------------------
+	// Runs after selection because only now is "did this light get a cube" known. Shrinking Range shrinks the
+	// light's whole sphere, so the tiled cull stops assigning it to distant tiles too — the bleed and its
+	// culling cost go away together. Dynamic lights are never clamped: they are few, they get the full-res
+	// tier, and a moving light that suddenly changed radius would be far more noticeable than a static one.
+	// s_cands is parallel to dst[] for i < count (the fill loop walks it in order and only ever breaks).
+	constexpr float kUnshadowedStaticScale = 0.35f;        // still lights its own alcove; can't reach the next room
+	constexpr float kIndoorSeenFromOutsideScale = 0.15f;   // the worst bleed case — clamp it much harder
+	for ( UINT i = 0; i < count; ++i ) {
+		if ( dst[i].ShadowCubeIndex >= 0 ) continue;   // shadowed: correctly occluded, leave it alone
+		if ( !s_cands[i].isStatic ) continue;
+		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
+		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.
+		const bool leakingOutdoors = s_cands[i].isIndoor && !cameraIndoors;
+		dst[i].Range *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
+		dst[i].ShadowRange = dst[i].Range;
+	}
 }
 
 
@@ -976,6 +1113,12 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// every overlapping point light" for "brightest single light" to avoid overexposure).
 	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
+	// PointShadowLowIndex @ b*.w — the BINDLESS heap slot of the low-res static shadow-cube array. The full-res
+	// array is a declared t-register in each shader, but the second tier rides in this spare 4th root constant
+	// instead (SM6.6 ResourceDescriptorHeap), which is why adding it needed no root signature changes. Only ever
+	// read by a light whose ShadowCubeIndex carries kShadowTierLow, so the 0 fallback is never dereferenced.
+	const UINT lowCubeSrv = m_PointShadows.GetLowSrvSlot();
+	m_CmdList->SetGraphicsRoot32BitConstant( countParam, lowCubeSrv == UINT_MAX ? 0u : lowCubeSrv, 3 );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
 }
