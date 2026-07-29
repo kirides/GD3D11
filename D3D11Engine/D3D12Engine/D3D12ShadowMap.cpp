@@ -628,7 +628,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		XMFLOAT3   SunDirWS;          float ShadowMapSize;
 		XMFLOAT3   SunColor;          float SunIntensity;
 		XMFLOAT3   CascadeTexelWorld; float AmbientStrength;
-		float ShadowAOStrength; float WorldAOStrength; float _pad0; float _pad1;
+		float ShadowAOStrength; float WorldAOStrength; float IndoorAmbient; float IndoorSunSuppression;
 	} cb;
 	static_assert( sizeof( cb ) == D3D12GraphicsEngine::kWetnessCbOffset, "ShadowCB head size must match the HLSL layout" );
 	const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
@@ -666,6 +666,19 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		cb.WorldAOStrength = set.WorldAOStrength;
 	}
 	cb.ShadowAOStrength = set.ShadowAOStrength;
+
+	// Per-PIXEL indoor policy, orthogonal to the whole-world `indoor` branch above. That branch only fires for
+	// zBSP_MODE_INDOOR worlds (Gothic's separate dungeon levels); a cave or house inside the OUTDOOR world keeps
+	// the outdoor sun/sky CB, so its interior surfaces used to track the time of day — bright at noon, dark at
+	// midnight. The shaders detect those surfaces from the vertex/instance color alpha (WorldConverter stamps
+	// DEFAULT_LIGHTMAP_POLY_COLOR, alpha 0.05, on every lightmapped poly; VobInfo::UpdateState and the skeletal
+	// groundLight do the same for indoor vobs) and swap the sun-derived ambient for this flat, time-independent
+	// floor. Zeroed on indoor WORLDS, where the CB above has already applied the equivalent policy globally and
+	// applying it twice would change interiors that already look right (an indoor world's IBL cube is built
+	// black by D3D12SkyIbl, so those worlds already sit at ~zero sun ambient). A NEGATIVE IndoorAmbient is the
+	// shader's "per-pixel indoor override off" sentinel — there is no spare CB float left in the 256B head.
+	cb.IndoorAmbient = indoor ? -1.0f : set.IndoorAmbientStrength;
+	cb.IndoorSunSuppression = set.IndoorSunSuppression;
 	memcpy( mapped, &cb, sizeof( cb ) );
 }
 

@@ -127,13 +127,17 @@ namespace {
     //      all-encompassing AABB (stay conservatively lit) rather than the reference's collapse-to-near-plane,
     //      which would unlight characters against the sky. The bounded near+far AABB is the whole point: it
     //      pulls in only lights whose sphere actually reaches the tile's geometry, so a wall at 15m no longer
-    //      overflows the 32-light cap the way the earlier camera-origin cone (near fixed at 1) did. NOTE prior
+    //      overflows the per-tile light cap the way the earlier camera-origin cone (near fixed at 1) did. NOTE prior
     //      retired versions here: an unbounded [1,100000] AABB (far corners blew up off-axis), then side-planes
     //      with a fixed [1,100000] slab and then a far-only slab — all still over-included and overflowed.
     //      Residual: a short-range light on a VOB/NPC that pokes in front of distant world geometry and can't
     //      reach that world can still be culled; completing the prepass (VOB+skeletal depth) removes it.
     //   2. Fixed per-tile index slice instead of a compacted global list, dropping RW_IndexCounter and its
-    //      per-frame clear. At 1080p this is ~1 MB (8160 tiles * 32 * 4 B) — negligible, and simpler/safer.
+    //      per-frame clear. At 1080p this is ~2 MB (8160 tiles * 64 * 4 B) — negligible, and simpler/safer.
+    //   3. Slots are handed out by a groupshared PREFIX SUM over buffer order, not by an InterlockedAdd race, so
+    //      an over-cap tile always drops the same (farthest) lights instead of a different set every frame. See
+    //      the CSMain comment in LightCull.hlsl — race-order selection was a visible per-tile flicker in rooms
+    //      full of static atmospheric lights.
     // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
     // D3D11 CullLights uses, so this shader's view space matches. SM6.6: no ternary (use min()/select()).
 
@@ -739,14 +743,16 @@ UINT D3D12GraphicsEngine::ResolveDiffuseSlotCacheIn( zCTexture* tex ) {
 bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	// Per-resolution Forward+ tile grid storage (P2.9b-2). Recreated on resize alongside the depth buffer.
 	// RW_LightGrid: one {Offset,Count} (8 B) per 16x16 tile. RW_LightIndexList: a fixed MAX_LIGHTS_PER_TILE
-	// (=32) uint slice per tile (no compaction/global counter — see the shader header). Both are DEFAULT-heap
+	// (=64) uint slice per tile (no compaction/global counter — see the shader header). Both are DEFAULT-heap
 	// UAV buffers created in UNORDERED_ACCESS; each frame DispatchLightCulling writes them (UAV) then transitions
-	// them to PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back. ~1 MB total at 1080p.
+	// them to PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back. ~2 MB total at 1080p.
 	if ( size.x <= 0 || size.y <= 0 ) return false;
 	ID3D12Device* device = m_Device.GetDevice();
 
 	constexpr UINT kTileSize = 16;
-	constexpr UINT kMaxLightsPerTile = 32;
+	// MUST match MAX_LIGHTS_PER_TILE in Shaders/D3D12/LightCull.hlsl and include/ForwardPlusTypes.hlsl — this is
+	// the stride the cull writes with and every lit shader reads with. 64 matches D3D11's ConstantBufferStructs.h.
+	constexpr UINT kMaxLightsPerTile = 64;
 	m_NumTilesX = (static_cast<UINT>(size.x) + kTileSize - 1) / kTileSize;
 	m_NumTilesY = (static_cast<UINT>(size.y) + kTileSize - 1) / kTileSize;
 	const UINT numTiles = m_NumTilesX * m_NumTilesY;
@@ -1033,8 +1039,15 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
 			pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
+	// Total order, not just "by distance": the tile cull keeps the first MAX_LIGHTS_PER_TILE candidates in BUFFER
+	// order, so the buffer order has to be a pure function of the visible light SET. std::sort is unstable, so
+	// equal distances (co-located atmospheric lights are common) would otherwise permute between frames and make
+	// the cap flicker again. The vob pointer breaks ties and is fixed for a light's lifetime.
 	std::sort( s_cands.begin(), s_cands.end(),
-		[]( const FrameLightCand& a, const FrameLightCand& b ) { return a.distSq < b.distSq; } );
+		[]( const FrameLightCand& a, const FrameLightCand& b ) {
+			if ( a.distSq != b.distSq ) return a.distSq < b.distSq;
+			return a.vob < b.vob;
+		} );
 
 	AssignStaticLightClusters( s_cands );
 

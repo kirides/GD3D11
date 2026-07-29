@@ -27,5 +27,6 @@ static const int kShadowTierLow  = 0x40000000;
 static const int kShadowSlotMask = 0x3FFFFFFF;
 
 #define TILE_SIZE 16u
-#define MAX_LIGHTS_PER_TILE 32u
+// Must match LightCull.hlsl's copy AND kMaxLightsPerTile in D3D12Scene.cpp (it strides RW_LightIndexList).
+#define MAX_LIGHTS_PER_TILE 64u
 #define NUM_CSM_CASCADES 3

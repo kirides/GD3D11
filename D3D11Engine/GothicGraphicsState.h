@@ -719,6 +719,8 @@ struct GothicRendererSettings {
         ShadowStrength = 0.40f;
         ShadowAOStrength = 0.50f;
         WorldAOStrength = 0.50f;
+        IndoorAmbientStrength = 0.10f;
+        IndoorSunSuppression = 1.0f;
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
@@ -1029,6 +1031,19 @@ struct GothicRendererSettings {
     float ShadowStrength;
     float ShadowAOStrength;
     float WorldAOStrength;
+    // D3D12 only. Gothic marks interior geometry by giving it a lightmap; the mod turns that into the flat
+    // DEFAULT_LIGHTMAP_POLY_COLOR vertex/instance color (alpha 0.05), which is what the shaders key off. Both
+    // knobs below exist because the sun/sky ambient is otherwise the ONLY light term with no occlusion beyond
+    // ssao*vertLighting, so a cave inside an OUTDOOR world (BSP mode outdoor -> none of the whole-world indoor
+    // overrides in D3D12ShadowMap/D3D12SkyIbl apply) tracked the time of day: bright at noon, dark at midnight.
+    //
+    // Flat, time-of-day-INDEPENDENT indirect floor applied to indoor surfaces in place of the sky IBL / ambient
+    // sun term. This is the knob that decouples interiors from the sun; interiors are meant to be lit by torches.
+    float IndoorAmbientStrength;
+    // How much of the DIRECT sun term is removed on indoor surfaces (1 = none reaches, 0 = CSM decides alone).
+    // The cascades already shadow a cave roof, but leaving this at 1 also covers bias/range leaks. Lower it if
+    // sunlight spilling through a cave mouth or door reads better than a hard sector cut.
+    float IndoorSunSuppression;
     float ShadowSoftness;
     float PCSSLightSize;
     // D3D12 only (the D3D11 backend has no PBR path): scale on the sky-IBL indirect term that replaced the

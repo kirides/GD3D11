@@ -26,7 +26,8 @@ cbuffer ShadowCB : register(b3)
     float3   SunDirWS;          float ShadowMapSize;    // dir TOWARD sun; shadow-map resolution
     float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
     float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;   // vertLighting -> AO modulation weights
+    float    ShadowAOStrength;  float WorldAOStrength;  // vertLighting -> AO modulation weights
+    float    IndoorAmbient;     float IndoorSunSuppression;             // per-pixel indoor policy (see PBRLighting.hlsl)
     // --- Scene wetness (rain) tail, uploaded separately by UploadWetnessConstants after the rain shadow
     // pass has computed this frame's rain camera. Keep in sync with Vob.hlsl/Skeletal.hlsl and the
     // WetnessCBData struct on the CPU side. RainShadowIndex/DistortionIndex are 0xFFFFFFFF when the rain
@@ -134,7 +135,11 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
 
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv  = i.uv;
-    o.col = i.col;
+    // Alpha forced to 1 = "outdoor" for PSMain's IndoorFromVertexColor. A quad mark's vertex color is the
+    // lightStatic of the MARK's own mesh (UpdateQuadMarkInfo), not of the world poly it sits on, so it never
+    // carries WorldConverter's DEFAULT_LIGHTMAP_POLY_COLOR indoor marker — its alpha means nothing here and
+    // must not be allowed to trip the indoor branch. Green is still read as vertLighting, unchanged.
+    o.col = float4( i.col.rgb, 1.0 );
     o.wpos = wpos;
     o.wnrm = normalize( wnrm );
     o.fogDist = length( wpos - CamPosWS );
@@ -163,7 +168,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.wpos );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao, IndoorFromVertexColor( i.col ) );
     rgb *= lerp( 1.0, 0.8, wetness );   // D3D11 dims the SUN light color 20% where the surface is wet
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
     // Additive wet sheen (D3D11's specWet, boosted where the sun actually reaches: specWet += specWet * shadow).

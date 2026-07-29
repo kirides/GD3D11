@@ -1635,6 +1635,20 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::EndDisabled();
         }
 
+        // Interior lighting (D3D12). Applies per PIXEL, keyed off Gothic's own lightmapped-sector marker, so it
+        // also covers caves/houses inside an outdoor world — the case the whole-world zBSP_MODE_INDOOR overrides
+        // never see. Outside the shadow block for the same reason the sky-IBL knobs below are: it is ambient.
+        ImGui::SeparatorText( "Interiors (D3D12)##AdvancedIndoor" );
+        ImGui::DragFloat( "IndoorAmbientStrength", &settings.IndoorAmbientStrength, 0.005f, 0.0f, 1.0f, "%.3f" );
+        ImGui::SetItemTooltip( "D3D12 only. Flat ambient floor used INSTEAD of the sun/sky ambient on indoor\n"
+                               "surfaces. It carries no time-of-day term, so a cave looks the same at noon and\n"
+                               "at midnight; torches and other point lights still light it normally.\n"
+                               "0 = interiors get no ambient at all (torch-only)." );
+        ImGui::DragFloat( "IndoorSunSuppression", &settings.IndoorSunSuppression, 0.01f, 0.0f, 1.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. How much of the DIRECT sun is removed on indoor surfaces.\n"
+                               "1 = none reaches (hard sector cut), 0 = only the shadow cascades decide.\n"
+                               "Lower this if sunlight spilling through a cave mouth or open door looks better." );
+
         // Sky image-based lighting — the D3D12 indirect-light term. Deliberately OUTSIDE the shadow block's
         // BeginDisabled/EndDisabled: it is ambient lighting and stays live with shadows switched off. Sits here
         // rather than under Atmosphere because both knobs act on the same term ShadowStrength scales.

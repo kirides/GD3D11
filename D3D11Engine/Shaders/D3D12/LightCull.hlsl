@@ -1,5 +1,5 @@
 #define TILE_SIZE 16
-#define MAX_LIGHTS_PER_TILE 32
+#define MAX_LIGHTS_PER_TILE 64
 
 // MUST stay layout-identical to GPULight (C++ D3D12EngineCommon.h / HLSL include/ForwardPlusTypes.hlsl) — this
 // is a StructuredBuffer, so a stride mismatch silently misindexes EVERY light. The cull only reads
@@ -27,6 +27,7 @@ cbuffer CullCB : register(b0) {
 
 groupshared uint gs_Count;
 groupshared uint gs_Indices[MAX_LIGHTS_PER_TILE];
+groupshared uint gs_Scan[TILE_SIZE * TILE_SIZE];   // per-chunk prefix sum of the pass flags (see CSMain)
 groupshared uint gs_MinDepthInt;   // nearest/farthest opaque depth in the tile, as sortable float bits
 groupshared uint gs_MaxDepthInt;
 
@@ -101,17 +102,47 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID ) {
 
     // Distribute the light test across the group's threads. Clamp the external count (root constant) to the
     // buffer capacity so a garbage TotalLights can never spin the loop (lasting D3D12 rule).
+    //
+    // The kept set MUST be a deterministic function of the light buffer, not of GPU scheduling. An
+    // InterlockedAdd append gives each passing light whatever slot it wins the race for, so once a tile has more
+    // than MAX_LIGHTS_PER_TILE candidates the 64 that survive the cap differ every frame and the tile visibly
+    // flickers at 16x16 granularity — which is exactly what Gothic's static "atmospheric" light rooms (hundreds
+    // of co-located lights, every tile far over the cap) do. Instead the group walks the buffer in fixed chunks
+    // of numThreads and compacts each chunk's pass flags with a Hillis-Steele prefix sum, so a light's slot is
+    // its rank in BUFFER ORDER. BuildFrameLightBuffer sorts that buffer by distance to the camera, so the cap
+    // now deterministically keeps the NEAREST candidates and drops the farthest — stable frame to frame.
+    //
+    // Every barrier below sits in group-uniform flow: the chunk loop bound is uniform (a root constant) and is
+    // deliberately NOT cut short when the tile fills up, since at kMaxFrameLights=400 that is at most two
+    // chunks and an early-out would put a barrier behind a groupshared-derived condition.
     uint total = min( TotalLights, 4096u );
-    uint numThreads = TILE_SIZE * TILE_SIZE;
-    for ( uint i = ti; i < total; i += numThreads ) {
-        TiledPointLight L = SB_Lights[i];
-        if ( SphereInsideAABB( L.PositionView, L.Range * 1.05, aabbMin, aabbMax ) ) {
-            uint idx;
-            InterlockedAdd( gs_Count, 1, idx );
-            if ( idx < MAX_LIGHTS_PER_TILE ) gs_Indices[idx] = i;
+    const uint numThreads = TILE_SIZE * TILE_SIZE;
+    for ( uint base = 0; base < total; base += numThreads ) {
+        uint i = base + ti;
+        uint pass = 0;
+        if ( i < total ) {
+            TiledPointLight L = SB_Lights[i];
+            pass = SphereInsideAABB( L.PositionView, L.Range * 1.05, aabbMin, aabbMax ) ? 1u : 0u;
         }
+
+        // Inclusive scan of `pass` over the group; gs_Scan[numThreads-1] ends up as the chunk's total.
+        gs_Scan[ti] = pass;
+        GroupMemoryBarrierWithGroupSync();
+        [unroll] for ( uint s = 1; s < numThreads; s <<= 1 ) {
+            uint v = ( ti >= s ) ? gs_Scan[ti - s] : 0u;
+            GroupMemoryBarrierWithGroupSync();
+            gs_Scan[ti] += v;
+            GroupMemoryBarrierWithGroupSync();
+        }
+
+        // gs_Count carries the lights kept by earlier chunks; the exclusive prefix is this light's rank inside
+        // the chunk. Overflow simply doesn't write (gs_Count still counts, and is clamped when it is stored).
+        uint slot = gs_Count + gs_Scan[ti] - pass;
+        if ( pass != 0 && slot < MAX_LIGHTS_PER_TILE ) gs_Indices[slot] = i;
+        GroupMemoryBarrierWithGroupSync();
+        if ( ti == 0 ) gs_Count += gs_Scan[numThreads - 1];
+        GroupMemoryBarrierWithGroupSync();
     }
-    GroupMemoryBarrierWithGroupSync();
 
     if ( ti == 0 ) {
         uint count = min( gs_Count, (uint)MAX_LIGHTS_PER_TILE );
