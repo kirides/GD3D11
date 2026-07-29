@@ -24,7 +24,10 @@ struct LightGrid { uint Offset; uint Count; };
 // ShadowCubeIndex encoding: -1 = unshadowed, else (slot | tier). Bit 30 selects the low-res static cube array
 // over the full-res dynamic one, and keeps the value positive so "ShadowCubeIndex >= 0" still means shadowed.
 static const int kShadowTierLow  = 0x40000000;
-static const int kShadowSlotMask = 0x3FFFFFFF;
+// Bit 29: the slot also has a valid dynamic (skeletal overlay) cube — sample it too and min the two results.
+// Full-res slots only; absent means a pure static shadow and no second sample. Mirrors D3D12EngineCommon.h.
+static const int kShadowHasDynamic = 0x20000000;
+static const int kShadowSlotMask = 0x1FFFFFFF;
 
 #define TILE_SIZE 16u
 // Must match LightCull.hlsl's copy AND kMaxLightsPerTile in D3D12Scene.cpp (it strides RW_LightIndexList).

@@ -49,6 +49,12 @@ float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPo
     int   slot   = encodedIndex & kShadowSlotMask;
     bool  lowRes = ( encodedIndex & kShadowTierLow ) != 0;
     float coarse = lowRes ? 4.0 : 1.0;
+    // Full-res slots keep their STATIC depth in PointShadowCubes and this frame's moving (skeletal) casters in a
+    // SEPARATE array; taking the min of the two comparisons is "occluded by either", which is exactly what the
+    // old composited cube produced — minus the per-slot CopyTextureRegion that used to build it every frame.
+    // The bit is only set for slots whose overlay actually has casters, so a light with no NPC nearby pays for
+    // no extra sample at all.
+    bool  hasDyn = ( encodedIndex & kShadowHasDynamic ) != 0;
 
     float3 d  = ( wpos + N * ( range * 0.01 * coarse ) ) - lightPos;   // normal-offset bias (world-space, uniform)
     float3 ad = abs( d );
@@ -78,7 +84,13 @@ float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPo
         }
         else
         {
-            sh += PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
+            float s = PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
+            if ( hasDyn )
+            {
+                TextureCubeArray dynCubes = ResourceDescriptorHeap[PointShadowDynIndex];
+                s = min( s, dynCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth ) );
+            }
+            sh += s;
         }
     }
     return sh * 0.25;

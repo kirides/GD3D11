@@ -90,7 +90,7 @@ bool D3D12PipelineState::CreateWorld() {
     // be bound (BindFrameLights) by every draw using this root sig with a light-reading PSO (World.PSO/
     // World.VobPSO), else the count/grid are undefined root values and the shader loops away.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );        // 3: t1 light StructuredBuffer
-    rs.AddConstants( 2, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 { LightCount, NumTilesX, pad, pad }
+    rs.AddConstants( 2, 5, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex, PointShadowDynIndex }
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );        // 5: t2 per-tile LightGrid {Offset,Count}
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );        // 6: t3 per-tile light-index list
 
@@ -627,7 +627,7 @@ bool D3D12PipelineState::CreateGrass() {
     rs.AddConstants( 2, 8, D3D12_SHADER_VISIBILITY_ALL );      // 4: b2 fog — VS: CamPosWS; PS: color/near/far
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 light StructuredBuffer (root SRV)
     // 6: b3 { LightCount, NumTilesX, LimitLightIntensity, pad }
-    rs.AddConstants( 3, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddConstants( 3, 5, D3D12_SHADER_VISIBILITY_PIXEL );   // b3 LightCB (5th = PointShadowDynIndex)
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-tile LightGrid
     rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t4 per-tile light-index list
     rs.AddCBV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 9: b4 shadow-sampling CB (root CBV)
@@ -1306,7 +1306,7 @@ bool D3D12PipelineState::CreateDecal() {
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 diffuse
     rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );      // 2: b1 fog — VS: CamPosWS; PS: color/near/far
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 3: t1 light StructuredBuffer
-    rs.AddConstants( 2, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 { LightCount, NumTilesX, ... }
+    rs.AddConstants( 2, 5, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB (5th = PointShadowDynIndex)
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 per-tile LightGrid
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t3 per-tile light-index list
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: b3 shadow CB
@@ -1446,7 +1446,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     // Forward+ point lights (mirrors World.RootSig params 3/4/5/6, here at 4..7 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 4: t1 light StructuredBuffer (root SRV)
-    rs.AddConstants( 4, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 { LightCount, NumTilesX, pad, pad }
+    rs.AddConstants( 4, 5, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB (5th = PointShadowDynIndex)
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t2 per-tile LightGrid {Offset,Count}
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-tile light-index list
     // 8: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)

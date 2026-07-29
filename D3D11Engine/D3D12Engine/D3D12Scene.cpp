@@ -1145,6 +1145,10 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// read by a light whose ShadowCubeIndex carries kShadowTierLow, so the 0 fallback is never dereferenced.
 	const UINT lowCubeSrv = m_PointShadows.GetLowSrvSlot();
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, lowCubeSrv == UINT_MAX ? 0u : lowCubeSrv, 3 );
+	// PointShadowDynIndex @ b*+1.x — same trick again, for the DYNAMIC (skeletal overlay) cube array. Only read
+	// by a light whose ShadowCubeIndex carries kShadowHasDynamic, so the 0 fallback is never dereferenced.
+	const UINT dynCubeSrv = m_PointShadows.GetDynSrvSlot();
+	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 4 );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
 }
@@ -2108,6 +2112,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// fans their command recording out to the pool so it also overlaps the depth prepass / GPU cull / light cull
 	// / SSAO the main thread records next.
 	PrepareShadowPasses();
+	// ...and fan their RECORDING out immediately, rather than waiting for BeginShadowRecording further down.
+	// Everything these two passes need was just resolved by PrepareShadowPasses into pure-D3D12 records, so there
+	// is nothing left to wait for — and the queue order does not depend on when the CPU records into a private
+	// list (the cascades established this), only on the ExecuteCommandLists order in FinishShadowPasses. Moving
+	// the launch here buys the arg-build block below as extra overlap, which is what the point-cube recording
+	// (the heaviest of the three shadow passes) needs to finish before the join.
+	BeginShadowRecording();
 	// Scene wetness ("wet ground"): publish this frame's rain camera + wetness/time constants into the tail
 	// of the shared shadow CB so the lit World/Vob/Skeletal pixel shaders can darken, ripple and gloss up
 	// the surfaces the rain actually reaches. Unconditional (it also has to publish the "not wet" state) and
@@ -2136,15 +2147,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	}
 	// Build the skeletal + node-attachment ExecuteIndirect command sets ONCE (T9) from g_FrameSkelDraws/
 	// g_FrameAttachDraws, resolving each material's full bindless index set — the depth prepass ignores the
-	// extra two, so both skeletal passes submit over these same two buffers. MUST stay ahead of
-	// BeginShadowRecording: this is the last Gothic-touching skeletal work (UpdateMeshLibTexAniState mutates
-	// the model's SHARED texani slots, zCTexture::CacheIn touches the resource manager) and the cascade
-	// recorders below run on pool threads that must never see either mid-flight.
+	// extra two, so both skeletal passes submit over these same two buffers.
+	// This is the last Gothic-touching skeletal work of the frame (UpdateMeshLibTexAniState mutates the model's
+	// SHARED texani slots, zCTexture::CacheIn touches the resource manager), and it now runs WHILE the shadow
+	// recorders are already going. That is safe because none of them touch Gothic: every recorder replays
+	// pre-resolved D3D12 handles and heap-slot ints snapshotted on this thread before it was launched. It is
+	// specifically NOT safe to move any Gothic read INTO a recorder for the same reason.
 	BuildSkeletalDrawCommands();
-	// Everything the shadow passes need is resolved and every indirect-arg buffer for this frame is written, so
-	// hand the shadow recording to the pool and carry on: the prepass/cull/SSAO block below is recorded on the
-	// main thread WHILE the cascades, the point-light cubes and the rain map record into their own lists.
-	BeginShadowRecording();
     {
         DX_ZONE( m_CmdList, "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );

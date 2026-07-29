@@ -2,7 +2,7 @@ cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
 cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
 cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
 cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB    : register(b4) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; };   // Forward+ tiled: light count + tiles/row + low-res cube heap slot
+cbuffer LightCB    : register(b4) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };   // Forward+ tiled: light count + tiles/row + low-res cube heap slot
 
 #include "include/ForwardPlusTypes.hlsl"
 

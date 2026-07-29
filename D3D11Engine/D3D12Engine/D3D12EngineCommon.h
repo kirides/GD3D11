@@ -93,7 +93,11 @@ static_assert( sizeof( GPULight ) == 64, "GPULight must match the HLSL GPULight 
 // int and the existing "ShadowCubeIndex >= 0 means shadowed" test in every shader keeps working untouched;
 // the slot itself is the low 30 bits. Mirrored as kShadowTierLow in ForwardPlusTypes.hlsl.
 constexpr int32_t kShadowTierLow = 0x40000000;
-constexpr int32_t kShadowSlotMask = 0x3FFFFFFF;
+// Bit 29: this light's slot also has a valid DYNAMIC (skeletal overlay) cube, so the lit pass samples the
+// dynamic array as well and mins the two results. Full-res slots only — the low tier has no dynamic twin.
+// Absent = pure static shadow, and no second sample is taken. Mirrored in ForwardPlusTypes.hlsl.
+constexpr int32_t kShadowHasDynamic = 0x20000000;
+constexpr int32_t kShadowSlotMask = 0x1FFFFFFF;
 
 // This frame's visible-VOB instance-ring snapshot (UploadFrameVobInstances) — the depth prepass, the color
 // pass AND the point-shadow static-VOB gather all draw from it. Defined in D3D12Scene.cpp.

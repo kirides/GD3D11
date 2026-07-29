@@ -6,17 +6,21 @@
 // needs VPAndRTArrayIndexFromAnyShaderFeedingRasterizer). Sampled in the tiled point-light loop when the
 // light's ShadowCubeIndex >= 0.
 //
-// Static/dynamic split (P2.10g), the D3D11 static-aside model: per shadowed light the ACTIVE cube is built as
-// (cached static-only depth) + (this frame's dynamic casters overlaid), so hundreds of shadowed lights can
-// update their MOVING casters every frame without re-rendering static geometry. Three phases, plus a
-// hand-back:
+// Static/dynamic split: a shadowed light's depth lives in TWO cube arrays that the lit pass samples and mins —
+// m_Cube (cached static-only depth) and m_DynCube (this frame's moving casters). Hundreds of shadowed lights
+// can therefore update their MOVING casters every frame without re-rendering static geometry. Three phases:
 //   A) STATIC   — for slots whose light is fresh / moved / resized, (re)render the static casters
-//                 (world mesh + instanced VOBs). Amortized: usually a no-op.
-//   B) COPY     — per overlay-eligible slot, copy its 6 static-aside faces into the active cube.
-//   C) DYNAMIC  — overlay the moving casters (skeletal NPCs + their node attachments) on top.
+//                 (world mesh + instanced VOBs) into m_Cube. Amortized: usually a no-op.
+//   C) DYNAMIC  — clear this slot's m_DynCube face-set and draw the moving casters (skeletal NPCs + their node
+//                 attachments) into it. Only for slots that actually HAVE casters in range this frame.
 //   D) hand the touched slots back to PIXEL_SHADER_RESOURCE for the lit pass.
-// A light that can NEVER receive an overlay (a static light, or ANY light at PLS_STATIC_ONLY) skips the aside
-// cube and the copy entirely — its static casters render straight into the active cube and persist there.
+// There is no phase B. It used to copy each overlay-eligible slot's 6 static faces into the active cube so the
+// overlay could be composited on top — 6 CopyTextureRegion + 18 barriers per light EVERY frame, including for
+// lights with no dynamic caster near them, because the copy doubled as the "wipe last frame's overlay" step.
+// Two arrays and a min() in SamplePointShadow removes both jobs: nothing to composite, so nothing to copy, and
+// a light that loses its casters just stops setting kShadowHasDynamic instead of needing to be wiped.
+// A light that can NEVER receive an overlay (a static light, or ANY light at PLS_STATIC_ONLY) simply never
+// carries that bit, so the lit pass reads only its static cube and phase C never touches it.
 //
 // Split for deferred recording like the CSM: Prepare() does every Gothic-touching step on the main thread
 // (range culls, CacheIn, animation/texani, the face-CB and VOB-instance ring writes) and flattens the result
@@ -82,6 +86,7 @@ public:
 
     UINT GetSrvSlot() const { return m_SrvSlot; }
     UINT GetLowSrvSlot() const { return m_LowSrvSlot; }   // bindless heap slot of the low-res static cube array
+    UINT GetDynSrvSlot() const { return m_DynSrvSlot; }   // bindless heap slot of the dynamic-overlay cube array
     bool IsPassReady() const { return m_PassReady; }
 
     // Slot-ownership identity for one entry of the GPU light buffer, parallel to `lights` in
@@ -155,8 +160,8 @@ private:
     // barrier to the 6 subresources actually being copied makes the cost proportional to the work done.
     // Consequence: EVERY barrier on these two resources must be per-subresource. A single ALL_SUBRESOURCES
     // transition asserts all 768 slices share one state, which they no longer do.
-    D3D12_RESOURCE_STATES m_ActiveSlotState[kMaxCubes] = {};   // active cube; PIXEL_SHADER_RESOURCE at rest
-    D3D12_RESOURCE_STATES m_StaticSlotState[kMaxCubes] = {};   // static-aside cube; DEPTH_WRITE at rest
+    D3D12_RESOURCE_STATES m_ActiveSlotState[kMaxCubes] = {};   // static cube; PIXEL_SHADER_RESOURCE at rest
+    D3D12_RESOURCE_STATES m_DynSlotState[kMaxCubes] = {};      // dynamic-overlay cube; PIXEL_SHADER_RESOURCE at rest
 
     // ---- Low-res static cube array (kStaticCubeSize^2, kMaxStaticCubes slots) -------------------------------
     // ONE array, no aside twin: everything routed here is a static light or a static cluster, and those are never
@@ -169,12 +174,16 @@ private:
     UINT m_LowSrvSlot = UINT_MAX;                                // R16_UNORM TextureCubeArray SRV, fetched bindlessly
     D3D12_RESOURCE_STATES m_LowSlotState[kMaxStaticCubes] = {};  // PIXEL_SHADER_RESOURCE at rest, per-slot like above
 
-    // Static-aside cube: second persistent cube array, static-caster depth only. No SRV (never sampled); the
-    // slots routed through it are copied into the active cube each frame. Only slots that can receive a dynamic
-    // overlay live here at all — see Slot::usesAside.
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_StaticCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_StaticCubeAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_StaticDsvHeap;   // one D16 6-slice DSV per slot (mirrors active)
+    // Dynamic-overlay cube: second persistent full-res cube array holding ONLY this frame's skeletal overlay
+    // depth, never a composite. m_Cube above holds the static base; the lit pass samples BOTH and takes the min
+    // (see SamplePointShadow), which is what removed the old per-slot static->active copy: 6 CopyTextureRegion
+    // + 18 barriers per overlay-eligible light EVERY frame, which is what the main thread used to block on.
+    // A slot here is cleared and redrawn only on a frame that actually has dynamic casters in range; a light
+    // with no NPC nearby simply doesn't set kShadowHasDynamic and the shader never reads this array for it.
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_DynCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DynCubeAlloc;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DynDsvHeap;   // one D16 6-slice DSV per slot (mirrors the static one)
+    UINT m_DynSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV, fetched bindlessly via LightCB's PointShadowDynIndex
 
     // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_FaceCB[kBackBufferCount];
@@ -212,11 +221,17 @@ private:
                                              // GetCurrentShadowMode forcing PLS_STATIC_ONLY for static lights).
         bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
                                              // cube itself) holds valid static-only depth; false => must re-render static
-        bool              usesAside = false; // last frame's routing for this slot: true = static goes to the aside cube
-                                             // and is copied into active each frame (the slot can receive a dynamic
-                                             // overlay); false = static is rendered DIRECTLY into the active cube and
-                                             // never copied (no overlay possible — static light, or PLS_STATIC_ONLY).
-                                             // A change here invalidates staticValid: the depth lives in the other cube.
+        bool              dynamicValid = false; // this slot's DYNAMIC cube holds a valid skeletal overlay, as of the
+                                             // last Record that was actually submitted (committed in CommitStaticCache,
+                                             // symmetric with staticValid). Drives kShadowHasDynamic in the encoded
+                                             // index, i.e. whether the lit pass samples the dynamic cube for this
+                                             // light at all. Set on a frame whose overlay produced draws, cleared on a
+                                             // SCHEDULED frame that produced none (the NPC left) — deliberately left
+                                             // alone on an unscheduled frame, so a round-robin light keeps its last
+                                             // overlay between turns instead of flickering.
+                                             // Read one frame late by design: SelectShadowedLights builds the encoded
+                                             // index from BuildFrameLightBuffer, before Prepare() has resolved this
+                                             // frame's overlay. Same class of latency the round-robin already has.
         UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
         UINT32            missingFrames = 0;   // consecutive frames this slot's owner was NOT a winner; 0 while it is.
                                              // A slot is NOT released the moment its light drops out of the winner
@@ -237,8 +252,13 @@ private:
     // Slots whose static target was (re)rendered by THIS frame's records, pending the CommitStaticCache() that
     // turns them into cache hits. Kept out of Slot so an uncommitted frame simply leaves staticValid false and
     // the slot retries next frame. Capacity is retained across frames (frame-path allocation rule).
-    struct PendingStatic { UINT slot; bool aside; };
+    struct PendingStatic { UINT slot; };
     std::vector<PendingStatic> m_PendingStatic;
+    // Same deal for the dynamic side: `has` is what Slot::dynamicValid becomes once the overlay is known to have
+    // been recorded AND submitted. Only slots whose overlay was actually SCHEDULED this frame appear here, so an
+    // unscheduled round-robin slot keeps whatever it had.
+    struct PendingDynamic { UINT slot; bool has; };
+    std::vector<PendingDynamic> m_PendingDynamic;
 
     // The shadowed lights chosen this frame — filled by SelectShadowedLights, consumed by Prepare().
     // renderStatic: also (re)render the STATIC casters into this slot's static target (fresh slot / light moved
