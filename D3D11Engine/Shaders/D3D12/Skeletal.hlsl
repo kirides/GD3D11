@@ -1,6 +1,22 @@
 cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
-cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
-cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
+// The motion-vector fields are APPENDED, never inserted: PointShadow.hlsl declares a byte-compatible prefix of
+// this same CB (it shares the upload) and reading a prefix of a larger constant buffer is legal, whereas
+// shifting ModelColor/Fatness would silently corrupt the point-shadow skeletal caster.
+cbuffer InstanceCB : register(b1)
+{
+    float4x4 M_World;
+    float4   ModelColor;
+    float    Fatness;
+    float3   _pad;
+    float4x4 M_PrevWorld;      // previous frame's world matrix (SkeletalVobInfo::PrevWorldMatrix)
+    uint     PrevBoneOffset;   // index of the FIRST previous-frame bone in Bones[] below; 0 == "no history"
+    float3   _pad2;
+};
+// One palette holding BOTH poses back to back: current at [0, numBones), previous at [PrevBoneOffset, +numBones).
+// Packing them into a single allocation is what keeps this change off the root signature AND off the 80-byte
+// SkeletalDrawCommand indirect signature — a separate previous-bone CB would have needed a third root CBV in
+// every skeletal command. 192 is 2 * NUM_MAX_BONES; only the allocated prefix is ever indexed.
+cbuffer BonesCB    : register(b2) { float4x4 Bones[192]; };
 cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
 cbuffer LightCB    : register(b4) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };   // Forward+ tiled: light count + tiles/row + low-res cube heap slot
 
@@ -192,4 +208,62 @@ float4 PSGhost( VS_DEPTH_OUT i ) : SV_TARGET
     // included above). D3D11's PS_TransparencySkel returns the raw texel because its HDR buffer is
     // gamma-space; porting that verbatim is what made ghosts read far too bright.
     return float4( SrgbToLinear( t.rgb ), t.a * GhostAlpha );
+}
+
+// --- G-buffer prepass variant: depth + motion vectors + normals (see include/MotionVectors.hlsl) ---
+// A separate entry point from VSDepth above, because that blob also builds the CSM cascade skeletal caster PSO,
+// which binds no render targets and never binds b9.
+//
+// Skeletals are the one geometry class whose motion is genuinely per-vertex: an NPC's world matrix barely moves
+// while a swung arm crosses half the screen. So the previous position is re-skinned through the PREVIOUS pose
+// (Bones[PrevBoneOffset + idx]) and pushed through the previous world matrix — the same two-skinning structure
+// D3D11's VS_ExSkeletal.hlsl uses (ApplySkinningCurrent / ApplySkinningPrevious with BT_CURR / BT_PREV).
+#define MOTIONCB_REGISTER b9
+#include "include/MotionVectors.hlsl"
+
+struct VS_GBUF_OUT
+{
+    float4 clip     : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+    float3 wnrm     : TEXCOORD1;
+    float4 currClip : TEXCOORD2;
+    float4 prevClip : TEXCOORD3;
+};
+
+VS_GBUF_OUT VSDepthGBuf( VS_IN i )
+{
+    float3 skinnedPos    = float3( 0, 0, 0 );
+    float3 skinnedNormal = float3( 0, 0, 0 );
+    float3 prevPos       = float3( 0, 0, 0 );
+    float3 prevNormal    = float3( 0, 0, 0 );
+    [unroll]
+    for ( int b = 0; b < 4; ++b )
+    {
+        uint  idx = i.boneIndices[b];
+        float w   = i.weights[b];
+        float4x4 bone     = Bones[idx];
+        float4x4 prevBone = Bones[PrevBoneOffset + idx];
+        skinnedPos    += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
+        skinnedNormal += w * mul( i.normal, (float3x3)bone );
+        prevPos       += w * mul( float4( i.pos[b].xyz, 1.0 ), prevBone ).xyz;
+        prevNormal    += w * mul( i.normal, (float3x3)prevBone );
+    }
+    // Fatness is applied to both poses (it inflates along the normal and is itself animated for some monsters),
+    // mirroring D3D11's ApplySkinningPrevious feeding PI_ModelFatness * prevNormal into M_PrevWorld.
+    float3 worldPos     = mul( float4( skinnedPos + Fatness * skinnedNormal, 1.0 ), M_World ).xyz;
+    float3 prevWorldPos = mul( float4( prevPos + Fatness * prevNormal, 1.0 ), M_PrevWorld ).xyz;
+
+    VS_GBUF_OUT o;
+    o.clip     = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv       = i.uv;
+    o.wnrm     = mul( skinnedNormal, (float3x3)M_World );
+    o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
+    o.prevClip = mul( float4( prevWorldPos, 1.0 ), PrevViewProj );
+    return o;
+}
+
+GBUF_OUT PSDepthClipGBuf( VS_GBUF_OUT i )
+{
+    clip( SampleSkelDiffuse( i.uv ).a - 0.5 );   // identical cutout to PSDepthClip
+    return MakeGBufOut( i.currClip, i.prevClip, i.wnrm );
 }

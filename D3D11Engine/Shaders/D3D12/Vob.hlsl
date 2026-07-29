@@ -295,3 +295,71 @@ void PSShadowClipBindless( VS_DEPTH_OUT i )
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
 }
+
+// --- G-buffer prepass variants: depth + motion vectors + normals (see include/MotionVectors.hlsl) ---
+// New entry points rather than an extension of VSDepth/VSDepthAttach, because those blobs also build the CSM
+// cascade caster PSOs, which bind no render targets and never bind b5.
+//
+// Both take the FULLER VS_IN (VSDepth's own VS_DEPTH_IN has no NORMAL) plus the previous-frame instance matrix.
+// That matrix costs nothing to fetch: VobInstanceInfo::prevWorld has been sitting at offset 64 of the instance
+// stream all along — D3D12RenderQueue::PushStaticVob fills it — it simply was never declared in an input layout.
+#include "include/MotionVectors.hlsl"
+
+struct VS_GBUF_IN
+{
+    float3   pos       : POSITION;
+    float3   nrm       : NORMAL;
+    float2   uv        : TEXCOORD0;
+    float4x4 iworld    : INSTANCE_WORLD_MATRIX;
+    float4x4 iprevworld: INSTANCE_PREV_WORLD_MATRIX;   // VobInstanceInfo::prevWorld (@64)
+    float2   iwind     : INSTANCE_WINDFLUENCE;
+};
+struct VS_GBUF_OUT
+{
+    float4 clip     : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+    float3 wnrm     : TEXCOORD1;
+    float4 currClip : TEXCOORD2;
+    float4 prevClip : TEXCOORD3;
+};
+
+VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
+{
+    VS_GBUF_OUT o;
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld );
+    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv   = i.uv;
+    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
+    // The SWAYED local position is reused for the previous frame, so a wind-swayed vob reports only its rigid
+    // motion. This deliberately differs from D3D11's VS_ExInstancedObj.hlsl, which feeds the UN-swayed `position`
+    // to M_PrevWorld and therefore reports the entire sway displacement as if it happened in a single frame —
+    // for a tree canopy that is a large bogus velocity every frame, which TAA/FSR resolve as smeared foliage.
+    // Under-reporting sway (leaves ghost slightly) is the far smaller error; correcting it properly needs last
+    // frame's wind phase, which is a follow-up, not a prerequisite.
+    o.prevClip = mul( float4( localPos, 1.0 ), mul( i.iprevworld, PrevViewProj ) );
+    return o;
+}
+
+VS_GBUF_OUT VSDepthAttachGBuf( VS_GBUF_IN i )
+{
+    VS_GBUF_OUT o;
+    float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
+    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv   = i.uv;
+    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
+    // Attachments (weapons/heads/held items) ride the bone they hang off, so their prevWorld is a genuinely
+    // different matrix each frame — this is what gives a swung sword real motion vectors.
+    o.prevClip = mul( float4( localPos, 1.0 ), mul( i.iprevworld, PrevViewProj ) );
+    return o;
+}
+
+GBUF_OUT PSDepthClipBindlessGBuf( VS_GBUF_OUT i )
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    clip( difTex.Sample( smp, i.uv ).a - 0.5 );
+    return MakeGBufOut( i.currClip, i.prevClip, i.wnrm );
+}

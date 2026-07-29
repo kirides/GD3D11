@@ -262,6 +262,15 @@ XRESULT D3D12GraphicsEngine::Init() {
         // leaves the AO mask at white (no occlusion) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
     }
+    // Motion-vector G-buffer support (camera-velocity fill + debug overlay). Non-fatal: nothing consumes the
+    // velocity/normal targets yet (TAA/FSR3/XeGTAO are the consumers and none exist), so a failure here costs
+    // the future upscaler/AO inputs, never the frame. CreateMotionConstantBuffers must succeed too — without
+    // the CB the *GBuf prepass PSOs would have an unbound root CBV, so failure disables the whole feature.
+    if ( !m_Pipelines.CreateMotion() || !CreateMotionConstantBuffers() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the motion-vector pipeline "
+                     "(no motion vectors / normal buffer — TAA, FSR3 and XeGTAO will have no input).";
+        m_MotionResourcesReady = false;
+    }
     if ( !m_Pipelines.CreateSkyIbl() ) {
         // Non-fatal: the lit shaders test the sky-IBL cube indices for 0xFFFFFFFF and fall back to the flat
         // ambient term they used before this existed, so a failure here costs indirect specular, not lighting.
@@ -1532,6 +1541,10 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     CreateLdrCopyResource( size );   // non-fatal: shared LDR scratch for SMAA/sharpen; both no-op without it
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
     CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
+    // Motion-vector + normal G-buffer (D3D12Motion.cpp). Non-fatal in the same way as the AO resources: on
+    // failure m_MotionResourcesReady stays false, the depth prepass falls back to its plain depth-only PSOs and
+    // the frame is unchanged — nothing consumes either target yet.
+    CreateMotionResources( size );
     CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
     ReleaseWaterCopyResources();     // lazily rebuilt at the new size by the next frame that renders water
@@ -1562,9 +1575,10 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // RTV descriptor heap: one per backbuffer + 1 for the HDR scene-color target (slot kBackBufferCount) +
     // 2 for the SMAA edge/blend intermediates (slots kBackBufferCount+1 / +2) + 1 for the HDR display
-    // composite target (slot kBackBufferCount+3; only populated when real HDR output is active).
+    // composite target (slot kBackBufferCount+3; only populated when real HDR output is active) + 2 for the
+    // motion-vector / octahedral-normal G-buffer the depth prepass writes (slots +4 / +5, D3D12Motion.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferCount + 4;
+    rtvHeapDesc.NumDescriptors = kBackBufferCount + 6;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )
@@ -2395,6 +2409,10 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     CreateLdrCopyResource( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
     CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
+    // Motion-vector + normal G-buffer (D3D12Motion.cpp). Non-fatal in the same way as the AO resources: on
+    // failure m_MotionResourcesReady stays false, the depth prepass falls back to its plain depth-only PSOs and
+    // the frame is unchanged — nothing consumes either target yet.
+    CreateMotionResources( size );
     CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site
     CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
     ReleaseWaterCopyResources();     // GPU is idle here; the next water frame rebuilds them at the new size

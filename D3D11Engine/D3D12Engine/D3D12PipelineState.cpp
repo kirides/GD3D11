@@ -12,6 +12,10 @@ namespace {
     // keeps its own copy — no ODR concern). Kept in sync with D3D12GraphicsEngine.cpp.
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
     constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    // Motion-vector + octahedral-normal G-buffer targets written by the *GBuf depth-prepass PSOs.
+    // Kept in sync with D3D12EngineCommon.h's kVelocityFormat / kGBufferNormalFormat.
+    constexpr DXGI_FORMAT kVelocityFormat = DXGI_FORMAT_R16G16_FLOAT;
+    constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
     constexpr const char* Shadermodel_CS = "cs_6_6";
@@ -121,6 +125,14 @@ bool D3D12PipelineState::CreateWorld() {
     // World.hlsl/Vob.hlsl's PSMain(Bindless) read it via ResourceDescriptorHeap[AoMaskIndex]. Points at the
     // white texture's SRV slot when SSAO is disabled/unavailable (mask = no occlusion, matches D3D11's default).
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b7 AOCB { AoMaskIndex }
+
+    // 13 = motion-vector CB (b5, VS only) as a ROOT CBV: { PrevViewProj, UnjitteredViewProj }, two matrices — far
+    // past the root-constant budget, hence a CBV. Read ONLY by the G-buffer prepass entry points
+    // (DepthPrepass.hlsl VSWorldGBuf, Vob.hlsl VSDepthGBuf/VSDepthAttachGBuf); every other user of this root
+    // signature — including the CSM cascade casters built from the non-GBuf blobs — simply leaves it unbound.
+    // Appended LAST on purpose: parameter index is Add*() call order, so inserting it anywhere earlier would
+    // silently renumber every existing bind site and both ExecuteIndirect command signatures anchored here.
+    rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX );            // 13: b5 MotionCB
 
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
@@ -907,6 +919,104 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, indirect).";
         return false;
     }
+
+    if ( !CreateDepthPrepassGBuf() ) {
+        // Non-fatal by design: the plain depth-only PSOs above are untouched and still drive a correct frame.
+        // Losing this costs the motion-vector + normal G-buffer (so TAA/FSR3/XeGTAO downstream), not rendering.
+        LogWarn() << "D3D12: motion-vector/normal G-buffer prepass PSOs unavailable — "
+                     "falling back to the plain depth-only prepass (no motion vectors, no normal buffer).";
+        World.DepthPrepassGBufPSO.Reset();
+        World.DepthPrepassVobGBufPSO.Reset();
+        World.DepthPrepassVobAttachGBufPSO.Reset();
+    }
+    return true;
+}
+
+/** G-buffer variants of the three World-family depth-prepass PSOs: same depth state, but writing motion vectors
+    (RT0) + octahedral normals (RT1) instead of masking off a scene-color RTV. Split out of CreateDepthPrepass so
+    a failure here can be swallowed without also losing the depth prepass itself. See D3D12Motion.cpp. */
+bool D3D12PipelineState::CreateDepthPrepassGBuf() {
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !World.RootSig ) return false;
+
+    if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "VSWorldGBuf", Shadermodel_VS, World.DepthPrepassGBufVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "PSClipGBuf", Shadermodel_PS, World.DepthPrepassGBufPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthGBuf", Shadermodel_VS, World.DepthPrepassVobGBufVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthAttachGBuf", Shadermodel_VS, World.DepthPrepassVobAttachGBufVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSDepthClipBindlessGBuf", Shadermodel_PS, World.DepthPrepassVobGBufPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    // Shared state: identical to the depth-only prepass (reversed-Z GREATER_EQUAL, depth-write on, back-face
+    // cull) so the depth laid down is bit-identical — only the render targets differ. Both RTs write all
+    // channels; the formats are RG16F so "all channels" is the .xy each PS returns.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = World.RootSig.Get();
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 2;
+    pso.RTVFormats[0] = kVelocityFormat;
+    pso.RTVFormats[1] = kGBufferNormalFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    // World mesh: Position (@0) + the packed OCTAHEDRAL normal (@12, R16G16_SNORM — already world-space, so
+    // PSClipGBuf forwards it to the normal target without a decode/encode round trip) + TexCoord0 (@20).
+    const D3D12_INPUT_ELEMENT_DESC worldLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+    pso.VS = { World.DepthPrepassGBufVsBlob->GetBufferPointer(), World.DepthPrepassGBufVsBlob->GetBufferSize() };
+    pso.PS = { World.DepthPrepassGBufPsBlob->GetBufferPointer(), World.DepthPrepassGBufPsBlob->GetBufferSize() };
+    pso.InputLayout = { worldLayout, _countof( worldLayout ) };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world G-buffer prepass).";
+        return false;
+    }
+
+    // Instanced VOBs + node attachments share one layout: the full ExVertexStruct (stride 60) triple plus the
+    // instance world matrix @0, the PREVIOUS-frame world matrix @64 and the wind/fatness pair @132. prevWorld has
+    // always been in the uploaded VobInstanceInfo (D3D12RenderQueue::PushStaticVob writes it); declaring it here
+    // is what finally makes it reach a shader, at zero bandwidth cost.
+    const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "INSTANCE_WORLD_MATRIX",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX",      1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX",      2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX",      3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  80, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  96, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 112, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",       0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    };
+    pso.PS = { World.DepthPrepassVobGBufPsBlob->GetBufferPointer(), World.DepthPrepassVobGBufPsBlob->GetBufferSize() };
+    pso.InputLayout = { vobLayout, _countof( vobLayout ) };
+    pso.VS = { World.DepthPrepassVobGBufVsBlob->GetBufferPointer(), World.DepthPrepassVobGBufVsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB G-buffer prepass).";
+        return false;
+    }
+    pso.VS = { World.DepthPrepassVobAttachGBufVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachGBufVsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobAttachGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment G-buffer prepass).";
+        return false;
+    }
     return true;
 }
 
@@ -1462,6 +1572,10 @@ bool D3D12PipelineState::CreateSkeletal() {
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b8 AOCB { AoMaskIndex }
+    // 13 = motion-vector CB (b9 here — b5 is the shadow CB on this signature; World.RootSig uses b5 for the same
+    // struct). Root CBV, VS only, read ONLY by Skeletal.hlsl's VSDepthGBuf. Appended last for the same
+    // parameter-renumbering reason as World's: SkeletalDrawCommand's indirect signature pushes param 11.
+    rs.AddCBV( 9, D3D12_SHADER_VISIBILITY_VERTEX );            // 13: b9 MotionCB
 
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
@@ -1552,6 +1666,32 @@ bool D3D12PipelineState::CreateSkeletal() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
         return false;
+    }
+
+    // G-buffer prepass variant: motion vectors + normals for skinned meshes (VSDepthGBuf skins the vertex TWICE,
+    // once through the current pose and once through the previous one out of the same b2 palette). Optional —
+    // on failure DrawSkeletalDepthPrepass falls back to the depth-only PSO above and NPCs simply contribute no
+    // per-vertex motion (they still get camera velocity from FillCameraVelocity). Never fails the whole pipeline.
+    if ( m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepthGBuf", Shadermodel_VS, Skeletal.DepthPrepassGBufVsBlob.ReleaseAndGetAddressOf() )
+        && m_Shaders->CompileFromFile( "Skeletal.hlsl", "PSDepthClipGBuf", Shadermodel_PS, Skeletal.DepthPrepassGBufPsBlob.ReleaseAndGetAddressOf() ) ) {
+        rs.ValidateShaders( {
+            { Skeletal.DepthPrepassGBufVsBlob.Get(), "Skeletal.hlsl:VSDepthGBuf",     D3D12_SHADER_VISIBILITY_VERTEX },
+            { Skeletal.DepthPrepassGBufPsBlob.Get(), "Skeletal.hlsl:PSDepthClipGBuf", D3D12_SHADER_VISIBILITY_PIXEL  },
+        } );
+        pso.VS = { Skeletal.DepthPrepassGBufVsBlob->GetBufferPointer(), Skeletal.DepthPrepassGBufVsBlob->GetBufferSize() };
+        pso.PS = { Skeletal.DepthPrepassGBufPsBlob->GetBufferPointer(), Skeletal.DepthPrepassGBufPsBlob->GetBufferSize() };
+        pso.NumRenderTargets = 2;
+        pso.RTVFormats[0] = kVelocityFormat;
+        pso.RTVFormats[1] = kGBufferNormalFormat;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal G-buffer prepass) — NPCs will have no per-vertex motion vectors.";
+            Skeletal.DepthPrepassGBufPSO.Reset();
+        }
+    } else {
+        LogWarn() << "D3D12: Skeletal.hlsl VSDepthGBuf/PSDepthClipGBuf failed to compile — NPCs will have no per-vertex motion vectors.";
+        Skeletal.DepthPrepassGBufPSO.Reset();
     }
     return true;
 }
@@ -2646,6 +2786,79 @@ bool D3D12PipelineState::CreateAO() {
     if ( FAILED( device->CreateComputePipelineState( &blurPso, IID_PPV_ARGS( AO.BlurPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateComputePipelineState failed (AO blur).";
         return false;
+    }
+    return true;
+}
+
+bool D3D12PipelineState::CreateMotion() {
+    // Motion-vector G-buffer support passes (D3D12Motion.cpp). Non-fatal throughout: the engine guards on each
+    // PSO, and losing them costs the fill (leaving sky/grass/water at the clear sentinel) or the debug view,
+    // never the frame. The per-object velocity/normal writes are in the *GBuf prepass PSOs, not here.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // --- Fill pass: b0 MotionCB root CBV (3 matrices — too big for root constants), b1 4x32-bit indices/size.
+    // Fully bindless (SM6.6 ResourceDescriptorHeap) for both the depth SRV and the velocity UAV, so there is no
+    // descriptor table and nothing to rebind per frame — same shape as the god-ray compute passes.
+    D3D12RootLayout& fillRs = Layout( "MotionFill" );
+    fillRs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 0: b0 MotionCB
+    fillRs.AddConstants( 1, 4, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 FillCB { depthIdx, velUavIdx, w, h }
+    if ( !fillRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Motion.FillRootSig = fillRs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "CameraVelocity.hlsl", "CSMain", Shadermodel_CS, Motion.FillCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    fillRs.ValidateShaders( { { Motion.FillCsBlob.Get(), "CameraVelocity.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC fillPso = {};
+    fillPso.pRootSignature = Motion.FillRootSig.Get();
+    fillPso.CS = { Motion.FillCsBlob->GetBufferPointer(), Motion.FillCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &fillPso, IID_PPV_ARGS( Motion.FillPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (camera-velocity fill).";
+        return false;
+    }
+
+    // --- Debug overlay: fullscreen triangle over the finished display image. b0 4x32-bit { srcIdx, mode,
+    // amplification, pad }, one point-clamp static sampler, bindless source. RTV format is DisplayFormat (NOT
+    // kBackBufferFormat) so it composites correctly when real HDR scanout is on — same rule every other
+    // display-space pass follows.
+    D3D12RootLayout& dbgRs = Layout( "MotionDebug" );
+    dbgRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 0: b0 MotionDebugCB
+    dbgRs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    if ( !dbgRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                             | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Motion.DebugRootSig = dbgRs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "MotionDebug.hlsl", "VSFullscreen", Shadermodel_VS, Motion.DebugVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "MotionDebug.hlsl", "PSMain", Shadermodel_PS, Motion.DebugPsBlob.ReleaseAndGetAddressOf() ) ) {
+        LogWarn() << "D3D12: MotionDebug.hlsl failed to compile — the velocity/normal debug overlay is unavailable.";
+        Motion.DebugPSO.Reset();
+        return true;   // the fill pass above is the part that matters; the overlay is developer-only
+    }
+    dbgRs.ValidateShaders( {
+        { Motion.DebugVsBlob.Get(), "MotionDebug.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Motion.DebugPsBlob.Get(), "MotionDebug.hlsl:PSMain",       D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC dbgPso = {};
+    dbgPso.pRootSignature = Motion.DebugRootSig.Get();
+    dbgPso.VS = { Motion.DebugVsBlob->GetBufferPointer(), Motion.DebugVsBlob->GetBufferSize() };
+    dbgPso.PS = { Motion.DebugPsBlob->GetBufferPointer(), Motion.DebugPsBlob->GetBufferSize() };
+    dbgPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    dbgPso.NumRenderTargets = 1;
+    dbgPso.RTVFormats[0] = DisplayFormat;
+    dbgPso.SampleDesc.Count = 1;
+    dbgPso.SampleMask = UINT_MAX;
+    dbgPso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    dbgPso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    dbgPso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    dbgPso.DepthStencilState.DepthEnable = FALSE;   // it replaces the image outright, no depth involved
+    dbgPso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &dbgPso, IID_PPV_ARGS( Motion.DebugPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (motion debug overlay).";
+        Motion.DebugPSO.Reset();
     }
     return true;
 }

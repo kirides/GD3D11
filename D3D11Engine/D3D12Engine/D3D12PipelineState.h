@@ -68,6 +68,20 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VobIndirectPsBlob;         // PSMainBindless
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobIndirectPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobIndirectPsBlob; // PSDepthClipBindless
+        // G-buffer prepass variants (motion vectors + octahedral normals — see D3D12Motion.cpp). Identical depth
+        // state to the three PSOs above, but two real render targets (kVelocityFormat, kGBufferNormalFormat)
+        // instead of the masked-off scene-color RTV, and the *GBuf shader entry points which additionally read
+        // b5 MotionCB and (for the two VOB variants) INSTANCE_PREV_WORLD_MATRIX off the instance stream.
+        // The engine falls back to the plain depth-only PSOs above whenever these are null, so a shader edit that
+        // breaks them costs the motion/normal buffers, not the frame.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassGBufPSO;         // world mesh
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufVsBlob;      // VSWorldGBuf
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufPsBlob;      // PSClipGBuf
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobGBufPSO;      // instanced VOBs (ExecuteIndirect)
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobGBufVsBlob;   // VSDepthGBuf
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobGBufPsBlob;   // PSDepthClipBindlessGBuf
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobAttachGBufPSO; // node attachments
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobAttachGBufVsBlob; // VSDepthAttachGBuf
         // Unlit BLENDED instanced VOBs (cobwebs, hanging cloth) — port of D3D11's DrawFrameAlphaMeshes. Same
         // VSMain + input layout as VobIndirectPSO, but PSAlphaBlendBindless (no alpha clip, real alpha out) and
         // blended without depth-write. Two PSOs for the two blend alpha funcs D3D11 peels VOB materials out for
@@ -139,6 +153,12 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPSO;    // depth-only skinned (color write mask 0)
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVsBlob;  // also reused by the CSM skeletal shadow caster
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;
+        // G-buffer prepass variant (motion vectors + normals). Skinned twice — current pose and the previous
+        // pose out of the same b2 palette — so a swung limb gets true per-vertex velocity. Optional: null falls
+        // back to DepthPrepassPSO above.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassGBufPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufVsBlob;  // VSDepthGBuf
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufPsBlob;  // PSDepthClipGBuf
     };
     // Point-light shadow cubes: two root sigs (world + VOB casters share one; the skeletal caster has its own,
     // with the 6-face view-proj CBV at b0), four VS/PS blobs, and three single-pass 6-face caster PSOs. The cube
@@ -198,6 +218,21 @@ public:
         Microsoft::WRL::ComPtr<ID3D12RootSignature> BlurRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            BlurCsBlob;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;
+    };
+
+    // Motion-vector G-buffer support passes (D3D12Motion.cpp). The per-object velocity/normal writes themselves
+    // ride the World/Skeletal *GBuf prepass PSOs above; these two are the fill and the debug view:
+    //   Fill  — CameraVelocity.hlsl CSMain: camera-only velocity for every pixel the prepass never covered.
+    //   Debug — MotionDebug.hlsl: fullscreen overlay of the velocity or normal target (DisplayVelocity setting).
+    // The velocity/normal textures and their heap slots live in the engine, like the bloom/AO pyramids.
+    struct MotionPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> FillRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            FillCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> FillPSO;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> DebugRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            DebugVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            DebugPsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugPSO;
     };
 
     // Sky image-based lighting — the indirect-light source for the Forward+ PBR shaders (Shaders/D3D12/
@@ -368,6 +403,7 @@ public:
     // --- Per-pass pipeline creation (pure pipeline state; no GPU buffers/textures) ---
     bool CreateWorld();        // shared world root sig + lit world-mesh PSO (must run before the two below)
     bool CreateDepthPrepass(); // depth-only world + instanced-VOB prepass PSOs (needs World.RootSig)
+    bool CreateDepthPrepassGBuf(); // motion-vector + normal variants of the above (called by CreateDepthPrepass)
     bool CreateVob();          // lit instanced-VOB PSO (needs World.RootSig); buffers stay in the engine
     bool CreateUI();          // 2D/UI root sig + shaders; warms the default PSO (vertex buffers stay in engine)
     bool CreateParticle();    // particle root sig + shaders; warms the alpha PSO (instance buffers stay in engine)
@@ -397,6 +433,7 @@ public:
     // strips) and true for particle prog-meshes, which are closed 3D meshes D3D11 draws with SetDefaultStates.
     ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite, bool cullBack = false );
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
+    bool CreateMotion();      // motion-vector fill compute + debug-overlay pipelines; textures stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateSky();         // procedural scattering sky dome (own bindless root sig + inner/outer PSOs); dome mesh is GSky's
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
@@ -451,6 +488,7 @@ public:
     SharpenPipeline  Sharpen;       // post-tonemap sharpening (Shaders/D3D12/Sharpen.hlsl)
     FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;
+    MotionPipeline   Motion;
     SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
     SkyPipeline      Sky;           // procedural scattering sky dome (Shaders/D3D12/Sky.hlsl)
     FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)

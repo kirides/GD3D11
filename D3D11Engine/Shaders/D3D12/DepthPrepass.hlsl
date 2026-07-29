@@ -33,3 +33,45 @@ void PSShadowClip( VS_OUT i )
 {
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );}
+
+// --- G-buffer prepass variant: depth + motion vectors + normals ---
+// Separate entry points rather than an extension of VSWorld/PSClip above, because those two blobs are ALSO what
+// the CSM cascade world caster is built from (D3D12ShadowMap), and that PSO binds no render targets and does not
+// bind b5 — emitting velocity/normal from the shared VS would leave its MotionCB root parameter undefined.
+//
+// World-mesh vertices are STATIC and already world-space, so the previous position is the current position: all
+// of the resulting velocity is camera motion, and it is EXACT (not the depth-reprojection approximation that
+// FillCameraVelocity falls back to for pixels no prepass draw covered). The packed normal at offset 12 is
+// already octahedral world-space, so it is passed through untouched — no decode/re-encode round trip.
+#include "include/MotionVectors.hlsl"
+
+struct VS_GBUF_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; };
+struct VS_GBUF_OUT
+{
+    float4 clip     : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+    float2 octNrm   : TEXCOORD1;   // already-encoded octahedral normal, straight from the vertex
+    float4 currClip : TEXCOORD2;
+    float4 prevClip : TEXCOORD3;
+};
+
+VS_GBUF_OUT VSWorldGBuf( VS_GBUF_IN i )
+{
+    VS_GBUF_OUT o;
+    o.clip     = mul( float4( i.pos, 1.0 ), ViewProj );
+    o.uv       = i.uv;
+    o.octNrm   = i.nrm;
+    o.currClip = mul( float4( i.pos, 1.0 ), UnjitteredViewProj );
+    o.prevClip = mul( float4( i.pos, 1.0 ), PrevViewProj );   // static geometry: same world position last frame
+    return o;
+}
+
+GBUF_OUT PSClipGBuf( VS_GBUF_OUT i )
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    clip( difTex.Sample( smp, i.uv ).a - 0.5 );   // identical cutout to PSClip — same depth, same coverage
+    GBUF_OUT o;
+    o.velocity = CalculateVelocity( i.currClip, i.prevClip );
+    o.normal   = i.octNrm;   // interpolating an octahedral pair is fine; XeGTAO renormalizes on decode
+    return o;
+}

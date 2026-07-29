@@ -1182,6 +1182,9 @@ struct GothicRendererSettings {
         struct {
             bool DepthMotionVectors;
             bool DisplayVelocity;
+            // D3D12 only: overlays the octahedral normal G-buffer the depth prepass writes (the XeGTAO input).
+            // D3D11 has no such buffer — it reconstructs normals from depth — so its renderer ignores this.
+            bool DisplayNormals;
         } TAA;
         struct {
             bool LazyCascadeUpdate;

@@ -1748,6 +1748,12 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Use Depth based Velocity", &settings.DebugSettings.TAA.DepthMotionVectors);
                 ImGui::SetItemTooltip("Instead of per-Object");
                 ImGui::Checkbox("Display Velocity", &settings.DebugSettings.TAA.DisplayVelocity);
+                ImGui::SetItemTooltip("Overlays the motion-vector buffer: red = horizontal motion, green = vertical.\n"
+                                      "A still camera on a still scene is black; a walking NPC shows as a coloured silhouette.");
+                ImGui::Checkbox("Display Normals (D3D12)", &settings.DebugSettings.TAA.DisplayNormals);
+                ImGui::SetItemTooltip("Overlays the octahedral normal G-buffer written by the D3D12 depth prepass\n"
+                                      "(the future XeGTAO input). Takes precedence over Display Velocity.\n"
+                                      "D3D11 has no such buffer and ignores this.");
                 ImGui::EndTabItem();
             }
 

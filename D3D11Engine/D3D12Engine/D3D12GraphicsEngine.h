@@ -1038,6 +1038,68 @@ private:
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp/m_PrevDepth + persistent SRV/UAV slots
     void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
 
+    // ---- Motion-vector + normal G-buffer (D3D12Motion.cpp) -------------------------------------------------
+    // Two extra full-resolution targets the Forward+ DEPTH PREPASS writes alongside depth, via the *GBuf PSO
+    // variants (World/Skeletal). Producers only for now — TAA, FSR3 and XeGTAO are the consumers, and none of
+    // them exist yet, so nothing in the frame currently READS either target. That is deliberate: it makes this
+    // increment independently GPU-verifiable through the debug overlay without changing a single output pixel.
+    //
+    //   m_VelocityBuffer — RG16F screen-space motion, prevUV - currUV (D3D11's CalculateVelocity convention).
+    //                      Cleared to kVelocitySentinel; the prepass overwrites opaque geometry with TRUE
+    //                      per-object velocity (static world via camera reprojection, VOBs via the instance
+    //                      stream's prevWorld, skeletals via a second skinning pass through the previous bone
+    //                      pose); FillCameraVelocity then replaces whatever sentinel is left.
+    //   m_NormalBuffer   — RG16F octahedral world-space normal, the XeGTAO input. Untouched by the fill pass:
+    //                      a pixel with no prepass coverage has no meaningful normal, and AO must treat it as
+    //                      "no geometry" rather than invent one.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VelocityBuffer;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VelocityAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_NormalBuffer;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_NormalAlloc;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_VelocityRtv = {};   // RTV heap slot kBackBufferCount+4
+    D3D12_CPU_DESCRIPTOR_HANDLE m_NormalRtv = {};     // RTV heap slot kBackBufferCount+5
+    UINT m_VelocitySrvSlot = UINT_MAX;    // SRV for the debug overlay + future TAA/FSR3 consumers
+    UINT m_VelocityUavSlot = UINT_MAX;    // UAV the FillCameraVelocity compute pass writes through (bindless)
+    UINT m_NormalSrvSlot = UINT_MAX;      // SRV for the debug overlay + future XeGTAO
+    bool m_MotionResourcesReady = false;  // false disables the whole feature (prepass falls back to depth-only)
+    bool m_VelocityInPixelState = false;  // mirrors m_SceneColorInPixelState: tracks RT vs shader-read rest state
+
+    // Camera history. m_PrevViewProjUnjittered is the matrix that rasterized the PREVIOUS frame, captured at the
+    // end of each OnStartWorldRendering; m_MotionHistoryValid is false on the first frame of a world and right
+    // after a resize, where there is no previous camera and every velocity must read as zero.
+    XMFLOAT4X4 m_PrevViewProjUnjittered = {};
+    XMFLOAT4X4 m_CurViewProjUnjittered = {};
+    bool m_MotionHistoryValid = false;
+    // Per-frame-in-flight 256-byte UPLOAD slabs holding MotionCBData, bound as a root CBV by the *GBuf prepass
+    // PSOs (b5 world-family / b9 skeletal) and by the fill pass (b0). One allocation per frame in flight rather
+    // than a ring: the contents are frame-global, written once in UploadMotionConstants.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_MotionCB[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_MotionCBAlloc[kBackBufferCount];
+    uint8_t* m_MotionCBMapped[kBackBufferCount] = {};
+    struct MotionCBData {
+        XMFLOAT4X4 PrevViewProj;
+        XMFLOAT4X4 UnjitteredViewProj;
+        XMFLOAT4X4 InvUnjitteredViewProj;
+    };
+    static_assert( sizeof( MotionCBData ) == 192, "MotionCBData must match Shaders/D3D12/include/MotionVectors.hlsl" );
+
+    bool CreateMotionResources( INT2 size );  // (re)builds the velocity/normal targets + their RTV/SRV/UAV views
+    bool CreateMotionConstantBuffers();       // one-time: the kBackBufferCount persistently-mapped MotionCB slabs
+    void UploadMotionConstants();             // captures this frame's camera into MotionCBData (start of world render)
+    void BeginMotionGBuffer();                // clears both targets + binds them as the prepass's two RTVs
+    void EndMotionGBuffer();                  // flips them back to shader-read and restores the scene-color RT
+    void FillCameraVelocity();                // camera-only velocity for every pixel the prepass never covered
+    void StoreVobPreviousTransforms();        // end-of-frame snapshot of vob/skeletal transforms for next frame
+    void RenderMotionDebugOverlay();          // DisplayVelocity/DisplayNormals debug view over the finished image
+    D3D12_GPU_VIRTUAL_ADDRESS GetMotionCbAddress() const;   // 0 when the feature is unavailable
+    // ALL-OR-NOTHING gate for the G-buffer prepass. Every prepass PSO must agree with whatever render targets
+    // BeginMotionGBuffer bound: if the two G-buffer RTVs are bound, a pass that fell back to its 1-RT
+    // depth-only PSO would be a render-target format mismatch (device removal, not a graceful degrade). The
+    // four *GBuf PSOs are created by two independent, individually non-fatal paths (CreateDepthPrepassGBuf and
+    // the tail of CreateSkeletal), so a partial success is genuinely reachable — hence one gate, tested by
+    // BeginMotionGBuffer and by each of the three prepass draws.
+    bool MotionGBufferActive() const;
+
     // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------
     // Replaces the flat greyscale ambient floor in PBRLighting.hlsl's ComputeSunLightingPBR
     // (`albedo * AmbientStrength * sunLum`), which gave metals NO indirect specular at all — at metallic=1 the

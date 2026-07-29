@@ -52,6 +52,7 @@ using Microsoft::WRL::ComPtr;
 // and records the resulting stream view + count here. The depth prepass (DrawVobDepthPrepass), the color pass
 // (DrawVobsInstanced) and the point-shadow static-VOB gather all draw from these — no second upload.
 std::vector<FrameVobUpload> g_FrameVobUploads;
+std::vector<VobInfo*> g_FrameVobs;
 // Per-vob snapshot of the diffuse SRV HEAP SLOT for each entry of visual->SkeletalMeshes, in that map's
 // (stable, unmutated-within-a-frame) iteration order. Taken by PrepareFrameSkeletals on the main thread
 // immediately after that vob's UpdateMeshLibTexAniState(), which is the only moment the shared per-MODEL texture
@@ -155,7 +156,8 @@ namespace {
     // Per-frame visible-vob/light/mob collection, hoisted out of DrawVobsInstanced so ALL geometry passes
     // (world, VOBs, skeletal) light against the same set. CollectVisibleVobs has side effects (fills each
     // visual's Instances list) and must run EXACTLY ONCE per frame. Single-threaded within OnStartWorldRendering.
-    std::vector<VobInfo*>         g_FrameVobs;
+    // g_FrameVobs sits at file scope above this namespace — StoreVobPreviousTransforms (D3D12Motion.cpp) walks
+    // it at frame end to snapshot each drawn vob's transform for next frame's motion vectors.
     std::vector<VobLightInfo*>    g_FrameLights;
     std::vector<SkeletalVobInfo*> g_FrameMobs;
 
@@ -205,16 +207,25 @@ namespace {
     constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
     constexpr UINT kSkeletalMaxBones = 96;                         // NUM_MAX_BONES — matches every skeletal HLSL
 
-    // Per-instance skeletal constant buffer (register b1). A minimal subset of the D3D11
-    // VS_ExConstantBuffer_PerInstanceSkeletal — just what the first-light skeletal shader reads
-    // (world matrix + model color + fatness). PrevWorld / motion vectors are a later step.
+    // Per-instance skeletal constant buffer (register b1). A subset of the D3D11
+    // VS_ExConstantBuffer_PerInstanceSkeletal: world matrix + model color + fatness, plus the motion-vector
+    // tail (previous world matrix + where the previous bone pose starts in the b2 palette).
+    //
+    // The motion fields are APPENDED, never inserted: PointShadow.hlsl declares a byte-compatible PREFIX of
+    // this same buffer (the point-shadow skeletal caster shares the upload), so shifting ModelColor/Fatness
+    // would silently corrupt it. Keep in sync with Skeletal.hlsl's InstanceCB.
     struct SkeletalInstanceCB {
         DirectX::XMFLOAT4X4 World;
         DirectX::XMFLOAT4   ModelColor;
         float               Fatness;
         float               Pad[3];
+        DirectX::XMFLOAT4X4 PrevWorld;
+        uint32_t            PrevBoneOffset;   // index of the first previous-pose matrix in the b2 palette
+        float               Pad2[3];
     };
-    static_assert( sizeof( SkeletalInstanceCB ) == 96, "SkeletalInstanceCB must stay 16-byte-aligned" );
+    static_assert( sizeof( SkeletalInstanceCB ) == 176, "SkeletalInstanceCB must stay 16-byte-aligned" );
+    static_assert( offsetof( SkeletalInstanceCB, ModelColor ) == 64 && offsetof( SkeletalInstanceCB, Fatness ) == 80,
+        "PointShadow.hlsl's SkelInstanceCB is a byte-compatible prefix of this struct — the motion tail must stay APPENDED" );
 
     // Phase-2 skeletal (animated) mesh shader — NPCs, monsters, animated MOBs. Matrix-palette skinning:
     // each vertex stores its position baked into up to 4 influencing bones' local spaces (half4 each),
@@ -2103,6 +2114,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// split D3D11ShadowMap uses (PrepareRender enqueues, DrawWorldShadow's WaitShadowCullingComplete joins).
 	m_ShadowMap.Prepare();
 
+	// Motion vectors: capture this frame's (unjittered) camera into the MotionCB the G-buffer depth prepass
+	// binds, and derive its inverse for the end-of-frame camera-velocity fill. Must precede the prepass; the
+	// matching StoreVobPreviousTransforms at the bottom of this function rolls it into history. See D3D12Motion.cpp.
+	UploadMotionConstants();
+
 	DrawSky();
 	// The other two shadow passes resolve their Gothic-side state here, on the main thread, WITHOUT recording any
 	// draws: the point-light shadow cubes (P2.10 — each selected light's 6 faces into the shared cube array) and
@@ -2157,6 +2173,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     {
         DX_ZONE( m_CmdList, "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
+		// Swap the (write-masked-off) scene-color RTV the prepass used to bind for the two motion/normal
+		// G-buffer targets, and clear velocity to its sentinel. The three prepass passes below then run their
+		// *GBuf PSO variants and write real motion vectors + octahedral normals alongside the depth they were
+		// already laying down. No-op when the feature is unavailable, in which case they keep their old
+		// depth-only PSOs and the scene-color binding is left exactly as it was. See D3D12Motion.cpp.
+		BeginMotionGBuffer();
         DrawDepthPrepass();
 		// GPU VOB culling (D3D12Cull.cpp) sits between the WORLD-MESH depth prepass and the VOB one, which is the
 		// only spot where the depth buffer holds world geometry and nothing else: BuildHiZ min-reduces it into the
@@ -2169,6 +2191,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		}
 	    DrawVobDepthPrepass();
 	    DrawSkeletalDepthPrepass();
+		// Back to the scene-color RT for the lit passes. The G-buffer targets stay in RENDER_TARGET until
+		// FillCameraVelocity flips them at the end of the frame.
+		EndMotionGBuffer();
     }
 	// Forward+ tiled light cull: consume this frame's light buffer + the prepass depth to record which point
 	// lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
@@ -2276,10 +2301,24 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		if ( visual ) visual->Instances.clear();
 	}
 
+	// Motion-vector history: snapshot every drawn vob's world matrix and every animated skeletal's bone pose so
+	// NEXT frame's G-buffer prepass has a previous transform to reproject through, and roll this frame's camera
+	// into m_PrevViewProjUnjittered. Mirrors D3D11GraphicsEngine::StoreVobPreviousTransforms, which D3D11 calls
+	// from its renderer's frame end. MUST come after every pass that consumed the PREVIOUS values (the prepass,
+	// far above) and after the collection lists are final. See D3D12Motion.cpp.
+	StoreVobPreviousTransforms();
+
 	// Snapshot the now-COMPLETE depth buffer for the next frame's SSAO (see D3D12AO.cpp). Deliberately here:
 	// every depth-writing pass (world, VOBs, skeletal, grass, decals, water, particles) has run, and
 	// RenderFogAndGodRays below is the first thing that moves the depth buffer out of DEPTH_WRITE.
 	CopyDepthForAO();
+
+	// Camera-only motion vectors for every pixel the depth prepass never covered — sky, grass, water, decals,
+	// the blended VOBs and the particle passes. Deliberately here, for the same reason CopyDepthForAO is: this
+	// is the first point at which the depth buffer is COMPLETE, and the fill reconstructs world positions from
+	// it. Only touches pixels still holding the clear sentinel, so the true per-object velocities the prepass
+	// wrote are left alone. See D3D12Motion.cpp.
+	FillCameraVelocity();
 
 	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same
 	// slot D3D11's PostFX composition occupies (after the ghosts/particle passes, before bloom+tonemap). Both
@@ -2303,6 +2342,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Post-tonemap sharpening (SHARPEN_CAS by default — this one is ON for a stock config, unlike SMAA).
 	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.
 	RenderSharpen();
+
+	// Developer view of the motion-vector / normal G-buffer, over the finished image (before Gothic's 2D UI and
+	// the ImGui overlay composite, so both stay readable on top of it). No-op unless one of the shared
+	// DebugSettings.TAA.Display* flags is on. This is currently the ONLY consumer of either target — TAA, FSR3
+	// and XeGTAO are still to come — and therefore the only way to verify this whole feature on the GPU.
+	RenderMotionDebugOverlay();
 
 	// Debug/editor lines last, on the finished LDR image — same slot as D3D11's "Draw Debug Lines" render-graph
 	// pass (after post-FX, before Gothic's 2D UI composites on top). Both calls also CLEAR their cache, so this
@@ -3071,6 +3116,12 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
+    // Motion vectors + normals: when the G-buffer variant is available (and BeginMotionGBuffer has bound the two
+    // targets) use it — same depth output, plus RT0 velocity / RT1 octahedral normal. Otherwise fall back to the
+    // depth-only PSO, which still has the scene-color RTV bound with an all-zero write mask.
+    const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
+    const bool gbuf = motionCb && MotionGBufferActive();
+
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() )
         return;
@@ -3092,9 +3143,11 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+    m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassGBufPSO.Get()
+                                      : m_Pipelines.World.DepthPrepassPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
+    if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSWorldGBuf)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -3502,9 +3555,17 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
+    // Motion vectors + normals — see DrawDepthPrepass. The G-buffer VS additionally reads
+    // INSTANCE_PREV_WORLD_MATRIX (offset 64 of VobInstanceInfo), which the plain VSDepth layout doesn't declare;
+    // the instance data is byte-identical either way, so no upload changes.
+    const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
+    const bool gbuf = motionCb && MotionGBufferActive();
+
+    m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassVobGBufPSO.Get()
+                                      : m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
+    if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSDepthGBuf)
     // Frame-global wind (b4): dir/time/playerPos set once here; each command overwrites only minHeight/maxHeight
     // (b4[4..5]) per visual. VSDepth reads b4 unconditionally, so this baseline MUST be bound before ExecuteIndirect.
     m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
@@ -3793,10 +3854,20 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 // be bound as a root CBV). Uploaded ONCE here; every consumer (prepass/color/shadow cascades)
                 // reuses these two GPU addresses via the cache.
                 const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
+                // Motion vectors: the PREVIOUS frame's pose is appended to the SAME b2 allocation, current at
+                // [0, numBones), previous at [numBones, 2*numBones). One allocation instead of two is what keeps
+                // this off both Skeletal.RootSig (no third root CBV) and the 80-byte SkeletalDrawCommand indirect
+                // signature. Costs up to 6 KB more ring per visible NPC; the ring is 8 MB/frame.
+                // A vob with no history yet (just spawned / first frame of a world) reuses the CURRENT pose as
+                // its previous one, so its velocity computes as pure camera motion rather than as garbage.
+                const std::vector<XMFLOAT4X4>& prevBones =
+                    ( vi->HasValidPrevTransforms && vi->PrevBoneTransforms.size() >= numBones )
+                        ? vi->PrevBoneTransforms : boneCache;
                 const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+                const UINT boneSizeTotal = boneSize * 2;
                 const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
                 const UINT boneOff = AlignCB( instOff + instSize );
-                if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
+                if ( boneOff + boneSizeTotal > m_SkeletalCBBufferCapacity ) {
                     if ( !m_SkeletalCBOverflowLogged ) {
                         LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
                                   << " bytes/frame). Some skeletal meshes dropped this frame.";
@@ -3809,11 +3880,17 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 XMStoreFloat4x4( &inst.World, xmWorld );
                 inst.ModelColor = XMFLOAT4( groundLight.x, groundLight.y, groundLight.z, groundLight.w );
                 inst.Fatness = model->GetModelFatness();
+                // StoreVobPreviousTransforms (end of the previous frame) is what fills PrevWorldMatrix; before
+                // its first run HasValidPrevTransforms is false and the current world doubles as the previous.
+                XMStoreFloat4x4( &inst.PrevWorld, vi->HasValidPrevTransforms
+                    ? XMLoadFloat4x4( &vi->PrevWorldMatrix ) : xmWorld );
+                inst.PrevBoneOffset = numBones;
 
                 uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
                 memcpy( ringBase + instOff, &inst, instSize );
                 memcpy( ringBase + boneOff, boneCache.data(), boneSize );
-                m_SkeletalCBBufferOffset = boneOff + boneSize;
+                memcpy( ringBase + boneOff + boneSize, prevBones.data(), boneSize );
+                m_SkeletalCBBufferOffset = boneOff + boneSizeTotal;
 
                 const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
                 entry.instCb = ringGpu + instOff;
@@ -3853,6 +3930,18 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
                 XMFLOAT4X4 attWorld;
                 XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &boneCache[n] ) );
+                // Motion vectors: the attachment's PREVIOUS world matrix is the previous model world times the
+                // previous pose's matrix for this same node — an attachment inherits all of its motion from the
+                // bone it hangs off, so this is what gives a swung weapon real velocity. Falls back to the
+                // current matrix before StoreVobPreviousTransforms has ever run for this vob, or if the previous
+                // pose has fewer nodes than the current one (a model swap mid-frame), so the worst case is
+                // "no motion" rather than a bogus one. Leaving it zero — VobInstanceInfo is value-initialized
+                // below — would reproject every attachment vertex to the world origin and paint the screen.
+                XMFLOAT4X4 attPrevWorld = attWorld;
+                if ( vi->HasValidPrevTransforms && static_cast<size_t>( n ) < vi->PrevBoneTransforms.size() ) {
+                    XMStoreFloat4x4( &attPrevWorld,
+                        XMLoadFloat4x4( &vi->PrevWorldMatrix ) * XMLoadFloat4x4( &vi->PrevBoneTransforms[n] ) );
+                }
                 for ( MeshVisualInfo* mvi : it->second ) {
                     if ( !mvi ) continue;
                     // Still being extracted on a worker thread — Meshes/MeshesByTexture are being written
@@ -3909,6 +3998,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             }
                             VobInstanceInfo vii = {};
                             vii.world = attWorld;
+                            vii.prevWorld = attPrevWorld;   // motion vectors — see attPrevWorld above
                             vii.color = groundLight.ToDWORD();
                             vii.windStrenth = attFatness;             // reinterpreted as Fatness — see VSMainAttach
                             vii.canBeAffectedByPlayer = attScaling;   // reinterpreted as Scaling — see VSMainAttach
@@ -3959,6 +4049,10 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     if ( !m_FrameOpen || !m_DepthBuffer ) return;
     if ( m_SkeletalDrawCount == 0 && m_AttachDrawCount == 0 ) return;
 
+    // Shared by both blocks below (base meshes bind it at b9 off Skeletal.RootSig, attachments at b5 off
+    // World.RootSig — same struct, different signature occupancy). See D3D12Motion.cpp.
+    const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
+
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
@@ -3977,9 +4071,14 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (skeletal)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (skeletal)" );
-        m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
+        // Motion vectors + normals — see DrawDepthPrepass. VSDepthGBuf skins each vertex twice (current pose and
+        // the previous pose out of the same b2 palette), so NPCs get true per-vertex velocity on limbs.
+        const bool skelGbuf = motionCb && MotionGBufferActive();
+        m_CmdList->SetPipelineState( skelGbuf ? m_Pipelines.Skeletal.DepthPrepassGBufPSO.Get()
+                                              : m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b9 MotionCB
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -3996,9 +4095,12 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (attachments)" );
-        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
+        const bool attachGbuf = motionCb && MotionGBufferActive();
+        m_CmdList->SetPipelineState( attachGbuf ? m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get()
+                                                : m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        if ( attachGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB
         // The shared VOB signature also writes b4[4..5]; VSDepthAttach never reads b4, but bind the frame-global
         // wind baseline anyway so the parameter is never left undefined for a later pass on this root sig.
         m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );

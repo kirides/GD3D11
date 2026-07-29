@@ -102,6 +102,10 @@ constexpr int32_t kShadowSlotMask = 0x1FFFFFFF;
 // This frame's visible-VOB instance-ring snapshot (UploadFrameVobInstances) — the depth prepass, the color
 // pass AND the point-shadow static-VOB gather all draw from it. Defined in D3D12Scene.cpp.
 extern std::vector<FrameVobUpload> g_FrameVobUploads;
+// This frame's collected static vobs (the D3D12 counterpart of D3D11's RenderedVobs). Read at frame end by
+// D3D12GraphicsEngine::StoreVobPreviousTransforms to roll each vob's world matrix into its motion-vector history.
+struct VobInfo;
+extern std::vector<VobInfo*> g_FrameVobs;
 
 // Per-vob snapshot of the diffuse SRV heap SLOT for each entry of visual->SkeletalMeshes, in that map's
 // iteration order — see FrameSkelDraw::matSrvIndex. Slots, not descriptor handles: the skeletal root signature
@@ -190,6 +194,24 @@ inline constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 // than paper white), so every one of those passes keeps its SDR shader and its SDR blending behaviour, and only
 // HdrEncode.hlsl converts to ST.2084 at present time.
 inline constexpr DXGI_FORMAT kHdrDisplayFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+// --- Motion-vector / normal G-buffer (D3D12Motion.cpp) ---
+// Two extra render targets the Forward+ DEPTH PREPASS writes alongside depth (it is the only full-scene pass
+// that runs before lighting, so both products are ready for anything that wants them pre-shading):
+//   * velocity — screen-space motion vectors in UV units, prevUV - currUV, matching D3D11's PS_Diffuse
+//     CalculateVelocity convention exactly (see Shaders/D3D12/include/MotionVectors.hlsl). Consumers: TAA, FSR3.
+//   * normal   — the shading normal, OCTAHEDRAL-encoded into two channels (world space, same encoding the packed
+//     36-byte world vertex already uses at offset 12 — see World.hlsl's DecodeOctNormal). Consumer: XeGTAO.
+// Both are RG16F: the octahedral pair lives in [-1,1] and velocities are fractions of a screen, so fp16 has
+// ample range, and 32 bpp for the pair is half what an RGBA16F normal target would cost.
+inline constexpr DXGI_FORMAT kVelocityFormat = DXGI_FORMAT_R16G16_FLOAT;
+inline constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
+
+// Sentinel the velocity target is cleared to each frame. FillCameraVelocity (end of world rendering, when depth
+// is final) replaces every pixel STILL holding it with a camera-only depth reprojection — that is what covers
+// the sky, grass, water, decals and the transparents, none of which are in the depth prepass. Real velocities
+// are fractions of a screen (|v| <= ~2), so this can never collide with one, and it survives fp16 exactly.
+inline constexpr float kVelocitySentinel = -1.0e4f;
 
 // --- CPU breadcrumb / debug-marker ring (DRED forensics + PIX events) ---
 // Why is BeginEvent not working as intended with Context on debugging this 32 bit app !!
