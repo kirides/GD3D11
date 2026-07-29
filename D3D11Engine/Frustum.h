@@ -160,12 +160,35 @@ public:
         isValid = true;
     }
 
+    /** n-vertex AABB rejection against the 6 cached world-space planes.
+     *  Cached planes have OUTWARD normals, so a box is fully outside plane i when
+     *  dot(n, center) + d > dot(|n|, extents). Same convention and same conservatism as the
+     *  AVX2 batch test in GothicAPI's CollectVisibleVobsWithLeafCache: it never rejects a box
+     *  that is really inside, but may accept one just outside an edge or corner.
+     *
+     *  This exists because DirectX::BoundingFrustum::Intersects rebuilds all six planes from
+     *  Origin/Orientation/slopes - including quaternion rotations - on EVERY call, which made it
+     *  roughly half the total cost of VOB collection in a profile. */
+    bool __vectorcall RejectedByCachedPlanes( FXMVECTOR center, FXMVECTOR extents ) const {
+        for ( int i = 0; i < 6; ++i ) {
+            const XMVECTOR plane = XMLoadFloat4( &m_cachedPlanes[i] );
+            const XMVECTOR dist = XMVectorAdd( XMVector3Dot( plane, center ), XMVectorSplatW( plane ) );
+            const XMVECTOR radius = XMVector3Dot( XMVectorAbs( plane ), extents );
+            if ( XMVector3Greater( dist, radius ) )
+                return true;
+        }
+        return false;
+    }
+
     // Schneller AABB-Test
     bool Intersects(const BoundingBox& aabb) const {
         if (m_always_containing) return true;
 
         if (m_useSphere) {
             return m_boundingSphere.Intersects(aabb);
+        }
+        if (m_hasPlanes) {
+            return !RejectedByCachedPlanes( XMLoadFloat3( &aabb.Center ), XMLoadFloat3( &aabb.Extents ) );
         }
         if (m_useBoundingOrientedBox) {
             return m_orientedBox.Intersects(aabb);
@@ -179,6 +202,18 @@ public:
 
         if (m_useSphere) {
             return m_boundingSphere.Intersects(sphere);
+        }
+        if (m_hasPlanes) {
+            // A sphere is the degenerate case of the box test with a scalar radius.
+            const XMVECTOR center = XMLoadFloat3( &sphere.Center );
+            const XMVECTOR radius = XMVectorReplicate( sphere.Radius );
+            for ( int i = 0; i < 6; ++i ) {
+                const XMVECTOR plane = XMLoadFloat4( &m_cachedPlanes[i] );
+                const XMVECTOR dist = XMVectorAdd( XMVector3Dot( plane, center ), XMVectorSplatW( plane ) );
+                if ( XMVector3Greater( dist, radius ) )
+                    return false;
+            }
+            return true;
         }
         if (m_useBoundingOrientedBox) {
             return m_orientedBox.Intersects(sphere);
@@ -207,6 +242,16 @@ public:
 
     bool Intersects( const zTBBox3D& aabb ) const {
         if ( m_always_containing ) return true;
+
+        // Center/extents straight from min/max - going through BBoxFromzTBBox3D would store to a
+        // BoundingBox on the stack and reload it, which showed up on its own in a profile.
+        if ( m_hasPlanes && !m_useSphere ) {
+            const XMVECTOR bbMin = XMLoadFloat3( &aabb.Min );
+            const XMVECTOR bbMax = XMLoadFloat3( &aabb.Max );
+            const XMVECTOR center = XMVectorScale( XMVectorAdd( bbMin, bbMax ), 0.5f );
+            const XMVECTOR extents = XMVectorScale( XMVectorSubtract( bbMax, bbMin ), 0.5f );
+            return !RejectedByCachedPlanes( center, extents );
+        }
         return Intersects( BBoxFromzTBBox3D( aabb ) );
     }
 

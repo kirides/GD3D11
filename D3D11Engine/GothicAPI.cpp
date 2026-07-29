@@ -4703,20 +4703,26 @@ static void CVVH_AddNotDrawnVobToList(
     const bool cullingEnabled = ctx.drawFlags.CullVobs && !ctx.drawFlags.SkipVobFrustumCull;
 
     for ( auto const& it : source ) {
-        if ( !visitor->Visit( it ) ) continue;
-
-        if ( !it->Vob->GetShowVisual() ) continue;
+        // Reject on distance FIRST: LastRenderPosition is already in the VobInfo cache line, while
+        // Visit() is an atomic RMW and GetShowVisual() dereferences into Gothic's own heap. Doing
+        // those first meant paying them for every candidate, including ones about to be dropped.
         float vdSq;
         XMStoreFloat( &vdSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
         if ( vdSq > distSq ) continue;
 
+        if ( !visitor->Visit( it ) ) continue;
+
+        if ( !it->Vob->GetShowVisual() ) continue;
+
+        // LastRenderBBox rather than Vob->GetBBox(): same value, but it lives in VobInfo instead of
+        // Gothic's heap, so the reject path stays off a second allocation entirely.
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
+            && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
         }
         if ( portalLeaf ) {
-            const zTBBox3D& bb = it->Vob->GetBBox();
+            const zTBBox3D& bb = it->LastRenderBBox;
             if ( !ctx.portalCuller->IsBoxVisibleInLeafSectors( *portalLeaf, bb.Min, bb.Max ) )
                 continue;
         }
@@ -4822,6 +4828,12 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
             }
         }
 
+        // Mirrors zCBspLeaf::LightVobList as already-resolved VobLightInfo*, index for index, so
+        // CollectLeafVobs needs no VobLightMap lookup per light per leaf. Validated there by a
+        // pointer compare and repaired on the spot when the game adds/removes a light at runtime.
+        bvi.Lights.clear();
+        bvi.Lights.reserve( leaf->LightVobList.NumInArray );
+
         for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
@@ -4844,6 +4856,10 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 if ( vob->IsIndoorVob() ) {
                     vi->IsIndoorVob = true;
                 }
+
+                bvi.Lights.push_back( vi );
+            } else {
+                bvi.Lights.push_back( vit->second );
             }
         }
 
@@ -6455,55 +6471,93 @@ static void CollectLeafVobs(
     if ( collectLights
             && ctx.drawFlags.EnableDynamicLighting && leafDistSq < visualFXDrawRadiusSq ) {
 
-        // Add dynamic lights
-        for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
+        // Add dynamic lights.
+        // A light is registered in every leaf its range touches, so this body runs many times per
+        // light per frame. Everything below is therefore ordered cheapest-first, and the dedup runs
+        // before the range and frustum tests so a light pays for those exactly once per frame.
+        const int numLights = leaf->LightVobList.NumInArray;
+
+        // base->Lights mirrors LightVobList index-for-index (filled in BuildBspVobMapCacheHelper).
+        // It can go stale when the game adds or removes a light at runtime, so each entry is checked
+        // with one pointer compare; a miss falls back to the map and repairs the slot.
+        const bool mirrorUsable = static_cast<int>(base->Lights.size()) == numLights;
+
+        for ( int i = 0; i < numLights; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
-            const float lightCameraDist = XMVectorGetX( XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
-            if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
+            // Range test first - it needs nothing but the zCVobLight, and keeping it ahead of the
+            // resolve below preserves the original rule that an out-of-range light never causes a
+            // VobLightInfo (and possibly a shadow cube) to be allocated.
+            // "distance + range < radius", squared to avoid a sqrt.
+            const float lightRange = vob->GetLightRange();
+            const float maxDist = visualFXDrawRadius - lightRange;
+            if ( maxDist <= 0.0f )
+                continue;
 
-                BoundingSphere lightSphere;
-                lightSphere.Center = vob->GetPositionWorld();
-                lightSphere.Radius = vob->GetLightRange();
+            float lightCameraDistSq;
+            XMStoreFloat( &lightCameraDistSq, XMVector3LengthSq( cameraPosition - vob->GetPositionWorldXM() ) );
+            if ( lightCameraDistSq >= maxDist * maxDist )
+                continue;
 
-                // Cull any lights that are not visible even though they are in range
-                if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) ) {
-                    continue;
-                }
+            VobLightInfo* vi = nullptr;
+            if ( mirrorUsable ) {
+                VobLightInfo* cached = base->Lights[i];
+                if ( cached && cached->Vob == vob )
+                    vi = cached;
+            }
 
-                // Check if we already have this light
+            if ( !vi ) {
                 auto vit = VobLightMap.find( vob );
                 if ( vit == VobLightMap.end() ) {
                     // Add if not. This light must have been added during gameplay
-                    VobLightInfo* vi = new VobLightInfo;
-                    vi->Vob = vob;                    
+                    VobLightInfo* nvi = new VobLightInfo;
+                    nvi->Vob = vob;
                     bool PFXVobLight = false;
-                    
+
                     if ( zCVob* parent = vob->GetVobParent(); parent ) {
                         if ( auto visFx = parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
                             if (auto origin = visFx->GetOrigin()) {
                                 // any PFX that stems from an ITEM should be counted as simple light.
                                 PFXVobLight = !origin->As<oCItem>();
-                            }                            
+                            }
                         }
                     }
 
-                    vi->IsPFXVobLight = PFXVobLight;
-                    vi->UpdateShadows = !PFXVobLight;
-                    vit = VobLightMap.emplace( vob, vi ).first;
+                    nvi->IsPFXVobLight = PFXVobLight;
+                    nvi->UpdateShadows = !PFXVobLight;
+                    vit = VobLightMap.emplace( vob, nvi ).first;
 
                     // Create shadow-buffers for these lights since it was dynamically added to the world
-                    if ( !vi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                    if ( !nvi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
                         BaseShadowedPointLight* bpl;
-                        Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi, true ); // Also flag as dynamic
-                        vi->LightShadowBuffers.reset(bpl);
+                        Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, nvi, true ); // Also flag as dynamic
+                        nvi->LightShadowBuffers.reset(bpl);
                     }
                 }
-                VobLightInfo* vi = vit->second;
-                if ( !visitor->Visit( vi ) ) continue;
-                ctx.queue->PushLightVob( vi );
+                vi = vit->second;
+
+                // Only the main camera pass collects lights (every shadow path sets
+                // CollectLights=false), so repairing the mirror here cannot race a worker thread.
+                if ( mirrorUsable )
+                    base->Lights[i] = vi;
             }
+
+            // Dedup BEFORE the frustum test: that test is leaf-independent, so running it once per
+            // light instead of once per (light, leaf) pair is pure profit. Safe because a leaf with
+            // clipResult==CONTAINS holds the light's centre inside the frustum anyway, so the test
+            // it skips could not have rejected the light either.
+            if ( !visitor->Visit( vi ) ) continue;
+
+            BoundingSphere lightSphere;
+            lightSphere.Center = vob->GetPositionWorld();
+            lightSphere.Radius = lightRange;
+
+            // Cull any lights that are not visible even though they are in range
+            if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) )
+                continue;
+
+            ctx.queue->PushLightVob( vi );
         }
     }
 }

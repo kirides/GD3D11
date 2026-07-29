@@ -333,6 +333,7 @@ struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
     VobInfo() :
         LastRenderPosition{},
+        LastRenderBBox{},
         IsIndoorVob{},
         VisibleInRenderPass{},
         VobSection{},
@@ -357,6 +358,12 @@ struct VobInfo : public BaseVobInfo {
 
     /** Position the vob was at while being rendered last time */
     XMFLOAT3 LastRenderPosition;
+
+    /** World-space bounding box, mirrored from zCVob at the same moments as LastRenderPosition.
+        Culling reads this instead of Vob->GetBBox() to keep the per-VOB reject path off Gothic's
+        heap. Safe for anything still in a BSP leaf list: a static vob that moves is pulled out of
+        those lists by MoveVobFromBspToDynamic and refreshed by UpdateState() in the same breath. */
+    zTBBox3D LastRenderBBox;
 
     /** True if this is an indoor-vob */
     bool IsIndoorVob;
