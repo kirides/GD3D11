@@ -337,10 +337,19 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     DX_ZONE( m_CmdList, "Sky IBL" );
 
     // --- Pass 1: analytic radiance -> env cube mip 0 -------------------------------------------------------
+    // BOTH cubes go back to UNORDERED_ACCESS: the flag covers the pair because the tail of this function
+    // flips them to PIXEL_SHADER_RESOURCE together. Transitioning only the env cube left the irradiance
+    // cube in PIXEL_SHADER_RESOURCE while pass 3 wrote it through a UAV, and made the tail barrier below
+    // claim a "before" state it was not in (RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH on every rebuild — i.e.
+    // continuously, as Gothic's day cycle keeps the sky colours dirty).
     if ( m_SkyEnvInReadState ) {
-        auto b = TransitionBarrier( m_SkyEnvCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &b );
+        D3D12_RESOURCE_BARRIER toUav[2] = {
+            TransitionBarrier( m_SkyEnvCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+            TransitionBarrier( m_SkyIrradCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+        };
+        m_CmdList->ResourceBarrier( 2, toUav );
         m_SkyEnvInReadState = false;
     }
 

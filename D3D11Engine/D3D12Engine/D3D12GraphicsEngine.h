@@ -421,13 +421,6 @@ private:
     HANDLE m_FenceEvent = nullptr;
     UINT   m_FrameIndex = 0;   // render-thread-only; every use above indexes per-frame GPU rings
 
-    // Mirror of m_FrameIndex, updated (relaxed store) at its every write site. QueueCleanupJob is the
-    // ONE place a resource-loading worker thread (once MT texture loading is enabled) needs the current
-    // frame slot, so it reads this atomic instead of the plain m_FrameIndex the render thread owns —
-    // avoids a torn/UB read of a non-atomic cross-thread variable without touching the hot render path
-    // (m_FrameIndex itself stays a plain UINT; ~50 render-thread-only reads elsewhere are unaffected).
-    std::atomic<UINT> m_CleanupFrameIndex{ 0 };
-
     // Synchronous upload path (direct queue) used for the transition barrier after async copy-queue uploads.
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_UploadAllocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_UploadCmdList;
@@ -461,6 +454,7 @@ private:
     UINT64 m_CopyBatchBytes = 0;      // upload bytes accumulated in the currently open batch
     std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> m_CopyBatchUploadAllocs;     // kept alive until flush
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      m_CopyBatchUploadResources;  // "
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      m_CopyBatchDestResources;    // copy targets, see PendingCopyRelease::DestResources
 
     // --- Pooled staging memory for buffer uploads ---
     // Creating a throwaway UPLOAD resource per upload cost one D3D12MA::CreateResource each (~0.1ms
@@ -487,6 +481,12 @@ private:
         UINT64 FenceValue = 0;
         std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> UploadAllocations;
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      UploadResources;
+        // The copy DESTINATIONS (texture/VB/IB being filled). The batch's command list references them,
+        // and the batch lives on the copy queue — completely outside the frame-fence deferral that
+        // guards D3D12Texture/D3D12VertexBuffer destruction. Gothic can create a visual and evict it
+        // again before the batch is even flushed, so without this reference the destination is
+        // final-released while a copy that reads/writes it is still queued.
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      DestResources;
         std::vector<StagingChunk> StagingChunks;   // returned to m_FreeStagingChunks, not freed
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
@@ -1396,12 +1396,29 @@ private:
     bool m_DecalInstanceOverflowLogged = false;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
-    std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};
-    // Guards m_PerFrameCleanupItems: QueueCleanupJob's emplace_back can run on a Gothic resource-manager
-    // worker thread (D3D12Texture create/destroy queuing an SRV-slot/allocation release), concurrently
-    // with the render thread draining+clearing a slot in MoveToNextFrame or the destructor's forced
-    // cleanup. Callbacks are moved out and run AFTER releasing the lock (see MoveToNextFrame/destructor)
-    // so an arbitrary callback body never executes while this mutex is held.
+    // Deferred resource releases, tagged with the ordinal of the frame they were queued in.
+    //
+    // This deliberately does NOT key off m_FrameIndex: that index aliases every kBackBufferCount frames,
+    // so a worker thread that read it just before MoveToNextFrame advanced (or in the window between the
+    // frame's Signal and that advance) would file its job under a slot that gets drained after the WRONG
+    // frame's fence — one frame too early — and final-release a resource the GPU is still reading
+    // (OBJECT_DELETED_WHILE_STILL_IN_USE / d3d12SDKLayers "referenced by GPU operations in-flight").
+    // A monotonic ordinal can't alias, and reading it under the same mutex as the push makes the
+    // read+file atomic, so the worst a racing worker can do is tag its job with the NEXT frame — which
+    // only ever defers the release longer.
+    struct PendingCleanupJob {
+        uint64_t FrameOrdinal = 0;
+        std::move_only_function<void()> Job;
+    };
+    std::deque<PendingCleanupJob> m_PendingCleanupJobs;
+    // Ordinal of the frame currently being recorded. Bumped (under m_CleanupMutex) at the top of
+    // MoveToNextFrame, before the frame's fence Signal. Starts at 1 so ordinal 0 is never in flight.
+    uint64_t m_CleanupFrameOrdinal = 1;
+    // Guards m_PendingCleanupJobs + m_CleanupFrameOrdinal: QueueCleanupJob can run on a Gothic
+    // resource-manager worker thread (D3D12Texture/D3D12VertexBuffer create/destroy queuing an
+    // SRV-slot/allocation release), concurrently with the render thread draining in MoveToNextFrame or
+    // the destructor's forced cleanup. Callbacks are moved out and run AFTER releasing the lock (see
+    // MoveToNextFrame/destructor) so an arbitrary callback body never executes while this mutex is held.
     std::mutex m_CleanupMutex;
     bool m_PresentPending = false;
 };

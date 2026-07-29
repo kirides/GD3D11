@@ -45,12 +45,14 @@ D3D12GraphicsEngine::D3D12GraphicsEngine() {
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     if ( m_SwapChainReady ) {
         WaitForGpuIdle();
-        // Force-run all remaining cleanups
-        for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-            for ( auto& cleanupCallback : m_PerFrameCleanupItems[i] ) {
-                cleanupCallback();
-            }
-            m_PerFrameCleanupItems[i].clear();
+        // Force-run all remaining cleanups — the GPU is idle, so every deferral has expired.
+        std::deque<PendingCleanupJob> jobs;
+        {
+            std::lock_guard<std::mutex> lock( m_CleanupMutex );
+            jobs.swap( m_PendingCleanupJobs );
+        }
+        for ( auto& pending : jobs ) {
+            if ( pending.Job ) pending.Job();
         }
     }
     if ( m_FenceEvent ) CloseHandle( m_FenceEvent );
@@ -504,6 +506,7 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 	// Keep the staging buffer alive until the batch's copies complete (moved to the pending list at flush).
 	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
 	m_CopyBatchUploadResources.push_back( std::move( upload ) );
+	m_CopyBatchDestResources.emplace_back( dst );   // and the destination — see PendingCopyRelease::DestResources
 	m_CopyBatchBytes += totalBytes;
 
 	// Bound VA/memory growth during a long world-load burst that never Presents: flush mid-burst once
@@ -608,6 +611,7 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* src
 			memcpy( stagingCpu, srcData, sizeInBytes );
 			m_CopyBatchList->CopyBufferRegion( dst, 0, stagingResource, stagingOffset, sizeInBytes );
 
+			m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
 			m_CopyBatchBytes += sizeInBytes;
 			if ( m_CopyBatchBytes >= kCopyBatchFlushThresholdBytes )
 				FlushTextureUploadsLocked();
@@ -661,6 +665,7 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* src
 
 	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
 	m_CopyBatchUploadResources.push_back( std::move( upload ) );
+	m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
 	m_CopyBatchBytes += sizeInBytes;
 
 	if ( m_CopyBatchBytes >= kCopyBatchFlushThresholdBytes )
@@ -707,6 +712,7 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 		// The batch was never submitted, so no GPU is reading the pooled chunks — reuse them right away.
 		m_CopyBatchUploadAllocs.clear();
 		m_CopyBatchUploadResources.clear();
+		m_CopyBatchDestResources.clear();
 		for ( auto& chunk : m_CopyBatchStagingChunks ) {
 			chunk.Offset = 0;
 			m_FreeStagingChunks.push_back( std::move( chunk ) );
@@ -730,6 +736,7 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	pending.FenceValue = fenceValue;
 	pending.UploadAllocations = std::move( m_CopyBatchUploadAllocs );
 	pending.UploadResources = std::move( m_CopyBatchUploadResources );
+	pending.DestResources = std::move( m_CopyBatchDestResources );
 	pending.StagingChunks = std::move( m_CopyBatchStagingChunks );
 	pending.CopyAllocator = std::move( m_CopyBatchAllocator );
 	pending.CopyCommandList = std::move( m_CopyBatchList );
@@ -737,6 +744,7 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 
 	m_CopyBatchUploadAllocs.clear();
 	m_CopyBatchUploadResources.clear();
+	m_CopyBatchDestResources.clear();
 	m_CopyBatchStagingChunks.clear();
 	m_CopyBatchBytes = 0;
 }
@@ -1391,14 +1399,13 @@ void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL:
 void D3D12GraphicsEngine::QueueCleanupJob( std::move_only_function<void()> callback )
 {
     if ( callback == nullptr ) return;
-    // No slot to recycle — just hold a reference until this frame index comes back around (after its
-    // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
-    // every command list that could reference it has finished on the GPU.
-    // m_CleanupFrameIndex (not m_FrameIndex) — safe to read from a resource-loading worker thread; see
-    // its declaration comment.
-    const UINT frameIndex = m_CleanupFrameIndex.load( std::memory_order_relaxed );
+    // Hold a reference until the frame this was queued in has retired on the GPU (MoveToNextFrame drains
+    // by ordinal, after its fence wait), then drop it. The capture keeps the resource alive until every
+    // command list that could reference it has finished.
+    // The ordinal is read INSIDE the lock: reading it first and locking after is exactly the race that
+    // let a worker's job land in an already-drained bucket — see m_PendingCleanupJobs' declaration.
     std::lock_guard<std::mutex> lock( m_CleanupMutex );
-    m_PerFrameCleanupItems[frameIndex].emplace_back( std::move(callback) );
+    m_PendingCleanupJobs.push_back( PendingCleanupJob{ m_CleanupFrameOrdinal, std::move( callback ) } );
 }
 
 
@@ -1499,7 +1506,6 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         return false;
     }
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
-    m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
 
     if ( !CreateFrameResources() ) return false;
     if ( !AcquireBackBufferRTVs() ) return false;
@@ -1956,25 +1962,44 @@ bool D3D12GraphicsEngine::WaitOnFrameFence( UINT64 value, const char* site ) {
 
 void D3D12GraphicsEngine::MoveToNextFrame() {
     const UINT64 currentFenceValue = m_FenceValues[m_FrameIndex];
+
+    // Close the ordinal for the frame we are about to submit BEFORE its Signal: from here on any
+    // QueueCleanupJob (render thread or worker) belongs to the next frame. Doing it after the Signal
+    // would let a job that is really the next frame's be tagged with a fence that is already going down.
+    uint64_t submittedOrdinal = 0;
+    {
+        std::lock_guard<std::mutex> lock( m_CleanupMutex );
+        submittedOrdinal = m_CleanupFrameOrdinal++;
+    }
+
     m_Device.GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
 
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
-    m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
 
     WaitOnFrameFence( m_FenceValues[m_FrameIndex], "MoveToNextFrame" );
     m_FenceValues[m_FrameIndex] = currentFenceValue + 1;
 
-    // Clean up all resources slated for deletion from its last pass. Swap the slot's jobs out under the
-    // lock, then run them unlocked — a job (e.g. QueueSrvResourceForRelease's) can itself lock other
-    // mutexes (m_SrvHeapMutex), and a worker thread may be concurrently emplace_back-ing into a
-    // different slot via QueueCleanupJob.
+    // The fence we just waited on is the one the frame that last used this back-buffer index signalled,
+    // i.e. ordinal (submitted - (kBackBufferCount-1)). Every job queued in that frame or earlier is now
+    // safe to run; anything newer stays queued.
+    const uint64_t retiredOrdinal = ( submittedOrdinal >= kBackBufferCount )
+        ? submittedOrdinal - ( kBackBufferCount - 1 ) : 0;
+
+    // Move the due jobs out under the lock, then run them unlocked — a job (e.g.
+    // QueueSrvResourceForRelease's) can itself lock other mutexes (m_SrvHeapMutex), and a worker thread
+    // may be concurrently pushing into m_PendingCleanupJobs via QueueCleanupJob.
     std::vector<std::move_only_function<void()>> jobs;
     {
         std::lock_guard<std::mutex> lock( m_CleanupMutex );
-        jobs.swap( m_PerFrameCleanupItems[m_FrameIndex] );
+        // Ordinals are assigned under this same lock, so the deque is (near-)sorted; a racing worker can
+        // only ever file a LOWER ordinal behind a higher one, which just costs that job one more frame.
+        while ( !m_PendingCleanupJobs.empty() && m_PendingCleanupJobs.front().FrameOrdinal <= retiredOrdinal ) {
+            jobs.emplace_back( std::move( m_PendingCleanupJobs.front().Job ) );
+            m_PendingCleanupJobs.pop_front();
+        }
     }
     for ( auto& cleanupCallback : jobs ) {
-        cleanupCallback(); // Calls FreeSrvSlot() and drops the captured ComPtrs
+        if ( cleanupCallback ) cleanupCallback(); // Calls FreeSrvSlot() and drops the captured ComPtrs
     }
 }
 
@@ -2351,7 +2376,6 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 
     m_Resolution = size;
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
-    m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too

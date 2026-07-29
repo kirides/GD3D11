@@ -693,6 +693,16 @@ void D3D12ShadowMap::Prepare() {
 	// Stays false on every path that launches no jobs (guard bail, sun down, threading off) — FinishShadowPasses
 	// reads it to decide whether the cascades already recorded into their own lists or still need inline draws.
 	m_RecordedInJob = false;
+	// Same deal for the per-cascade "this slot holds a closed, executable list" flags, and for the same reason
+	// they MUST be cleared here rather than in BeginShadowRecording (which runs after the jobs below may already
+	// have recorded and flagged themselves). Clearing them only in the threaded branch further down left them
+	// TRUE from the last daytime frame on every path that returns early — most importantly the sun-down bail:
+	// FinishShadowPasses' execute loop walks ALL kShadowRecordSlots, so at night it re-executed the cascade lists
+	// recorded during the day. Those lists reference VOB/skeletal vertex buffers that have long since been freed
+	// (a night/day flip despawns and respawns NPCs wholesale), which is OBJECT_DELETED_WHILE_STILL_IN_USE at
+	// ExecuteCommandLists and a GPU hang in the shadow draws — plus the cascades got drawn twice, once inline and
+	// once from the stale list. Previous-frame jobs are all joined by now (FinishShadowPasses), so this is safe.
+	for ( UINT c = 0; c < kShadowCascades; ++c ) m_E->m_ShadowListRecorded[c] = false;
 	if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_Pipelines.World.RootSig )
 		return;
 
@@ -835,10 +845,7 @@ void D3D12ShadowMap::Prepare() {
 	g_CullJobs.clear();
 	if ( threadedCull ) {
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
-			// Cleared HERE, before the jobs can set it. BeginShadowRecording deliberately no longer touches the
-			// cascade slots: it runs later in the frame, by which point a fast cascade may already have recorded
-			// and flagged itself, and resetting the flag there would silently drop that cascade's list.
-			m_E->m_ShadowListRecorded[c] = false;
+			// (The flags were cleared at the top of this function, before ANY early-out — see there.)
 			g_CullJobs.push_back( Engine::RenderingThreadPool->enqueue(
 				[]( const std::stop_token& token, D3D12ShadowMap* self, UINT cascade, bool record ) {
 					if ( token.stop_requested() ) return;
