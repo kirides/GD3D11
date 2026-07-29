@@ -489,7 +489,9 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	dd.Height = static_cast<UINT>( size.y );
 	dd.DepthOrArraySize = 1;
 	dd.MipLevels = 1;
-	dd.Format = kBackBufferFormat;
+	// Must match the display target byte-for-byte: this is a CopyResource destination, and with real HDR
+	// output the display target is the FP16 extended-sRGB buffer rather than the R10G10B10A2 swapchain.
+	dd.Format = m_Pipelines.DisplayFormat;
 	dd.SampleDesc.Count = 1;
 	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 	dd.Flags = D3D12_RESOURCE_FLAG_NONE;
@@ -507,7 +509,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srv.Texture2D.MipLevels = 1;
-	srv.Format = kBackBufferFormat;
+	srv.Format = m_Pipelines.DisplayFormat;
 	device->CreateShaderResourceView( m_LdrCopy.Get(), &srv, GetSrvCpuHandle( m_LdrCopySrvSlot ) );
 
 	m_LdrCopyReady = true;
@@ -603,12 +605,11 @@ void D3D12GraphicsEngine::RenderSMAA() {
 
 	DX_ZONE( m_CmdList, "SMAA" );
 
-	ID3D12Resource* backBuffer = m_BackBuffers[m_FrameIndex].Get();
-	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+	ID3D12Resource* backBuffer = GetDisplayTarget();
+	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
 
-	// --- Copy the tonemapped swapchain image into m_LdrCopy (the SMAA color input). ---
-	// Swapchain: RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST.
+	// --- Copy the tonemapped display image into m_LdrCopy (the SMAA color input). ---
+	// Display target: RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST.
 	{
 		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
 		m_CmdList->ResourceBarrier( 1, &b );
@@ -703,11 +704,10 @@ void D3D12GraphicsEngine::RenderSharpen() {
 
 	DX_ZONE( m_CmdList, "Sharpen" );
 
-	ID3D12Resource* backBuffer = m_BackBuffers[m_FrameIndex].Get();
-	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+	ID3D12Resource* backBuffer = GetDisplayTarget();
+	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
 
-	// A texture can't be its own SRV and RTV, so sharpen a copy of the swapchain back onto the swapchain.
+	// A texture can't be its own SRV and RTV, so sharpen a copy of the display target back onto itself.
 	// Same shape as D3D11 (both of its modes copy into the pfx temp buffer first). m_LdrCopy rests in COPY_DEST.
 	{
 		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );

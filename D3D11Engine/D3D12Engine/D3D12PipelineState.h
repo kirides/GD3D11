@@ -331,6 +331,14 @@ public:
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey | kind<<29 | depthWrite<<31
     };
 
+    // RTV format every "display space" pass targets — the tonemap resolve, the 2D/FF UI, video, the inventory
+    // preview, debug lines, SMAA's final pass and the sharpen pass. Normally the swapchain's own
+    // R10G10B10A2_UNORM, i.e. those passes render straight onto the backbuffer. When the engine brings up real
+    // HDR scanout it swaps this to R16G16B16A16_FLOAT before any Create*() runs, and those same passes then
+    // render into the intermediate m_HdrDisplay buffer (extended-sRGB, values >1 allowed) which HdrEncode
+    // converts to ST.2084 at present time. Fixed for the process lifetime — the HDR toggle needs a restart.
+    DXGI_FORMAT DisplayFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -343,7 +351,8 @@ public:
     bool CreateDecal();       // decal root sig + shaders + fixed lit PSO; warms alpha (quad/instance VBs stay in engine)
     bool CreateSkeletal();    // skinned root sig + lit + depth-prepass PSOs (skeletal CB ring stays in the engine)
     bool CreatePointShadow(); // point-shadow root sigs + shaders + 3 caster PSOs (cube textures/DSVs/rings stay in engine)
-    bool CreateTonemap();     // fullscreen HDR->swapchain resolve (dynamic exposure + ACES)
+    bool CreateTonemap();     // fullscreen HDR->display resolve (dynamic exposure + SDR curve or HDR roll-off)
+    bool CreateHdrEncode();   // extended-sRGB display buffer -> ST.2084/Rec.2020 swapchain (real-HDR scanout only)
     bool CreateLumAdapt();    // two-pass GPU luminance reduction + temporal adaptation (feeds Tonemap's exposure)
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
@@ -398,7 +407,12 @@ public:
     DecalPipeline       Decal;
     SkeletalPipeline    Skeletal;
     PointShadowPipeline PointShadow;
+    // Tonemap has a second PSO because GetBackbufferData (savegame thumbnails / screenshots) re-runs the resolve
+    // into its own R10G10B10A2 capture texture: with real HDR active Tonemap.PSO targets the FP16 display buffer,
+    // which is the wrong RTV format for that capture — and a screenshot wants the SDR image anyway.
     GraphicsPipeline Tonemap;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapCapturePSO;   // same shaders/root sig, always kBackBufferFormat
+    GraphicsPipeline HdrEncode;   // ST.2084 scanout encode; only created when real HDR output is active
     WaterPipeline    Water;
     ComputePipeline  LightCull;
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums

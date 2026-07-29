@@ -414,7 +414,7 @@ bool D3D12PipelineState::CreatePreview() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // drawn directly onto the swapchain backbuffer, not the HDR scene target
+    pso.RTVFormats[0] = DisplayFormat;   // drawn directly onto the display target, not the HDR scene target
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -755,7 +755,7 @@ bool D3D12PipelineState::CreateVideo() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // drawn straight onto the swapchain backbuffer, like the 2D/UI path
+    pso.RTVFormats[0] = DisplayFormat;   // drawn straight onto the display target, like the 2D/UI path
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
 
@@ -1111,7 +1111,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
     pso.NumRenderTargets = 1;
     // Plain 2D UI draws straight to the swapchain (after the tonemap resolve); the sky pass (rtvIsHdr) runs
     // during OnStartWorldRendering with the R16F HDR scene-color target bound.
-    pso.RTVFormats[0] = rtvIsHdr ? kSceneColorFormat : kBackBufferFormat;
+    pso.RTVFormats[0] = rtvIsHdr ? kSceneColorFormat : DisplayFormat;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
 
@@ -1653,8 +1653,10 @@ bool D3D12PipelineState::CreateTonemap() {
 
     D3D12RootLayout& rs = Layout( "Tonemap" );
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 0: t0 scene HDR
-    // 1: b0 { Exposure, LumWhite, ToneMapMode, pad }
-    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    // 1: b0 { Exposure, LumWhite, ToneMapMode, HdrOutput, DisplayHeadroom, pad[3] }. HdrOutput switches the PS
+    // off the SDR operators entirely and onto the highlight roll-off for a real HDR scanout; a runtime branch
+    // rather than a PSO variant, since it is uniform for the whole process (see DisplayFormat).
+    rs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_PIXEL );
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t1 AdaptedLum
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );   // s0
 
@@ -1679,7 +1681,7 @@ bool D3D12PipelineState::CreateTonemap() {
     pso.InputLayout = { nullptr, 0 };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // resolves to the swapchain
+    pso.RTVFormats[0] = DisplayFormat;   // resolves to the display target (swapchain, or m_HdrDisplay in HDR)
     pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -1691,6 +1693,73 @@ bool D3D12PipelineState::CreateTonemap() {
     pso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Tonemap.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap).";
+        return false;
+    }
+
+    // Screenshot/thumbnail variant: identical except it always targets the R10G10B10A2 swapchain format, which
+    // GetBackbufferData's capture texture uses. Aliases the main PSO when they'd be the same object anyway.
+    if ( DisplayFormat == kBackBufferFormat ) {
+        TonemapCapturePSO = Tonemap.PSO;
+    } else {
+        pso.RTVFormats[0] = kBackBufferFormat;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( TonemapCapturePSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap capture variant).";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool D3D12PipelineState::CreateHdrEncode() {
+    // Final ST.2084 scanout encode for the real-HDR path: reads the extended-sRGB FP16 display buffer (which by
+    // then holds the tonemapped scene plus the 2D UI, SMAA/sharpen and the ImGui overlay) and writes the
+    // PQ/Rec.2020 swapchain. Only called when the engine actually brought HDR output up; see
+    // D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer. Fullscreen triangle, no IA, no depth, no blend.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "HdrEncode" );
+    // 0: b0 { SrcIndex, PaperWhiteNits, EncodeMode, pad }
+    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    // s0 point-clamp: this is a 1:1 fullscreen blit, so any filtering would only smear the image.
+    D3D12_STATIC_SAMPLER_DESC pointClamp = D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL );
+    pointClamp.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    rs.AddStaticSampler( pointClamp );
+
+    // DIRECTLY_INDEXED enables the SM6.6 ResourceDescriptorHeap[SrcIndex] fetch of the display buffer.
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    HdrEncode.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "HdrEncode.hlsl", "VSFullscreen", Shadermodel_VS, HdrEncode.VsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "HdrEncode.hlsl", "PSEncode", Shadermodel_PS, HdrEncode.PsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    rs.ValidateShaders( {
+        { HdrEncode.VsBlob.Get(), "HdrEncode.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { HdrEncode.PsBlob.Get(), "HdrEncode.hlsl:PSEncode",     D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = HdrEncode.RootSig.Get();
+    pso.VS = { HdrEncode.VsBlob->GetBufferPointer(), HdrEncode.VsBlob->GetBufferSize() };
+    pso.PS = { HdrEncode.PsBlob->GetBufferPointer(), HdrEncode.PsBlob->GetBufferSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;   // the real swapchain, NOT DisplayFormat — this pass is the bridge
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( HdrEncode.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (HDR scanout encode).";
         return false;
     }
     return true;
@@ -2221,7 +2290,7 @@ bool D3D12PipelineState::CreateSmaa() {
         return false;
     if ( !makePso( Smaa.BlendVsBlob.Get(), Smaa.BlendPsBlob.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, Smaa.BlendPSO.ReleaseAndGetAddressOf(), "blend" ) )
         return false;
-    if ( !makePso( Smaa.NeighborVsBlob.Get(), Smaa.NeighborPsBlob.Get(), kBackBufferFormat, Smaa.NeighborPSO.ReleaseAndGetAddressOf(), "neighbor" ) )
+    if ( !makePso( Smaa.NeighborVsBlob.Get(), Smaa.NeighborPsBlob.Get(), DisplayFormat, Smaa.NeighborPSO.ReleaseAndGetAddressOf(), "neighbor" ) )
         return false;
 
     return true;
@@ -2440,7 +2509,7 @@ bool D3D12PipelineState::CreateSharpen() {
         pso.InputLayout = { nullptr, 0 };
         pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         pso.NumRenderTargets = 1;
-        pso.RTVFormats[0] = kBackBufferFormat;
+        pso.RTVFormats[0] = DisplayFormat;
         pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
         pso.SampleDesc.Count = 1;
         pso.SampleMask = UINT_MAX;
@@ -2796,7 +2865,7 @@ bool D3D12PipelineState::CreateLines() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // drawn onto the tonemapped swapchain, not the HDR scene target
+    pso.RTVFormats[0] = DisplayFormat;   // drawn onto the tonemapped display target, not the HDR scene target
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;

@@ -82,6 +82,19 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;
     }
+    // Must run BEFORE any Create*(): it decides m_Pipelines.DisplayFormat, which every display-space PSO
+    // (2D/UI, video, preview, lines, tonemap, SMAA's final pass, sharpen) bakes into its RTV format. That is
+    // also why the HDR toggle needs a restart rather than taking effect on the next resize.
+    DetectHdrOutputCapability();
+    if ( m_HdrOutputActive && !m_Pipelines.CreateHdrEncode() ) {
+        // Without the encode pass nothing in the FP16 display buffer would ever reach the swapchain, so give
+        // up on HDR here — while it is still free to do so, i.e. before any display-space PSO has baked
+        // DisplayFormat. Everything downstream then builds exactly as it does in SDR.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the HDR scanout encode pipeline; falling back to SDR output.";
+        m_HdrOutputActive = false;
+        m_HdrEncodePQ = false;
+        m_Pipelines.DisplayFormat = kBackBufferFormat;
+    }
     if ( !m_Pipelines.CreateUI() || !CreateUIVertexBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline.";
         return XR_FAILED;
@@ -1058,11 +1071,42 @@ void D3D12GraphicsEngine::BindSceneColorTarget() {
 }
 
 
+/** Peak luminance the HDR highlight roll-off targets, in nits. Monitor-reported metadata is frequently wrong
+	(a 400-nit edge-lit panel claiming 1499, or reporting nothing at all), so the user override wins whenever
+	HDR_AutoMaxBrightness is off, and the auto path falls back to a conservative 1000 when DXGI reports nothing. */
+float D3D12GraphicsEngine::GetHdrMaxBrightnessNits() const {
+	const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+	float nits = s.HDR_AutoMaxBrightness ? m_HdrMonitorMaxNits : s.HDR_MaxBrightness;
+	if ( !( nits > 0.0f ) ) nits = 1000.0f;
+	return std::clamp( nits, 100.0f, 10000.0f );
+}
+
+/** Nit level that 1.0 in the display buffer maps to — the brightness of the HUD/menus and of diffuse-white
+	surfaces. Clamped below the peak so there is always at least a little highlight headroom left; a paper white
+	at or above the ceiling would leave the roll-off nothing to work with and read as a flat, clipped image. */
+float D3D12GraphicsEngine::GetHdrPaperWhiteNits() const {
+	const float paperWhite = std::clamp( Engine::GAPI->GetRendererState().RendererSettings.HDR_PaperWhite, 50.0f, 1000.0f );
+	return std::min( paperWhite, GetHdrMaxBrightnessNits() / 1.25f );
+}
+
+
+ID3D12Resource* D3D12GraphicsEngine::GetDisplayTarget() const {
+	return m_HdrDisplay ? m_HdrDisplay.Get() : m_BackBuffers[m_FrameIndex].Get();
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetDisplayRtv() const {
+	if ( m_HdrDisplay ) return m_HdrDisplayRtv;
+	D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+	return rtv;
+}
+
+
 void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
-	// Tonemap the finished HDR scene into the swapchain backbuffer, then leave the backbuffer bound so the 2D UI
-	// (drawn after OnStartWorldRendering) composites on top in LDR. If HDR is unavailable, no-op (nothing to show).
+	// Tonemap the finished HDR scene onto the display target, then leave it bound so the 2D UI (drawn after
+	// OnStartWorldRendering) composites on top. If HDR is unavailable, no-op (nothing to show).
 	if ( !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig || !m_CmdList ) return;
-	DX_ZONE( m_CmdList, "Tonemap resolve (HDR->swapchain)" );
+	DX_ZONE( m_CmdList, "Tonemap resolve (HDR->display)" );
 
 	if ( !m_SceneColorInPixelState ) {
 		auto toSrv = TransitionBarrier( m_SceneColor.Get(),
@@ -1071,8 +1115,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 		m_SceneColorInPixelState = true;
 	}
 
-	D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	rtv.ptr += static_cast<SIZE_T>(m_FrameIndex) * m_RtvDescriptorSize;
+	D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 	m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );   // no depth for the fullscreen resolve
 	m_ColorTargetIsHDR = false;
 
@@ -1083,20 +1126,228 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
-	auto& tonemapSettings = Engine::GAPI->GetRendererState().RendererSettings;
-	// { Exposure, LumWhite, ToneMapMode, pad }. MiddleGray is NOT sent — Tonemap.hlsl hardcodes its ACES-tuned
-	// 0.18 target; RendererSettings.HDRMiddleGray (0.8) is calibrated for D3D11's own tonemap curves.
-	struct { float Exposure; float LumWhite; UINT ToneMapMode; float _pad; } tonemapConsts = {
-		tonemapSettings.Exposure > 0.0f ? tonemapSettings.Exposure : 1.0f,
-		tonemapSettings.HDRLumWhite,
-		static_cast<UINT>( tonemapSettings.HDRToneMap ),
-		0.0f
-	};
-	m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, &tonemapConsts, 0 );
+	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive );
+	m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &tonemapConsts, 0 );
 	m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+}
+
+
+/** Fills Tonemap.hlsl's b0. `hdrOutput` selects the display path (highlight roll-off, extended-sRGB out)
+	over the SDR operators; GetBackbufferData passes false so screenshots always capture the SDR image. */
+D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConstants( bool hdrOutput ) const {
+	const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+	TonemapRootConstants c = {};
+	c.Exposure = s.Exposure > 0.0f ? s.Exposure : 1.0f;
+	// MiddleGray is NOT sent — Tonemap.hlsl hardcodes its ACES-tuned 0.18 target; RendererSettings.HDRMiddleGray
+	// (0.8) is calibrated for D3D11's own tonemap curves.
+	c.LumWhite = s.HDRLumWhite;
+	c.ToneMapMode = static_cast<UINT>( s.HDRToneMap );
+	c.HdrOutput = hdrOutput ? 1u : 0u;
+	// Headroom expressed in paper-white units: how many times brighter than diffuse white the panel can go.
+	// GetHdrPaperWhiteNits keeps this >= 1.25 by construction.
+	c.DisplayHeadroom = hdrOutput ? ( GetHdrMaxBrightnessNits() / GetHdrPaperWhiteNits() ) : 0.0f;
+	return c;
+}
+
+
+/** Best-effort query of whether we can scan out real HDR, run once at Init (before any PSO bakes
+	DisplayFormat). Walks the adapter's outputs looking for one Windows currently has in HDR mode and keeps its
+	luminance metadata. The window doesn't exist yet, so this can only pick "some HDR output on this adapter";
+	CreateSwapChain refreshes the metadata from the output the window actually landed on. */
+void D3D12GraphicsEngine::DetectHdrOutputCapability() {
+	m_HdrOutputActive = false;
+	m_HdrEncodePQ = false;
+	m_HdrMonitorMaxNits = m_HdrMonitorMinNits = m_HdrMonitorMaxFullFrameNits = 0.0f;
+	m_Pipelines.DisplayFormat = kBackBufferFormat;
+
+	if ( !Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor ) return;
+
+	IDXGIAdapter1* adapter = m_Device.GetAdapter();
+	if ( !adapter ) return;
+
+	ComPtr<IDXGIOutput> output;
+	for ( UINT i = 0; adapter->EnumOutputs( i, output.ReleaseAndGetAddressOf() ) != DXGI_ERROR_NOT_FOUND; ++i ) {
+		ComPtr<IDXGIOutput6> output6;
+		if ( FAILED( output.As( &output6 ) ) ) continue;   // pre-Windows-10-1703: no HDR metadata at all
+
+		DXGI_OUTPUT_DESC1 desc = {};
+		if ( FAILED( output6->GetDesc1( &desc ) ) ) continue;
+		if ( desc.ColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) continue;   // display not in HDR mode
+
+		m_HdrOutputActive = true;
+		m_HdrMonitorMaxNits = desc.MaxLuminance;
+		m_HdrMonitorMinNits = desc.MinLuminance;
+		m_HdrMonitorMaxFullFrameNits = desc.MaxFullFrameLuminance;
+		break;
+	}
+
+	if ( !m_HdrOutputActive ) {
+		LogInfo() << "D3D12: HDR output requested but no HDR-enabled display was found on this adapter; using SDR.";
+		return;
+	}
+
+	m_Pipelines.DisplayFormat = kHdrDisplayFormat;
+	LogInfo() << "D3D12: HDR output enabled. Monitor reports " << m_HdrMonitorMaxNits << " nits peak, "
+		<< m_HdrMonitorMaxFullFrameNits << " nits full-frame, " << m_HdrMonitorMinNits << " nits black.";
+}
+
+
+/** Puts the (already created) swapchain into the HDR10 colour space and publishes the mastering metadata.
+	Called after every swapchain (re)creation. R10G10B10A2 + G2084/P2020 is the classic HDR10 setup: the
+	application produces the PQ signal itself, which is exactly what HdrEncode.hlsl does.
+	On refusal m_HdrEncodePQ stays false and the encode pass degrades to an SDR passthrough — the FP16 display
+	buffer and every PSO built for it are already committed at that point, so there is no going back to the
+	direct-to-swapchain path mid-run, but the frame still presents correctly. */
+void D3D12GraphicsEngine::ApplySwapChainColorSpace() {
+	m_HdrEncodePQ = false;
+	if ( !m_HdrOutputActive || !m_SwapChain ) return;
+
+	// Refresh the luminance metadata from the output the window actually ended up on — on a multi-monitor
+	// setup that need not be the one Init found, and the settings UI reports these numbers to the player.
+	ComPtr<IDXGIOutput> output;
+	if ( SUCCEEDED( m_SwapChain->GetContainingOutput( output.GetAddressOf() ) ) ) {
+		ComPtr<IDXGIOutput6> output6;
+		DXGI_OUTPUT_DESC1 desc = {};
+		if ( SUCCEEDED( output.As( &output6 ) ) && SUCCEEDED( output6->GetDesc1( &desc ) )
+			&& desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
+			m_HdrMonitorMaxNits = desc.MaxLuminance;
+			m_HdrMonitorMinNits = desc.MinLuminance;
+			m_HdrMonitorMaxFullFrameNits = desc.MaxFullFrameLuminance;
+		}
+	}
+
+	constexpr DXGI_COLOR_SPACE_TYPE kHdr10 = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+	UINT support = 0;
+	if ( FAILED( m_SwapChain->CheckColorSpaceSupport( kHdr10, &support ) )
+		|| !( support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT )
+		|| FAILED( m_SwapChain->SetColorSpace1( kHdr10 ) ) ) {
+		LogWarn() << "D3D12: the swapchain refused the HDR10 colour space; presenting SDR from the HDR display buffer.";
+		return;
+	}
+	m_HdrEncodePQ = true;
+
+	// Mastering metadata (optional, best-effort): tells the display what range we actually authored for, so its
+	// own tone mapping doesn't second-guess a signal we already rolled off. Chromaticities are Rec.709 (our
+	// working primaries) in DXGI's 1/50000 units; luminance is the effective peak, i.e. what the user's slider
+	// or the monitor's own report put us at. IDXGISwapChain4 is Windows 10 1703+; skip quietly without it.
+	ComPtr<IDXGISwapChain4> swapChain4;
+	if ( FAILED( m_SwapChain.As( &swapChain4 ) ) ) return;
+
+	const float maxNits = GetHdrMaxBrightnessNits();
+	DXGI_HDR_METADATA_HDR10 meta = {};
+	meta.RedPrimary[0] = 32000;   meta.RedPrimary[1] = 16500;    // 0.640, 0.330
+	meta.GreenPrimary[0] = 15000; meta.GreenPrimary[1] = 30000;  // 0.300, 0.600
+	meta.BluePrimary[0] = 7500;   meta.BluePrimary[1] = 3000;    // 0.150, 0.060
+	meta.WhitePoint[0] = 15635;   meta.WhitePoint[1] = 16450;    // D65
+	meta.MaxMasteringLuminance = static_cast<UINT>( maxNits * 10000.0f );   // 1/10000 nit units
+	meta.MinMasteringLuminance = static_cast<UINT>( std::max( 0.0f, m_HdrMonitorMinNits ) * 10000.0f );
+	meta.MaxContentLightLevel = static_cast<UINT16>( std::min( 65535.0f, maxNits ) );
+	meta.MaxFrameAverageLightLevel = static_cast<UINT16>( std::min( 65535.0f, GetHdrPaperWhiteNits() ) );
+	swapChain4->SetHDRMetaData( DXGI_HDR_METADATA_TYPE_HDR10, sizeof( meta ), &meta );
+}
+
+
+/** (Re)builds the FP16 composite target the whole post-scene chain renders into while HDR output is active.
+	Rests in RENDER_TARGET for the entire frame, exactly like the swapchain backbuffer it stands in for, so the
+	copy-out/copy-back dances in RenderSMAA/RenderSharpen work against it unchanged. Cleared every frame by
+	OnBeginFrame, so nothing carries over between frames. */
+bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
+	m_HdrDisplay.Reset();
+	m_HdrDisplayAlloc.Reset();
+	if ( !m_HdrOutputActive ) return true;   // SDR: display target IS the swapchain, nothing to build
+	if ( size.x < 4 || size.y < 4 ) return false;
+
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !device || !m_RtvHeap ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC dd = {};
+	dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	dd.Width = static_cast<UINT64>( size.x );
+	dd.Height = static_cast<UINT>( size.y );
+	dd.DepthOrArraySize = 1;
+	dd.MipLevels = 1;
+	dd.Format = kHdrDisplayFormat;
+	dd.SampleDesc.Count = 1;
+	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+	D3D12_CLEAR_VALUE clearValue = {};
+	clearValue.Format = kHdrDisplayFormat;
+	memcpy( clearValue.Color, m_ClearColor, sizeof( clearValue.Color ) );
+
+	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
+		m_HdrDisplayAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HdrDisplay.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: failed to create the HDR display composite target (" << size.x << "x" << size.y << ").";
+		return false;
+	}
+	m_HdrDisplay->SetName( L"HdrDisplayComposite" );
+
+	// RTV heap slot kBackBufferCount+3 (after the swapchain RTVs, the scene-color RTV and SMAA's edge/blend).
+	m_HdrDisplayRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	m_HdrDisplayRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 3 ) * m_RtvDescriptorSize;
+	device->CreateRenderTargetView( m_HdrDisplay.Get(), nullptr, m_HdrDisplayRtv );
+
+	if ( m_HdrDisplaySrvSlot == UINT_MAX ) m_HdrDisplaySrvSlot = AllocateSrvSlot();
+	if ( m_HdrDisplaySrvSlot == UINT_MAX ) return false;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
+	srv.Format = kHdrDisplayFormat;
+	device->CreateShaderResourceView( m_HdrDisplay.Get(), &srv, GetSrvCpuHandle( m_HdrDisplaySrvSlot ) );
+	return true;
+}
+
+
+/** The single ST.2084 conversion of the frame: display buffer -> swapchain. Runs at the very end of Present,
+	after the 2D UI and the ImGui overlay have composited into the display buffer, with the backbuffer still in
+	RENDER_TARGET (OnBeginFrame transitioned it) and before the transition to PRESENT. */
+void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
+	if ( !m_HdrOutputActive || !m_HdrDisplay || !m_CmdList ) return;
+	if ( !m_Pipelines.HdrEncode.PSO || !m_Pipelines.HdrEncode.RootSig || m_HdrDisplaySrvSlot == UINT_MAX ) return;
+	DX_ZONE( m_CmdList, "HDR scanout encode (display->swapchain)" );
+
+	auto toSrv = TransitionBarrier( m_HdrDisplay.Get(),
+		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	m_CmdList->ResourceBarrier( 1, &toSrv );
+
+	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
+
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	// The PS fetches the display buffer via SM6.6 ResourceDescriptorHeap, so the shader-visible heap must be
+	// bound. It normally still is from OnBeginFrame, but this runs after the ImGui overlay, which sets heaps
+	// of its own — cheap insurance for the one pass that would otherwise present garbage.
+	if ( m_SrvHeap ) {
+		ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+		m_CmdList->SetDescriptorHeaps( 1, heaps );
+	}
+
+	m_CmdList->SetPipelineState( m_Pipelines.HdrEncode.PSO.Get() );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.HdrEncode.RootSig.Get() );
+
+	struct { UINT SrcIndex; float PaperWhiteNits; UINT EncodeMode; float _pad; } consts = {
+		m_HdrDisplaySrvSlot, GetHdrPaperWhiteNits(), m_HdrEncodePQ ? 1u : 0u, 0.0f };
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, &consts, 0 );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	// Back to the resting state the next frame's OnBeginFrame expects to clear.
+	auto toRt = TransitionBarrier( m_HdrDisplay.Get(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_CmdList->ResourceBarrier( 1, &toRt );
 }
 
 
@@ -1247,6 +1498,15 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
+    ApplySwapChainColorSpace();      // HDR10 colour space + mastering metadata (no-op unless HDR output is active)
+    if ( !CreateHdrDisplayTarget( size ) ) {
+        // The FP16 composite target is where every display-space PSO renders once HDR is active, so losing it
+        // would leave those draws unbound. Degrade to the SDR passthrough encode rather than showing nothing:
+        // GetDisplayRtv() falls back to the swapchain, whose format no longer matches those PSOs, so the honest
+        // move is to give up on the swapchain entirely and let Init's caller fall back to D3D11.
+        LogWarn() << "D3D12GraphicsEngine::CreateSwapChain: failed to create the HDR display target.";
+        return false;
+    }
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
     CreateLdrCopyResource( size );   // non-fatal: shared LDR scratch for SMAA/sharpen; both no-op without it
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
@@ -1266,8 +1526,11 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     // Bring up the ImGui overlay on the D3D12 backend (mirrors D3D11's OnResize-time init). ImGui
     // texture SRVs are allocated out of our shader-visible heap via callbacks; drawn each Present().
     if ( Engine::ImGuiHandle && !Engine::ImGuiHandle->Initiated && m_SrvHeap ) {
+        // The overlay draws into the display target (m_HdrDisplay when HDR output is up), so it must be
+        // built for that RTV format, not the swapchain's. It needs no HDR awareness beyond that: the display
+        // buffer holds the same gamma-encoded values it would write to an SDR swapchain.
         Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, m_Device.GetDevice(),
-            m_Device.GetDirectQueue(), kBackBufferCount, kBackBufferFormat, m_SrvHeap.Get() );
+            m_Device.GetDirectQueue(), kBackBufferCount, m_Pipelines.DisplayFormat, m_SrvHeap.Get() );
     }
     return true;
 }
@@ -1277,9 +1540,10 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     ID3D12Device* device = m_Device.GetDevice();
 
     // RTV descriptor heap: one per backbuffer + 1 for the HDR scene-color target (slot kBackBufferCount) +
-    // 2 for the SMAA edge/blend intermediates (slots kBackBufferCount+1 / +2).
+    // 2 for the SMAA edge/blend intermediates (slots kBackBufferCount+1 / +2) + 1 for the HDR display
+    // composite target (slot kBackBufferCount+3; only populated when real HDR output is active).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferCount + 3;
+    rtvHeapDesc.NumDescriptors = kBackBufferCount + 4;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )
@@ -1382,10 +1646,11 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
     m_CmdList->ResourceBarrier( 1, &toRT );
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    // The swapchain stays transitioned to RENDER_TARGET even in HDR mode — EncodeHdrDisplayToBackBuffer
+    // writes it at the end of Present — but everything the frame draws goes to the display target.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 
-    // Bind the backbuffer + depth target for the frame. The 3D world pass (OnStartWorldRendering) uses
+    // Bind the display + depth target for the frame. The 3D world pass (OnStartWorldRendering) uses
     // the depth buffer; the 2D/UI PSO has depth disabled, so it draws over the result regardless.
     const bool haveDepth = m_DepthBuffer && m_DsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
@@ -1587,11 +1852,14 @@ XRESULT D3D12GraphicsEngine::Present() {
     // Draw the ImGui overlay last, on top of the 2D UI, while the backbuffer is still a render target.
     // The SRV heap is bound (OnBeginFrame); re-bind the RTV defensively in case a draw changed it.
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-        rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
         Engine::ImGuiHandle->RenderLoopD3D12( m_CmdList.Get() );
     }
+
+    // With real HDR output the frame so far lives in the FP16 display buffer; this is the one pass that turns
+    // it into the ST.2084 signal the swapchain scans out. No-op in SDR (the display target IS the backbuffer).
+    EncodeHdrDisplayToBackBuffer();
 
     auto toPresent = TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
@@ -1848,8 +2116,7 @@ void D3D12GraphicsEngine::RestoreFrameRenderTarget() {
     // those must stay untouched, this runs mid-frame after rings may already have been consumed).
     if ( !m_CmdList || !m_RtvHeap ) return;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 
     const bool haveDepth = m_DepthBuffer && m_DsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
@@ -1895,7 +2162,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     pixelsize = 4;
     buffersize = thumbnail ? INT2( 256, 256 ) : m_Resolution;
 
-    if ( !m_CmdList || !m_SwapChainReady || !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig ) {
+    if ( !m_CmdList || !m_SwapChainReady || !m_SceneColor || !m_Pipelines.TonemapCapturePSO || !m_Pipelines.Tonemap.RootSig ) {
         LogInfo() << (thumbnail ? "Thumbnail failed. D3D12 backend not ready" : "GetBackbufferData failed. D3D12 backend not ready");
         return;
     }
@@ -1966,12 +2233,13 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
         m_CmdList->SetDescriptorHeaps( 1, heaps );
     }
 
-    m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
+    // TonemapCapturePSO, not Tonemap.PSO: with HDR output active the latter targets the FP16 display buffer,
+    // and a savegame thumbnail wants the plain SDR image regardless — hence hdrOutput=false below too.
+    m_CmdList->SetPipelineState( m_Pipelines.TonemapCapturePSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
-    auto& tonemapSettings = Engine::GAPI->GetRendererState().RendererSettings;
-    const float exposureConsts[2] = { tonemapSettings.Exposure > 0.0f ? tonemapSettings.Exposure : 1.0f, tonemapSettings.HDRMiddleGray };
-    m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, exposureConsts, 0 );
+    const TonemapRootConstants captureConsts = MakeTonemapConstants( false );
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &captureConsts, 0 );
     m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
@@ -2058,6 +2326,8 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 
     WaitForGpuIdle();
     for ( UINT i = 0; i < kBackBufferCount; ++i ) m_BackBuffers[i].Reset();
+    m_HdrDisplay.Reset();          // rebuilt at the new size below (SRV slot is kept and re-pointed)
+    m_HdrDisplayAlloc.Reset();
 
     // Must pass the SAME flags the swapchain was created with (CreateSwapChainForHwnd's scd.Flags) —
     // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING can't be added/removed via ResizeBuffers, only the create call.
@@ -2075,6 +2345,10 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
+    // ResizeBuffers drops the colour space along with the buffers, and the window may have been dragged to a
+    // different (possibly non-HDR) monitor — re-apply and refresh the metadata before rebuilding the target.
+    ApplySwapChainColorSpace();
+    if ( !CreateHdrDisplayTarget( size ) ) return false;   // no-op in SDR; fatal in HDR (see CreateSwapChain)
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
     CreateLdrCopyResource( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site

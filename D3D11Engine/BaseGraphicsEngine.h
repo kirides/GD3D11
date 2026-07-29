@@ -157,6 +157,13 @@ public:
     /** Returns the graphics-device this is running on */
     virtual const std::string& GetGraphicsDeviceName() PURE;
 
+    /** Reports whether the backend is currently scanning out real HDR (ST.2084/HDR10) and, if so, the
+        luminance metadata DXGI reported for the output the game window is on. Values are in nits; the
+        maximum is what the highlight roll-off targets when HDR_AutoMaxBrightness is set. Returns false on
+        backends/configurations without an HDR scanout (D3D11, or D3D12 in SDR) — the settings UI uses this
+        to show what was actually detected, since monitor metadata is often wrong or missing. */
+    virtual bool GetHdrOutputInfo( float& maxNits, float& minNits, float& maxFullFrameNits ) const { return false; }
+
     /** Draws a screen fade effects */
     virtual XRESULT DrawScreenFade( void* camera ) { return XR_SUCCESS; }
     virtual void OnAddVob(VobInfo* vi) { }

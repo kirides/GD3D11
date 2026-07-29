@@ -430,8 +430,7 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     // screen pixels this inventory slot's viewport happens to cover — comparing against those stale values
     // would randomly reject preview pixels and let the resolved 3D scene bleed through. Clear the depth back
     // to reversed-Z far (0.0), scoped to just this viewport's rect, before drawing.
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     D3D12_VIEWPORT vp = m_CurrentViewport;

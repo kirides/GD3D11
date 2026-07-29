@@ -1,4 +1,10 @@
-cbuffer TonemapCB : register(b0) { float Exposure; float LumWhite; uint ToneMapMode; float _pad; };
+cbuffer TonemapCB : register(b0)
+{
+    float Exposure; float LumWhite; uint ToneMapMode; uint HdrOutput;
+    // Display headroom in PAPER-WHITE units when HdrOutput != 0: (HDR max brightness / paper white). 5.0 means
+    // the panel can show highlights up to 5x diffuse white. Unused (and pushed as 0) in SDR.
+    float DisplayHeadroom; float3 _pad;
+};
 Texture2D    SceneHDR : register(t0);
 SamplerState smp      : register(s0);
 // Dynamic exposure (CS_LumReduce/CS_LumAdapt): [0] = this frame's temporally-adapted average scene luminance.
@@ -118,6 +124,48 @@ float3 ToneMap_ACESFitted( float3 x )
     return curr * whiteScale;
 }
 
+// --- Real HDR display output ---------------------------------------------------------------------------------
+// On an actual HDR scanout the operators above are exactly the wrong thing: every one of them exists to squeeze
+// an unbounded linear range into the [0,1] an SDR panel can show, and they do it by crushing (and desaturating)
+// everything the display could have reproduced natively. So when HdrOutput is set none of them run. The scene
+// keeps its linear values, expressed in PAPER-WHITE units (1.0 == diffuse white == the paper-white slider's nit
+// level), and only the part that exceeds what the panel can physically emit is rolled off.
+//
+// `DisplayHeadroom` (w) is that ceiling in the same units. Everything below the knee is passed through bit-exact,
+// so SDR-range material has the same brightness and contrast it would have on an SDR display; above the knee an
+// exponential shoulder asymptotes to w, so a 50x-paper-white specular hit lands just under the panel's peak
+// instead of clipping to a flat white blob. The shoulder is C1-continuous at the knee (derivative 1), which is
+// what keeps a slow-moving highlight from visibly "catching" as it crosses over.
+float RollOffLuminance( float lum, float w )
+{
+    const float knee = 0.75 * w;                 // BT.2390's normalized knee position
+    if ( lum <= knee ) return lum;               // untouched — the whole point of not using an SDR curve
+    const float shoulder = max( 1e-4, w - knee );
+    return knee + shoulder * ( 1.0 - exp( -( lum - knee ) / shoulder ) );
+}
+
+float3 ToneMapHDRDisplay( float3 x, float w )
+{
+    // Roll off on LUMINANCE, not per channel: a per-channel curve pulls bright saturated colours (torch flame,
+    // magic bolts) toward white, which is the SDR compromise this path exists to avoid. Channels that still
+    // overshoot the ceiling afterwards are clamped, so extremely saturated over-range pixels desaturate only
+    // when they genuinely cannot be shown.
+    const float lum = max( 1e-5, dot( x, float3( 0.2126, 0.7152, 0.0722 ) ) );
+    x *= RollOffLuminance( lum, w ) / lum;
+    return clamp( x, 0.0, w );
+}
+
+// Extended sRGB transfer function — the standard curve, just not clamped at 1.0. The HDR display buffer stores
+// gamma-encoded values with headroom (>1 == brighter than paper white) rather than linear ones, so that Gothic's
+// 2D UI/HUD, the ImGui overlay, SMAA and the sharpen pass all keep compositing and blending in exactly the same
+// perceptual space they use in SDR — none of those shaders needed an HDR variant. HdrEncode.hlsl inverts this
+// right before scanout.
+float3 LinearToSrgbExtended( float3 c )
+{
+    c = max( c, 0.0 );
+    return select( c <= 0.0031308, c * 12.92, 1.055 * pow( c, 1.0 / 2.4 ) - 0.055 );
+}
+
 float4 PSTonemap( VS_OUT i ) : SV_TARGET
 {
     // clamp guards the rare frame where CS_LumAdapt hasn't run yet (partial-sum buffer alloc failure on a
@@ -125,6 +173,9 @@ float4 PSTonemap( VS_OUT i ) : SV_TARGET
     float lum = clamp( AdaptedLum[0], 0.05, 32.0 );
     float exposureFactor = Exposure * kMiddleGray / ( lum + 0.001 );
     float3 hdr = SceneHDR.Sample( smp, i.uv ).rgb * exposureFactor;
+
+    [branch] if ( HdrOutput != 0 )
+        return float4( LinearToSrgbExtended( ToneMapHDRDisplay( hdr, DisplayHeadroom ) ), 1.0 );
 
     float3 mapped;
     if ( ToneMapMode == 0 )      mapped = ToneMap_jafEq4( hdr );

@@ -148,8 +148,7 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     // the DSV for them (m_DepthBuffer is back in DEPTH_WRITE by this point in the frame — every pass that
     // borrows it restores that state) and restore the color-only binding afterwards, since the 2D/UI PSOs
     // that draw next are built with DSVFormat UNKNOWN.
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( frame ) * m_RtvDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
     const bool useDepth = !screenSpace && m_DepthBuffer && m_DsvHeap;
     if ( useDepth ) {
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();

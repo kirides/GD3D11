@@ -823,6 +823,9 @@ struct GothicRendererSettings {
         DisplayFlip = false;
         LowLatency = false;
         HDR_Monitor = false;
+        HDR_AutoMaxBrightness = true;
+        HDR_MaxBrightness = 1000.0f;
+        HDR_PaperWhite = 200.0f;
         EnableInactiveFpsLock = true;
         MTResoureceManager = false;
         CompressBackBuffer = false;
@@ -1083,6 +1086,14 @@ struct GothicRendererSettings {
     bool DisplayFlip;
     bool LowLatency;
     bool HDR_Monitor;
+    /** Real HDR scanout (D3D12 only, requires HDR_Monitor). Monitor HDR metadata is frequently wrong, so the
+        peak the tonemapper rolls off to is user-overridable: HDR_AutoMaxBrightness takes DXGI's reported
+        DXGI_OUTPUT_DESC1::MaxLuminance, otherwise HDR_MaxBrightness (nits) is used verbatim. HDR_PaperWhite is
+        the nit level that "SDR white" maps to — it sets the brightness of the UI/HUD and of diffuse-white
+        surfaces, and is the reference the highlight headroom is measured against. */
+    bool HDR_AutoMaxBrightness;
+    float HDR_MaxBrightness;
+    float HDR_PaperWhite;
     bool StretchWindow;
     int ChangeWindowPreset;
     bool SmoothShadowCameraUpdate;

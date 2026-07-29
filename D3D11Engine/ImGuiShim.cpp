@@ -1461,6 +1461,45 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         ImGui::EndDisabled();
 
+        // --- Real HDR display output (ST.2084 scanout; D3D12 backend only) -----------------------------
+        ImGui::SeparatorText( "HDR Display Output" );
+        if ( ImGui::Checkbox( "HDR Monitor Output", &settings.HDR_Monitor ) ) {
+            // The swapchain colour space + the display-buffer format are decided at device/swapchain setup,
+            // so this only takes effect on the next launch (same as the GraphicsAPI switch).
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled( "(restart required)" );
+
+        float detectedMax = 0.0f, detectedMin = 0.0f, detectedMaxFullFrame = 0.0f;
+        const bool hdrActive = Engine::GraphicsEngine
+            && Engine::GraphicsEngine->GetHdrOutputInfo( detectedMax, detectedMin, detectedMaxFullFrame );
+        if ( hdrActive ) {
+            ImGui::Text( "Active. Monitor reports %.0f nits peak (%.0f full-frame, %.4f black).",
+                detectedMax, detectedMaxFullFrame, detectedMin );
+        } else if ( settings.HDR_Monitor ) {
+            ImGui::TextDisabled( "Not active (needs the D3D12 backend and an HDR-enabled display in Windows)." );
+        } else {
+            ImGui::TextDisabled( "Disabled - the SDR tonemapper is in use." );
+        }
+
+        ImGui::BeginDisabled( !settings.HDR_Monitor );
+        ImGui::Checkbox( "Auto Max Brightness (use monitor metadata)", &settings.HDR_AutoMaxBrightness );
+        ImGui::BeginDisabled( settings.HDR_AutoMaxBrightness );
+        ImGui::SliderFloat( "HDR Max Brightness", &settings.HDR_MaxBrightness, 400.0f, 2000.0f, "%.0f nits",
+            ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::EndDisabled();
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Peak luminance the highlight roll-off targets. Monitor-reported metadata is\n"
+                "frequently wrong - lower this until the brightest highlights stop clipping." );
+        }
+        ImGui::SliderFloat( "Paper White / UI Brightness", &settings.HDR_PaperWhite, 80.0f, 500.0f, "%.0f nits",
+            ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Nit level that SDR white maps to. Sets the brightness of the HUD/menus and of\n"
+                "diffuse-white surfaces; the headroom above it is what highlights get to use." );
+        }
+        ImGui::EndDisabled();
+
         ImGui::Checkbox( "Bloom", &settings.EnableBloom );
         ImGui::BeginDisabled( !settings.EnableBloom );
         {

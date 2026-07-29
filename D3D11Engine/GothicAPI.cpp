@@ -5448,6 +5448,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "DisplayFlip", to_string_locale_independent( s.DisplayFlip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "LowLatency", to_string_locale_independent( s.LowLatency ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HDR_Monitor", to_string_locale_independent( s.HDR_Monitor ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_AutoMaxBrightness", to_string_locale_independent( s.HDR_AutoMaxBrightness ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_MaxBrightness", float_to_string( s.HDR_MaxBrightness, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_PaperWhite", float_to_string( s.HDR_PaperWhite, 1 ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Display", "StretchWindow", to_string_locale_independent( s.StretchWindow ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "UIScale", to_string_locale_independent( s.GothicUIScale ).c_str(), ini.c_str() );
@@ -5625,6 +5628,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DisplayFlip = GetPrivateProfileBoolA( "Display", "DisplayFlip", ds.DisplayFlip, ini );
         s.LowLatency = GetPrivateProfileBoolA( "Display", "LowLatency", ds.LowLatency, ini );
         s.HDR_Monitor = GetPrivateProfileBoolA( "Display", "HDR_Monitor", false, ini );
+        s.HDR_AutoMaxBrightness = GetPrivateProfileBoolA( "Display", "HDR_AutoMaxBrightness", ds.HDR_AutoMaxBrightness, ini );
+        s.HDR_MaxBrightness = std::clamp( GetPrivateProfileFloatA( "Display", "HDR_MaxBrightness", ds.HDR_MaxBrightness, ini ), 100.0f, 10000.0f );
+        s.HDR_PaperWhite = std::clamp( GetPrivateProfileFloatA( "Display", "HDR_PaperWhite", ds.HDR_PaperWhite, ini ), 50.0f, 1000.0f );
         s.StretchWindow = GetPrivateProfileBoolA( "Display", "StretchWindow", ds.StretchWindow, ini );
         s.GothicUIScale = GetPrivateProfileFloatA( "Display", "UIScale", 1.0f, ini );
         s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", ds.EnableRain, ini );

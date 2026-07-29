@@ -107,6 +107,14 @@ public:
     void DrawLines( const std::vector<struct LineVertex>& lines, bool screenSpace );
     const std::string& GetGraphicsDeviceName() override { return m_Device.GetDeviceDescription(); }
 
+    bool GetHdrOutputInfo( float& maxNits, float& minNits, float& maxFullFrameNits ) const override {
+        if ( !m_HdrOutputActive ) return false;
+        maxNits = m_HdrMonitorMaxNits;
+        minNits = m_HdrMonitorMinNits;
+        maxFullFrameNits = m_HdrMonitorMaxFullFrameNits;
+        return true;
+    }
+
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
     ID3D12Device* GetD3DDevice() const { return m_Device.GetDevice(); }
 
@@ -202,7 +210,30 @@ private:
     bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
     bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
     void BindSceneColorTarget();      // transition HDR RT -> RENDER_TARGET (if needed) + bind it (+ depth) as the world-pass RTV
-    void ResolveSceneToBackBuffer();  // tonemap the HDR scene into the swapchain backbuffer, then rebind the backbuffer for the 2D UI
+    void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
+
+    // --- Real HDR display output (ST.2084 scanout) ---------------------------------------------------------
+    // Decided once at Init from RendererSettings.HDR_Monitor + what DXGI reports about the adapter's outputs;
+    // fixed for the process lifetime, because the display-buffer format is baked into every display-space PSO.
+    // Tonemap.hlsl's b0 (8 root constants). HdrOutput switches the PS off the SDR operators and onto the
+    // display-referred highlight roll-off; DisplayHeadroom is the panel's peak in paper-white units.
+    struct TonemapRootConstants {
+        float Exposure; float LumWhite; UINT ToneMapMode; UINT HdrOutput;
+        float DisplayHeadroom; float _pad[3];
+    };
+    TonemapRootConstants MakeTonemapConstants( bool hdrOutput ) const;
+
+    void   DetectHdrOutputCapability();     // fills m_HdrOutputActive + the luminance metadata (best effort)
+    void   ApplySwapChainColorSpace();      // SetColorSpace1(G2084/P2020) + SetHDRMetaData; clears m_HdrEncodePQ on refusal
+    bool   CreateHdrDisplayTarget( INT2 size );  // FP16 extended-sRGB composite target (+RTV +SRV); recreated on resize
+    void   EncodeHdrDisplayToBackBuffer();  // final fullscreen PQ encode into the swapchain (called from Present)
+    float  GetHdrMaxBrightnessNits() const; // the roll-off ceiling: monitor metadata or the user's override
+    float  GetHdrPaperWhiteNits() const;    // nit level 1.0 in the display buffer maps to (clamped to the ceiling)
+    // The target every "display space" pass renders into: the swapchain backbuffer normally, or m_HdrDisplay
+    // when real HDR output is up. Both rest in RENDER_TARGET for the whole frame, so callers that copy out of
+    // and back into it (SMAA, sharpen) need no special-casing.
+    ID3D12Resource*             GetDisplayTarget() const;
+    D3D12_CPU_DESCRIPTOR_HANDLE GetDisplayRtv() const;
     // World/DepthPrepass/Vob pipeline creation now lives in m_Pipelines (CreateWorld/CreateDepthPrepass/CreateVob).
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
     bool CreateLightCullBuffers( INT2 size ); // per-resolution tile grid + index-list UAV buffers (rebuilt on resize)
@@ -356,6 +387,22 @@ private:
     bool m_ColorTargetIsHDR = false;
     // Tonemap pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Tonemap; exposure is read live from
     // Engine::GAPI->GetRendererState().RendererSettings.Exposure in ResolveSceneToBackBuffer (player-tunable).
+
+    // --- Real HDR display output ---------------------------------------------------------------------------
+    // When active, the whole post-scene chain (tonemap resolve -> Gothic's 2D UI/HUD -> SMAA -> sharpen ->
+    // ImGui) composites into m_HdrDisplay instead of the swapchain. That buffer holds EXTENDED-sRGB values in
+    // paper-white units (see kHdrDisplayFormat), which is why none of those passes needed an HDR variant: they
+    // keep their SDR shaders and blend in the same perceptual space as before. EncodeHdrDisplayToBackBuffer
+    // does the one ST.2084/Rec.2020 conversion at the very end of the frame.
+    bool m_HdrOutputActive = false;   // HDR_Monitor && an HDR10-capable output was found; fixed after Init
+    bool m_HdrEncodePQ = false;       // the swapchain accepted the G2084 colour space (else: SDR passthrough)
+    float m_HdrMonitorMaxNits = 0.0f;          // DXGI_OUTPUT_DESC1::MaxLuminance (0 = nothing reported)
+    float m_HdrMonitorMinNits = 0.0f;          // DXGI_OUTPUT_DESC1::MinLuminance
+    float m_HdrMonitorMaxFullFrameNits = 0.0f; // DXGI_OUTPUT_DESC1::MaxFullFrameLuminance
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_HdrDisplay;        // kHdrDisplayFormat, resolution-sized
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_HdrDisplayAlloc;
+    D3D12_CPU_DESCRIPTOR_HANDLE                 m_HdrDisplayRtv = {};   // RTV heap slot kBackBufferCount+3
+    UINT m_HdrDisplaySrvSlot = UINT_MAX;                                // read bindlessly by HdrEncode.hlsl
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferCount];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferCount];

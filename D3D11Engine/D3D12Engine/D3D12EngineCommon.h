@@ -123,6 +123,13 @@ inline bool GetSkipDefaultHeapCopyAfterUpload() {
 // creation and the post-FX (bloom/luminance) passes that sample it.
 inline constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
+// Display-buffer format used ONLY when real HDR scanout is active. The tonemap resolve, Gothic's 2D UI, SMAA,
+// the sharpen pass and the ImGui overlay then composite into an m_HdrDisplay of this format instead of writing
+// the swapchain directly; it stores EXTENDED-sRGB values (the normal gamma encoding, but >1.0 allowed = brighter
+// than paper white), so every one of those passes keeps its SDR shader and its SDR blending behaviour, and only
+// HdrEncode.hlsl converts to ST.2084 at present time.
+inline constexpr DXGI_FORMAT kHdrDisplayFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
 // --- CPU breadcrumb / debug-marker ring (DRED forensics + PIX events) ---
 // Why is BeginEvent not working as intended with Context on debugging this 32 bit app !!
 // A global ring-buffer tracking recent recording phases mapped directly to command list slots.
