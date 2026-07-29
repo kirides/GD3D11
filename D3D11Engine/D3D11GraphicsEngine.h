@@ -784,3 +784,13 @@ inline D3D11GraphicsEngine* AsD3D11Engine( BaseGraphicsEngine* engine ) {
         && "AsD3D11Engine called on a non-D3D11 graphics engine" );
     return static_cast<D3D11GraphicsEngine*>( engine );
 }
+
+/** Same as AsD3D11Engine, but for code that can legitimately run under any backend: returns
+    nullptr instead of asserting when the active engine isn't D3D11. Use this at every call site
+    reachable from backend-neutral code (Gothic hooks, ImGui, exported script bindings):
+    if ( auto d3d11Engine = TryAsD3D11Engine( Engine::GraphicsEngine ) ) { ... } */
+inline D3D11GraphicsEngine* TryAsD3D11Engine( BaseGraphicsEngine* engine ) {
+    return engine && engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
+        ? dynamic_cast<D3D11GraphicsEngine*>( engine )
+        : nullptr;
+}

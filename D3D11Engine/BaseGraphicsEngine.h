@@ -215,6 +215,11 @@ public:
     /** Called when the backbuffer is (re)created after a resize/reset. */
     virtual void OnResetBackBuffer() {}
 
+    /** Clears the "waiting for a present" guard, so the next OnStartWorldRendering actually draws
+        the world instead of early-outing. Needed by the backbuffer-readback path (savegame
+        thumbnails/screenshots), which renders a frame on demand outside the normal present cycle. */
+    virtual void ResetPresentPending() {}
+
     /** Sets the active pixel shader object */
     virtual XRESULT SetActivePixelShader( PShaderID shader ) { return XR_SUCCESS; };
     virtual XRESULT SetActiveVertexShader( VShaderID shader ) { return XR_SUCCESS; };

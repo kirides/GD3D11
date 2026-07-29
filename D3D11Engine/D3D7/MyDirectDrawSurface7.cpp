@@ -571,10 +571,10 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         byte* data;
         INT2 buffersize;
         int pixelSize;
-        AsD3D11EngineBase(Engine::GraphicsEngine)->ResetPresentPending();
+        Engine::GraphicsEngine->ResetPresentPending();
         Engine::GraphicsEngine->OnStartWorldRendering();
         Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
-        AsD3D11EngineBase(Engine::GraphicsEngine)->ResetPresentPending();
+        Engine::GraphicsEngine->ResetPresentPending();
 
         lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount = 32;
         lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask = 0x00FF0000;

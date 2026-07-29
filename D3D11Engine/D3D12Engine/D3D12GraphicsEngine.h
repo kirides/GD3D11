@@ -84,6 +84,10 @@ public:
     /** In-game world render entry (zCBspNodeRender hook). Draws the static world mesh (Phase 2). */
     XRESULT OnStartWorldRendering() override;
 
+    /** Clears the present-pending guard so the backbuffer-readback path (savegame thumbnails) can
+        force a world render mid-frame. Mirrors D3D11GraphicsEngineBase::ResetPresentPending. */
+    void ResetPresentPending() override { m_PresentPending = false; }
+
     /** Draws the wrapped static world mesh. Phase-2 first-light: flat-shaded (screen-space derivative
         normal), depth-tested, no textures / no G-buffer — just the backbuffer + a depth target.
         `noTextures` is accepted for interface parity but currently always effectively true. */

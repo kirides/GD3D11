@@ -2594,7 +2594,9 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
 
 /** Called to update the compress backbuffer state */
 void GothicAPI::UpdateCompressBackBuffer() {
-    AsD3D11Engine(Engine::GraphicsEngine)->OnResetBackBuffer();
+    // Backend-neutral: reachable from the ImGui settings window and the graphics-preset apply path,
+    // both of which run under D3D12 too. OnResetBackBuffer is a BaseGraphicsEngine virtual.
+    Engine::GraphicsEngine->OnResetBackBuffer();
 }
 
 /** Draws a skeletal mesh-vob */

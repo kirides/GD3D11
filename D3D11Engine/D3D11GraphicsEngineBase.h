@@ -120,7 +120,7 @@ public:
     virtual XRESULT SetActiveGShader( GShaderID shader );
     //virtual int MeasureString(std::string str, zFont* zFont);
 
-    void ResetPresentPending() { PresentPending = false; }
+    void ResetPresentPending() override { PresentPending = false; }
 
     ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
@@ -204,5 +204,12 @@ inline D3D11GraphicsEngineBase* AsD3D11EngineBase( BaseGraphicsEngine* engine ) 
     if ( !engine ) return nullptr;
     assert( engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
         && "AsD3D11EngineBase called on a non-D3D11 graphics engine" );
+    return static_cast<D3D11GraphicsEngineBase*>( engine );
+}
+
+/** Same as AsD3D11EngineBase, but returns nullptr instead of asserting when the active engine
+    isn't D3D11. Use this at every call site reachable from backend-neutral code. */
+inline D3D11GraphicsEngineBase* TryAsD3D11EngineBase( BaseGraphicsEngine* engine ) {
+    if ( !engine || engine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) return nullptr;
     return static_cast<D3D11GraphicsEngineBase*>( engine );
 }
