@@ -501,10 +501,18 @@ void GothicAPI::UpdateMTResourceManager() {
     #endif
 #endif*/
 
-    // It can lead to dead-lock so it is force-disabled until it is investigated
+    // ZENGIN itself ships with this enabled (zEngine: SetThreadingEnabled(!zoptions->Parm("ZNORESTHREAD"))),
+    // so the loader thread is the vanilla configuration and we treat it as sound. Our side of it is what
+    // had to be fixed: the texture being cached in is thread-local now (GothicAPI::ScopedLoadingTexture),
+    // because a process-global slot let the loader thread and the game thread clobber each other and a
+    // surface would latch the wrong texture name permanently.
+    // Only ever set this once, here at init: SetThreadingEnabled gates zCResourceManager's own
+    // Lock/UnlockCacheInQueue, so flipping it at runtime can leave that critical section locked forever.
     if ( zCResourceManager* rsm = zCResourceManager::GetResourceManager() ) {
-        rsm->SetThreadingEnabled( false );
-        //rsm->SetThreadingEnabled( RendererState.RendererSettings.MTResoureceManager );
+        rsm->SetThreadingEnabled( RendererState.RendererSettings.MTResoureceManager );
+    } else {
+        LogWarn() << "zCResourceManager not created yet - MultiThreadResourceManager setting not applied, "
+            "ZENGIN keeps its own default (threading enabled)";
     }
 }
 
@@ -5138,6 +5146,17 @@ void GothicAPI::SetBoundTexture( int idx, zCTexture* tex ) {
 
 zCTexture* GothicAPI::GetBoundTexture( int idx ) {
     return BoundTextures[idx];
+}
+
+/** Texture currently being cached in on this thread. Thread-local on purpose - see ScopedLoadingTexture. */
+static thread_local zCTexture* s_LoadingTexture = nullptr;
+
+void GothicAPI::SetLoadingTexture( zCTexture* tex ) {
+    s_LoadingTexture = tex;
+}
+
+zCTexture* GothicAPI::GetLoadingTexture() {
+    return s_LoadingTexture;
 }
 
 /** Teleports the player to the given location */

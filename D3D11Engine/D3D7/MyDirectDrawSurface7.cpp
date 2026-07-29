@@ -286,6 +286,17 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     WaitForPendingAdditionalResources();
 
     if ( !GothicTexture ) {
+#ifndef PUBLIC_RELEASE
+        // The name latched here is permanent, so a wrong zCTexture means this surface looks for (and
+        // caches under) somebody else's replacement maps forever. That can only happen if the loading
+        // texture leaked across threads or past its load - see GothicAPI::ScopedLoadingTexture.
+        if ( MyDirectDrawSurface7* owner = ownedTexture->GetSurface(); owner && owner != this ) {
+            LogWarn() << "LoadAdditionalResources: '" << ownedTexture->GetNameView()
+                << "' does not own this surface - texture name would be wrong, skipping";
+            return;
+        }
+#endif
+
         GothicTexture = ownedTexture;
         TextureName = GothicTexture->GetNameWithoutExtView();
 
@@ -647,18 +658,18 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
         EngineTexture->UpdateDataDeferred( LockedData, 0 );
         Engine::GAPI->AddFrameLoadedTexture( this );
-        
-        // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
-        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+
+        // Only set while this thread is inside LoadResourceData. This is used to get the zCTexture from this Surface.
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture() ) {
             // Comming from LoadResourceData
-            LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+            LoadAdditionalResources( loading );
         }
     } else {
         EngineTexture->UpdateData( LockedData, 0 );
-        // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
-        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+        // Only set while this thread is inside LoadResourceData. This is used to get the zCTexture from this Surface.
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture() ) {
             // Comming from LoadResourceData
-            LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+            LoadAdditionalResources( loading );
         }
         SetReady( true ); // No need to load other stuff to get this ready
     }

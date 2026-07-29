@@ -28,13 +28,13 @@ public:
     }
 
     static int __fastcall hooked_LoadResourceData( zCTexture* thisptr ) {
-        Engine::GAPI->SetBoundTexture( 7, thisptr ); // Slot 7 is reserved for this
+        // Publish the texture so the MyDirectDrawSurface7::Unlock calls the original loader makes can
+        // find out who they belong to. Thread-local: this runs on the game thread *and* on ZENGIN's
+        // resource-manager thread.
+        GothicAPI::ScopedLoadingTexture loading( thisptr );
+
         // TODO: Figure out why some DTX1a Textures crash this
-        int ret = HookedFunctions::OriginalFunctions.ofiginal_zCTextureLoadResourceData( thisptr );
-
-        Engine::GAPI->SetBoundTexture( 7, nullptr ); // Slot 7 is reserved for this
-
-        return ret;
+        return HookedFunctions::OriginalFunctions.ofiginal_zCTextureLoadResourceData( thisptr );
     }
 
     /*
@@ -152,7 +152,11 @@ public:
                 LogInfo() << "CacheIn on Texture: " << GetNameView();
             }
 #endif
-            Engine::GAPI->SetBoundTexture( 7, this ); // Index 7 is reserved for cacheIn
+            // Scoped: with the resource-manager thread running, CacheIn only *queues* the texture and
+            // the load happens later on that thread. Leaving this set past the call would make the next
+            // unrelated surface unlocked on this thread believe it belongs to this texture and latch its
+            // name forever. hooked_LoadResourceData publishes it again on whichever thread does load it.
+            GothicAPI::ScopedLoadingTexture loading( this );
 
             // Cache the texture, overwrite priority if wanted.
             zCResourceManager::GetResourceManager()->CacheIn( this, zCTextureCacheHack::ForceCacheIn ? -1 : priority );

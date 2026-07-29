@@ -735,6 +735,32 @@ public:
     void SetBoundTexture( int idx, zCTexture* tex );
     zCTexture* GetBoundTexture( int idx );
 
+    /** The zCTexture ZENGIN is currently caching in, on *this* thread. MyDirectDrawSurface7::Unlock has
+        no other way of finding out which zCTexture the surface it is unlocking belongs to, so the load
+        path has to smuggle it through here. This must not be process-global: zCResourceManager derives
+        from zCThread and ships with its loader thread enabled (only -ZNORESTHREAD turns it off), so the
+        game thread and that loader thread can both sit inside zCTexture::LoadResourceData at the same
+        time. A shared slot lets them clobber each other, and the surface latches the resulting wrong
+        name permanently.
+        Always set it through ScopedLoadingTexture - it restores the previous value, which keeps nested
+        cache-ins (a texture loaded from inside another texture's load) correct. */
+    static void SetLoadingTexture( zCTexture* tex );
+    static zCTexture* GetLoadingTexture();
+
+    /** Publishes 'tex' as the texture being cached in on this thread for the lifetime of the object. */
+    struct ScopedLoadingTexture {
+        explicit ScopedLoadingTexture( zCTexture* tex ) : Previous( GothicAPI::GetLoadingTexture() ) {
+            GothicAPI::SetLoadingTexture( tex );
+        }
+        ~ScopedLoadingTexture() { GothicAPI::SetLoadingTexture( Previous ); }
+
+        ScopedLoadingTexture( const ScopedLoadingTexture& ) = delete;
+        ScopedLoadingTexture& operator=( const ScopedLoadingTexture& ) = delete;
+
+    private:
+        zCTexture* Previous;
+    };
+
     /** Returns gothics output window */
     HWND GetOutputWindow() { return OutputWindow; }
 
