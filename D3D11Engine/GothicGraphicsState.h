@@ -691,6 +691,12 @@ struct GothicRendererSettings {
         BloomThreshold = 0.9f;
         Exposure = 1.0f;
 
+        AutoExposureMiddleGray = 0.18f;
+        AutoExposureStrength = 0.65f;
+        AutoExposureMin = 0.5f;
+        AutoExposureMax = 2.0f;
+        AutoExposureSpeed = 0.5f;
+
         WireframeVobs = false;
         WireframeWorld = false;
         DrawShadowGeometry = true;
@@ -719,8 +725,6 @@ struct GothicRendererSettings {
         ShadowStrength = 0.40f;
         ShadowAOStrength = 0.50f;
         WorldAOStrength = 0.50f;
-        IndoorAmbientStrength = 0.10f;
-        IndoorSunSuppression = 1.0f;
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
@@ -1019,6 +1023,30 @@ struct GothicRendererSettings {
     float HDRLumWhite;
     float HDRMiddleGray;
     float Exposure;
+
+    // --- Dynamic exposure (D3D12 only; the D3D11 HDR path uses HDRMiddleGray/Exposure alone) ------------------
+    // CS_LumReduce/CS_LumAdapt meter the finished HDR scene and Tonemap.hlsl divides by the result, so the
+    // renderer's default behaviour is to drive EVERY scene to the same average brightness. That is wrong for
+    // Gothic: an unlit cave is meant to read as dark, not to be normalized up to the same level as open daylight.
+    // These five knobs are what bound that. See PSTonemap for the exact formula.
+    //
+    // Metering target in linear luminance - the average the auto-exposure aims the scene at. The classic
+    // photographic 0.18; raise for a brighter overall image, lower for a darker one. NOT HDRMiddleGray, which is
+    // calibrated for D3D11's own compressed tonemap curves and would overexpose by ~4.4x here.
+    float AutoExposureMiddleGray;
+    // How much of the full normalization to apply, 0..1, as an exponent on the exposure factor. 1 = classic
+    // "every scene becomes middle gray" (bright caves, the reason this knob exists); 0 = auto-exposure off, the
+    // manual Exposure multiplier alone. In between, a scene that meters darker than the target still ends up
+    // darker than the target, just less so - which is what keeps interiors and nights readable but still dim.
+    float AutoExposureStrength;
+    // Hard limits on the resulting exposure multiplier, applied after Strength. These, not the luminance floor
+    // in CS_LumReduce, are what cap how far a dark scene can be lifted (or a bright one pulled down).
+    float AutoExposureMin;
+    float AutoExposureMax;
+    // Adaptation rate (Pattanaik tau) used by CS_LumAdapt's exponential blend toward the new measurement.
+    // Higher = the eye adjusts faster; lower = a longer, more cinematic transition walking into a cave.
+    float AutoExposureSpeed;
+
     float BloomThreshold;
     float BloomStrength;
     bool EnableBloom;
@@ -1031,19 +1059,6 @@ struct GothicRendererSettings {
     float ShadowStrength;
     float ShadowAOStrength;
     float WorldAOStrength;
-    // D3D12 only. Gothic marks interior geometry by giving it a lightmap; the mod turns that into the flat
-    // DEFAULT_LIGHTMAP_POLY_COLOR vertex/instance color (alpha 0.05), which is what the shaders key off. Both
-    // knobs below exist because the sun/sky ambient is otherwise the ONLY light term with no occlusion beyond
-    // ssao*vertLighting, so a cave inside an OUTDOOR world (BSP mode outdoor -> none of the whole-world indoor
-    // overrides in D3D12ShadowMap/D3D12SkyIbl apply) tracked the time of day: bright at noon, dark at midnight.
-    //
-    // Flat, time-of-day-INDEPENDENT indirect floor applied to indoor surfaces in place of the sky IBL / ambient
-    // sun term. This is the knob that decouples interiors from the sun; interiors are meant to be lit by torches.
-    float IndoorAmbientStrength;
-    // How much of the DIRECT sun term is removed on indoor surfaces (1 = none reaches, 0 = CSM decides alone).
-    // The cascades already shadow a cave roof, but leaving this at 1 also covers bias/range leaks. Lower it if
-    // sunlight spilling through a cave mouth or door reads better than a hard sector cut.
-    float IndoorSunSuppression;
     float ShadowSoftness;
     float PCSSLightSize;
     // D3D12 only (the D3D11 backend has no PBR path): scale on the sky-IBL indirect term that replaced the

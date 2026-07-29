@@ -1461,6 +1461,33 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         ImGui::EndDisabled();
 
+        // --- Dynamic exposure (D3D12 backend only) -----------------------------------------------------
+        // The auto-exposure meter (CS_LumReduce/CS_LumAdapt) measures average scene luminance and Tonemap.hlsl
+        // divides by it, which on its own normalizes EVERY scene to the same brightness — the reason an unlit
+        // cave used to come out as bright as daylight. These knobs bound that.
+        ImGui::SeparatorText( "Auto Exposure (D3D12)##AdvancedAutoExposure" );
+        ImGui::DragFloat( "AutoExposureStrength", &settings.AutoExposureStrength, 0.01f, 0.0f, 1.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. How much of the measured brightness difference the auto-exposure\n"
+                               "corrects for.\n"
+                               "1 = full normalization: every scene, including a dark cave, is pushed to the\n"
+                               "    target brightness.\n"
+                               "0 = auto-exposure off; only the manual Exposure slider applies.\n"
+                               "In between, dark scenes stay dark - just less extremely so." );
+        ImGui::DragFloat( "AutoExposureMiddleGray", &settings.AutoExposureMiddleGray, 0.005f, 0.01f, 1.0f, "%.3f" );
+        ImGui::SetItemTooltip( "D3D12 only. The average linear luminance the auto-exposure aims the scene at.\n"
+                               "0.18 is the classic photographic value. Higher = brighter overall image.\n"
+                               "This is NOT HDRMiddleGray, which is calibrated for the D3D11 tonemap curves." );
+        ImGui::DragFloat( "AutoExposureMin", &settings.AutoExposureMin, 0.01f, 0.0f, 8.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. Lower limit on the exposure multiplier auto-exposure may apply.\n"
+                               "Raise toward 1.0 to stop bright scenes from being darkened." );
+        ImGui::DragFloat( "AutoExposureMax", &settings.AutoExposureMax, 0.01f, 0.0f, 8.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. Upper limit on the exposure multiplier auto-exposure may apply.\n"
+                               "This is the hard cap on how far a dark interior can be brightened; lower it\n"
+                               "toward 1.0 if caves and nights still read too bright." );
+        ImGui::DragFloat( "AutoExposureSpeed", &settings.AutoExposureSpeed, 0.01f, 0.0f, 8.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. How fast the eye adapts to a new brightness (Pattanaik tau).\n"
+                               "Higher = snappier, lower = a longer transition when entering a cave." );
+
         // --- Real HDR display output (ST.2084 scanout; D3D12 backend only) -----------------------------
         ImGui::SeparatorText( "HDR Display Output" );
         if ( ImGui::Checkbox( "HDR Monitor Output", &settings.HDR_Monitor ) ) {
@@ -1634,20 +1661,6 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::EndDisabled();
         }
-
-        // Interior lighting (D3D12). Applies per PIXEL, keyed off Gothic's own lightmapped-sector marker, so it
-        // also covers caves/houses inside an outdoor world — the case the whole-world zBSP_MODE_INDOOR overrides
-        // never see. Outside the shadow block for the same reason the sky-IBL knobs below are: it is ambient.
-        ImGui::SeparatorText( "Interiors (D3D12)##AdvancedIndoor" );
-        ImGui::DragFloat( "IndoorAmbientStrength", &settings.IndoorAmbientStrength, 0.005f, 0.0f, 1.0f, "%.3f" );
-        ImGui::SetItemTooltip( "D3D12 only. Flat ambient floor used INSTEAD of the sun/sky ambient on indoor\n"
-                               "surfaces. It carries no time-of-day term, so a cave looks the same at noon and\n"
-                               "at midnight; torches and other point lights still light it normally.\n"
-                               "0 = interiors get no ambient at all (torch-only)." );
-        ImGui::DragFloat( "IndoorSunSuppression", &settings.IndoorSunSuppression, 0.01f, 0.0f, 1.0f, "%.2f" );
-        ImGui::SetItemTooltip( "D3D12 only. How much of the DIRECT sun is removed on indoor surfaces.\n"
-                               "1 = none reaches (hard sector cut), 0 = only the shadow cascades decide.\n"
-                               "Lower this if sunlight spilling through a cave mouth or open door looks better." );
 
         // Sky image-based lighting — the D3D12 indirect-light term. Deliberately OUTSIDE the shadow block's
         // BeginDisabled/EndDisabled: it is ambient lighting and stays live with shadows switched off. Sits here

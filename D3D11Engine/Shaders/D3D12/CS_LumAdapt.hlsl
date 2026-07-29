@@ -1,7 +1,7 @@
 // Dynamic exposure (auto-exposure), level 2: reduces CS_LumReduce's per-group partial sums to one average
 // scene luminance, then blends it toward last frame's value using Pattanaik's exponential technique — the
 // same adaptation D3D11's PS_PFX_LumAdapt.hlsl performs. Runs as a single thread group (Dispatch(1,1,1)).
-cbuffer LumAdaptCB : register(b0) { uint NumPartials; float DeltaTime; uint FirstFrame; float _pad; };
+cbuffer LumAdaptCB : register(b0) { uint NumPartials; float DeltaTime; uint FirstFrame; float Tau; };
 StructuredBuffer<float2>  PartialSums : register(t0);   // {sum, count} per group, from CS_LumReduce
 RWStructuredBuffer<float> AdaptedLum  : register(u0);   // [0] = last frame's adapted luminance; overwritten here
 
@@ -45,10 +45,13 @@ void CSMain( uint3 gtid : SV_GroupThreadID )
         }
         else
         {
-            const float tau = 0.5;   // matches D3D11 PS_PFX_LumAdapt's fTau
+            // RendererSettings.AutoExposureSpeed (default 0.5, D3D11 PS_PFX_LumAdapt's fTau).
             float lastLum = AdaptedLum[0];
-            adapted = lastLum + ( currentLum - lastLum ) * ( 1.0 - exp( -DeltaTime * tau ) );
+            adapted = lastLum + ( currentLum - lastLum ) * ( 1.0 - exp( -DeltaTime * max( Tau, 0.0 ) ) );
         }
-        AdaptedLum[0] = clamp( adapted, 0.05, 32.0 );   // matches D3D11's floor/clamp range
+        // Numerical guard only - deliberately far wider than the old [0.05, 32]. Limiting the METER is the wrong
+        // place to bound auto-exposure (it silently pins dark scenes to the maximum boost); AutoExposureMin/Max
+        // in PSTonemap bound the exposure multiplier directly instead.
+        AdaptedLum[0] = clamp( adapted, 1e-4, 1e4 );
     }
 }

@@ -1653,10 +1653,13 @@ bool D3D12PipelineState::CreateTonemap() {
 
     D3D12RootLayout& rs = Layout( "Tonemap" );
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 0: t0 scene HDR
-    // 1: b0 { Exposure, LumWhite, ToneMapMode, HdrOutput, DisplayHeadroom, pad[3] }. HdrOutput switches the PS
-    // off the SDR operators entirely and onto the highlight roll-off for a real HDR scanout; a runtime branch
-    // rather than a PSO variant, since it is uniform for the whole process (see DisplayFormat).
-    rs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_PIXEL );
+    // 1: b0 { Exposure, LumWhite, ToneMapMode, HdrOutput, DisplayHeadroom, MiddleGray, AutoExposureStrength,
+    // AutoExposureMin, AutoExposureMax, pad[3] }. HdrOutput switches the PS off the SDR operators entirely and
+    // onto the highlight roll-off for a real HDR scanout; a runtime branch rather than a PSO variant, since it
+    // is uniform for the whole process (see DisplayFormat). The count is asserted against
+    // D3D12GraphicsEngine::TonemapRootConstants at the SetGraphicsRoot32BitConstants call site (that struct is
+    // private, so it can't be named from here).
+    rs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_PIXEL );
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t1 AdaptedLum
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );   // s0
 

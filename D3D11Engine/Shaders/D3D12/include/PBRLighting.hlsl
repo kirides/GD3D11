@@ -11,8 +11,7 @@
 //   cbuffer LightCB  { uint LightCount; uint NumTilesX; uint LimitLightIntensity; ...; }
 //   cbuffer ShadowCB { float4x4 CascadeViewProj[NUM_CSM_CASCADES]; float3 SunDirWS; float ShadowMapSize;
 //                      float3 SunColor; float SunIntensity; float3 CascadeTexelWorld; float AmbientStrength;
-//                      float ShadowAOStrength; float WorldAOStrength; float IndoorAmbient;
-//                      float IndoorSunSuppression; ...; }
+//                      float ShadowAOStrength; float WorldAOStrength; ...; }
 //   StructuredBuffer<GPULight> Lights; StructuredBuffer<LightGrid> LightGridBuf; StructuredBuffer<uint> LightIndexBuf;
 //   Texture2DArray ShadowMap; SamplerComparisonState shadowCmp; TextureCubeArray PointShadowCubes;
 // The LOW-RES static cube array is not a declared binding: it is fetched bindlessly (SM6.6
@@ -384,28 +383,9 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     return normalize( mul( nrm, CotangentFrame( N, -p, uv ) ) );
 }
 
-// Is this surface inside a Gothic INDOOR sector? WorldConverter stamps every lightmapped polygon (and
-// VobInfo::UpdateState / the skeletal groundLight every indoor vob) with the flat DEFAULT_LIGHTMAP_POLY_COLOR
-// = (0.05, 0.05, 0.05, 0.05); outdoor geometry carries the ground poly's lightStatic, whose alpha is 1. The
-// ALPHA channel is therefore a free, already-uploaded indoor bit — and it survives the world mesh's BGRA-read-
-// as-RGBA channel swap (see World.hlsl VSTransparent), unlike .r/.b. Vegetation passes 0: grass is outdoor-only.
-//
-// Returns 0 or 1, then gets scaled by the CB's enable sentinel at the use site.
-float IndoorFromVertexColor( float4 col )
-{
-    return col.a < 0.5 ? 1.0 : 0.0;
-}
-
-// PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation).
-//
-// `indoor` (0..1, from IndoorFromVertexColor) decouples interior surfaces from the outdoor sun. Without it a
-// cave or house inside an OUTDOOR world tracks the time of day: the whole-world indoor overrides in
-// D3D12ShadowMap/D3D12SkyIbl only fire for zBSP_MODE_INDOOR levels, and the ambient/IBL term is the one light
-// term with no real occluder — vertLighting and ssao merely attenuate it (shadowAO bottoms out at
-// lerp(1, 0.05, ShadowAOStrength) = 0.525 at the 0.5 default), so ~half the noon sky irradiance reached a cave
-// interior while midnight correctly left it black.
+// PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao, float ssao, float indoor )
+                              float roughness, float metallic, float ao, float ssao )
 {
     float3 V = normalize( CamPosWS - wpos );
     float3 L = SunDirWS;                            // dir toward the sun (world space)
@@ -441,18 +421,8 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     else
         ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 
-    // Indoor override. A NEGATIVE IndoorAmbient is D3D12ShadowMap's "off" sentinel, set on zBSP_MODE_INDOOR
-    // worlds where the whole-world policy has already handled this at CB level (there is no spare float in the
-    // 256-byte ShadowCB head to carry a separate enable). Where it IS on, the sun/sky-derived ambient is
-    // replaced by a flat floor that contains no time-of-day term at all — that, not merely dimming it, is what
-    // makes a cave read the same at 13:00 and at 00:00. Torches and other point lights are untouched and remain
-    // the intended interior light source.
-    float indoorApply = IndoorAmbient >= 0.0 ? indoor : 0.0;
-    ambientSun = lerp( ambientSun, albedo * IndoorAmbient * shadowAO * ssao, indoorApply );
-
-    // Direct Sun term. The cascades already shadow a cave roof, so this mostly guards against depth-bias and
-    // cascade-range leaks; IndoorSunSuppression < 1 lets sunlight spill through a cave mouth or an open door.
-    float sunAtten = sun * worldAO * SunIntensity * ( 1.0 - indoorApply * IndoorSunSuppression );
+    // Direct Sun term
+    float sunAtten = sun * worldAO * SunIntensity;
     float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
 
     return ambientSun + directSun;

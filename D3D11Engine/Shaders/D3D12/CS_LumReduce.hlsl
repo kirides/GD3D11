@@ -7,7 +7,12 @@ cbuffer LumReduceCB : register(b0) { uint Width; uint Height; uint NumGroupsX; u
 Texture2D SceneHDR : register(t0);
 RWStructuredBuffer<float2> PartialSums : register(u0);   // per-group {sum, count}
 
-static const float MIN_LUM = 0.05;   // matches D3D11 PS_PFX_LumConvert's MIN_LUM floor
+// Numerical floor only. This used to be 0.05 (D3D11 PS_PFX_LumConvert's floor), applied PER PIXEL and therefore
+// baked into the average: every black pixel metered as 0.05, so the whole dark half of the range collapsed and a
+// torchless cave measured no darker than a dim room — the meter saturated and auto-exposure handed it the maximum
+// boost. The floor belongs on the FINAL adapted value (CS_LumAdapt) and on the exposure multiplier itself
+// (AutoExposureMin/Max), not on individual samples; all this needs to do is keep the value away from zero.
+static const float MIN_LUM = 1e-4;
 static const float3 LUM_CONVERT = float3( 0.333, 0.333, 0.333 );
 
 groupshared float gs_sum[256];

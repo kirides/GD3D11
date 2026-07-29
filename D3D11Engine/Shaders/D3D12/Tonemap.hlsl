@@ -3,21 +3,23 @@ cbuffer TonemapCB : register(b0)
     float Exposure; float LumWhite; uint ToneMapMode; uint HdrOutput;
     // Display headroom in PAPER-WHITE units when HdrOutput != 0: (HDR max brightness / paper white). 5.0 means
     // the panel can show highlights up to 5x diffuse white. Unused (and pushed as 0) in SDR.
-    float DisplayHeadroom; float3 _pad;
+    float DisplayHeadroom;
+    // Dynamic-exposure controls, straight from RendererSettings (see PSTonemap for how they combine).
+    float MiddleGray; float AutoExposureStrength; float AutoExposureMin;
+    float AutoExposureMax; float3 _pad;
 };
 Texture2D    SceneHDR : register(t0);
 SamplerState smp      : register(s0);
 // Dynamic exposure (CS_LumReduce/CS_LumAdapt): [0] = this frame's temporally-adapted average scene luminance.
-// Mirrors D3D11's `vColor *= HDR_MiddleGray / fLumAvg` exposure adjustment, EXCEPT the "middle gray" target is
-// the classic photographic 0.18 (below), not RendererSettings.HDRMiddleGray (0.8) — that setting is tuned for
-// D3D11's own compressed tonemap curves (ToneMap_jafEq4/Uncharted2/etc.), which expect a much brighter target
-// than most of the operators below. Reusing 0.8 overexposed the whole scene by ~4.4x (0.8/0.18) before the user
-// even touched the manual Exposure slider. Exposure stays a user-tunable multiplier layered on top
-// (RendererSettings.Exposure, default 1.0). LumWhite mirrors RendererSettings.HDRLumWhite (the whiteScale/
-// highlight-rolloff white point several operators below use); ToneMapMode mirrors RendererSettings.HDRToneMap
-// (GothicGraphicsState.h's E_HDRToneMap enum — same 0..5 values/order as D3D11's ImGui combo) so the same
-// setting picks the operator on both backends.
-static const float kMiddleGray = 0.18;
+// Mirrors D3D11's `vColor *= HDR_MiddleGray / fLumAvg` exposure adjustment, EXCEPT the target is
+// RendererSettings.AutoExposureMiddleGray (default 0.18, the classic photographic value) and NOT
+// RendererSettings.HDRMiddleGray (0.8) — that setting is tuned for D3D11's own compressed tonemap curves
+// (ToneMap_jafEq4/Uncharted2/etc.), which expect a much brighter target than most of the operators below.
+// Reusing 0.8 overexposed the whole scene by ~4.4x (0.8/0.18) before the user even touched the manual Exposure
+// slider. Exposure stays a user-tunable multiplier layered on top (RendererSettings.Exposure, default 1.0).
+// LumWhite mirrors RendererSettings.HDRLumWhite (the whiteScale/highlight-rolloff white point several operators
+// below use); ToneMapMode mirrors RendererSettings.HDRToneMap (GothicGraphicsState.h's E_HDRToneMap enum — same
+// 0..5 values/order as D3D11's ImGui combo) so the same setting picks the operator on both backends.
 StructuredBuffer<float> AdaptedLum : register(t1);
 
 struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
@@ -170,8 +172,16 @@ float4 PSTonemap( VS_OUT i ) : SV_TARGET
 {
     // clamp guards the rare frame where CS_LumAdapt hasn't run yet (partial-sum buffer alloc failure on a
     // resize) and the buffer still holds its D3D12MA DEFAULT_POOLS_NOT_ZEROED creation-time content.
-    float lum = clamp( AdaptedLum[0], 0.05, 32.0 );
-    float exposureFactor = Exposure * kMiddleGray / ( lum + 0.001 );
+    float lum = clamp( AdaptedLum[0], 1e-4, 1e4 );
+
+    // Auto-exposure, bounded. `MiddleGray/lum` alone is a FULL normalization: it maps whatever the scene happens
+    // to average onto the target, so an unlit cave comes out exactly as bright as open daylight. Raising that
+    // ratio to AutoExposureStrength (< 1) makes the correction partial, so a scene that meters dark stays dark,
+    // just less extremely — at 0 the auto term drops out entirely and only the manual Exposure slider is left.
+    // The final clamp is the hard safety rail, in exposure units the user can reason about directly.
+    float autoExposure = pow( max( MiddleGray, 1e-6 ) / lum, saturate( AutoExposureStrength ) );
+    autoExposure = clamp( autoExposure, AutoExposureMin, max( AutoExposureMin, AutoExposureMax ) );
+    float exposureFactor = Exposure * autoExposure;
     float3 hdr = SceneHDR.Sample( smp, i.uv ).rgb * exposureFactor;
 
     [branch] if ( HdrOutput != 0 )

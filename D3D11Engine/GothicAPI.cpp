@@ -5399,6 +5399,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "Exposure", float_to_string( s.Exposure, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureMiddleGray", to_string_locale_independent( s.AutoExposureMiddleGray ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureStrength", to_string_locale_independent( s.AutoExposureStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureMin", to_string_locale_independent( s.AutoExposureMin ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureMax", to_string_locale_independent( s.AutoExposureMax ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureSpeed", to_string_locale_independent( s.AutoExposureSpeed ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomThreshold", float_to_string( s.BloomThreshold, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomStrength", float_to_string( s.BloomStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomKnee", float_to_string( s.BloomKnee, 2 ).c_str(), ini.c_str() );
@@ -5483,8 +5488,6 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowSoftness", to_string_locale_independent( s.ShadowSoftness ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", to_string_locale_independent( s.ShadowAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldAOStrength", to_string_locale_independent( s.WorldAOStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "IndoorAmbientStrength", to_string_locale_independent( s.IndoorAmbientStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "IndoorSunSuppression", to_string_locale_independent( s.IndoorSunSuppression ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SkyIblIntensity", to_string_locale_independent( s.SkyIblIntensity ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SkyIblNightFloor", to_string_locale_independent( s.SkyIblNightFloor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
@@ -5551,6 +5554,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
         s.EnableBloom = GetPrivateProfileBoolA( "General", "EnableBloom", ds.EnableBloom, ini );
         s.Exposure = GetPrivateProfileFloatA( "General", "Exposure", ds.Exposure, ini );
+        s.AutoExposureMiddleGray = GetPrivateProfileFloatA( "General", "AutoExposureMiddleGray", ds.AutoExposureMiddleGray, ini );
+        s.AutoExposureStrength = GetPrivateProfileFloatA( "General", "AutoExposureStrength", ds.AutoExposureStrength, ini );
+        s.AutoExposureMin = GetPrivateProfileFloatA( "General", "AutoExposureMin", ds.AutoExposureMin, ini );
+        s.AutoExposureMax = GetPrivateProfileFloatA( "General", "AutoExposureMax", ds.AutoExposureMax, ini );
+        s.AutoExposureSpeed = GetPrivateProfileFloatA( "General", "AutoExposureSpeed", ds.AutoExposureSpeed, ini );
         s.BloomThreshold = GetPrivateProfileFloatA( "General", "BloomThreshold", ds.BloomThreshold, ini );
         s.BloomStrength = GetPrivateProfileFloatA( "General", "BloomStrength", ds.BloomStrength, ini );
         s.BloomKnee = GetPrivateProfileFloatA( "General", "BloomKnee", ds.BloomKnee, ini );
@@ -5609,8 +5617,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", ds.ShadowSoftness, ini );
         s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", ds.ShadowAOStrength, ini );
         s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", ds.WorldAOStrength, ini );
-        s.IndoorAmbientStrength = GetPrivateProfileFloatA( "Shadows", "IndoorAmbientStrength", ds.IndoorAmbientStrength, ini );
-        s.IndoorSunSuppression = GetPrivateProfileFloatA( "Shadows", "IndoorSunSuppression", ds.IndoorSunSuppression, ini );
         s.SkyIblIntensity = GetPrivateProfileFloatA( "Shadows", "SkyIblIntensity", ds.SkyIblIntensity, ini );
         s.SkyIblNightFloor = GetPrivateProfileFloatA( "Shadows", "SkyIblNightFloor", ds.SkyIblNightFloor, ini );
         s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias = GetPrivateProfileFloatA( "Shadows", "ShadowDepthSlopeBias", ds.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, ini );

@@ -31,7 +31,7 @@ cbuffer ShadowCB : register(b4)
     float3   SunDirWS;          float ShadowMapSize;
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float IndoorAmbient; float IndoorSunSuppression;
+    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
     // Scene-wetness (rain) block. Grass applies no wetness (no Wetness.hlsl include here), but the fields must
     // be declared so the AO tail below lands at the byte offset UploadAoReprojConstants writes it to — this CB
     // is the same 512-byte resource World/Vob/Skeletal bind, three disjoint writers into one layout.
@@ -153,7 +153,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // blade's reprojected position describes the blade itself and its neighbours, not the terrain behind it —
     // the reason this used to pass a literal 1.0.
     float ssao = SampleScreenSpaceAO( i.wpos );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao, 0.0 );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, 0.9, 0.0 );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

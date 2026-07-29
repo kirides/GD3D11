@@ -28,7 +28,7 @@ cbuffer ShadowCB : register(b3)
     float3   SunDirWS;          float ShadowMapSize;
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float IndoorAmbient; float IndoorSunSuppression;
+    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
     // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
     // lit shaders and in the CPU-side WetnessCBData.
     float4x4 RainViewProj;
@@ -138,7 +138,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.wpos );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao, IndoorFromVertexColor( i.col ) );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
@@ -235,7 +235,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.wpos );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao, IndoorFromVertexColor( i.col ) );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;

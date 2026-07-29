@@ -416,8 +416,9 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	m_CmdList->ResourceBarrier( 1, &partialToSrv );
 
 	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
-	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float _pad; };
-	LumAdaptCB adaptCb = { m_LumGroupsX * m_LumGroupsY, Engine::GAPI->GetDeltaTime(), m_LumAdaptInitialized ? 0u : 1u, 0.0f };
+	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float Tau; };
+	LumAdaptCB adaptCb = { m_LumGroupsX * m_LumGroupsY, Engine::GAPI->GetDeltaTime(), m_LumAdaptInitialized ? 0u : 1u,
+		std::max( Engine::GAPI->GetRendererState().RendererSettings.AutoExposureSpeed, 0.0f ) };
 	m_CmdList->SetPipelineState( m_Pipelines.LumAdapt.PSO.Get() );
 	m_CmdList->SetComputeRootSignature( m_Pipelines.LumAdapt.RootSig.Get() );
 	m_CmdList->SetComputeRoot32BitConstants( 0, 4, &adaptCb, 0 );

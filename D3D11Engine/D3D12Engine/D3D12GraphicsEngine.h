@@ -219,8 +219,12 @@ private:
     // display-referred highlight roll-off; DisplayHeadroom is the panel's peak in paper-white units.
     struct TonemapRootConstants {
         float Exposure; float LumWhite; UINT ToneMapMode; UINT HdrOutput;
-        float DisplayHeadroom; float _pad[3];
+        float DisplayHeadroom;
+        // Dynamic-exposure controls (RendererSettings.AutoExposure*), see MakeTonemapConstants.
+        float MiddleGray; float AutoExposureStrength; float AutoExposureMin;
+        float AutoExposureMax; float _pad[3];
     };
+    static constexpr UINT kTonemapRootConstantCount = sizeof( TonemapRootConstants ) / sizeof( UINT );
     TonemapRootConstants MakeTonemapConstants( bool hdrOutput ) const;
 
     void   DetectHdrOutputCapability();     // fills m_HdrOutputActive + the luminance metadata (best effort)

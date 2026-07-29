@@ -1127,7 +1127,9 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
 	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive );
-	m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &tonemapConsts, 0 );
+	// Count MUST match the AddConstants( 0, ... ) in D3D12PipelineState::CreateTonemap.
+	static_assert( kTonemapRootConstantCount == 12, "Tonemap root constant count changed - update CreateTonemap" );
+	m_CmdList->SetGraphicsRoot32BitConstants( 1, kTonemapRootConstantCount, &tonemapConsts, 0 );
 	m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
@@ -1141,8 +1143,13 @@ D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConsta
 	const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 	TonemapRootConstants c = {};
 	c.Exposure = s.Exposure > 0.0f ? s.Exposure : 1.0f;
-	// MiddleGray is NOT sent — Tonemap.hlsl hardcodes its ACES-tuned 0.18 target; RendererSettings.HDRMiddleGray
-	// (0.8) is calibrated for D3D11's own tonemap curves.
+	// Dynamic-exposure knobs. NOT RendererSettings.HDRMiddleGray (0.8) — that one is calibrated for D3D11's own
+	// tonemap curves and overexposes this path by ~4.4x; AutoExposureMiddleGray defaults to the photographic 0.18.
+	// Strength/Min/Max are what stop a dark interior from being normalized up to daylight brightness.
+	c.MiddleGray = s.AutoExposureMiddleGray > 0.0f ? s.AutoExposureMiddleGray : 0.18f;
+	c.AutoExposureStrength = std::clamp( s.AutoExposureStrength, 0.0f, 1.0f );
+	c.AutoExposureMin = std::max( s.AutoExposureMin, 0.0f );
+	c.AutoExposureMax = std::max( s.AutoExposureMax, c.AutoExposureMin );
 	c.LumWhite = s.HDRLumWhite;
 	c.ToneMapMode = static_cast<UINT>( s.HDRToneMap );
 	c.HdrOutput = hdrOutput ? 1u : 0u;
