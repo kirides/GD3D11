@@ -1772,16 +1772,43 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::TextUnformatted("GPU-driven VOB culling (D3D12 only)");
                 ImGui::Checkbox("GPU VOB culling", &settings.GpuVobCulling );
                 ImGui::SetItemTooltip("Collect static VOBs distance-only on the CPU and frustum-cull them in a compute shader instead. Off = the classic CPU per-VOB frustum test");
+                
                 ImGui::BeginDisabled( !settings.GpuVobCulling );
                 ImGui::Checkbox("GPU occlusion culling", &settings.GpuVobOcclusionCulling );
                 ImGui::SetItemTooltip("Additionally reject VOB instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass");
                 ImGui::EndDisabled();
-                ImGui::EndTabItem();
-            }
 
-            if (ImGui::BeginTabItem("Culling", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
+
+                ImGui::Separator();
+                auto& portalCuller = Engine::GAPI->GetPortalCuller();
+                if ( ImGui::Checkbox( "Portal culling", &settings.EnablePortalCulling ) ) {
+                    portalCuller.SetEnabled( settings.EnablePortalCulling );
+                }
+                ImGui::SetItemTooltip( "Skip VOBs in rooms the camera cannot see into through any\n"
+                                       "chain of portals. Only affects portal-compiled outdoor worlds." );
+
+                ImGui::BeginDisabled( !settings.EnablePortalCulling );
+                if ( ImGui::SliderFloat( "Near room radius", &settings.PortalCullingNearRadius, 0.0f, 15000.0f, "%.0f" ) ) {
+                    portalCuller.SetNearSectorRadius( settings.PortalCullingNearRadius );
+                }
+                ImGui::SetItemTooltip( "Rooms closer than this are never culled (100 units = 1m).\n"
+                                       "Raise it if interiors pop while standing near a doorway." );
+                ImGui::EndDisabled();
+
+                const auto& ps = portalCuller.GetStats();
+                if ( ps.NumSectors == 0 ) {
+                    ImGui::TextDisabled( "world has no sector/portal data" );
+                } else {
+                    ImGui::Text( "sectors: %d active / %d  (portals: %d)",
+                        ps.ActiveSectors, ps.NumSectors, ps.NumPortals );
+                    ImGui::Text( "camera: %s", ps.CameraOutdoor ? "outdoor" : "in sector" );
+                    if ( ps.UnreachableSectors > 0 ) {
+                        ImGui::TextColored( ImVec4( 1.0f, 0.7f, 0.2f, 1.0f ),
+                            "%d sector(s) unreachable from outdoor - never culled", ps.UnreachableSectors );
+                    }
+                }
                 ImGui::EndTabItem();
             }
             

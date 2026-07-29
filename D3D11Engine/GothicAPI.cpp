@@ -840,6 +840,8 @@ void GothicAPI::ResetVobs() {
     RegisteredVobs.clear();
     BspLeafVobLists.clear();
     LeafLinearCache.Clear();
+    // Holds indices into the (now gone) sector arrays and BspInfo::SectorIds - must not outlive them.
+    PortalCuller.Clear();
     DynamicallyAddedVobs.clear();
     DecalVobs.clear();
     VobsByVisual.clear();
@@ -4114,16 +4116,20 @@ void GothicAPI::CollectVisibleVobs(
 
     zCBspBase* rootBsp = tree->GetRootNode();
     Frustum frustum = Frustum::AlwaysContainingFrustum();
+    bool haveCameraMatrices = false;
+    XMMATRIX worldToClip = XMMatrixIdentity();
     if ( auto cam = GetSceneCamera() ) {
         cam->Activate();
 
         // Row-Major view
         const auto& view = cam->trafoView;
         const auto& proj = cam->trafoProjection;
-        frustum.BuildPerspective(
-            XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
-            XMLoadFloat4x4( &proj )
-        );
+        const XMMATRIX viewM = XMMatrixTranspose( XMLoadFloat4x4( &view ) );
+        const XMMATRIX projM = XMLoadFloat4x4( &proj );
+        frustum.BuildPerspective( viewM, projM );
+
+        worldToClip = XMMatrixMultiply( viewM, projM );
+        haveCameraMatrices = true;
     }
 
     if ( CameraReplacementPtr ) {
@@ -4162,6 +4168,15 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawFlags.CollectIndoorVobs = true;
     ctx.drawFlags.CollectMobs = true;
     ctx.drawFlags.CollectLights = true;
+
+    // This overload is the main camera pass of both backends, and the only place portal culling
+    // applies: shadow passes need casters from rooms the player cannot see into.
+    if ( haveCameraMatrices && PortalCuller.IsActive() ) {
+        oCGame* game = oCGame::GetGame();
+        PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
+        ctx.portalCuller = &PortalCuller;
+    }
+
     CollectVisibleVobs( ctx );
 
     if ( RendererState.RendererSettings.SortRenderQueue ) {
@@ -4678,7 +4693,10 @@ static void CVVH_AddNotDrawnVobToList(
         float distSq,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
-        BspTreeVobVisitor* visitor
+        BspTreeVobVisitor* visitor,
+        // Non-null only for the indoor list of a portal-culled pass: the vob must additionally
+        // reach the screen-space aperture its room is seen through (ScreenProjectionTouchesPortal).
+        const BspInfo* portalLeaf = nullptr
     ) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
     // SkipVobFrustumCull: the backend culls these on the GPU (D3D12), so collect distance-only.
@@ -4696,6 +4714,11 @@ static void CVVH_AddNotDrawnVobToList(
             && cullingEnabled
             && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
+        }
+        if ( portalLeaf ) {
+            const zTBBox3D& bb = it->Vob->GetBBox();
+            if ( !ctx.portalCuller->IsBoxVisibleInLeafSectors( *portalLeaf, bb.Min, bb.Max ) )
+                continue;
         }
         if ( it->Vob->GetVisualAlpha() ) {
             ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
@@ -4890,6 +4913,11 @@ void GothicAPI::BuildBspVobMapCache() {
     ZoneScopedN( "GothicAPI::BuildBspVobMapCache" );
     BuildBspVobMapCacheHelper( LoadedWorldInfo->BspTree->GetRootNode() );
     BuildBspLeafLinearCache();
+
+    // Needs the BspInfo mirror tree above to exist - it tags the leafs with their sector ids.
+    PortalCuller.SetEnabled( RendererState.RendererSettings.EnablePortalCulling );
+    PortalCuller.SetNearSectorRadius( RendererState.RendererSettings.PortalCullingNearRadius );
+    PortalCuller.BuildFromWorld( LoadedWorldInfo->BspTree );
 }
 
 void GothicAPI::BuildBspLeafLinearCache() {
@@ -5436,6 +5464,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     */
 
     WritePrivateProfileStringA( "General", "EnableOcclusionCulling", to_string_locale_independent( s.EnableOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnablePortalCulling", to_string_locale_independent( s.EnablePortalCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     
     auto res = Engine::GraphicsEngine->GetBackbufferResolution();
@@ -5592,6 +5622,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         */
 
         s.EnableOcclusionCulling = GetPrivateProfileBoolA( "General", "EnableOcclusionCulling", ds.EnableOcclusionCulling, ini );
+        s.EnablePortalCulling = GetPrivateProfileBoolA( "General", "EnablePortalCulling", ds.EnablePortalCulling, ini );
+        s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
 
         // override INI settings with GMP minimum values.
@@ -6398,7 +6430,12 @@ static void CollectLeafVobs(
 
     if ( ctx.drawFlags.DrawVOBs ) {
         if ( collectIndoorVobs && leafDistSq < vobIndoorDistSq ) {
-            CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor );
+            // Portal culling: a room the camera cannot see into through any chain of portals has
+            // none of its VOBs collected at all. Leafs outside every sector pass through untouched.
+            if ( !ctx.portalCuller || ctx.portalCuller->IsLeafVisible( *base ) ) {
+                CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor,
+                    ctx.portalCuller ? base : nullptr );
+            }
         }
 
         if ( leafDistSq < vobOutdoorSmallDistSq ) {

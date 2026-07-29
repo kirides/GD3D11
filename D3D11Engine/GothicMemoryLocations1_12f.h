@@ -246,6 +246,8 @@ struct GothicMemoryLocations {
     };
 
     struct zCBspTree {
+        static const unsigned int Offset_SectorList = 0x40;
+        static const unsigned int Offset_PortalList = 0x4C;
         static const unsigned int AddVob = 0x005344B0;
         static const unsigned int LoadBIN = 0x0053B550;
         static const unsigned int Offset_NumPolys = 0x24;
@@ -259,6 +261,13 @@ struct GothicMemoryLocations {
         static const unsigned int Render = 0x005335A0;
     };
 
+    /** Layout is identical across G1 1.08k, G1 1.12f and G2 2.6 - plain data, no code addresses. */
+    struct zCBspSector {
+        static const unsigned int Offset_SectorNodes = 0x14;
+        static const unsigned int Offset_SectorIndex = 0x20;
+        static const unsigned int Offset_SectorPortals = 0x24;
+    };
+
     struct zCBspBase {
         static const unsigned int CollectPolysInBBox3D = 0x00535F20;
         static const unsigned int CheckRayAgainstPolys = 0x00534F30;
@@ -268,6 +277,7 @@ struct GothicMemoryLocations {
     };
 
     struct zCPolygon {
+        static const unsigned int Offset_PolyPlane = 0x08;
         static const unsigned int Offset_VerticesArray = 0x00;
         static const unsigned int Offset_FeaturesArray = 0x2C;
         static const unsigned int Offset_NumPolyVertices = 0x30;
@@ -310,6 +320,8 @@ struct GothicMemoryLocations {
     };
 
     struct zCMaterial {
+        static const unsigned int Offset_BspSectorFront = 0x44;
+        static const unsigned int Offset_BspSectorBack = 0x48;
         static const unsigned int Offset_Color = 0x38;
         static const unsigned int Offset_Texture = 0x34;
         static const unsigned int Offset_AlphaFunc = 0x70;

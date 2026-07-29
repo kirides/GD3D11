@@ -968,6 +968,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Detours\detver.h" />
     <ClInclude Include="EditorLinePrimitive.h" />
     <ClInclude Include="Engine.h" />
+    <ClInclude Include="BspPortalCuller.h" />
     <ClInclude Include="Frustum.h" />
     <ClInclude Include="GFSDK_SSAO.h" />
     <ClInclude Include="GInventory.h" />
@@ -1231,6 +1232,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp" />
     <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
     <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
+    <ClCompile Include="BspPortalCuller.cpp" />
     <ClCompile Include="ShaderRegistry.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">../pch.h</PrecompiledHeaderFile>

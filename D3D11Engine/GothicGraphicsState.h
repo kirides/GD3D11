@@ -743,6 +743,8 @@ struct GothicRendererSettings {
         GammaValue = 1.0f;
 
         EnableOcclusionCulling = false;
+        EnablePortalCulling = true;
+        PortalCullingNearRadius = 2500.0f;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
@@ -977,6 +979,12 @@ struct GothicRendererSettings {
     bool DoZPrepass;
     bool EnableAutoupdates;
     bool EnableOcclusionCulling;
+    /** Skip VOBs of rooms the camera cannot see into through any chain of portals.
+        Only applies to portal-compiled outdoor worlds; see BspPortalCuller. */
+    bool EnablePortalCulling;
+    /** Rooms within this distance of the camera are never portal-culled (Gothic units, 100 = 1m).
+        Raise it if interiors pop while standing near a doorway. */
+    float PortalCullingNearRadius;
     bool SortRenderQueue;
     bool DrawThreaded;
     EPointLightShadowMode EnablePointlightShadows;

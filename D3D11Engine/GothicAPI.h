@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "AlignedAllocator.h"
 #include "Frustum.h"
+#include "BspPortalCuller.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
 #include "zCTree.h"
@@ -39,7 +40,12 @@ struct RndCullContext {
     RenderStage stage;
 
     RenderQueue* queue;
-    
+
+    /** Sector/portal visibility for this pass, or null to not portal-cull at all. Only the main
+        camera pass sets it: shadow passes must keep collecting casters in rooms the player cannot
+        see into, and it is solved for the player camera anyway. */
+    const class BspPortalCuller* portalCuller = nullptr;
+
     struct
     {
         float OutdoorVobs;
@@ -112,6 +118,7 @@ struct BspInfo {
         IndoorLights = std::move( other.IndoorLights );
         Mobs = std::move( other.Mobs );
         NodePolygons = std::move( other.NodePolygons );
+        SectorIds = std::move( other.SectorIds );
         NumStaticLights = other.NumStaticLights;
         
         OcclusionInfo.NodeMesh = std::move(other.OcclusionInfo.NodeMesh);
@@ -140,6 +147,10 @@ struct BspInfo {
 
     // This is filled in case we have loaded a custom worldmesh
     std::vector<zCPolygon*> NodePolygons;
+
+    /** Sectors (rooms) this leaf holds polys of, as indices into BspPortalCuller's sector array.
+        Empty on outdoor leafs, which is the vast majority - see BspPortalCuller::BuildFromWorld. */
+    std::vector<uint16_t> SectorIds;
 
     int NumStaticLights;
 
@@ -651,6 +662,10 @@ public:
     /** Builds our BspTreeVobMap */
     void BuildBspVobMapCache();
 
+    /** Sector/portal visibility, rebuilt on every world load. Inactive on worlds without portals. */
+    BspPortalCuller& GetPortalCuller() { return PortalCuller; }
+    const BspPortalCuller& GetPortalCuller() const { return PortalCuller; }
+
     /** Returns the new node from tha base node */
     BspInfo* GetNewBspNode( zCBspBase* base );
 
@@ -985,6 +1000,8 @@ public:
     // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
     BspLeafLinearCache LeafLinearCache;
 private:
+    BspPortalCuller PortalCuller;
+
     gtl::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
     /** Map of VobInfo-Lists for zCBspLeafs */
