@@ -2650,6 +2650,86 @@ bool D3D12PipelineState::CreateAO() {
     return true;
 }
 
+bool D3D12PipelineState::CreateSky() {
+    // Procedural atmospheric-scattering sky dome (Shaders/D3D12/Sky.hlsl) — the replacement for Gothic's
+    // fixed-function sky. Non-fatal: DrawAtmosphereSkyDome() guards on both PSOs and DrawSky() falls back to
+    // zCSkyController_Outdoor::RenderSkyPre() if either is missing, so a failed compile costs performance,
+    // never the sky itself.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "Sky" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProj
+    // 1: b1 Atmosphere — a real CBV, not root constants: AtmosphereConstantBuffer is 96 bytes (24 DWORDs) and
+    // it is the same struct D3D11 uploads, filled once per frame by GSky::RenderSky().
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddConstants( 2, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: b2 World (dome scale + camera translation)
+    rs.AddConstants( 3, 4, D3D12_SHADER_VISIBILITY_PIXEL );     // 3: b3 { cloud slot, night slot, pad, pad }
+    // s0: linear WRAP — both sky layers are scrolled by world XZ well outside [0,1] and are authored to tile
+    // (D3D11 samples them through its SS_Linear wrap sampler).
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
+
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Sky.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "Sky.hlsl", "VSMain", Shadermodel_VS, Sky.VsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "Sky.hlsl", "PSMain", Shadermodel_PS, Sky.PsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "Sky.hlsl", "PSMainOuter", Shadermodel_PS, Sky.OuterPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    rs.ValidateShaders( {
+        { Sky.VsBlob.Get(),      "Sky.hlsl:VSMain",      D3D12_SHADER_VISIBILITY_VERTEX },
+        { Sky.PsBlob.Get(),      "Sky.hlsl:PSMain",      D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Sky.OuterPsBlob.Get(), "Sky.hlsl:PSMainOuter", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
+    // GSky's dome is a raw ExVertexStruct buffer (stride 60, Position at offset 0) — MeshInfo::Create uploads
+    // the CPU struct unpacked, unlike the world/VOB paths' 36-byte ExVertexStructGPU. Only POSITION is read:
+    // the cloud layers are sampled by world XZ, so the dome's own UVs/normals/colour are all unused.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Sky.RootSig.Get();
+    pso.VS = { Sky.VsBlob->GetBufferPointer(), Sky.VsBlob->GetBufferSize() };
+    pso.PS = { Sky.PsBlob->GetBufferPointer(), Sky.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;   // the HDR scene target; the dome writes linear radiance
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    // CM_CULL_BACK, exactly as D3D11's DrawSky sets it — the camera sits INSIDE the dome, so the front faces
+    // are the ones pointing away and back-face culling is what keeps the near hemisphere from occluding the far.
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // Depth test ON, depth write OFF, GREATER_EQUAL (reversed-Z): the sky must never occlude anything, it only
+    // fills where nothing else drew. D3D11 uses the identical trio.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Sky.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (sky dome).";
+        return false;
+    }
+
+    pso.PS = { Sky.OuterPsBlob->GetBufferPointer(), Sky.OuterPsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Sky.OuterPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (sky dome, outer).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateSkyIbl() {
     // Sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl) — the indirect-light source that replaces the flat
     // greyscale ambient in PBRLighting.hlsl's ComputeSunLightingPBR. Non-fatal: RenderSkyIBL() guards on every

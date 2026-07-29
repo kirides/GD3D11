@@ -2347,16 +2347,61 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	Engine::GAPI->GetSky()->RenderSky(); // does not render, but calculates atmosphere data (AC_LightPos etc.)
 
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
-	// D3D11's real atmospheric-scattering sky dome (PS_Atmosphere/PS_AtmosphereOuter + VS_ExWS, gated on
-	// AtmosphericScattering==true, the project default — see D3D11GraphicsEngine::DrawSky) is NOT ported to
-	// D3D12 yet. This used to `return` here when AtmosphericScattering was true, leaving ONLY the flat,
-	// un-modulated FogColorMod fill above as the entire sky — day or night, since that fill has no time-of-day
-	// term at all. That's what produced the "sky is shining light-blue at night" bug: the fixed-function sky
-	// below (which Gothic itself renders with real per-time-of-day textures/colors, sun, moon and stars) was
-	// being skipped entirely whenever AtmosphericScattering was on, which is the default. Until the real
-	// scattering shader is ported, always fall through to the fixed-function sky instead — it isn't identical
-	// to D3D11's procedural scattering, but it does correctly vary with time of day/weather, unlike the flat
-	// fill, and is a strict improvement over showing a static color regardless of AtmosphericScattering.
+
+	// Procedural atmospheric-scattering sky dome (D3D12Sky.cpp) — ONE indexed draw instead of the ~5-15
+	// fixed-function draws RenderSkyPre() issues below, each of which pays a full state resolve + FF constant
+	// buffer update + vertex-buffer refill on its way back through MyDirect3DDevice7::DrawPrimitive. Gated on
+	// the SAME user setting D3D11's DrawSky uses, so both backends respond identically to it, and on the pass
+	// having actually drawn — if the PSO failed to compile or the dome mesh isn't loaded yet, it returns false
+	// having submitted nothing and we fall through to the fixed-function sky rather than show an empty sky.
+	//
+	// (History, so this isn't "fixed" back: an earlier attempt just `return`ed here when AtmosphericScattering
+	// was true, leaving only the flat FogColorMod fill above as the entire sky. That fill has no time-of-day
+	// term, which is what produced the "sky is shining light-blue at night" bug. The dome below does vary with
+	// time of day — it is driven by the same AC_* constants D3D11's sky is — so that failure mode is gone, but
+	// the fallback is kept for exactly the case where the dome cannot draw.)
+	if ( rs.RendererSettings.AtmosphericScattering && DrawAtmosphereSkyDome() ) {
+#if defined(BUILD_GOTHIC_1_CLASSIC)
+		// G1's magic barrier. In G1 the active sky controller may be an oCSkyControler_Barrier, whose
+		// RenderSkyPre() override draws the barrier dome + its lightning (verified against
+		// Gothic_I_Classic/API/oBarrier.h: oCSkyControler_Barrier::RenderSkyPre == 0x632140, a virtual
+		// override of zCSkyControler_Outdoor::RenderSkyPre == 0x5C0900). D3D11's DrawSky calls 0x632140
+		// directly here in its scattering path; this goes through the VTABLE instead
+		// (zCSkyController::RenderSkyPre dispatches via VTBL_RenderSkyPre), which is the same call whenever a
+		// barrier controller IS installed but strictly safer and more mod-friendly otherwise:
+		//   * hardcoding 0x632140 reads `barrier` at this+0x680, one dword PAST the end of a plain
+		//     zCSkyControler_Outdoor (sizeof 0x680) — fine for a barrier controller (sizeof 0x688), an
+		//     out-of-bounds read for any other. The vtable resolves to the base instead, which is safe.
+		//   * a mod that re-enables the barrier — or installs any other derived sky controller — gets ITS
+		//     override called, rather than one hardcoded address for one game version.
+		//
+		// The override internally calls zCSkyControler_Outdoor::RenderSkyPre() first, so on G1 the
+		// fixed-function sky is still drawn over our dome and G1 keeps paying for it. That is pre-existing
+		// D3D11 behaviour, mirrored deliberately rather than "fixed": the guard conditions inside the override
+		// are NOT verifiable from the available source (the oBarrier.cpp in the G2 tree gates on
+		// renderLightning/weather members that G1-Classic's zCSkyControler_Outdoor does not even have), so
+		// reimplementing the barrier half to skip the redundant sky draw would be guesswork on a path that
+		// cannot be GPU-tested here. The draw-call win is therefore G2-only for now; correctness is both.
+		if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor() ) {
+			const RenderStage oldBarrierStage = rs.RendererInfo.RenderStage;
+			rs.RendererInfo.RenderStage = STAGE_DRAW_SKY;
+			rs.DepthState.DepthBufferEnabled = true;
+			rs.DepthState.DepthWriteEnabled = false;
+			rs.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_GREATER_EQUAL;
+			rs.DepthState.SetDirty();
+			rs.RasterizerState.SetDefault();
+			rs.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+			rs.RasterizerState.SetDirty();
+
+			skyCtrl->RenderSkyPre();   // virtual -> oCSkyControler_Barrier's override when one is installed
+
+			// The engine breaks the far plane on its way through; restore it as D3D11's DrawSky does.
+			Engine::GAPI->SetFarPlane( rs.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
+			rs.RendererInfo.RenderStage = oldBarrierStage;
+		}
+#endif
+		return XR_SUCCESS;
+	}
 
 	// Fixed-function sky path: hand off to Gothic's own zCSkyController_Outdoor::RenderSkyPre(), same as
 	// D3D11GraphicsEngine::DrawSky. Its D3DFVF_XYZRHW_DIF_T1 draws come back through MyDirect3DDevice7 ->

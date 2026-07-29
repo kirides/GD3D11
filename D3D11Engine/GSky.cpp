@@ -307,27 +307,37 @@ float4 GSky::GetSkylightColor() {
 }
 
 /** Returns the cloud texture */
-D3D11Texture* GSky::GetCloudTexture() {
+GfxTexture* GSky::GetCloudTextureGfx() {
     if ( CloudTexture_Zen ) {
         if ( CloudTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
             if ( MyDirectDrawSurface7* dds7 = CloudTexture_Zen->GetSurface() ) {
-                return D3D11Texture::From( dds7->GetEngineTexture() );
+                return dds7->GetEngineTexture();
             }
         }
     }
-    return D3D11Texture::From( CloudTexture.get() );
+    return CloudTexture.get();
+}
+
+/** Returns the night texture */
+GfxTexture* GSky::GetNightTextureGfx() {
+    if ( NightTexture_Zen ) {
+        if ( NightTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
+            if ( MyDirectDrawSurface7* dds7 = NightTexture_Zen->GetSurface() ) {
+                return dds7->GetEngineTexture();
+            }
+        }
+    }
+    return NightTexture.get();
+}
+
+/** Returns the cloud texture */
+D3D11Texture* GSky::GetCloudTexture() {
+    return D3D11Texture::From( GetCloudTextureGfx() );
 }
 
 /** Returns the cloud texture */
 D3D11Texture* GSky::GetNightTexture() {
-    if ( NightTexture_Zen ) {
-        if ( NightTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
-            if ( MyDirectDrawSurface7* dds7 = NightTexture_Zen->GetSurface() ) {
-                return D3D11Texture::From( dds7->GetEngineTexture() );
-            }
-        }
-    }
-    return D3D11Texture::From( NightTexture.get() );
+    return D3D11Texture::From( GetNightTextureGfx() );
 }
 
 // The scale equation calculated by Vernier's Graphical Analysis

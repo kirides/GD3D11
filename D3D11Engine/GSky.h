@@ -76,6 +76,12 @@ public:
     /** Returns the night texture */
     D3D11Texture* GetNightTexture();
 
+    /** Backend-neutral form of the two accessors above — same resolution (a ZenGin override texture if a
+        script set one and it is cached in, else our own loaded DDS), without the D3D11 downcast. The D3D12
+        sky dome binds these and downcasts with D3D12Texture::From itself. */
+    GfxTexture* GetCloudTextureGfx();
+    GfxTexture* GetNightTextureGfx();
+
     /** Returns the current sun color */
     float3 GetSunColor();
 

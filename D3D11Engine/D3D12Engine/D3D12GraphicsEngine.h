@@ -1098,6 +1098,24 @@ private:
     bool CreateSkyIblResources();             // one-time: builds both cubes + their persistent SRV/UAV slots
     void RenderSkyIBL();                      // rebuilds the cubes when the sky state moved; no-ops otherwise
 
+    // ---- Procedural atmospheric-scattering sky dome (D3D12Sky.cpp) ------------------------------------------
+    // Replaces Gothic's fixed-function sky: ONE indexed draw over GSky's static unit sphere, coloured by the
+    // AC_* scattering constants GSky::RenderSky() already computes every frame, instead of the ~5-15 separate
+    // zCRenderer draws (two dome layers, colour dome, background tile, screen blend) that ZenGin's
+    // zCSkyController_Outdoor::RenderSkyPre() issues and that come back through the D3D7 shim one at a time.
+    //
+    // Per-frame-in-flight 256-byte UPLOAD CB holding just the AtmosphereConstantBuffer the pixel shader reads
+    // at b1. Small and separate on purpose: the sky is drawn very early in OnStartWorldRendering, long before
+    // RenderFogAndGodRays / DrawWaterSurfaces fill their own atmosphere blocks, so it cannot share either.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyCB[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyCBAlloc[kBackBufferCount];
+    uint8_t* m_SkyCBMapped[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_SkyCBGpu[kBackBufferCount] = {};
+    bool CreateSkyConstantBuffers();          // one-time: the per-frame-in-flight atmosphere CB ring
+    // Draws the dome. Returns false WITHOUT having drawn anything if the pipeline/CB/dome mesh isn't available,
+    // which is DrawSky's signal to fall back to the fixed-function sky rather than show an empty sky.
+    bool DrawAtmosphereSkyDome();
+
     // ---- Height fog + god rays (plan item #5) — D3D12 port of D3D11's PostFX composition pass. -------------
     // Two quarter-resolution HDR textures carry the god-ray chain (mask -> radial blur), mirroring D3D11's
     // GetTempBufferDS4() pool textures; both rest in UNORDERED_ACCESS between frames like the bloom mips.

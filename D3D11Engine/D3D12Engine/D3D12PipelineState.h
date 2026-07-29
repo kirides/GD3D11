@@ -216,6 +216,21 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> IrradiancePSO;   // cosine convolve -> irradiance cube
     };
 
+    // Procedural atmospheric-scattering sky dome (Shaders/D3D12/Sky.hlsl) — the replacement for Gothic's
+    // fixed-function sky, drawn as ONE indexed draw over GSky's static unit sphere. Own bindless root sig
+    // (b0 ViewProj, b1 Atmosphere CBV, b2 World, b3 cloud/night SRV heap slots, static linear-wrap s0). Two
+    // PSOs differing only in pixel shader: the camera is either inside the atmosphere shell (PSMain, the
+    // in-game case) or above it (PSMainOuter) — the same split D3D11's DrawSky makes between PS_Atmosphere
+    // and PS_AtmosphereOuter. The dome's vertex/index buffers belong to GSky, not here.
+    struct SkyPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;        // PSMain      (AC_CameraHeight <= AC_OuterRadius)
+        Microsoft::WRL::ComPtr<ID3DBlob>            OuterPsBlob;   // PSMainOuter (above the shell)
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> OuterPSO;
+    };
+
     // SMAA anti-aliasing (runtime toggle, RendererSettings.AntiAliasingMode == AA_SMAA). One bindless root
     // sig (b0 root consts { RT_METRICS + 5 SRV heap indices }, static linear+point clamp samplers,
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by all three fullscreen passes. Edge/Blend PSOs target an
@@ -383,6 +398,7 @@ public:
     ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite, bool cullBack = false );
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
+    bool CreateSky();         // procedural scattering sky dome (own bindless root sig + inner/outer PSOs); dome mesh is GSky's
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
@@ -436,6 +452,7 @@ public:
     FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;
     SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
+    SkyPipeline      Sky;           // procedural scattering sky dome (Shaders/D3D12/Sky.hlsl)
     FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)

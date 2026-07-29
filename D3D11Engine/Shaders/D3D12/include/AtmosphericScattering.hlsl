@@ -1,15 +1,19 @@
-// Atmospheric scattering — D3D12 copy of the ground-scattering half of Shaders/AtmosphericScattering.h.
+// Atmospheric scattering — D3D12 port of Shaders/AtmosphericScattering.h.
 //
-// The D3D11 header can't be included verbatim here: it is FXC/SM5 source that also declares the sky-dome
-// entry helpers and pins the Atmosphere cbuffer to b1 of the deferred-lighting root layout. This copy keeps
-// ONLY what the height-fog composition needs (ApplyAtmosphericScatteringGround + its two helpers) and the
-// AtmosphereConstantBuffer layout, which is filled CPU-side straight from GSky::GetAtmosphereCB() — the same
-// struct D3D11 uploads (ConstantBufferStructs.h AtmosphereConstantBuffer), so the field order must stay in
-// lockstep with it.
+// The D3D11 header can't be included verbatim here: it is FXC/SM5 source that pins the Atmosphere cbuffer to
+// b1 of the deferred-lighting root layout. This copy keeps the AtmosphereConstantBuffer layout, which is
+// filled CPU-side straight from GSky::GetAtmosphereCB() — the same struct D3D11 uploads
+// (ConstantBufferStructs.h AtmosphereConstantBuffer), so the field order must stay in lockstep with it.
 //
-// NOTE: D3D12 does NOT render the atmospheric-scattering sky dome (it uses Gothic's fixed-function sky, see
-// D3D12GraphicsEngine::DrawSky). The scattering math still applies here because GSky::RenderSky() computes
-// the AC_* constants every frame regardless of who draws the sky.
+// Two halves, both used:
+//   * ApplyAtmosphericScatteringGround — the 1-sample per-fragment ground term (height-fog composition,
+//     water, wetness, PBR ambient).
+//   * ApplyAtmosphericScatteringSky / ...Outer — the AC_nSamples ray-march a viewer looking UP sees, i.e.
+//     the sky dome itself (Shaders/D3D12/Sky.hlsl, D3D12GraphicsEngine::DrawAtmosphereSkyDome). Ported
+//     verbatim from the D3D11 header so the two backends' skies match; the Sky/Outer split is which side of
+//     AC_OuterRadius the camera is on, exactly as D3D11 picks PS_Atmosphere vs PS_AtmosphereOuter.
+//
+// GSky::RenderSky() computes the AC_* constants every frame regardless of who draws the sky.
 #ifndef D3D12_ATMOSPHERIC_SCATTERING_HLSL
 #define D3D12_ATMOSPHERIC_SCATTERING_HLSL
 
@@ -117,6 +121,143 @@ float3 ApplyAtmosphericScatteringGround( float3 worldPosition, float3 in_color, 
         outColor = dayColor + nightColor * nightWeight;
 
     return outColor;
+}
+
+// --- Sky-dome half (Shaders/D3D12/Sky.hlsl) -------------------------------------------------------------
+// Ported verbatim from Shaders/AtmosphericScattering.h. Only the helpers the two dome functions need are
+// copied; the ground term above uses AC_Escale only.
+
+// Calculates the Mie phase function
+float AC_getMiePhase( float fCos, float fCos2, float g, float g2 )
+{
+    return 1.5 * ( ( 1.0 - g2 ) / ( 2.0 + g2 ) ) * ( 1.0 + fCos2 ) / pow( abs( 1.0 + g2 - 2.0 * g * fCos ), 1.5 );
+}
+
+// Calculates the Rayleigh phase function
+float AC_getRayleighPhase( float fCos2 )
+{
+    return 0.75 + 0.75 * fCos2;
+}
+
+// Returns the near intersection point of a line and a sphere
+float AC_getNearIntersection( float3 v3Pos, float3 v3Ray, float fDistance2, float fRadius2 )
+{
+    float B = 2.0 * dot( v3Pos, v3Ray );
+    float C = fDistance2 - fRadius2;
+    float fDet = max( 0.0, B * B - 4.0 * C );
+    return 0.5 * ( -B - sqrt( fDet ) );
+}
+
+// Camera INSIDE the atmosphere shell — the normal in-game case (AC_CameraHeight < AC_OuterRadius).
+float3 ApplyAtmosphericScatteringSky( float3 worldPosition )
+{
+    float3 camPos = AC_CameraPos;
+    float3 vPos = worldPosition - AC_SpherePosition;
+    float3 vRay = vPos - camPos;
+
+    float fFar = length( vRay );
+    vRay /= fFar;
+
+    // Calculate the ray's starting position, then calculate its scattering offset
+    float3 vStart = camPos;
+
+    float fHeight = length( vStart );
+    float fDepth = exp( AC_RayleighOverScaleDepth * ( AC_InnerRadius - AC_CameraHeight ) );
+    float fStartAngle = dot( vRay, vStart ) / fHeight;
+    float fStartOffset = fDepth * AC_Escale( fStartAngle );
+
+    // Initialize the scattering loop variables
+    float fSampleLength = fFar / AC_fSamples;
+    float fScaledLength = fSampleLength * AC_Scale;
+    float3 vSampleRay = vRay * fSampleLength;
+    float3 vSamplePoint = vStart + vSampleRay * 0.5;
+
+    float3 vInvWavelength = 1.0f / pow( AC_Wavelength, 4.0f );
+
+    // Now loop through the sample rays
+    float3 vFrontColor = float3( 0.0, 0.0, 0.0 );
+    for ( int i = 0; i < AC_nSamples; i++ )
+    {
+        float fSampleHeight = length( vSamplePoint );
+        float fSampleDepth = exp( AC_RayleighOverScaleDepth * ( AC_InnerRadius - fSampleHeight ) );
+        float fLightAngle = dot( AC_LightPos, vSamplePoint ) / fSampleHeight;
+        float fCameraAngle = dot( vRay, vSamplePoint ) / fSampleHeight;
+        float fScatter = ( fStartOffset + fSampleDepth * ( AC_Escale( fLightAngle ) - AC_Escale( fCameraAngle ) ) );
+
+        float3 vAttenuate = exp( -fScatter * ( vInvWavelength * AC_Kr4PI + AC_Km4PI ) );
+
+        vFrontColor += vAttenuate * ( fSampleDepth * fScaledLength );
+        vSamplePoint += vSampleRay;
+    }
+
+    // Finally, scale the Mie and Rayleigh colors
+    float3 c0 = vFrontColor * ( vInvWavelength * AC_KrESun );
+    float3 c1 = vFrontColor * AC_KmESun;
+
+    float3 vDirection = camPos - vPos;
+
+    float fCos = dot( AC_LightPos, vDirection ) / length( vDirection );
+    float fCos2 = fCos * fCos;
+
+    return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, AC_g, AC_g * AC_g ) * c1 * 2.0f;
+}
+
+// Camera OUTSIDE the atmosphere shell. Differs from the above by starting the march at the ray's entry point
+// into the shell (AC_getNearIntersection) rather than at the camera, and by the 2.0 factor moving from the
+// Mie term onto the Rayleigh one — kept exactly as the D3D11 shader has it.
+float3 ApplyAtmosphericScatteringOuter( float3 worldPosition )
+{
+    float3 camPos = AC_CameraPos;
+    float3 vPos = worldPosition - AC_SpherePosition;
+    float3 vRay = vPos - camPos;
+
+    float fFar = length( vRay );
+    vRay /= fFar;
+
+    // Calculate the closest intersection of the ray with the outer atmosphere
+    float fNear = AC_getNearIntersection( camPos, vRay, AC_CameraHeight * AC_CameraHeight, AC_OuterRadius * AC_OuterRadius );
+
+    // Calculate the ray's starting position, then calculate its scattering offset
+    float3 vStart = camPos + vRay * fNear;
+    fFar -= fNear;
+
+    float fStartAngle = dot( vRay, vStart ) / AC_OuterRadius;
+    float fStartDepth = exp( -1.0 / AC_RayleighScaleDepth );
+    float fStartOffset = fStartDepth * AC_Escale( fStartAngle );
+
+    // Initialize the scattering loop variables
+    float fSampleLength = fFar / AC_fSamples;
+    float fScaledLength = fSampleLength * AC_Scale;
+    float3 vSampleRay = vRay * fSampleLength;
+    float3 vSamplePoint = vStart + vSampleRay * 0.5;
+
+    float3 vInvWavelength = 1.0f / pow( AC_Wavelength, 4.0f );
+
+    // Now loop through the sample rays
+    float3 vFrontColor = float3( 0.0, 0.0, 0.0 );
+    for ( int i = 0; i < AC_nSamples; i++ )
+    {
+        float fSampleHeight = length( vSamplePoint );
+        float fSampleDepth = exp( AC_RayleighOverScaleDepth * ( AC_InnerRadius - fSampleHeight ) );
+        float fLightAngle = dot( AC_LightPos, vSamplePoint ) / fSampleHeight;
+        float fCameraAngle = dot( vRay, vSamplePoint ) / fSampleHeight;
+        float fScatter = ( fStartOffset + fSampleDepth * ( AC_Escale( fLightAngle ) - AC_Escale( fCameraAngle ) ) );
+
+        float3 vAttenuate = exp( -fScatter * ( vInvWavelength * AC_Kr4PI + AC_Km4PI ) );
+
+        vFrontColor += vAttenuate * ( fSampleDepth * fScaledLength );
+        vSamplePoint += vSampleRay;
+    }
+
+    float3 c0 = vFrontColor * ( vInvWavelength * AC_KrESun ) * 2.0f;
+    float3 c1 = vFrontColor * AC_KmESun;
+
+    float3 vDirection = camPos - vPos;
+
+    float fCos = dot( AC_LightPos, vDirection ) / length( vDirection );
+    float fCos2 = fCos * fCos;
+
+    return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, AC_g, AC_g * AC_g ) * c1;
 }
 
 #endif

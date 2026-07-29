@@ -269,6 +269,14 @@ XRESULT D3D12GraphicsEngine::Init() {
     } else if ( !CreateSkyIblResources() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-IBL cubemaps (falling back to flat ambient).";
     }
+    if ( !m_Pipelines.CreateSky() ) {
+        // Non-fatal: DrawSky() falls back to Gothic's fixed-function sky (zCSkyController_Outdoor::RenderSkyPre)
+        // whenever DrawAtmosphereSkyDome() can't draw, so a failure here costs the per-frame draw-call saving,
+        // never the sky itself.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-dome pipeline (falling back to Gothic's fixed-function sky).";
+    } else if ( !CreateSkyConstantBuffers() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-dome constant buffers (falling back to Gothic's fixed-function sky).";
+    }
     if ( !m_Pipelines.CreateFog() ) {
         // Non-fatal: the height-fog/god-ray composition is opt-in (RendererSettings.DrawFog / EnableGodRays)
         // and outdoor-only. RenderFogAndGodRays() guards on the PSOs; EvaluateHeightFogActive() additionally
