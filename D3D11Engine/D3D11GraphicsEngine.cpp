@@ -2381,8 +2381,14 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vbGfx,
 // Need to be able to pass in a texture, otherwise when batch-drawing node attachments, the zCMaterial* AniTexture will be wrong!
 bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo)
 {
+    // Texture still streaming in (async load)? Draw with a solid black placeholder instead of
+    // skipping the mesh, so it doesn't flash the clear color while it loads. Shader selection can
+    // still use zCTexture metadata (alpha channel, fx/normalmap presence), which is available
+    // independent of the GPU upload having completed - only the actual SRVs are swapped out.
+    const bool diffuseReady = tex->CacheIn( 0.6f ) == zRES_CACHED_IN;
+
     ID3D11ShaderResourceView* srvs[3] = {
-        GetSrvFromGfx( tex->GetSurface()->GetEngineTexture() ),
+        diffuseReady ? GetSrvFromGfx( tex->GetSurface()->GetEngineTexture() ) : GetSrvFromGfx( BlackTexture.get() ),
         nullptr,
         nullptr,
     };
@@ -2397,17 +2403,19 @@ bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool 
         info = Engine::GAPI->GetMaterialInfoFrom( mat );
     }
 
-    // Bind a default normalmap in case the scene is wet and we currently have none
-    if ( GfxTexture* nrm = tex->GetSurface()->GetNormalmap() ) {
-        // Modify the strength of that default normalmap for the material info
-        srvs[1] = GetSrvFromGfx( nrm );
-    } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
-        srvs[1] = DistortionTexture->GetShaderResourceView().Get();
-        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( mat ); }
-        if (info) {
-            // Value override for non-normalmapped textures in case of rain
-            info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
-            info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
+    if ( diffuseReady ) {
+        // Bind a default normalmap in case the scene is wet and we currently have none
+        if ( GfxTexture* nrm = tex->GetSurface()->GetNormalmap() ) {
+            // Modify the strength of that default normalmap for the material info
+            srvs[1] = GetSrvFromGfx( nrm );
+        } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
+            srvs[1] = DistortionTexture->GetShaderResourceView().Get();
+            if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( mat ); }
+            if (info) {
+                // Value override for non-normalmapped textures in case of rain
+                info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
+                info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
+            }
         }
     }
 
@@ -2421,23 +2429,22 @@ bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool 
         }
     }
 
-    if ( GfxTexture* fxmap = tex->GetSurface()->GetFxMap() ) {
-        srvs[2] = GetSrvFromGfx( fxmap );
-        fxmap->BindToPixelShader( 2 );
+    if ( diffuseReady ) {
+        if ( GfxTexture* fxmap = tex->GetSurface()->GetFxMap() ) {
+            srvs[2] = GetSrvFromGfx( fxmap );
+            fxmap->BindToPixelShader( 2 );
+        }
     }
 
     GetContext()->PSSetShaderResources( 0, 3, srvs );
 
-    
+
     return true;
 }
 
 /** Sets up texture with normalmap and fxmap for rendering */
 bool D3D11GraphicsEngine::BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo ) {
     auto tex = mat->GetAniTexture();
-    if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-        return false;
-    }
     return BindTextureNRFX(mat, tex, bindShader, updateMaterialInfo);
 }
 
@@ -2743,7 +2750,14 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             zCTexture* tex = nullptr;
             if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
                 if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue; // we cant determine if we need to draw this, alpha data is only available after loading a texture.
+                    // Texture still streaming in (async load) - we can't determine if it needs alpha
+                    // testing yet, so draw with a black placeholder instead of skipping this submesh
+                    // (which would make it vanish/flash the clear color for a frame).
+                    if ( lastTex != BlackTexture.get() ) {
+                        BlackTexture->BindToPixelShader( 0 );
+                        lastTex = BlackTexture.get();
+                    }
+                    continue;
                 }
                 const bool needTex =  tex != lastTex
                     && (tex->HasAlphaChannel() || mat->HasAlphaTest());
@@ -5147,9 +5161,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     } else {
 
-                        if ( matTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                            continue;
-                        }
+                        // Don't skip the mesh if the texture is still streaming in (async load) - it
+                        // gets drawn with a black placeholder below instead, so it doesn't flash the
+                        // clear-color background. HasAlphaChannel() reads texture header metadata,
+                        // available independent of the GPU upload having completed.
                         int alphaLevel = 0;
                         if ( matTex && matTex->HasAlphaChannel() ) {
                             alphaLevel = 2;
@@ -5270,11 +5285,14 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
             if ( isSkipped( mesh ) || !isAlphaMesh( mesh ) ) continue;
 
-            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                continue;
+            if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+            } else {
+                // Still streaming in (async load) - draw depth as if fully opaque (the black
+                // placeholder has no alpha cutout) instead of skipping, matching what the color
+                // pass above now does for the same mesh.
+                BlackTexture->BindToPixelShader( 0 );
             }
-
-            texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
 
             // Get the right shader for it
             if ( BindShaderForTexture( mesh.first.Texture, false,
@@ -5324,10 +5342,13 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 ID3D11ShaderResourceView* srv[3];
                 MaterialInfo* info = mesh.first.Info;
 
-                // Get diffuse and normalmap
-                srv[0] = GetSrvFromGfx( surface->GetEngineTexture() );
-                srv[1] = GetSrvFromGfx( surface->GetNormalmap() );
-                srv[2] = GetSrvFromGfx( surface->GetFxMap() );
+                // Get diffuse and normalmap. If the texture is still streaming in (async load),
+                // draw with a black placeholder instead of whatever happens to be bound in slot 0,
+                // so it doesn't flash the clear-color background.
+                const bool diffuseReady = mesh.first.Texture->CacheIn( 0.6f ) == zRES_CACHED_IN;
+                srv[0] = diffuseReady ? GetSrvFromGfx( surface->GetEngineTexture() ) : GetSrvFromGfx( BlackTexture.get() );
+                srv[1] = diffuseReady ? GetSrvFromGfx( surface->GetNormalmap() ) : nullptr;
+                srv[2] = diffuseReady ? GetSrvFromGfx( surface->GetFxMap() ) : nullptr;
 
                 auto needDefaultNormalsStrength = !srv[1] && sceneIsWet;
                 // Bind a default normalmap in case the scene is wet and we currently have
@@ -7609,21 +7630,23 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 #endif
                     }
                     else {
-                        // Bind texture
-                        if ( tx->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                            continue;
-                        }
                         // Previously this forced alpha testing, now we need to check material flags as well for that and only enable the shader if absolutely necessery
                         const bool wantShader = !isZPrepass || (tx->HasAlphaChannel() || meshKey.Material->HasAlphaTest());
+
+                        // Texture still streaming in (async load)? Draw with a black placeholder
+                        // instead of skipping the whole instanced batch, so it doesn't flash the
+                        // clear-color background - especially costly here since one skip drops
+                        // every instance of this mesh/texture.
+                        const bool diffuseReady = tx->CacheIn( 0.6f ) == zRES_CACHED_IN;
 
                         MyDirectDrawSurface7* surface = tx->GetSurface();
                         ID3D11ShaderResourceView* srv[3];
                         MaterialInfo* info = meshKey.Info;
 
                         // Get diffuse and normalmap
-                        srv[0] = GetSrvFromGfx(surface->GetEngineTexture() );
-                        srv[1] = GetSrvFromGfx( surface->GetNormalmap() );
-                        srv[2] = GetSrvFromGfx( surface->GetFxMap() );
+                        srv[0] = diffuseReady ? GetSrvFromGfx( surface->GetEngineTexture() ) : GetSrvFromGfx( BlackTexture.get() );
+                        srv[1] = diffuseReady ? GetSrvFromGfx( surface->GetNormalmap() ) : nullptr;
+                        srv[2] = diffuseReady ? GetSrvFromGfx( surface->GetFxMap() ) : nullptr;
 
                         // Bind a default normalmap in case the scene is wet and we
                         // currently have none

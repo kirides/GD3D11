@@ -6004,12 +6004,15 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         zCSubMesh* s = morphMesh->GetSubmesh( i );
         if ( zCTexture* texture = s->Material->GetAniTexture() ) {
             if ( lastTex != texture ) {
-                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue;
-                }
                 lastTex = texture;
                 if ( isZPrepass ) {
-                    texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    // Texture still streaming in (async load)? Draw depth with a black placeholder
+                    // (opaque, no alpha cutout) instead of skipping, so it doesn't vanish for a frame.
+                    if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    } else {
+                        g->GetBlackTexture()->BindToPixelShader( 0 );
+                    }
                 } else if ( !g->BindTextureNRFX( s->Material, bindShader ) ) {
                     continue;
                 }
