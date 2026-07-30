@@ -462,6 +462,30 @@ struct GothicMemoryLocations {
         static const unsigned int PurgeCaches = 0x007678E0;
         static const unsigned int RefreshTexMaxSize = 0x0077FBA0;
         static const unsigned int SetThreadingEnabled = 0x00767AE0;
+
+        // zCResourceManager derives from zCThread (0x18 bytes), classCacheList is the zCArray that
+        // follows it: [+0x18] = array, [+0x1C] = numAlloc, [+0x20] = numInArray.
+        static const unsigned int Offset_ClassCacheList = 0x18;
+        static const unsigned int Offset_ClassCacheCount = 0x20;
+        // volatile zBOOL goToSuspend - the flag PurgeCaches uses to park the loader thread
+        static const unsigned int Offset_GoToSuspend = 0x60;
+        static const unsigned int VTBL_IsThreadRunning = 0x0C;
+
+        // zCResourceManager::zCClassCache
+        static const unsigned int SizeOf_ClassCache = 0x1C;
+        static const unsigned int Offset_ClassCache_ResClassDef = 0x00;
+        static const unsigned int Offset_ClassCache_ResListHead = 0x04;
+    };
+
+    struct zCResource {
+        // zCObject base, then nextRes/prevRes/timeStamp, then the zCCriticalSection stateChangeGuard
+        // (vtbl + CRITICAL_SECTION = 0x1C bytes), then the bitfield.
+        static const unsigned int Offset_NextRes = 0x24;
+        static const unsigned int Offset_StateChangeGuard = 0x30;
+        // bits 0-1: cacheState (zTResourceCacheState), bit 2: cacheOutLock
+        static const unsigned int Offset_Flags = 0x4C;
+        // bit 0: managedByResMan
+        static const unsigned int Offset_Flags_ManagedByResMan = 0x4E;
     };
 
     struct oCWorld {

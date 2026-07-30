@@ -68,7 +68,7 @@ void HookedFunctionInfo::InitHooks() {
     zCVob::Hook();
     zCTexture::Hook();
     //zCThread::Hook();
-    //zCResourceManager::Hook();
+    zCResourceManager::Hook();
     zCQuadMark::Hook();
     zCFlash::Hook();
     oCNPC::Hook();

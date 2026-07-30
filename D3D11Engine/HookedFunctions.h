@@ -73,6 +73,7 @@ typedef int( __thiscall* zCTex_D3DXTEX_BuildSurfaces )(void*, int);
 typedef int( __thiscall* zCTextureLoadResourceData )(void*);
 typedef int( __thiscall* zCThreadSuspendThread )(void*);
 typedef void( __thiscall* zCResourceManagerCacheOut )(void*, class zCResource*);
+typedef void( __thiscall* zCResourceManagerPurgeCaches )(void*, unsigned int);
 typedef void( __thiscall* zCQuadMarkCreateQuadMark )(void*, zCPolygon*, const float3&, const float2&, struct zTEffectParams*);
 typedef void( __thiscall* zCFlashSetVisualUsedBy )(void*, zCVob*);
 typedef void( __thiscall* oCWorldEnableVob )(void*, zCVob*, zCVob*);
@@ -184,6 +185,7 @@ struct HookedFunctionInfo {
     zCTextureLoadResourceData ofiginal_zCTextureLoadResourceData = reinterpret_cast<zCTextureLoadResourceData>(GothicMemoryLocations::zCTexture::LoadResourceData);
     zCThreadSuspendThread original_zCThreadSuspendThread = reinterpret_cast<zCThreadSuspendThread>(GothicMemoryLocations::zCThread::SuspendThread);
     //zCResourceManagerCacheOut original_zCResourceManagerCacheOut = reinterpret_cast<zCResourceManagerCacheOut>(GothicMemoryLocations::zCResourceManager::CacheOut);
+    zCResourceManagerPurgeCaches original_zCResourceManagerPurgeCaches = reinterpret_cast<zCResourceManagerPurgeCaches>(GothicMemoryLocations::zCResourceManager::PurgeCaches);
     zCQuadMarkCreateQuadMark original_zCQuadMarkCreateQuadMark = reinterpret_cast<zCQuadMarkCreateQuadMark>(GothicMemoryLocations::zCQuadMark::CreateQuadMark);
     GenericDestructor original_zCQuadMarkDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCQuadMark::Destructor);
     GenericThiscall original_zCQuadMarkConstructor = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCQuadMark::Constructor);
