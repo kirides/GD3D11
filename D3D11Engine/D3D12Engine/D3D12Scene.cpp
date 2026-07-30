@@ -2382,6 +2382,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Do any remaining dx12 stuff BEFORE setting PresentPending
 
 	m_PresentPending = true;
+    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = RenderStage::STAGE_DRAW_UNKNOWN;
 
 	// After this point, we hand over to Gothics UI rendering (inventory item previews render via
 	// DrawVobSingle, called straight from Gothic's own zCWorld::Render hook during this phase).
