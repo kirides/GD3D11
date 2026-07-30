@@ -148,8 +148,7 @@ private:
             Sleep( 1 );
         }
 
-        LogWarn() << "zCResourceManager::PurgeCaches: resource thread did not suspend - skipping the "
-            "cache-list sanity pass and running ZENGIN's PurgeCaches unguarded";
+        LogWarn() << "zCResourceManager::PurgeCaches: resource thread did not suspend in time";
         return false;
     }
 
@@ -204,10 +203,21 @@ private:
         return lockedByUs;
     }
 
+    /** If the resource thread will not park, the class-cache lists are not ours to walk safely (the
+        loader thread mutates nextRes/resListHead via InsertRes/RemoveRes with no lock we can take on
+        the list itself - only ParkResourceThread's OS-level suspend actually stops that). Calling
+        ZENGIN's PurgeCaches unguarded in that state reopens the exact livelock this hook exists to
+        prevent, so we skip the purge entirely rather than gamble on the timing. It is safe to skip:
+        this is a manual/best-effort reclaim (texture quality change, Reload Textures) and
+        zCResourceManager::Evict() already reclaims over-budget caches every frame regardless. */
     void PurgeCachesWithProgressGuarantee( unsigned int classDef ) {
-        std::vector<zCResource*> lockedByUs;
-        if ( ParkResourceThread() )
-            lockedByUs = LockOutUnremovableResources( classDef );
+        if ( !ParkResourceThread() ) {
+            LogWarn() << "zCResourceManager::PurgeCaches: skipping this purge entirely - the class "
+                "cache lists cannot be scanned safely while the resource thread is still running";
+            return;
+        }
+
+        std::vector<zCResource*> lockedByUs = LockOutUnremovableResources( classDef );
 
         HookedFunctions::OriginalFunctions.original_zCResourceManagerPurgeCaches( this, classDef );
 
