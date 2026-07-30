@@ -1204,14 +1204,19 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     DepthStencilBuffer.reset();
 
     UINT scflags = m_flipWithTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-    if ( frameLatencyWaitableObject ) {
-        CloseHandle( frameLatencyWaitableObject );
-        frameLatencyWaitableObject = nullptr;
-    }
 
     static UINT lastSwapchainFlags = scflags;
 
     if ( !SwapChain.Get() ) {
+        // Defensive: only reached on first creation in practice (SwapChain is resized in place
+        // afterwards, never recreated), but guards against a future re-create path leaking the
+        // previous swapchain's waitable handle. Must NOT run on the plain ResizeBuffers path below -
+        // that keeps the same handle alive across resizes as long as the waitable flag doesn't change.
+        if ( frameLatencyWaitableObject ) {
+            CloseHandle( frameLatencyWaitableObject );
+            frameLatencyWaitableObject = nullptr;
+        }
+
         static std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD, "DXGI_SWAP_EFFECT_DISCARD"},
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, "DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL"},
@@ -1567,6 +1572,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 #endif //  BUILD_SPACERNET
 
     if ( !g_MainLoopFramePacingInstalled ) {
+        WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
     }
 
@@ -1909,9 +1915,6 @@ XRESULT D3D11GraphicsEngine::Present() {
         default:
             LogWarnBox() << "Device Removed! (Unknown reason)";
         }
-    } else if ( hr == S_OK && frameLatencyWaitableObject ) {
-        ZoneScopedN( "Present::frameLatencyWaitableObject" );
-        WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
     }
 
     PresentPending = false;

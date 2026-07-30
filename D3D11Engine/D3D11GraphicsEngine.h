@@ -758,6 +758,11 @@ private:
     /** Low latency object handle */
     HANDLE frameLatencyWaitableObject;
 
+public:
+    HANDLE GetFrameLatencyWaitableObject() const override { return frameLatencyWaitableObject; }
+
+private:
+
     /** If true, we will save a screenshot after the next frame */
     bool SaveScreenshotNextFrame;
 

@@ -142,6 +142,22 @@ public:
         of OnBeginFrame. */
     virtual void FrameLimiterBeginFrame();
 
+    /** Returns the DXGI frame-latency waitable handle for backends whose swapchain was created
+        with DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, or nullptr if the backend/current
+        swapchain doesn't have one (feature disabled, not yet created, or unsupported). The handle
+        is owned by the backend's swapchain - callers must not close it. */
+    virtual HANDLE GetFrameLatencyWaitableObject() const { return nullptr; }
+
+    /** Waits on GetFrameLatencyWaitableObject(), if any, so the CPU doesn't get more than one
+        frame ahead of the swapchain. Same call-site story as FrameLimiterEndFrame/BeginFrame:
+        invoked once per loop iteration from CGameManagerRunLoop_PaceFrame when that patch is
+        installed, falling back to OnBeginFrame otherwise (see g_MainLoopFramePacingInstalled). */
+    void WaitForFrameLatencyWaitable() {
+        if ( HANDLE waitable = GetFrameLatencyWaitableObject() ) {
+            WaitForSingleObjectEx( waitable, 1000, TRUE );
+        }
+    }
+
     /** Called to set the current viewport */
     virtual XRESULT SetViewport( const ViewportInfo& viewportInfo ) PURE;
 

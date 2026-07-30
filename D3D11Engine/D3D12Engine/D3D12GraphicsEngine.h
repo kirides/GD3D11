@@ -66,6 +66,8 @@ public:
     XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
     XRESULT Clear( const float4& color ) override;
 
+    HANDLE GetFrameLatencyWaitableObject() const override { return m_FrameLatencyWaitableObject; }
+
     /** Settings/ImGui-driven shader hot-reload. Only RECORDS the request (ORs into m_PendingShaderReload) —
         callable any number of times per frame (e.g. an ImGui button held/spammed, or several settings
         changes in one frame each requesting a reload) with no GPU work done here at all, so it can never
@@ -452,6 +454,11 @@ private:
     UINT64 m_CopyFenceValue = 0;
     HANDLE m_CopyFenceEvent = nullptr;
     bool m_TearingSupported;
+
+    /** DXGI frame-latency waitable handle (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),
+        set up once in CreateSwapChain. Survives ResizeBuffers (same flag, same handle) - only
+        closed in the destructor. See GetFrameLatencyWaitableObject(). */
+    HANDLE m_FrameLatencyWaitableObject = nullptr;
 
     // --- Batched copy-queue uploader ---
     // A CacheIn burst can load dozens-hundreds of textures in a single frame. Doing a

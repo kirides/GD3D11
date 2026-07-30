@@ -57,6 +57,7 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     }
     if ( m_FenceEvent ) CloseHandle( m_FenceEvent );
     if ( m_UploadEvent ) CloseHandle( m_UploadEvent );
+    if ( m_FrameLatencyWaitableObject ) CloseHandle( m_FrameLatencyWaitableObject );
 }
 
 XRESULT D3D12GraphicsEngine::Init() {
@@ -1514,7 +1515,8 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = kBackBufferCount;
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    scd.Flags = m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    scd.Flags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
+        | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     scd.Scaling = DXGI_SCALING_STRETCH;
     scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
@@ -1534,6 +1536,16 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         return false;
     }
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+
+    // Cap the swapchain's own render-ahead queue to 1, matching the single wait we do per loop
+    // iteration (CGameManagerRunLoop_PaceFrame / OnBeginFrame fallback via WaitForFrameLatencyWaitable).
+    m_SwapChain->SetMaximumFrameLatency( 1 );
+    m_FrameLatencyWaitableObject = m_SwapChain->GetFrameLatencyWaitableObject();
+    if ( m_FrameLatencyWaitableObject ) {
+        // First wait is satisfied immediately (nothing presented yet) - consume it now so the very
+        // first real frame doesn't observe a stale signal.
+        WaitForSingleObjectEx( m_FrameLatencyWaitableObject, 1000, TRUE );
+    }
 
     if ( !CreateFrameResources() ) return false;
     if ( !AcquireBackBufferRTVs() ) return false;
@@ -1645,6 +1657,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
 
     if ( !g_MainLoopFramePacingInstalled ) {
+        WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
     }
 
@@ -2415,8 +2428,10 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     m_HdrDisplayAlloc.Reset();
 
     // Must pass the SAME flags the swapchain was created with (CreateSwapChainForHwnd's scd.Flags) —
-    // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING can't be added/removed via ResizeBuffers, only the create call.
-    const UINT swapChainFlags = m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    // neither DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING nor _FRAME_LATENCY_WAITABLE_OBJECT can be added/removed
+    // via ResizeBuffers, only the create call. The waitable handle itself stays valid across the resize.
+    const UINT swapChainFlags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
+        | ( m_FrameLatencyWaitableObject ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0 );
     HRESULT hr = m_SwapChain->ResizeBuffers( kBackBufferCount,
         static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), kBackBufferFormat, swapChainFlags );
     if ( FAILED( hr ) ) {

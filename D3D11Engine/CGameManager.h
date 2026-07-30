@@ -22,6 +22,7 @@ DWORD g_CGameManagerRunLoop_ReturnAddr = 0;
 static void __cdecl CGameManagerRunLoop_PaceFrame() {
     if ( Engine::GraphicsEngine ) {
         Engine::GraphicsEngine->FrameLimiterEndFrame();
+        Engine::GraphicsEngine->WaitForFrameLatencyWaitable();
         Engine::GraphicsEngine->FrameLimiterBeginFrame();
     }
 }
