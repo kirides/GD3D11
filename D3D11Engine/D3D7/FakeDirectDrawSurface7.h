@@ -72,8 +72,9 @@ public:
 	void InitFakeSurface( const DDSURFACEDESC2* desc, MyDirectDrawSurface7* resource, int mipLevel );
 private:
 
-	/** Current ref-count */
-	int RefCount;
+	/** Current ref-count. Atomic for the same reason as MyDirectDrawSurface7::refCount: mip surfaces
+	    are unlocked by the resource-loader thread and released by the game thread. */
+	std::atomic<ULONG> RefCount;
 
 	/** Mip-level this represents */
 	int MipLevel;

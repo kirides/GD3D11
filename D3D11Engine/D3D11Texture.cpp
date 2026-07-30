@@ -11,26 +11,28 @@
 #include "zFILE_VDFS.h"
 
 extern bool NativeSupport16BitTextures;
-static unsigned char* ConvertedData = nullptr;
-static size_t ConvertedDataSize = 0;
+
+/** Scratch for the 16bit->32bit conversion. Thread-local: with ZENGIN's resource thread enabled the
+    game thread and the loader thread convert textures at the same time, and a shared buffer meant one
+    of them could grow (and free) the block the other one had just handed to CreateTexture2D as
+    initial data - a heap use-after-free the driver reads through, which shows up as unrelated
+    corruption much later. One buffer per thread is at most a few MB and gets reused for every
+    texture, so this stays within the no-per-frame-allocation rule. */
+static thread_local std::vector<unsigned char> ConvertedData;
 
 unsigned char* ConvertTextureData( UINT TextureWidth, UINT TextureHeight, DXGI_FORMAT TextureFormat, unsigned char* data ) {
     UINT realDataSize = TextureWidth * TextureHeight * 4;
-    if ( ConvertedDataSize < realDataSize ) {
-        if (ConvertedData) {
-            free( ConvertedData );
-        }
-        ConvertedData = reinterpret_cast<unsigned char*>( malloc( realDataSize ) );
-        ConvertedDataSize = realDataSize;
+    if ( ConvertedData.size() < realDataSize ) {
+        ConvertedData.resize( realDataSize );
     }
     if ( TextureFormat == DXGI_FORMAT_B5G6R5_UNORM ) {
-        Convert565to8888( ConvertedData, data, realDataSize );
+        Convert565to8888( ConvertedData.data(), data, realDataSize );
     } else if ( TextureFormat == DXGI_FORMAT_B5G5R5A1_UNORM ) {
-        Convert1555to8888( ConvertedData, data, realDataSize );
+        Convert1555to8888( ConvertedData.data(), data, realDataSize );
     } else {
-        Convert4444to8888( ConvertedData, data, realDataSize );
+        Convert4444to8888( ConvertedData.data(), data, realDataSize );
     }
-    return ConvertedData;
+    return ConvertedData.data();
 }
 
 D3D11Texture::D3D11Texture() {
@@ -38,6 +40,12 @@ D3D11Texture::D3D11Texture() {
 }
 
 D3D11Texture::~D3D11Texture() {
+    // A pending GenerateMipMaps command would call into this object at frame start. Deferred mip
+    // uploads don't need this: those keep their own reference to the destination resource.
+    if ( Engine::GAPI ) {
+        Engine::GAPI->RemovePendingTextureCommands( this );
+    }
+
     Thumbnail.Reset();
     Texture.Reset();
     ShaderResourceView.Reset();
@@ -58,13 +66,16 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
         format = ETextureFormat::TF_B8G8R8A8;
     }
 
+    // Stays USAGE_DEFAULT even when created with initial data: game textures can receive further mip
+    // levels afterwards (UpdateDataDeferred's CopySubresourceRegion, GenerateMipMaps' CopyResource),
+    // and neither is legal against an IMMUTABLE resource.
     CD3D11_TEXTURE2D_DESC textureDesc(
         static_cast<DXGI_FORMAT>(format),
         size.x,
         size.y,
         1,
         mipMapCount,
-        D3D11_BIND_SHADER_RESOURCE, data ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
+        D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
 
     // Build one subresource per mip level, since data holds the full, concatenated mip chain
     std::vector<D3D11_SUBRESOURCE_DATA> initialDataMips;
@@ -203,7 +214,11 @@ XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string&
     return XR_SUCCESS;
 }
 
-static std::vector<uint8_t> stagingBuffer;
+/** Accumulates the whole mip chain before it is handed to CreateTexture2D. Thread-local for the same
+    reason as ConvertedData above - UpdateData runs on whichever thread caches the texture in. All mip
+    levels of one texture arrive in order on that same thread, which is what makes a per-thread (rather
+    than per-texture) buffer enough. */
+static thread_local std::vector<uint8_t> stagingBuffer;
 
 /** Updates the Texture-Object */
 XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
@@ -261,9 +276,16 @@ XRESULT D3D11Texture::UpdateDataDeferred( void* data, int mip ) {
     UINT TextureWidth = (TextureSize.x >> mip);
     UINT TextureHeight = (TextureSize.y >> mip);
 
-    ID3D11Texture2D* stagingTexture;
+    // Snapshot the destination: everything below has to describe and target the same resource, and the
+    // queue entry then holds it alive on its own until the game thread performs the copy.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> destination = Texture;
+    if ( !destination ) {
+        return XR_FAILED;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture;
     D3D11_TEXTURE2D_DESC stagingTextureDesc;
-    Texture.Get()->GetDesc( &stagingTextureDesc );
+    destination->GetDesc( &stagingTextureDesc );
     stagingTextureDesc.Width = TextureWidth;
     stagingTextureDesc.Height = TextureHeight;
     stagingTextureDesc.MipLevels = 1;
@@ -282,12 +304,12 @@ XRESULT D3D11Texture::UpdateDataDeferred( void* data, int mip ) {
     }
     stagingTextureData.SysMemSlicePitch = 0;
 
-    HRESULT result = engine->GetDevice()->CreateTexture2D( &stagingTextureDesc, &stagingTextureData, &stagingTexture );
+    HRESULT result = engine->GetDevice()->CreateTexture2D( &stagingTextureDesc, &stagingTextureData, stagingTexture.GetAddressOf() );
     if ( FAILED( result ) )
         return XR_FAILED;
-    ::SetDebugName( stagingTexture, "D3D11Texture->UpdateDataDeferred->stagingTexture" );
+    ::SetDebugName( stagingTexture.Get(), "D3D11Texture->UpdateDataDeferred->stagingTexture" );
 
-    Engine::GAPI->AddStagingTexture( mip, stagingTexture, Texture.Get() );
+    Engine::GAPI->AddStagingTexture( mip, stagingTexture, destination );
     return XR_SUCCESS;
 }
 

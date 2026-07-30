@@ -283,6 +283,22 @@ struct PolyStripInfo {
     zCVob* vob;
 };
 
+/** One mip-level upload handed over by ZENGIN's resource-loader thread: a filled STAGING texture and
+    the texture it has to be copied into once the game thread owns the immediate context again.
+
+    Both are strong references on purpose. The surface owning the destination can be cached out - and
+    with it its D3D11Texture deleted - at any point between the loader thread queueing this and the
+    game thread draining the queue at frame start (turning normalmaps on/off purges the whole texture
+    cache, which does exactly that, repeatedly). Handing a freed ID3D11Texture2D to
+    CopySubresourceRegion trips the debug layer's interface sentinel and corrupts driver state in
+    release builds, so the queue keeps both resources alive by itself instead of relying on whoever
+    created them still being around. */
+struct DeferredMipUpload {
+    UINT Mip;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> Staging;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> Destination;
+};
+
 /** Class used to communicate between Gothic and the Engine */
 class zCPolygon;
 class zCTexture;
@@ -831,13 +847,18 @@ public:
     XRESULT LoadMenuSettings( const std::string& file );
 
     /** Adds a staging texture to the list of the staging textures for this frame */
-    void AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID3D11Texture2D* texture );
+    void AddStagingTexture( UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
+        const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture );
 
     /** Gets a list of the staging textures for this frame */
-    std::list<std::pair<std::pair<UINT, ID3D11Texture2D*>, ID3D11Texture2D*>>& GetStagingTextures() {return FrameStagingTextures;}
+    std::vector<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
 
     /** Adds a mip map generation deferred command */
     void AddMipMapGeneration( GfxTexture* texture );
+
+    /** Drops any pending deferred commands referencing this texture. Must be called from
+        ~GfxTexture-implementations, or the game thread would dispatch them into a freed object. */
+    void RemovePendingTextureCommands( GfxTexture* texture );
 
     /** Gets a list of the mip map generation commands for this frame */
     std::list<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
@@ -1084,7 +1105,7 @@ private:
     DWORD MainThreadID;
 
     /** Textures loaded this frame */
-    std::list<std::pair<std::pair<UINT, ID3D11Texture2D*>, ID3D11Texture2D*>> FrameStagingTextures;
+    std::vector<DeferredMipUpload> FrameStagingTextures;
     std::list<GfxTexture*> FrameMipMapGenerations;
     std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
 

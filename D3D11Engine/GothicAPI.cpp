@@ -5945,9 +5945,10 @@ POINT GothicAPI::GetCursorPosition() {
 }
 
 /** Adds a staging texture to the list of the staging textures for this frame */
-void GothicAPI::AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID3D11Texture2D* texture ) {
+void GothicAPI::AddStagingTexture( UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
+    const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
-    FrameStagingTextures.emplace_back( std::make_pair( mip, stagingTexture ), texture );
+    FrameStagingTextures.emplace_back( DeferredMipUpload{ mip, stagingTexture, texture } );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 
@@ -5955,6 +5956,14 @@ void GothicAPI::AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID
 void GothicAPI::AddMipMapGeneration( GfxTexture* texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
     FrameMipMapGenerations.push_back( texture );
+    Engine::GAPI->LeaveResourceCriticalSection();
+}
+
+/** Drops any pending deferred commands referencing this texture */
+void GothicAPI::RemovePendingTextureCommands( GfxTexture* texture ) {
+    Engine::GAPI->EnterResourceCriticalSection();
+    // Usually empty, and never long: this only holds what one frame's worth of loading queued up.
+    std::erase( FrameMipMapGenerations, texture );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 

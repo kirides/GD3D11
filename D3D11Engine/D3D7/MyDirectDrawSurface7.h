@@ -125,10 +125,10 @@ public:
     const std::string& GetTextureName();
 
     /** Sets this texture ready to use */
-    void SetReady(const bool ready ) { IsReady = ready; }
+    void SetReady( const bool ready ) { IsReady.store( ready, std::memory_order_release ); }
 
     /** returns if this surface is ready or not */
-    bool IsSurfaceReady() const { return IsReady; }
+    bool IsSurfaceReady() const { return IsReady.load( std::memory_order_acquire ); }
 
     /** Returns true if this surface is used to render a movie to */
     bool IsMovieSurface() const { return LockedData != nullptr; }
@@ -141,11 +141,20 @@ private:
 
     /** Faked attached surfaces for the mipmaps */
     std::vector<MyDirectDrawSurface7*> attachedSurfaces;
-    int refCount;
+
+    /** Atomic: ZENGIN's resource-loader thread AddRef()s a surface (GothicAPI::AddFrameLoadedTexture)
+        while the game thread Release()s surfaces being cached out. A plain int lost increments there,
+        which freed a surface - and with it its D3D11Texture - that was still referenced by the frame's
+        deferred-upload queue. */
+    std::atomic<ULONG> refCount;
 
     /** Temporary data used during locks */
     unsigned char* LockedData;
-    bool IsReady; // True if the attached texture was successfully filled with data
+
+    /** True once the attached texture was successfully filled with data. Written by the loading thread
+        (and by the game thread when it drains the frame's loaded-texture list), read by the render
+        thread in BindToSlot. */
+    std::atomic<bool> IsReady;
 
     /** Original DESC this was created with */
     DDSURFACEDESC2 OriginalSurfaceDesc;

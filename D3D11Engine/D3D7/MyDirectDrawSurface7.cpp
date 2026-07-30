@@ -430,17 +430,20 @@ HRESULT MyDirectDrawSurface7::QueryInterface( REFIID riid, LPVOID* ppvObj ) {
 
 ULONG MyDirectDrawSurface7::AddRef() {
     DebugWriteTex( "IDirectDrawSurface7(%p)::AddRef(%i)" );
-    return ++refCount;
+    return refCount.fetch_add( 1, std::memory_order_relaxed ) + 1;
 }
 
 ULONG MyDirectDrawSurface7::Release() {
     DebugWriteTex( "IDirectDrawSurface7(%p)::Release(%i)" );
-    if ( --refCount == 0 ) {
+    // acq_rel so everything the releasing thread did to this surface is visible to whoever ends up
+    // running the destructor.
+    ULONG remaining = refCount.fetch_sub( 1, std::memory_order_acq_rel ) - 1;
+    if ( remaining == 0 ) {
         delete this;
         return 0;
     }
 
-    return refCount;
+    return remaining;
 }
 
 HRESULT MyDirectDrawSurface7::AddAttachedSurface( LPDIRECTDRAWSURFACE7 lpDDSAttachedSurface ) {
