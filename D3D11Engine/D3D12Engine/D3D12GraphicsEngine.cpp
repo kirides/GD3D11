@@ -33,6 +33,12 @@ namespace {
 D3D12GraphicsEngine::D3D12GraphicsEngine() {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
     m_Resolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
+    // Same LowLatency toggle D3D11 uses for its swapchain waitable object. kBackBufferCount is always
+    // N+1 - 1 slot for the frame currently in flight plus N queued behind it - so normally N=2 queued
+    // (3 slots) and LowLatency trims that to N=1 queued (2 slots, matching D3D11's non-low-latency
+    // double buffering). Must be set before the Attach() calls below so D3D12ShadowMap/D3D12PointShadows
+    // pick up the right value, and before any per-frame resource is created - switching it requires a restart.
+    kBackBufferCount = Engine::GAPI->GetRendererState().RendererSettings.LowLatency ? 2 : 3;
     // Hand the shadow modules their engine back-reference HERE, not in their Init(): Init() has ordering
     // constraints (the caster PSOs need the depth-prepass shader blobs, so the CSM map is created well into
     // Init()), but the engine calls into the modules BEFORE that — CreateWorldIndirect/CreateVobIndirect ask
@@ -1069,9 +1075,10 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	m_SceneColor->SetName( L"SceneColorHDR(R16F)" );
 	m_SceneColorInPixelState = false;
 
-	// RTV in the extra heap slot (index kBackBufferCount, past the swapchain RTVs).
+	// RTV in the extra heap slot (index kBackBufferMax, past the swapchain RTVs - the heap always reserves
+	// the max slot count regardless of the actually configured kBackBufferCount, so this offset never moves).
 	m_SceneColorRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_SceneColorRtv.ptr += static_cast<SIZE_T>(kBackBufferCount) * m_RtvDescriptorSize;
+	m_SceneColorRtv.ptr += static_cast<SIZE_T>(kBackBufferMax) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_SceneColor.Get(), nullptr, m_SceneColorRtv );
 
 	// SRV for the tonemap resolve (slot allocated once; view re-created each call to point at the current resource).
@@ -1332,9 +1339,9 @@ bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 	}
 	m_HdrDisplay->SetName( L"HdrDisplayComposite" );
 
-	// RTV heap slot kBackBufferCount+3 (after the swapchain RTVs, the scene-color RTV and SMAA's edge/blend).
+	// RTV heap slot kBackBufferMax+3 (after the swapchain RTVs, the scene-color RTV and SMAA's edge/blend).
 	m_HdrDisplayRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_HdrDisplayRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 3 ) * m_RtvDescriptorSize;
+	m_HdrDisplayRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 3 ) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_HdrDisplay.Get(), nullptr, m_HdrDisplayRtv );
 
 	if ( m_HdrDisplaySrvSlot == UINT_MAX ) m_HdrDisplaySrvSlot = AllocateSrvSlot();
@@ -1537,9 +1544,10 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     }
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
 
-    // Cap the swapchain's own render-ahead queue to 1, matching the single wait we do per loop
-    // iteration (CGameManagerRunLoop_PaceFrame / OnBeginFrame fallback via WaitForFrameLatencyWaitable).
-    m_SwapChain->SetMaximumFrameLatency( 1 );
+    // Cap the swapchain's own render-ahead queue to N queued frames (kBackBufferCount - 1: kBackBufferCount
+    // itself counts the 1 frame currently in flight too), matching the single wait we do per loop iteration
+    // (CGameManagerRunLoop_PaceFrame / OnBeginFrame fallback via WaitForFrameLatencyWaitable).
+    m_SwapChain->SetMaximumFrameLatency( kBackBufferCount - 1 );
     m_FrameLatencyWaitableObject = m_SwapChain->GetFrameLatencyWaitableObject();
     if ( m_FrameLatencyWaitableObject ) {
         // First wait is satisfied immediately (nothing presented yet) - consume it now so the very
@@ -1600,12 +1608,14 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 bool D3D12GraphicsEngine::CreateFrameResources() {
     ID3D12Device* device = m_Device.GetDevice();
 
-    // RTV descriptor heap: one per backbuffer + 1 for the HDR scene-color target (slot kBackBufferCount) +
-    // 2 for the SMAA edge/blend intermediates (slots kBackBufferCount+1 / +2) + 1 for the HDR display
-    // composite target (slot kBackBufferCount+3; only populated when real HDR output is active) + 2 for the
-    // motion-vector / octahedral-normal G-buffer the depth prepass writes (slots +4 / +5, D3D12Motion.cpp).
+    // RTV descriptor heap: kBackBufferMax backbuffer slots (reserved at the compile-time max regardless of
+    // the actually configured kBackBufferCount, so every fixed offset below stays stable) + 1 for the HDR
+    // scene-color target (slot kBackBufferMax) + 2 for the SMAA edge/blend intermediates (slots
+    // kBackBufferMax+1 / +2) + 1 for the HDR display composite target (slot kBackBufferMax+3; only
+    // populated when real HDR output is active) + 2 for the motion-vector / octahedral-normal G-buffer the
+    // depth prepass writes (slots +4 / +5, D3D12Motion.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferCount + 6;
+    rtvHeapDesc.NumDescriptors = kBackBufferMax + 6;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )

@@ -53,14 +53,17 @@ static_assert( kSkeletalShadowCascades <= kShadowCascades );
 
 class D3D12ShadowMap {
 public:
-    // Per-frame ring depth of the per-cascade indirect-arg buffers; must match
-    // D3D12GraphicsEngine::kBackBufferCount (static_assert'd in the .cpp).
-    static constexpr UINT kBackBufferCount = 2;
+    // Compile-time array bound of the per-cascade indirect-arg buffers; must match
+    // D3D12GraphicsEngine::kBackBufferMax (static_assert'd in the .cpp).
+    static constexpr UINT kBackBufferMax = 3;
+    UINT kBackBufferCount = 2;   // synced from the engine in Attach() below
 
     // The engine back-reference, handed over in the engine's CONSTRUCTOR. Deliberately separate from Init():
     // the engine calls CreateWorldArgRings/CreateVobArgRings from its own indirect-command setup, which runs
-    // BEFORE Init() (whose caster PSOs depend on the depth-prepass shader blobs existing first).
-    void Attach( D3D12GraphicsEngine& engine ) { m_E = &engine; }
+    // BEFORE Init() (whose caster PSOs depend on the depth-prepass shader blobs existing first). Defined in
+    // the .cpp: D3D12GraphicsEngine is only forward-declared here, so reading engine.kBackBufferCount needs
+    // the complete type.
+    void Attach( D3D12GraphicsEngine& engine );
 
     // The shadow map itself + its caster PSOs, created once. Fails soft: on failure the engine simply renders
     // without sun shadows (Prepare() guards on the resources existing) instead of falling back to D3D11.
@@ -164,15 +167,15 @@ private:
     bool m_SunDirInitialized = false;
 
     // Per-cascade world-mesh ExecuteIndirect arg rings (engine command sig m_WorldIndirectCmdSig).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WorldDrawArgs[kShadowCascades][kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kShadowCascades][kBackBufferCount];
-    uint8_t*                  m_WorldDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kShadowCascades][kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WorldDrawArgs[kShadowCascades][kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kShadowCascades][kBackBufferMax];
+    uint8_t*                  m_WorldDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kShadowCascades][kBackBufferMax] = {};
     UINT                      m_WorldDrawCount[kShadowCascades] = {};
     // Per-cascade instanced-VOB arg rings — the VOB analogue of the above (engine sig m_VobIndirectCmdSig).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferCount];
-    uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferMax];
+    uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read

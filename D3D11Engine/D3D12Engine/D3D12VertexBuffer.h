@@ -97,7 +97,7 @@ public:
     static D3D12VertexBuffer* From( GfxVertexBuffer* buffer ) { return static_cast<D3D12VertexBuffer*>( buffer ); }
 
 private:
-    static constexpr UINT kMaxCopies = 3;   // == D3D12GraphicsEngine::kBackBufferCount (checked at Init)
+    static constexpr UINT kMaxCopies = 3;   // == D3D12GraphicsEngine::kBackBufferMax
     static constexpr UINT kNoSlot = 0xFFFFFFFFu;   // "no copy has ever been written"
 
     struct Copy {

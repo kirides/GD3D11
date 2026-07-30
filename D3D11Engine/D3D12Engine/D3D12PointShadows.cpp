@@ -21,8 +21,13 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
-static_assert( D3D12PointShadows::kBackBufferCount == D3D12GraphicsEngine::kBackBufferCount,
-    "D3D12PointShadows' per-frame ring depth must match the engine's frame-in-flight count" );
+static_assert( D3D12PointShadows::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
+    "D3D12PointShadows' per-frame ring array bound must match the engine's" );
+
+void D3D12PointShadows::Attach( D3D12GraphicsEngine& engine ) {
+    m_E = &engine;
+    kBackBufferCount = engine.kBackBufferCount;
+}
 
 using namespace DirectX;
 

@@ -576,15 +576,15 @@ bool D3D12GraphicsEngine::CreateSmaaResources( INT2 size ) {
 	device->CreateShaderResourceView( m_SmaaEdges.Get(), &srv, GetSrvCpuHandle( m_SmaaEdgesSrvSlot ) );
 	device->CreateShaderResourceView( m_SmaaBlend.Get(), &srv, GetSrvCpuHandle( m_SmaaBlendSrvSlot ) );
 
-	// RTVs for edges/blend at fixed RTV-heap slots kBackBufferCount+1 / +2 (slot kBackBufferCount is m_SceneColor).
+	// RTVs for edges/blend at fixed RTV-heap slots kBackBufferMax+1 / +2 (slot kBackBufferMax is m_SceneColor).
 	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
 	rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 	rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	m_SmaaEdgesRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_SmaaEdgesRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 1 ) * m_RtvDescriptorSize;
+	m_SmaaEdgesRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 1 ) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_SmaaEdges.Get(), &rtvDesc, m_SmaaEdgesRtv );
 	m_SmaaBlendRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_SmaaBlendRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 2 ) * m_RtvDescriptorSize;
+	m_SmaaBlendRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 2 ) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_SmaaBlend.Get(), &rtvDesc, m_SmaaBlendRtv );
 
 	m_SmaaResourcesReady = true;

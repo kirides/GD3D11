@@ -76,7 +76,7 @@ namespace {
 
 UINT D3D12VertexBuffer::CurrentFrameSlot() {
     if ( D3D12GraphicsEngine* engine = Engine12() ) {
-        return engine->GetFrameIndex() % D3D12GraphicsEngine::kBackBufferCount;
+        return engine->GetFrameIndex() % engine->kBackBufferCount;
     }
     return 0;
 }
@@ -127,8 +127,8 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     // applied to the CPU-only D3D7 dynamic-buffer case) can never race an in-flight GPU read of the same
     // buffer from an earlier frame — see the class comment.
     bool isDynamic = ( usage & U_DYNAMIC ) || ( cpuAccess & CA_WRITE );
-    m_NumCopies = isDynamic ? D3D12GraphicsEngine::kBackBufferCount : 1;
-    if ( m_NumCopies > kMaxCopies ) m_NumCopies = kMaxCopies;   // defensive clamp; kBackBufferCount is currently 2
+    m_NumCopies = isDynamic ? Engine12()->kBackBufferCount : 1;
+    if ( m_NumCopies > kMaxCopies ) m_NumCopies = kMaxCopies;   // defensive clamp; kBackBufferCount is at most kBackBufferMax
 
     D3D12_RESOURCE_DESC bd = {};
     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;

@@ -101,12 +101,12 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
         return false;
 
     // RTVs in the two heap slots past the swapchain RTVs, the scene-color RTV, SMAA's edge/blend pair and the
-    // HDR display RTV (kBackBufferCount+0..+3). See CreateFrameResources' rtvHeapDesc.NumDescriptors.
+    // HDR display RTV (kBackBufferMax+0..+3). See CreateFrameResources' rtvHeapDesc.NumDescriptors.
     D3D12_CPU_DESCRIPTOR_HANDLE rtvBase = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     m_VelocityRtv = rtvBase;
-    m_VelocityRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 4 ) * m_RtvDescriptorSize;
+    m_VelocityRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 4 ) * m_RtvDescriptorSize;
     m_NormalRtv = rtvBase;
-    m_NormalRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 5 ) * m_RtvDescriptorSize;
+    m_NormalRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 5 ) * m_RtvDescriptorSize;
     device->CreateRenderTargetView( m_VelocityBuffer.Get(), nullptr, m_VelocityRtv );
     device->CreateRenderTargetView( m_NormalBuffer.Get(), nullptr, m_NormalRtv );
 

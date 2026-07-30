@@ -73,11 +73,13 @@ public:
     static bool IsLowSlot( UINT globalSlot ) { return globalSlot >= kMaxCubes; }
     static UINT LowIndex( UINT globalSlot ) { return globalSlot - kMaxCubes; }
 
-    static constexpr UINT kBackBufferCount = 2;   // must match D3D12GraphicsEngine::kBackBufferCount (asserted in the .cpp)
+    static constexpr UINT kBackBufferMax = 3;   // must match D3D12GraphicsEngine::kBackBufferMax (asserted in the .cpp)
+    UINT kBackBufferCount = 2;   // synced from the engine in Attach() below
 
     // The engine back-reference, handed over in the engine's CONSTRUCTOR so it is valid before Init() runs
-    // (mirrors D3D12ShadowMap::Attach — see the note there).
-    void Attach( D3D12GraphicsEngine& engine ) { m_E = &engine; }
+    // (mirrors D3D12ShadowMap::Attach — see the note there). Defined in the .cpp: D3D12GraphicsEngine is
+    // only forward-declared here, so reading engine.kBackBufferCount needs the complete type.
+    void Attach( D3D12GraphicsEngine& engine );
 
     // Both cube arrays + their per-slot DSVs + the array SRV + the per-frame face-CB / VOB-instance rings. The
     // caster PIPELINES live in m_Pipelines.PointShadow (D3D12PipelineState::CreatePointShadow). Non-fatal at
@@ -186,20 +188,20 @@ private:
     UINT m_DynSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV, fetched bindlessly via LightCB's PointShadowDynIndex
 
     // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FaceCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FaceCBAlloc[kBackBufferCount];
-    uint8_t*                  m_FaceCBMapped[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_FaceCBGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FaceCB[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FaceCBAlloc[kBackBufferMax];
+    uint8_t*                  m_FaceCBMapped[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_FaceCBGpu[kBackBufferMax] = {};
 
     // Per-frame TIGHT (64-byte world matrix) VOB-instance ring for the point-shadow VOB caster: only the
     // instances range-culled into a shadowed light's sphere get packed here, so cube draws stay proportional to
     // nearby casters. Persistently mapped UPLOAD; offset reset at the top of Prepare(); drop+log on overflow
     // (never reallocates — see the 32-bit per-frame-allocation rule).
     static constexpr UINT kMaxVobInstances = 8192;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobInst[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstAlloc[kBackBufferCount];
-    uint8_t*                  m_VobInstPtr[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_VobInstGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobInst[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstAlloc[kBackBufferMax];
+    uint8_t*                  m_VobInstPtr[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_VobInstGpu[kBackBufferMax] = {};
     UINT m_VobInstCapacity = 0;   // bytes
     UINT m_VobInstOffset = 0;     // reset each frame at the top of Prepare()
     bool m_VobInstOverflowLogged = false;

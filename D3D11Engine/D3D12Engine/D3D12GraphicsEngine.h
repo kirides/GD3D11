@@ -45,7 +45,14 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     friend class D3D12PointShadows;
 
 public:
-    static constexpr UINT kBackBufferCount = 2;
+    /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
+        Arrays are always sized to this; kBackBufferCount below decides how many slots are actually used. */
+    static constexpr UINT kBackBufferMax = 3;
+
+    /** Actual configured frame-in-flight count (<= kBackBufferMax). Set once in the constructor from
+        RendererSettings.LowLatency, before D3D12ShadowMap::Attach/D3D12PointShadows::Attach copy it -
+        never changes afterwards (switching it requires a restart, like D3D11's swapchain waitable flag). */
+    UINT kBackBufferCount = 2;
 
     D3D12GraphicsEngine();
     ~D3D12GraphicsEngine() override;
@@ -386,14 +393,14 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocator> m_Allocator;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain3>        m_SwapChain;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;   // kBackBufferCount swapchain RTVs + 1 HDR scene-color RTV
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV
     UINT m_RtvDescriptorSize = 0;
 
     // HDR scene-color pipeline (Phase 3): the 3D world passes render into m_SceneColor (R16F, values >1 allowed —
     // sun + additive point lights no longer clip), then ResolveSceneToBackBuffer tonemaps it into the swapchain.
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_SceneColorAlloc;       // backing D3D12MA allocation (recreated on resize)
-    D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferCount
+    D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferMax
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
     bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
     // Which RTV format/target DrawVertexArray is currently rendering into — true while the HDR scene-color
@@ -416,7 +423,7 @@ private:
     float m_HdrMonitorMaxFullFrameNits = 0.0f; // DXGI_OUTPUT_DESC1::MaxFullFrameLuminance
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_HdrDisplay;        // kHdrDisplayFormat, resolution-sized
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_HdrDisplayAlloc;
-    D3D12_CPU_DESCRIPTOR_HANDLE                 m_HdrDisplayRtv = {};   // RTV heap slot kBackBufferCount+3
+    D3D12_CPU_DESCRIPTOR_HANDLE                 m_HdrDisplayRtv = {};   // RTV heap slot kBackBufferMax+3
     UINT m_HdrDisplaySrvSlot = UINT_MAX;                                // read bindlessly by HdrEncode.hlsl
 
     // --- Shader hot-reload --------------------------------------------------------------------------------
@@ -430,12 +437,12 @@ private:
     // safe to fully stall the GPU here. See the .cpp for the flush + rollback-on-fatal-failure sequence.
     void ApplyPendingShaderReload();
 
-    Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferCount];
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferCount];
+    Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferMax];
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferMax];
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CmdList;
 
     Microsoft::WRL::ComPtr<ID3D12Fence> m_Fence;
-    UINT64 m_FenceValues[kBackBufferCount] = {};
+    UINT64 m_FenceValues[kBackBufferMax] = {};
     HANDLE m_FenceEvent = nullptr;
     UINT   m_FrameIndex = 0;   // render-thread-only; every use above indexes per-frame GPU rings
 
@@ -580,18 +587,18 @@ private:
     D3D12PipelineState m_Pipelines;
 
     // The 2D/UI root sig + shaders + blend/depth PSO cache now live in m_Pipelines.UI. The vertex ring stays here.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferCount]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_UIVertexBufferAlloc[kBackBufferCount];
-    uint8_t* m_UIVertexBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferMax]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_UIVertexBufferAlloc[kBackBufferMax];
+    uint8_t* m_UIVertexBufferPtr[kBackBufferMax] = {};
     UINT m_UIVertexBufferCapacity = 0;
     UINT m_UIVertexBufferOffset = 0;                               // reset each OnBeginFrame
     bool m_UIOverflowLogged = false;
 
     // Debug/editor line ring (D3D12LineRenderer). Same persistently-mapped per-frame upload ring pattern as
     // the UI vertex ring above; the line PSOs/root sig live in m_Pipelines.Lines.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LineVertexBuffer[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LineVertexBufferAlloc[kBackBufferCount];
-    uint8_t* m_LineVertexBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LineVertexBuffer[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LineVertexBufferAlloc[kBackBufferMax];
+    uint8_t* m_LineVertexBufferPtr[kBackBufferMax] = {};
     UINT m_LineVertexBufferCapacity = 0;
     UINT m_LineVertexBufferOffset = 0;                             // reset each OnBeginFrame
     bool m_LineOverflowLogged = false;
@@ -599,9 +606,9 @@ private:
     // Poly-strip vertex ring (D3D12Fx.cpp). Same persistently-mapped per-frame upload ring pattern; the strip
     // geometry is rebuilt on the CPU every frame (GothicAPI::CalcPolyStripMeshes), so it can't live in a
     // static VB the way quad marks do. D3D11 instead grows one shared TempPolysVertexBuffer on demand.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_FxVertexBuffer[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FxVertexBufferAlloc[kBackBufferCount];
-    uint8_t* m_FxVertexBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_FxVertexBuffer[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FxVertexBufferAlloc[kBackBufferMax];
+    uint8_t* m_FxVertexBufferPtr[kBackBufferMax] = {};
     UINT m_FxVertexBufferCapacity = 0;
     UINT m_FxVertexBufferOffset = 0;                               // reset each OnBeginFrame
     bool m_FxOverflowLogged = false;
@@ -644,10 +651,10 @@ private:
     };
     static constexpr UINT kMaxWorldDrawCommands = 16384;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_WorldIndirectCmdSig;   // b6(4 consts)@param10 + DrawIndexed
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferCount]; // persistently-mapped UPLOAD ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kBackBufferCount];
-    uint8_t* m_WorldDrawArgsPtr[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferMax]; // persistently-mapped UPLOAD ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kBackBufferMax];
+    uint8_t* m_WorldDrawArgsPtr[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferMax] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
     unsigned int m_WorldDrawnIndices = 0;            // total indices in this frame's command set (triangle counter)
     bool m_WorldDrawArgsOverflowLogged = false;
@@ -704,9 +711,9 @@ private:
     static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
     static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobIndirectCmdSig;   // VBVx2 + IBV + b6(3) + b4[4..5](2) + DrawIndexed
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobDrawArgs[kBackBufferCount];   // main-view (prepass+color share it)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferCount];
-    uint8_t* m_VobDrawArgsPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferMax];
+    uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
     unsigned int m_VobDrawnTriangles = 0;            // triangles in this frame's main-view VOB command set (stats)
     bool m_VobDrawArgsOverflowLogged = false;
@@ -755,13 +762,13 @@ private:
     static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
     static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_SkeletalIndirectCmdSig;  // CBV(b1) + CBV(b2) + VBV + IBV + b6(3) + DrawIndexed
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalDrawArgs[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferCount];
-    uint8_t* m_SkeletalDrawArgsPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalDrawArgs[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferMax];
+    uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_AttachDrawArgs[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AttachDrawArgsAlloc[kBackBufferCount];
-    uint8_t* m_AttachDrawArgsPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_AttachDrawArgs[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AttachDrawArgsAlloc[kBackBufferMax];
+    uint8_t* m_AttachDrawArgsPtr[kBackBufferMax] = {};
     UINT m_AttachDrawCount = 0;                      // VobDrawCommands built this frame (prepass + color share them)
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
@@ -802,9 +809,9 @@ private:
         UINT              InstanceCount;
     };
     static constexpr UINT kMaxCullVisuals = 16384;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferCount];   // persistently-mapped UPLOAD
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCullVisualsAlloc[kBackBufferCount];
-    uint8_t* m_VobCullVisualsPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferMax];   // persistently-mapped UPLOAD
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCullVisualsAlloc[kBackBufferMax];
+    uint8_t* m_VobCullVisualsPtr[kBackBufferMax] = {};
     UINT m_VobCullVisualCount = 0;                  // records written this frame
     bool m_VobCullVisualOverflowLogged = false;
     // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
@@ -855,8 +862,8 @@ private:
     static constexpr UINT kPointShadowListIndex = kShadowCascades;       // (from D3D12ShadowMap.h)
     static constexpr UINT kRainShadowListIndex  = kShadowCascades + 1;
     static constexpr UINT kShadowRecordSlots    = kShadowCascades + 2;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferCount];
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_ShadowCmdLists[kShadowRecordSlots][kBackBufferCount];
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferMax];
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_ShadowCmdLists[kShadowRecordSlots][kBackBufferMax];
     bool m_ShadowCmdListsReady = false;
     bool CreateShadowRecordCommandLists();
     // Closes + submits whatever is currently recorded in m_CmdList and immediately reopens it on the SAME
@@ -894,10 +901,10 @@ private:
     // four owners: D3D12ShadowMap::Prepare owns the head [0, kWetnessCbOffset) (cascade view-projs + sun dir +
     // strength + texel sizes), then UploadWetnessConstants, UploadAoReprojConstants and UploadSkyIblConstants
     // each own a tail block. The buffer lives here because it is shared; see kWetnessCbOffset below.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferCount];
-    uint8_t* m_ShadowCBMapped[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferMax];
+    uint8_t* m_ShadowCBMapped[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferMax] = {};
     bool CreateShadowConstantBuffer();   // the shared per-frame shadow CB ring (once, at init)
     // Bindless SRV-heap-slot resolvers for the (fully bindless) skeletal + node-attachment passes: the
     // material's cached-in engine texture's heap slot, or the 1x1 black fallback. ...Slot uses GetCacheState
@@ -952,7 +959,8 @@ private:
     // innermost level, up[i+1] otherwise); t1 is a static copy of down[i]'s SRV, written once at creation.
     // Indexed [m_FrameIndex][level] — double-buffered so frame N's t0 rewrite can never race frame N-1's
     // still-in-flight GPU read of the same slot (see the comment block above this section).
-    UINT m_BloomUpSrvPairSlot[kBackBufferCount][kBloomMaxMips] = {
+    UINT m_BloomUpSrvPairSlot[kBackBufferMax][kBloomMaxMips] = {
+        { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX },
         { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX },
         { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX } };  // base slot of the pair; t1 = base+1
     bool CreateBloomResources( INT2 size );   // (re)builds the pyramid textures + persistent SRV/UAV slots
@@ -975,8 +983,8 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaBlendAlloc;
     UINT m_SmaaEdgesSrvSlot = UINT_MAX;
     UINT m_SmaaBlendSrvSlot = UINT_MAX;
-    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaEdgesRtv = {};                 // RTV heap slot kBackBufferCount+1
-    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaBlendRtv = {};                 // RTV heap slot kBackBufferCount+2
+    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaEdgesRtv = {};                 // RTV heap slot kBackBufferMax+1
+    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaBlendRtv = {};                 // RTV heap slot kBackBufferMax+2
     std::unique_ptr<D3D12Texture> m_SmaaAreaTex;                     // precomputed area LUT (160x560 R8G8), loaded once
     std::unique_ptr<D3D12Texture> m_SmaaSearchTex;                   // precomputed search LUT (66x33 R8), loaded once
     bool m_SmaaTexturesLoaded = false;
@@ -1127,8 +1135,8 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VelocityAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_NormalBuffer;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_NormalAlloc;
-    D3D12_CPU_DESCRIPTOR_HANDLE m_VelocityRtv = {};   // RTV heap slot kBackBufferCount+4
-    D3D12_CPU_DESCRIPTOR_HANDLE m_NormalRtv = {};     // RTV heap slot kBackBufferCount+5
+    D3D12_CPU_DESCRIPTOR_HANDLE m_VelocityRtv = {};   // RTV heap slot kBackBufferMax+4
+    D3D12_CPU_DESCRIPTOR_HANDLE m_NormalRtv = {};     // RTV heap slot kBackBufferMax+5
     UINT m_VelocitySrvSlot = UINT_MAX;    // SRV for the debug overlay + future TAA/FSR3 consumers
     UINT m_VelocityUavSlot = UINT_MAX;    // UAV the FillCameraVelocity compute pass writes through (bindless)
     UINT m_NormalSrvSlot = UINT_MAX;      // SRV for the debug overlay + future XeGTAO
@@ -1144,9 +1152,9 @@ private:
     // Per-frame-in-flight 256-byte UPLOAD slabs holding MotionCBData, bound as a root CBV by the *GBuf prepass
     // PSOs (b5 world-family / b9 skeletal) and by the fill pass (b0). One allocation per frame in flight rather
     // than a ring: the contents are frame-global, written once in UploadMotionConstants.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_MotionCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_MotionCBAlloc[kBackBufferCount];
-    uint8_t* m_MotionCBMapped[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_MotionCB[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_MotionCBAlloc[kBackBufferMax];
+    uint8_t* m_MotionCBMapped[kBackBufferMax] = {};
     struct MotionCBData {
         XMFLOAT4X4 PrevViewProj;
         XMFLOAT4X4 UnjitteredViewProj;
@@ -1282,10 +1290,10 @@ private:
     // Per-frame-in-flight 256-byte UPLOAD CB holding just the AtmosphereConstantBuffer the pixel shader reads
     // at b1. Small and separate on purpose: the sky is drawn very early in OnStartWorldRendering, long before
     // RenderFogAndGodRays / DrawWaterSurfaces fill their own atmosphere blocks, so it cannot share either.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyCBAlloc[kBackBufferCount];
-    uint8_t* m_SkyCBMapped[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_SkyCBGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyCB[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyCBAlloc[kBackBufferMax];
+    uint8_t* m_SkyCBMapped[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_SkyCBGpu[kBackBufferMax] = {};
     bool CreateSkyConstantBuffers();          // one-time: the per-frame-in-flight atmosphere CB ring
     // Draws the dome. Returns false WITHOUT having drawn anything if the pipeline/CB/dome mesh isn't available,
     // which is DrawSky's signal to fall back to the fixed-function sky rather than show an empty sky.
@@ -1310,10 +1318,10 @@ private:
     // blocks — [0,256) the HeightfogConstantBuffer (b0), [256,512) the AtmosphereConstantBuffer (b1). Both
     // are filled once per frame in RenderFogAndGodRays from the exact same GAPI/GSky values D3D11 uses.
     static constexpr UINT kFogAtmosphereCbOffset = 256;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FogCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FogCBAlloc[kBackBufferCount];
-    uint8_t* m_FogCBMapped[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_FogCBGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FogCB[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FogCBAlloc[kBackBufferMax];
+    uint8_t* m_FogCBMapped[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_FogCBGpu[kBackBufferMax] = {};
     // True for frames where the height-fog composition actually runs. The lit geometry shaders' cheap linear
     // distance fog (MakeFogConstants) is D3D12's stand-in for this pass and MUST be suppressed while it runs,
     // or the scene is fogged twice — D3D11's world/VOB/skeletal shaders apply no distance fog at all (their
@@ -1354,10 +1362,10 @@ private:
     // RenderFogAndGodRays, so it cannot share m_FogCB's atmosphere block (that one is only filled when the
     // height-fog composition actually runs, later in the frame).
     static constexpr UINT kWaterAtmosphereCbOffset = 256;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterCB[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterCBAlloc[kBackBufferCount];
-    uint8_t* m_WaterCBMapped[kBackBufferCount] = {};
-    D3D12_GPU_VIRTUAL_ADDRESS m_WaterCBGpu[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterCB[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterCBAlloc[kBackBufferMax];
+    uint8_t* m_WaterCBMapped[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_WaterCBGpu[kBackBufferMax] = {};
 
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
@@ -1451,9 +1459,9 @@ private:
     // under them instead of casting a solid quad. Own (smaller-capped) ring rather than sharing the
     // main-view one: this pass is built at a different point in the frame and must not disturb it.
     static constexpr UINT kMaxRainVobDrawCommands = 8192;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainVobDrawArgs[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainVobDrawArgsAlloc[kBackBufferCount];
-    uint8_t* m_RainVobDrawArgsPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainVobDrawArgs[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainVobDrawArgsAlloc[kBackBufferMax];
+    uint8_t* m_RainVobDrawArgsPtr[kBackBufferMax] = {};
     UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
     // Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
     // main-view / per-cascade views, since the bucket index IS the visual index.
@@ -1506,9 +1514,9 @@ private:
 
     // Instanced static VOBs (reuses the shared world root sig; slot 0 = packed vertex, slot 1 = per-instance
     // data). Lit PSO/blobs now live in m_Pipelines.World (VobPSO/VobVsBlob/VobPsBlob); the buffers stay here.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstanceBufferAlloc[kBackBufferCount];
-    uint8_t* m_VobInstanceBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstanceBufferAlloc[kBackBufferMax];
+    uint8_t* m_VobInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
     bool m_VobInstanceOverflowLogged = false;
@@ -1523,9 +1531,9 @@ private:
     // Slice index: cascade c uses slot c; the rain shadowmap uses kRainInstanceRingSlot.
     static constexpr UINT kShadowInstanceRingSlots = kShadowCascades + 1;
     static constexpr UINT kRainInstanceRingSlot    = kShadowCascades;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobInstanceBuffer[kBackBufferCount];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobInstanceBufferAlloc[kBackBufferCount];
-    uint8_t* m_ShadowVobInstanceBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobInstanceBuffer[kBackBufferMax];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobInstanceBufferAlloc[kBackBufferMax];
+    uint8_t* m_ShadowVobInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_ShadowInstanceSliceCapacity = 0;   // bytes per slot (NOT the whole buffer)
     // Per-slot, so one busy cascade overflowing doesn't silence the warning for the others. Reset each
     // OnBeginFrame like the other ring warn-once flags — a drop is never silent.
@@ -1541,9 +1549,9 @@ private:
     // StructuredBuffer of the frame's visible point lights, rebuilt each frame from CollectVisibleVobs and
     // bound as a root SRV (t1) to the world/VOB pixel shaders, which loop it per pixel (N.L + attenuation)
     // on top of the baked vertex lighting. Root SRV => no descriptor-heap slot consumed.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightBuffer[kBackBufferCount]; // persistently-mapped UPLOAD, GPULight[]
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightBufferAlloc[kBackBufferCount];
-    uint8_t* m_LightBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightBuffer[kBackBufferMax]; // persistently-mapped UPLOAD, GPULight[]
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightBufferAlloc[kBackBufferMax];
+    uint8_t* m_LightBufferPtr[kBackBufferMax] = {};
     UINT m_LightBufferCapacity = 0;                               // max lights per frame
     UINT m_FrameLightCount = 0;                                   // lights written this frame
     bool m_LightOverflowLogged = false;
@@ -1558,18 +1566,18 @@ private:
     // b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0), lit + depth-prepass PSOs, and their blobs now
     // live in m_Pipelines.Skeletal. The per-frame CB ring below holds each vob's instance CB + bone matrices
     // (root CBVs into it, 256-byte aligned).
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalCBBuffer[kBackBufferCount]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalCBBufferAlloc[kBackBufferCount];
-    uint8_t* m_SkeletalCBBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalCBBuffer[kBackBufferMax]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalCBBufferAlloc[kBackBufferMax];
+    uint8_t* m_SkeletalCBBufferPtr[kBackBufferMax] = {};
     UINT m_SkeletalCBBufferCapacity = 0;
     UINT m_SkeletalCBBufferOffset = 0;                             // reset each OnBeginFrame
     bool m_SkeletalCBOverflowLogged = false;
 
     // Particle (PFX) path — instanced camera-facing billboards, one instance per live particle. The root sig,
     // shaders, and per-BlendKey PSO cache now live in m_Pipelines.Particle. Per-frame instance ring stays here.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ParticleInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ParticleInstanceBufferAlloc[kBackBufferCount];
-    uint8_t* m_ParticleInstanceBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ParticleInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ParticleInstanceBufferAlloc[kBackBufferMax];
+    uint8_t* m_ParticleInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_ParticleInstanceBufferCapacity = 0;
     UINT m_ParticleInstanceBufferOffset = 0;                       // reset each OnBeginFrame
     bool m_ParticleInstanceOverflowLogged = false;
@@ -1581,9 +1589,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalQuadVB;          // shared unit quad (6 verts), static
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalQuadVBAlloc;
     D3D12_VERTEX_BUFFER_VIEW m_DecalQuadVBV = {};
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalInstanceBufferAlloc[kBackBufferCount];
-    uint8_t* m_DecalInstanceBufferPtr[kBackBufferCount] = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalInstanceBufferAlloc[kBackBufferMax];
+    uint8_t* m_DecalInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_DecalInstanceBufferCapacity = 0;
     UINT m_DecalInstanceBufferOffset = 0;                          // reset each OnBeginFrame
     bool m_DecalInstanceOverflowLogged = false;
