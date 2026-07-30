@@ -42,6 +42,7 @@ struct GothicMemoryLocations {
 
     struct CGameManager {
         static const unsigned int ExitGame = 0x004899E0;
+        static const unsigned int RunLoopSysEventCallSite = 0x0;
     };
 
     struct zCOption {

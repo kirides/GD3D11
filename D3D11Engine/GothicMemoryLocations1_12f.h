@@ -447,6 +447,10 @@ struct GothicMemoryLocations {
         static const unsigned int RemoveRes = 0;
     };
 
+    struct CGameManager {
+        static const unsigned int RunLoopSysEventCallSite = 0x0;
+    };
+
     struct zCResource {
         // zCObject base, then nextRes/prevRes/timeStamp, then the zCCriticalSection stateChangeGuard
         // (vtbl + CRITICAL_SECTION = 0x1C bytes), then the bitfield.
