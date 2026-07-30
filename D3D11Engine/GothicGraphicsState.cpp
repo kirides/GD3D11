@@ -169,10 +169,9 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     if ( FeatureLevel10Compatibility ) {
         s.ApplyFeatureLevel10Downgrades();
     }
-
-    Engine::GAPI->UpdateTextureMaxSize();
-    Engine::GraphicsEngine->ReloadShaders();
-    Engine::GAPI->UpdateCompressBackBuffer();
+    if ( Engine::GAPI ) Engine::GAPI->UpdateTextureMaxSize();
+    if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->ReloadShaders();
+    if ( Engine::GAPI ) Engine::GAPI->UpdateCompressBackBuffer();
 }
 
 void GothicRendererSettings::ApplyGraphicsPreset()

@@ -518,8 +518,10 @@ void GothicAPI::UpdateMTResourceManager() {
 
 /** Called to update the texture quality */
 void GothicAPI::UpdateTextureMaxSize() {
-    zCResourceManager::RefreshTexMaxSize(RendererState.RendererSettings.textureMaxSize);
     if ( zCResourceManager* rsm = zCResourceManager::GetResourceManager() ) {
+        if ( oCGame::GetGame() ) {
+            zCResourceManager::RefreshTexMaxSize(RendererState.RendererSettings.textureMaxSize);
+        }
         rsm->PurgeCaches( GothicMemoryLocations::zCClassDef::zCTexture );
     }
 }
@@ -2620,7 +2622,9 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
 void GothicAPI::UpdateCompressBackBuffer() {
     // Backend-neutral: reachable from the ImGui settings window and the graphics-preset apply path,
     // both of which run under D3D12 too. OnResetBackBuffer is a BaseGraphicsEngine virtual.
-    Engine::GraphicsEngine->OnResetBackBuffer();
+    if ( Engine::GraphicsEngine ) {
+        Engine::GraphicsEngine->OnResetBackBuffer();
+    }
 }
 
 /** Draws a skeletal mesh-vob */
