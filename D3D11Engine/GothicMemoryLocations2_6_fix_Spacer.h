@@ -475,6 +475,10 @@ struct GothicMemoryLocations {
         static const unsigned int SizeOf_ClassCache = 0x1C;
         static const unsigned int Offset_ClassCache_ResClassDef = 0x00;
         static const unsigned int Offset_ClassCache_ResListHead = 0x04;
+
+        static const unsigned int InsertRes = 0;
+        static const unsigned int TouchRes = 0;
+        static const unsigned int RemoveRes = 0;
     };
 
     struct zCResource {
