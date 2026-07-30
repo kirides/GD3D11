@@ -866,7 +866,7 @@ struct GothicRendererSettings {
         HDR_MaxBrightness = 1000.0f;
         HDR_PaperWhite = 200.0f;
         EnableInactiveFpsLock = true;
-        MTResoureceManager = false;
+        MTResoureceManager = true;
         CompressBackBuffer = false;
         AnimateStaticVobs = true;
         RunInSpacerNet = false;
