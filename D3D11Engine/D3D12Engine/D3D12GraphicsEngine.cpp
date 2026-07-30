@@ -1655,6 +1655,10 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         OnResize( m_NewResolution );
     }
 
+    // Same spot, same reasoning, for a pending shader hot-reload request (ReloadShaders only records it —
+    // see ApplyPendingShaderReload's comment for the GPU-flush + rollback-on-failure this does).
+    ApplyPendingShaderReload();
+
     // Same spot, same reasoning, for the shadow-map quality setting (mirrors D3D11ShadowMap::PrepareRender's
     // per-frame settings check). Clamp+snap here too so the ImGui slider/ini can't leave an in-between size.
     if ( m_ShadowMap.HasResources() ) {
@@ -2505,14 +2509,61 @@ XRESULT D3D12GraphicsEngine::Clear( const float4& /*color*/ ) {
 }
 
 
-XRESULT D3D12GraphicsEngine::ReloadShaders( ShaderCategory /*categories*/ ) {
-    // D3D11 recompiles in place here. On D3D12 the settings macros are baked into the DXIL blobs the PSOs
-    // were built from, and those PSOs are held both by D3D12PipelineState and by the engine-owned
-    // shadow-caster / on-demand blend caches — rebuilding them safely needs a GPU flush plus a coordinated
-    // teardown that doesn't exist yet. Say so instead of pretending the toggle took effect.
-    LogInfo() << "D3D12: shader settings changed - restart the game for them to take effect "
-                 "(live shader reload is not implemented on the D3D12 backend yet).";
+XRESULT D3D12GraphicsEngine::ReloadShaders( ShaderCategory categories ) {
+    // Just record the request — see the header comment for why nothing else happens here. This may run
+    // from ImGui mid-frame (a held/spammed "Reload all Shaders" button, several settings toggles in one
+    // frame), so it must stay this cheap and this safe: OR-ing a bitmask has no failure mode.
+    m_PendingShaderReload |= categories;
     return XR_SUCCESS;
+}
+
+
+void D3D12GraphicsEngine::ApplyPendingShaderReload() {
+    if ( m_PendingShaderReload == ShaderCategory::None ) return;
+    // Clear immediately: whatever we're about to do covers everything requested up to this point, and any
+    // request that arrives *during* the reload (there can't be one — this runs synchronously on the same
+    // thread ImGui/the settings code calls ReloadShaders from, before the next frame even opens) must not
+    // be lost by an unrelated later clear.
+    m_PendingShaderReload = ShaderCategory::None;
+
+    LogInfo() << "D3D12: reloading shaders...";
+    Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Reloading shaders..." );
+
+    // Every current PSO/root-sig/blob must be provably unreferenced by the GPU before ReloadAll() releases
+    // and replaces it (D3D12PipelineState::Create*() destroys-then-recreates; destroying an object the GPU
+    // is still executing against is the corruption this whole path exists to avoid). The previous frame's
+    // command list is already Closed+Executed+Presented at this OnBeginFrame checkpoint, so this flush
+    // drains exactly the in-flight work — no different from what TriggerResize's OnResize already does here.
+    WaitForGpuIdle();
+
+    // Snapshot the fully-working pipeline state before touching anything. Every member is a ComPtr (or a
+    // container of them) or trivially-copyable, so this is a cheap AddRef pass, not a GPU operation — and it
+    // is what makes a partial/failed reload safe: if any FATAL pass fails to recompile below, every ComPtr
+    // this copy still holds is restored verbatim, so no draw call can ever observe a null "was working a
+    // second ago" PSO. Non-fatal (optional) passes are allowed to end up degraded on their own, same as a
+    // fresh Init() would leave them — every draw site for those already guards on the PSO existing.
+    D3D12PipelineState backup = m_Pipelines;
+
+    std::vector<std::string> failedFatal, failedOptional;
+    const bool ok = m_Pipelines.ReloadAll( m_HdrOutputActive, failedFatal, failedOptional );
+
+    if ( !ok ) {
+        m_Pipelines = backup;   // whole-state rollback — see ReloadAll's header comment for why this is safe
+        std::string names;
+        for ( const auto& n : failedFatal ) { if ( !names.empty() ) names += ", "; names += n; }
+        LogWarn() << "D3D12: shader reload failed (" << names << ") - keeping the previous, working shaders. "
+                     "Fix the shader source and reload again.";
+        Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Shader reload FAILED (" + names + ") - kept previous shaders." );
+        return;
+    }
+
+    if ( !failedOptional.empty() ) {
+        std::string names;
+        for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
+        LogWarn() << "D3D12: shader reload finished with degraded passes (" << names
+                   << ") - those effects are disabled/simplified until fixed and reloaded again.";
+    }
+    LogInfo() << "D3D12: shaders reloaded.";
 }
 
 

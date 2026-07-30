@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <map>
 #include <string>
+#include <vector>
 #include <cstdint>
 #include "D3D12Device.h"
 #include "D3D12RootLayout.h"
@@ -429,6 +430,32 @@ public:
 
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
+
+    // Re-runs every pipeline-state Create*() in the same dependency order D3D12GraphicsEngine::Init()
+    // uses (World before Vob/DepthPrepass, which share World.RootSig; etc.) — the shader-hot-reload path.
+    // Does NOT touch anything GPU-resource-shaped (buffers/textures live in the engine, per the class
+    // comment); only blobs/root-signatures/PSOs. Every on-demand blend-keyed PSO cache (UI.Pipelines,
+    // Particle.Pipelines, Decal.BlendPipelines, WorldTransparency.BlendPipelines, Fx.BlendPipelines,
+    // World.QuadMarkPipelines) is cleared right after its owning Create*() call so the next GetOrCreate*()
+    // rebuilds against the freshly compiled blob instead of quietly keeping a PSO built from the old one.
+    //
+    // CALLER'S RESPONSIBILITY: the GPU must be fully idle before this runs (every Create*() destroys the
+    // previous blob/PSO ComPtr before the replacement is ready) and nothing may be recording into a
+    // command list that could reference the pipelines this touches — see
+    // D3D12GraphicsEngine::ApplyPendingShaderReload for the fence flush + rollback-on-failure this is
+    // designed to be called from. Also, this is NOT reentrant on its own (no internal locking) — the
+    // caller must guarantee only one reload runs at a time (ApplyPendingShaderReload does this by only
+    // ever running at a single frame-boundary checkpoint).
+    //
+    // `hdrEncodeActive` mirrors Init()'s `m_HdrOutputActive`: only rebuild HdrEncode when real HDR
+    // scanout is actually up (its RTV format is baked in at Init and never changes afterward).
+    // On return, every pass whose name lands in `failedFatal` failed to rebuild — these are exactly the
+    // passes Init() treats as fatal (would abort the whole engine on first bring-up); the caller should
+    // roll the ENTIRE m_Pipelines back to its pre-reload snapshot rather than leave any of them null.
+    // Passes in `failedOptional` failed too, but Init() already tolerates them individually (their PSO
+    // ends up null/whatever it was and every draw site already guards on that) — no rollback needed for
+    // those alone. Returns true only if failedFatal ended up empty.
+    bool ReloadAll( bool hdrEncodeActive, std::vector<std::string>& failedFatal, std::vector<std::string>& failedOptional );
 
     // --- Per-pass pipeline creation (pure pipeline state; no GPU buffers/textures) ---
     bool CreateWorld();        // shared world root sig + lit world-mesh PSO (must run before the two below)

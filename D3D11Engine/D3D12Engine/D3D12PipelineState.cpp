@@ -3370,3 +3370,60 @@ bool D3D12PipelineState::CreateLines() {
     }
     return true;
 }
+
+bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::string>& failedFatal, std::vector<std::string>& failedOptional ) {
+    // "Fatal" mirrors exactly the Create*() calls D3D12GraphicsEngine::Init() treats as XR_FAILED-worthy
+    // (world/UI/lighting-critical passes nothing else falls back for); "optional" mirrors the ones Init()
+    // already logs-and-continues on. See the big comment block in Init() for the per-pass reasoning — kept
+    // in that one place rather than duplicated here. Order matches Init(): World before DepthPrepass/Vob
+    // (they reuse World.RootSig via GetLayout), Skeletal/PointShadow/Water/etc. after.
+    auto runFatal = [&]( const char* name, bool (D3D12PipelineState::*fn)() ) {
+        if ( !(this->*fn)() ) failedFatal.push_back( name );
+    };
+    auto runOptional = [&]( const char* name, bool (D3D12PipelineState::*fn)() ) {
+        if ( !(this->*fn)() ) failedOptional.push_back( name );
+    };
+
+    if ( hdrEncodeActive ) runFatal( "HdrEncode", &D3D12PipelineState::CreateHdrEncode );
+    runFatal( "UI", &D3D12PipelineState::CreateUI );
+    UI.Pipelines.clear();   // blend-keyed cache; entries were built from the blobs CreateUI() just replaced
+    runFatal( "World", &D3D12PipelineState::CreateWorld );
+    World.QuadMarkPipelines.clear();
+    runFatal( "DepthPrepass", &D3D12PipelineState::CreateDepthPrepass );
+    runOptional( "WorldTransparency", &D3D12PipelineState::CreateWorldTransparency );
+    WorldTransparency.BlendPipelines.clear();
+    runFatal( "LightCull", &D3D12PipelineState::CreateLightCull );
+    runFatal( "Vob", &D3D12PipelineState::CreateVob );
+    runOptional( "Cull", &D3D12PipelineState::CreateCull );
+    runFatal( "Skeletal", &D3D12PipelineState::CreateSkeletal );
+    runFatal( "PointShadow", &D3D12PipelineState::CreatePointShadow );
+    runFatal( "Water", &D3D12PipelineState::CreateWater );
+    runFatal( "Particle", &D3D12PipelineState::CreateParticle );
+    Particle.Pipelines.clear();
+    runFatal( "Decal", &D3D12PipelineState::CreateDecal );
+    Decal.BlendPipelines.clear();
+    runFatal( "Tonemap", &D3D12PipelineState::CreateTonemap );
+    runFatal( "LumAdapt", &D3D12PipelineState::CreateLumAdapt );
+    runFatal( "Preview", &D3D12PipelineState::CreatePreview );
+    runOptional( "Bloom", &D3D12PipelineState::CreateBloom );
+    runOptional( "Ghost", &D3D12PipelineState::CreateGhost );
+    runOptional( "GhostSkeletal", &D3D12PipelineState::CreateGhostSkeletal );
+    runOptional( "Grass", &D3D12PipelineState::CreateGrass );
+    runOptional( "Video", &D3D12PipelineState::CreateVideo );
+    runOptional( "Smaa", &D3D12PipelineState::CreateSmaa );
+    runOptional( "Sharpen", &D3D12PipelineState::CreateSharpen );
+    runOptional( "AO", &D3D12PipelineState::CreateAO );
+    runOptional( "Gtao", &D3D12PipelineState::CreateGtao );
+    runOptional( "Motion", &D3D12PipelineState::CreateMotion );
+    runOptional( "Taa", &D3D12PipelineState::CreateTaa );
+    runOptional( "SkyIbl", &D3D12PipelineState::CreateSkyIbl );
+    runOptional( "Sky", &D3D12PipelineState::CreateSky );
+    runOptional( "Fog", &D3D12PipelineState::CreateFog );
+    runOptional( "AdvanceRain", &D3D12PipelineState::CreateAdvanceRain );
+    runOptional( "RainDraw", &D3D12PipelineState::CreateRainDraw );
+    runOptional( "Lines", &D3D12PipelineState::CreateLines );
+    runOptional( "Fx", &D3D12PipelineState::CreateFx );
+    Fx.BlendPipelines.clear();
+
+    return failedFatal.empty();
+}

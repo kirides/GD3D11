@@ -66,10 +66,15 @@ public:
     XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
     XRESULT Clear( const float4& color ) override;
 
-    /** Settings-driven shader reload. D3D12 bakes its configuration macros (see
-        D3D12ShaderBackend::AppendGlobalMacros) into every PSO at Init(), and PSOs are referenced by the
-        engine-owned shadow-caster pipelines too, so live rebuilding isn't wired yet — this logs that a
-        restart is needed instead of silently doing nothing like the BaseGraphicsEngine default would. */
+    /** Settings/ImGui-driven shader hot-reload. Only RECORDS the request (ORs into m_PendingShaderReload) —
+        callable any number of times per frame (e.g. an ImGui button held/spammed, or several settings
+        changes in one frame each requesting a reload) with no GPU work done here at all, so it can never
+        itself stall or race. The actual recompile runs once, at the next OnBeginFrame's
+        ApplyPendingShaderReload() checkpoint — see that method for why there and how failures are handled.
+        D3D12 doesn't distinguish ShaderCategory subsets the way D3D11 does; any non-None request reloads
+        every D3D12 pipeline (see D3D12PipelineState::ReloadAll). CSM/point-shadow shadow-CASTER PSOs
+        (owned by D3D12ShadowMap/D3D12PointShadows, not D3D12PipelineState) are not yet part of this and
+        keep whatever shader they were built with until the next full engine restart. */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All ) override;
 
     XRESULT CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) override;
@@ -411,6 +416,17 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_HdrDisplayAlloc;
     D3D12_CPU_DESCRIPTOR_HANDLE                 m_HdrDisplayRtv = {};   // RTV heap slot kBackBufferCount+3
     UINT m_HdrDisplaySrvSlot = UINT_MAX;                                // read bindlessly by HdrEncode.hlsl
+
+    // --- Shader hot-reload --------------------------------------------------------------------------------
+    // Coalesced request bitmask: ReloadShaders() only ORs into this (see its header comment) — never touches
+    // the GPU or m_Pipelines directly, so calling it any number of times in a frame (a spammed ImGui button,
+    // several settings toggles) is always safe and collapses to exactly one recompile pass.
+    ShaderCategory m_PendingShaderReload = ShaderCategory::None;
+    // Runs the coalesced request, if any: called once per frame from OnBeginFrame, at the same checkpoint
+    // TriggerResize()'s pending resize is applied — after the previous frame's command list is
+    // Closed+Executed+Presented (nothing is mid-recording) and before this frame's allocator Reset, so it is
+    // safe to fully stall the GPU here. See the .cpp for the flush + rollback-on-fatal-failure sequence.
+    void ApplyPendingShaderReload();
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferCount];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferCount];
