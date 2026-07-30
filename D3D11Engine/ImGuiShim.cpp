@@ -784,7 +784,9 @@ void ImGuiShim::RenderSettingsWindowModern() {
                     int ssr = std::clamp<int>(settings.WaterSSRQuality, 0, std::size( ssrLevels ) - 1);
                     if ( ImGui::SliderInt( "Water Reflections", &ssr, 0, std::size( ssrLevels ) - 1, ssrLevels[ssr], ImGuiSliderFlags_::ImGuiSliderFlags_AlwaysClamp ) ) {
                         settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
-                        shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                        if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                            shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                        }
                     }
 
                     ImGui::TableNextColumn();
@@ -915,7 +917,9 @@ void ImGuiShim::RenderSettingsWindow()
                 } else {
                     settings.AllowNormalmaps = 0;
                 }
-                Engine::GraphicsEngine->ReloadShaders();
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders();
+                }
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
@@ -926,14 +930,18 @@ void ImGuiShim::RenderSettingsWindow()
                     {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
             };
             if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                }
                 } ) ) {
                 ImGui::EndCombo();
             }
             ImGui::SetItemTooltip( "Screen-Space ambient occlusion mode.\nChanging this will reload shaders." );
 
             if ( ImGui::Checkbox( "Godrays", &settings.EnableGodRays ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                }
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
@@ -1195,7 +1203,9 @@ void ImGuiShim::RenderSettingsWindow()
             };
 
             if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, [&shadersToReload]{
-                shadersToReload |= ShaderCategory::LightsAndShadows;
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    shadersToReload |= ShaderCategory::LightsAndShadows;
+                }
             } ) ) {
                 ImGui::EndCombo();
             }
@@ -1302,7 +1312,9 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
         {
             ImGui::PushID( "GodRaysSettings" );
             if ( ImGui::Checkbox( "GodRays", &settings.EnableGodRays ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                }
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
             ImGui::DragFloat( "GodRayDecay", &settings.GodRayDecay, 0.01f );
@@ -1434,7 +1446,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
-            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+            }
         }
         ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
@@ -1461,7 +1475,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::BeginDisabled( !settings.EnableHDR );
         if ( ImComboBoxC( "HDR ToneMap", hdrToneMapValues, reinterpret_cast<int*>(&settings.HDRToneMap), []
         {
-            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Tonemapping );
+            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Tonemapping );
+            }
         } ) ) {
             ImGui::EndCombo();
         }
@@ -1600,7 +1616,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "Fixed shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
             ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
 
-            if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
+            if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { 
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
+                } ) ) {
                 ImGui::EndCombo();
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
@@ -1620,7 +1640,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
                 settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
                 settings.ApplyFeatureLevel10Downgrades();
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
@@ -1645,7 +1668,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     {"PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS},
                 };
                 if ( ImComboBoxC( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, []() {
-                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    }
                     } ) ) {
                     ImGui::EndCombo();
                 }
@@ -1654,7 +1679,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
             if ( ImGui::SliderInt( "Soft shadow limit", &settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
             }
             ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'.\nChanging this will reload shaders." );
             
@@ -1863,7 +1890,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip("Enables a less intensive but lower quality shadow solution.");
                 if ( ImGui::Checkbox( "Use Screen-Space Shadow Mask", &settings.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ) ) {
-                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    }
                 }
                 ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
 
@@ -1874,7 +1903,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");
 
                 if (ImGui::Checkbox("Compressed Normalmaps support", &settings.CompressedNormalsSupport )) {
-                    Engine::GraphicsEngine->ReloadShaders();
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders();
+                    }
                 }
                 ImGui::SetItemTooltip("Enables support for BC5 compressed Normalmaps.");
 
@@ -1885,7 +1916,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 };
                 if ( ImComboBoxC( "Normalmapping texture mode", normalMapType, &settings.AllowNormalmaps, []
                 {
-                    Engine::GraphicsEngine->ReloadShaders();
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders();
+                    }
                     Engine::GAPI->UpdateTextureMaxSize();
                 } ) ) {
                     ImGui::EndCombo();
@@ -1983,7 +2016,9 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
                 };
                 if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                    }
                     } ) ) {
                     ImGui::EndCombo();
                 }
