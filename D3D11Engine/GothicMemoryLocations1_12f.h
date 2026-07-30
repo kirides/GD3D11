@@ -446,6 +446,7 @@ struct GothicMemoryLocations {
     struct zCResource {
         // zCObject base, then nextRes/prevRes/timeStamp, then the zCCriticalSection stateChangeGuard
         // (vtbl + CRITICAL_SECTION = 0x1C bytes), then the bitfield.
+        static const unsigned int Offset_RefCtr = 0x04;
         static const unsigned int Offset_NextRes = 0x24;
         static const unsigned int Offset_StateChangeGuard = 0x30;
         // bits 0-1: cacheState (zTResourceCacheState), bit 2: cacheOutLock

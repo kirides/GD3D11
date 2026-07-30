@@ -649,6 +649,11 @@ struct GothicMemoryLocations {
         static const unsigned int CacheIn = 0x005DD040;
         static const unsigned int CacheOut = 0x005DD350;
         static const unsigned int PurgeCaches = 0x005DCA30;
+        // zCResourceManager::zCClassCache::InsertRes/TouchRes/RemoveRes - hooked to serialize class-cache
+        // list mutation, see zCResourceManager.h.
+        static const unsigned int InsertRes = 0x005DE390;
+        static const unsigned int TouchRes = 0x005DE460;
+        static const unsigned int RemoveRes = 0x005DE3F0;
         static const unsigned int RefreshTexMaxSize = 0x005F4EA0;
         static const unsigned int SetThreadingEnabled = 0x005DCC30;
 
@@ -669,6 +674,7 @@ struct GothicMemoryLocations {
     struct zCResource {
         // zCObject base, then nextRes/prevRes/timeStamp, then the zCCriticalSection stateChangeGuard
         // (vtbl + CRITICAL_SECTION = 0x1C bytes), then the bitfield.
+        static const unsigned int Offset_RefCtr = 0x04;
         static const unsigned int Offset_NextRes = 0x24;
         static const unsigned int Offset_StateChangeGuard = 0x30;
         // bits 0-1: cacheState (zTResourceCacheState), bit 2: cacheOutLock
