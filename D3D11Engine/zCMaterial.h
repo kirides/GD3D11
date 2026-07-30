@@ -18,6 +18,8 @@ enum zTMat_Group {
     zMAT_NUM_MAT_GROUP
   };
 
+class zCBspSector;
+
 class zCTexAniCtrl {
 private:
     int	AniChannel;
@@ -191,6 +193,17 @@ public:
 
     int GetMatGroup() {
         return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_MatGroup ));
+    }
+
+    /** Sector on the front side of a sector/portal poly using this material. Null means "outdoor".
+        Only ever non-null on materials the world-compiler generated for sectors ("S:.."/"P:..").
+        See zCBspTree::CreateBspSectors2 in the original engine. */
+    zCBspSector* GetBspSectorFront() const {
+        return *reinterpret_cast<zCBspSector**>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_BspSectorFront ));
+    }
+
+    zCBspSector* GetBspSectorBack() const {
+        return *reinterpret_cast<zCBspSector**>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_BspSectorBack ));
     }
 
     bool HasAlphaTest() {

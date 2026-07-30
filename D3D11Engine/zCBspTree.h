@@ -209,6 +209,27 @@ public:
     short					sectorIndex;			// sector this leaf was activated by
 };
 
+/** One room of a portal-compiled world. The world-compiler emits these for every "S:.."-named
+    sector; they own the BSP-leafs their polys live in plus the portal polys leading out of them.
+    Layout is identical for G1 and G2 - see GothicMemoryLocations::zCBspSector. */
+class zCBspSector {
+public:
+    /** Leafs that contain at least one poly of this sector */
+    zCArray<zCBspBase*>& GetSectorNodes() {
+        return *reinterpret_cast<zCArray<zCBspBase*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspSector::Offset_SectorNodes ));
+    }
+
+    /** Portal polys leading out of this sector. For each, the material's front/back sector says
+        where it leads; a null front means "outdoor". */
+    zCArray<zCPolygon*>& GetSectorPortals() {
+        return *reinterpret_cast<zCArray<zCPolygon*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspSector::Offset_SectorPortals ));
+    }
+
+    unsigned long GetSectorIndex() const {
+        return *reinterpret_cast<unsigned long*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspSector::Offset_SectorIndex ));
+    }
+};
+
 /** BspTree-Object which holds the world */
 class zCBspTree {
 public:
@@ -277,6 +298,16 @@ public:
 
     zCMesh* GetMesh() {
         return *reinterpret_cast<zCMesh**>(THISPTR_OFFSET( GothicMemoryLocations::zCBspTree::Offset_WorldMesh ));
+    }
+
+    /** Sectors of this world. Empty on worlds that were compiled without portals. */
+    zCArray<zCBspSector*>& GetSectorList() {
+        return *reinterpret_cast<zCArray<zCBspSector*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspTree::Offset_SectorList ));
+    }
+
+    /** All portal polys of this world, two entries (front/back) per portal. */
+    zCArray<zCPolygon*>& GetPortalList() {
+        return *reinterpret_cast<zCArray<zCPolygon*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCBspTree::Offset_PortalList ));
     }
 
 private:

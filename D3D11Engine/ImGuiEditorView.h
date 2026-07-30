@@ -112,7 +112,7 @@ public:
             // Enable free-cam, the easy way
             oCGame::GetGame()->TestKey(GOTHIC_KEY::F6);
 
-            D3D11GraphicsEngine::UpdateShouldBlockGameInput();
+            GothicAPI::UpdateShouldBlockGameInput();
             ResetEditorCamera();
 
             // Reset the selection, so it doesn't crash on levelchange
@@ -121,7 +121,7 @@ public:
             // Disable free-cam, the easy way
             oCGame::GetGame()->TestKey(GOTHIC_KEY::F4);
 
-            D3D11GraphicsEngine::UpdateShouldBlockGameInput();
+            GothicAPI::UpdateShouldBlockGameInput();
         }
     }
 
@@ -160,11 +160,12 @@ protected:
     /** Consolidates all boxes painted during the current stroke into a single box */
     void ConsolidateStrokeBoxes();
 
-    /** Returns true if any existing vegetation box already covers the position */
-    bool VegetationCoversPosition(const XMFLOAT3& p);
+    /** Returns true if an existing vegetation box already has grass within range of the position */
+    bool VegetationCoversPosition(const XMFLOAT3& p, float range);
 
-    /** Traces the set of placed vegetation boxes */
-    GVegetationBox* TraceVegetationBoxes(const XMFLOAT3& wPos, const XMFLOAT3& wDir);
+    /** Traces the set of placed vegetation boxes against their grass instances. Outputs the distance of
+     *  the nearest hit so it can be weighted against the world-/vob-hits. */
+    GVegetationBox* TraceVegetationBoxes(const XMFLOAT3& wPos, const XMFLOAT3& wDir, float* distance = nullptr);
 
     /** Render individual panels */
     void RenderMainPanel();
@@ -246,7 +247,7 @@ protected:
     bool ShowMaterialInfoDialog;
 
     /** Thumbnail texture */
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> SelectedImageThumbnail;
+    GfxTexture* SelectedImageThumbnail;
 
     WidgetContainer* Widgets;
 };

@@ -104,6 +104,12 @@ struct GothicMemoryLocations {
 
     struct CGameManager {
         static const unsigned int ExitGame = 0x00425780;
+
+        // CALL sysEvent inside CGameManager::Run()'s ingame do-while loop - the single
+        // funnel point every loop iteration passes through (verified via Ghidra against
+        // Gothic2.exe). Patched to wrap frame pacing around the whole iteration instead
+        // of nesting it inside Render(). See CGameManager.h.
+        static const unsigned int RunLoopSysEventCallSite = 0x00425e35;
     };
 
     struct zCOption {
@@ -111,6 +117,7 @@ struct GothicMemoryLocations {
         static const unsigned int ReadInt = 0x00462390;
         static const unsigned int ReadBool = 0x00462160;
         static const unsigned int ReadDWORD = 0x004624F0;
+        static const unsigned int ReadReal = 0x00462650;
         static const unsigned int WriteString = 0x00461FD0;
         static const unsigned int Offset_CommandLine = 0x284;
     };
@@ -205,6 +212,12 @@ struct GothicMemoryLocations {
         static const unsigned int OBJ_ActivezCSkyController = 0x0099AC8C;
 
         static const unsigned int Offset_Sun = 0x5F4; // First of the two planets
+        // Same address as Offset_Sun, named for the array it actually is: zCSkyPlanet planets[2], [0] sun,
+        // [1] moon (verified against ZenGin/Gothic_II_Addon/API/zSky_Outdoor.h: `planets[NUM_PLANETS];
+        // // sizeof 80h offset 5F4h`, i.e. 2 x sizeof(zCSkyPlanet)==0x40).
+        static const unsigned int Offset_Planets = 0x5F4;
+        // float resultFogScale — fades the planets out on foggy days (zCSkyControler_Outdoor::RenderPlanets).
+        static const unsigned int Offset_ResultFogScale = 0x574;
         static const unsigned int Offset_MasterTime = 0x80;
         static const unsigned int Offset_LastMasterTime = 0x84;
         static const unsigned int Offset_MasterState = 0x88;
@@ -532,6 +545,8 @@ struct GothicMemoryLocations {
 
 
     struct zCBspTree {
+        static const unsigned int Offset_SectorList = 0x40;
+        static const unsigned int Offset_PortalList = 0x4C;
         static const unsigned int AddVob = 0x00531040;
         static const unsigned int LoadBIN = 0x00538E10;
         static const unsigned int Offset_NumPolys = 0x24;
@@ -557,7 +572,15 @@ struct GothicMemoryLocations {
         static const unsigned int CALL_RenderTrivIndoor = 0x005304AB;
     };
 
+    /** Layout is identical across G1 1.08k, G1 1.12f and G2 2.6 - plain data, no code addresses. */
+    struct zCBspSector {
+        static const unsigned int Offset_SectorNodes = 0x14;
+        static const unsigned int Offset_SectorIndex = 0x20;
+        static const unsigned int Offset_SectorPortals = 0x24;
+    };
+
     struct zCPolygon {
+        static const unsigned int Offset_PolyPlane = 0x08;
         static const unsigned int Offset_VerticesArray = 0x00;
         static const unsigned int Offset_FeaturesArray = 0x2C;
         static const unsigned int Offset_NumPolyVertices = 0x30;
@@ -576,6 +599,8 @@ struct GothicMemoryLocations {
     };
 
     struct zCMaterial {
+        static const unsigned int Offset_BspSectorFront = 0x44;
+        static const unsigned int Offset_BspSectorBack = 0x48;
         static const unsigned int Offset_Color = 0x38;
         static const unsigned int Offset_Texture = 0x34;
         static const unsigned int Offset_AlphaFunc = 0x74;
@@ -630,8 +655,38 @@ struct GothicMemoryLocations {
         static const unsigned int CacheIn = 0x005DD040;
         static const unsigned int CacheOut = 0x005DD350;
         static const unsigned int PurgeCaches = 0x005DCA30;
+        // zCResourceManager::zCClassCache::InsertRes/TouchRes/RemoveRes - hooked to serialize class-cache
+        // list mutation, see zCResourceManager.h.
+        static const unsigned int InsertRes = 0x005DE390;
+        static const unsigned int TouchRes = 0x005DE460;
+        static const unsigned int RemoveRes = 0x005DE3F0;
         static const unsigned int RefreshTexMaxSize = 0x005F4EA0;
         static const unsigned int SetThreadingEnabled = 0x005DCC30;
+
+        // zCResourceManager derives from zCThread (0x18 bytes), classCacheList is the zCArray that
+        // follows it: [+0x18] = array, [+0x1C] = numAlloc, [+0x20] = numInArray.
+        static const unsigned int Offset_ClassCacheList = 0x18;
+        static const unsigned int Offset_ClassCacheCount = 0x20;
+        // volatile zBOOL goToSuspend - the flag PurgeCaches uses to park the loader thread
+        static const unsigned int Offset_GoToSuspend = 0x60;
+        static const unsigned int VTBL_IsThreadRunning = 0x0C;
+
+        // zCResourceManager::zCClassCache
+        static const unsigned int SizeOf_ClassCache = 0x1C;
+        static const unsigned int Offset_ClassCache_ResClassDef = 0x00;
+        static const unsigned int Offset_ClassCache_ResListHead = 0x04;
+    };
+
+    struct zCResource {
+        // zCObject base, then nextRes/prevRes/timeStamp, then the zCCriticalSection stateChangeGuard
+        // (vtbl + CRITICAL_SECTION = 0x1C bytes), then the bitfield.
+        static const unsigned int Offset_RefCtr = 0x04;
+        static const unsigned int Offset_NextRes = 0x24;
+        static const unsigned int Offset_StateChangeGuard = 0x30;
+        // bits 0-1: cacheState (zTResourceCacheState), bit 2: cacheOutLock
+        static const unsigned int Offset_Flags = 0x4C;
+        // bit 0: managedByResMan
+        static const unsigned int Offset_Flags_ManagedByResMan = 0x4E;
     };
 
     struct oCWorld {

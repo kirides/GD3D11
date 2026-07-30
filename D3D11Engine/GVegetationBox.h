@@ -6,6 +6,8 @@ struct GrassConstantBuffer;
 class GMeshSimple;
 class D3D11Texture;
 class D3D11VertexBuffer;
+class GfxTexture;
+class GfxVertexBuffer;
 class zCTexture;
 class Frustum;
 struct MeshInfo;
@@ -44,6 +46,13 @@ public:
 
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p );
+
+    /** Does a ray-test against the actual grass instances, using the bounding-box only as a broadphase.
+     *  Returns the ray-parameter of the nearest hit instance. */
+    bool TraceVegetationSpots( const XMFLOAT3& wPos, const XMFLOAT3& wDir, float& t );
+
+    /** Returns true if there is an actual grass instance within (horizontal) range of the given position */
+    bool HasVegetationNear( const XMFLOAT3& p, float range );
 
     /** Sets bounding box rendering */
     void SetRenderBoundingBox( bool value );
@@ -90,6 +99,15 @@ public:
 
     /** Returns the current density of this volume */
     float GetDensity();
+
+    /** Backend-neutral accessors for a backend that draws vegetation itself instead of going through the
+     * D3D11-only PrepareRenderGeometryPipeline/RenderVegetation state-machine path below (D3D12's DrawVegetation). */
+    GMeshSimple* GetVegetationMesh() const { return VegetationMesh; }
+    GfxTexture* GetVegetationTexture() const { return VegetationTexture; }
+    zCTexture* GetMeshTexture() const { return MeshTexture; }
+    GfxVertexBuffer* GetInstancingBuffer() const { return InstancingBuffer.get(); }
+    size_t GetSpotCount() const { return VegetationSpots.size(); }
+
     static void PrepareRenderGeometryPipeline();
     static void ResetRenderGeometryPipeline();
     static void PrepareRenderShadowPipeline();
@@ -112,8 +130,8 @@ private:
 
     XMFLOAT3 BoxMin;
     XMFLOAT3 BoxMax;
-    D3D11Texture* VegetationTexture;
-    std::unique_ptr<D3D11VertexBuffer> InstancingBuffer;
+    GfxTexture* VegetationTexture;
+    std::unique_ptr<GfxVertexBuffer> InstancingBuffer;
     bool DrawBoundingBox;
     bool Modified;
 
@@ -124,7 +142,7 @@ private:
     static void ReleaseSharedResources();
 
     static GMeshSimple* SharedVegetationMesh;
-    static std::unique_ptr<D3D11Texture> SharedVegetationTexture;
+    static std::unique_ptr<GfxTexture> SharedVegetationTexture;
     static int SharedResourceRefCount;
 };
 

@@ -42,12 +42,14 @@ struct GothicMemoryLocations {
 
     struct CGameManager {
         static const unsigned int ExitGame = 0x004899E0;
+        static const unsigned int RunLoopSysEventCallSite = 0x0;
     };
 
     struct zCOption {
         static const unsigned int ReadInt = 0x0061C4F0;
         static const unsigned int ReadBool = 0x0061C2C0;
         static const unsigned int ReadDWORD = 0x0061C650;
+        static const unsigned int ReadReal = 0;
         static const unsigned int Offset_CommandLine = 0x284;
     };
 
@@ -99,6 +101,9 @@ struct GothicMemoryLocations {
         static const unsigned int OBJ_ActivezCSkyController = 0x00B186AC;
 
         static const unsigned int Offset_Sun = 0x5F4; // First of the two planets
+        // zCSkyPlanet planets[2] — [0] sun, [1] moon. Same member layout as the retail 2.6fix build.
+        static const unsigned int Offset_Planets = 0x5F4;
+        static const unsigned int Offset_ResultFogScale = 0x574;
         static const unsigned int Offset_MasterTime = 0x80;
         static const unsigned int Offset_MasterState = 0x88;
         static const unsigned int Offset_SkyLayer1 = 0x5A8;
@@ -360,6 +365,8 @@ struct GothicMemoryLocations {
 
 
     struct zCBspTree {
+        static const unsigned int Offset_SectorList = 0x40;
+        static const unsigned int Offset_PortalList = 0x4C;
         static const unsigned int AddVob = 0x006BC840;
         static const unsigned int LoadBIN = 0x006C4640;
         static const unsigned int Offset_NumPolys = 0x24;
@@ -385,7 +392,15 @@ struct GothicMemoryLocations {
         static const unsigned int CALL_RenderTrivIndoor = 0x005304AB;*/
     };
 
+    /** Layout is identical across G1 1.08k, G1 1.12f and G2 2.6 - plain data, no code addresses. */
+    struct zCBspSector {
+        static const unsigned int Offset_SectorNodes = 0x14;
+        static const unsigned int Offset_SectorIndex = 0x20;
+        static const unsigned int Offset_SectorPortals = 0x24;
+    };
+
     struct zCPolygon {
+        static const unsigned int Offset_PolyPlane = 0x08;
         static const unsigned int Offset_VerticesArray = 0x00;
         static const unsigned int Offset_FeaturesArray = 0x2C;
         static const unsigned int Offset_NumPolyVertices = 0x30;
@@ -403,6 +418,8 @@ struct GothicMemoryLocations {
 
 
     struct zCMaterial {
+        static const unsigned int Offset_BspSectorFront = 0x44;
+        static const unsigned int Offset_BspSectorBack = 0x48;
 
         static const unsigned int Offset_Color = 0x38;
         static const unsigned int Offset_Texture = 0x34;
@@ -446,6 +463,35 @@ struct GothicMemoryLocations {
         static const unsigned int PurgeCaches = 0x007678E0;
         static const unsigned int RefreshTexMaxSize = 0x0077FBA0;
         static const unsigned int SetThreadingEnabled = 0x00767AE0;
+
+        // zCResourceManager derives from zCThread (0x18 bytes), classCacheList is the zCArray that
+        // follows it: [+0x18] = array, [+0x1C] = numAlloc, [+0x20] = numInArray.
+        static const unsigned int Offset_ClassCacheList = 0x18;
+        static const unsigned int Offset_ClassCacheCount = 0x20;
+        // volatile zBOOL goToSuspend - the flag PurgeCaches uses to park the loader thread
+        static const unsigned int Offset_GoToSuspend = 0x60;
+        static const unsigned int VTBL_IsThreadRunning = 0x0C;
+
+        // zCResourceManager::zCClassCache
+        static const unsigned int SizeOf_ClassCache = 0x1C;
+        static const unsigned int Offset_ClassCache_ResClassDef = 0x00;
+        static const unsigned int Offset_ClassCache_ResListHead = 0x04;
+
+        static const unsigned int InsertRes = 0;
+        static const unsigned int TouchRes = 0;
+        static const unsigned int RemoveRes = 0;
+    };
+
+    struct zCResource {
+        // zCObject base, then nextRes/prevRes/timeStamp, then the zCCriticalSection stateChangeGuard
+        // (vtbl + CRITICAL_SECTION = 0x1C bytes), then the bitfield.
+        static const unsigned int Offset_RefCtr = 0x04;
+        static const unsigned int Offset_NextRes = 0x24;
+        static const unsigned int Offset_StateChangeGuard = 0x30;
+        // bits 0-1: cacheState (zTResourceCacheState), bit 2: cacheOutLock
+        static const unsigned int Offset_Flags = 0x4C;
+        // bit 0: managedByResMan
+        static const unsigned int Offset_Flags_ManagedByResMan = 0x4E;
     };
 
     struct oCWorld {

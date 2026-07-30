@@ -18,6 +18,7 @@ void VobInfo::UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb) {
 void VobInfo::UpdateState() {
     WorldMatrix = *Vob->GetWorldMatrixPtr();
     LastRenderPosition = Vob->GetPositionWorld();
+    LastRenderBBox = Vob->GetBBox();
 
     // Colorize the vob according to the underlaying polygon
     if ( IsIndoorVob ) {

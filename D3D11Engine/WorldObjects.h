@@ -4,16 +4,15 @@
 
 #include "pch.h"
 #include "GothicGraphicsState.h"
-#include "D3D11Texture.h"
+#include "GfxTexture.h"
 #include "zTypes.h"
 #include "ConstantBufferStructs.h"
 #include "zCPolygon.h"
 #include "BaseShadowedPointLight.h"
-#include "D3D11VertexBuffer.h"
+#include "GfxVertexBuffer.h"
 
 class zCMaterial;
 class zCPolygon;
-class D3D11VertexBuffer;
 class zCVob;
 class zCTexture;
 class zCLightmap;
@@ -21,6 +20,13 @@ struct zCModelNodeInst;
 struct BspInfo;
 class zCQuadMark;
 struct MaterialInfo;
+struct MeshVisualInfo;
+
+/** Blocks until a background node-visual extraction targeting this MeshVisualInfo has finished.
+    Defined in WorldConverter.cpp - declared here so MeshVisualInfo's destructor can never free a
+    mesh a worker thread is still filling in. No-op for the (vast majority of) synchronously
+    extracted visuals. */
+void WaitForPendingNodeVisualExtraction( MeshVisualInfo* meshInfo );
 
 struct ParticleRenderInfo {
     GothicBlendStateInfo BlendState;
@@ -96,18 +102,18 @@ struct MeshInfo {
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    D3D11VertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
-    D3D11VertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
-    D3D11VertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
-    D3D11VertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
-    
-    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    GfxVertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
+    GfxVertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
+    GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
+    GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
+
+    std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
     // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
-    std::unique_ptr<D3D11VertexBuffer> MeshPositionBuffer;
-    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> MeshShadowIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshPositionBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
@@ -142,7 +148,7 @@ struct QuadMarkInfo {
 
     ~QuadMarkInfo() = default;
 
-    std::unique_ptr<D3D11VertexBuffer> Mesh;
+    std::unique_ptr<GfxVertexBuffer> Mesh;
     int NumVertices;
 
     zCQuadMark* Visual;
@@ -160,8 +166,8 @@ struct SkeletalMeshInfo {
 
     ~SkeletalMeshInfo();
 
-    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 
@@ -228,6 +234,11 @@ struct MeshVisualInfo : public BaseVisualInfo {
 
     ~MeshVisualInfo() override
     {
+        // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
+        // Never free the target out from under a running job.
+        if ( !Ready.load( std::memory_order_acquire ) ) {
+            WaitForPendingNodeVisualExtraction( this );
+        }
         if ( MorphMeshVisual ) {
             zCObject_Release( MorphMeshVisual );
         }
@@ -247,7 +258,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
     //zCProgMeshProto* Visual;
     std::vector<VobInstanceInfo> Instances;
     unsigned int StartInstanceNum;
-
+    
     /** Full mesh of this */
     MeshInfo* FullMesh;
 
@@ -258,6 +269,12 @@ struct MeshVisualInfo : public BaseVisualInfo {
     /** Flag wether some mesh inside needs alpha testing, to allow sorting for shader usage */
     bool NeedsAlphaTesting;
     size_t LastAniUpdateFrame;
+
+    /** False while a worker thread is still filling Meshes/MeshesByTexture/FullMesh in
+        (WorldConverter::ExtractNodeVisualAsync). Draw/update sites must skip this visual entirely until
+        it flips to true - reading the containers before that races the extraction. Synchronously
+        extracted visuals (every other path) leave it at true. */
+    std::atomic<bool> Ready{ true };
 };
 
 /** Holds the converted mesh of a VOB */
@@ -287,6 +304,11 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
 
     /** Submeshes of this visual */
     std::map<zCMaterial*, std::vector<std::unique_ptr<SkeletalMeshInfo>>> SkeletalMeshes;
+
+    /** False while a background LoadzCModelData(...) extraction job (GothicAPI::PendingSkeletalLoads)
+     *  is still filling SkeletalMeshes/Meshes. Draw/update code must skip vobs pointing at a
+     *  not-yet-ready visual instead of touching the (possibly still empty) mesh lists. */
+    std::atomic<bool> Ready{true};
 };
 
 struct BaseVobInfo {
@@ -311,6 +333,7 @@ struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
     VobInfo() :
         LastRenderPosition{},
+        LastRenderBBox{},
         IsIndoorVob{},
         VisibleInRenderPass{},
         VobSection{},
@@ -318,7 +341,8 @@ struct VobInfo : public BaseVobInfo {
         ParentBSPNodes{},
         GroundColor{},
         PrevWorldMatrix{},
-        HasValidPrevMatrix{}
+        HasValidPrevMatrix{},
+        VisualIndex(-1)
     {
     }
     VobInfo(VobInfo&& other) = delete;
@@ -335,6 +359,12 @@ struct VobInfo : public BaseVobInfo {
     /** Position the vob was at while being rendered last time */
     XMFLOAT3 LastRenderPosition;
 
+    /** World-space bounding box, mirrored from zCVob at the same moments as LastRenderPosition.
+        Culling reads this instead of Vob->GetBBox() to keep the per-VOB reject path off Gothic's
+        heap. Safe for anything still in a BSP leaf list: a static vob that moves is pulled out of
+        those lists by MoveVobFromBspToDynamic and refreshed by UpdateState() in the same breath. */
+    zTBBox3D LastRenderBBox;
+
     /** True if this is an indoor-vob */
     bool IsIndoorVob;
 
@@ -349,6 +379,10 @@ struct VobInfo : public BaseVobInfo {
 
     /** BSP-Node this is stored in */
     std::vector<BspInfo*> ParentBSPNodes;
+    
+    // index into the engines respective visual instancing lookup.
+    // Used to implement bucket gather for main geometry as well as shadow cascades.
+    int16_t VisualIndex;
 
     /** Color the underlaying polygon has */
     DWORD GroundColor;
@@ -485,10 +519,8 @@ struct SectionInstanceCache {
 
     
     std::map<MeshVisualInfo*, std::vector<VS_ExConstantBuffer_PerInstance>> InstanceCacheData;
-    std::map<MeshVisualInfo*, std::unique_ptr<D3D11VertexBuffer>> InstanceCache;
+    std::map<MeshVisualInfo*, std::unique_ptr<GfxVertexBuffer>> InstanceCache;
 };
-
-class D3D11Texture;
 
 /** Describes a world-section for the renderer */
 struct WorldMeshSectionInfo {
@@ -533,7 +565,7 @@ struct WorldMeshSectionInfo {
     void SaveSectionMeshToFile( const std::string& name );
 
     std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> WorldMeshes;
-    std::map<D3D11Texture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
+    std::map<GfxTexture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
     std::map<zCMaterial*, std::vector<MeshInfo*>> WorldMeshesByCustomTextureOriginal;
     std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> SuppressedMeshes;
     std::list<VobInfo*> Vobs;

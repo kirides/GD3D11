@@ -273,8 +273,11 @@ extern "C" void WINAPI HookedReleaseDDThreadLock() {
 extern "C" float WINAPI UpdateCustomFontMultiplierFontRendering( float multiplier ) {
     // Using this function is unrecommended if you respect your players
     // there are a lot of players that don't play with GD3D11 mod
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    return engine ? engine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0f;
+    if (Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11) {
+        D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
+        return engine ? engine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0f;
+    }
+    return 1.0f;
 }
 
 extern "C" void WINAPI SetCustomCloudAndNightTexture( int idxTexture, bool isNightTexture ) {
@@ -447,10 +450,9 @@ int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR l
 
 [[noreturn]] void badAllocationHandler()
 {
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     while ( ShowCursor( true ) < 0 );
-    if ( engine ) {
-        if ( HWND outputWindow = engine->GetOutputWindow() ) {
+    if ( Engine::GraphicsEngine ) {
+        if ( HWND outputWindow = Engine::GraphicsEngine->GetOutputWindow() ) {
             ShowWindow( outputWindow, SW_HIDE );
         }
     }

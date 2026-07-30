@@ -58,10 +58,11 @@ typedef void( __thiscall* zCRnd_D3D_DrawPolySimple )(void*, zCTexture*, void*, i
 typedef int( __thiscall* zCOptionReadInt )(void*, zSTRING const&, char const*, int);
 typedef int( __thiscall* zCOptionReadBool )(void*, zSTRING const&, char const*, int);
 typedef unsigned long( __thiscall* zCOptionReadDWORD )(void*, zSTRING const&, char const*, unsigned long);
+typedef float( __thiscall* zCOptionReadReal )(void*, zSTRING const&, char const*, float);
 typedef void( __thiscall* zCViewBlitText )(void*);
 typedef void( __thiscall* zCViewPrint )(void*, int, int, const zSTRING&);
 typedef int( __thiscall* CGameManagerExitGame )(void*);
-typedef const zSTRING* (__thiscall* zCVisualGetFileExtension)(void*, int);
+typedef const zSTRING* (__thiscall* zCVisualGetFileExtension)(const void*, int);
 typedef void( __thiscall* zCWorldDisposeVobs )(void*, zCTree<zCVob>*);
 typedef void( __thiscall* oCSpawnManagerSpawnNpc )(void*, oCNPC*, const XMFLOAT3&, float);
 typedef int( __thiscall* oCSpawnManagerCheckRemoveNpc )(void*, oCNPC*);
@@ -72,6 +73,10 @@ typedef int( __thiscall* zCTex_D3DXTEX_BuildSurfaces )(void*, int);
 typedef int( __thiscall* zCTextureLoadResourceData )(void*);
 typedef int( __thiscall* zCThreadSuspendThread )(void*);
 typedef void( __thiscall* zCResourceManagerCacheOut )(void*, class zCResource*);
+typedef void( __thiscall* zCResourceManagerPurgeCaches )(void*, unsigned int);
+typedef void( __thiscall* zCClassCacheInsertRes )(void*, class zCResource*);
+typedef void( __thiscall* zCClassCacheTouchRes )(void*, class zCResource*);
+typedef void( __thiscall* zCClassCacheRemoveRes )(void*, class zCResource*);
 typedef void( __thiscall* zCQuadMarkCreateQuadMark )(void*, zCPolygon*, const float3&, const float2&, struct zTEffectParams*);
 typedef void( __thiscall* zCFlashSetVisualUsedBy )(void*, zCVob*);
 typedef void( __thiscall* oCWorldEnableVob )(void*, zCVob*, zCVob*);
@@ -107,6 +112,10 @@ inline LONG DetourAttachTyped( TOriginal* originalFunction, THook hookFunction )
     static_assert( sizeof( TOriginal ) == sizeof( PVOID ), "Unexpected original function pointer size" );
     static_assert( sizeof( THook ) == sizeof( PVOID ), "Unexpected hook function pointer size" );
 
+    if (!originalFunction || !*originalFunction) {
+        return ERROR_INVALID_PARAMETER;
+    } 
+    
     PVOID* ppOriginal = reinterpret_cast<PVOID*>(originalFunction);
 
     // 2. Cast the hook function safely.
@@ -158,6 +167,7 @@ struct HookedFunctionInfo {
     zCOptionReadInt original_zCOptionReadInt = reinterpret_cast<zCOptionReadInt>(GothicMemoryLocations::zCOption::ReadInt);
     zCOptionReadBool original_zCOptionReadBool = reinterpret_cast<zCOptionReadBool>(GothicMemoryLocations::zCOption::ReadBool);
     zCOptionReadDWORD original_zCOptionReadDWORD = reinterpret_cast<zCOptionReadDWORD>(GothicMemoryLocations::zCOption::ReadDWORD);
+    zCOptionReadReal original_zCOptionReadReal = reinterpret_cast<zCOptionReadReal>(GothicMemoryLocations::zCOption::ReadReal);
 #if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
     zCViewBlitText original_zCViewBlit = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::Blit);
     zCViewBlitText original_zCViewBlitText = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::BlitText);
@@ -178,6 +188,12 @@ struct HookedFunctionInfo {
     zCTextureLoadResourceData ofiginal_zCTextureLoadResourceData = reinterpret_cast<zCTextureLoadResourceData>(GothicMemoryLocations::zCTexture::LoadResourceData);
     zCThreadSuspendThread original_zCThreadSuspendThread = reinterpret_cast<zCThreadSuspendThread>(GothicMemoryLocations::zCThread::SuspendThread);
     //zCResourceManagerCacheOut original_zCResourceManagerCacheOut = reinterpret_cast<zCResourceManagerCacheOut>(GothicMemoryLocations::zCResourceManager::CacheOut);
+    zCResourceManagerPurgeCaches original_zCResourceManagerPurgeCaches = reinterpret_cast<zCResourceManagerPurgeCaches>(GothicMemoryLocations::zCResourceManager::PurgeCaches);
+#if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_GOTHIC_2_6_fix)
+    zCClassCacheInsertRes original_zCClassCacheInsertRes = reinterpret_cast<zCClassCacheInsertRes>(GothicMemoryLocations::zCResourceManager::InsertRes);
+    zCClassCacheTouchRes original_zCClassCacheTouchRes = reinterpret_cast<zCClassCacheTouchRes>(GothicMemoryLocations::zCResourceManager::TouchRes);
+    zCClassCacheRemoveRes original_zCClassCacheRemoveRes = reinterpret_cast<zCClassCacheRemoveRes>(GothicMemoryLocations::zCResourceManager::RemoveRes);
+#endif
     zCQuadMarkCreateQuadMark original_zCQuadMarkCreateQuadMark = reinterpret_cast<zCQuadMarkCreateQuadMark>(GothicMemoryLocations::zCQuadMark::CreateQuadMark);
     GenericDestructor original_zCQuadMarkDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCQuadMark::Destructor);
     GenericThiscall original_zCQuadMarkConstructor = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCQuadMark::Constructor);

@@ -1,5 +1,6 @@
 #include "ImGuiShim.h"
 #include "GSky.h"
+#include "D3D12Engine/D3D12GraphicsEngine.h"
 #include <VersionHelpers.h>
 #include <ShellScalingApi.h>
 
@@ -15,6 +16,7 @@
 #include "zFILE_VDFS.h"
 
 #define STB_IMAGE_IMPLEMENTATION
+#include "D3D12Engine/D3D12Texture.h"
 #include "vendor/stb/stb_image.h"
 
 namespace ImGui {
@@ -68,12 +70,95 @@ int GetDpi( HWND hWnd )
     return ydpi;
 }
 
+namespace {
+    // SRV-descriptor callbacks for imgui_impl_dx12: it needs to allocate/free shader-visible
+    // descriptors for its textures (font atlas + any user textures). We route these through the
+    // D3D12GraphicsEngine's shader-visible heap (passed via ImGui_ImplDX12_InitInfo::UserData).
+    void ImGuiDX12_SrvAlloc( ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpu, D3D12_GPU_DESCRIPTOR_HANDLE* outGpu ) {
+        auto* engine = static_cast<D3D12GraphicsEngine*>( info->UserData );
+        const UINT slot = engine->AllocateSrvSlot();
+        *outCpu = engine->GetSrvCpuHandle( slot );
+        *outGpu = engine->GetSrvGpuHandle( slot );
+    }
+    // Bump allocator has no free-list yet: freeing is a no-op. ImGui frees are rare (font-atlas
+    // recreation on DPI/font change), so leaked slots are bounded — acceptable for now.
+    void ImGuiDX12_SrvFree( ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE /*cpu*/, D3D12_GPU_DESCRIPTOR_HANDLE /*gpu*/ ) {
+    }
+
+    void ImGuiCollectResolutions( std::vector<std::pair<INT2, std::string>>& resolutions ) {
+
+        std::vector<DisplayModeInfo> modes;
+        Engine::GraphicsEngine->GetDisplayModeList( &modes );
+        resolutions.clear();
+
+        // Don't offer a resolution bigger than the monitor's current desktop resolution. DXGI's mode list
+        // enumerates every mode the OUTPUT hardware supports, which can include entries above the current
+        // desktop resolution (e.g. the desktop is running scaled/non-native); picking one of those isn't
+        // useful here — the window/swapchain would end up larger than the visible desktop.
+        const int maxWidth = GetSystemMetrics( SM_CXSCREEN );
+        const int maxHeight = GetSystemMetrics( SM_CYSCREEN );
+
+        for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
+            if ( maxWidth > 0 && maxHeight > 0 && ( (*it).Width > maxWidth || (*it).Height > maxHeight ) )
+                continue;
+
+            std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height )
+                // disable Hz display until we implement exclusive fullscreen mode. If we ever do.
+                // + " (" + std::to_string( (*it).refreshRateNumerator / std::max<unsigned int>( 1, (*it).refreshRateDenominator ) ) + " Hz)"
+                ;
+            resolutions.emplace_back( std::make_pair( INT2( (*it).Width, (*it).Height ), s ) );
+        }
+    }
+
+    // Shared post-backend-init setup (DPI-scaled font, resolution list, editor view). The DX11 and
+    // DX12 init paths differ only in which ImGui_ImplXXXX_Init they call; everything else is common.
+    void FinishImGuiInit( HWND window, std::vector<std::pair<INT2, std::string>>& resolutions, std::unique_ptr<ImGuiEditorView>& editorView ) {
+        const auto actualDPI = GetDpi( window );
+
+        ImGuiCollectResolutions( resolutions );
+
+        ImFontConfig config = {};
+
+        config.MergeMode = true;
+        //config.GlyphRanges = euroGlyphRanges;
+        const auto path = std::filesystem::current_path();
+        std::filesystem::path fonts[] = {
+            // path / "system" / "GD3D11" / "Fonts" / "GII_-_Die_Nacht_des_Raben.ttf",
+            path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf",
+        };
+
+        bool firstFont = true;
+        for ( auto fontpath : fonts ) {
+            if ( std::filesystem::exists( fontpath ) ) {
+                config.MergeMode = !firstFont;
+                const auto font = ImGui::GetIO().Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f, &config );
+                if ( font && firstFont ) {
+                    firstFont = false;
+                }
+            }
+        }
+
+        auto dpiScale = actualDPI / 96.0f;
+    
+        auto& style = ImGui::GetStyle();
+        style.FontScaleDpi = dpiScale;
+
+        style.Alpha = 1.0f;
+        style.Colors[ImGuiCol_Text] = ImVec4( 1.f, 0.87f, 0.68f, 1.f );
+        style.Colors[ImGuiCol_TextDisabled] = ImVec4( 1.f, 0.87f, 0.68f, 0.28f );
+        style.Colors[ImGuiCol_Border] = ImVec4( 0.84f, 0.54f, 0.15f, 1.0f );
+        style.Colors[ImGuiCol_BorderShadow] = ImVec4( 0.00f, 0.00f, 0.00f, 0.00f );
+        
+        editorView = std::make_unique<ImGuiEditorView>();
+    }
+}
+
 void ImGuiShim::Init(
     HWND Window,
     const Microsoft::WRL::ComPtr<ID3D11Device1>& device,
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context
 )
-{ 
+{
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -83,99 +168,86 @@ void ImGuiShim::Init(
     OutputWindow = Window;
     ImGui_ImplWin32_Init( OutputWindow );
     ImGui_ImplDX11_Init( device.Get(), context.Get() );
+    m_Backend = Backend::D3D11;
 
-    const auto actualDPI = GetDpi( Window );
     Initiated = true;
+    FinishImGuiInit( Window, Resolutions, m_EditorView );
+}
 
-    std::vector<DisplayModeInfo> modes;
-    Engine::GraphicsEngine->GetDisplayModeList( &modes );
-    Resolutions.clear();
-    for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
-        std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
-        Resolutions.emplace_back( std::make_pair(INT2((*it).Width, (*it).Height), s) );
-    }
+void ImGuiShim::InitD3D12(
+    HWND Window,
+    D3D12GraphicsEngine* engine,
+    ID3D12Device* device,
+    ID3D12CommandQueue* queue,
+    int numFramesInFlight,
+    DXGI_FORMAT rtvFormat,
+    ID3D12DescriptorHeap* srvHeap
+)
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = NULL;
+    io.LogFilename = NULL;
+    OutputWindow = Window;
+    ImGui_ImplWin32_Init( OutputWindow );
 
-    //static const ImWchar euroGlyphRanges[] = {
-    //    0x0020, 0x007E, // Basic Latin
-    //    0x00A0, 0x00FF, // Latin-1 Supplement
-    //    0x0100, 0x017F, // Latin Extended-A
-    //    0x0180, 0x018F, // Latin Extended-B
-    //    0x0400, 0x04FF, // Cyrillic
-    //    0x2010, 0x2015, // Various dashes
-    //    0x201E, 0x201E, // low-9 quotation mark
-    //    0x201C, 0x201D, // high-9 quotation marks
-    //    0,              // End of ranges
-    //};
-    ImFontConfig config = { };
-    config.MergeMode = true;
-    //config.GlyphRanges = euroGlyphRanges;
-    const auto path = std::filesystem::current_path();
-    std::filesystem::path fonts[] = {
-        // path / "system" / "GD3D11" / "Fonts" / "GII_-_Die_Nacht_des_Raben.ttf",
-        path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf",
-    };
+    ImGui_ImplDX12_InitInfo initInfo = {};
+    initInfo.Device = device;
+    initInfo.CommandQueue = queue;
+    initInfo.NumFramesInFlight = numFramesInFlight;
+    initInfo.RTVFormat = rtvFormat;
+    initInfo.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    initInfo.UserData = engine;
+    initInfo.SrvDescriptorHeap = srvHeap;
+    initInfo.SrvDescriptorAllocFn = &ImGuiDX12_SrvAlloc;
+    initInfo.SrvDescriptorFreeFn = &ImGuiDX12_SrvFree;
+    ImGui_ImplDX12_Init( &initInfo );
+    m_Backend = Backend::D3D12;
 
-    bool firstFont = true;
-    for ( auto fontpath : fonts ) {
-        if ( std::filesystem::exists( fontpath ) ) {
-            config.MergeMode = !firstFont;
-            const auto font = io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f, &config );
-            if ( font && firstFont ) {
-                firstFont = false;
-            }
-        }
-    }
-
-    auto dpiScale = actualDPI / 96.0f;
-    
-    auto& style = ImGui::GetStyle();
-    style.FontScaleDpi = dpiScale;
-
-    style.Alpha = 1.0f;
-    style.Colors[ImGuiCol_Text] = ImVec4( 1.f, 0.87f, 0.68f, 1.f );
-    style.Colors[ImGuiCol_TextDisabled] = ImVec4( 1.f, 0.87f, 0.68f, 0.28f );
-    style.Colors[ImGuiCol_Border] = ImVec4( 0.84f, 0.54f, 0.15f, 1.0f );
-    style.Colors[ImGuiCol_BorderShadow] = ImVec4( 0.00f, 0.00f, 0.00f, 0.00f );
-    
-    m_EditorView = std::make_unique<ImGuiEditorView>();
+    Initiated = true;
+    FinishImGuiInit( Window, Resolutions, m_EditorView );
 }
 
 
 ImGuiShim::~ImGuiShim()
 {
     if ( Initiated ) {
-        ImGui_ImplWin32_Shutdown();
+        if ( m_Backend == Backend::D3D12 ) {
+            ImGui_ImplDX12_Shutdown();
+        } else {
+            ImGui_ImplDX11_Shutdown();
+        }
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
     }
 }
 
-void ImGuiShim::RenderLoop()
+void ImGuiShim::BuildFrameUI()
 {
-    ImGui_ImplDX11_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-
-    ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
+    const auto bbres = Engine::GraphicsEngine->GetResolution();
+    ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != bbres;
+    ImGui::GetIO().FontGlobalScale = bbres.y < 1080 ? static_cast<float>( bbres.y ) / 1080.0f : 1.0f;
 
     static zSTRING GDX_IMGUI_BEGINFRAME = "GDX_IMGUI_BEGINFRAME";
     static zSTRING GDX_IMGUI_ENDFRAME = "GDX_IMGUI_ENDFRAME";
-    static int beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME );
-    static int endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME );
-
-    static int retryFindFuncs = 0;
-    if ( retryFindFuncs > 120 ) {
-        if ( beginFrameFn == -1 ) { beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME ); }
-        if ( endFrameFn == -1 ) { endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME ); }
-        retryFindFuncs = 0;
+    if ( !m_scriptFnsResolved ) {
+        m_beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME );
+        m_endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME );
+        m_scriptFnsResolved = true;
+    }
+    if ( m_retryFindFuncs > 120 ) {
+        if ( m_beginFrameFn == -1 ) { m_beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME ); }
+        if ( m_endFrameFn == -1 ) { m_endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME ); }
+        m_retryFindFuncs = 0;
     }
 
     LibShowBlockingThisFrame = false;
     LibShowNonBlockingThisFrame = false;
-    if ( beginFrameFn != -1 ) {
-        zCParser::GetParser()->CallFunc( beginFrameFn );
+    if ( m_beginFrameFn != -1 ) {
+        zCParser::GetParser()->CallFunc( m_beginFrameFn );
     } else {
-        retryFindFuncs++;
+        m_retryFindFuncs++;
     }
 
     auto oldSettings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -203,15 +275,43 @@ void ImGuiShim::RenderLoop()
 
     if ( GetBlockGameInput() != m_lastFrameBlockGameInput ) {
         m_lastFrameBlockGameInput = GetBlockGameInput();
-        D3D11GraphicsEngine::UpdateShouldBlockGameInput();
+        GothicAPI::UpdateShouldBlockGameInput();
     }
+}
+
+void ImGuiShim::CallEndFrameScript()
+{
+    if ( m_endFrameFn != -1 ) {
+        zCParser::GetParser()->CallFunc( m_endFrameFn );
+    }
+}
+
+void ImGuiShim::RenderLoop()
+{
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    BuildFrameUI();
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
 
-    if ( endFrameFn != -1 ) {
-        zCParser::GetParser()->CallFunc( endFrameFn );
-    };
+    CallEndFrameScript();
+}
+
+void ImGuiShim::RenderLoopD3D12( ID3D12GraphicsCommandList* commandList )
+{
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    BuildFrameUI();
+
+    ImGui::Render();
+    ImGui_ImplDX12_RenderDrawData( ImGui::GetDrawData(), commandList );
+
+    CallEndFrameScript();
 }
 
 bool ImGuiShim::GetIsActive() {
@@ -254,13 +354,7 @@ void ImGuiShim::OnResize( INT2 newSize )
 {
     CurrentResolution = newSize;
 
-    std::vector<DisplayModeInfo> modes;
-    Engine::GraphicsEngine->GetDisplayModeList( &modes );
-    Resolutions.clear();
-    for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
-        std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
-        Resolutions.emplace_back( std::make_pair(INT2((*it).Width, (*it).Height), s) );
-    }
+    ImGuiCollectResolutions( Resolutions );
 }
 
 template <typename T>
@@ -457,10 +551,17 @@ namespace
     }
 }
 
-static std::vector<std::unique_ptr<D3D11Texture>> s_previewTextures = {};
+static std::vector<std::unique_ptr<GfxTexture>> s_previewTextures = {};
 
-static ImTextureID GetImTextureIdFromGfx( D3D11Texture* tex) {
-    return (ImTextureID)(intptr_t)tex->GetShaderResourceView().Get();
+static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
+    switch (Engine::GraphicsEngine->GetBackendAPI())
+    {
+    case EGraphicsEngineBackend::D3D11:
+        return (ImTextureID)(intptr_t)D3D11Texture::From(tex)->GetShaderResourceView().Get();
+    case EGraphicsEngineBackend::D3D12:
+        return (ImTextureID)(intptr_t)D3D12Texture::From(tex)->GetSrvGpuHandle().ptr;
+    }
+    return ImTextureID{};
 }
 
 static ImTextureID GetOrLoadTexture( int textureId, std::string_view textureName ) {
@@ -491,10 +592,10 @@ static ImTextureID GetOrLoadTexture( int textureId, std::string_view textureName
     if ( image_data == NULL )
         return ImTextureID{};
 
-    D3D11Texture* tex;
+    GfxTexture* tex;
     Engine::GraphicsEngine->CreateTexture( &tex );
 
-    auto r = tex->Init( INT2( image_width, image_height ), D3D11Texture::ETextureFormat::TF_R8G8B8A8, 1, image_data, std::string(textureName.data(), textureName.size()) );
+    auto r = tex->Init( INT2( image_width, image_height ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, image_data, std::string(textureName.data(), textureName.size()) );
     stbi_image_free( image_data );
 
     if ( r != XR_SUCCESS ) {
@@ -683,7 +784,9 @@ void ImGuiShim::RenderSettingsWindowModern() {
                     int ssr = std::clamp<int>(settings.WaterSSRQuality, 0, std::size( ssrLevels ) - 1);
                     if ( ImGui::SliderInt( "Water Reflections", &ssr, 0, std::size( ssrLevels ) - 1, ssrLevels[ssr], ImGuiSliderFlags_::ImGuiSliderFlags_AlwaysClamp ) ) {
                         settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
-                        shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                        if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                            shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                        }
                     }
 
                     ImGui::TableNextColumn();
@@ -766,16 +869,22 @@ void ImGuiShim::RenderSettingsWindow()
 
     // RenderSettingsWindowModern(); -- Disabled while in development ;)
 
+    static std::string settingsLabel;
+    if ( settingsLabel.empty() && Engine::GraphicsEngine ) {
+        settingsLabel.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12
+        ? "D3D12 "
+        : "D3D11 " )
+        .append( VERSION_NUMBER );
+
 #ifdef IS_DEV_BUILD
-    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER " - (" BUILD_DATE ")";
-#else
-    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER;
+        settingsLabel.append(" - (").append(BUILD_DATE).append(")");
 #endif
+    }
 
     ShaderCategory shadersToReload = ShaderCategory::None;
 
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
-    if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
+    if ( ImGui::Begin( settingsLabel.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
         FixupSettings(settings);
 
@@ -808,7 +917,9 @@ void ImGuiShim::RenderSettingsWindow()
                 } else {
                     settings.AllowNormalmaps = 0;
                 }
-                Engine::GraphicsEngine->ReloadShaders();
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders();
+                }
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
@@ -816,17 +927,21 @@ void ImGuiShim::RenderSettingsWindow()
                     {"Disabled", AOMode::AO_NONE, nullptr},
                     {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
                     {"SAO", AOMode::AO_SAO, nullptr},
-                    {"ASSAO", AOMode::AO_ASSAO, "Intel ASSAO (Adaptive Screen Space Ambient Occlusion)"},
+                    {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
             };
             if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                }
                 } ) ) {
                 ImGui::EndCombo();
             }
             ImGui::SetItemTooltip( "Screen-Space ambient occlusion mode.\nChanging this will reload shaders." );
 
             if ( ImGui::Checkbox( "Godrays", &settings.EnableGodRays ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                }
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
@@ -998,10 +1113,9 @@ void ImGuiShim::RenderSettingsWindow()
                     CurrentResolution.y * settings.ResolutionScalePercent / 100
                 );
             } else {
-                static float previousResolutionScale = static_cast<float>(settings.ResolutionScalePercent);
-                if ( ImGui::SliderFloat( "##ResolutionScalePercent", &previousResolutionScale, 25.0f, 200.0f, "%.0f%%" ) ) {
-                    previousResolutionScale = std::clamp( previousResolutionScale, 25.0f, 200.0f );
-                    settings.ResolutionScalePercent = static_cast<int>(previousResolutionScale);
+                auto previousResolutionScale = settings.ResolutionScalePercent;
+                if ( ImGui::SliderInt( "##ResolutionScalePercent", &previousResolutionScale, 25, 200, "%d %%" ) ) {
+                    settings.ResolutionScalePercent = std::clamp( previousResolutionScale, 25, 200 );
                 }
                 ImGui::SetItemTooltip("Effective resolution: %d x %d",
                     CurrentResolution.x * settings.ResolutionScalePercent / 100,
@@ -1078,27 +1192,20 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Shadow Quality", buttonWidth ); ImGui::SameLine();
 
-            const static std::vector<std::pair<const char*, int>> shadowMapSizesMax = {
-                {"very low", 512},
-                {"low", 1024},
-                {"medium", 2048},
-                {"high", 4096},
-                {"very high", 8192},
-                {"ultra high", 16384},
-            };
-            const static std::vector<std::pair<const char*, int>> shadowMapSizesDxFeature10 = {
+            // Resolutions are restricted to these five power-of-two steps — 8192 is the hard ceiling on both
+            // backends/feature levels (a 16384 cascade slice is ~1GB, not worth the VRAM for a shadow map).
+            const static std::vector<std::pair<const char*, int>> shadowMapSizes = {
                 {"very low", 512},
                 {"low", 1024},
                 {"medium", 2048},
                 {"high", 4096},
                 {"very high", 8192},
             };
-            const std::vector<std::pair<const char*, int>>& shadowMapSizes = FeatureLevel10Compatibility
-                ? shadowMapSizesDxFeature10
-                : shadowMapSizesMax;
 
             if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, [&shadersToReload]{
-                shadersToReload |= ShaderCategory::LightsAndShadows;
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    shadersToReload |= ShaderCategory::LightsAndShadows;
+                }
             } ) ) {
                 ImGui::EndCombo();
             }
@@ -1205,7 +1312,9 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
         {
             ImGui::PushID( "GodRaysSettings" );
             if ( ImGui::Checkbox( "GodRays", &settings.EnableGodRays ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                }
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
             ImGui::DragFloat( "GodRayDecay", &settings.GodRayDecay, 0.01f );
@@ -1303,6 +1412,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         if ( ImGui::Button( "Reset Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             settings.SetDefault();
+            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
+                settings.ApplyDx12Defaults();
+            }
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
         }
         ImGui::SetItemTooltip( "Reset all settings to their default values." );
@@ -1337,7 +1449,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
-            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+            }
         }
         ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
@@ -1349,6 +1463,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
 
         ImGui::Checkbox( "HDR", &settings.EnableHDR );
+
+        ImGui::DragFloat( "Exposure", &settings.Exposure, 0.01f, 0.0f, 8.0f, "%.2f" );
 
         static std::vector<std::pair<const char*, int>> hdrToneMapValues = {
             {"ToneMap_jafEq4", 0},
@@ -1362,9 +1478,77 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::BeginDisabled( !settings.EnableHDR );
         if ( ImComboBoxC( "HDR ToneMap", hdrToneMapValues, reinterpret_cast<int*>(&settings.HDRToneMap), []
         {
-            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Tonemapping );
+            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Tonemapping );
+            }
         } ) ) {
             ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
+
+        // --- Dynamic exposure (D3D12 backend only) -----------------------------------------------------
+        // The auto-exposure meter (CS_LumReduce/CS_LumAdapt) measures average scene luminance and Tonemap.hlsl
+        // divides by it, which on its own normalizes EVERY scene to the same brightness — the reason an unlit
+        // cave used to come out as bright as daylight. These knobs bound that.
+        ImGui::SeparatorText( "Auto Exposure (D3D12)##AdvancedAutoExposure" );
+        ImGui::DragFloat( "AutoExposureStrength", &settings.AutoExposureStrength, 0.01f, 0.0f, 1.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. How much of the measured brightness difference the auto-exposure\n"
+                               "corrects for.\n"
+                               "1 = full normalization: every scene, including a dark cave, is pushed to the\n"
+                               "    target brightness.\n"
+                               "0 = auto-exposure off; only the manual Exposure slider applies.\n"
+                               "In between, dark scenes stay dark - just less extremely so." );
+        ImGui::DragFloat( "AutoExposureMiddleGray", &settings.AutoExposureMiddleGray, 0.005f, 0.01f, 1.0f, "%.3f" );
+        ImGui::SetItemTooltip( "D3D12 only. The average linear luminance the auto-exposure aims the scene at.\n"
+                               "0.18 is the classic photographic value. Higher = brighter overall image.\n"
+                               "This is NOT HDRMiddleGray, which is calibrated for the D3D11 tonemap curves." );
+        ImGui::DragFloat( "AutoExposureMin", &settings.AutoExposureMin, 0.01f, 0.0f, 8.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. Lower limit on the exposure multiplier auto-exposure may apply.\n"
+                               "Raise toward 1.0 to stop bright scenes from being darkened." );
+        ImGui::DragFloat( "AutoExposureMax", &settings.AutoExposureMax, 0.01f, 0.0f, 8.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. Upper limit on the exposure multiplier auto-exposure may apply.\n"
+                               "This is the hard cap on how far a dark interior can be brightened; lower it\n"
+                               "toward 1.0 if caves and nights still read too bright." );
+        ImGui::DragFloat( "AutoExposureSpeed", &settings.AutoExposureSpeed, 0.01f, 0.0f, 8.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. How fast the eye adapts to a new brightness (Pattanaik tau).\n"
+                               "Higher = snappier, lower = a longer transition when entering a cave." );
+
+        // --- Real HDR display output (ST.2084 scanout; D3D12 backend only) -----------------------------
+        ImGui::SeparatorText( "HDR Display Output" );
+        if ( ImGui::Checkbox( "HDR Monitor Output", &settings.HDR_Monitor ) ) {
+            // The swapchain colour space + the display-buffer format are decided at device/swapchain setup,
+            // so this only takes effect on the next launch (same as the GraphicsAPI switch).
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled( "(restart required)" );
+
+        float detectedMax = 0.0f, detectedMin = 0.0f, detectedMaxFullFrame = 0.0f;
+        const bool hdrActive = Engine::GraphicsEngine
+            && Engine::GraphicsEngine->GetHdrOutputInfo( detectedMax, detectedMin, detectedMaxFullFrame );
+        if ( hdrActive ) {
+            ImGui::Text( "Active. Monitor reports %.0f nits peak (%.0f full-frame, %.4f black).",
+                detectedMax, detectedMaxFullFrame, detectedMin );
+        } else if ( settings.HDR_Monitor ) {
+            ImGui::TextDisabled( "Not active (needs the D3D12 backend and an HDR-enabled display in Windows)." );
+        } else {
+            ImGui::TextDisabled( "Disabled - the SDR tonemapper is in use." );
+        }
+
+        ImGui::BeginDisabled( !settings.HDR_Monitor );
+        ImGui::Checkbox( "Auto Max Brightness (use monitor metadata)", &settings.HDR_AutoMaxBrightness );
+        ImGui::BeginDisabled( settings.HDR_AutoMaxBrightness );
+        ImGui::SliderFloat( "HDR Max Brightness", &settings.HDR_MaxBrightness, 400.0f, 2000.0f, "%.0f nits",
+            ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::EndDisabled();
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Peak luminance the highlight roll-off targets. Monitor-reported metadata is\n"
+                "frequently wrong - lower this until the brightest highlights stop clipping." );
+        }
+        ImGui::SliderFloat( "Paper White / UI Brightness", &settings.HDR_PaperWhite, 80.0f, 500.0f, "%.0f nits",
+            ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Nit level that SDR white maps to. Sets the brightness of the HUD/menus and of\n"
+                "diffuse-white surfaces; the headroom above it is what highlights get to use." );
         }
         ImGui::EndDisabled();
 
@@ -1397,6 +1581,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "Allow Pointlights self-shadowing", &settings.AllowSelfShadowingPointlights );
         ImGui::SetItemTooltip("Lets things like torches and lights from players also cast shadow for players.");
 
+        ImGui::Checkbox( "Disable static Pointlights", &settings.DisableStaticPointlights );
+        ImGui::SetItemTooltip("D3D12 only. Drops every static light from the scene.\n"
+            "Gothic fills rooms and caves with 10-30 co-located 'atmospheric' static lights that only raise the\n"
+            "ambient level; with HDR output they stack up and make interiors far too bright.");
+
         // ImGui::Checkbox("FastShadows", &settings.FastShadows );	
         ImGui::Checkbox( "DrawShadowGeometry", &settings.DrawShadowGeometry );
         if ( settings.RendererMode != GothicRendererSettings::RM_ForwardPlus) {
@@ -1410,25 +1599,15 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "AtmosphericScattering", &settings.AtmosphericScattering );
         ImGui::Checkbox( "SkeletalVertexNormals", &settings.ShowSkeletalVertexNormals );
 
-        static std::vector<std::pair<const char*, int>> shadowMapSizesMax = {
+        // Resolutions are restricted to these five power-of-two steps — 8192 is the hard ceiling on both
+        // backends/feature levels (a 16384 cascade slice is ~1GB, not worth the VRAM for a shadow map).
+        static std::vector<std::pair<const char*, int>> shadowMapSizes = {
           {"512", 512},
           {"1024", 1024},
           {"2048", 2048},
           {"4096", 4096},
           {"8192", 8192},
-          {"16384", 16384},
         };
-        static std::vector<std::pair<const char*, int>> shadowMapSizesDxFeature10 = {
-         {"512", 512},
-         {"1024", 1024},
-         {"2048", 2048},
-         {"4096", 4096},
-         {"8192", 8192},
-        };
-        std::vector<std::pair<const char*, int>>& shadowMapSizes = shadowMapSizesMax;
-        if ( FeatureLevel10Compatibility ) {
-            shadowMapSizes = shadowMapSizesDxFeature10;
-        }
 
         ImGui::Checkbox( "Enable Shadows", &settings.EnableShadows );
         ImGui::BeginDisabled( !settings.EnableShadows );
@@ -1440,7 +1619,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "Fixed shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
             ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
 
-            if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
+            if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { 
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
+                } ) ) {
                 ImGui::EndCombo();
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
@@ -1460,7 +1643,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
                 settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
                 settings.ApplyFeatureLevel10Downgrades();
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
             }
             ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
@@ -1485,7 +1671,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     {"PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS},
                 };
                 if ( ImComboBoxC( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, []() {
-                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    }
                     } ) ) {
                     ImGui::EndCombo();
                 }
@@ -1494,7 +1682,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
             if ( ImGui::SliderInt( "Soft shadow limit", &settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
             }
             ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'.\nChanging this will reload shaders." );
             
@@ -1507,6 +1697,31 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::EndDisabled();
         }
+
+        // Sky image-based lighting — the D3D12 indirect-light term. Deliberately OUTSIDE the shadow block's
+        // BeginDisabled/EndDisabled: it is ambient lighting and stays live with shadows switched off. Sits here
+        // rather than under Atmosphere because both knobs act on the same term ShadowStrength scales.
+        ImGui::SeparatorText( "Sky Lighting (D3D12)##AdvancedSkyIbl" );
+        ImGui::DragFloat( "SkyIblIntensity", &settings.SkyIblIntensity, 0.02f, 0.0f, 5.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. Scales the sky image-based indirect light (diffuse irradiance +\n"
+            "prefiltered specular) that replaced the flat ambient term. Multiplies with\n"
+            "ShadowStrength; 1.0 is neutral. 0 disables the IBL and falls back to the flat\n"
+            "ambient, which has no indirect specular at all (metals go black off-sun)." );
+        ImGui::DragFloat( "SkyOcclusionStrength", &settings.SkyOcclusionStrength, 0.01f, 0.0f, 1.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. How strongly Gothic's baked vertex light gates the sky-IBL indirect\n"
+            "term. The IBL is the OPEN SKY's radiance; without this it reaches caves and portal\n"
+            "rooms unoccluded, so interiors read as sunlit at noon and only go dark at night.\n"
+            "ShadowAOStrength can't do this - it floors at 1-ShadowAOStrength (0.5), so a\n"
+            "pitch-black cave still caught half the daytime sky. 0 = off (old behaviour);\n"
+            "1 = interiors get no sky ambient at all. The default leaves a small floor so cave\n"
+            "ceilings keep a trace of bounce light instead of crushing to black." );
+        ImGui::DragFloat( "SkyIblNightFloor", &settings.SkyIblNightFloor, 0.005f, 0.0f, 0.5f, "%.3f" );
+        ImGui::SetItemTooltip( "D3D12 only. Minimum night sky radiance for the IBL, in linear units.\n"
+            "Gothic's night is not physically lit - zCSkyState's night fogColor is (5,5,20),\n"
+            "so a faithful sky IBL leaves nights nearly black. This is the deliberate fill\n"
+            "(D3D11's atmospheric scattering hardcodes the same idea). 0 disables the floor.\n"
+            "Blue-weighted, so it reads as moonlight rather than grey underexposure." );
+
         ImGui::Separator();
 
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );
@@ -1569,6 +1784,12 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Use Depth based Velocity", &settings.DebugSettings.TAA.DepthMotionVectors);
                 ImGui::SetItemTooltip("Instead of per-Object");
                 ImGui::Checkbox("Display Velocity", &settings.DebugSettings.TAA.DisplayVelocity);
+                ImGui::SetItemTooltip("Overlays the motion-vector buffer: red = horizontal motion, green = vertical.\n"
+                                      "A still camera on a still scene is black; a walking NPC shows as a coloured silhouette.");
+                ImGui::Checkbox("Display Normals (D3D12)", &settings.DebugSettings.TAA.DisplayNormals);
+                ImGui::SetItemTooltip("Overlays the octahedral normal G-buffer written by the D3D12 depth prepass\n"
+                                      "(the future XeGTAO input). Takes precedence over Display Velocity.\n"
+                                      "D3D11 has no such buffer and ignores this.");
                 ImGui::EndTabItem();
             }
 
@@ -1588,10 +1809,48 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Slope-scaled depth bias for the shadow caster pass. Higher removes shadow acne/stepping on thin geometry; too high detaches contact shadows (peter-panning)");
                 ImGui::EndTabItem();
             }
-            
+
             if (ImGui::BeginTabItem("Culling", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::TextUnformatted("GPU-driven VOB culling (D3D12 only)");
+                ImGui::Checkbox("GPU VOB culling", &settings.GpuVobCulling );
+                ImGui::SetItemTooltip("Collect static VOBs distance-only on the CPU and frustum-cull them in a compute shader instead. Off = the classic CPU per-VOB frustum test");
+                
+                ImGui::BeginDisabled( !settings.GpuVobCulling );
+                ImGui::Checkbox("GPU occlusion culling", &settings.GpuVobOcclusionCulling );
+                ImGui::SetItemTooltip("Additionally reject VOB instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass");
+                ImGui::EndDisabled();
+
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
+
+                ImGui::Separator();
+                auto& portalCuller = Engine::GAPI->GetPortalCuller();
+                if ( ImGui::Checkbox( "Portal culling", &settings.EnablePortalCulling ) ) {
+                    portalCuller.SetEnabled( settings.EnablePortalCulling );
+                }
+                ImGui::SetItemTooltip( "Skip VOBs in rooms the camera cannot see into through any\n"
+                                       "chain of portals. Only affects portal-compiled outdoor worlds." );
+
+                ImGui::BeginDisabled( !settings.EnablePortalCulling );
+                if ( ImGui::SliderFloat( "Near room radius", &settings.PortalCullingNearRadius, 0.0f, 15000.0f, "%.0f" ) ) {
+                    portalCuller.SetNearSectorRadius( settings.PortalCullingNearRadius );
+                }
+                ImGui::SetItemTooltip( "Rooms closer than this are never culled (100 units = 1m).\n"
+                                       "Raise it if interiors pop while standing near a doorway." );
+                ImGui::EndDisabled();
+
+                const auto& ps = portalCuller.GetStats();
+                if ( ps.NumSectors == 0 ) {
+                    ImGui::TextDisabled( "world has no sector/portal data" );
+                } else {
+                    ImGui::Text( "sectors: %d active / %d  (portals: %d)",
+                        ps.ActiveSectors, ps.NumSectors, ps.NumPortals );
+                    ImGui::Text( "camera: %s", ps.CameraOutdoor ? "outdoor" : "in sector" );
+                    if ( ps.UnreachableSectors > 0 ) {
+                        ImGui::TextColored( ImVec4( 1.0f, 0.7f, 0.2f, 1.0f ),
+                            "%d sector(s) unreachable from outdoor - never culled", ps.UnreachableSectors );
+                    }
+                }
                 ImGui::EndTabItem();
             }
             
@@ -1634,7 +1893,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip("Enables a less intensive but lower quality shadow solution.");
                 if ( ImGui::Checkbox( "Use Screen-Space Shadow Mask", &settings.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ) ) {
-                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    }
                 }
                 ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
 
@@ -1645,7 +1906,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");
 
                 if (ImGui::Checkbox("Compressed Normalmaps support", &settings.CompressedNormalsSupport )) {
-                    Engine::GraphicsEngine->ReloadShaders();
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders();
+                    }
                 }
                 ImGui::SetItemTooltip("Enables support for BC5 compressed Normalmaps.");
 
@@ -1656,7 +1919,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 };
                 if ( ImComboBoxC( "Normalmapping texture mode", normalMapType, &settings.AllowNormalmaps, []
                 {
-                    Engine::GraphicsEngine->ReloadShaders();
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                        Engine::GraphicsEngine->ReloadShaders();
+                    }
                     Engine::GAPI->UpdateTextureMaxSize();
                 } ) ) {
                     ImGui::EndCombo();
@@ -1751,10 +2016,12 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     {"Disabled", AOMode::AO_NONE, nullptr},
                     {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
                     {"SAO", AOMode::AO_SAO, nullptr},
-                    {"ASSAO", AOMode::AO_ASSAO, "Intel ASSAO (Adaptive Screen Space Ambient Occlusion)"},
+                    {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
                 };
                 if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
+                    if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                    }
                     } ) ) {
                     ImGui::EndCombo();
                 }
@@ -1793,6 +2060,47 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     ImGui::DragFloat( "Intensity", &settings.SaoSettings.Intensity, 0.01f, 0.0f, 10.0f );
                     ImGui::SliderInt( "Samples", &settings.SaoSettings.NumSamples, 4, 64 );
                     ImGui::DragFloat( "Blur Sharpness", &settings.SaoSettings.BlurSharpness, 0.01f, 0.0f, 16.0f );
+                } else if ( settings.AoMode == AOMode::AO_ASSAO
+                            && settings.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+                    // D3D12 implements AO_ASSAO with Intel XeGTAO instead of ASSAO, so it gets its own controls.
+                    // Defaults and ranges are Intel's (XeGTAO.h GTAOImGuiSettings); Radius is the one that
+                    // differs, being in Gothic world units rather than metres.
+                    ImGui::SeparatorText( "XeGTAO Settings (D3D12)" );
+                    ImGui::TextUnformatted( "Intel XeGTAO — ground-truth ambient occlusion." );
+
+                    static std::vector<std::pair<const char*, int>> gtaoQuality = {
+                        {"Low", 0}, {"Medium", 1}, {"High", 2}, {"Ultra", 3}
+                    };
+                    if ( ImComboBox( "Quality Level", gtaoQuality, &settings.GtaoSettings.QualityLevel ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Higher levels take more samples per pixel (slices x steps: 1x2, 2x2, 3x3, 9x3)." );
+
+                    static std::vector<std::pair<const char*, int>> gtaoDenoise = {
+                        {"Disabled", 0}, {"Sharp", 1}, {"Medium", 2}, {"Soft", 3}
+                    };
+                    if ( ImComboBox( "Denoising", gtaoDenoise, &settings.GtaoSettings.DenoisePasses ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Number of edge-aware spatial denoise passes.\n'Sharp' is enough with TAA on." );
+
+                    ImGui::DragFloat( "Radius", &settings.GtaoSettings.Radius, 1.0f, 1.0f, 10000.0f, "%.0f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "World-space radius of the occlusion sphere, in GOTHIC UNITS (1 m = 100).\nDefault 50 (0.5 m)." );
+
+                    if ( ImGui::CollapsingHeader( "Auto-tuned settings (heuristics)" ) ) {
+                        ImGui::DragFloat( "Radius Multiplier", &settings.GtaoSettings.RadiusMultiplier, 0.01f, 0.3f, 3.0f, "%.3f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.3, 3.0] Counters inherent screen-space bias. Intel's auto-tune result: 1.457." );
+                        ImGui::DragFloat( "Falloff Range", &settings.GtaoSettings.FalloffRange, 0.01f, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.0, 1.0] Fades sample impact towards the radius edge. Default 0.615." );
+                        ImGui::DragFloat( "Sample Distribution Power", &settings.GtaoSettings.SampleDistributionPower, 0.01f, 1.0f, 3.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[1.0, 3.0] >1 focuses samples near the centre (small crevices). Default 2.0." );
+                        ImGui::DragFloat( "Thin Occluder Compensation", &settings.GtaoSettings.ThinOccluderCompensation, 0.01f, 0.0f, 0.7f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.0, 0.7] Discards samples behind the centre sooner, countering depth-only geometry bias. Default 0.0." );
+                        ImGui::DragFloat( "Final Power", &settings.GtaoSettings.FinalValuePower, 0.01f, 0.5f, 5.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.5, 5.0] occlusion = pow( occlusion, this ). Default 2.2 — raise to darken." );
+                        ImGui::DragFloat( "Depth MIP Sampling Offset", &settings.GtaoSettings.DepthMIPSamplingOffset, 0.05f, 0.0f, 30.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[2.0, 6.0] Bandwidth/quality trade-off. Lower = sharper but less temporally stable. Default 3.30." );
+                    }
                 } else if ( settings.AoMode == AOMode::AO_ASSAO ) {
                     ImGui::SeparatorText( "ASSAO Settings" );
 

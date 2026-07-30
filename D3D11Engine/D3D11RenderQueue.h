@@ -44,10 +44,9 @@ struct RenderItem
 
 class D3D11RenderQueue: public RenderQueue {
 public:
-    D3D11RenderQueue( ID3D11Device* device, ID3D11DeviceContext* context ):
-        m_Device( device ),
-        m_Context( context )
+    D3D11RenderQueue( ID3D11Device* device, ID3D11DeviceContext* context )
     { }
+    D3D11RenderQueue() = default;
 
     ~D3D11RenderQueue() override = default;
 
@@ -67,7 +66,4 @@ private:
     std::vector<VobLightInfo*> lights;
     std::vector<SkeletalVobInfo*> skeltalVobs;
     std::vector<TransparencyVobInfo> transparent;
-
-    Microsoft::WRL::ComPtr<ID3D11Device> m_Device;
-    Microsoft::WRL::ComPtr<ID3D11DeviceContext> m_Context;
 };

@@ -236,20 +236,15 @@ public:
         }
 
         if ( !haveCurrentResolution ) {
-            DisplayModeInfo info;
-            info.Width = static_cast<DWORD>(currentResolution.x);
-            info.Height = static_cast<DWORD>(currentResolution.y);
+            DisplayModeInfo info( static_cast<DWORD>(currentResolution.x), static_cast<DWORD>(currentResolution.y), 60, 1 );
             modes.insert( modes.begin(), info );
         }
         if ( !have800x600 ) {
-            DisplayModeInfo info;
-            info.Width = 800;
-            info.Height = 600;
+            DisplayModeInfo info( 800, 600, 60, 1 );
             modes.insert( modes.begin(), info );
         }
         if ( !have640x480 ) {
-            DisplayModeInfo info;
-            info.Width = 640;
+            DisplayModeInfo info( 640, 480, 60, 1 );
             info.Height = 480;
             modes.insert( modes.begin(), info );
         }

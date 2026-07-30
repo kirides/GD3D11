@@ -44,6 +44,7 @@ runs:
         Copy-Item -Path "blobs/Textures" -Destination "$relDir/GD3D11/Textures/" -Recurse -Force
         Copy-Item -Path "blobs/libs/*" -Destination "$relDir/" -Recurse -Force
         Copy-Item -Path "blobs/bin/wine-d2d1.dll" -Destination "$relDir/GD3D11/Bin/d2d1.dll" -Force
+        Copy-Item -Path "blobs/D3D12" -Destination "$relDir/GD3D11/D3D12/" -Force
 
         Copy-Item -Path "$artifactDir/*" -Destination $binDir -Force
         Move-Item -Path "$binDir/ddraw.dll" -Destination "$relDir/" -Force

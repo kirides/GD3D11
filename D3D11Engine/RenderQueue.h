@@ -11,9 +11,9 @@ public:
     virtual void PushTransparencyVob( TransparencyVobInfo vobInfo ) PURE;
     virtual void PushLightVob( VobLightInfo* vobInfo ) PURE;
 
-    virtual XRESULT Init() PURE;
-    virtual void Reset() PURE;
-    virtual XRESULT ProcessQueue() PURE;
+    virtual XRESULT Init() { return XR_SUCCESS; }
+    virtual void Reset() {}
+    virtual XRESULT ProcessQueue() { return XR_SUCCESS; }
 };
 
 // Only used for legacy render paths where we need to manipulate render state while collecting them

@@ -78,35 +78,44 @@ inline HRESULT zVdfsReadFile( const char* str, std::vector<uint8_t>& buffer, lon
     return S_OK;
 }
 
-inline HRESULT LoadTextureArray(
-    ID3D11Device* pd3dDevice,
-    const char* sTexturePrefix,
-    int iNumTextures,
-    VirtualFileReader fileReader,
-    ID3D11Texture2D** ppTex2D,
-    ID3D11ShaderResourceView** ppSRV )
-{
-    if ( !ppTex2D || !ppSRV ) {
-        LogError() << "invalid argument: ppTex2D or ppSRV should not be null";
-        return E_FAIL;
-    }
+// One mip level's raw pixel data within a parsed slice's file buffer (pointer stays valid as long as
+// the owning ParsedTextureArray::fileBuffers entry is alive).
+struct ParsedDDSMip {
+    const uint8_t* data = nullptr;
+    uint32_t rowPitch = 0;
+    uint32_t sizeBytes = 0;
+};
 
-    HRESULT hr = S_OK;
-    D3D11_TEXTURE2D_DESC desc = {};
-    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;
+struct ParsedDDSSlice {
+    std::vector<ParsedDDSMip> mips;
+};
+
+// Device-agnostic result of parsing a numbered sequence of same-shaped DDS files into a texture array's
+// worth of subresource data. Backend-specific loaders (LoadTextureArray below for D3D11, D3D12's own
+// loader) turn this into a real GPU resource; this struct only owns the CPU-side bytes.
+struct ParsedTextureArray {
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    uint32_t width = 0, height = 0, mipCount = 0;
+    std::vector<std::vector<uint8_t>> fileBuffers;   // keeps raw bytes alive; slices[].mips[].data points into these
+    std::vector<ParsedDDSSlice> slices;
+};
+
+// Reads `iNumTextures` sequentially-numbered DDS files (sTexturePrefix + %.4d + ".dds") via fileReader
+// and parses each one's header + every mip level entirely on the CPU — no D3D11/D3D12 calls, so both
+// backends' texture-array loaders share this instead of re-implementing DDS parsing. All slices must
+// match slice 0's width/height/mip count/format.
+inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTextures, VirtualFileReader fileReader, ParsedTextureArray& out ) {
     CHAR str[MAX_PATH];
-
-    // Keep raw file data buffers alive in RAM until we finish allocating our texture array.
-    std::vector<std::vector<uint8_t>> fileBuffers( iNumTextures );
-    std::vector<D3D11_SUBRESOURCE_DATA> initData;
+    out.fileBuffers.assign( iNumTextures, {} );
+    out.slices.assign( iNumTextures, {} );
 
     // Step 1: Read raw files from the VFS
     long numRead;
     for ( int i = 0; i < iNumTextures; i++ ) {
         sprintf( str, "%s%.4d.dds", sTexturePrefix, i );
 
-        hr = fileReader( str, fileBuffers[i], &numRead );
-        if ( !SUCCEEDED( hr) ) {
+        HRESULT hr = fileReader( str, out.fileBuffers[i], &numRead );
+        if ( !SUCCEEDED( hr ) ) {
             LogError() << "Failed to read file: " << str;
             return E_FAIL;
         }
@@ -114,8 +123,8 @@ inline HRESULT LoadTextureArray(
 
     // Step 2: Parse raw memory streams entirely on CPU (thread-safe)
     for ( int i = 0; i < iNumTextures; i++ ) {
-        const uint8_t* rawData = fileBuffers[i].data();
-        const size_t rawSize = fileBuffers[i].size();
+        const uint8_t* rawData = out.fileBuffers[i].data();
+        const size_t rawSize = out.fileBuffers[i].size();
 
         if ( rawSize < (sizeof( uint32_t ) + sizeof( DDS_HEADER )) ) {
             LogError() << "DDS data too small at index: " << i << " was: " << rawSize << ", expected: " << (sizeof( uint32_t ) + sizeof( DDS_HEADER )) << " prefix was: " << sTexturePrefix;
@@ -170,23 +179,13 @@ inline HRESULT LoadTextureArray(
 
         // Establish the first texture array's base characteristics
         if ( i == 0 ) {
-            texFormat = parsedFormat;
-            desc.Width = width;
-            desc.Height = height;
-            desc.MipLevels = mipCount;
-            desc.ArraySize = iNumTextures;
-            desc.Format = texFormat;
-            desc.SampleDesc.Count = 1;
-            desc.SampleDesc.Quality = 0;
-            desc.Usage = D3D11_USAGE_IMMUTABLE; // CPU read-only, optimized VRAM layout.
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-            desc.CPUAccessFlags = 0;
-            desc.MiscFlags = 0;
-
-            initData.reserve( iNumTextures * mipCount );
+            out.format = parsedFormat;
+            out.width = width;
+            out.height = height;
+            out.mipCount = mipCount;
         } else {
-            // Validate match integrity 
-            if ( width != desc.Width || height != desc.Height || mipCount != desc.MipLevels || parsedFormat != texFormat ) {
+            // Validate match integrity
+            if ( width != out.width || height != out.height || mipCount != out.mipCount || parsedFormat != out.format ) {
                 LogError() << "Texture index " << i << " mismatch with Texture 0 properties!";
                 return E_FAIL;
             }
@@ -198,22 +197,19 @@ inline HRESULT LoadTextureArray(
         uint32_t currentWidth = width;
         uint32_t currentHeight = height;
 
+        out.slices[i].mips.resize( mipCount );
         for ( uint32_t mip = 0; mip < mipCount; mip++ ) {
             uint32_t subresourceSize = 0;
             uint32_t rowPitch = 0;
 
-            GetSurfaceInfo( currentWidth, currentHeight, texFormat, subresourceSize, rowPitch );
+            GetSurfaceInfo( currentWidth, currentHeight, out.format, subresourceSize, rowPitch );
 
             if ( offset + subresourceSize > rawSize ) {
                 LogError() << "Texture data out of bounds during layout allocation at index: " << i;
                 return E_FAIL;
             }
 
-            D3D11_SUBRESOURCE_DATA subData = {};
-            subData.pSysMem = bitData;
-            subData.SysMemPitch = rowPitch;
-            subData.SysMemSlicePitch = subresourceSize;
-            initData.push_back( subData );
+            out.slices[i].mips[mip] = { bitData, rowPitch, subresourceSize };
 
             // Shift data read offset to point to the next mip-level
             bitData += subresourceSize;
@@ -221,6 +217,51 @@ inline HRESULT LoadTextureArray(
 
             currentWidth = std::max<uint32_t>( 1, currentWidth >> 1 );
             currentHeight = std::max<uint32_t>( 1, currentHeight >> 1 );
+        }
+    }
+
+    return S_OK;
+}
+
+inline HRESULT LoadTextureArray(
+    ID3D11Device* pd3dDevice,
+    const char* sTexturePrefix,
+    int iNumTextures,
+    VirtualFileReader fileReader,
+    ID3D11Texture2D** ppTex2D,
+    ID3D11ShaderResourceView** ppSRV )
+{
+    if ( !ppTex2D || !ppSRV ) {
+        LogError() << "invalid argument: ppTex2D or ppSRV should not be null";
+        return E_FAIL;
+    }
+
+    ParsedTextureArray parsed;
+    HRESULT hr = ParseTextureArrayDDS( sTexturePrefix, iNumTextures, fileReader, parsed );
+    if ( FAILED( hr ) ) return hr;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = parsed.width;
+    desc.Height = parsed.height;
+    desc.MipLevels = parsed.mipCount;
+    desc.ArraySize = iNumTextures;
+    desc.Format = parsed.format;
+    desc.SampleDesc.Count = 1;
+    desc.SampleDesc.Quality = 0;
+    desc.Usage = D3D11_USAGE_IMMUTABLE; // CPU read-only, optimized VRAM layout.
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.CPUAccessFlags = 0;
+    desc.MiscFlags = 0;
+
+    std::vector<D3D11_SUBRESOURCE_DATA> initData;
+    initData.reserve( static_cast<size_t>(iNumTextures) * parsed.mipCount );
+    for ( const auto& slice : parsed.slices ) {
+        for ( const auto& mip : slice.mips ) {
+            D3D11_SUBRESOURCE_DATA subData = {};
+            subData.pSysMem = mip.data;
+            subData.SysMemPitch = mip.rowPitch;
+            subData.SysMemSlicePitch = mip.sizeBytes;
+            initData.push_back( subData );
         }
     }
 

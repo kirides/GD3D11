@@ -39,9 +39,9 @@ struct BinkVideo
 	void* vid = nullptr;
 
 	unsigned char* textureData = nullptr;
-    D3D11Texture* textureY = nullptr;
-    D3D11Texture* textureU = nullptr;
-    D3D11Texture* textureV = nullptr;
+    GfxTexture* textureY = nullptr;
+    GfxTexture* textureU = nullptr;
+    GfxTexture* textureV = nullptr;
 	DWORD width = 0;
 	DWORD height = 0;
 	bool useBGRA = false;
@@ -263,9 +263,9 @@ int __fastcall BinkPlayerPlayFrame(DWORD BinkPlayer)
 
                     video->width = vidWidth;
                     video->height = vidHeight;
-                    video->textureY = new D3D11Texture();
-                    video->textureU = new D3D11Texture();
-                    video->textureV = new D3D11Texture();
+                    Engine::GraphicsEngine->CreateTexture( &video->textureY );
+                    Engine::GraphicsEngine->CreateTexture( &video->textureU );
+                    Engine::GraphicsEngine->CreateTexture( &video->textureV );
                     video->textureY->Init(INT2(vidWidth, vidHeight), D3D11Texture::ETextureFormat::TF_R8, 1, nullptr, "Video Texture Y");
                     video->textureU->Init(INT2(vidWidth / 2, vidHeight / 2), D3D11Texture::ETextureFormat::TF_R8, 1, nullptr, "Video Texture U");
                     video->textureV->Init(INT2(vidWidth / 2, vidHeight / 2), D3D11Texture::ETextureFormat::TF_R8, 1, nullptr, "Video Texture V");

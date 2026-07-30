@@ -86,9 +86,29 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     // Create our own vertexbuffer
     D3D11_BUFFER_DESC bufferDesc;
     bufferDesc.ByteWidth = sizeInBytes;
-    bufferDesc.Usage = static_cast<D3D11_USAGE>(usage);
-    bufferDesc.BindFlags = static_cast<D3D11_USAGE>(EBindFlags);
-    bufferDesc.CPUAccessFlags = static_cast<D3D11_USAGE>(cpuAccess);
+    // Translate the backend-neutral Gfx* flags into D3D11 enum/flag values.
+    D3D11_USAGE d3dUsage = D3D11_USAGE_DEFAULT;
+    switch ( usage ) {
+        case U_DYNAMIC:   d3dUsage = D3D11_USAGE_DYNAMIC; break;
+        case U_IMMUTABLE: d3dUsage = D3D11_USAGE_IMMUTABLE; break;
+        case U_DEFAULT:
+        default:          d3dUsage = D3D11_USAGE_DEFAULT; break;
+    }
+
+    UINT d3dBind = 0;
+    if ( EBindFlags & B_VERTEXBUFFER )     d3dBind |= D3D11_BIND_VERTEX_BUFFER;
+    if ( EBindFlags & B_INDEXBUFFER )      d3dBind |= D3D11_BIND_INDEX_BUFFER;
+    if ( EBindFlags & B_STREAM_OUT )       d3dBind |= D3D11_BIND_STREAM_OUTPUT;
+    if ( EBindFlags & B_SHADER_RESOURCE )  d3dBind |= D3D11_BIND_SHADER_RESOURCE;
+    if ( EBindFlags & B_UNORDERED_ACCESS ) d3dBind |= D3D11_BIND_UNORDERED_ACCESS;
+
+    UINT d3dCpu = 0;
+    if ( cpuAccess & CA_WRITE ) d3dCpu |= D3D11_CPU_ACCESS_WRITE;
+    if ( cpuAccess & CA_READ )  d3dCpu |= D3D11_CPU_ACCESS_READ;
+
+    bufferDesc.Usage = d3dUsage;
+    bufferDesc.BindFlags = d3dBind;
+    bufferDesc.CPUAccessFlags = d3dCpu;
     bufferDesc.MiscFlags = 0;
     bufferDesc.StructureByteStride = structuredByteSize;
 
@@ -184,8 +204,19 @@ XRESULT D3D11VertexBuffer::UpdateBuffer( void* data, UINT size ) {
 
 /** Maps the buffer */
 XRESULT D3D11VertexBuffer::Map( int flags, void** dataPtr, UINT* size ) {
+    // Translate the backend-neutral EMapFlags value into a D3D11_MAP type.
+    D3D11_MAP d3dMap;
+    switch ( flags ) {
+        case M_READ:               d3dMap = D3D11_MAP_READ; break;
+        case M_WRITE:              d3dMap = D3D11_MAP_WRITE; break;
+        case M_READ_WRITE:         d3dMap = D3D11_MAP_READ_WRITE; break;
+        case M_WRITE_NO_OVERWRITE: d3dMap = D3D11_MAP_WRITE_NO_OVERWRITE; break;
+        case M_WRITE_DISCARD:
+        default:                   d3dMap = D3D11_MAP_WRITE_DISCARD; break;
+    }
+
     D3D11_MAPPED_SUBRESOURCE res;
-    if ( FAILED( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->Map( VertexBuffer.Get(), 0, static_cast<D3D11_MAP>(flags), 0, &res ) ) ) {
+    if ( FAILED( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->Map( VertexBuffer.Get(), 0, d3dMap, 0, &res ) ) ) {
         return XR_FAILED;
     }
 

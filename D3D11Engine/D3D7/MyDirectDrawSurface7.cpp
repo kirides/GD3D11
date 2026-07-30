@@ -6,10 +6,102 @@
 #include "../zCTexture.h"
 #include "../D3D11_Helpers.h"
 #include "../zFILE_VDFS.h"
+#include "../ThreadPool.h"
 
 #define DebugWriteTex(x)  DebugWrite(x)
 
 const std::string LEAF_SUBSTR[] = { "Treetop", "Bush", "Leaf" };
+
+/** Reads an already-resolved replacement file and builds the GPU texture from it. Defined below. */
+static bool LoadResource( const std::string& path, const std::string& name, std::vector<uint8_t>& storage, GfxTexture** ppTexture );
+
+/** One decoded replacement texture, shared by every surface that resolved to the same file.
+
+    Without this, the same '<tex>_NORMAL.DDS' was read, decoded and uploaded once per Unlock of every
+    mip level of its diffuse texture (Gothic unlocks the whole chain through FakeDirectDrawSurface7,
+    which forwards to the owning surface) — each load throwing the previous one away, and each one
+    blocking on the previous worker job through WaitForPendingAdditionalResources. */
+struct SharedAdditionalTexture {
+    /** Cache key: the resolved VDFS path this was loaded from. */
+    std::string Path;
+
+    /** Owned. Null while not yet loaded, and stays null if the load failed — Loaded still flips, so a
+        broken file isn't retried by every surface that references it. */
+    GfxTexture* Texture = nullptr;
+
+    /** Guards Texture/Loaded. Held across the read+decode+upload, so a second worker asking for the
+        same file waits for the first instead of duplicating the work. */
+    std::mutex LoadMutex;
+    bool Loaded = false;
+
+    ~SharedAdditionalTexture();
+
+    /** Loads on first call, no-ops afterwards. Returns the (possibly null) texture. */
+    GfxTexture* EnsureLoaded( const std::string& name, std::vector<uint8_t>& storage );
+};
+
+namespace {
+    /** Path-keyed cache of the decoded replacement textures. Weak on purpose: an entry lives exactly
+        as long as some surface still references it, so a texture that Gothic caches out gives its
+        normal/ORM maps back instead of pinning them for the rest of the session — this is a 32-bit
+        process and replacement packs are large. */
+    std::mutex s_AdditionalTextureCacheMutex;
+    std::unordered_map<std::string, std::weak_ptr<SharedAdditionalTexture>> s_AdditionalTextureCache;
+
+    /** Returns the shared entry for 'path', creating (but not loading) it if this is the first user. */
+    std::shared_ptr<SharedAdditionalTexture> AcquireAdditionalTexture( const std::string& path ) {
+        std::scoped_lock lock( s_AdditionalTextureCacheMutex );
+        std::weak_ptr<SharedAdditionalTexture>& slot = s_AdditionalTextureCache[path];
+        if ( std::shared_ptr<SharedAdditionalTexture> existing = slot.lock() ) {
+            return existing;
+        }
+
+        auto entry = std::make_shared<SharedAdditionalTexture>();
+        entry->Path = path;
+        slot = entry;
+        return entry;
+    }
+
+    /** True if this entry has nothing left to do (a null entry means "no such replacement file"). */
+    bool IsAdditionalTextureResolved( const std::shared_ptr<SharedAdditionalTexture>& entry ) {
+        if ( !entry ) return true;
+        std::scoped_lock lock( entry->LoadMutex );
+        return entry->Loaded;
+    }
+
+    /** Texture of an already-resolved entry. Only valid after IsAdditionalTextureResolved(). */
+    GfxTexture* PeekAdditionalTexture( const std::shared_ptr<SharedAdditionalTexture>& entry ) {
+        if ( !entry ) return nullptr;
+        std::scoped_lock lock( entry->LoadMutex );
+        return entry->Texture;
+    }
+}
+
+SharedAdditionalTexture::~SharedAdditionalTexture() {
+    {
+        std::scoped_lock lock( s_AdditionalTextureCacheMutex );
+        // Only drop our own slot: a surface may already have raced in and put a fresh entry for the
+        // same path there, in which case that one is still alive and must be left alone.
+        if ( auto it = s_AdditionalTextureCache.find( Path );
+             it != s_AdditionalTextureCache.end() && it->second.expired() ) {
+            s_AdditionalTextureCache.erase( it );
+        }
+    }
+
+    // May run on a worker thread (last reference dropped by a finishing load job). Both backends'
+    // texture destructors are safe there: D3D11 just releases COM objects, D3D12 pushes the resource
+    // and its SRV slot onto the mutex-guarded deferred-cleanup queue.
+    delete Texture;
+}
+
+GfxTexture* SharedAdditionalTexture::EnsureLoaded( const std::string& name, std::vector<uint8_t>& storage ) {
+    std::scoped_lock lock( LoadMutex );
+    if ( !Loaded ) {
+        Loaded = true;
+        LoadResource( Path, name, storage, &Texture ); // leaves Texture null on failure
+    }
+    return Texture;
+}
 
 MyDirectDrawSurface7::MyDirectDrawSurface7() {
     refCount = 1;
@@ -20,6 +112,8 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
     GothicTexture = nullptr;
     IsReady = false;
     TextureType = ETextureType::TX_UNDEF;
+    AvailableMaterials = EAdditionalMaterial::None;
+    AdditionalResourcesResolved = false;
     LockType = 0;
 
     // Check for test-bind mode to figure out what zCTexture-Object we are associated with
@@ -31,6 +125,13 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
 }
 
 MyDirectDrawSurface7::~MyDirectDrawSurface7() {
+    IsReady = false;
+
+    // A worker may still be loading this surface's normal/ORM maps and will publish them into
+    // Normalmap/FxMap — never free the surface out from under it. Common on texture cache
+    // invalidation, where surfaces are destroyed while their loads are still queued.
+    WaitForPendingAdditionalResources();
+
     // Release mip-map chain first
     for ( LPDIRECTDRAWSURFACE7 mipmap : attachedSurfaces ) {
         mipmap->Release();
@@ -39,51 +140,97 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
     // Sometimes gothic doesn't unlock a surface or this is a movie-buffer
     delete[] LockedData;
 
-    EngineTexture.reset();
-    delete Normalmap;
-    delete FxMap;
+    delete EngineTexture;
+
+    // The maps themselves belong to the shared cache — dropping our share is all that's needed, and
+    // only deletes them if no other surface still uses the same replacement file.
+    Normalmap.store( nullptr, std::memory_order_release );
+    FxMap.store( nullptr, std::memory_order_release );
+    NormalmapRef.reset();
+    FxMapRef.reset();
 }
 
 /** Returns the engine texture of this surface */
-D3D11Texture* MyDirectDrawSurface7::GetEngineTexture() {
-    return EngineTexture.get();
+GfxTexture* MyDirectDrawSurface7::GetEngineTexture() {
+    return EngineTexture;
 }
 
-/** Returns the engine texture of this surface */
-D3D11Texture* MyDirectDrawSurface7::GetNormalmap() {
-    return Normalmap;
+/** Returns the engine texture of this surface. Null until the async load publishes it. */
+GfxTexture* MyDirectDrawSurface7::GetNormalmap() {
+    return Normalmap.load( std::memory_order_acquire );
 }
 
-/** Returns the fx-map for this surface */
-D3D11Texture* MyDirectDrawSurface7::GetFxMap() {
-    return FxMap;
+/** Returns the fx-map for this surface. Null until the async load publishes it. */
+GfxTexture* MyDirectDrawSurface7::GetFxMap() {
+    return FxMap.load( std::memory_order_acquire );
 }
 
 /** Binds this texture */
 void MyDirectDrawSurface7::BindToSlot( int slot ) {
-    ID3D11ShaderResourceView* srvs[2] = {
-        nullptr, nullptr
-    };
-    
     if ( !IsReady ) {
-        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 1, srvs );
-        return; // Don't bind half-loaded textures!
+        // Don't bind half-loaded textures! Clear just the diffuse slot.
+        Engine::GraphicsEngine->BindSurfaceTextures( slot, nullptr, nullptr, 1 );
+        return;
     }
 
-    if ( EngineTexture ) {// Needed sometimes
-        srvs[0] = EngineTexture->GetShaderResourceView().Get();
-    }
-    if ( Normalmap ) {
-        srvs[1] = Normalmap->GetShaderResourceView().Get();
-    }
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 2, srvs );
+    Engine::GraphicsEngine->BindSurfaceTextures( slot, EngineTexture, Normalmap, 2 );
 }
 
+namespace {
+    static constexpr char vdfsWorkPath[] { R"(\_WORK\DATA\TEXTURES\REPLACEMENTS\)" };
+    static constexpr char systemWorkPath[] { R"(\SYSTEM\GD3D11\TEXTURES\REPLACEMENTS\)" };
+
+    /** In-flight async additional-resource loads, keyed by surface. Registered/pruned/waited by whoever
+        calls LoadAdditionalResources (the game thread, or Gothic's own loader thread via the deferred
+        Unlock path) — but never by the worker job itself, which is what lets a waiter hold the mutex
+        while waiting on a job without deadlocking against it. Mirrors WorldConverter's node-visual
+        registry. */
+    struct PendingSurfaceLoad {
+        MyDirectDrawSurface7* Surface;
+        TaskHandle<void> Task;
+    };
+    std::mutex s_PendingSurfaceLoadsMutex;
+    std::vector<PendingSurfaceLoad> s_PendingSurfaceLoads;
+
+    /** Caller must hold s_PendingSurfaceLoadsMutex. */
+    void PruneFinishedSurfaceLoadsLocked() {
+        std::erase_if( s_PendingSurfaceLoads, []( const PendingSurfaceLoad& p ) {
+            return !p.Task.future.valid()
+                || p.Task.future.wait_for( std::chrono::seconds( 0 ) ) == std::future_status::ready;
+        } );
+    }
+
+    /** Probes both replacement roots for '<textureName><suffix>' and returns the path that exists, or
+        an empty string. Existence-only: no open, no read, no decode — cheap enough to keep on the game
+        thread, which is what lets the caller decide up front whether a worker job is needed at all. */
+    std::string ResolveResourcePath( const std::string& textureName, const char* suffix, const std::string& gameName ) {
+        std::string candidate;
+        candidate.reserve( 255 );
+
+        candidate.append( vdfsWorkPath ).append( textureName ).append( suffix );
+        if ( auto file = zFILE_VDFS::Create( candidate ); file && file->Exists() ) {
+            return candidate;
+        }
+
+        candidate.clear();
+        candidate.append( systemWorkPath ).append( "Normalmaps_" ).append( gameName ).append( "\\" )
+                 .append( textureName ).append( suffix );
+        if ( auto file = zFILE_VDFS::Create( candidate ); file && file->Exists() ) {
+            return candidate;
+        }
+        return {};
+    }
+}
+
+/** Reads an already-resolved replacement file and builds the GPU texture from it. Runs on a worker
+    thread: the VDFS is read-only and thread safe, and both backends' GfxTexture::Init only use
+    free-threaded device calls (D3D11 CreateDDSTextureFromMemory / D3D12 CreateResource) plus the
+    internally-locked D3D12 upload batch — neither touches an immediate context. */
 static bool LoadResource(
     const std::string& path,
     const std::string& name,
     std::vector<uint8_t>& storage,
-    D3D11Texture** ppTexture) {
+    GfxTexture** ppTexture) {
     auto file = zFILE_VDFS::Create( path );
     if ( !file->Exists() ) {
         return false;
@@ -113,9 +260,43 @@ static bool LoadResource(
     return true;
 }
 
+void MyDirectDrawSurface7::WaitForPendingAdditionalResources() {
+    std::scoped_lock lock( s_PendingSurfaceLoadsMutex );
+    for ( auto& pending : s_PendingSurfaceLoads ) {
+        if ( pending.Surface == this && pending.Task.future.valid() ) {
+            pending.Task.future.wait();
+        }
+    }
+    PruneFinishedSurfaceLoadsLocked();
+}
+
 /** Loads additional resources if possible */
 void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
+    // Gothic unlocks every mip level of a texture and each of them ends up here (the mip surfaces are
+    // views onto this one). Everything below — the VDFS probes, the cache lookups, the worker job —
+    // is keyed off TextureName, which is latched from the first zCTexture this surface is associated
+    // with and never changes afterwards, so every repeat call would redo identical work. A re-cached
+    // texture gets a brand new surface, so nothing needs this to be re-resolvable.
+    if ( AdditionalResourcesResolved ) {
+        return;
+    }
+
+    // A worker may still be loading this surface's maps from an earlier call (the texture got
+    // re-cached). It owns Normalmap/FxMap until it publishes them, so join it before touching either.
+    WaitForPendingAdditionalResources();
+
     if ( !GothicTexture ) {
+#ifndef PUBLIC_RELEASE
+        // The name latched here is permanent, so a wrong zCTexture means this surface looks for (and
+        // caches under) somebody else's replacement maps forever. That can only happen if the loading
+        // texture leaked across threads or past its load - see GothicAPI::ScopedLoadingTexture.
+        if ( MyDirectDrawSurface7* owner = ownedTexture->GetSurface(); owner && owner != this ) {
+            LogWarn() << "LoadAdditionalResources: '" << ownedTexture->GetNameView()
+                << "' does not own this surface - texture name would be wrong, skipping";
+            return;
+        }
+#endif
+
         GothicTexture = ownedTexture;
         TextureName = GothicTexture->GetNameWithoutExtView();
 
@@ -126,56 +307,120 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
 
     }
 
-    if ( Normalmap ) {
-        SAFE_DELETE( Normalmap );
-    }
+    Normalmap.store( nullptr, std::memory_order_release );
+    FxMap.store( nullptr, std::memory_order_release );
+    AvailableMaterials.store( EAdditionalMaterial::None, std::memory_order_release );
+    NormalmapRef.reset();
+    FxMapRef.reset();
 
-    if ( FxMap ) {
-        SAFE_DELETE( FxMap );
-    }
+    AdditionalResourcesResolved = true;
+
     // Set texture name
     if ( EngineTexture ) {
-        SetDebugName( EngineTexture->GetTextureObject().Get(), "D3D11Texture(\"" + TextureName + "\")->Texture" );
-        SetDebugName( EngineTexture->GetShaderResourceView().Get(), "D3D11Texture(\"" + TextureName + "\")->ShaderResourceView" );
+        EngineTexture->SetDebugName( TextureName.c_str() );
     }
 
-    if ( TextureName.empty() || Normalmap || FxMap || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
+    if ( TextureName.empty() || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
         return;
     }
 
-    D3D11Texture* fxMapTexture = nullptr;
-    D3D11Texture* nrmmapTexture = nullptr;
+    // --- Probe on the game thread ---
+    // Only existence checks happen here. The overwhelmingly common case for vanilla content is that
+    // nothing exists, and that case still costs exactly what it did before: a couple of VDFS index
+    // lookups and no job at all.
+    const std::string& gameName = Engine::GAPI->GetGameName();
 
-    static constexpr char vdfsWorkPath[] { R"(\_WORK\DATA\TEXTURES\REPLACEMENTS\)" };
-    static constexpr char systemWorkPath[] {R"(\SYSTEM\GD3D11\TEXTURES\REPLACEMENTS\)"};
-    std::string currentResource(255, ' ');
-    std::string textureName(255, ' ');
-    std::vector<uint8_t> storage;
+    const std::string normalPath = ResolveResourcePath( TextureName, "_NORMAL.DDS", gameName );
 
-    const auto& gameName = Engine::GAPI->GetGameName();
-    
-    const std::pair<const char*, D3D11Texture** const> resourcesToLoad[] = {
-        {"_NORMAL.DDS", &nrmmapTexture},
-        {"_FX.DDS", &fxMapTexture},
-    };
+    std::string materialPath;
+    const char* materialSuffix = "";
+    EAdditionalMaterial materialType = EAdditionalMaterial::None;
+    {
+        // D3D12 prefers a full PBR set and falls back through the partial variants; D3D11 only knows
+        // the legacy specular map. First hit wins, exactly as the synchronous version did.
+        const std::pair<const char*, EAdditionalMaterial> d3d12Variants[] = {
+            { "_ORM.DDS",   EAdditionalMaterial::ORM },
+            { "_OR.DDS",    EAdditionalMaterial::AoRoughness },
+            { "_ROUGH.DDS", EAdditionalMaterial::Roughness },
+        };
+        const std::pair<const char*, EAdditionalMaterial> d3d11Variants[] = {
+            { "_FX.DDS",    EAdditionalMaterial::Specular },
+        };
+        const bool isD3D12 = Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12;
+        using VariantSpan = std::span<const std::pair<const char*, EAdditionalMaterial>>;
+        const VariantSpan variants = isD3D12 ? VariantSpan{ d3d12Variants } : VariantSpan{ d3d11Variants };
 
-    for (const auto [suffix, texture] : resourcesToLoad) {
-        textureName.clear();
-        textureName.append(TextureName).append(suffix);
-
-        currentResource.clear();
-        currentResource.append(vdfsWorkPath).append(textureName);
-        if (LoadResource(currentResource, textureName, storage, texture)) {
-            continue;
+        for ( const auto& [suffix, type] : variants ) {
+            materialPath = ResolveResourcePath( TextureName, suffix, gameName );
+            if ( !materialPath.empty() ) {
+                materialSuffix = suffix;
+                materialType = type;
+                break;
+            }
         }
-    
-        currentResource.clear();
-        currentResource.append(systemWorkPath).append("Normalmaps_").append(gameName).append("\\").append(textureName);
-        LoadResource(currentResource, textureName, storage, texture);
     }
 
-    Normalmap = nrmmapTexture;
-    FxMap = fxMapTexture;
+    if ( normalPath.empty() && materialPath.empty() ) {
+        return; // No replacements for this texture — nothing to hand off.
+    }
+
+    // --- Claim the shared cache entries ---
+    // Refcounting happens here, on the calling thread, so the entries can't be destroyed underneath a
+    // worker that is still decoding into them. Whether they are already loaded decides if a job is
+    // needed at all.
+    NormalmapRef = normalPath.empty() ? nullptr : AcquireAdditionalTexture( normalPath );
+    FxMapRef = materialPath.empty() ? nullptr : AcquireAdditionalTexture( materialPath );
+
+    // Another surface already loaded these files (or this texture was cached back in while another
+    // surface still held them). Publish straight away — no file IO, no upload, no job.
+    if ( IsAdditionalTextureResolved( NormalmapRef ) && IsAdditionalTextureResolved( FxMapRef ) ) {
+        GfxTexture* fx = PeekAdditionalTexture( FxMapRef );
+        Normalmap.store( PeekAdditionalTexture( NormalmapRef ), std::memory_order_release );
+        AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
+        FxMap.store( fx, std::memory_order_release );
+        return;
+    }
+
+    // --- Read + decode + upload on a worker ---
+    // This is the part that cost up to 20ms per cache-in burst on the game thread. Until it lands the
+    // surface simply renders without its extra maps, which is the same state it is in for any texture
+    // that has no replacement files.
+    if ( !Engine::WorkerThreadPool ) {
+        std::vector<uint8_t> storage;
+        GfxTexture* nrm = NormalmapRef ? NormalmapRef->EnsureLoaded( TextureName + "_NORMAL.DDS", storage ) : nullptr;
+        GfxTexture* fx = FxMapRef ? FxMapRef->EnsureLoaded( TextureName + materialSuffix, storage ) : nullptr;
+        Normalmap.store( nrm, std::memory_order_release );
+        AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
+        FxMap.store( fx, std::memory_order_release );
+        return;
+    }
+
+    auto task = Engine::WorkerThreadPool->enqueue(
+        [this, nrmRef = NormalmapRef, fxRef = FxMapRef, materialType, materialSuffix, name = TextureName]( const std::stop_token& token ) {
+            if ( token.stop_requested() ) {
+                // Cancelled before a worker picked it up (world change / pool flush). Leave the maps
+                // null; the surface renders diffuse-only until the texture is cached in again.
+                return;
+            }
+
+            std::vector<uint8_t> storage;
+
+            // EnsureLoaded does the work at most once per file across the whole process; a second
+            // worker that wants the same file waits here instead of decoding it a second time.
+            GfxTexture* nrm = nrmRef ? nrmRef->EnsureLoaded( name + "_NORMAL.DDS", storage ) : nullptr;
+            GfxTexture* fx = fxRef ? fxRef->EnsureLoaded( name + materialSuffix, storage ) : nullptr;
+
+            // Publish. AvailableMaterials must be visible before FxMap, because every reader gates on
+            // GetFxMap() being non-null and then trusts GetAvailableMaterials() to say what its
+            // channels mean — the reverse order could decode an ORM map as a roughness-only one.
+            Normalmap.store( nrm, std::memory_order_release );
+            AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
+            FxMap.store( fx, std::memory_order_release );
+        } );
+
+    std::scoped_lock lock( s_PendingSurfaceLoadsMutex );
+    PruneFinishedSurfaceLoadsLocked();
+    s_PendingSurfaceLoads.emplace_back( this, std::move( task ) );
 }
 
 HRESULT MyDirectDrawSurface7::QueryInterface( REFIID riid, LPVOID* ppvObj ) {
@@ -185,17 +430,20 @@ HRESULT MyDirectDrawSurface7::QueryInterface( REFIID riid, LPVOID* ppvObj ) {
 
 ULONG MyDirectDrawSurface7::AddRef() {
     DebugWriteTex( "IDirectDrawSurface7(%p)::AddRef(%i)" );
-    return ++refCount;
+    return refCount.fetch_add( 1, std::memory_order_relaxed ) + 1;
 }
 
 ULONG MyDirectDrawSurface7::Release() {
     DebugWriteTex( "IDirectDrawSurface7(%p)::Release(%i)" );
-    if ( --refCount == 0 ) {
+    // acq_rel so everything the releasing thread did to this surface is visible to whoever ends up
+    // running the destructor.
+    ULONG remaining = refCount.fetch_sub( 1, std::memory_order_acq_rel ) - 1;
+    if ( remaining == 0 ) {
         delete this;
         return 0;
     }
 
-    return refCount;
+    return remaining;
 }
 
 HRESULT MyDirectDrawSurface7::AddAttachedSurface( LPDIRECTDRAWSURFACE7 lpDDSAttachedSurface ) {
@@ -337,10 +585,10 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         byte* data;
         INT2 buffersize;
         int pixelSize;
-        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->ResetPresentPending();
+        Engine::GraphicsEngine->ResetPresentPending();
         Engine::GraphicsEngine->OnStartWorldRendering();
         Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
-        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->ResetPresentPending();
+        Engine::GraphicsEngine->ResetPresentPending();
 
         lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount = 32;
         lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask = 0x00FF0000;
@@ -413,18 +661,18 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
         EngineTexture->UpdateDataDeferred( LockedData, 0 );
         Engine::GAPI->AddFrameLoadedTexture( this );
-        
-        // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
-        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+
+        // Only set while this thread is inside LoadResourceData. This is used to get the zCTexture from this Surface.
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture() ) {
             // Comming from LoadResourceData
-            LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+            LoadAdditionalResources( loading );
         }
     } else {
         EngineTexture->UpdateData( LockedData, 0 );
-        // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
-        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+        // Only set while this thread is inside LoadResourceData. This is used to get the zCTexture from this Surface.
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture() ) {
             // Comming from LoadResourceData
-            LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+            LoadAdditionalResources( loading );
         }
         SetReady( true ); // No need to load other stuff to get this ready
     }
@@ -520,7 +768,7 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     }
 
     // Create the texture object this is linked with
-    Engine::GraphicsEngine->CreateTexture( EngineTexture );
+    Engine::GraphicsEngine->CreateTexture( &EngineTexture );
 
 
     int redBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask );
@@ -531,20 +779,20 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     int bpp = redBits + greenBits + blueBits + alphaBits;
 
     // Find out format
-    D3D11Texture::ETextureFormat format = D3D11Texture::ETextureFormat::TF_B8G8R8A8;
+    GfxTexture::ETextureFormat format = GfxTexture::ETextureFormat::TF_B8G8R8A8;
     switch ( bpp ) {
     case 16:
     {
         switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
-        case 1: format = D3D11Texture::ETextureFormat::TF_B5G5R5A1; break;
-        case 2: format = D3D11Texture::ETextureFormat::TF_B4G4R4A4; break;
-        default: format = D3D11Texture::ETextureFormat::TF_B5G6R5; break;
+        case 1: format = GfxTexture::ETextureFormat::TF_B5G5R5A1; break;
+        case 2: format = GfxTexture::ETextureFormat::TF_B4G4R4A4; break;
+        default: format = GfxTexture::ETextureFormat::TF_B5G6R5; break;
         }
         break;
     }
     case 24:
     case 32:
-        format = D3D11Texture::ETextureFormat::TF_B8G8R8A8;
+        format = GfxTexture::ETextureFormat::TF_B8G8R8A8;
         break;
 
     case 0:
@@ -553,17 +801,17 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
         if ( (lpDDSurfaceDesc->ddpfPixelFormat.dwFlags & DDPF_FOURCC) == DDPF_FOURCC ) {
             switch ( lpDDSurfaceDesc->ddpfPixelFormat.dwFourCC ) {
             case FOURCC_DXT1:
-                format = D3D11Texture::ETextureFormat::TF_DXT1;
+                format = GfxTexture::ETextureFormat::TF_DXT1;
                 break;
 
             case FOURCC_DXT2:
             case FOURCC_DXT3:
-                format = D3D11Texture::ETextureFormat::TF_DXT3;
+                format = GfxTexture::ETextureFormat::TF_DXT3;
                 break;
 
             case FOURCC_DXT4:
             case FOURCC_DXT5:
-                format = D3D11Texture::ETextureFormat::TF_DXT5;
+                format = GfxTexture::ETextureFormat::TF_DXT5;
                 break;
             }
         }

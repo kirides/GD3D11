@@ -1,87 +1,10 @@
 #pragma once
-#include "ShaderCategory.h"
-#include "ShaderIDs.h"
+#include "ShaderRegistry.h"
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
 #include "D3D11HDShader.h"
 #include "D3D11GShader.h"
 #include "D3D11CShader.h"
-#include <functional>
-#include <type_traits>
-#include <string_view>
-
-/** Struct holds initial shader data for load operation*/
-struct ShaderInfo {
-public:
-    std::string name;				//Shader's name, used for debug logging
-    std::string fileName;			//Shader's filename (without 'system\\GD3D11\\shaders\\')
-    ShaderType type;				//Shader's type: Vertex, Pixel, Geometry, HullDomain, Compute
-    std::string entryPoint;			//Shader's entry point function name
-    size_t shaderIndex;				//Per-type enum index (e.g. VShaderID/PShaderID cast to size_t)
-    EVERTEX_INPUT_LAYOUT layout;						//Shader's input layout
-    std::vector<D3D_SHADER_MACRO> shaderMakros;
-    ShaderCategory contentCategory;	//Content category for selective reloading
-    size_t compiledHash = 0;			//Hash of last successful compilation (file timestamp + macros)
-
-    // Optional: builds per-shader dynamic macros (renderer-settings-dependent) at compile/hash time.
-    // Only macros this shader actually uses should be emitted — keeps hashing precise.
-    using MacroBuilder = std::function<void( std::vector<D3D_SHADER_MACRO>& )>;
-    MacroBuilder macroBuilder;
-
-    /** Builder-style factory: infers name, type, and entrypoint from enum template parameter */
-    template<auto ID>
-    static ShaderInfo make( std::string fn ) {
-        using EnumT = decltype(ID);
-        ShaderInfo si{};
-        
-        si.shaderIndex = static_cast<size_t>(ID);
-        si.name = magic_enum::enum_name( ID );
-        si.fileName = std::move( fn );
-        si.type = shader_type_for<EnumT>();
-        si.entryPoint = entrypoint_for<EnumT>();
-
-        return si;
-    }
-
-    /** Chainable setters for builder pattern */
-    ShaderInfo& with_layout( EVERTEX_INPUT_LAYOUT l ) { layout = l; return *this; }
-    ShaderInfo& with_macros( std::vector<D3D_SHADER_MACRO> m ) { shaderMakros = std::move(m); return *this; }
-    ShaderInfo& with_macros( MacroBuilder b ) {
-        if (macroBuilder) {
-            macroBuilder = [previous = std::move(macroBuilder), current = std::move( b )](std::vector<D3D_SHADER_MACRO>& m)
-            {
-               previous(m);
-                current(m);
-            };
-        } else {
-            macroBuilder = std::move( b );
-        }
-        return *this;
-    }
-    ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
-    ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
-
-private:
-    ShaderInfo() : type( ShaderType::None ), shaderIndex( 0 ), layout( VERTEX_INPUT_LAYOUT_NONE ), contentCategory( ShaderCategory::Other ) {}
-
-    template<typename EnumT>
-    static constexpr ShaderType shader_type_for() {
-        if constexpr ( std::is_same_v<EnumT, VShaderID> )  return ShaderType::Vertex;
-        if constexpr ( std::is_same_v<EnumT, PShaderID> )  return ShaderType::Pixel;
-        if constexpr ( std::is_same_v<EnumT, GShaderID> )  return ShaderType::Geometry;
-        if constexpr ( std::is_same_v<EnumT, HDShaderID> ) return ShaderType::HullDomain;
-        if constexpr ( std::is_same_v<EnumT, CShaderID> )  return ShaderType::Compute;
-    }
-
-    template<typename EnumT>
-    static constexpr const char* entrypoint_for() {
-        if constexpr ( std::is_same_v<EnumT, VShaderID> )  return "VSMain";
-        if constexpr ( std::is_same_v<EnumT, PShaderID> )  return "PSMain";
-        if constexpr ( std::is_same_v<EnumT, GShaderID> )  return "GSMain";
-        if constexpr ( std::is_same_v<EnumT, HDShaderID> ) return "HSMain";
-        if constexpr ( std::is_same_v<EnumT, CShaderID> )  return "CSMain";
-    }
-};
 
 class D3D11ShaderManager {
 public:
@@ -131,7 +54,7 @@ private:
     bool IsCShaderKnown( size_t index ) { std::unique_lock<std::mutex> lock( _CShaderMutex ); return CShaders[index] != nullptr; }
 
 private:
-    std::vector<ShaderInfo> Shaders;							//Initial shader list for loading
+    ShaderRegistry m_Registry;									//Backend-neutral shader declaration table + hashing
     std::vector<std::shared_ptr<D3D11VShader>> VShaders;
     std::vector<std::shared_ptr<D3D11PShader>> PShaders;
     std::vector<std::shared_ptr<D3D11HDShader>> HDShaders;

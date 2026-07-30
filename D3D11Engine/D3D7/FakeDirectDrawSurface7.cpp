@@ -33,19 +33,20 @@ HRESULT FakeDirectDrawSurface7::QueryInterface( REFIID riid, LPVOID* ppvObj ) {
 
 ULONG FakeDirectDrawSurface7::AddRef() {
     DebugWrite( "FakeDirectDrawSurface7(%p)::AddRef(%i)" );
-    return ++RefCount;
+    return RefCount.fetch_add( 1, std::memory_order_relaxed ) + 1;
 }
 
 ULONG FakeDirectDrawSurface7::Release() {
 
     DebugWrite( "FakeDirectDrawSurface7(%p)::Release(%i)" );
 
-    if ( --RefCount == 0 ) {
+    ULONG remaining = RefCount.fetch_sub( 1, std::memory_order_acq_rel ) - 1;
+    if ( remaining == 0 ) {
         delete this;
         return 0;
     }
 
-    return RefCount;
+    return remaining;
 }
 
 HRESULT FakeDirectDrawSurface7::AddAttachedSurface( LPDIRECTDRAWSURFACE7 lpDDSAttachedSurface ) {
@@ -191,15 +192,15 @@ HRESULT FakeDirectDrawSurface7::Unlock( LPRECT lpRect ) {
 
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
         Resource->GetEngineTexture()->UpdateDataDeferred( Data, MipLevel );
-        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture() ) {
             // Comming from LoadResourceData
-            Resource->LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+            Resource->LoadAdditionalResources( loading );
         }
     } else {
         Resource->GetEngineTexture()->UpdateData( Data, MipLevel );
-        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+        if ( zCTexture* loading = Engine::GAPI->GetLoadingTexture() ) {
             // Comming from LoadResourceData
-            Resource->LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+            Resource->LoadAdditionalResources( loading );
         }
     }
 

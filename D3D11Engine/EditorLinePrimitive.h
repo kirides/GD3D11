@@ -24,7 +24,7 @@
 /** Objects which can draw a primitive only out of wireframe-lines. It also is able to intesect them */
 
 struct LineVertex;
-class D3D11PShader;
+class GfxVertexBuffer;
 class EditorLinePrimitive {
 public:
     EditorLinePrimitive();
@@ -107,15 +107,15 @@ private:
     /** Intersects only one line segment */
     float IntersectLineSegment( FXMVECTOR rayOrigin, FXMVECTOR rayVec, FXMVECTOR lineStart, GXMVECTOR lineEnd, float Epsilon );
 
-    /** Renders a vertexbuffer with the given shader */
-    void RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, D3D11PShader* Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass = -1 );
+    /** Renders a vertexbuffer with the given pixel shader (looked up via the engine interface) */
+    void RenderVertexBuffer( const std::unique_ptr<GfxVertexBuffer>& VB, UINT NumVertices, PShaderID psID, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass = -1 );
 
     /** The bunch of vertices we have */
     LineVertex* Vertices;
     UINT NumVertices;
 
-    /** Vertex buffer */
-    Microsoft::WRL::ComPtr<ID3D11Buffer> PrimVB;
+    /** Vertex buffer (backend-neutral; created through the GfxVertexBuffer factory) */
+    std::unique_ptr<GfxVertexBuffer> PrimVB;
 
     /** Primitives shaders */
     PShaderID PrimShaderID;
@@ -124,7 +124,7 @@ private:
     /** Solid vertices we have */
     LineVertex* SolidVertices;
     UINT NumSolidVertices;
-    Microsoft::WRL::ComPtr<ID3D11Buffer> SolidPrimVB;
+    std::unique_ptr<GfxVertexBuffer> SolidPrimVB;
 
     /** Transforms */
     XMFLOAT3 Location;

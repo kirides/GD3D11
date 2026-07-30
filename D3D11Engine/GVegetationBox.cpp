@@ -12,7 +12,7 @@
 #include "zCMaterial.h"
 #include "Frustum.h"
 GMeshSimple* GVegetationBox::SharedVegetationMesh = nullptr;
-std::unique_ptr<D3D11Texture> GVegetationBox::SharedVegetationTexture;
+std::unique_ptr<GfxTexture> GVegetationBox::SharedVegetationTexture;
 int GVegetationBox::SharedResourceRefCount = 0;
 
 GVegetationBox::GVegetationBox() {
@@ -60,6 +60,65 @@ void GVegetationBox::ReleaseSharedResources() {
         SharedVegetationMesh = nullptr;
         SharedVegetationTexture.reset();
     }
+}
+
+/** Computes the world-space bounds of a single grass instance. The spots are stored transposed, so the
+ *  translation sits in _14/_24/_34 and the uniform scale is the length of any basis vector. The mesh is
+ *  roughly two units tall and one wide, which is what VisualizeGrass draws its tick from. */
+static void GetVegetationSpotBounds( const XMFLOAT4X4& spot, XMFLOAT3& bbMin, XMFLOAT3& bbMax ) {
+    float scale;
+    XMStoreFloat( &scale, XMVector3Length( XMVectorSet( spot._12, spot._22, spot._32, 0 ) ) );
+
+    bbMin = XMFLOAT3( spot._14 - scale, spot._24, spot._34 - scale );
+    bbMax = XMFLOAT3( spot._14 + scale, spot._24 + scale * 2.0f, spot._34 + scale );
+}
+
+/** Traces the actual grass instances instead of the bounding-box. The AABB is only used as a broadphase:
+ *  a box refits around whatever is left after painting/removing, so its AABB regularly spans large empty
+ *  areas which would otherwise swallow every click that goes through the gap. */
+bool GVegetationBox::TraceVegetationSpots( const XMFLOAT3& wPos, const XMFLOAT3& wDir, float& t ) {
+    float boxT;
+    if ( !Toolbox::IntersectBox( BoxMin, BoxMax, wPos, wDir, boxT ) )
+        return false;
+
+    float nearest = FLT_MAX;
+    for ( const XMFLOAT4X4& spot : VegetationSpots ) {
+        XMFLOAT3 spotMin, spotMax;
+        GetVegetationSpotBounds( spot, spotMin, spotMax );
+
+        float spotT;
+        if ( Toolbox::IntersectBox( spotMin, spotMax, wPos, wDir, spotT ) && spotT < nearest )
+            nearest = spotT;
+    }
+
+    if ( nearest == FLT_MAX )
+        return false;
+
+    t = nearest;
+    return true;
+}
+
+/** Returns true if there is an actual grass instance within range of the given position */
+bool GVegetationBox::HasVegetationNear( const XMFLOAT3& p, float range ) {
+    // Cheap reject first: grow the box by the range so positions just outside it can still be covered
+    // by a blade sitting on the border.
+    if ( p.x < BoxMin.x - range || p.y < BoxMin.y - range || p.z < BoxMin.z - range ||
+        p.x > BoxMax.x + range || p.y > BoxMax.y + range || p.z > BoxMax.z + range )
+        return false;
+
+    const float rangeSq = range * range;
+
+    for ( const XMFLOAT4X4& spot : VegetationSpots ) {
+        // Horizontal distance only - the brush follows the terrain, so comparing heights would let a
+        // blade on a slope above/below the cursor count as "not covered".
+        const float dx = spot._14 - p.x;
+        const float dz = spot._34 - p.z;
+
+        if ( dx * dx + dz * dz < rangeSq )
+            return true;
+    }
+
+    return false;
 }
 
 /** Returns true if the given position is inside the box */
@@ -322,8 +381,8 @@ void GVegetationBox::PrepareRenderGeometryPipeline()
     Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstanced );
     Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_Grass );
 
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
 }
 
 void GVegetationBox::ResetRenderGeometryPipeline()
@@ -343,8 +402,8 @@ void GVegetationBox::PrepareRenderShadowPipeline() {
     Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstancedShadow );
     Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_GrassShadow );
 
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
 }
 
 void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& gcb)
@@ -367,7 +426,7 @@ void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer&
         gcb.G_HeroAffectStrength = 0.0f;
     }
 
-    gcb.G_UseAlphaToCoverage = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetMSAADepthBuffer() != nullptr ? 1u : 0u;
+    gcb.G_UseAlphaToCoverage = AsD3D11Engine(Engine::GraphicsEngine)->GetMSAADepthBuffer() != nullptr ? 1u : 0u;
 }
 
 /** Draws this vegetation box */

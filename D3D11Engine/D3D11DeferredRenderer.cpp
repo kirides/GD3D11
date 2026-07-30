@@ -146,8 +146,18 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     PShaderID resolvedDiffuseNormalmappedAlphatest,
     PShaderID resolvedDiffuseNormalmappedAlphatestFxMap ) {
 
+    
     const auto& active = activePS;
     auto newShader = activePS;
+    if (texture->GetCacheState() != zRES_CACHED_IN) {
+        newShader = shaderManager.GetPShader( PShaderID::PS_Diffuse );
+        if ( active != newShader ) {
+            activePS = newShader;
+            activePS->Apply();
+            return true;
+        }
+        return false;
+    }
 
     const bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD;
     const bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;

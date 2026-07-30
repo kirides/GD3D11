@@ -532,6 +532,35 @@ struct SAOSettings {
     float BlurSharpness;
 };
 
+// Intel XeGTAO. D3D12 ONLY — it is what AOMode::AO_ASSAO selects on that backend (D3D11 keeps its own ASSAO
+// port, which reads AssaoSettings). Mirrors XeGTAO::GTAOSettings field-for-field except that Radius is in
+// GOTHIC WORLD UNITS rather than metres: Intel's default of 0.5 m becomes 50 here, since 1 m == 100 units
+// (cf. HBAOSettings::MetersToViewSpaceUnits). The remaining values are Intel's auto-tuned defaults, exposed
+// because XE_GTAO_USE_DEFAULT_CONSTANTS is 0 in our shader so they can be tuned live.
+struct GTAOSettings {
+    GTAOSettings() {
+        QualityLevel = 2;
+        DenoisePasses = 1;
+        Radius = 50.0f;
+        RadiusMultiplier = 1.457f;
+        FalloffRange = 0.615f;
+        SampleDistributionPower = 2.0f;
+        ThinOccluderCompensation = 0.0f;
+        FinalValuePower = 2.2f;
+        DepthMIPSamplingOffset = 3.30f;
+    }
+
+    int QualityLevel;                   // 0 low, 1 medium, 2 high, 3 ultra — picks the main-pass entry point
+    int DenoisePasses;                  // 0 disabled, 1 sharp, 2 medium, 3 soft
+    float Radius;                       // view-space radius of the occlusion sphere, in Gothic units
+    float RadiusMultiplier;             // [0.3, 3.0] counters screen-space bias; Intel's auto-tune result
+    float FalloffRange;                 // [0.0, 1.0] fades sample impact towards the radius edge
+    float SampleDistributionPower;      // [1.0, 3.0] >1 concentrates samples near the centre (crevices)
+    float ThinOccluderCompensation;     // [0.0, 0.7] discards samples behind the centre sooner
+    float FinalValuePower;              // [0.5, 5.0] occlusion = pow( occlusion, this )
+    float DepthMIPSamplingOffset;       // [2.0, 6.0] bandwidth/quality trade-off in the MIP selection
+};
+
 struct GothicRendererSettings {
     enum EPointLightShadowMode {
         PLS_DISABLED = 0,
@@ -601,6 +630,14 @@ struct GothicRendererSettings {
     enum E_RendererMode {
         RM_Deferred = 0,
         RM_ForwardPlus = 1,
+    };
+
+    /** Selects which graphics backend the engine creates on startup. Read very early
+        (before the full settings load) in Engine::CreateGraphicsEngine(). D3D12 is inert
+        until the D3D12 backend lands; requesting it currently falls back to D3D11. */
+    enum E_GraphicsAPI {
+        GRAPHICS_API_D3D11 = 0,
+        GRAPHICS_API_D3D12 = 1,
     };
 
     enum E_WaterSSRQuality {
@@ -681,6 +718,13 @@ struct GothicRendererSettings {
         HDRLumWhite = 11.2f;
         HDRMiddleGray = 0.8f;
         BloomThreshold = 0.9f;
+        Exposure = 1.0f;
+
+        AutoExposureMiddleGray = 0.18f;
+        AutoExposureStrength = 0.65f;
+        AutoExposureMin = 0.5f;
+        AutoExposureMax = 2.0f;
+        AutoExposureSpeed = 0.5f;
 
         WireframeVobs = false;
         WireframeWorld = false;
@@ -713,6 +757,10 @@ struct GothicRendererSettings {
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
+        SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
+        SkyOcclusionStrength = 0.0f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
+        SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
+
         BloomStrength = 1.0f;
         EnableBloom = false;
         BloomKnee = 0.5f;
@@ -724,10 +772,14 @@ struct GothicRendererSettings {
         GammaValue = 1.0f;
 
         EnableOcclusionCulling = false;
+        EnablePortalCulling = true;
+        PortalCullingNearRadius = 1500.0f;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
         ThreadedShadowCulling = false;
+        GpuVobCulling = false;
+        GpuVobOcclusionCulling = false;
         EnableVSync = true;
         DoZPrepass = false;
         SortRenderQueue = false;
@@ -740,6 +792,7 @@ struct GothicRendererSettings {
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
         RendererMode = RM_Deferred;
+        GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
         DrawSectionIntersections = true;
 
@@ -798,6 +851,7 @@ struct GothicRendererSettings {
         AllowNumpadKeys = false;
         EnableDebugLog = true;
         EnableCustomFontRendering = true;
+        FastInventoryRendering = true;
 
         ForceFOV = false;
 
@@ -808,8 +862,11 @@ struct GothicRendererSettings {
         DisplayFlip = false;
         LowLatency = false;
         HDR_Monitor = false;
+        HDR_AutoMaxBrightness = true;
+        HDR_MaxBrightness = 1000.0f;
+        HDR_PaperWhite = 200.0f;
         EnableInactiveFpsLock = true;
-        MTResoureceManager = false;
+        MTResoureceManager = true;
         CompressBackBuffer = false;
         AnimateStaticVobs = true;
         RunInSpacerNet = false;
@@ -817,12 +874,23 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
         WaterSSRQuality = WATER_SSR_MEDIUM;
 
-        GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
+        GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
+        DisableStaticPointlights = false;
         
+        ApplyGraphicsPreset();
         ApplyAssaoPreset(1);
 
         ResetDebugSettings();
+    }
+    
+    void ApplyDx12Defaults()
+    {
+        EnableHDR = true;
+        HDRToneMap = ACESFittedTonemap;
+        ThreadedShadowCulling = true;
+        
+        ShadowStrength = 0.20f;
     }
 
     void ApplyGraphicsPreset();
@@ -931,6 +999,13 @@ struct GothicRendererSettings {
     E_ShadowFilterMode ShadowFilterMode;
     bool EnableShadows;
     bool ThreadedShadowCulling;
+    // GPU-driven static-VOB culling (D3D12 only; D3D11 ignores both). GpuVobCulling replaces the CPU per-VOB
+    // frustum test with a distance-only collection plus a compute frustum cull that compacts the instance
+    // stream and rewrites the ExecuteIndirect instance counts. GpuVobOcclusionCulling additionally rejects
+    // instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass — split
+    // out as its own toggle because it is the part that can wrongly hide geometry.
+    bool GpuVobCulling;
+    bool GpuVobOcclusionCulling;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
@@ -944,6 +1019,12 @@ struct GothicRendererSettings {
     bool DoZPrepass;
     bool EnableAutoupdates;
     bool EnableOcclusionCulling;
+    /** Skip VOBs of rooms the camera cannot see into through any chain of portals.
+        Only applies to portal-compiled outdoor worlds; see BspPortalCuller. */
+    bool EnablePortalCulling;
+    /** Rooms within this distance of the camera are never portal-culled (Gothic units, 100 = 1m).
+        Raise it if interiors pop while standing near a doorway. */
+    float PortalCullingNearRadius;
     bool SortRenderQueue;
     bool DrawThreaded;
     EPointLightShadowMode EnablePointlightShadows;
@@ -951,6 +1032,8 @@ struct GothicRendererSettings {
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
     E_RendererMode RendererMode;
+    /** Requested graphics backend (see E_GraphicsAPI). Inert until the D3D12 backend lands. */
+    E_GraphicsAPI GraphicsAPI;
     /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
     int MSAASamples;
     bool DrawSectionIntersections;
@@ -988,6 +1071,31 @@ struct GothicRendererSettings {
     float TesselationRange;
     float HDRLumWhite;
     float HDRMiddleGray;
+    float Exposure;
+
+    // --- Dynamic exposure (D3D12 only; the D3D11 HDR path uses HDRMiddleGray/Exposure alone) ------------------
+    // CS_LumReduce/CS_LumAdapt meter the finished HDR scene and Tonemap.hlsl divides by the result, so the
+    // renderer's default behaviour is to drive EVERY scene to the same average brightness. That is wrong for
+    // Gothic: an unlit cave is meant to read as dark, not to be normalized up to the same level as open daylight.
+    // These five knobs are what bound that. See PSTonemap for the exact formula.
+    //
+    // Metering target in linear luminance - the average the auto-exposure aims the scene at. The classic
+    // photographic 0.18; raise for a brighter overall image, lower for a darker one. NOT HDRMiddleGray, which is
+    // calibrated for D3D11's own compressed tonemap curves and would overexpose by ~4.4x here.
+    float AutoExposureMiddleGray;
+    // How much of the full normalization to apply, 0..1, as an exponent on the exposure factor. 1 = classic
+    // "every scene becomes middle gray" (bright caves, the reason this knob exists); 0 = auto-exposure off, the
+    // manual Exposure multiplier alone. In between, a scene that meters darker than the target still ends up
+    // darker than the target, just less so - which is what keeps interiors and nights readable but still dim.
+    float AutoExposureStrength;
+    // Hard limits on the resulting exposure multiplier, applied after Strength. These, not the luminance floor
+    // in CS_LumReduce, are what cap how far a dark scene can be lifted (or a bright one pulled down).
+    float AutoExposureMin;
+    float AutoExposureMax;
+    // Adaptation rate (Pattanaik tau) used by CS_LumAdapt's exponential blend toward the new measurement.
+    // Higher = the eye adjusts faster; lower = a longer, more cinematic transition walking into a cave.
+    float AutoExposureSpeed;
+
     float BloomThreshold;
     float BloomStrength;
     bool EnableBloom;
@@ -1002,6 +1110,24 @@ struct GothicRendererSettings {
     float WorldAOStrength;
     float ShadowSoftness;
     float PCSSLightSize;
+    // D3D12 only (the D3D11 backend has no PBR path): scale on the sky-IBL indirect term that replaced the
+    // flat ambient floor in Shaders/D3D12/include/PBRLighting.hlsl. 0 falls back to that flat term entirely.
+    float SkyIblIntensity;
+    // D3D12 only: how strongly Gothic's baked vertex light gates the sky-IBL indirect term — see
+    // Shaders/D3D12/include/PBRLighting.hlsl ComputeSunLightingPBR. The IBL is the OPEN SKY's radiance, and
+    // without this it is added with no visibility term at all, so caves and portal rooms read as sunlit at
+    // noon and only go dark at night. ShadowAOStrength cannot do this job: it floors at 1-ShadowAOStrength
+    // (0.5 by default), which still let a pitch-black cave catch half the daytime sky. 0 = off (the old
+    // behaviour); 1 = interiors receive no sky ambient at all. The default leaves a small floor so cave
+    // ceilings keep a trace of bounce light rather than crushing to black. Applies ONLY to the IBL branch —
+    // the flat ambient fallback already carries vertLighting through shadowAO and matches D3D11 verbatim.
+    float SkyOcclusionStrength;
+    // D3D12 only: minimum LINEAR sky radiance (green channel; R/B follow a fixed blue-weighted ratio) used as a
+    // night floor for the sky IBL. Gothic's night is not physically lit — zCSkyState's night fogColor is
+    // (5,5,20), i.e. ~0.002 linear — so a faithful IBL leaves horizontal/downward normals with nothing. This is
+    // the deliberate non-physical fill that Gothic itself applies; D3D11's atmospheric scattering hardcodes the
+    // equivalent (AtmosphericScattering.h: nightColor = (0.2,0.2,0.4) * NIGHT_BRIGHTNESS). 0 disables the floor.
+    float SkyIblNightFloor;
 
     float GodRayDecay;
     float GodRayWeight;
@@ -1019,6 +1145,7 @@ struct GothicRendererSettings {
     HBAOSettings HbaoSettings;
     SAOSettings SaoSettings;
     ASSAO_Settings AssaoSettings;
+    GTAOSettings GtaoSettings;   // D3D12's AO_ASSAO implementation — see the struct comment
     AOMode AoMode;
 
     bool FixViewFrustum;
@@ -1045,10 +1172,21 @@ struct GothicRendererSettings {
     bool EnableDebugLog;
 
     bool EnableCustomFontRendering;
+    /** Skips ZenGin's per-inventory-slot pseudo-world render (see zCWorld::hooked_Render). Off = fall back to
+        the original oCItem::RenderItem path, for comparing against vanilla behavior. */
+    bool FastInventoryRendering;
     bool ForceFOV;
     bool DisplayFlip;
     bool LowLatency;
     bool HDR_Monitor;
+    /** Real HDR scanout (D3D12 only, requires HDR_Monitor). Monitor HDR metadata is frequently wrong, so the
+        peak the tonemapper rolls off to is user-overridable: HDR_AutoMaxBrightness takes DXGI's reported
+        DXGI_OUTPUT_DESC1::MaxLuminance, otherwise HDR_MaxBrightness (nits) is used verbatim. HDR_PaperWhite is
+        the nit level that "SDR white" maps to — it sets the brightness of the UI/HUD and of diffuse-white
+        surfaces, and is the reference the highlight headroom is measured against. */
+    bool HDR_AutoMaxBrightness;
+    float HDR_MaxBrightness;
+    float HDR_PaperWhite;
     bool StretchWindow;
     int ChangeWindowPreset;
     bool SmoothShadowCameraUpdate;
@@ -1066,11 +1204,18 @@ struct GothicRendererSettings {
     E_GraphicsPreset GraphicsPreset;
     bool CompressedNormalsSupport;
     bool AllowSelfShadowingPointlights;
+    // Drop every zCVobLight with IsStatic() from the frame's point-light set. Gothic lights its rooms and caves
+    // with 10-30 co-located "atmospheric" static fill lights that exist only to raise the ambient level; under
+    // an HDR pipeline they stack into a badly over-bright interior. D3D12 backend only (see BuildFrameLightBuffer).
+    bool DisableStaticPointlights;
     
     struct {
         struct {
             bool DepthMotionVectors;
             bool DisplayVelocity;
+            // D3D12 only: overlays the octahedral normal G-buffer the depth prepass writes (the XeGTAO input).
+            // D3D11 has no such buffer — it reconstructs normals from depth — so its renderer ignores this.
+            bool DisplayNormals;
         } TAA;
         struct {
             bool LazyCascadeUpdate;
@@ -1162,7 +1307,9 @@ struct GothicRendererInfo {
     int WorldMeshDrawCalls;
 
     unsigned int VOBVerticesDataSize;
-    unsigned int SkeletalVerticesDataSize;
+    // Skeletal meshes can be extracted (and their SkeletalMeshInfo destroyed) from background
+    // worker threads (see GothicAPI::LoadzCModelData), so this counter needs to be atomic.
+    std::atomic<unsigned int> SkeletalVerticesDataSize;
     RenderStage RenderStage;
     
     bool IsRenderStageDx11() const {

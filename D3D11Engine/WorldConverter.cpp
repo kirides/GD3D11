@@ -1374,9 +1374,18 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vertices.emplace_back();
 
                 ExVertexStruct& vx = vertices.back();
-                XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) ) ) );
+                XMMATRIX nodeTrafo = XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) );
+                XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), nodeTrafo ) );
                 vx.TexCoord = wedge.texUV;
-                vx.Normal = wedge.normal;
+                // The position bakes the node's bind-pose transform in (above); the normal must rotate by the SAME
+                // transform or it stays in the attachment's raw local mesh space while position moves into node/
+                // model space. At draw time both then get the outer per-instance world matrix (PrepareFrameSkeletals'
+                // attWorld = modelWorld * boneCache[n]) applied identically to position and normal — if the normal
+                // never got this node-local rotation, it ends up in the wrong space entirely, so N.L (and thus the
+                // CSM shadow test's occlusion sampling and the direct sun term) come out wrong/near-zero regardless
+                // of the attachment's actual orientation or shadow state, leaving only the flat ambient floor visible
+                // — exactly "same brightness in sun or in shadow".
+                XMStoreFloat3( &vx.Normal, XMVector3Normalize( XMVector3TransformNormal( XMLoadFloat3( &wedge.normal ), nodeTrafo ) ) );
                 vx.Color = 0xFFFFFFFF;
             }
 
@@ -1602,6 +1611,126 @@ void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::f
             attachments[index].emplace_back( mi );
         }
     }
+}
+
+namespace {
+    /** In-flight ExtractNodeVisualAsync jobs. Registered and pruned on the main thread only; the worker
+        job itself never touches this list, so a waiter can hold the mutex while waiting on a job without
+        ever deadlocking against it. Never more than a handful of entries (one per attachment currently
+        popping in), so a flat vector beats a map here. */
+    struct PendingNodeVisual {
+        MeshVisualInfo* MeshInfo;
+        zCVisual* Visual;
+        TaskHandle<void> Task;
+    };
+    std::mutex s_PendingNodeVisualsMutex;
+    std::vector<PendingNodeVisual> s_PendingNodeVisuals;
+
+    /** Drops entries whose job has run to completion. Caller must hold s_PendingNodeVisualsMutex. */
+    void PruneFinishedNodeVisualsLocked() {
+        std::erase_if( s_PendingNodeVisuals, []( const PendingNodeVisual& p ) {
+            return !p.Task.future.valid()
+                || p.Task.future.wait_for( std::chrono::seconds( 0 ) ) == std::future_status::ready;
+        } );
+    }
+}
+
+/** Blocks until a background node-visual extraction targeting this MeshVisualInfo has finished. */
+void WaitForPendingNodeVisualExtraction( MeshVisualInfo* meshInfo ) {
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    for ( auto& pending : s_PendingNodeVisuals ) {
+        if ( pending.MeshInfo == meshInfo && pending.Task.future.valid() ) {
+            pending.Task.future.wait();
+        }
+    }
+    PruneFinishedNodeVisualsLocked();
+}
+
+void WorldConverter::WaitForPendingNodeVisuals( zCVisual* visual ) {
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    for ( auto& pending : s_PendingNodeVisuals ) {
+        if ( pending.Visual == visual && pending.Task.future.valid() ) {
+            pending.Task.future.wait();
+        }
+    }
+    PruneFinishedNodeVisualsLocked();
+}
+
+void WorldConverter::WaitForAllPendingNodeVisuals() {
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    for ( auto& pending : s_PendingNodeVisuals ) {
+        if ( pending.Task.future.valid() ) {
+            pending.Task.future.wait();
+        }
+    }
+    s_PendingNodeVisuals.clear();
+}
+
+/** Extracts a node-visual on a worker thread. See the header for the contract. */
+void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
+    ZoneScoped;
+
+    if ( !node->NodeVisual || !Engine::WorkerThreadPool ) {
+        ExtractNodeVisual( index, node, attachments );
+        return;
+    }
+
+    const char* ext = node->NodeVisual->GetFileExtension( 0 );
+    const bool isMMS = strcmp( ext, ".MMS" ) == 0;
+    if ( !isMMS && strcmp( ext, ".3DS" ) != 0 ) {
+        // .MDS/.ASC (and anything else): ExtractProgMeshProtoFromModel mutates ZENGIN state, so it has to
+        // stay on the game thread. These are rare compared to the 3DS/MMS weapons, heads and held items.
+        ExtractNodeVisual( index, node, attachments );
+        return;
+    }
+
+    zCProgMeshProto* pm = isMMS
+        ? reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh()
+        : static_cast<zCProgMeshProto*>(node->NodeVisual);
+    if ( !pm || pm->GetNumSubmeshes() == 0 ) {
+        return;
+    }
+
+    // Only allow 1 attachment (same rule as the synchronous path). The MeshVisualInfo destructor blocks
+    // on this visual's own job, so replacing an attachment that is still being extracted is safe.
+    if ( !attachments[index].empty() ) {
+        delete attachments[index][0];
+        attachments[index].clear();
+    }
+
+    // Build the shell on this thread so the caller can already identify the attachment (Visual is what
+    // the "did the visual change?" check compares against), then let a worker fill in the meshes.
+    MeshVisualInfo* mi = new MeshVisualInfo;
+    mi->Visual = node->NodeVisual;
+    if ( isMMS ) {
+        mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
+        zCObject_AddRef( mi->MorphMeshVisual );
+    }
+    mi->Ready.store( false, std::memory_order_relaxed );
+    attachments[index].emplace_back( mi );
+
+    zCVisual* nodeVisual = node->NodeVisual;
+    auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS]( const std::stop_token& token ) {
+        if ( token.stop_requested() ) {
+            // Cancelled before a worker picked it up (world change / shutdown flush) - the visual we
+            // would read from may already be gone. Clear Visual so the next frame notices the mismatch
+            // and re-extracts instead of rendering an empty attachment forever.
+            mi->Visual = nullptr;
+            mi->Ready.store( true, std::memory_order_release );
+            return;
+        }
+        Extract3DSMeshFromVisual2( pm, mi );
+        if ( isMMS ) {
+            // Extract3DSMeshFromVisual2 sets Visual to the morph mesh's inner progmesh; the attachment
+            // identity is the outer zCMorphMesh (mirrors ExtractNodeVisual).
+            mi->Visual = reinterpret_cast<zCVisual*>(mi->MorphMeshVisual);
+        }
+        mi->Ready.store( true, std::memory_order_release );
+    } );
+
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    PruneFinishedNodeVisualsLocked();
+    s_PendingNodeVisuals.emplace_back( mi, nodeVisual, std::move( task ) );
 }
 
 /** Updates a Morph-Mesh visual */
@@ -1974,7 +2103,7 @@ void WorldConverter::WrapVertexBuffers( const std::list<std::vector<ExVertexStru
     int off = 0;
     for ( auto const& iti : indexBuffers ) {
         for ( auto&& vi = iti->begin(); vi != iti->end(); ++vi ) {
-            outIndices.emplace_back( *vi + vxOffsets[off] );
+            outIndices.emplace_back( static_cast<unsigned int>( *vi ) + vxOffsets[off] );
         }
         off++;
 

@@ -23,6 +23,16 @@ constexpr float snowSpeedFactor = 0.15f;
 namespace {
     const float2 snowScale( 3.0f, 3.0f );
     const float2 rainScale( 30.0f / 10.0f, 30.0f / 2.0f );
+
+    ID3D11ShaderResourceView* GetSrvFromGfx( GfxTexture* texture ) {
+        if ( !texture ) { return nullptr; }
+        return D3D11Texture::From( texture )->GetShaderResourceView().Get();
+    }
+
+    ID3D11ShaderResourceView* GetSrvFromGfx( GfxVertexBuffer* buffer ) {
+        if ( !buffer ) { return nullptr; }
+        return D3D11VertexBuffer::From( buffer )->GetShaderResourceView().Get();
+    }
 }
 
 D3D11Effect::D3D11Effect() {
@@ -170,13 +180,11 @@ XRESULT D3D11Effect::DrawRain() {
     e->GetConstantBufferPool()->BindPS(1, rainBufAllocation);
 
     if ( firstFrame || (state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused()) ) {
-        D3D11VertexBuffer* b = nullptr;
 
         // Use initial-data if we don't have something in the stream-buffers yet
-        if ( firstFrame )
-            b = RainBufferInitial.get();
-        else
-            b = RainBufferDrawFrom.get();
+        D3D11VertexBuffer* b = D3D11VertexBuffer::From(firstFrame
+            ? RainBufferInitial.get()
+            : RainBufferDrawFrom.get());
 
         firstFrame = false;
 
@@ -187,10 +195,10 @@ XRESULT D3D11Effect::DrawRain() {
         e->GetContext()->IASetVertexBuffers( 0, 1, b->GetVertexBuffer().GetAddressOf(), &stride, &offset );
 
         // Bind immutable particle data as StructuredBuffer SRV for the advance VS
-        e->GetContext()->VSSetShaderResources( 1, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
+        e->GetContext()->VSSetShaderResources( 1, 1, D3D11VertexBuffer::From( RainBufferStatic.get() )->GetShaderResourceView().GetAddressOf() );
 
         // Set stream target
-        e->GetContext()->SOSetTargets( 1, RainBufferStreamTo->GetVertexBuffer().GetAddressOf(), &offset );
+        e->GetContext()->SOSetTargets( 1, D3D11VertexBuffer::From( RainBufferStreamTo.get() )->GetVertexBuffer().GetAddressOf(), &offset );
 
         // Apply shaders
         e->GetContext()->PSSetShader( nullptr, nullptr, 0 );
@@ -253,7 +261,7 @@ XRESULT D3D11Effect::DrawRain() {
     RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
 
     // Bind immutable particle data as StructuredBuffer SRV
-    e->GetContext()->VSSetShaderResources( 1, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
+    e->GetContext()->VSSetShaderResources( 1, 1, D3D11VertexBuffer::From( RainBufferStatic.get() )->GetShaderResourceView().GetAddressOf() );
 
     // Bind the shadow comparison sampler to the vertex shader at slot 2 (SS_Comp in shader)
     e->GetContext()->VSSetSamplers( 2, 1, m_RainDropShadowSamplerState.GetAddressOf() );
@@ -270,7 +278,7 @@ XRESULT D3D11Effect::DrawRain() {
     {
         UINT stride = sizeof( RainParticleDynamic );
         UINT offset = 0;
-        e->GetContext()->IASetVertexBuffers( 0, 1, RainBufferDrawFrom->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+        e->GetContext()->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( RainBufferDrawFrom.get() )->GetVertexBuffer().GetAddressOf(), &stride, &offset );
         e->GetContext()->DrawInstanced( 4, numParticles, 0, 0 );
     }
 
@@ -358,8 +366,8 @@ XRESULT D3D11Effect::DrawRain_CS() {
     if ( state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused() ) {
         advanceRainCS->Apply();
 
-        e->GetContext()->CSSetShaderResources( 0, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
-        e->GetContext()->CSSetUnorderedAccessViews( 0, 1, RainBufferDrawFrom->GetUnorderedAccessView().GetAddressOf(), nullptr );
+        e->GetContext()->CSSetShaderResources( 0, 1, D3D11VertexBuffer::From( RainBufferStatic.get() )->GetShaderResourceView().GetAddressOf() );
+        e->GetContext()->CSSetUnorderedAccessViews( 0, 1, D3D11VertexBuffer::From( RainBufferDrawFrom.get() )->GetUnorderedAccessView().GetAddressOf(), nullptr );
         e->GetContext()->Dispatch( (numParticles + 127) / 128, 1, 1 );
 
         // Unbind compute shader elements
@@ -411,7 +419,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
     RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
 
     // Bind immutable particle data as StructuredBuffer SRV
-    e->GetContext()->VSSetShaderResources( 1, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
+    e->GetContext()->VSSetShaderResources( 1, 1, D3D11VertexBuffer::From( RainBufferStatic.get() )->GetShaderResourceView().GetAddressOf() );
 
     // Bind the shadow comparison sampler to the vertex shader at slot 2 (SS_Comp in shader)
     e->GetContext()->VSSetSamplers( 2, 1, m_RainDropShadowSamplerState.GetAddressOf() );
@@ -428,7 +436,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
     {
         UINT stride = sizeof( RainParticleDynamic );
         UINT offset = 0;
-        e->GetContext()->IASetVertexBuffers( 0, 1, RainBufferDrawFrom->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+        e->GetContext()->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( RainBufferDrawFrom.get() )->GetVertexBuffer().GetAddressOf(), &stride, &offset );
         e->GetContext()->DrawInstanced( 4, numParticles, 0, 0 );
     }
 

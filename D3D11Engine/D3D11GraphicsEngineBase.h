@@ -2,6 +2,7 @@
 #include "BaseGraphicsEngine.h"
 #include "D3DGraphicsEventRecord.h"
 #include <dxgi1_5.h>
+#include <cassert>
 
 class D3D11DepthBufferState;
 class D3D11BlendStateInfo;
@@ -27,11 +28,14 @@ public:
     D3D11GraphicsEngineBase();
     ~D3D11GraphicsEngineBase() override;
 
+    /** This whole hierarchy is the Direct3D 11 backend. */
+    EGraphicsEngineBackend GetBackendAPI() const override { return EGraphicsEngineBackend::D3D11; }
+
     /** Called after the fake-DDraw-Device got created */
     XRESULT Init() override PURE;
 
     /** Called when the game created its window */
-    XRESULT SetWindow( HWND hWnd ) override;
+    XRESULT SetWindow( HWND hWnd ) override PURE;
 
     /** Called on window resize/resolution change */
     XRESULT OnResize( INT2 newSize ) override PURE;
@@ -50,11 +54,11 @@ public:
     XRESULT Clear( const float4& color ) override PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    XRESULT CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) override;
+    XRESULT CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) override;
 
     /** Creates a texture object (Not registered inside) */
-    XRESULT CreateTexture( D3D11Texture** outTexture ) override;
-    XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) override;
+    XRESULT CreateTexture( GfxTexture** outTexture ) override;
+    XRESULT CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) override;
     
     /** Creates a bufferobject for a shadowed point light */
     XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) override;
@@ -80,8 +84,11 @@ public:
     /** Draws a vertexarray, used for rendering gothics UI */
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
+    /** Binds a surface's diffuse/normalmap textures to consecutive PS slots (see base). */
+    void BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures = 2 ) override;
+
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
-    XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds viewport information to the given constantbuffer slot */
     XRESULT BindViewportInformation( VShaderID shader, int slot ) override;
@@ -91,7 +98,7 @@ public:
     auto GetContext() -> const auto& { return Context; }
 
     /** Pixel Shader functions */
-    void UnbindActivePS() { ActivePS = nullptr; }
+    void UnbindActivePS() override { ActivePS = nullptr; }
     auto GetActivePS() -> auto& { return ActivePS; }
     auto GetActiveVS() -> auto& { return ActiveVS; }
     auto GetActiveGS() -> auto& { return ActiveGS; }
@@ -106,11 +113,6 @@ public:
     /** Sets up the default rendering state */
     void SetDefaultStates();
 
-    /** Sets up a draw call for a VS_Ex-Mesh */
-    virtual void SetupVS_ExMeshDrawCall() PURE;
-    virtual void SetupVS_ExConstantBuffer() PURE;
-    virtual void SetupVS_ExPerInstanceConstantBuffer() PURE;
-
     /** Sets the active pixel shader object */
     XRESULT SetActivePixelShader( PShaderID shader ) override;
     XRESULT SetActiveVertexShader( VShaderID shader ) override;
@@ -118,9 +120,8 @@ public:
     virtual XRESULT SetActiveGShader( GShaderID shader );
     //virtual int MeasureString(std::string str, zFont* zFont);
 
-    void ResetPresentPending() { PresentPending = false; }
+    void ResetPresentPending() override { PresentPending = false; }
 
-    auto GetOutputWindow() -> auto { return OutputWindow; }
     ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
@@ -161,9 +162,6 @@ protected:
     /** States */
     Microsoft::WRL::ComPtr<ID3D11SamplerState> DefaultSamplerState;
 
-    /** Output-window (Gothics main window)*/
-    HWND OutputWindow;
-
     /** Total resolution we are rendering at */
     INT2 Resolution;
 
@@ -198,3 +196,20 @@ protected:
     /** If true, we are still waiting for a present to happen. Don't draw everything twice! */
     bool PresentPending;
 };
+
+/** Checked downcast of the global engine to the D3D11 backend base. Replaces the
+    blind reinterpret_cast pattern: asserts the backend tag in debug builds, then
+    performs a proper (inheritance-aware) static_cast. Returns nullptr for null. */
+inline D3D11GraphicsEngineBase* AsD3D11EngineBase( BaseGraphicsEngine* engine ) {
+    if ( !engine ) return nullptr;
+    assert( engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
+        && "AsD3D11EngineBase called on a non-D3D11 graphics engine" );
+    return static_cast<D3D11GraphicsEngineBase*>( engine );
+}
+
+/** Same as AsD3D11EngineBase, but returns nullptr instead of asserting when the active engine
+    isn't D3D11. Use this at every call site reachable from backend-neutral code. */
+inline D3D11GraphicsEngineBase* TryAsD3D11EngineBase( BaseGraphicsEngine* engine ) {
+    if ( !engine || engine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) return nullptr;
+    return static_cast<D3D11GraphicsEngineBase*>( engine );
+}

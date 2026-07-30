@@ -18,13 +18,9 @@ class D3D11ShaderManager;
 
 class D3D11NVAPI;
 
-enum D3D11ENGINE_RENDER_STAGE {
-    DES_Z_PRE_PASS,
-    DES_MAIN,
-    DES_SHADOWMAP,
-    DES_SHADOWMAP_CUBE,
-    DES_GHOST
-};
+/** The render-stage enum is now the backend-neutral ERenderStage (BaseGraphicsEngine.h).
+    This alias keeps the historical D3D11-side spelling working unchanged. */
+using D3D11ENGINE_RENDER_STAGE = ERenderStage;
 
 enum ShadowCubeCasterMask : unsigned int {
     SHADOW_CASTER_WORLD = 1u << 0,
@@ -81,7 +77,7 @@ public:
     XRESULT SetWindow( HWND hWnd ) override;
 
     /** Reset BackBuffer */
-    void OnResetBackBuffer();
+    void OnResetBackBuffer() override;
 
     /** Get BackBuffer Format */
     DXGI_FORMAT GetBackBufferFormat();
@@ -101,7 +97,7 @@ public:
     XRESULT OnBeginFrame() override;
 
     XRESULT TriggerResize( INT2 resolution ) override {
-        NewResolution = resolution;
+        m_NewResolution = resolution;
         return XR_SUCCESS;
     }
 
@@ -133,23 +129,23 @@ public:
     //virtual int MeasureString(std::string str, zFont* zFont) override;
 
     /** Draws a vertexbuffer, non-indexed */
-    XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
-    XRESULT DrawVertexBufferIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) override;
-    XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
+    XRESULT DrawVertexBuffer( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawVertexBufferIndexed( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) override;
+    XRESULT DrawVertexBufferIndexedUINT( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Binds the wrapped world mesh's packed (36-byte / ExVertexStructGPU) vertex buffer + its
         32-bit index buffer to the IA. Used by the world-mesh color / alpha submissions that drive
         the packed buffer with VS_ExPacked. */
     void BindWrappedWorldMeshPacked( MeshInfo* wrappedWorldMesh );
-    XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
+    XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Draws a vertexbuffer, instanced */
-    XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) );
-    XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 );
-    XRESULT DrawVertexBufferInstancedIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset );
+    XRESULT DrawVertexBufferInstanced( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawVertexBufferInstancedIndexed( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) override;
+    XRESULT DrawVertexBufferInstancedIndexedUINT( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset );
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
-    XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds viewport information to the given constantbuffer slot */
     XRESULT BindViewportInformation( VShaderID shader, int slot ) override;
@@ -164,17 +160,17 @@ public:
     void UpdateColorSpace_SwapChain();
 
     /** Sets up texture with normalmap and fxmap for rendering */
-    bool BindTextureNRFX( zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo = true );
-    bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true );
+    bool BindTextureNRFX( zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo = true ) override;
+    bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true ) override;
 
     /** Draws a skeletal mesh */
     XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness =
-                                          1.0f);
+                                          1.0f) override;
     XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) override;
-    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f);
+    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f) override;
 
     /** Draws a batch of skeletal mesh vobs */
-    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments );
+    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments ) override;
 
     /** Draws a screen fade effects */
     XRESULT DrawScreenFade( void* camera ) override;
@@ -183,10 +179,10 @@ public:
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Draws a vertexarray, indexed */
-    XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Draws a batch of instanced geometry */
-    XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) override;
+    XRESULT DrawInstanced( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, GfxVertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) override;
 
     /** Called when a vob was removed from the world */
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
@@ -323,27 +319,13 @@ public:
     void SetRenderingStage( D3D11ENGINE_RENDER_STAGE stage );
 
     /** Returns the current rendering stage */
-    D3D11ENGINE_RENDER_STAGE GetRenderingStage();
-
-    /** Update focus window state */
-    void UpdateFocus( HWND hWnd, bool focus_state );
-
-    /** Update clipping cursor onto window */
-    void UpdateClipCursor( HWND hWnd );
-
-    /** Message-Callback for the main window */
-    LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
-
-    static void UpdateShouldBlockGameInput();
+    D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
 
     /** Reloads shaders */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All) override;
 
     /** Draws the given mesh infos as water */
     void DrawWaterSurfaces() override;
-
-    /** Handles an UI-Event */
-    void OnUIEvent( EUIEvent uiEvent ) override;
 
     /** Draws the given list of decals */
     void DrawDecalList( const std::vector<zCVob*>& decals, bool lighting );
@@ -372,12 +354,10 @@ public:
     /** Draws particle meshes */
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) override;
 
-    /** Draws particle effects */
+    /** Draws particle effects into the given engine-owned refraction targets. Backend-internal:
+        the render graph creates the two targets and calls this directly (not via the base interface). */
     void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, RenderToTextureBuffer
-                            * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion) override;
-
-    /** Returns the settings window availability */
-    bool HasSettingsWindow();
+                            * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion);
 
     /** Returns a dummy cube-rendertarget used for pointlight shadowmaps */
     RenderToTextureBuffer* GetDummyCubeRT() const { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
@@ -436,6 +416,7 @@ public:
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
     D3D11Texture* GetBlueNoiseTexture() const { return BlueNoise512BGRA.get(); }
     D3D11Texture* GetWhiteTexture() const { return WhiteTexture.get(); }
+    D3D11Texture* GetBlackTexture() const { return BlackTexture.get(); }
 
     RenderToTextureBuffer* GetVelocityBuffer() const { return VelocityBuffer.get(); }
 
@@ -508,7 +489,6 @@ private:
 
 protected:
 
-    std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
 
 
@@ -759,8 +739,8 @@ private:
     std::unique_ptr<ConstantBufferPool> DynamicConstantBufferPool;
 
     /** Quads for decals/particles */
-    std::unique_ptr<D3D11VertexBuffer> QuadVertexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> QuadIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> QuadVertexBuffer;
+    std::unique_ptr<GfxVertexBuffer> QuadIndexBuffer;
 
     /** Occlusion query manager */
     std::unique_ptr<D3D11OcclusionQuerry> Occlusion;
@@ -772,12 +752,16 @@ private:
     std::unique_ptr<D3D11VertexBuffer> TempMorphedMeshBigVertexBuffer;
     std::unique_ptr<D3D11VertexBuffer> TempHUDVertexBuffer;
 
-    /** Cached display modes */
-    std::vector<DisplayModeInfo> CachedDisplayModes;
+    /** Cached refresh rate for the current exclusive-fullscreen mode (D3D11-only concept). */
     DXGI_RATIONAL CachedRefreshRate;
 
     /** Low latency object handle */
     HANDLE frameLatencyWaitableObject;
+
+public:
+    HANDLE GetFrameLatencyWaitableObject() const override { return frameLatencyWaitableObject; }
+
+private:
 
     /** If true, we will save a screenshot after the next frame */
     bool SaveScreenshotNextFrame;
@@ -787,14 +771,31 @@ private:
     bool m_lowlatency;
     bool m_HDR;
     int m_previousFpsLimit;
-    bool m_isWindowActive;
     bool m_FrameNeedsJitter;
     float unionCurrentCustomFontMultiplier;
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;
     XMFLOAT4X4 m_PrevViewProjMatrix;
-    
-    INT2 NewResolution;
-    
+
     void CreateAndBindDefaultSampler();
 };
+
+/** Checked downcast of the global engine to the concrete D3D11 engine. Replaces the
+    blind reinterpret_cast pattern: asserts the backend tag in debug builds, then
+    performs a proper (inheritance-aware) static_cast. Returns nullptr for null. */
+inline D3D11GraphicsEngine* AsD3D11Engine( BaseGraphicsEngine* engine ) {
+    if ( !engine ) return nullptr;
+    assert( engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
+        && "AsD3D11Engine called on a non-D3D11 graphics engine" );
+    return static_cast<D3D11GraphicsEngine*>( engine );
+}
+
+/** Same as AsD3D11Engine, but for code that can legitimately run under any backend: returns
+    nullptr instead of asserting when the active engine isn't D3D11. Use this at every call site
+    reachable from backend-neutral code (Gothic hooks, ImGui, exported script bindings):
+    if ( auto d3d11Engine = TryAsD3D11Engine( Engine::GraphicsEngine ) ) { ... } */
+inline D3D11GraphicsEngine* TryAsD3D11Engine( BaseGraphicsEngine* engine ) {
+    return engine && engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
+        ? dynamic_cast<D3D11GraphicsEngine*>( engine )
+        : nullptr;
+}

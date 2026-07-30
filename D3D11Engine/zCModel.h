@@ -294,23 +294,23 @@ public:
         return 2; // Allow leakage because it is only container for 3DS models(mob) - better than crash
     }
 
-    zCArray<zCModelNodeInst*>* GetNodeList() {
+    zCArray<zCModelNodeInst*>* GetNodeList() const {
         return reinterpret_cast<zCArray<zCModelNodeInst*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_NodeList ));
     }
 
-    zCArray<zCMeshSoftSkin*>* GetMeshSoftSkinList() {
+    zCArray<zCMeshSoftSkin*>* GetMeshSoftSkinList() const {
         return reinterpret_cast<zCArray<zCMeshSoftSkin*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_MeshSoftSkinList ));
     }
 
-    zCArray<zCModelPrototype*>* GetModelProtoList() {
+    zCArray<zCModelPrototype*>* GetModelProtoList() const {
         return reinterpret_cast<zCArray<zCModelPrototype*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_ModelProtoList ));
     }
 
-    zCArray<zTMeshLibEntry*>* GetMeshLibList() {
+    zCArray<zTMeshLibEntry*>* GetMeshLibList() const {
         return reinterpret_cast<zCArray<zTMeshLibEntry*>*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_MeshLibList ));
     }
 
-    zCArray<zTMdl_NodeVobAttachment>* GetAttachedVobList() {
+    zCArray<zTMdl_NodeVobAttachment>* GetAttachedVobList() const {
         return reinterpret_cast<zCArray<zTMdl_NodeVobAttachment>*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_AttachedVobList ));
     }
 
@@ -320,7 +320,7 @@ public:
     }
 
     /** Fills a vector of (viewspace) bone-transformation matrices for this frame */
-    void GetBoneTransforms( std::vector<XMFLOAT4X4>* transforms ) {
+    void GetBoneTransforms( std::vector<XMFLOAT4X4>* transforms ) const {
         zCArray<zCModelNodeInst*>* nodeList = GetNodeList();
         if ( !nodeList )
             return;
@@ -345,21 +345,21 @@ public:
         }
     }
 
-    const char* GetVisualName() {
+    const std::string_view GetVisualName() const {
         if ( GetMeshSoftSkinList()->NumInArray > 0 )
-            return GetMeshSoftSkinList()->Array[0]->GetObjectName();
+            return GetMeshSoftSkinList()->Array[0]->GetObjectNameView();
 
         return "";
         //return __GetVisualName().ToChar();
     }
 
-    zSTRING GetModelName() {
+    zSTRING GetModelName() const {
         zSTRING str;
-        reinterpret_cast<void( __fastcall* )( zCModel*, int, zSTRING& )>( GothicMemoryLocations::zCModel::GetVisualName )( this, 0, str );
+        reinterpret_cast<void( __fastcall* )( const zCModel*, int, zSTRING& )>( GothicMemoryLocations::zCModel::GetVisualName )( this, 0, str );
         return str;
     }
 
-    zCVob* GetHomeVob() {
+    zCVob* GetHomeVob() const {
         return *reinterpret_cast<zCVob**>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_HomeVob ));
     }
 

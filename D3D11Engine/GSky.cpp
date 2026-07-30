@@ -99,7 +99,7 @@ MeshInfo* GSky::GetSkyPlane() {
 
 /** Adds a sky texture. Sky textures must be in order to make the daytime work */
 XRESULT GSky::AddSkyTexture( const std::string& file ) {
-    D3D11Texture* t;
+    GfxTexture* t;
     XLE( Engine::GraphicsEngine->CreateTexture( &t ) );
     XLE( t->Init( file ) );
 
@@ -223,8 +223,8 @@ void GSky::GetTextureOfDaytime( float time, D3D11Texture** t1, D3D11Texture** t2
     // Calculate weight
     float weight = index - i0;
 
-    *t1 = SkyTextures[i0];
-    *t2 = SkyTextures[i1];
+    *t1 = D3D11Texture::From( SkyTextures[i0] );
+    *t2 = D3D11Texture::From( SkyTextures[i1] );
     *factor = weight;
 }
 
@@ -307,7 +307,7 @@ float4 GSky::GetSkylightColor() {
 }
 
 /** Returns the cloud texture */
-D3D11Texture* GSky::GetCloudTexture() {
+GfxTexture* GSky::GetCloudTextureGfx() {
     if ( CloudTexture_Zen ) {
         if ( CloudTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
             if ( MyDirectDrawSurface7* dds7 = CloudTexture_Zen->GetSurface() ) {
@@ -318,8 +318,8 @@ D3D11Texture* GSky::GetCloudTexture() {
     return CloudTexture.get();
 }
 
-/** Returns the cloud texture */
-D3D11Texture* GSky::GetNightTexture() {
+/** Returns the night texture */
+GfxTexture* GSky::GetNightTextureGfx() {
     if ( NightTexture_Zen ) {
         if ( NightTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
             if ( MyDirectDrawSurface7* dds7 = NightTexture_Zen->GetSurface() ) {
@@ -328,6 +328,16 @@ D3D11Texture* GSky::GetNightTexture() {
         }
     }
     return NightTexture.get();
+}
+
+/** Returns the cloud texture */
+D3D11Texture* GSky::GetCloudTexture() {
+    return D3D11Texture::From( GetCloudTextureGfx() );
+}
+
+/** Returns the cloud texture */
+D3D11Texture* GSky::GetNightTexture() {
+    return D3D11Texture::From( GetNightTextureGfx() );
 }
 
 // The scale equation calculated by Vernier's Graphical Analysis

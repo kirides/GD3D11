@@ -159,10 +159,13 @@ extern "C"
         Engine::GAPI->GetRendererState().RendererSettings.RainUseInitialSet = initial;
     }
 
-    /** Gets a ID3D11DeviceContext1 rendering context */
+    /** Gets a ID3D11DeviceContext1 rendering context. Returns nullptr when the D3D12 backend is
+        active - there is no D3D11 context to hand out then. */
     __declspec(dllexport) ID3D11DeviceContext1* __cdecl GDX_GetDX11RenderingContext( void ) {
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-        return g->GetContext().Get();
+        if ( auto d3d11Engine = TryAsD3D11Engine( Engine::GraphicsEngine ) ) {
+            return d3d11Engine->GetContext().Get();
+        }
+        return nullptr;
     }
 
     /** Gets a GD3D11 version */

@@ -100,7 +100,7 @@ public:
 	}
 
 	/** Returns the actual vertex buffer */
-	D3D11VertexBuffer* GetVertexBuffer() {
+    GfxVertexBuffer* GetVertexBuffer() {
 		return VertexBuffer.get();
 	}
 
@@ -110,7 +110,7 @@ private:
 	D3DVERTEXBUFFERDESC OriginalDesc;
 
 	/** Our own vertex buffer */
-	std::unique_ptr<D3D11VertexBuffer> VertexBuffer;
+	std::unique_ptr<GfxVertexBuffer> VertexBuffer;
 
 	/** Referencecount on this */
 	int RefCount;

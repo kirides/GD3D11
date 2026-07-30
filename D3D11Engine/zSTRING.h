@@ -33,6 +33,10 @@ public:
         return _dataPtr ? _dataPtr : "";
     }
 
+    std::string ToString() const {
+        return _dataPtr ? std::string(_dataPtr, length) : "";
+    }
+
     size_t Length() const
     {
         return length;

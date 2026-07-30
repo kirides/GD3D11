@@ -40,8 +40,12 @@ public:
         return "";
     }
 
-    const char* GetObjectName() {
+    const char* GetObjectName() const {
         return __GetObjectName().ToChar();
+    }
+
+    const std::string_view GetObjectNameView() const {
+        return __GetObjectName().ToView();
     }
 
     /** Returns the class-type of this visual */
@@ -73,12 +77,12 @@ public:
     }
 
 private:
-    zSTRING& __GetObjectName() {
-        return reinterpret_cast<zSTRING&( __fastcall* )( zCVisual* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
+    const zSTRING& __GetObjectName() const {
+        return reinterpret_cast<const zSTRING&( __fastcall* )( const zCVisual* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
 
-    const zSTRING* __GetFileExtension( int i ) {
-        DWORD* vtbl = reinterpret_cast<DWORD*>(*reinterpret_cast<DWORD*>(this));
+    const zSTRING* __GetFileExtension( int i ) const {
+        DWORD* vtbl = reinterpret_cast<DWORD*>(*reinterpret_cast<const DWORD*>(this));
 
         zCVisualGetFileExtension fn = reinterpret_cast<zCVisualGetFileExtension>(vtbl[GothicMemoryLocations::zCVisual::VTBL_GetFileExtension]);
         return fn( this, i );

@@ -13,8 +13,22 @@ enum ETextureType {
     TX_WOOD,
 };
 
+enum EAdditionalMaterial
+{
+    None,
+    Specular = 1, // legacy _fx.dds
+    ORM = 2, // full _orm.dds = AO, Roughness, Metallic
+    Roughness = 3, // single _rough.dds, single channel,  R = roughness
+    AoRoughness = 4, // full _or.dds: R = AO, G: Roughness
+};
+
 class zCTexture;
-class D3D11Texture;
+class GfxTexture;
+
+/** One decoded replacement texture (normalmap / ORM / specular), shared by every surface whose
+    material resolved to the same file. Defined in MyDirectDrawSurface7.cpp. */
+struct SharedAdditionalTexture;
+
 class MyDirectDrawSurface7 : public IDirectDrawSurface7 {
 public:
     MyDirectDrawSurface7();
@@ -80,58 +94,101 @@ public:
     void BindToSlot( int slot );
 
     /** Returns the engine texture of this surface */
-    D3D11Texture* GetEngineTexture();
+    GfxTexture* GetEngineTexture();
 
     /** Returns the normalmap of this surface */
-    D3D11Texture* GetNormalmap();
+    GfxTexture* GetNormalmap();
 
     /** Returns the fx-map for this surface */
-    D3D11Texture* GetFxMap();
+    GfxTexture* GetFxMap();
 
-    /** Loads additional resources if possible */
+    /** Loads additional resources if possible.
+        Probing for which replacement files exist happens synchronously; the actual read + decode +
+        GPU upload is handed to a worker thread, because doing it inline cost up to 20ms on the game
+        thread whenever a batch of textures cached in (world load, cache invalidation, teleport, or
+        just turning around onto unseen NPCs/VOBs). Until the job lands, GetNormalmap()/GetFxMap()
+        return nullptr and the material renders with its diffuse only — the same thing that happens
+        for a texture that has no replacement at all.
+
+        Called once per Unlock of *every* mip level (Gothic uploads the whole chain through
+        FakeDirectDrawSurface7, which forwards to this surface), so repeat calls for a zCTexture that
+        was already resolved return immediately. The decoded textures themselves live in a global
+        path-keyed, refcounted cache, so a file is read and uploaded exactly once no matter how many
+        surfaces resolve to it. */
     void LoadAdditionalResources( zCTexture* ownedTexture );
+
+    /** Joins an in-flight async additional-resource load for this surface. Must be called before
+        anything reads or frees Normalmap/FxMap non-atomically. */
+    void WaitForPendingAdditionalResources();
 
     /** Returns the name of this surface */
     const std::string& GetTextureName();
 
     /** Sets this texture ready to use */
-    void SetReady(const bool ready ) { IsReady = ready; }
+    void SetReady( const bool ready ) { IsReady.store( ready, std::memory_order_release ); }
 
     /** returns if this surface is ready or not */
-    bool IsSurfaceReady() const { return IsReady; }
+    bool IsSurfaceReady() const { return IsReady.load( std::memory_order_acquire ); }
 
     /** Returns true if this surface is used to render a movie to */
     bool IsMovieSurface() const { return LockedData != nullptr; }
 
     /** Returns the type of this texture */
-    ETextureType GetTextureType() const { return TextureType; };
+    ETextureType GetTextureType() const { return TextureType; }
+
+    EAdditionalMaterial GetAvailableMaterials() const { return AvailableMaterials.load( std::memory_order_acquire ); };
 private:
 
     /** Faked attached surfaces for the mipmaps */
     std::vector<MyDirectDrawSurface7*> attachedSurfaces;
-    int refCount;
+
+    /** Atomic: ZENGIN's resource-loader thread AddRef()s a surface (GothicAPI::AddFrameLoadedTexture)
+        while the game thread Release()s surfaces being cached out. A plain int lost increments there,
+        which freed a surface - and with it its D3D11Texture - that was still referenced by the frame's
+        deferred-upload queue. */
+    std::atomic<ULONG> refCount;
 
     /** Temporary data used during locks */
     unsigned char* LockedData;
-    bool IsReady; // True if the attached texture was successfully filled with data
+
+    /** True once the attached texture was successfully filled with data. Written by the loading thread
+        (and by the game thread when it drains the frame's loaded-texture list), read by the render
+        thread in BindToSlot. */
+    std::atomic<bool> IsReady;
 
     /** Original DESC this was created with */
     DDSURFACEDESC2 OriginalSurfaceDesc;
 
     /** Attached texture */
-    std::unique_ptr<D3D11Texture> EngineTexture;
+    GfxTexture* EngineTexture;
 
     /** Associated Name */
     std::string TextureName;
     ETextureType TextureType;
 
-    /** Additional maps */
-    D3D11Texture* Normalmap;
-    D3D11Texture* FxMap;
+    /** Additional maps. Atomic because they are published by the worker thread that loads them while
+        the render thread is already binding this surface — every reader goes through
+        GetNormalmap()/GetFxMap(), so a plain acquire load there covers all of them. These are
+        borrowed views into the cache entries below, which own the textures. */
+    std::atomic<GfxTexture*> Normalmap;
+    std::atomic<GfxTexture*> FxMap;
+
+    /** Keeps this surface's share of the cached replacement textures alive. Only ever touched by the
+        thread that calls LoadAdditionalResources (and by the destructor, after joining the loader),
+        never by the render thread — that one reads the atomics above. */
+    std::shared_ptr<SharedAdditionalTexture> NormalmapRef;
+    std::shared_ptr<SharedAdditionalTexture> FxMapRef;
+
+    /** True once the replacement files for GothicTexture have been probed for. Guards against the
+        mip-chain storm: Gothic unlocks every mip level of a texture, and each one forwards to
+        LoadAdditionalResources on this surface. */
+    bool AdditionalResourcesResolved;
 
     /** Locktype */
     DWORD LockType;
 
     /** zCTexture this is associated with */
     zCTexture* GothicTexture;
+
+    std::atomic<EAdditionalMaterial> AvailableMaterials;
 };

@@ -3,14 +3,16 @@
 #include "pch.h"
 #include "AlignedAllocator.h"
 #include "Frustum.h"
+#include "BspPortalCuller.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
 #include "zCTree.h"
 #include "zCPolyStrip.h"
 #include "zTypes.h"
 #include "RenderQueue.h"
-#include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
+#include "ThreadPool.h"
+#include <shared_mutex>
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
@@ -38,7 +40,12 @@ struct RndCullContext {
     RenderStage stage;
 
     RenderQueue* queue;
-    
+
+    /** Sector/portal visibility for this pass, or null to not portal-cull at all. Only the main
+        camera pass sets it: shadow passes must keep collecting casters in rooms the player cannot
+        see into, and it is solved for the player camera anyway. */
+    const class BspPortalCuller* portalCuller = nullptr;
+
     struct
     {
         float OutdoorVobs;
@@ -62,6 +69,12 @@ struct RndCullContext {
         bool EnableDynamicLighting;
         bool EnableOcclusionCulling;
         bool CullVobs;
+        // GPU-driven culling (D3D12): collect static VOBs with the DISTANCE test only and let the backend
+        // frustum/occlusion-cull them on the GPU instead (D3D12Cull.cpp). Suppresses both the per-VOB
+        // frustum test and the BSP-node frustum rejection that would drop whole subtrees behind the camera.
+        // LIGHTS and skeletal MOBs keep their frustum tests either way — the light buffer is capped and the
+        // per-draw skeletal path has no GPU cull yet. Defaults false: D3D11 never sets it.
+        bool SkipVobFrustumCull;
         bool CollectIndoorVobs;
         bool CollectMobs;
         bool CollectLights;
@@ -105,6 +118,7 @@ struct BspInfo {
         IndoorLights = std::move( other.IndoorLights );
         Mobs = std::move( other.Mobs );
         NodePolygons = std::move( other.NodePolygons );
+        SectorIds = std::move( other.SectorIds );
         NumStaticLights = other.NumStaticLights;
         
         OcclusionInfo.NodeMesh = std::move(other.OcclusionInfo.NodeMesh);
@@ -133,6 +147,10 @@ struct BspInfo {
 
     // This is filled in case we have loaded a custom worldmesh
     std::vector<zCPolygon*> NodePolygons;
+
+    /** Sectors (rooms) this leaf holds polys of, as indices into BspPortalCuller's sector array.
+        Empty on outdoor leafs, which is the vast majority - see BspPortalCuller::BuildFromWorld. */
+    std::vector<uint16_t> SectorIds;
 
     int NumStaticLights;
 
@@ -265,6 +283,22 @@ struct PolyStripInfo {
     zCVob* vob;
 };
 
+/** One mip-level upload handed over by ZENGIN's resource-loader thread: a filled STAGING texture and
+    the texture it has to be copied into once the game thread owns the immediate context again.
+
+    Both are strong references on purpose. The surface owning the destination can be cached out - and
+    with it its D3D11Texture deleted - at any point between the loader thread queueing this and the
+    game thread draining the queue at frame start (turning normalmaps on/off purges the whole texture
+    cache, which does exactly that, repeatedly). Handing a freed ID3D11Texture2D to
+    CopySubresourceRegion trips the debug layer's interface sentinel and corrupts driver state in
+    release builds, so the queue keeps both resources alive by itself instead of relying on whoever
+    created them still being around. */
+struct DeferredMipUpload {
+    UINT Mip;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> Staging;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> Destination;
+};
+
 /** Class used to communicate between Gothic and the Engine */
 class zCPolygon;
 class zCTexture;
@@ -380,6 +414,10 @@ public:
 
     void DrawTransparencyVobs();
     void DrawSkeletalVN();
+
+    /** Backend-neutral accessor so a non-D3D11 backend can drain TransparencyVobs itself
+        (DrawTransparencyVobs() above is hard-wired to D3D11GraphicsEngine). */
+    std::vector<TransparencyVobInfo>& GetTransparencyVobs() { return TransparencyVobs; }
 
     /** Draws the inventory */
     void DrawInventory( zCWorld* world, zCCamera& camera );
@@ -601,10 +639,10 @@ public:
     /** Recursive helper function to draw the BSP-Tree */
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
-    /** Draws particles, in a simple way */
-    void DrawParticlesSimple(
-        RenderToTextureBuffer* bufferParticleColor,
-        RenderToTextureBuffer* bufferParticleDistortion);
+    /** Prepares this frame's particle draw data (visibility + FX collection) and draws the
+        particle prog-meshes. Backend-neutral: the concrete engine draws the collected
+        FrameParticles into its own refraction targets afterwards. */
+    void DrawParticlesSimple();
 
     /** Prepares poly strips for feeding into renderer (weapon and effect trails) */
     void CalcPolyStripMeshes();
@@ -622,7 +660,10 @@ public:
         std::vector<VobLightInfo*>& lights,
         std::vector<SkeletalVobInfo*>& mobs,
         EGothicCullFlags cullFlags = EGothicCullFlags::CullAll,
-        EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE);
+        EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE,
+        // true => distance-only static-VOB collection; the caller frustum/occlusion-culls them itself
+        // (D3D12's GPU cull). See RndCullContext::drawFlags.SkipVobFrustumCull.
+        bool skipVobFrustumCull = false );
 
     void CollectVisibleVobs( const RndCullContext& ctx );
 
@@ -636,6 +677,10 @@ public:
 
     /** Builds our BspTreeVobMap */
     void BuildBspVobMapCache();
+
+    /** Sector/portal visibility, rebuilt on every world load. Inactive on worlds without portals. */
+    BspPortalCuller& GetPortalCuller() { return PortalCuller; }
+    const BspPortalCuller& GetPortalCuller() const { return PortalCuller; }
 
     /** Returns the new node from tha base node */
     BspInfo* GetNewBspNode( zCBspBase* base );
@@ -706,6 +751,32 @@ public:
     void SetBoundTexture( int idx, zCTexture* tex );
     zCTexture* GetBoundTexture( int idx );
 
+    /** The zCTexture ZENGIN is currently caching in, on *this* thread. MyDirectDrawSurface7::Unlock has
+        no other way of finding out which zCTexture the surface it is unlocking belongs to, so the load
+        path has to smuggle it through here. This must not be process-global: zCResourceManager derives
+        from zCThread and ships with its loader thread enabled (only -ZNORESTHREAD turns it off), so the
+        game thread and that loader thread can both sit inside zCTexture::LoadResourceData at the same
+        time. A shared slot lets them clobber each other, and the surface latches the resulting wrong
+        name permanently.
+        Always set it through ScopedLoadingTexture - it restores the previous value, which keeps nested
+        cache-ins (a texture loaded from inside another texture's load) correct. */
+    static void SetLoadingTexture( zCTexture* tex );
+    static zCTexture* GetLoadingTexture();
+
+    /** Publishes 'tex' as the texture being cached in on this thread for the lifetime of the object. */
+    struct ScopedLoadingTexture {
+        explicit ScopedLoadingTexture( zCTexture* tex ) : Previous( GothicAPI::GetLoadingTexture() ) {
+            GothicAPI::SetLoadingTexture( tex );
+        }
+        ~ScopedLoadingTexture() { GothicAPI::SetLoadingTexture( Previous ); }
+
+        ScopedLoadingTexture( const ScopedLoadingTexture& ) = delete;
+        ScopedLoadingTexture& operator=( const ScopedLoadingTexture& ) = delete;
+
+    private:
+        zCTexture* Previous;
+    };
+
     /** Returns gothics output window */
     HWND GetOutputWindow() { return OutputWindow; }
 
@@ -763,7 +834,10 @@ public:
     /** Returns the current weight of the rain-fx. The bigger value of ours and gothics is returned. */
     float GetRainFXWeight();
 
-    /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
+    /** Returns true if gothic's current outdoor weather is snow */
+    bool IsSnowingWeather();
+
+    /** Returns the wetness of the scene. Lasts longer than RainFXWeight. Always 0 while it snows. */
     float GetSceneWetness();
 
     /** Saves the users settings from the menu */
@@ -773,16 +847,21 @@ public:
     XRESULT LoadMenuSettings( const std::string& file );
 
     /** Adds a staging texture to the list of the staging textures for this frame */
-    void AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID3D11Texture2D* texture );
+    void AddStagingTexture( UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
+        const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture );
 
     /** Gets a list of the staging textures for this frame */
-    std::list<std::pair<std::pair<UINT, ID3D11Texture2D*>, ID3D11Texture2D*>>& GetStagingTextures() {return FrameStagingTextures;}
+    std::vector<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
 
     /** Adds a mip map generation deferred command */
-    void AddMipMapGeneration( D3D11Texture* texture );
+    void AddMipMapGeneration( GfxTexture* texture );
+
+    /** Drops any pending deferred commands referencing this texture. Must be called from
+        ~GfxTexture-implementations, or the game thread would dispatch them into a freed object. */
+    void RemovePendingTextureCommands( GfxTexture* texture );
 
     /** Gets a list of the mip map generation commands for this frame */
-    std::list<D3D11Texture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
+    std::list<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
 
     /** Adds a texture to the list of the loaded textures for this frame */
     void AddFrameLoadedTexture( MyDirectDrawSurface7* srf );
@@ -795,6 +874,9 @@ public:
 
     /** Returns the frame particle info collected from all DrawParticleFX-Calls */
     std::map<zCTexture*, ParticleRenderInfo>& GetFrameParticleInfo();
+
+    /** Returns this frame's collected particle instances (populated by DrawParticlesSimple). */
+    std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& GetFrameParticles() { return FrameParticles; }
 
     /** Checks if the normalmaps are there */
     bool CheckNormalmapFilesOld();
@@ -839,6 +921,7 @@ public:
     float GetSkyTimeScale();
     
     static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
+    static void UpdateShouldBlockGameInput();
 
 private:
     struct WorldSectionBVHNode {
@@ -940,6 +1023,16 @@ private:
     gtl::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
     gtl::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
+    /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
+     *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
+     *  reads from) is destroyed - see WaitForPendingSkeletalLoad(). */
+    gtl::flat_hash_map<SkeletalMeshVisualInfo*, TaskHandle<void>> PendingSkeletalLoads;
+
+    /** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any)
+     *  has finished, then removes it from PendingSkeletalLoads. Must be called before deleting
+     *  a SkeletalMeshVisualInfo or destroying the zCModel/oCNPC it was built from. */
+    void WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi );
+
     /** Set of all vobs we registered by now */
     gtl::flat_hash_set<zCVob*> RegisteredVobs;
 
@@ -954,13 +1047,19 @@ public:
     // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
     BspLeafLinearCache LeafLinearCache;
 private:
+    BspPortalCuller PortalCuller;
+
     gtl::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
     /** Map of VobInfo-Lists for zCBspLeafs */
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
 
-    /** Map for the material infos */
+    /** Map for the material infos.
+        Guarded because mesh extraction runs on worker threads (WorldConverter::ExtractNodeVisualAsync,
+        GothicAPI::LoadzCModelData) and resolves MaterialInfos while the main thread keeps looking them
+        up per draw. Values are unique_ptr so returned pointers stay valid across a rehash. */
     gtl::flat_hash_map<void*, std::unique_ptr<MaterialInfo>> MaterialInfos;
+    std::shared_mutex MaterialInfosMutex;
 
     /** Maps visuals to vobs */
     gtl::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
@@ -1006,8 +1105,8 @@ private:
     DWORD MainThreadID;
 
     /** Textures loaded this frame */
-    std::list<std::pair<std::pair<UINT, ID3D11Texture2D*>, ID3D11Texture2D*>> FrameStagingTextures;
-    std::list<D3D11Texture*> FrameMipMapGenerations;
+    std::vector<DeferredMipUpload> FrameStagingTextures;
+    std::list<GfxTexture*> FrameMipMapGenerations;
     std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
 
     /** Quad marks loaded in the world */

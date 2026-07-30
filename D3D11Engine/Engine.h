@@ -31,9 +31,6 @@ namespace Engine {
     /** Global worker threadpool */
     __declspec(selectany) ThreadPool* WorkerThreadPool;
 
-    /** Refresh worker threadpool */
-    void RefreshWorkerThreadpool();
-
     /** Creates main graphics engine */
     void CreateGraphicsEngine();
 

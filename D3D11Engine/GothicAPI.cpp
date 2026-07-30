@@ -501,10 +501,18 @@ void GothicAPI::UpdateMTResourceManager() {
     #endif
 #endif*/
 
-    // It can lead to dead-lock so it is force-disabled until it is investigated
+    // ZENGIN itself ships with this enabled (zEngine: SetThreadingEnabled(!zoptions->Parm("ZNORESTHREAD"))),
+    // so the loader thread is the vanilla configuration and we treat it as sound. Our side of it is what
+    // had to be fixed: the texture being cached in is thread-local now (GothicAPI::ScopedLoadingTexture),
+    // because a process-global slot let the loader thread and the game thread clobber each other and a
+    // surface would latch the wrong texture name permanently.
+    // Only ever set this once, here at init: SetThreadingEnabled gates zCResourceManager's own
+    // Lock/UnlockCacheInQueue, so flipping it at runtime can leave that critical section locked forever.
     if ( zCResourceManager* rsm = zCResourceManager::GetResourceManager() ) {
-        rsm->SetThreadingEnabled( false );
-        //rsm->SetThreadingEnabled( RendererState.RendererSettings.MTResoureceManager );
+        rsm->SetThreadingEnabled( RendererState.RendererSettings.MTResoureceManager );
+    } else {
+        LogWarn() << "zCResourceManager not created yet - MultiThreadResourceManager setting not applied, "
+            "ZENGIN keeps its own default (threading enabled)";
     }
 }
 
@@ -840,6 +848,8 @@ void GothicAPI::ResetVobs() {
     RegisteredVobs.clear();
     BspLeafVobLists.clear();
     LeafLinearCache.Clear();
+    // Holds indices into the (now gone) sector arrays and BspInfo::SectorIds - must not outlive them.
+    PortalCuller.Clear();
     DynamicallyAddedVobs.clear();
     DecalVobs.clear();
     VobsByVisual.clear();
@@ -860,6 +870,10 @@ void GothicAPI::ResetVobs() {
     }
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
+
+    // clearAndFlush() above already waited for every background LoadzCModelData(...) job to
+    // finish, so it's safe to drop the (now stale) handles without waiting on them again.
+    PendingSkeletalLoads.clear();
 
     // Delete static mesh vobs
     for ( auto const& it : VobMap ) {
@@ -928,6 +942,7 @@ void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
 
         extern MeshManager* s_MeshManager;
         s_MeshManager->DropCaches();
+        Engine::GraphicsEngine->OnLoadWorld();
     }
 
 #ifndef PUBLIC_RELEASE
@@ -1401,7 +1416,7 @@ void GothicAPI::DrawWorldMeshNaive() {
             if( RendererState.RendererSettings.ShowSkeletalVertexNormals )
                 VNSkeletalVobs.emplace_back( vobInfo );
         }
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
         if (!drawAsMorphMesh.empty()) {
             auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Skeletal Morph Meshes" ) ); 
@@ -1424,10 +1439,9 @@ void GothicAPI::DrawWorldMeshNaive() {
     ResetWorldTransform();
 }
 
-/** Draws particles, in a simple way */
-void GothicAPI::DrawParticlesSimple(
-    RenderToTextureBuffer* bufferParticleColor,
-    RenderToTextureBuffer* bufferParticleDistortion) {
+/** Prepares this frame's particle data and draws the particle prog-meshes. The concrete engine
+    draws the collected FrameParticles into its own refraction targets after this returns. */
+void GothicAPI::DrawParticlesSimple() {
     ZoneScopedN( "GothicAPI::DrawParticlesSimple" );
     ParticleFrameData data;
 
@@ -1444,7 +1458,6 @@ void GothicAPI::DrawParticlesSimple(
         }
 
         Engine::GraphicsEngine->DrawFrameParticleMeshes( ParticleEffectProgMeshes );
-        Engine::GraphicsEngine->DrawFrameParticles( FrameParticles, FrameParticleInfo, bufferParticleColor, bufferParticleDistortion);
     }
 }
 
@@ -1736,14 +1749,21 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     LoadedMaterials.erase( mat );
-    MaterialInfos.erase( mat );
+    {
+        std::unique_lock lock( MaterialInfosMutex );
+        MaterialInfos.erase( mat );
+    }
     if ( !mat )
         return;
     for ( auto&& it : SkeletalMeshVisuals ) {
+        // Skip entries a background LoadzCModelData(...) job is still filling in - mutating
+        // Meshes/SkeletalMeshes here would race with the worker thread writing to the same maps.
+        if ( !it.second->Ready.load() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
     for ( auto&& it : SkeletalMeshNpcs ) {
+        if ( !it.second->Ready.load() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
@@ -1805,6 +1825,10 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
 
 /** Called when a visual got removed */
 void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
+    // Gothic frees this visual once we return - make sure no background node-attachment extraction
+    // (WorldConverter::ExtractNodeVisualAsync) is still reading from it.
+    WorldConverter::WaitForPendingNodeVisuals( visual );
+
     std::vector<std::string> extv;
 
     zCClassDef* classDef = reinterpret_cast<zCObject*>(visual)->_GetClassDef();
@@ -1870,10 +1894,11 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
 
             zCModel* zmodel = static_cast<zCModel*>(visual);
             if ( zmodel->GetMainPrototypeReferences() <= 1 ) { // Check if it is the last reference in prototype so that we can delete this visual
-                std::string str = zmodel->GetVisualName();
+                auto visName = zmodel->GetVisualName();
+                std::string str( visName.data(), visName.size() );
                 if ( str.empty() ) { // Happens when the model has no skeletal-mesh
                     zSTRING mds = zmodel->GetModelName();
-                    str = mds.ToChar();
+                    str.append( mds.ToView() );
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
@@ -1884,6 +1909,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                             vobInfo->VisualInfo = nullptr;
                         }
                     }
+
+                    // The model is about to be freed by Gothic once this function returns - make sure no
+                    // background extraction job (GothicAPI::LoadzCModelData) is still reading from it.
+                    WaitForPendingSkeletalLoad( it->second );
 
                     delete SkeletalMeshVisuals[str];
                     SkeletalMeshVisuals.erase( str );
@@ -1901,6 +1930,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                             vobInfo->VisualInfo = nullptr;
                         }
                     }
+
+                    // The model is about to be freed by Gothic once this function returns - make sure no
+                    // background extraction job (GothicAPI::LoadzCModelData) is still reading from it.
+                    WaitForPendingSkeletalLoad( it->second );
 
                     delete SkeletalMeshNpcs[npc];
                     SkeletalMeshNpcs.erase( npc );
@@ -1966,7 +1999,7 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
             RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
     }
 
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
     if ( !msh->MeshIndexBuffer ) {
         g->DrawVertexBufferInstanced( msh->GetMeshVertexBuffer(), msh->Vertices.size(), 6 );
     } else {
@@ -1989,7 +2022,14 @@ void GothicAPI::LeaveResourceCriticalSection() {
 /** Called when a VOB got removed from the world */
 void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     //LogInfo() << "Removing vob: " << vob;
-    Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
+
+    // Symmetric to the OnAddVob side: an inventory preview vob never entered the engine's world-scoped state, so
+    // it must not tear it down either. Skipping this matters, not just for symmetry - ZenGin adds and removes the
+    // item once per slot per frame at world position (0,0,0), and the notification invalidates the cached static
+    // shadow cube of every point light reaching that position, forcing a re-render every frame the container is
+    // open. A null world means we can't tell, so keep the old behavior there.
+    if ( !world || world == LoadedWorldInfo->MainWorld )
+        Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
 
     auto it = RegisteredVobs.find( vob );
     if ( it == RegisteredVobs.end() ) {
@@ -2255,9 +2295,6 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             vi->Vob = vob;
             vi->VisualInfo = StaticMeshVisuals[pm];
 
-            // Add to map
-            VobsByVisual[vob->GetVisual()].push_back( vi );
-
             // Check for mainworld
             if ( world == oCGame::GetGame()->_zCSession_world ) {
                 VobMap[vob] = vi;
@@ -2270,10 +2307,22 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                     // It's not, chose this as a dynamically added vob
                     DynamicallyAddedVobs.push_back( vi );
                 }
+                // Add to map
+                VobsByVisual[vob->GetVisual()].push_back( vi );
+
+                // Inventory vobs are deliberately left out of this: they are added and removed once per slot per
+                // frame while a container is open, and the engine-side notification is world-scoped work
+                // (D3D12 invalidates every cached point-light static shadow cube reaching the vob, and grows a
+                // permanent instancing bucket per visual). DrawVobSingle draws them without any of it.
+                Engine::GraphicsEngine->OnAddVob( vi );
             } else {
                 // Must be inventory
                 Inventory->OnAddVob( vi, world );
+
+                // Add to map
+                VobsByVisual[vob->GetVisual()].push_back( vi );
             }
+
             break;
         } else if ( ext == ".MDS" || ext == ".ASC" ) {
             // Some mods use MDS/ASC models for inventory
@@ -2335,41 +2384,113 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
     }
 }
 
+/** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any) has
+ *  finished, then forgets about it. Must be called before deleting a SkeletalMeshVisualInfo or
+ *  destroying the zCModel/oCNPC it was built from - the job reads directly from that model. */
+void GothicAPI::WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi ) {
+    if ( !mi )
+        return;
+
+    auto it = PendingSkeletalLoads.find( mi );
+    if ( it == PendingSkeletalLoads.end() )
+        return;
+
+    TaskHandle<void> handle = std::move( it->second );
+    PendingSkeletalLoads.erase( it );
+
+    handle.cancel(); // Lets the job bail out immediately if it hasn't started running yet (see below)
+    if ( handle.future.valid() )
+        handle.future.wait();
+}
+
 /** Loads the data out of a zCModel */
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
-    std::string str = model->GetVisualName();
+    auto visName = model->GetVisualName();
+    std::string str(visName.data(), visName.size());
     if ( str.empty() ) { // Happens when the model has no skeletal-mesh
         zSTRING mds = model->GetModelName();
-        str = mds.ToChar();
-        mds.Delete();
+        str.append( mds.ToView() );
     }
 
     SkeletalMeshVisualInfo* mi = SkeletalMeshVisuals[str];
-    if ( !mi || mi->Meshes.empty() ) {
-        // Load the new visual
-        if ( !mi ) mi = new SkeletalMeshVisualInfo;
-
-        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
-        mi->Visual = model;
-
+    if ( !mi ) {
+        mi = new SkeletalMeshVisualInfo;
         SkeletalMeshVisuals[str] = mi;
     }
+
+    if ( !mi->Ready.load() ) {
+        auto pendingLoad = PendingSkeletalLoads.find( mi );
+        if ( pendingLoad != PendingSkeletalLoads.end() ) {
+            if ( pendingLoad->second.future.valid() ) {
+                pendingLoad->second.future.wait();
+            }
+        }
+    }
+
+    if ( !mi->Meshes.empty() )
+        return mi; // Already loaded
+
+    // Extraction (CPU vertex/weight unpacking + GPU buffer creation) is the expensive part of a
+    // vob popping into range, so run it on a worker thread instead of stalling the main thread.
+    // GothicAPI::OnVisualDeleted() blocks on PendingSkeletalLoads before freeing this model/mi,
+    // and Ready gates every draw/update site so nobody touches Meshes/SkeletalMeshes early.
+    mi->Ready = false;
+    PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
+        if ( token.stop_requested() ) {
+            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
+            // it would read from may already be gone, so don't touch it.
+            mi->Ready.store( true );
+            return;
+        }
+        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+        mi->Visual = model;
+        mi->Ready.store( true );
+    } );
     return mi;
 }
 
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
+    zCModel* model = static_cast<zCModel*>(npc->GetVisual());
+
+    auto visName = model->GetVisualName();
+    std::string str( visName.data(), visName.size() );
+    if ( str.empty() ) { // Happens when the model has no skeletal-mesh
+        zSTRING mds = model->GetModelName();
+        str.append( mds.ToView() );
+    }
+
     SkeletalMeshVisualInfo* mi = SkeletalMeshNpcs[npc];
     if ( !mi ) {
         mi = new SkeletalMeshVisualInfo;
         SkeletalMeshNpcs[npc] = mi;
     }
 
-    zCModel* model = static_cast<zCModel*>(npc->GetVisual());
-    mi->Visual = model;
+    if ( !mi->Ready.load() ) {
+        auto pendingLoad = PendingSkeletalLoads.find( mi );
+        if ( pendingLoad != PendingSkeletalLoads.end() ) {
+            if ( pendingLoad->second.future.valid() ) {
+                pendingLoad->second.future.wait();
+            }
+        }
+    }
 
-    // Update a visual information
-    mi->ClearMeshes();
-    WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+    // can't cache the meshes and VisualName as it otherwise
+    // won't properly fire for changing armors. for whatever reason...
+
+    // See LoadzCModelData(zCModel*) above for why this runs on a worker thread.
+    mi->Ready = false;
+    PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
+        if ( token.stop_requested() ) {
+            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
+            // it would read from may already be gone, so don't touch it.
+            mi->Ready.store( true );
+            return;
+        }
+        mi->ClearMeshes();
+        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+        mi->Visual = model;
+        mi->Ready.store( true );
+    } );
     return mi;
 }
 
@@ -2385,11 +2506,11 @@ int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
             skeletalMesh = it->second;
         }
     } else {
-        std::string str = model->GetVisualName();
+        auto visName = model->GetVisualName();
+        std::string str( visName.data(), visName.size() );
         if ( str.empty() ) { // Happens when the model has no skeletal-mesh
             zSTRING mds = model->GetModelName();
-            str = mds.ToChar();
-            mds.Delete();
+            str.append( mds.ToView() );
         }
 
         auto it = SkeletalMeshVisuals.find( str );
@@ -2398,7 +2519,7 @@ int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
         }
     }
 
-    if ( skeletalMesh ) {
+    if ( skeletalMesh && skeletalMesh->Ready.load() ) {
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
                 numPolys += static_cast<int>(mesh->Indices.size() / 3);
@@ -2423,11 +2544,11 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
             skeletalMesh = it->second;
         }
     } else {
-        std::string str = model->GetVisualName();
+        auto visName = model->GetVisualName();
+        std::string str( visName.data(), visName.size() );
         if ( str.empty() ) { // Happens when the model has no skeletal-mesh
             zSTRING mds = model->GetModelName();
-            str = mds.ToChar();
-            mds.Delete();
+            str.append( mds.ToView() );
         }
 
         auto it = SkeletalMeshVisuals.find( str );
@@ -2436,7 +2557,7 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
         }
     }
 
-    if ( skeletalMesh ) {
+    if ( skeletalMesh && skeletalMesh->Ready.load() ) {
         static std::vector<XMFLOAT4X4> transforms;
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
@@ -2497,7 +2618,9 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
 
 /** Called to update the compress backbuffer state */
 void GothicAPI::UpdateCompressBackBuffer() {
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->OnResetBackBuffer();
+    // Backend-neutral: reachable from the ImGui settings window and the graphics-preset apply path,
+    // both of which run under D3D12 too. OnResetBackBuffer is a BaseGraphicsEngine virtual.
+    Engine::GraphicsEngine->OnResetBackBuffer();
 }
 
 /** Draws a skeletal mesh-vob */
@@ -2508,17 +2631,20 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         return;
     }
     // TODO: Put this into the renderer!!
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
 
+    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+        return; // Still being built on a worker thread - don't touch its mesh data yet
+
     model->SetIsVisible( true );
     if ( !vi->Vob->GetShowVisual() )
         return;
-    
+
     const auto now = Engine::GAPI->GetTotalTimeDW();
 
     if ( updateState ) {
@@ -2768,12 +2894,15 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     }
     
     // TODO: Put this into the renderer!!
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+
+    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+        return; // Still being built on a worker thread - don't touch its mesh data yet
 
     model->SetIsVisible( true );
     if ( !vi->Vob->GetShowVisual() )
@@ -3005,7 +3134,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
 void GothicAPI::DrawTransparencyVobs() {
     ZoneScopedN( "GothicAPI::DrawTransparencyVobs" );
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
     if ( !TransparencyVobs.empty() ) {
         // Setup alpha blending
         RendererState.RasterizerState.SetDefault();
@@ -3114,11 +3243,11 @@ void GothicAPI::DrawSkeletalVN() {
         RendererState.DepthState.SetDefault();
         RendererState.DepthState.SetDirty();
 
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
-        if ( model && vi->VisualInfo ) {
+        if ( model && vi->VisualInfo && static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() ) {
             XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
             XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
@@ -3300,9 +3429,9 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
 
 /** Debugging */
 void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
-    std::unique_ptr<D3D11VertexBuffer> vxb;
+    std::unique_ptr<GfxVertexBuffer> vxb;
     Engine::GraphicsEngine->CreateVertexBuffer( vxb );
-    vxb->Init( nullptr, 6 * sizeof( ExVertexStruct ), D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER, D3D11VertexBuffer::EUsageFlags::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+    vxb->Init( nullptr, 6 * sizeof( ExVertexStruct ), GfxVertexBuffer::EBindFlags::B_VERTEXBUFFER, GfxVertexBuffer::EUsageFlags::U_DYNAMIC, GfxVertexBuffer::CA_WRITE );
 
     ExVertexStruct vx[6];
     ZeroMemory( vx, sizeof( vx ) );
@@ -3588,7 +3717,11 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 
 /** Unprojects a pixel-position on the screen */
 void XM_CALLCONV GothicAPI::UnprojectXM(float2 p, XMVECTOR& worldPos, XMVECTOR& worldDir) {
-    
+    if ( !GetSceneCamera() ) {
+        worldPos = XMVectorReplicate( 0.0f );
+        worldDir = worldPos;
+        return;
+    }
     const auto res = Engine::GraphicsEngine->GetBackbufferResolution();
 
     XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&RendererState.TransformState.TransformProj));
@@ -3851,6 +3984,16 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
        
 #endif
+        case VK_F1:
+#ifdef BUILD_SPACER
+#define IS_SPACER_BUILD true
+#else
+#define IS_SPACER_BUILD false
+#endif
+            if (zCOption::GetOptions()->IsParameter("XEnableEditorPanel") || IS_SPACER_BUILD) {
+                Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenEditor );
+            }
+            break;
         case VK_F11:
             if ( ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) ) {
                 Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_ToggleAdvancedSettings );
@@ -3988,22 +4131,27 @@ void GothicAPI::CollectVisibleVobs(
     std::vector<VobLightInfo*>& lights, 
     std::vector<SkeletalVobInfo*>& mobs, 
     EGothicCullFlags cullFlags,
-    EBspTreeCollectFlags collectFlags ) {
+    EBspTreeCollectFlags collectFlags,
+    bool skipVobFrustumCull ) {
     ZoneScopedN( "GothicAPI::CollectVisibleVobsLegacy" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
     Frustum frustum = Frustum::AlwaysContainingFrustum();
+    bool haveCameraMatrices = false;
+    XMMATRIX worldToClip = XMMatrixIdentity();
     if ( auto cam = GetSceneCamera() ) {
         cam->Activate();
 
         // Row-Major view
         const auto& view = cam->trafoView;
         const auto& proj = cam->trafoProjection;
-        frustum.BuildPerspective(
-            XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
-            XMLoadFloat4x4( &proj )
-        );
+        const XMMATRIX viewM = XMMatrixTranspose( XMLoadFloat4x4( &view ) );
+        const XMMATRIX projM = XMLoadFloat4x4( &proj );
+        frustum.BuildPerspective( viewM, projM );
+
+        worldToClip = XMMatrixMultiply( viewM, projM );
+        haveCameraMatrices = true;
     }
 
     if ( CameraReplacementPtr ) {
@@ -4038,9 +4186,19 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawFlags.EnableDynamicLighting = RendererState.RendererSettings.EnableDynamicLighting;
     ctx.drawFlags.EnableOcclusionCulling = RendererState.RendererSettings.EnableOcclusionCulling;
     ctx.drawFlags.CullVobs = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
+    ctx.drawFlags.SkipVobFrustumCull = skipVobFrustumCull;
     ctx.drawFlags.CollectIndoorVobs = true;
     ctx.drawFlags.CollectMobs = true;
     ctx.drawFlags.CollectLights = true;
+
+    // This overload is the main camera pass of both backends, and the only place portal culling
+    // applies: shadow passes need casters from rooms the player cannot see into.
+    if ( haveCameraMatrices && PortalCuller.IsActive() ) {
+        oCGame* game = oCGame::GetGame();
+        PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
+        ctx.portalCuller = &PortalCuller;
+    }
+
     CollectVisibleVobs( ctx );
 
     if ( RendererState.RendererSettings.SortRenderQueue ) {
@@ -4266,7 +4424,7 @@ bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Fr
         return true;
     }
 
-    return frustum.Contains( mesh->BoundingBox ) != DirectX::ContainmentType::DISJOINT;
+    return frustum.Intersects( mesh->BoundingBox );
 }
 
 void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
@@ -4292,7 +4450,7 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
         nodeStack.pop_back();
 
         const WorldSectionBVHNode& node = WorldSectionBVHNodes[nodeIndex];
-        if ( frustum.Contains( node.Bounds ) == DirectX::ContainmentType::DISJOINT ) {
+        if ( !frustum.Intersects( node.Bounds ) ) {
             continue;
         }
 
@@ -4326,6 +4484,18 @@ bool GothicAPI::UseWorldSectionBVH() const {
     return RendererState.RendererSettings.DebugSettings.FeatureSet.UseWorldSectionBVH;
 }
 
+void GothicAPI::UpdateShouldBlockGameInput( ) {
+    if ( auto hImgui = Engine::ImGuiHandle ) {
+        auto oldIsActive = hImgui->IsActive;
+        hImgui->IsActive = hImgui->SettingsVisible || hImgui->GetIsEditorVisible() || hImgui->AdvancedSettingsVisible || hImgui->LibShowBlockingThisFrame;
+        hImgui->UpdateBlockGameInput();
+
+        if ( oldIsActive != hImgui->IsActive ) {
+            Engine::GAPI->SetEnableGothicInput( !hImgui->IsActive );
+        }
+    }
+}
+    
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
     const Frustum* queryFrustum,
@@ -4344,7 +4514,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             if ( !queryFrustum->IsValid() ) {
                 return true;
             }
-            return queryFrustum->Contains( section.BoundingBox ) != DirectX::ContainmentType::DISJOINT;
+            return queryFrustum->Intersects( section.BoundingBox );
         }
 
         return GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) != ZTCAM_CLIPTYPE_OUT;
@@ -4545,23 +4715,38 @@ static void CVVH_AddNotDrawnVobToList(
         float distSq,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
-        BspTreeVobVisitor* visitor
+        BspTreeVobVisitor* visitor,
+        // Non-null only for the indoor list of a portal-culled pass: the vob must additionally
+        // reach the screen-space aperture its room is seen through (ScreenProjectionTouchesPortal).
+        const BspInfo* portalLeaf = nullptr
     ) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
-    const bool cullingEnabled = ctx.drawFlags.CullVobs;
+    // SkipVobFrustumCull: the backend culls these on the GPU (D3D12), so collect distance-only.
+    const bool cullingEnabled = ctx.drawFlags.CullVobs && !ctx.drawFlags.SkipVobFrustumCull;
 
     for ( auto const& it : source ) {
-        if ( !visitor->Visit( it ) ) continue;
-
-        if ( !it->Vob->GetShowVisual() ) continue;
+        // Reject on distance FIRST: LastRenderPosition is already in the VobInfo cache line, while
+        // Visit() is an atomic RMW and GetShowVisual() dereferences into Gothic's own heap. Doing
+        // those first meant paying them for every candidate, including ones about to be dropped.
         float vdSq;
         XMStoreFloat( &vdSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
         if ( vdSq > distSq ) continue;
 
+        if ( !visitor->Visit( it ) ) continue;
+
+        if ( !it->Vob->GetShowVisual() ) continue;
+
+        // LastRenderBBox rather than Vob->GetBBox(): same value, but it lives in VobInfo instead of
+        // Gothic's heap, so the reject path stays off a second allocation entirely.
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
+            && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
+        }
+        if ( portalLeaf ) {
+            const zTBBox3D& bb = it->LastRenderBBox;
+            if ( !ctx.portalCuller->IsBoxVisibleInLeafSectors( *portalLeaf, bb.Min, bb.Max ) )
+                continue;
         }
         if ( it->Vob->GetVisualAlpha() ) {
             ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
@@ -4665,6 +4850,12 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
             }
         }
 
+        // Mirrors zCBspLeaf::LightVobList as already-resolved VobLightInfo*, index for index, so
+        // CollectLeafVobs needs no VobLightMap lookup per light per leaf. Validated there by a
+        // pointer compare and repaired on the spot when the game adds/removes a light at runtime.
+        bvi.Lights.clear();
+        bvi.Lights.reserve( leaf->LightVobList.NumInArray );
+
         for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
@@ -4687,6 +4878,10 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 if ( vob->IsIndoorVob() ) {
                     vi->IsIndoorVob = true;
                 }
+
+                bvi.Lights.push_back( vi );
+            } else {
+                bvi.Lights.push_back( vit->second );
             }
         }
 
@@ -4756,6 +4951,11 @@ void GothicAPI::BuildBspVobMapCache() {
     ZoneScopedN( "GothicAPI::BuildBspVobMapCache" );
     BuildBspVobMapCacheHelper( LoadedWorldInfo->BspTree->GetRootNode() );
     BuildBspLeafLinearCache();
+
+    // Needs the BspInfo mirror tree above to exist - it tags the leafs with their sector ids.
+    PortalCuller.SetEnabled( RendererState.RendererSettings.EnablePortalCulling );
+    PortalCuller.SetNearSectorRadius( RendererState.RendererSettings.PortalCullingNearRadius );
+    PortalCuller.BuildFromWorld( LoadedWorldInfo->BspTree );
 }
 
 void GothicAPI::BuildBspLeafLinearCache() {
@@ -4857,6 +5057,7 @@ void GothicAPI::DrawSkyGothicOriginal() {
 
 /** Reset's the material info that were previously gathered */
 void GothicAPI::ResetMaterialInfo() {
+    std::unique_lock lock( MaterialInfosMutex );
     MaterialInfos.clear();
 }
 
@@ -4868,24 +5069,30 @@ static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
 }
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materialName) {
-    auto it = MaterialInfos.find( any );
-    MaterialInfo* mi;
-    if ( it == MaterialInfos.end() ) {
-        // Make a new one and try to load it
-        auto info = std::make_unique<MaterialInfo>();
-        MaterialInfos.emplace(any, std::move(info));
-        mi = MaterialInfos[any].get();
-        if ( any ) {
-            mi->LoadFromFile( materialName );
-            if ( materialName.contains("FULLALPHA" )) {
-                mi->MaterialType = MaterialInfo::MT_FullAlpha;
-            }
+    // Hot path: shared lock, no allocation. Worker threads (mesh extraction) hit this concurrently with
+    // the main thread's per-draw lookups, and a miss on either side rehashes the map.
+    {
+        std::shared_lock lock( MaterialInfosMutex );
+        auto it = MaterialInfos.find( any );
+        if ( it != MaterialInfos.end() ) {
+            return it->second.get();
         }
-        FixUpMaterial( mi->buffer );
-    } else {
-        mi = it->second.get();
     }
-    return mi;
+
+    // Miss. Build the entry outside the lock - LoadFromFile does file IO, which we don't want to hold
+    // every other thread's lookups up for. Two threads racing on the same material both build one and
+    // the loser's copy is simply dropped by try_emplace.
+    auto info = std::make_unique<MaterialInfo>();
+    if ( any ) {
+        info->LoadFromFile( materialName );
+        if ( materialName.contains( "FULLALPHA" ) ) {
+            info->MaterialType = MaterialInfo::MT_FullAlpha;
+        }
+    }
+    FixUpMaterial( info->buffer );
+
+    std::unique_lock lock( MaterialInfosMutex );
+    return MaterialInfos.try_emplace( any, std::move( info ) ).first->second.get();
 }
     
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {
@@ -4953,6 +5160,17 @@ void GothicAPI::SetBoundTexture( int idx, zCTexture* tex ) {
 
 zCTexture* GothicAPI::GetBoundTexture( int idx ) {
     return BoundTextures[idx];
+}
+
+/** Texture currently being cached in on this thread. Thread-local on purpose - see ScopedLoadingTexture. */
+static thread_local zCTexture* s_LoadingTexture = nullptr;
+
+void GothicAPI::SetLoadingTexture( zCTexture* tex ) {
+    s_LoadingTexture = tex;
+}
+
+zCTexture* GothicAPI::GetLoadingTexture() {
+    return s_LoadingTexture;
 }
 
 /** Teleports the player to the given location */
@@ -5257,6 +5475,12 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "Exposure", float_to_string( s.Exposure, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureMiddleGray", to_string_locale_independent( s.AutoExposureMiddleGray ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureStrength", to_string_locale_independent( s.AutoExposureStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureMin", to_string_locale_independent( s.AutoExposureMin ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureMax", to_string_locale_independent( s.AutoExposureMax ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoExposureSpeed", to_string_locale_independent( s.AutoExposureSpeed ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomThreshold", float_to_string( s.BloomThreshold, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomStrength", float_to_string( s.BloomStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomKnee", float_to_string( s.BloomKnee, 2 ).c_str(), ini.c_str() );
@@ -5289,6 +5513,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     */
 
     WritePrivateProfileStringA( "General", "EnableOcclusionCulling", to_string_locale_independent( s.EnableOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnablePortalCulling", to_string_locale_independent( s.EnablePortalCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     
     auto res = Engine::GraphicsEngine->GetBackbufferResolution();
@@ -5306,6 +5532,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "DisplayFlip", to_string_locale_independent( s.DisplayFlip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "LowLatency", to_string_locale_independent( s.LowLatency ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HDR_Monitor", to_string_locale_independent( s.HDR_Monitor ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_AutoMaxBrightness", to_string_locale_independent( s.HDR_AutoMaxBrightness ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_MaxBrightness", float_to_string( s.HDR_MaxBrightness, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_PaperWhite", float_to_string( s.HDR_PaperWhite, 1 ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Display", "StretchWindow", to_string_locale_independent( s.StretchWindow ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "UIScale", to_string_locale_independent( s.GothicUIScale ).c_str(), ini.c_str() );
@@ -5314,6 +5543,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "LimitLightIntesity", to_string_locale_independent( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "TiledLighting", to_string_locale_independent( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "RendererMode", to_string_locale_independent( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "GraphicsAPI", s.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ? "D3D12" : "D3D11", ini.c_str() );
     WritePrivateProfileStringA( "Display", "MSAASamples", to_string_locale_independent( s.MSAASamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
@@ -5337,8 +5567,12 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowSoftness", to_string_locale_independent( s.ShadowSoftness ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", to_string_locale_independent( s.ShadowAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldAOStrength", to_string_locale_independent( s.WorldAOStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SkyIblIntensity", to_string_locale_independent( s.SkyIblIntensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SkyOcclusionStrength", to_string_locale_independent( s.SkyOcclusionStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SkyIblNightFloor", to_string_locale_independent( s.SkyIblNightFloor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", to_string_locale_independent( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AntiAliasing", to_string_locale_independent( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
@@ -5362,9 +5596,24 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "SAO", "NumSamples", to_string_locale_independent( s.SaoSettings.NumSamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "BlurSharpness", to_string_locale_independent( s.SaoSettings.BlurSharpness ).c_str(), ini.c_str() );
 
+    // XeGTAO (D3D12's AO_ASSAO implementation)
+    WritePrivateProfileStringA( "GTAO", "QualityLevel", to_string_locale_independent( s.GtaoSettings.QualityLevel ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "DenoisePasses", to_string_locale_independent( s.GtaoSettings.DenoisePasses ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "Radius", to_string_locale_independent( s.GtaoSettings.Radius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "RadiusMultiplier", to_string_locale_independent( s.GtaoSettings.RadiusMultiplier ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "FalloffRange", to_string_locale_independent( s.GtaoSettings.FalloffRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "SampleDistributionPower", to_string_locale_independent( s.GtaoSettings.SampleDistributionPower ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "ThinOccluderCompensation", to_string_locale_independent( s.GtaoSettings.ThinOccluderCompensation ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "FinalValuePower", to_string_locale_independent( s.GtaoSettings.FinalValuePower ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "DepthMIPSamplingOffset", to_string_locale_independent( s.GtaoSettings.DepthMIPSamplingOffset ).c_str(), ini.c_str() );
+
     WritePrivateProfileStringA( "FontRendering", "Enable", to_string_locale_independent( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
 
+    WritePrivateProfileStringA( "Inventory", "FastInventoryRendering", to_string_locale_independent( s.FastInventoryRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
+
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseShadowAtlas", to_string_locale_independent( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", to_string_locale_independent( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GenerateAONormalsFromDepth", to_string_locale_independent( s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5397,6 +5646,12 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
         s.EnableBloom = GetPrivateProfileBoolA( "General", "EnableBloom", ds.EnableBloom, ini );
+        s.Exposure = GetPrivateProfileFloatA( "General", "Exposure", ds.Exposure, ini );
+        s.AutoExposureMiddleGray = GetPrivateProfileFloatA( "General", "AutoExposureMiddleGray", ds.AutoExposureMiddleGray, ini );
+        s.AutoExposureStrength = GetPrivateProfileFloatA( "General", "AutoExposureStrength", ds.AutoExposureStrength, ini );
+        s.AutoExposureMin = GetPrivateProfileFloatA( "General", "AutoExposureMin", ds.AutoExposureMin, ini );
+        s.AutoExposureMax = GetPrivateProfileFloatA( "General", "AutoExposureMax", ds.AutoExposureMax, ini );
+        s.AutoExposureSpeed = GetPrivateProfileFloatA( "General", "AutoExposureSpeed", ds.AutoExposureSpeed, ini );
         s.BloomThreshold = GetPrivateProfileFloatA( "General", "BloomThreshold", ds.BloomThreshold, ini );
         s.BloomStrength = GetPrivateProfileFloatA( "General", "BloomStrength", ds.BloomStrength, ini );
         s.BloomKnee = GetPrivateProfileFloatA( "General", "BloomKnee", ds.BloomKnee, ini );
@@ -5429,6 +5684,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         */
 
         s.EnableOcclusionCulling = GetPrivateProfileBoolA( "General", "EnableOcclusionCulling", ds.EnableOcclusionCulling, ini );
+        s.EnablePortalCulling = GetPrivateProfileBoolA( "General", "EnablePortalCulling", ds.EnablePortalCulling, ini );
+        s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
 
         // override INI settings with GMP minimum values.
@@ -5455,8 +5712,12 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", ds.ShadowSoftness, ini );
         s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", ds.ShadowAOStrength, ini );
         s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", ds.WorldAOStrength, ini );
+        s.SkyIblIntensity = GetPrivateProfileFloatA( "Shadows", "SkyIblIntensity", ds.SkyIblIntensity, ini );
+        s.SkyOcclusionStrength = GetPrivateProfileFloatA( "Shadows", "SkyOcclusionStrength", ds.SkyOcclusionStrength, ini );
+        s.SkyIblNightFloor = GetPrivateProfileFloatA( "Shadows", "SkyIblNightFloor", ds.SkyIblNightFloor, ini );
         s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias = GetPrivateProfileFloatA( "Shadows", "ShadowDepthSlopeBias", ds.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, ini );
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
+        s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
 
         INT2 res = {};
         RECT desktopRect;
@@ -5475,6 +5736,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DisplayFlip = GetPrivateProfileBoolA( "Display", "DisplayFlip", ds.DisplayFlip, ini );
         s.LowLatency = GetPrivateProfileBoolA( "Display", "LowLatency", ds.LowLatency, ini );
         s.HDR_Monitor = GetPrivateProfileBoolA( "Display", "HDR_Monitor", false, ini );
+        s.HDR_AutoMaxBrightness = GetPrivateProfileBoolA( "Display", "HDR_AutoMaxBrightness", ds.HDR_AutoMaxBrightness, ini );
+        s.HDR_MaxBrightness = std::clamp( GetPrivateProfileFloatA( "Display", "HDR_MaxBrightness", ds.HDR_MaxBrightness, ini ), 100.0f, 10000.0f );
+        s.HDR_PaperWhite = std::clamp( GetPrivateProfileFloatA( "Display", "HDR_PaperWhite", ds.HDR_PaperWhite, ini ), 50.0f, 1000.0f );
         s.StretchWindow = GetPrivateProfileBoolA( "Display", "StretchWindow", ds.StretchWindow, ini );
         s.GothicUIScale = GetPrivateProfileFloatA( "Display", "UIScale", 1.0f, ini );
         s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", ds.EnableRain, ini );
@@ -5486,6 +5750,12 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Force experimental settings OFF
         s.RendererMode = GothicRendererSettings::E_RendererMode::RM_Deferred;
         // ....
+
+        // Backend selection is applied at engine creation (read directly there, before this load
+        // runs). Mirror it into the settings struct so the settings UI reflects the current value.
+        s.GraphicsAPI = _stricmp( GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", ini ).c_str(), "D3D12" ) == 0
+            ? GothicRendererSettings::GRAPHICS_API_D3D12
+            : GothicRendererSettings::GRAPHICS_API_D3D11;
 
         {
             // MSAA is only valid for the Forward+ renderer; clamp to the nearest supported power-of-two (1/2/4/8).
@@ -5534,9 +5804,27 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SaoSettings.NumSamples = GetPrivateProfileIntA( "SAO", "NumSamples", defaultSAOSettings.NumSamples, ini.c_str() );
         s.SaoSettings.BlurSharpness = GetPrivateProfileFloatA( "SAO", "BlurSharpness", defaultSAOSettings.BlurSharpness, ini );
 
+        // XeGTAO (D3D12's AO_ASSAO implementation)
+        const GTAOSettings& dGtao = ds.GtaoSettings;
+        s.GtaoSettings.QualityLevel = GetPrivateProfileIntA( "GTAO", "QualityLevel", dGtao.QualityLevel, ini.c_str() );
+        s.GtaoSettings.DenoisePasses = GetPrivateProfileIntA( "GTAO", "DenoisePasses", dGtao.DenoisePasses, ini.c_str() );
+        s.GtaoSettings.Radius = GetPrivateProfileFloatA( "GTAO", "Radius", dGtao.Radius, ini );
+        s.GtaoSettings.RadiusMultiplier = GetPrivateProfileFloatA( "GTAO", "RadiusMultiplier", dGtao.RadiusMultiplier, ini );
+        s.GtaoSettings.FalloffRange = GetPrivateProfileFloatA( "GTAO", "FalloffRange", dGtao.FalloffRange, ini );
+        s.GtaoSettings.SampleDistributionPower = GetPrivateProfileFloatA( "GTAO", "SampleDistributionPower", dGtao.SampleDistributionPower, ini );
+        s.GtaoSettings.ThinOccluderCompensation = GetPrivateProfileFloatA( "GTAO", "ThinOccluderCompensation", dGtao.ThinOccluderCompensation, ini );
+        s.GtaoSettings.FinalValuePower = GetPrivateProfileFloatA( "GTAO", "FinalValuePower", dGtao.FinalValuePower, ini );
+        s.GtaoSettings.DepthMIPSamplingOffset = GetPrivateProfileFloatA( "GTAO", "DepthMIPSamplingOffset", dGtao.DepthMIPSamplingOffset, ini );
+        s.GtaoSettings.QualityLevel = std::clamp( s.GtaoSettings.QualityLevel, 0, 3 );
+        s.GtaoSettings.DenoisePasses = std::clamp( s.GtaoSettings.DenoisePasses, 0, 3 );
+
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
 
+        s.FastInventoryRendering = GetPrivateProfileBoolA( "Inventory", "FastInventoryRendering", ds.FastInventoryRendering, ini );
+
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
+        s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
+        s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
         s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask = GetPrivateProfileBoolA( "Debug", "UseScreenSpaceShadowMask", ds.DebugSettings.FeatureSet.UseScreenSpaceShadowMask, ini );
         s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth = GetPrivateProfileBoolA( "Debug", "GenerateAONormalsFromDepth", ds.DebugSettings.FeatureSet.GenerateAONormalsFromDepth, ini );
@@ -5657,16 +5945,25 @@ POINT GothicAPI::GetCursorPosition() {
 }
 
 /** Adds a staging texture to the list of the staging textures for this frame */
-void GothicAPI::AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID3D11Texture2D* texture ) {
+void GothicAPI::AddStagingTexture( UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
+    const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
-    FrameStagingTextures.emplace_back( std::make_pair( mip, stagingTexture ), texture );
+    FrameStagingTextures.emplace_back( DeferredMipUpload{ mip, stagingTexture, texture } );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 
 /** Adds a mip map generation deferred command */
-void GothicAPI::AddMipMapGeneration( D3D11Texture* texture ) {
+void GothicAPI::AddMipMapGeneration( GfxTexture* texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
     FrameMipMapGenerations.push_back( texture );
+    Engine::GAPI->LeaveResourceCriticalSection();
+}
+
+/** Drops any pending deferred commands referencing this texture */
+void GothicAPI::RemovePendingTextureCommands( GfxTexture* texture ) {
+    Engine::GAPI->EnterResourceCriticalSection();
+    // Usually empty, and never long: this only holds what one frame's worth of loading queued up.
+    std::erase( FrameMipMapGenerations, texture );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 
@@ -5697,7 +5994,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         
     // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
 
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     const bool isZPrepass = g->GetRenderingStage() == DES_Z_PRE_PASS;
     const bool bindShader = g->GetRenderingStage() == DES_MAIN || isZPrepass;
@@ -5707,12 +6004,15 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         zCSubMesh* s = morphMesh->GetSubmesh( i );
         if ( zCTexture* texture = s->Material->GetAniTexture() ) {
             if ( lastTex != texture ) {
-                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue;
-                }
                 lastTex = texture;
                 if ( isZPrepass ) {
-                    texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    // Texture still streaming in (async load)? Draw depth with a black placeholder
+                    // (opaque, no alpha cutout) instead of skipping, so it doesn't vanish for a frame.
+                    if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    } else {
+                        g->GetBlackTexture()->BindToPixelShader( 0 );
+                    }
                 } else if ( !g->BindTextureNRFX( s->Material, bindShader ) ) {
                     continue;
                 }
@@ -5740,9 +6040,9 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
     // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
 
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
-    D3D11Texture* whiteTexture = g->GetWhiteTexture();
+    GfxTexture* whiteTexture = g->GetWhiteTexture();
     void* lastTex = whiteTexture;
 
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
@@ -6114,9 +6414,27 @@ float GothicAPI::GetRainFXWeight() {
     return std::max( myRainFxWeight, gRainFxWeight );
 }
 
+/** Returns true if gothic's current outdoor weather is snow */
+bool GothicAPI::IsSnowingWeather() {
+    if ( oCGame* ogame = oCGame::GetGame() ) {
+        if ( zCWorld* world = ogame->_zCSession_world ) {
+            if ( zCSkyController_Outdoor* skyController = world->GetSkyControllerOutdoor() ) {
+                return skyController->GetWeatherType() == zTWeather::zTWEATHER_SNOW;
+            }
+        }
+    }
+    return false;
+}
+
 /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
 float GothicAPI::GetSceneWetness() {
-    float rain = GetRainFXWeight();
+    // Snow drives the same particle-fx weight as rain (see GetRainFXWeight), but snow must not wet the
+    // ground - no darkening, no ripples, no wet specular. Only our own manual override still counts here,
+    // so the wetness slider keeps working while it snows. Note this decays through the branch below
+    // instead of returning early, so wetness fades out normally when the weather switches to snow.
+    float rain = IsSnowingWeather()
+        ? RendererState.RendererSettings.RainSceneWettness
+        : GetRainFXWeight();
     static DWORD s_rainStopTime = Toolbox::timeSinceStartMs();
 
     if ( rain >= SceneWetness ) {
@@ -6202,7 +6520,12 @@ static void CollectLeafVobs(
 
     if ( ctx.drawFlags.DrawVOBs ) {
         if ( collectIndoorVobs && leafDistSq < vobIndoorDistSq ) {
-            CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor );
+            // Portal culling: a room the camera cannot see into through any chain of portals has
+            // none of its VOBs collected at all. Leafs outside every sector pass through untouched.
+            if ( !ctx.portalCuller || ctx.portalCuller->IsLeafVisible( *base ) ) {
+                CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor,
+                    ctx.portalCuller ? base : nullptr );
+            }
         }
 
         if ( leafDistSq < vobOutdoorSmallDistSq ) {
@@ -6222,55 +6545,93 @@ static void CollectLeafVobs(
     if ( collectLights
             && ctx.drawFlags.EnableDynamicLighting && leafDistSq < visualFXDrawRadiusSq ) {
 
-        // Add dynamic lights
-        for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
+        // Add dynamic lights.
+        // A light is registered in every leaf its range touches, so this body runs many times per
+        // light per frame. Everything below is therefore ordered cheapest-first, and the dedup runs
+        // before the range and frustum tests so a light pays for those exactly once per frame.
+        const int numLights = leaf->LightVobList.NumInArray;
+
+        // base->Lights mirrors LightVobList index-for-index (filled in BuildBspVobMapCacheHelper).
+        // It can go stale when the game adds or removes a light at runtime, so each entry is checked
+        // with one pointer compare; a miss falls back to the map and repairs the slot.
+        const bool mirrorUsable = static_cast<int>(base->Lights.size()) == numLights;
+
+        for ( int i = 0; i < numLights; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
-            const float lightCameraDist = XMVectorGetX( XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
-            if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
+            // Range test first - it needs nothing but the zCVobLight, and keeping it ahead of the
+            // resolve below preserves the original rule that an out-of-range light never causes a
+            // VobLightInfo (and possibly a shadow cube) to be allocated.
+            // "distance + range < radius", squared to avoid a sqrt.
+            const float lightRange = vob->GetLightRange();
+            const float maxDist = visualFXDrawRadius - lightRange;
+            if ( maxDist <= 0.0f )
+                continue;
 
-                BoundingSphere lightSphere;
-                lightSphere.Center = vob->GetPositionWorld();
-                lightSphere.Radius = vob->GetLightRange();
+            float lightCameraDistSq;
+            XMStoreFloat( &lightCameraDistSq, XMVector3LengthSq( cameraPosition - vob->GetPositionWorldXM() ) );
+            if ( lightCameraDistSq >= maxDist * maxDist )
+                continue;
 
-                // Cull any lights that are not visible even though they are in range
-                if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) ) {
-                    continue;
-                }
+            VobLightInfo* vi = nullptr;
+            if ( mirrorUsable ) {
+                VobLightInfo* cached = base->Lights[i];
+                if ( cached && cached->Vob == vob )
+                    vi = cached;
+            }
 
-                // Check if we already have this light
+            if ( !vi ) {
                 auto vit = VobLightMap.find( vob );
                 if ( vit == VobLightMap.end() ) {
                     // Add if not. This light must have been added during gameplay
-                    VobLightInfo* vi = new VobLightInfo;
-                    vi->Vob = vob;                    
+                    VobLightInfo* nvi = new VobLightInfo;
+                    nvi->Vob = vob;
                     bool PFXVobLight = false;
-                    
+
                     if ( zCVob* parent = vob->GetVobParent(); parent ) {
                         if ( auto visFx = parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
                             if (auto origin = visFx->GetOrigin()) {
                                 // any PFX that stems from an ITEM should be counted as simple light.
                                 PFXVobLight = !origin->As<oCItem>();
-                            }                            
+                            }
                         }
                     }
 
-                    vi->IsPFXVobLight = PFXVobLight;
-                    vi->UpdateShadows = !PFXVobLight;
-                    vit = VobLightMap.emplace( vob, vi ).first;
+                    nvi->IsPFXVobLight = PFXVobLight;
+                    nvi->UpdateShadows = !PFXVobLight;
+                    vit = VobLightMap.emplace( vob, nvi ).first;
 
                     // Create shadow-buffers for these lights since it was dynamically added to the world
-                    if ( !vi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                    if ( !nvi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
                         BaseShadowedPointLight* bpl;
-                        Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi, true ); // Also flag as dynamic
-                        vi->LightShadowBuffers.reset(bpl);
+                        Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, nvi, true ); // Also flag as dynamic
+                        nvi->LightShadowBuffers.reset(bpl);
                     }
                 }
-                VobLightInfo* vi = vit->second;
-                if ( !visitor->Visit( vi ) ) continue;
-                ctx.queue->PushLightVob( vi );
+                vi = vit->second;
+
+                // Only the main camera pass collects lights (every shadow path sets
+                // CollectLights=false), so repairing the mirror here cannot race a worker thread.
+                if ( mirrorUsable )
+                    base->Lights[i] = vi;
             }
+
+            // Dedup BEFORE the frustum test: that test is leaf-independent, so running it once per
+            // light instead of once per (light, leaf) pair is pure profit. Safe because a leaf with
+            // clipResult==CONTAINS holds the light's centre inside the frustum anyway, so the test
+            // it skips could not have rejected the light either.
+            if ( !visitor->Visit( vi ) ) continue;
+
+            BoundingSphere lightSphere;
+            lightSphere.Center = vob->GetPositionWorld();
+            lightSphere.Radius = lightRange;
+
+            // Cull any lights that are not visible even though they are in range
+            if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) )
+                continue;
+
+            ctx.queue->PushLightVob( vi );
         }
     }
 }
@@ -6286,6 +6647,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
+    // See the identical note in CollectVisibleVobsWithLeafCache: with GPU culling the frustum may not reject
+    // nodes. Forcing INTERSECTS (never CONTAINS) keeps CollectLeafVobs' per-light sphere test alive.
+    const bool skipVobFrustumCull = ctx.drawFlags.SkipVobFrustumCull;
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
         if ( enableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
@@ -6300,7 +6664,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
         ContainmentType clipResult = inheritedContainment;
         if ( dist < vobOutdoorDist ) {
-            if ( !enableOcclusionCulling ) {
+            if ( skipVobFrustumCull ) {
+                clipResult = ContainmentType::INTERSECTS;
+            } else if ( !enableOcclusionCulling ) {
                 if ( clipResult != ContainmentType::CONTAINS ) {
                     clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
                 }
@@ -6415,6 +6781,10 @@ static void CollectVisibleVobsWithLeafCache(
     const float* pMaxZ = cache.MaxZ.data();
 
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
+    // SkipVobFrustumCull (D3D12 GPU culling): leaves must NOT be rejected by the frustum any more — the whole
+    // point is to hand the backend every in-range static VOB. Only the distance term below survives. Lights and
+    // skeletal MOBs inside those leaves keep their own per-object frustum tests in CollectLeafVobs.
+    const bool skipVobFrustumCull = ctx.drawFlags.SkipVobFrustumCull;
     const uint32_t padded = (cache.Count + 7u) & ~7u;
 
     for ( uint32_t i = 0; i < padded; i += 8 ) {
@@ -6434,7 +6804,7 @@ static void CollectVisibleVobsWithLeafCache(
         // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b
         // So blendv(MinX, MaxX, pNX): pNX>=0 (MSB=0) -> MinX (min along positive normal), pNX<0 (MSB=1) -> MaxX.
         __m256 vOutside = vZero;
-        for ( int p = 0; p < 6; ++p ) {
+        for ( int p = 0; p < 6 && !skipVobFrustumCull; ++p ) {
             const __m256 vPX = _mm256_blendv_ps( vMinX, vMaxX, pNX[p] );
             const __m256 vPY = _mm256_blendv_ps( vMinY, vMaxY, pNY[p] );
             const __m256 vPZ = _mm256_blendv_ps( vMinZ, vMaxZ, pNZ[p] );
@@ -6554,7 +6924,9 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
     const float vobSmallSize = RendererState.RendererSettings.SmallVobSize;
     bool collectIndoor = ctx.stage != RenderStage::STAGE_DRAW_SHADOWS;
-    auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
+    // SkipVobFrustumCull (D3D12 GPU culling): distance-only, like CVVH_AddNotDrawnVobToList above.
+    auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs
+        && !ctx.drawFlags.SkipVobFrustumCull;
 
     // Add visible dynamically added vobs
     if ( RendererState.RendererSettings.DrawVOBs ) {

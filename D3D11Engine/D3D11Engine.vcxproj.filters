@@ -37,6 +37,9 @@
     <Filter Include="Engine\D3D11">
       <UniqueIdentifier>{2c8b46b4-d862-4873-964d-9fb082f86e57}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\D3D12">
+      <UniqueIdentifier>{4a7f1e2b-9c3d-4e5a-8b6f-1d2c3e4f5a6b}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Engine\GAPI\Objects">
       <UniqueIdentifier>{291c93a2-0f93-4a10-b857-0d8b86186ca0}</UniqueIdentifier>
     </Filter>
@@ -93,6 +96,12 @@
     </Filter>
     <Filter Include="Librarys\stb">
       <UniqueIdentifier>{b0119c3a-7a6b-4406-a285-2a8b05760c74}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Engine\DXGI">
+      <UniqueIdentifier>{eb8840c8-8ff4-48d1-898b-20540a0f0a18}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Librarys\D3D12MemoryAllocator">
+      <UniqueIdentifier>{c0a8cc76-71b8-489a-8078-86f1dc39635d}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -355,6 +364,9 @@
     <ClInclude Include="zCThread.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
+    <ClInclude Include="zCResource.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
     <ClInclude Include="zCDecal.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -421,6 +433,9 @@
       <Filter>Engine\D2D\Views\Editor</Filter>
     </ClInclude>
     <ClInclude Include="WorldObjects.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
+    <ClInclude Include="WindAnimation.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
     <ClInclude Include="ThreadPool.h">
@@ -726,6 +741,9 @@
     <ClInclude Include="include\imgui\backends\imgui_impl_dx11.h">
       <Filter>Librarys\imgui\backends</Filter>
     </ClInclude>
+    <ClInclude Include="include\imgui\backends\imgui_impl_dx12.h">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClInclude>
     <ClInclude Include="include\imgui\backends\imgui_impl_win32.h">
       <Filter>Librarys\imgui\backends</Filter>
     </ClInclude>
@@ -749,6 +767,33 @@
     </ClInclude>
     <ClInclude Include="ShaderCategory.h">
       <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="ShaderRegistry.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12Device.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12ShadowMap.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12PointShadows.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12EngineCommon.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12VertexBuffer.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12Texture.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12LineRenderer.h">
+      <Filter>Engine\D3D12</Filter>
     </ClInclude>
     <ClInclude Include="GothicExternals.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
@@ -857,8 +902,28 @@
     <ClInclude Include="vendor\mikktspace.h" />
     <ClInclude Include="VertexPacking.h" />
     <ClInclude Include="DDSArrayLoader.h" />
+    <ClInclude Include="DXGIHelpers.h" />
     <ClInclude Include="vendor\stb\stb_image.h">
       <Filter>Librarys\stb</Filter>
+    </ClInclude>
+    <ClInclude Include="vendor\D3D12MemoryAllocator\src\Common.h">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClInclude>
+    <ClInclude Include="vendor\D3D12MemoryAllocator\include\D3D12MemAlloc.h">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12PipelineState.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12ShaderBackend.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\InstancingUtils.h" />
+    <ClInclude Include="D3D12Engine\D3D12RenderQueue.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12TracyDebug.h">
+      <Filter>Engine\D3D12</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -901,6 +966,69 @@
     </ClCompile>
     <ClCompile Include="D3D11ShaderManager.cpp">
       <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="ShaderRegistry.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Device.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Scene.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12ShadowMap.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PointShadows.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Engine2D.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PostFX.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Texture.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12AO.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Motion.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Taa.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GTAO.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Cull.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Fog.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Water.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Transparency.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Fx.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12LineRenderer.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Rain.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12VertexBuffer.cpp">
+      <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="GSky.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
@@ -1002,6 +1130,9 @@
     <ClCompile Include="WorldObjects.cpp">
       <Filter>Engine\GAPI</Filter>
     </ClCompile>
+    <ClCompile Include="WindAnimation.cpp">
+      <Filter>Engine\GAPI</Filter>
+    </ClCompile>
     <ClCompile Include="GMeshSimple.cpp" />
     <ClCompile Include="BaseShadowedPointLight.cpp" />
     <ClCompile Include="D3D11GraphicsEngine.cpp">
@@ -1074,6 +1205,9 @@
       <Filter>Librarys\imgui</Filter>
     </ClCompile>
     <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\backends\imgui_impl_dx12.cpp">
       <Filter>Librarys\imgui\backends</Filter>
     </ClCompile>
     <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">
@@ -1168,6 +1302,24 @@
     </ClCompile>
     <ClCompile Include="ConstantBufferPool.cpp" />
     <ClCompile Include="vendor\mikktspace.c" />
+    <ClCompile Include="BaseGraphicsEngine.cpp" />
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClCompile>
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

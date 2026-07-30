@@ -4,7 +4,8 @@
 //#define BUILD_GOTHIC_1_08k
 //#define BUILD_GOTHIC_2_6_fix
 
-#define THISPTR_OFFSET(x) (reinterpret_cast<DWORD>(this) + (x))
+#define PTR_OFFSET(ptr, x) (reinterpret_cast<DWORD>(ptr) + (x))
+#define THISPTR_OFFSET(x) PTR_OFFSET(this, x)
 
 template<typename T, size_t n >
 static void PatchAddr( unsigned int adr, const T( &v )[n] ) {

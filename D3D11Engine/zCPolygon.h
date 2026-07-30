@@ -1,8 +1,9 @@
 #pragma once
 #include "pch.h"
 #include "HookedFunctions.h"
+#include "zTypes.h"
 
-#pragma pack (push, 1)	
+#pragma pack (push, 1)
 #ifdef BUILD_GOTHIC_2_6_fix
 struct PolyFlags {
     unsigned char PortalPoly : 2;
@@ -109,6 +110,16 @@ public:
 
     PolyFlags* GetPolyFlags() const {
         return reinterpret_cast<PolyFlags*>(THISPTR_OFFSET( GothicMemoryLocations::zCPolygon::Offset_PolyFlags ));
+    }
+
+    /** Plane this polygon lies in. Front side is dot(Normal, p) > Distance. */
+    const zTPlane& GetPolyPlane() const {
+        return *reinterpret_cast<zTPlane*>(THISPTR_OFFSET( GothicMemoryLocations::zCPolygon::Offset_PolyPlane ));
+    }
+
+    /** True if this poly is one of the sector/portal polys the world was compiled with */
+    bool IsPortal() const {
+        return GetPolyFlags()->PortalPoly != 0;
     }
 
     zCMaterial* GetMaterial() const {
