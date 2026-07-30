@@ -6,13 +6,17 @@
 // point-light accumulator.
 //
 // #include this AFTER the including shader has already declared (with its own, per-shader register slots):
-//   #include "include/ForwardPlusTypes.hlsl"   (GPULight, LightGrid, TILE_SIZE, MAX_LIGHTS_PER_TILE, NUM_CSM_CASCADES)
+//   #include "include/ForwardPlusTypes.hlsl"   (GPULight, LightGrid, TILE_SIZE, MAX_ACTIVE_LIGHTS, NUM_Z_SLICES,
+//                                                NUM_CSM_CASCADES)
 //   cbuffer FogCB    { ...; float3 CamPosWS; ...; }
-//   cbuffer LightCB  { uint LightCount; uint NumTilesX; uint LimitLightIntensity; ...; }
+//   cbuffer LightCB  { uint LightCount; uint NumTilesX; uint LimitLightIntensity; ...;
+//                      float ProjA; float ProjB; float NearZ; float FarZ; }   -- the last 4 feed ComputeZSlice
+//                      (ProjA/ProjB = reversed-Z depth->viewZ terms, matches LightCull.hlsl's CullCB;
+//                      NearZ/FarZ = the log-distributed cluster Z range, also matching CullCB)
 //   cbuffer ShadowCB { float4x4 CascadeViewProj[NUM_CSM_CASCADES]; float3 SunDirWS; float ShadowMapSize;
 //                      float3 SunColor; float SunIntensity; float3 CascadeTexelWorld; float AmbientStrength;
 //                      float ShadowAOStrength; float WorldAOStrength; ...; }
-//   StructuredBuffer<GPULight> Lights; StructuredBuffer<LightGrid> LightGridBuf; StructuredBuffer<uint> LightIndexBuf;
+//   StructuredBuffer<GPULight> Lights; StructuredBuffer<LightGrid> LightGridBuf;
 //   Texture2DArray ShadowMap; SamplerComparisonState shadowCmp; TextureCubeArray PointShadowCubes;
 // The LOW-RES static cube array is not a declared binding: it is fetched bindlessly (SM6.6
 // ResourceDescriptorHeap) from LightCB's PointShadowLowIndex, so adding the second tier cost no root
@@ -464,42 +468,71 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     return ambientSun + directSun;
 }
 
-// Accumulate dynamic point lights at a world-space surface point using the Forward+ tile grid: derive the
-// tile from SV_Position.xy, read its {Offset,Count} slice, and loop ONLY the lights culled into that tile
-// (indices into the global Lights buffer). `albedo` is LINEAR (sRGB-decoded in the PS). Ports D3D11 feat/pbr
-// FP_ComputePointLighting (PLS_ComputePointLightLightingPBR): range cull, falloff = nd*(nd*0.2+0.8), full
-// Cook-Torrance BRDF per light, additive. The count is clamped to the per-tile capacity so a garbage grid
-// entry can never spin the loop away (that reads as a GPU timeout).
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
+// Reconstructs THIS pixel's cluster Z slice from its own hardware depth (reversed-Z), analytically — no depth-
+// buffer fetch (unlike the old per-tile scheme, which sampled a prepass depth texture in the cull compute pass).
+// ProjA/ProjB invert the reversed-Z depth to a linear view-space Z (same formula as LightCull.hlsl's CullCB);
+// NearZ/FarZ bound the log-distributed slice range LightCull.hlsl's CSMain used to build the cluster grid — the
+// two sides MUST agree on NearZ/FarZ/NUM_Z_SLICES or a pixel picks a different cluster than the one culled for it.
+uint ComputeZSlice( float hwDepth )
 {
-    uint2 tile = uint2( svpos ) / TILE_SIZE;
+    float d = max( hwDepth, 1e-6 );   // guard: hwDepth==0 (cleared/sky) would divide-by-zero below
+    float viewZ = ProjB / ( d - ProjA );
+    float t = log2( max( viewZ, NearZ ) / NearZ ) / log2( FarZ / NearZ );
+    return (uint)clamp( floor( t * (float)NUM_Z_SLICES ), 0.0, (float)( NUM_Z_SLICES - 1 ) );
+}
+
+// Applies one light's contribution (direct BRDF + its shadow, if any) and folds it into `total`/`maxLit`.
+void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 albedo, float roughness,
+                       float metallic, inout float3 total, inout float3 maxLit )
+{
+    GPULight L = Lights[lightIndex];
+    float3 dir = L.PositionWorld - wpos;
+    float dist = length( dir );
+    if ( dist >= L.Range ) return;
+    dir /= dist;
+    float nd  = saturate( 1.0 - dist / L.Range );
+    float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
+    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
+    if ( L.ShadowCubeIndex >= 0 )
+    {
+        // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube
+        // centred on its cluster, while its own position/range still drive the shading above.
+        float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.ShadowOrigin, L.ShadowRange );
+        float camDist = length( L.PositionView );
+        float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
+        lit *= lerp( sh, 1.0, fade );
+    }
+    total += lit;
+    maxLit = max( maxLit, lit );
+}
+
+// Accumulate dynamic point lights at a world-space surface point using the CLUSTERED Forward+ grid: derive the
+// cluster from SV_Position.xy (screen tile) and SV_Position.z (Z slice, via ComputeZSlice), read its
+// MAX_ACTIVE_LIGHTS-bit membership mask, and bit-scan ONLY the lights it flags (indices into the global Lights
+// buffer — bit i is light i, see MAX_ACTIVE_LIGHTS). `svpos` is the shader's SV_Position (xy = screen pixel,
+// z = hardware depth). `albedo` is LINEAR (sRGB-decoded in the PS). Ports D3D11 feat/pbr
+// FP_ComputePointLighting (PLS_ComputePointLightLightingPBR): range cull, falloff = nd*(nd*0.2+0.8), full
+// Cook-Torrance BRDF per light, additive. Bit-scanning a fixed-width mask (rather than looping an
+// {Offset,Count} index slice) can never spin away on a garbage grid entry — the loop bound is the popcount of
+// the mask, not an unclamped Count. Most words are 0 for a typical cluster, so the per-word while() is cheap.
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
+{
+    uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
-    LightGrid g = LightGridBuf[tileIndex];
-    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
+    uint  slice = ComputeZSlice( svpos.z );
+    LightGrid g = LightGridBuf[tileIndex * NUM_Z_SLICES + slice];
     float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     float3 maxLit = 0;
-    for ( uint k = 0; k < n; k++ )
+    for ( uint w = 0; w < MASK_WORDS; ++w )
     {
-        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
-        float3 dir = L.PositionWorld - wpos;
-        float dist = length( dir );
-        if ( dist >= L.Range ) continue;
-        dir /= dist;
-        float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
-        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
-        if ( L.ShadowCubeIndex >= 0 )
+        uint m = g.Mask[w];
+        while ( m != 0 )
         {
-            // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube
-            // centred on its cluster, while its own position/range still drive the shading above.
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.ShadowOrigin, L.ShadowRange );
-            float camDist = length( L.PositionView );
-            float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            lit *= lerp( sh, 1.0, fade );
+            uint bit = firstbitlow( m );
+            m &= m - 1;   // clear the lowest set bit
+            ApplyTiledLight( w * 32u + bit, wpos, N, V, albedo, roughness, metallic, total, maxLit );
         }
-        total += lit;
-        maxLit = max( maxLit, lit );
     }
     // LimitLightIntensity: swap "sum of every light" for "brightest single light" (mirrors D3D11's
     // ForwardPlusLighting.hlsl / CS_TiledShading.hlsl MAX-blend mode) to avoid overexposure where many

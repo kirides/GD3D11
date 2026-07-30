@@ -124,29 +124,15 @@ namespace {
     // main pass would see background occluded through the gaps). Reuses m_Pipelines.World.RootSig: only b0 (ViewProj)
     // and t0/s0 are referenced — fog/light params are NOT bound (no light loop here, so no hang risk).
 
-    // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
-    // group builds its tile's view-space AABB from the prepass depth and records which point lights touch it
-    // into a per-tile slice of RW_LightIndexList (fixed MAX_LIGHTS_PER_TILE stride — no global atomic counter,
-    // so no counter buffer/clear), with the per-tile {Offset,Count} landing in RW_LightGrid. This is the D3D11
-    // reference Shaders/CS_LightCulling.hlsl (min/max-depth AABB + SphereInsideAABB) with two divergences:
-    //   1. Reversed-Z + world-only prepass. The reference's ScreenToView z-inverse is written for finite
-    //      standard-Z; we feed it the ACTUAL projection z-row terms (viewZ = Proj._43/(depth-Proj._33)), which
-    //      is correct for our reversed-Z infinite-far camera. And because our depth prepass lays down WORLD
-    //      MESH ONLY, an "empty" tile (no world depth — sky, or a VOB/NPC in front of nothing) falls back to an
-    //      all-encompassing AABB (stay conservatively lit) rather than the reference's collapse-to-near-plane,
-    //      which would unlight characters against the sky. The bounded near+far AABB is the whole point: it
-    //      pulls in only lights whose sphere actually reaches the tile's geometry, so a wall at 15m no longer
-    //      overflows the per-tile light cap the way the earlier camera-origin cone (near fixed at 1) did. NOTE prior
-    //      retired versions here: an unbounded [1,100000] AABB (far corners blew up off-axis), then side-planes
-    //      with a fixed [1,100000] slab and then a far-only slab — all still over-included and overflowed.
-    //      Residual: a short-range light on a VOB/NPC that pokes in front of distant world geometry and can't
-    //      reach that world can still be culled; completing the prepass (VOB+skeletal depth) removes it.
-    //   2. Fixed per-tile index slice instead of a compacted global list, dropping RW_IndexCounter and its
-    //      per-frame clear. At 1080p this is ~2 MB (8160 tiles * 64 * 4 B) — negligible, and simpler/safer.
-    //   3. Slots are handed out by a groupshared PREFIX SUM over buffer order, not by an InterlockedAdd race, so
-    //      an over-cap tile always drops the same (farthest) lights instead of a different set every frame. See
-    //      the CSMain comment in LightCull.hlsl — race-order selection was a visible per-tile flicker in rooms
-    //      full of static atmospheric lights.
+    // CLUSTERED Forward+ light-culling COMPUTE shader (P2.14; tiled P2.9b-2 predecessor). One thread group per
+    // (16x16 screen tile x Z slice) cluster; each group builds its cluster's view-space AABB analytically (a
+    // log-distributed Z slice over CullCB's NearZ/FarZ — no depth-buffer read at all, unlike the old per-tile
+    // scheme which bounded each tile's far-Z from the prepass depth) and tests up to MAX_ACTIVE_LIGHTS lights
+    // against it, one per thread. A pass sets that light's bit in a 64-bit groupshared mask (InterlockedOr),
+    // written out as the cluster's LightGrid.Mask — no index list, no global atomic counter, and no per-tile
+    // light cap: the cap is now a single global one (the frame's nearest MAX_ACTIVE_LIGHTS, see
+    // ForwardPlusTypes.hlsl), so it can never differ between clusters or flicker frame-to-frame the way the
+    // old per-tile InterlockedAdd race used to. See LightCull.hlsl's CSMain for the full rationale.
     // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
     // D3D11 CullLights uses, so this shader's view space matches. SM6.6: no ternary (use min()/select()).
 
@@ -200,8 +186,34 @@ namespace {
 
 
     // Forward+ MVP light buffer (P2.9a): the whole visible-light list is rebuilt from offset 0 each frame,
-    // so the ring is just kBackBufferCount snapshots (no per-draw offset). Cap matches D3D11 MAX_TILED_LIGHTS.
-    constexpr UINT kMaxFrameLights = 400;
+    // so the ring is just kBackBufferCount snapshots (no per-draw offset). MUST match MAX_ACTIVE_LIGHTS in
+    // Shaders/D3D12/include/ForwardPlusTypes.hlsl (raising one without the other either wastes cluster-mask
+    // capacity or silently drops lights past the smaller of the two — see that header's comment). Raised from
+    // the original 400 (D3D11 MAX_TILED_LIGHTS parity) to 1024 after in-game testing showed ambient-heavy scenes
+    // (static "atmospheric" fill lights stacking with dynamic torches/spells) regularly exceeding 400 visible
+    // point lights and clipping.
+    constexpr UINT kMaxFrameLights = 1024;
+
+    // Clustered Forward+ (P2.14). MUST match NUM_Z_SLICES in Shaders/D3D12/include/ForwardPlusTypes.hlsl.
+    constexpr UINT kNumZSlices = 16;
+    // MUST match MASK_WORDS in Shaders/D3D12/include/ForwardPlusTypes.hlsl (MAX_ACTIVE_LIGHTS / 32) — sizes the
+    // per-cluster LightGrid.Mask array on the C++ side of CreateLightCullBuffers.
+    constexpr UINT kMaskWordsPerCluster = kMaxFrameLights / 32;
+    // Gothic's reversed-Z camera projection has no real far plane (infinite far), so the cluster Z grid needs a
+    // chosen practical far distance to log-distribute its slices over. This is a FLOOR, not the actual value
+    // used — GetClusterFarZ() below clamps it up to the user's VisualFXDrawRadius setting, which is the CPU-side
+    // distance point lights are even collected out to (up to 50000 in the ImGui slider). A fixed 4096 here used
+    // to hard-clip any light farther than that from the camera: BOTH the cull compute's cluster AABBs (Z capped
+    // at FarZ) and the lit pixel shaders' ComputeZSlice clamp to [NearZ,FarZ], so a light beyond FarZ could never
+    // intersect any cluster no matter how far the user's draw-distance setting said to collect it from — it just
+    // silently stopped lighting anything, which read as point lights vanishing at a short, seemingly arbitrary
+    // range regardless of VisualFXDrawRadius. Tying FarZ to that setting (with this constant only as a floor for
+    // very small settings) fixes that without costing extra memory: buffer size depends on tile/slice/mask
+    // counts, not on FarZ, which only changes how far apart the log-distributed Z slices land.
+    constexpr float kClusterMinFarZ = 4096.0f;
+    float GetClusterFarZ() {
+        return std::max( kClusterMinFarZ, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
+    }
 
 
     constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
@@ -756,22 +768,23 @@ UINT D3D12GraphicsEngine::ResolveDiffuseSlotCacheIn( zCTexture* tex ) {
 
 
 bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
-	// Per-resolution Forward+ tile grid storage (P2.9b-2). Recreated on resize alongside the depth buffer.
-	// RW_LightGrid: one {Offset,Count} (8 B) per 16x16 tile. RW_LightIndexList: a fixed MAX_LIGHTS_PER_TILE
-	// (=64) uint slice per tile (no compaction/global counter — see the shader header). Both are DEFAULT-heap
-	// UAV buffers created in UNORDERED_ACCESS; each frame DispatchLightCulling writes them (UAV) then transitions
-	// them to PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back. ~2 MB total at 1080p.
+	// Per-resolution CLUSTERED Forward+ grid storage (P2.14; tiled P2.9b-2 predecessor). Recreated on resize
+	// alongside the depth buffer. RW_LightGrid: one MAX_ACTIVE_LIGHTS-bit membership mask (kMaskWordsPerCluster
+	// * 4 B) per (16x16 screen tile x Z slice) cluster — see LightCull.hlsl/PBRLighting.hlsl. There is no
+	// separate index-list buffer: the mask itself IS the light list (bit i = light i). DEFAULT-heap UAV buffer
+	// created in UNORDERED_ACCESS; each frame DispatchLightCulling writes it (UAV) then transitions it to
+	// PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back.
 	if ( size.x <= 0 || size.y <= 0 ) return false;
 	ID3D12Device* device = m_Device.GetDevice();
 
 	constexpr UINT kTileSize = 16;
-	// MUST match MAX_LIGHTS_PER_TILE in Shaders/D3D12/LightCull.hlsl and include/ForwardPlusTypes.hlsl — this is
-	// the stride the cull writes with and every lit shader reads with. 64 matches D3D11's ConstantBufferStructs.h.
-	constexpr UINT kMaxLightsPerTile = 64;
 	m_NumTilesX = (static_cast<UINT>(size.x) + kTileSize - 1) / kTileSize;
 	m_NumTilesY = (static_cast<UINT>(size.y) + kTileSize - 1) / kTileSize;
 	const UINT numTiles = m_NumTilesX * m_NumTilesY;
 	if ( numTiles == 0 ) return false;
+	// MUST match NUM_Z_SLICES in Shaders/D3D12/include/ForwardPlusTypes.hlsl — both sides derive the same
+	// cluster index (tileIndex * kNumZSlices + slice) from it, so a mismatch silently misindexes every cluster.
+	const UINT numClusters = numTiles * kNumZSlices;
 
 	D3D12MA::ALLOCATION_DESC heapDefault = {};
 	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -797,9 +810,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 		return true;
 		};
 
-	if ( !makeUavBuffer( static_cast<UINT64>(numTiles) * 2u * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer, m_LightGridBufferAlloc ) )
-		return false;
-	if ( !makeUavBuffer( static_cast<UINT64>(numTiles) * kMaxLightsPerTile * sizeof( uint32_t ), L"LightIndexList", m_LightIndexBuffer, m_LightIndexBufferAlloc ) )
+	if ( !makeUavBuffer( static_cast<UINT64>(numClusters) * kMaskWordsPerCluster * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer, m_LightGridBufferAlloc ) )
 		return false;
 	m_LightGridInPixelState = false;   // freshly created in UNORDERED_ACCESS (see DispatchLightCulling round-trip)
 	return true;
@@ -1071,7 +1082,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
 			pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
-	// Total order, not just "by distance": the tile cull keeps the first MAX_LIGHTS_PER_TILE candidates in BUFFER
+	// Total order, not just "by distance": the cluster cull keeps the first MAX_ACTIVE_LIGHTS candidates in BUFFER
 	// order, so the buffer order has to be a pure function of the visible light SET. std::sort is unstable, so
 	// equal distances (co-located atmospheric lights are common) would otherwise permute between frames and make
 	// the cap flicker again. The vob pointer breaks ties and is fixed for a light's lifetime.
@@ -1142,15 +1153,17 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 }
 
 
-void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT gridParam, UINT indexParam ) {
-	// Bind the Forward+ tiled point-light root params: srvParam = the light StructuredBuffer as a root SRV
-	// (t1), countParam = LightCB { LightCount, NumTilesX, LimitLightIntensity }, gridParam/indexParam = the
-	// per-tile grid (t2) and light-index list (t3) root SRVs produced by DispatchLightCulling. EVERY draw
-	// whose bound PSO reads the tiled light loop MUST call this after setting its root signature, or the loop
-	// bound (Count) and grid are UNDEFINED root values and can run billions of iterations → GPU timeout/
-	// removal. Root args are cleared on every SetGraphicsRootSignature. The param indices differ per root
-	// sig: m_Pipelines.World.RootSig uses (3,4,5,6) — the default — for the world mesh / instanced VOBs /
-	// node attachments; m_Pipelines.Skeletal.RootSig uses (4,5,6,7); m_Pipelines.Grass.RootSig uses (5,6,7,8).
+void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT gridParam ) {
+	// Bind the CLUSTERED Forward+ point-light root params: srvParam = the light StructuredBuffer as a root SRV
+	// (t1), countParam = LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex,
+	// PointShadowDynIndex, ProjA, ProjB, NearZ, FarZ }, gridParam = the per-cluster 64-bit mask root SRV (t2)
+	// produced by DispatchLightCulling. EVERY draw whose bound PSO reads the tiled light loop MUST call this
+	// after setting its root signature, or the loop bound (Count) and grid are UNDEFINED root values and can
+	// run billions of iterations → GPU timeout/removal. Root args are cleared on every SetGraphicsRootSignature.
+	// The param indices differ per root sig: m_Pipelines.World.RootSig uses (3,4,5) — the default — for the
+	// world mesh / instanced VOBs / node attachments; m_Pipelines.Skeletal.RootSig uses (4,5,6);
+	// m_Pipelines.Grass.RootSig uses (5,6,7). (Param 6/7/8, formerly the light-index-list SRV, is now dead —
+	// see the root-sig comments in D3D12PipelineState.cpp.)
 	m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
@@ -1168,8 +1181,13 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// by a light whose ShadowCubeIndex carries kShadowHasDynamic, so the 0 fallback is never dereferenced.
 	const UINT dynCubeSrv = m_PointShadows.GetDynSrvSlot();
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 4 );
+	// ProjA/ProjB/NearZ/FarZ (P2.14): let every lit pixel shader reconstruct ITS OWN cluster Z slice from its
+	// own SV_Position.z (PBRLighting.hlsl's ComputeZSlice) — must match DispatchLightCulling's CullCB exactly,
+	// or a pixel picks a different cluster than the one the compute pass culled lights into.
+	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+	const float clusterConsts[4] = { projM._33, projM._43, Engine::GAPI->GetNearPlane(), GetClusterFarZ() };
+	m_CmdList->SetGraphicsRoot32BitConstants( countParam, 4, clusterConsts, 5 );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
-	m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
 }
 
 
@@ -1542,7 +1560,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	// and VOB passes bind, at the same root-parameter indices (the Decal layout mirrors World's order).
 	const FogConstants decalFog = MakeFogConstants();
 	m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &decalFog, 0 );                                  // b1 fog
-	BindFrameLights();                                                                               // 3..6
+	BindFrameLights();                                                                               // 3..5
 	m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[frame] );                         // b3 shadow CB
 	m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
 	m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );  // t5 cubes
@@ -1971,7 +1989,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );
 			m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );
-			BindFrameLights( 5, 6, 7, 8 );
+			BindFrameLights( 5, 6, 7 );
 			m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );
 			m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );
 			m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );
@@ -3192,14 +3210,13 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
 
 
 void D3D12GraphicsEngine::DispatchLightCulling() {
-    // Forward+ tiled light cull (P2.9b-2). Runs after the depth prepass, before the lit passes: one 16x16
-    // thread group per screen tile writes {Offset,Count} into m_LightGridBuffer and the touching light
-    // indices into m_LightIndexBuffer. This increment only PRODUCES the grid — nothing consumes it yet, so
-    // the frame is visually unchanged; verify by inspecting the two buffers in RenderDoc (per-tile Count
-    // should be non-zero where torches/spells are on screen, zero for empty sky). The lit pixel shaders read
-    // this grid instead of looping all lights. The cull reads the prepass depth (transitioned to a compute SRV
-    // and back below) to clamp each tile's FAR-Z to real geometry — see the shader header for why far-only.
-    if ( !m_FrameOpen || !m_Pipelines.LightCull.PSO || !m_Pipelines.LightCull.RootSig || !m_LightGridBuffer || !m_LightIndexBuffer )
+    // CLUSTERED Forward+ light cull (P2.14; tiled P2.9b-2 predecessor). One thread group per (16x16 screen
+    // tile x Z slice) cluster writes a 64-bit light-membership mask into m_LightGridBuffer — see
+    // Shaders/D3D12/LightCull.hlsl. Cluster Z bounds are analytic (log-distributed over CullCB's NearZ/FarZ),
+    // so unlike the old per-tile scheme this pass never touches the depth buffer: no prepass ordering
+    // dependency, no depth-SRV round-trip. Verify in RenderDoc: m_LightGridBuffer's Mask should be non-zero for
+    // clusters torches/spells occupy, zero elsewhere.
+    if ( !m_FrameOpen || !m_Pipelines.LightCull.PSO || !m_Pipelines.LightCull.RootSig || !m_LightGridBuffer )
         return;
     if ( !m_LightBuffer[m_FrameIndex] || m_NumTilesX == 0 || m_NumTilesY == 0 )
         return;
@@ -3207,25 +3224,19 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     DX_ZONE( m_CmdList, "Light Culling (compute)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Light Culling (compute)" );
 
-    // The lit geometry passes left the grid/index buffers in PIXEL_SHADER_RESOURCE last frame; transition them
-    // back to UNORDERED_ACCESS so the cull CS can write them as root UAVs. Skipped on the first dispatch after
-    // (re)creation, when they're already in UAV (see CreateLightCullBuffers / m_LightGridInPixelState).
-    D3D12_RESOURCE_BARRIER batchPre[3] = {};
-    UINT preCount = 0;
-
+    // The lit geometry passes left the grid buffer in PIXEL_SHADER_RESOURCE last frame; transition it back to
+    // UNORDERED_ACCESS so the cull CS can write it as a root UAV. Skipped on the first dispatch after
+    // (re)creation, when it's already in UAV (see CreateLightCullBuffers / m_LightGridInPixelState).
     if ( m_LightGridInPixelState ) {
-        batchPre[preCount++] = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        batchPre[preCount++] = TransitionBarrier( m_LightIndexBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        D3D12_RESOURCE_BARRIER pre = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        m_CmdList->ResourceBarrier( 1, &pre );
         m_LightGridInPixelState = false;
     }
 
-    batchPre[preCount++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-    m_CmdList->ResourceBarrier( preCount, batchPre );
-
     // ProjScale = the projection's x/y view->clip scale (diagonal terms; layout-invariant so no transpose
-    // worry). ProjA/ProjB = the z-row terms (_33, _43) the CS inverts to turn a reversed-Z depth sample into
-    // a view-space Z (viewZ = ProjB / (depth - ProjA)); same scalars read straight off the CPU matrix, so no
-    // transpose concern either. Same projection the geometry passes use.
+    // worry) — used to derive each cluster's view-space XY bounds at its analytic near/far Z. NearZ/FarZ log-
+    // distribute the Z slices (see LightCull.hlsl); MUST match what BindFrameLights uploads into LightCB's
+    // NearZ/FarZ for the lit pixel shaders, or a pixel picks a different cluster than the one culled for it.
     const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
 
     struct LightCullConstants {
@@ -3233,7 +3244,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
         uint32_t ScreenX, ScreenY;
         uint32_t TotalLights;
         uint32_t NumTilesX;
-        float    ProjA, ProjB;   // projM._33, projM._43 (reversed-Z depth -> viewZ reconstruction)
+        float    NearZ, FarZ;
     } cb{};
     cb.ProjScaleX = projM._11;
     cb.ProjScaleY = projM._22;
@@ -3241,34 +3252,18 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     cb.ScreenY = static_cast<uint32_t>( m_Resolution.y );
     cb.TotalLights = m_FrameLightCount;
     cb.NumTilesX = m_NumTilesX;
-    cb.ProjA = projM._33;
-    cb.ProjB = projM._43;
-
-    // The depth prepass left the depth buffer in DEPTH_WRITE; make it readable by this compute pass, then hand
-    // it back to DEPTH_WRITE below so the lit passes (GREATER_EQUAL depth-write) see it exactly as before.
-    D3D12_RESOURCE_BARRIER depthToSrv = {};
-    depthToSrv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    depthToSrv.Transition.pResource = m_DepthBuffer.Get();
-    depthToSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    depthToSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    depthToSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    cb.NearZ = Engine::GAPI->GetNearPlane();
+    cb.FarZ = GetClusterFarZ();
 
     m_CmdList->SetPipelineState( m_Pipelines.LightCull.PSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.LightCull.RootSig.Get() );
     m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LightGridBuffer->GetGPUVirtualAddress() );
-    m_CmdList->SetComputeRootUnorderedAccessView( 3, m_LightIndexBuffer->GetGPUVirtualAddress() );
-    m_CmdList->SetComputeRootDescriptorTable( 4, GetSrvGpuHandle( m_DepthSrvSlot ) );   // t1 DepthTex (SRV heap already bound)
-    m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
+    m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, kNumZSlices );
 
-    D3D12_RESOURCE_BARRIER batchPost[3] = {
-        TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
-        TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-        TransitionBarrier( m_LightIndexBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE )
-    };
-
-    m_CmdList->ResourceBarrier( 3, batchPost );
+    D3D12_RESOURCE_BARRIER post = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+    m_CmdList->ResourceBarrier( 1, &post );
     m_LightGridInPixelState = true;
 }
 
@@ -4191,7 +4186,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &fog, 0 );   // b3 fog
-        BindFrameLights( 4, 5, 6, 7 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
+        BindFrameLights( 4, 5, 6 );   // light SRV(t1)+count(b4)+cluster-mask(t2) — MUST set all (see BindFrameLights)
         m_CmdList->SetGraphicsRootConstantBufferView( 8, m_ShadowCBGpu[m_FrameIndex] );        // b5 shadow CB
         m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );    // t4 shadow map
         m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes

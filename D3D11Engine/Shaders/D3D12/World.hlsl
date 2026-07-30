@@ -2,15 +2,19 @@
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };   // Forward+ tiled: light count + tiles/row + low-res cube heap slot
+// Forward+ tiled: light count + tiles/row + low-res cube heap slot. ProjA/ProjB/NearZ/FarZ feed
+// PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see that header for what each means.
+cbuffer LightCB : register(b2) {
+    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
+    float ProjA; float ProjB; float NearZ; float FarZ;
+};
 
 #include "include/ForwardPlusTypes.hlsl"
 
-// Bound as a ROOT descriptor SRV (no descriptor-table slot). The per-tile grid produced by the light-cull
-// compute (DispatchLightCulling) narrows this loop to only the lights that touch each 16x16 screen tile.
+// Bound as a ROOT descriptor SRV (no descriptor-table slot). The per-cluster mask produced by the light-cull
+// compute (DispatchLightCulling) narrows this loop to only the lights visible in this pixel's cluster.
 StructuredBuffer<GPULight>  Lights        : register(t1);   // root SRV — all visible lights, indexed by the grid
-StructuredBuffer<LightGrid> LightGridBuf  : register(t2);   // root SRV — per-tile {Offset,Count}
-StructuredBuffer<uint>      LightIndexBuf : register(t3);   // root SRV — per-tile light-index slices
+StructuredBuffer<LightGrid> LightGridBuf  : register(t2);   // root SRV — per-cluster 64-bit membership mask
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -168,7 +172,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );   // D3D11 dims the SUN light color 20% where the surface is wet
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     // Additive wet sheen (D3D11's specWet, boosted where the sun actually reaches: specWet += specWet * shadow).
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.

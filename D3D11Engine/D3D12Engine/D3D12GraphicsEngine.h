@@ -254,8 +254,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE GetDisplayRtv() const;
     // World/DepthPrepass/Vob pipeline creation now lives in m_Pipelines (CreateWorld/CreateDepthPrepass/CreateVob).
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
-    bool CreateLightCullBuffers( INT2 size ); // per-resolution tile grid + index-list UAV buffers (rebuilt on resize)
-    void DispatchLightCulling();      // dispatch the tiled light cull (writes the per-tile light grid; not yet consumed)
+    bool CreateLightCullBuffers( INT2 size ); // per-resolution clustered light-grid UAV buffer (rebuilt on resize)
+    void DispatchLightCulling();      // dispatch the clustered light cull (writes the per-cluster mask grid)
     // Vob pipeline creation now lives in m_Pipelines.CreateVob (buffers stay: CreateVobInstanceBuffers).
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     void UploadFrameVobInstances();   // snapshot visible VOB instances into the ring ONCE (prepass + color share it)
@@ -275,7 +275,7 @@ private:
     void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm ) const;
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
-    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (4,5,6,7)=skeletal, (5,6,7,8)=grass
+    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5 );   // light SRV(t1)+count+cluster-mask(t2); (3,4,5)=world, (4,5,6)=skeletal, (5,6,7)=grass
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
     // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
@@ -915,20 +915,18 @@ private:
     UINT ResolveDiffuseSlotCacheIn( zCTexture* tex );
 
 
-    // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
-    // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
-    // (fixed 32/tile, no global counter). All live permanently in UNORDERED_ACCESS. m_NumTilesX/Y = tile
-    // grid dimensions for the current resolution.
+    // Clustered Forward+ light culling (P2.14; tiled P2.9b-2 predecessor): one global compute root sig + PSO;
+    // one resolution-sized DEFAULT-heap UAV buffer holding the per-cluster 64-bit light-membership mask
+    // (NumTilesX * NumTilesY * kNumZSlices clusters). Lives permanently in UNORDERED_ACCESS. m_NumTilesX/Y =
+    // screen-tile grid dimensions for the current resolution (Z slice count is the compile-time kNumZSlices).
     // Light-cull pipeline (RootSig/PSO/blob) now lives in m_Pipelines.LightCull
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numTiles * 8 B)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numClusters * 8 B)
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightGridBufferAlloc;  // recreated on resize
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightIndexBuffer;   // RWStructuredBuffer<uint>  (numTiles * 32 * 4 B)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightIndexBufferAlloc; // recreated on resize
     UINT m_NumTilesX = 0;
     UINT m_NumTilesY = 0;
-    // Grid/index buffers round-trip UNORDERED_ACCESS (cull CS writes) -> PIXEL_SHADER_RESOURCE (lit PS reads)
-    // each frame. Tracks whether they're currently in the PS-read state so DispatchLightCulling knows whether
-    // it must transition them back to UAV before the next dispatch (false right after (re)creation in UAV).
+    // The grid buffer round-trips UNORDERED_ACCESS (cull CS writes) -> PIXEL_SHADER_RESOURCE (lit PS reads)
+    // each frame. Tracks whether it's currently in the PS-read state so DispatchLightCulling knows whether
+    // it must transition it back to UAV before the next dispatch (false right after (re)creation in UAV).
     bool m_LightGridInPixelState = false;
 
     // Bloom pyramid (P2.11, mirrors D3D11PFX_Bloom): resolution-dependent chain of progressively half-sized

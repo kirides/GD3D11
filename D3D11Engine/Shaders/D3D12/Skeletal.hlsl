@@ -18,14 +18,18 @@ cbuffer InstanceCB : register(b1)
 // every skeletal command. 192 is 2 * NUM_MAX_BONES; only the allocated prefix is ever indexed.
 cbuffer BonesCB    : register(b2) { float4x4 Bones[192]; };
 cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB    : register(b4) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };   // Forward+ tiled: light count + tiles/row + low-res cube heap slot
+// Forward+ tiled: light count + tiles/row + low-res cube heap slot. ProjA/ProjB/NearZ/FarZ feed
+// PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
+cbuffer LightCB    : register(b4) {
+    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
+    float ProjA; float ProjB; float NearZ; float FarZ;
+};
 
 #include "include/ForwardPlusTypes.hlsl"
 
-// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — see the world shader for the rationale.
+// Forward+ tiled point lights (root-descriptor SRVs + per-cluster mask) — see the world shader for the rationale.
 StructuredBuffer<GPULight>  Lights        : register(t1);
 StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
-StructuredBuffer<uint>      LightIndexBuf : register(t3);
 
 // No t0 diffuse texture: EVERY entry point in this file (lit, depth-prepass, shadow-clip and ghost) fetches its
 // diffuse bindlessly from MaterialCB.MatDiffuseIndex, so neither Skeletal.RootSig nor GhostSkeletal.RootSig
@@ -152,7 +156,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

@@ -1,5 +1,7 @@
-#define TILE_SIZE 16
-#define MAX_LIGHTS_PER_TILE 64
+#define TILE_SIZE 16u
+#define MAX_ACTIVE_LIGHTS 1024u
+#define MASK_WORDS (MAX_ACTIVE_LIGHTS / 32u)
+#define NUM_Z_SLICES 16u
 
 // MUST stay layout-identical to GPULight (C++ D3D12EngineCommon.h / HLSL include/ForwardPlusTypes.hlsl) — this
 // is a StructuredBuffer, so a stride mismatch silently misindexes EVERY light. The cull only reads
@@ -10,36 +12,38 @@ struct TiledPointLight {
     float3 PositionWorld; int ShadowCubeIndex;
     float3 ShadowOrigin;  float ShadowRange;
 };
-struct LightGrid { uint Offset; uint Count; };
+// Clustered Forward+ (P2.14): a MAX_ACTIVE_LIGHTS-bit membership mask, one bit per light in
+// SB_Lights[0..MAX_ACTIVE_LIGHTS). MASK_WORDS * 4 bytes, same layout as ForwardPlusTypes.hlsl's copy.
+struct LightGrid { uint Mask[MASK_WORDS]; };
 
-StructuredBuffer<TiledPointLight> SB_Lights       : register(t0);
-RWStructuredBuffer<LightGrid>     RW_LightGrid     : register(u0);
-RWStructuredBuffer<uint>          RW_LightIndexList : register(u1);
-Texture2D<float>                  DepthTex          : register(t1);   // prepass depth (reversed-Z); per-tile far-Z
+StructuredBuffer<TiledPointLight> SB_Lights   : register(t0);
+RWStructuredBuffer<LightGrid>     RW_LightGrid : register(u0);
 
 cbuffer CullCB : register(b0) {
     float2 ProjScale;    // (Proj._11, Proj._22): view->clip x/y scale (diagonal terms, layout-invariant)
     uint2  ScreenDim;    // render-target pixel size
-    uint   TotalLights;  // valid light count in SB_Lights (<= light buffer capacity)
+    uint   TotalLights;  // valid light count in SB_Lights (may exceed MAX_ACTIVE_LIGHTS; only the first
+                          // MAX_ACTIVE_LIGHTS are ever tested — see the numthreads note below)
     uint   NumTilesX;    // ceil(ScreenDim.x / TILE_SIZE)
-    float2 ProjZ;        // (Proj._33, Proj._43): reversed-Z depth->viewZ  (viewZ = ProjZ.y / (depth - ProjZ.x))
+    float  NearZ;        // camera near plane (Engine::GAPI->GetNearPlane()) — inner bound of the cluster Z range
+    float  FarZ;         // fixed practical cluster far distance (kClusterFarZ in D3D12Scene.cpp) — Gothic's
+                          // reversed-Z projection has no real far plane, so clustering needs a chosen one;
+                          // anything beyond it collapses into the last (coarsest) Z slice.
 };
 
-groupshared uint gs_Count;
-groupshared uint gs_Indices[MAX_LIGHTS_PER_TILE];
-groupshared uint gs_Scan[TILE_SIZE * TILE_SIZE];   // per-chunk prefix sum of the pass flags (see CSMain)
-groupshared uint gs_MinDepthInt;   // nearest/farthest opaque depth in the tile, as sortable float bits
-groupshared uint gs_MaxDepthInt;
+groupshared uint   gs_Mask[MASK_WORDS];
+groupshared float3 gs_AabbMin;
+groupshared float3 gs_AabbMax;
 
-// View-space position of a screen pixel at a given reversed-Z depth. The four packed projection scalars
-// (ProjScale = _11/_22, ProjZ = _33/_43) are exactly the terms D3D11's ScreenToView uses; the z inverse is
-// valid for our reversed-Z infinite-far camera because they are the actual matrix entries. ndc.y flipped.
-float3 ScreenToView( float2 pixel, float depth ) {
+// View-space XY at a given pixel and a KNOWN view-space Z (unlike the old per-tile cull, this Z comes from the
+// analytic cluster slice bounds below, not from sampling the depth buffer — that's what makes this CLUSTERED
+// rather than "tiled with scene-derived depth bounds": every cluster's shape is fixed by the camera projection
+// alone, so the cull no longer depends on the depth prepass having run first.
+float2 ViewXYAtZ( float2 pixel, float zView ) {
     float2 ndc;
     ndc.x = pixel.x / (float)ScreenDim.x * 2.0 - 1.0;
     ndc.y = -(pixel.y / (float)ScreenDim.y * 2.0 - 1.0);
-    float zView = ProjZ.y / ( depth - ProjZ.x );
-    return float3( ndc.x / ProjScale.x * zView, ndc.y / ProjScale.y * zView, zView );
+    return float2( ndc.x / ProjScale.x * zView, ndc.y / ProjScale.y * zView );
 }
 
 // Closest-point sphere/AABB overlap (view space). Keeps a light iff its sphere touches the box.
@@ -49,108 +53,46 @@ bool SphereInsideAABB( float3 center, float radius, float3 aabbMin, float3 aabbM
     return dot( delta, delta ) <= radius * radius;
 }
 
-[numthreads( TILE_SIZE, TILE_SIZE, 1 )]
-void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID ) {
-    uint ti = threadID.y * TILE_SIZE + threadID.x;
-    if ( ti == 0 ) { gs_Count = 0; gs_MinDepthInt = 0x7F7FFFFF; gs_MaxDepthInt = 0; }
-    GroupMemoryBarrierWithGroupSync();
+// One thread group per (tileX, tileY, zSlice) cluster; one thread per candidate light (thread ti tests light
+// ti — see MAX_ACTIVE_LIGHTS). Dispatch is (NumTilesX, NumTilesY, NUM_Z_SLICES); groupID.z is the Z slice.
+[numthreads( MAX_ACTIVE_LIGHTS, 1, 1 )]
+void CSMain( uint3 groupID : SV_GroupID, uint ti : SV_GroupIndex ) {
+    // Only the first MASK_WORDS threads need to clear the mask (one word each) — cheap even though the group
+    // has many more threads than that.
+    if ( ti < MASK_WORDS ) gs_Mask[ti] = 0;
 
-    // Per-tile depth bounds from the prepass. Each of the 256 threads owns exactly one tile pixel and folds
-    // its reversed-Z depth into the group min/max (asuint keeps float ordering for depth in [0,1]). Sky /
-    // cleared pixels read 0 and are skipped. This is the D3D11 CS_LightCulling min/max; the AABB it builds is
-    // bounded on BOTH the near and far side by real geometry, so the tile only pulls in lights whose sphere
-    // actually reaches the surfaces in it — the earlier camera-origin cone (near fixed at 1) instead counted
-    // every light between the camera and the geometry, so a wall at 15m still overflowed the 32-light cap.
-    {
-        uint2 px = uint2( groupID.xy ) * TILE_SIZE + threadID.xy;
-        if ( px.x < ScreenDim.x && px.y < ScreenDim.y ) {
-            float d = DepthTex.Load( int3( int2( px ), 0 ) );
-            if ( d > 0.0 ) {   // reversed-Z: 0 == cleared (sky / no opaque geometry)
-                uint di = asuint( d );
-                InterlockedMin( gs_MinDepthInt, di );
-                InterlockedMax( gs_MaxDepthInt, di );
-            }
-        }
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    // Tile AABB in view space, spanning the near..far corners of the tile's screen rect at the min/max depth.
-    float2 tileMin = float2( groupID.xy ) * TILE_SIZE;
-    float2 tileMax = float2( groupID.xy + uint2( 1, 1 ) ) * TILE_SIZE;
-    float3 aabbMin, aabbMax;
-    if ( gs_MinDepthInt == 0x7F7FFFFF ) {
-        // No world-mesh depth in this tile (sky, or a VOB/NPC the world-only prepass didn't lay down). Fall
-        // back to an all-encompassing box so those tiles stay conservatively lit — DELIBERATELY divergent from
-        // D3D11 (which collapses empty tiles to the near plane), because our prepass is world-mesh only and
-        // collapsing here would unlight characters standing against the sky. (Complete the prepass to remove.)
-        aabbMin = float3( -1e9, -1e9, -1e9 );
-        aabbMax = float3(  1e9,  1e9,  1e9 );
-    } else {
-        float minDepth = asfloat( gs_MinDepthInt );   // reversed-Z: smaller depth == farther
-        float maxDepth = asfloat( gs_MaxDepthInt );
-        float3 c0 = ScreenToView( float2( tileMin.x, tileMin.y ), minDepth );
-        float3 c1 = ScreenToView( float2( tileMax.x, tileMin.y ), minDepth );
-        float3 c2 = ScreenToView( float2( tileMin.x, tileMax.y ), minDepth );
-        float3 c3 = ScreenToView( float2( tileMax.x, tileMax.y ), minDepth );
-        float3 c4 = ScreenToView( float2( tileMin.x, tileMin.y ), maxDepth );
-        float3 c5 = ScreenToView( float2( tileMax.x, tileMin.y ), maxDepth );
-        float3 c6 = ScreenToView( float2( tileMin.x, tileMax.y ), maxDepth );
-        float3 c7 = ScreenToView( float2( tileMax.x, tileMax.y ), maxDepth );
-        aabbMin = min( min( min( c0, c1 ), min( c2, c3 ) ), min( min( c4, c5 ), min( c6, c7 ) ) );
-        aabbMax = max( max( max( c0, c1 ), max( c2, c3 ) ), max( max( c4, c5 ), max( c6, c7 ) ) );
-    }
-
-    // Distribute the light test across the group's threads. Clamp the external count (root constant) to the
-    // buffer capacity so a garbage TotalLights can never spin the loop (lasting D3D12 rule).
-    //
-    // The kept set MUST be a deterministic function of the light buffer, not of GPU scheduling. An
-    // InterlockedAdd append gives each passing light whatever slot it wins the race for, so once a tile has more
-    // than MAX_LIGHTS_PER_TILE candidates the 64 that survive the cap differ every frame and the tile visibly
-    // flickers at 16x16 granularity — which is exactly what Gothic's static "atmospheric" light rooms (hundreds
-    // of co-located lights, every tile far over the cap) do. Instead the group walks the buffer in fixed chunks
-    // of numThreads and compacts each chunk's pass flags with a Hillis-Steele prefix sum, so a light's slot is
-    // its rank in BUFFER ORDER. BuildFrameLightBuffer sorts that buffer by distance to the camera, so the cap
-    // now deterministically keeps the NEAREST candidates and drops the farthest — stable frame to frame.
-    //
-    // Every barrier below sits in group-uniform flow: the chunk loop bound is uniform (a root constant) and is
-    // deliberately NOT cut short when the tile fills up, since at kMaxFrameLights=400 that is at most two
-    // chunks and an early-out would put a barrier behind a groupshared-derived condition.
-    uint total = min( TotalLights, 4096u );
-    const uint numThreads = TILE_SIZE * TILE_SIZE;
-    for ( uint base = 0; base < total; base += numThreads ) {
-        uint i = base + ti;
-        uint pass = 0;
-        if ( i < total ) {
-            TiledPointLight L = SB_Lights[i];
-            pass = SphereInsideAABB( L.PositionView, L.Range * 1.05, aabbMin, aabbMax ) ? 1u : 0u;
-        }
-
-        // Inclusive scan of `pass` over the group; gs_Scan[numThreads-1] ends up as the chunk's total.
-        gs_Scan[ti] = pass;
-        GroupMemoryBarrierWithGroupSync();
-        [unroll] for ( uint s = 1; s < numThreads; s <<= 1 ) {
-            uint v = ( ti >= s ) ? gs_Scan[ti - s] : 0u;
-            GroupMemoryBarrierWithGroupSync();
-            gs_Scan[ti] += v;
-            GroupMemoryBarrierWithGroupSync();
-        }
-
-        // gs_Count carries the lights kept by earlier chunks; the exclusive prefix is this light's rank inside
-        // the chunk. Overflow simply doesn't write (gs_Count still counts, and is clamped when it is stored).
-        uint slot = gs_Count + gs_Scan[ti] - pass;
-        if ( pass != 0 && slot < MAX_LIGHTS_PER_TILE ) gs_Indices[slot] = i;
-        GroupMemoryBarrierWithGroupSync();
-        if ( ti == 0 ) gs_Count += gs_Scan[numThreads - 1];
-        GroupMemoryBarrierWithGroupSync();
-    }
+    // Log-distributed cluster Z bounds (Doom/Olsson clustered shading): slice 0 is thinnest (nearest, where
+    // depth precision/occupancy is highest) and slices widen geometrically out to FarZ. This is pure view-space
+    // math and has nothing to do with the reversed-Z hardware depth encoding — that only matters where a hardware
+    // depth is converted back to a view-space Z (PBRLighting.hlsl's ComputeZSlice does that for the pixel shader
+    // side; this compute pass never touches hardware depth at all).
+    const uint slice = groupID.z;
+    const float sliceNearZ = NearZ * pow( FarZ / NearZ, (float)slice / (float)NUM_Z_SLICES );
+    const float sliceFarZ  = NearZ * pow( FarZ / NearZ, (float)( slice + 1 ) / (float)NUM_Z_SLICES );
 
     if ( ti == 0 ) {
-        uint count = min( gs_Count, (uint)MAX_LIGHTS_PER_TILE );
-        uint tileIndex = groupID.y * NumTilesX + groupID.x;
-        uint offset = tileIndex * MAX_LIGHTS_PER_TILE;   // fixed per-tile slice (no global counter)
-        RW_LightGrid[tileIndex].Offset = offset;
-        RW_LightGrid[tileIndex].Count  = count;
-        for ( uint j = 0; j < count; ++j )
-            RW_LightIndexList[offset + j] = gs_Indices[j];
+        const float2 tileMin = float2( groupID.xy ) * TILE_SIZE;
+        const float2 tileMax = float2( groupID.xy + uint2( 1, 1 ) ) * TILE_SIZE;
+        const float2 n0 = ViewXYAtZ( tileMin, sliceNearZ ), n1 = ViewXYAtZ( tileMax, sliceNearZ );
+        const float2 f0 = ViewXYAtZ( tileMin, sliceFarZ ),  f1 = ViewXYAtZ( tileMax, sliceFarZ );
+        gs_AabbMin = float3( min( min( n0, n1 ), min( f0, f1 ) ), sliceNearZ );
+        gs_AabbMax = float3( max( max( n0, n1 ), max( f0, f1 ) ), sliceFarZ );
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( ti < TotalLights ) {
+        TiledPointLight L = SB_Lights[ti];
+        if ( SphereInsideAABB( L.PositionView, L.Range * 1.05, gs_AabbMin, gs_AabbMax ) ) {
+            InterlockedOr( gs_Mask[ti / 32u], 1u << ( ti % 32u ) );
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( ti == 0 ) {
+        const uint tileIndex = groupID.y * NumTilesX + groupID.x;
+        const uint clusterIndex = tileIndex * NUM_Z_SLICES + slice;
+        [unroll]
+        for ( uint w = 0; w < MASK_WORDS; ++w )
+            RW_LightGrid[clusterIndex].Mask[w] = gs_Mask[w];
     }
 }

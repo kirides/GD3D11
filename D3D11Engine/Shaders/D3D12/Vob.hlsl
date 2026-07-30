@@ -1,6 +1,10 @@
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };
+// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
+cbuffer LightCB : register(b2) {
+    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
+    float ProjA; float ProjB; float NearZ; float FarZ;
+};
 // Wind sway for instanced VOBs (flags/foliage). Mirrors D3D11's WindParams cbuffer (VS_ExInstancedObj.hlsl);
 // minHeight/maxHeight are the flat (non-WIND_META_SRV) per-visual bounding-box fallback, refreshed per visual
 // by DrawVobsInstanced before each visual's draw calls (see WindMinHeight/WindMaxHeight below).
@@ -17,7 +21,6 @@ cbuffer WindCB : register(b4)
 // Forward+ tiled point lights (root-descriptor SRVs + per-tile grid)
 StructuredBuffer<GPULight>  Lights        : register(t1);
 StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
-StructuredBuffer<uint>      LightIndexBuf : register(t3);
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -143,7 +146,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -240,7 +243,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -279,7 +282,7 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, i.col.g );
     float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     return float4( rgb, t.a * i.col.a );
 }
 
