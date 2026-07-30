@@ -874,10 +874,11 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
         WaterSSRQuality = WATER_SSR_MEDIUM;
 
-        GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
+        GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
         DisableStaticPointlights = false;
         
+        ApplyGraphicsPreset();
         ApplyAssaoPreset(1);
 
         ResetDebugSettings();
