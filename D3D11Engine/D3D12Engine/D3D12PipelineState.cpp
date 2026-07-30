@@ -1290,13 +1290,13 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
         pso.DepthStencilState.DepthEnable = TRUE;
         pso.DepthStencilState.DepthWriteMask = depth.DepthWriteEnabled ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
         pso.DepthStencilState.DepthFunc = static_cast<D3D12_COMPARISON_FUNC>(depth.DepthBufferCompareFunc);
+        pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     } else {
         pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
         pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
     }
     pso.DepthStencilState.StencilEnable = FALSE;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
     ComPtr<ID3D12PipelineState> state;
     HRESULT hr;
