@@ -31,7 +31,7 @@ runs:
       run: |
         $shortHash = $env:GITHUB_SHA.Substring(0, 7)
         $date = Get-Date -Format 'dd.MM.yyyy HH:mm'
-        "tag=nightly/$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+        "tag=nightly-$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
         "name=Nightly - $shortHash ($date)" >> $env:GITHUB_OUTPUT
 
     - name: Create nightly release
