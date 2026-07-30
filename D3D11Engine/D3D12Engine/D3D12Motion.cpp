@@ -184,13 +184,17 @@ D3D12_GPU_VIRTUAL_ADDRESS D3D12GraphicsEngine::GetMotionCbAddress() const {
 void D3D12GraphicsEngine::UploadMotionConstants() {
     if ( !m_MotionResourcesReady || !m_MotionCBMapped[m_FrameIndex] ) return;
 
-    // Identical ViewProj derivation to DrawWorldMesh / the depth prepass, so the velocity the prepass VS
-    // computes is consistent with the clip position it rasterizes to.
+    // Same ViewProj derivation as DrawWorldMesh / the depth prepass — except the TAA JITTER IS STRIPPED BACK
+    // OUT. AdvanceJitter (which ran just before this) put a sub-pixel offset into TransformProj._13/_23 so the
+    // geometry passes supersample; motion vectors must be computed WITHOUT it, or every pixel reports the
+    // frame-to-frame jitter delta as real motion and the TAA resolve chases its own tail.
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
     const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 projM = Engine::GAPI->GetProjectionMatrix();   // by VALUE — the jitter is cleared on the copy
+    projM._13 = 0.0f;
+    projM._23 = 0.0f;
     const XMMATRIX viewProj = XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) );
     XMStoreFloat4x4( &m_CurViewProjUnjittered, viewProj );
 

@@ -1100,6 +1100,48 @@ private:
     // BeginMotionGBuffer and by each of the three prepass draws.
     bool MotionGBufferActive() const;
 
+    // ---- Temporal anti-aliasing (D3D12Taa.cpp) --------------------------------------------------------------
+    // Port of Intel's Graphics Optimized TAA (MIT; Shaders/D3D12/TAAResolve.hlsl carries the attribution). The
+    // first real consumer of the motion-vector G-buffer above.
+    //
+    // Runs on the LINEAR HDR scene colour, after the fog/god-ray composition and before bloom — the standard
+    // slot, and the reason the resolve keeps its history in linear HDR (see note 4 in the shader): TAA is then
+    // transparent to everything downstream, scene colour in and scene colour out.
+    //
+    // Two history buffers ping-pong: the resolve reads m_TaaHistory[1 - m_TaaHistoryIndex] and writes
+    // m_TaaHistory[m_TaaHistoryIndex], whose .a carries the accumulated confidence weight (Intel's [0.5, 1)
+    // range). The result is then copied back over the scene colour for the rest of the chain.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TaaHistory[2];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TaaHistoryAlloc[2];
+    UINT m_TaaHistorySrvSlot[2] = { UINT_MAX, UINT_MAX };
+    UINT m_TaaHistoryUavSlot[2] = { UINT_MAX, UINT_MAX };
+    UINT m_TaaHistoryIndex = 0;
+    // TAA needs the PREVIOUS frame's depth for its disocclusion test, and cannot borrow m_PrevDepth: that one is
+    // refilled by CopyDepthForAO earlier in the SAME frame, so by the time TAA runs it already holds THIS
+    // frame's depth. Hence a private snapshot, taken at the end of RenderTAA.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TaaPrevDepth;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TaaPrevDepthAlloc;
+    UINT m_TaaPrevDepthSrvSlot = UINT_MAX;
+    bool m_TaaPrevDepthValid = false;
+    bool m_TaaResourcesReady = false;
+    // Cleared on world load / resize / whenever TAA is switched off, so a stale history can never be blended in.
+    bool m_TaaHistoryValid = false;
+
+    // Sub-pixel jitter. Uses the SAME FSR3 phase sequence D3D11PFX_TAA::AdvanceJitter does — it is already
+    // linked, and sharing it makes the planned FSR3 upscaler a drop-in rather than a second jitter regime.
+    // m_TaaJitterPixels is this frame's offset in PIXELS (what the resolve's depth lookup needs); the projection
+    // gets it in clip units. Zero whenever TAA is off, so an un-resolved jittered image can never reach the
+    // screen.
+    XMFLOAT2 m_TaaJitterPixels = { 0.0f, 0.0f };
+    int  m_TaaJitterIndex = 0;
+    UINT m_TaaFrameNumber = 0;
+    bool m_TaaJitterActive = false;
+
+    bool CreateTaaResources( INT2 size );  // (re)builds the history pair + the private previous-depth snapshot
+    void AdvanceJitter();                  // per-frame jitter into TransformProj._13/_23 (no-op when TAA is off)
+    void RenderTAA();                      // the resolve dispatch + copy back over the scene colour
+    bool IsTaaEnabled() const;             // AntiAliasingMode == AA_TAA and everything it needs exists
+
     // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------
     // Replaces the flat greyscale ambient floor in PBRLighting.hlsl's ComputeSunLightingPBR
     // (`albedo * AmbientStrength * sunLum`), which gave metals NO indirect specular at all — at metallic=1 the

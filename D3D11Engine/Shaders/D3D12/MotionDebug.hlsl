@@ -48,6 +48,7 @@ float3 DecodeOct( float2 e )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
+    // Both targets are RG16F, so one declaration serves each mode.
     Texture2D<float2> src = ResourceDescriptorHeap[SrcIndex];
     float2 v = src.SampleLevel( smpPointClamp, i.uv, 0 );
 

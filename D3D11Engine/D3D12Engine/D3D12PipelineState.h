@@ -225,6 +225,15 @@ public:
     //   Fill  — CameraVelocity.hlsl CSMain: camera-only velocity for every pixel the prepass never covered.
     //   Debug — MotionDebug.hlsl: fullscreen overlay of the velocity or normal target (DisplayVelocity setting).
     // The velocity/normal textures and their heap slots live in the engine, like the bloom/AO pyramids.
+    // Temporal anti-aliasing resolve (Shaders/D3D12/TAAResolve.hlsl — Intel's TAA, MIT). One compute pipeline;
+    // 16 root constants and fully bindless, so there are no descriptor tables to rebind. The history pair and
+    // the previous-depth snapshot are GPU resources and live in the engine (D3D12Taa.cpp).
+    struct TaaPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
+    };
+
     struct MotionPipeline {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> FillRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            FillCsBlob;
@@ -434,6 +443,7 @@ public:
     ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite, bool cullBack = false );
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
     bool CreateMotion();      // motion-vector fill compute + debug-overlay pipelines; textures stay in engine
+    bool CreateTaa();         // Intel TAA resolve compute pipeline; history buffers stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateSky();         // procedural scattering sky dome (own bindless root sig + inner/outer PSOs); dome mesh is GSky's
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
@@ -489,6 +499,7 @@ public:
     FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;
     MotionPipeline   Motion;
+    TaaPipeline      Taa;
     SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
     SkyPipeline      Sky;           // procedural scattering sky dome (Shaders/D3D12/Sky.hlsl)
     FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)

@@ -10,11 +10,11 @@
 // this pixel WAS, so a resolve reads history with `uv + velocity`. Keeping the sign the same as D3D11 means the
 // eventual TAA/FSR3 ports can share reasoning with the D3D11 implementation instead of inverting everything.
 //
-// JITTER: both matrices are UNJITTERED. There is no jitter today (MotionCB::UnjitteredViewProj is simply this
-// frame's ViewProj), but the prepass VS must go on multiplying by UnjitteredViewProj rather than reusing its
-// b0 ViewProj — the moment TAA turns jitter on, b0 becomes the jittered matrix and only this one stays clean.
-// Velocity computed from a jittered matrix carries the per-frame sub-pixel offset as fake motion, which is
-// exactly the artifact TAA then fails to resolve.
+// JITTER: both matrices are UNJITTERED, and the prepass VS multiplies by UnjitteredViewProj rather than reusing
+// its b0 ViewProj. That distinction is live now that TAA jitters the projection (AdvanceJitter writes
+// TransformProj._13/_23, so b0 IS the jittered matrix): velocity computed from a jittered matrix would carry the
+// per-frame sub-pixel offset as fake motion, which is precisely the artifact TAA then cannot resolve.
+// The clip position written to SV_POSITION deliberately stays JITTERED — that is what supersamples the image.
 
 #ifndef D3D12_MOTIONVECTORS_HLSL
 #define D3D12_MOTIONVECTORS_HLSL

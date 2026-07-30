@@ -204,6 +204,10 @@ inline constexpr DXGI_FORMAT kHdrDisplayFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 //     36-byte world vertex already uses at offset 12 — see World.hlsl's DecodeOctNormal). Consumer: XeGTAO.
 // Both are RG16F: the octahedral pair lives in [-1,1] and velocities are fractions of a screen, so fp16 has
 // ample range, and 32 bpp for the pair is half what an RGBA16F normal target would cost.
+// TWO CHANNELS, and it stays that way: RG16F UV-space motion is the interchange format every temporal consumer
+// expects (FSR3, XeGTAO's denoiser, DLSS-style APIs all take a 2-channel motion vector). Anything an individual
+// algorithm wants beyond that — Intel's TAA, for instance, likes an expected depth delta alongside it — has to
+// be derived in that algorithm's own pass rather than widened into this shared buffer.
 inline constexpr DXGI_FORMAT kVelocityFormat = DXGI_FORMAT_R16G16_FLOAT;
 inline constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
 

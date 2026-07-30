@@ -271,6 +271,11 @@ XRESULT D3D12GraphicsEngine::Init() {
                      "(no motion vectors / normal buffer — TAA, FSR3 and XeGTAO will have no input).";
         m_MotionResourcesReady = false;
     }
+    // Temporal AA (Intel's TAA resolve). Non-fatal: RenderTAA and AdvanceJitter both guard through
+    // IsTaaEnabled(), so a failure here leaves the frame un-jittered and un-resolved exactly as before.
+    if ( !m_Pipelines.CreateTaa() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the TAA pipeline (temporal AA unavailable).";
+    }
     if ( !m_Pipelines.CreateSkyIbl() ) {
         // Non-fatal: the lit shaders test the sky-IBL cube indices for 0xFFFFFFFF and fall back to the flat
         // ambient term they used before this existed, so a failure here costs indirect specular, not lighting.
@@ -1545,6 +1550,9 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     // failure m_MotionResourcesReady stays false, the depth prepass falls back to its plain depth-only PSOs and
     // the frame is unchanged — nothing consumes either target yet.
     CreateMotionResources( size );
+    // TAA history + its private previous-depth snapshot. Non-fatal for the same reason; also resets the
+    // accumulated history, which a resolution change invalidates outright.
+    CreateTaaResources( size );
     CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
     ReleaseWaterCopyResources();     // lazily rebuilt at the new size by the next frame that renders water
@@ -2413,6 +2421,9 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     // failure m_MotionResourcesReady stays false, the depth prepass falls back to its plain depth-only PSOs and
     // the frame is unchanged — nothing consumes either target yet.
     CreateMotionResources( size );
+    // TAA history + its private previous-depth snapshot. Non-fatal for the same reason; also resets the
+    // accumulated history, which a resolution change invalidates outright.
+    CreateTaaResources( size );
     CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site
     CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
     ReleaseWaterCopyResources();     // GPU is idle here; the next water frame rebuilds them at the new size

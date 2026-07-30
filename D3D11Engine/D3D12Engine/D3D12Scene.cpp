@@ -420,6 +420,14 @@ void D3D12GraphicsEngine::OnLoadWorld()
     // world's geometry into it would produce garbage occlusion for one frame. RenderSSAO falls back to the
     // white "no occlusion" mask until CopyDepthForAO refills it at the end of the first frame here.
     m_PrevDepthValid = false;
+    // Same reasoning for TAA: the accumulated history and its depth snapshot belong to the world being left.
+    // Blending them into the new one would smear the old level across the first frames of the new one, and the
+    // depth-confidence test would reject essentially every pixel while doing it.
+    m_TaaHistoryValid = false;
+    m_TaaPrevDepthValid = false;
+    // Motion vectors: the previous camera belongs to the old world too, so the first frame here must report
+    // zero motion rather than reproject through a camera that no longer means anything.
+    m_MotionHistoryValid = false;
 }
 
 
@@ -2050,6 +2058,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
     TracyD3D12ZoneCGX(m_CmdList.Get(), "OnStartWorldRendering");
     
+    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = RenderStage::STAGE_DRAW_WORLD;
     Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE);
 
 	// Decide ONCE, before anything draws, whether this frame's post-pass height fog runs (RenderFogAndGodRays,
@@ -2114,6 +2123,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// split D3D11ShadowMap uses (PrepareRender enqueues, DrawWorldShadow's WaitShadowCullingComplete joins).
 	m_ShadowMap.Prepare();
 
+	// TAA sub-pixel jitter, into TransformProj._13/_23 so every geometry pass below inherits it via
+	// GothicAPI::GetProjectionMatrix. MUST precede UploadMotionConstants, which deliberately strips the jitter
+	// back out for its UnjitteredViewProj. No-op unless AntiAliasingMode == AA_TAA. See D3D12Taa.cpp.
+	AdvanceJitter();
 	// Motion vectors: capture this frame's (unjittered) camera into the MotionCB the G-buffer depth prepass
 	// binds, and derive its inverse for the end-of-frame camera-velocity fill. Must precede the prepass; the
 	// matching StoreVobPreviousTransforms at the bottom of this function rolls it into history. See D3D12Motion.cpp.
@@ -2327,6 +2340,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
 	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
+	// Temporal AA, on the finished LINEAR HDR scene: after the fog/god-ray composition (those are part of the
+	// scene and belong inside the temporal accumulation) and BEFORE bloom + luminance adaptation (blooming or
+	// auto-exposing an aliased frame makes the flicker TAA exists to remove worse). The resolve writes the
+	// scene colour back in place, so nothing below needs to know it ran. No-op unless AA_TAA.
+	RenderTAA();
+
 	RenderBloom();
 	RenderLuminanceAdapt();
 

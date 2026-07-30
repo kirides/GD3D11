@@ -2863,6 +2863,46 @@ bool D3D12PipelineState::CreateMotion() {
     return true;
 }
 
+bool D3D12PipelineState::CreateTaa() {
+    // Intel's Graphics Optimized TAA resolve (Shaders/D3D12/TAAResolve.hlsl). Non-fatal: RenderTAA guards on the
+    // PSO and the frame simply stays un-anti-aliased (or on SMAA) if this fails.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // 0 = b0 MotionCB as a ROOT CBV: the SAME three matrices the G-buffer prepass and the camera-velocity fill
+    // bind. The resolve needs InvUnjitteredViewProj + PrevViewProj to reconstruct the expected previous depth,
+    // which is how the depth-confidence test works without Intel's third velocity channel (the motion-vector
+    // buffer stays a 2-channel RG16F for the other temporal consumers). Three matrices are far past the
+    // root-constant budget, hence a CBV.
+    // 1 = b1 16 root constants (resolution, jitter, frame number, feature flags, six bindless heap indices and
+    // the depth tolerance). Every texture and the output UAV are fetched through ResourceDescriptorHeap, so
+    // there is no descriptor table at all — hence CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED.
+    D3D12RootLayout& rs = Layout( "Taa" );
+    rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 0: b0 MotionCB
+    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 TaaCB
+    // s0 linear-clamp: the bicubic/bilinear history fetches. s1 point-clamp: the depth gathers, which must not
+    // filter across a depth discontinuity.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP ) );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_ALL ) );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Taa.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "TAAResolve.hlsl", "CSMain", Shadermodel_CS, Taa.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { Taa.CsBlob.Get(), "TAAResolve.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Taa.RootSig.Get();
+    pso.CS = { Taa.CsBlob->GetBufferPointer(), Taa.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( Taa.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (TAA resolve).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateSky() {
     // Procedural atmospheric-scattering sky dome (Shaders/D3D12/Sky.hlsl) — the replacement for Gothic's
     // fixed-function sky. Non-fatal: DrawAtmosphereSkyDome() guards on both PSOs and DrawSky() falls back to
