@@ -134,6 +134,13 @@ public:
     
     zTResourceCacheState CacheIn( float priority ) {
         zTResourceCacheState cacheState = GetCacheState();
+        if (GetCurrentThreadId() != Engine::GAPI->GetMainThreadID()) {
+            if (auto surface = GetSurface(); !surface || !surface->IsSurfaceReady() ) {
+                return zRES_CACHED_OUT;
+            }
+            return cacheState;
+        }
+
         if ( cacheState == zRES_CACHED_IN ) {
             TouchTimeStamp();
         } else/* if ( cacheState == zRES_CACHED_OUT || zCTextureCacheHack::ForceCacheIn )*/ {
