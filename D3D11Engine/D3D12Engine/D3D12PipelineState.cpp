@@ -89,14 +89,20 @@ bool D3D12PipelineState::CreateWorld() {
     rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );                     // 2: b1 fog — VS: CamPosWS; PS: color/near/far
 
     // 3 = point-light StructuredBuffer as a ROOT SRV at t1 (no descriptor slot consumed — a GPU VA
-    // straight in the root; aligns with the CPU-offload/bindless direction). 4 = b2 { light count,
-    // NumTilesX }. 5/6 = the Forward+ per-tile grid + index-list root SRVs at t2/t3. All four MUST
-    // be bound (BindFrameLights) by every draw using this root sig with a light-reading PSO (World.PSO/
+    // straight in the root; aligns with the CPU-offload/bindless direction). 4 = b2 LightCB. 5 = the
+    // clustered Forward+ per-cluster mask root SRV at t2. Both non-SRV params MUST be bound
+    // (BindFrameLights) by every draw using this root sig with a light-reading PSO (World.PSO/
     // World.VobPSO), else the count/grid are undefined root values and the shader loops away.
+    // Param 6 (t3) used to be the per-tile light-index list; clustered Forward+ (P2.14) replaced it with
+    // a 64-bit mask in LightGrid itself, so t3 is no longer declared by any shader and this slot is now
+    // PERMANENTLY UNBOUND — left in place (rather than renumbering every later param + BindFrameLights
+    // call site) since nothing ever reads register(t3) any more. Same pattern as the WindCB param below.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );        // 3: t1 light StructuredBuffer
-    rs.AddConstants( 2, 5, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex, PointShadowDynIndex }
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );        // 5: t2 per-tile LightGrid {Offset,Count}
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );        // 6: t3 per-tile light-index list
+    // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex, PointShadowDynIndex,
+    //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
+    rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );        // 5: t2 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );        // 6: t3 UNUSED/dead (see above)
 
     // 7 = shadow-sampling CB (b3) as a ROOT CBV (cascade view-projs are too big for root constants).
     // 8 = the CSM shadow-map Texture2DArray SRV (t4) via a one-entry descriptor table off the shared
@@ -640,10 +646,10 @@ bool D3D12PipelineState::CreateGrass() {
     rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );
     rs.AddConstants( 2, 8, D3D12_SHADER_VISIBILITY_ALL );      // 4: b2 fog — VS: CamPosWS; PS: color/near/far
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 light StructuredBuffer (root SRV)
-    // 6: b3 { LightCount, NumTilesX, LimitLightIntensity, pad }
-    rs.AddConstants( 3, 5, D3D12_SHADER_VISIBILITY_PIXEL );   // b3 LightCB (5th = PointShadowDynIndex)
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-tile LightGrid
-    rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t4 per-tile light-index list
+    // 6: b3 LightCB, grown 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
+    rs.AddConstants( 3, 9, D3D12_SHADER_VISIBILITY_PIXEL );   // b3 LightCB
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t4 UNUSED/dead (formerly the per-tile light-index list — see World.RootSig)
     rs.AddCBV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 9: b4 shadow-sampling CB (root CBV)
     rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 CSM shadow-map array
     // 11: t6 point-shadow cube array (PBRLighting.hlsl requires this symbol)
@@ -1422,9 +1428,11 @@ bool D3D12PipelineState::CreateDecal() {
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 diffuse
     rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );      // 2: b1 fog — VS: CamPosWS; PS: color/near/far
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 3: t1 light StructuredBuffer
-    rs.AddConstants( 2, 5, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB (5th = PointShadowDynIndex)
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 per-tile LightGrid
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t3 per-tile light-index list
+    // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (PBRLighting.hlsl's
+    // ComputeZSlice). Param 6 (t3, formerly the per-tile light-index list) is now dead/unbound — see World.RootSig.
+    rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t3 UNUSED/dead
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: b3 shadow CB
     rs.AddTable( D3D12RootLayout::SRVRange( 4 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
     rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t5 point-shadow cubes
@@ -1564,9 +1572,10 @@ bool D3D12PipelineState::CreateSkeletal() {
     // Forward+ point lights (mirrors World.RootSig params 3/4/5/6, here at 4..7 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 4: t1 light StructuredBuffer (root SRV)
-    rs.AddConstants( 4, 5, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB (5th = PointShadowDynIndex)
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t2 per-tile LightGrid {Offset,Count}
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-tile light-index list
+    // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
+    rs.AddConstants( 4, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t2 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 UNUSED/dead (formerly the per-tile light-index list — see World.RootSig)
     // 8: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_PIXEL );
     // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB);
@@ -2153,21 +2162,20 @@ bool D3D12PipelineState::CreateWater() {
 }
 
 bool D3D12PipelineState::CreateLightCull() {
-    // Forward+ tiled light-culling compute pipeline (P2.9b-2). One GLOBAL compute root signature + PSO,
-    // created once. b0 = cull constants (8 root 32-bit values); t0 = the point-light StructuredBuffer as a
-    // root SRV (same UPLOAD buffer the world PS reads); u0/u1 = the light grid / index-list DEFAULT-heap UAVs
-    // as root UAVs (RWStructuredBuffers are valid as root UAVs; stride comes from the HLSL declaration). t1 =
-    // the depth buffer SRV, which (being a Texture2D) can't be a root SRV, so it rides a one-entry descriptor
-    // table off the shared SRV heap — used to tighten each tile's far-Z bound (P2.9b-3 flicker fix).
+    // CLUSTERED Forward+ light-culling compute pipeline (P2.14; tiled P2.9b-2 predecessor). One GLOBAL compute
+    // root signature + PSO, created once. b0 = cull constants (8 root 32-bit values); t0 = the point-light
+    // StructuredBuffer as a root SRV (same UPLOAD buffer the world PS reads); u0 = the per-cluster 64-bit mask
+    // DEFAULT-heap UAV as a root UAV (RWStructuredBuffer is valid as a root UAV; stride comes from the HLSL
+    // declaration). Cluster Z bounds are now analytic (log-distributed over CullCB's NearZ/FarZ), not derived
+    // from the depth prepass, so this pass no longer touches the depth buffer at all — no t1 DepthTex table,
+    // no depth-buffer barrier round-trip in DispatchLightCulling, and no ordering dependency on the prepass.
     ID3D12Device* device = m_Device->GetDevice();
 
     D3D12RootLayout& rs = Layout( "LightCull" );
-    // 0: b0 CullCB — ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + ProjA + ProjB
+    // 0: b0 CullCB — ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + NearZ + FarZ
     rs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );
     rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 SB_Lights
-    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 2: u0 RW_LightGrid
-    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 3: u1 RW_LightIndexList
-    rs.AddTable( D3D12RootLayout::SRVRange( 1 ), D3D12_SHADER_VISIBILITY_ALL );   // 4: t1 DepthTex (SRV heap)
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 2: u0 RW_LightGrid (per-cluster 64-bit mask)
 
     if ( !rs.Build( device ) )   // compute: no IA input layout
         return false;

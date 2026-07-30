@@ -16,14 +16,17 @@
 // with CULL_NONE.
 cbuffer FrameCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };
+// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
+cbuffer LightCB : register(b2) {
+    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
+    float ProjA; float ProjB; float NearZ; float FarZ;
+};
 
 #include "include/ForwardPlusTypes.hlsl"
 
-// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — same t1/t2/t3 the world pass binds.
+// Forward+ tiled point lights (root-descriptor SRVs + per-cluster mask) — same t1/t2 the world pass binds.
 StructuredBuffer<GPULight>  Lights        : register(t1);
 StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
-StructuredBuffer<uint>      LightIndexBuf : register(t3);
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);   // linear CLAMP: a decal is a single [0,1] sprite; wrap would bleed the edge
@@ -95,9 +98,9 @@ VS_OUT VSMain( VS_IN i )
     return o;
 }
 
-// Shared by both entry points: the Forward+ evaluation at the decal's surface. `svpos` is SV_Position.xy,
-// which AccumTiledPointLights needs to find the light tile.
-float3 ShadeDecal( float3 albedo, float3 wpos, float3 nrm, float2 svpos )
+// Shared by both entry points: the Forward+ evaluation at the decal's surface. `svpos` is SV_Position.xyz,
+// which AccumTiledPointLights needs to find the light cluster (xy = screen tile, z = hardware depth -> Z slice).
+float3 ShadeDecal( float3 albedo, float3 wpos, float3 nrm, float3 svpos )
 {
     float3 N = normalize( nrm );
     // Double-sided: shade the face actually turned toward the camera, else a wall decal seen from its "back"
@@ -118,7 +121,7 @@ float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully 
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    float3 rgb = ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xy );
+    float3 rgb = ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xyz );
     // Distance fog, like every other opaque surface (D3D11 draws this pass with PS_World_NoMV, which fogs).
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -130,5 +133,5 @@ float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend stat
     // Deliberately NOT fogged: this one PS is shared by the ADD/MUL/MUL2 blend modes, where lerping toward the
     // fog colour would brighten (ADD) or darken (MUL) the surface instead of fading it into the distance.
     // D3D11's PS_Transparency doesn't fog these either.
-    return float4( ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xy ), t.a * i.alpha );
+    return float4( ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xyz ), t.a * i.alpha );
 }

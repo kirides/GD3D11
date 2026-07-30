@@ -5,6 +5,28 @@
 // (LightCB/ShadowCB live at different b-slots per shader) still belong to each file, only the *shapes* are
 // common here.
 
+#define TILE_SIZE 16u
+// Clustered Forward+ (P2.14): a global cap on SIMULTANEOUSLY-SHADED point lights, not a per-tile cap. The
+// frame's light buffer (kMaxFrameLights in D3D12Scene.cpp, sorted nearest-to-camera) feeds only its first
+// MAX_ACTIVE_LIGHTS entries into the cluster bitmask — thread ti of LightCull.hlsl's CSMain tests light ti, and
+// the mask has exactly this many bits, so the constant is load-bearing on BOTH sides, not just a cap. Lights
+// beyond this rank in the sorted buffer simply never light anything (same "farthest dropped first" policy the
+// old per-tile prefix-sum cap used, just applied once globally instead of independently per tile).
+// Must match LightCull.hlsl's numthreads(MAX_ACTIVE_LIGHTS,1,1) AND kMaxFrameLights in D3D12Scene.cpp (raising
+// one without the other either wastes capacity or silently drops lights past the smaller of the two).
+// Raised from 64 (P2.14's initial cap clipped visibly in ambient-heavy scenes — Gothic can have 400+
+// simultaneously visible point lights once static "atmospheric" fill lights are counted) to 1024 = 32 * 32-bit
+// words. Each cluster's mask is MASK_WORDS * 4 bytes: at 1080p (~8160 16x16 tiles * NUM_Z_SLICES=16 slices =
+// 130560 clusters) that's ~16.7 MB total — small next to a single HDR scene target, so still "low" by this
+// codebase's standards despite the 16x jump from the 64-bit original.
+#define MAX_ACTIVE_LIGHTS 1024u
+#define MASK_WORDS (MAX_ACTIVE_LIGHTS / 32u)
+// Cluster Z slice count (log-distributed over [NearZ, FarZ], see LightCB's NearZ/FarZ/ProjA/ProjB and
+// PBRLighting.hlsl's ComputeZSlice). Must match kNumZSlices in D3D12Scene.cpp — it sizes the LightGrid buffer
+// and both sides derive the SAME cluster index from it, so a mismatch silently misindexes every cluster.
+#define NUM_Z_SLICES 16u
+#define NUM_CSM_CASCADES 3
+
 // Per-frame visible point light (torches/campfires/spells), 64 B. Must stay in lockstep with the C++ GPULight
 // in D3D12Engine/D3D12EngineCommon.h and with LightCull.hlsl's TiledPointLight copy.
 // Forward shaders read PositionWorld/Range/Color for shading; PositionView feeds the tile cull;
@@ -19,7 +41,10 @@ struct GPULight {
     float3 PositionWorld; int ShadowCubeIndex;
     float3 ShadowOrigin;  float ShadowRange;
 };
-struct LightGrid { uint Offset; uint Count; };
+// Clustered Forward+ grid cell: a MAX_ACTIVE_LIGHTS-bit membership mask over the frame's active light list (bit
+// i set = light i is visible in this cluster), NOT an {Offset,Count} index slice — see LightCull.hlsl/
+// PBRLighting.hlsl's AccumTiledPointLights. MASK_WORDS * 4 bytes per cluster.
+struct LightGrid { uint Mask[MASK_WORDS]; };
 
 // ShadowCubeIndex encoding: -1 = unshadowed, else (slot | tier). Bit 30 selects the low-res static cube array
 // over the full-res dynamic one, and keeps the value positive so "ShadowCubeIndex >= 0" still means shadowed.
@@ -28,8 +53,3 @@ static const int kShadowTierLow  = 0x40000000;
 // Full-res slots only; absent means a pure static shadow and no second sample. Mirrors D3D12EngineCommon.h.
 static const int kShadowHasDynamic = 0x20000000;
 static const int kShadowSlotMask = 0x1FFFFFFF;
-
-#define TILE_SIZE 16u
-// Must match LightCull.hlsl's copy AND kMaxLightsPerTile in D3D12Scene.cpp (it strides RW_LightIndexList).
-#define MAX_LIGHTS_PER_TILE 64u
-#define NUM_CSM_CASCADES 3

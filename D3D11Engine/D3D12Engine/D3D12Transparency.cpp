@@ -381,7 +381,7 @@ void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
     // parameter DrawVobsInstanced binds. Fog is bound for the VS's CamPosWS even though the PS drops the term.
     const FogConstants fog = MakeSceneFogConstants();
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );                                       // b1 fog
-    BindFrameLights();                                                                               // 3..6
+    BindFrameLights();                                                                               // 3..5
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );                  // b3 shadow CB
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
     m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );  // t5 cubes

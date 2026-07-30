@@ -12,14 +12,17 @@ cbuffer GrassCB : register(b1)
     float3 G_PlayerPosWS;     float _gpad1;
 };
 cbuffer FogCB : register(b2) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b3) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex; };
+// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
+cbuffer LightCB : register(b3) {
+    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
+    float ProjA; float ProjB; float NearZ; float FarZ;
+};
 
 #include "include/ForwardPlusTypes.hlsl"
 
-// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — see World.hlsl for the rationale.
+// Forward+ tiled point lights (root-descriptor SRVs + per-cluster mask) — see World.hlsl for the rationale.
 StructuredBuffer<GPULight>  Lights        : register(t2);
 StructuredBuffer<LightGrid> LightGridBuf  : register(t3);
-StructuredBuffer<uint>      LightIndexBuf : register(t4);
 
 Texture2D    tx       : register(t0);   // grass blade texture (GVegetationBox::VegetationTexture)
 Texture2D    txGround : register(t1);   // ground/undercoat texture (GVegetationBox::MeshTexture) — tints the blades
@@ -157,7 +160,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // the reason this used to pass a literal 1.0.
     float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, 0.9, 0.0 );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, 0.9, 0.0 );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
