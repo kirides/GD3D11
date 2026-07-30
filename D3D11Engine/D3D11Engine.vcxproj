@@ -1155,6 +1155,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zCResourceManager.h" />
     <ClInclude Include="zCRndD3D.h" />
     <ClInclude Include="zCSkyController_Outdoor.h" />
+    <ClInclude Include="zCResource.h" />
     <ClInclude Include="zCTexture.h" />
     <ClInclude Include="zCThread.h" />
     <ClInclude Include="zCTimer.h" />

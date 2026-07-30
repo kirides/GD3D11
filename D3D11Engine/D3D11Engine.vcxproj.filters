@@ -364,6 +364,9 @@
     <ClInclude Include="zCThread.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
+    <ClInclude Include="zCResource.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
     <ClInclude Include="zCDecal.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
