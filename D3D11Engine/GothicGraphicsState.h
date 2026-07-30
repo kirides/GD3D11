@@ -532,6 +532,35 @@ struct SAOSettings {
     float BlurSharpness;
 };
 
+// Intel XeGTAO. D3D12 ONLY — it is what AOMode::AO_ASSAO selects on that backend (D3D11 keeps its own ASSAO
+// port, which reads AssaoSettings). Mirrors XeGTAO::GTAOSettings field-for-field except that Radius is in
+// GOTHIC WORLD UNITS rather than metres: Intel's default of 0.5 m becomes 50 here, since 1 m == 100 units
+// (cf. HBAOSettings::MetersToViewSpaceUnits). The remaining values are Intel's auto-tuned defaults, exposed
+// because XE_GTAO_USE_DEFAULT_CONSTANTS is 0 in our shader so they can be tuned live.
+struct GTAOSettings {
+    GTAOSettings() {
+        QualityLevel = 2;
+        DenoisePasses = 1;
+        Radius = 50.0f;
+        RadiusMultiplier = 1.457f;
+        FalloffRange = 0.615f;
+        SampleDistributionPower = 2.0f;
+        ThinOccluderCompensation = 0.0f;
+        FinalValuePower = 2.2f;
+        DepthMIPSamplingOffset = 3.30f;
+    }
+
+    int QualityLevel;                   // 0 low, 1 medium, 2 high, 3 ultra — picks the main-pass entry point
+    int DenoisePasses;                  // 0 disabled, 1 sharp, 2 medium, 3 soft
+    float Radius;                       // view-space radius of the occlusion sphere, in Gothic units
+    float RadiusMultiplier;             // [0.3, 3.0] counters screen-space bias; Intel's auto-tune result
+    float FalloffRange;                 // [0.0, 1.0] fades sample impact towards the radius edge
+    float SampleDistributionPower;      // [1.0, 3.0] >1 concentrates samples near the centre (crevices)
+    float ThinOccluderCompensation;     // [0.0, 0.7] discards samples behind the centre sooner
+    float FinalValuePower;              // [0.5, 5.0] occlusion = pow( occlusion, this )
+    float DepthMIPSamplingOffset;       // [2.0, 6.0] bandwidth/quality trade-off in the MIP selection
+};
+
 struct GothicRendererSettings {
     enum EPointLightShadowMode {
         PLS_DISABLED = 0,
@@ -1115,6 +1144,7 @@ struct GothicRendererSettings {
     HBAOSettings HbaoSettings;
     SAOSettings SaoSettings;
     ASSAO_Settings AssaoSettings;
+    GTAOSettings GtaoSettings;   // D3D12's AO_ASSAO implementation — see the struct comment
     AOMode AoMode;
 
     bool FixViewFrustum;

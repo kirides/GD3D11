@@ -2790,6 +2790,59 @@ bool D3D12PipelineState::CreateAO() {
     return true;
 }
 
+bool D3D12PipelineState::CreateGtao() {
+    // Intel XeGTAO — what AOMode::AO_ASSAO selects on D3D12 (Shaders/D3D12/XeGTAO.hlsl drives the vendored
+    // XeGTAO.h/.hlsli next to it). One root signature for all eight passes:
+    //   0 = b0, 24 root constants: XeGTAO's GTAOConstants block (see the static_assert in D3D12GTAO.cpp).
+    //   1 = b1, 12 root constants: the bindless heap indices for whichever pass is dispatching.
+    // Every texture and UAV is fetched through ResourceDescriptorHeap (SM6.6), so there are no descriptor
+    // tables — hence CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, the same shape as the TAA resolve.
+    // Non-fatal throughout: RenderGTAO() guards on the PSOs and the AO chain falls back to the simple SSAO path.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "Gtao" );
+    rs.AddConstants( 0, 24, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 GTAOConstants
+    rs.AddConstants( 1, 12, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 GTAOBindingsCB
+    // s0 point-clamp: XeGTAO gathers depth quads and samples explicit MIP levels. Any filtering would blend
+    // across depth discontinuities and, per Intel's note in the main pass, interpolate depths within a MIP.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 0, D3D12_SHADER_VISIBILITY_ALL ) );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Gtao.RootSig = rs.RootSig();
+
+    // Compile + PSO in one step per entry point; the whole feature is all-or-nothing (a missing quality level
+    // would silently downgrade at runtime), so any failure aborts and leaves every Gtao PSO null.
+    auto makePass = [&]( const char* entry, ID3DBlob** blob, ID3D12PipelineState** pso ) -> bool {
+        if ( !m_Shaders->CompileFromFile( "XeGTAO.hlsl", entry, Shadermodel_CS, blob ) )
+            return false;
+        rs.ValidateShaders( { { *blob, entry, D3D12_SHADER_VISIBILITY_ALL } } );
+        D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+        desc.pRootSignature = Gtao.RootSig.Get();
+        desc.CS = { ( *blob )->GetBufferPointer(), ( *blob )->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( pso ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (XeGTAO " << entry << ").";
+            return false;
+        }
+        return true;
+        };
+
+    // Intel's quality tiers, in GTAOSettings::QualityLevel order.
+    static const char* const kMainEntries[4] = { "CSGTAOLow", "CSGTAOMedium", "CSGTAOHigh", "CSGTAOUltra" };
+
+    if ( !makePass( "CSPrefilterDepths16x16", Gtao.PrefilterCsBlob.ReleaseAndGetAddressOf(), Gtao.PrefilterPSO.ReleaseAndGetAddressOf() )
+        || !makePass( "CSGenerateNormals", Gtao.NormalsCsBlob.ReleaseAndGetAddressOf(), Gtao.NormalsPSO.ReleaseAndGetAddressOf() )
+        || !makePass( "CSDenoisePass", Gtao.DenoiseCsBlob.ReleaseAndGetAddressOf(), Gtao.DenoisePSO.ReleaseAndGetAddressOf() )
+        || !makePass( "CSDenoiseLastPass", Gtao.DenoiseLastCsBlob.ReleaseAndGetAddressOf(), Gtao.DenoiseLastPSO.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    for ( int q = 0; q < 4; ++q ) {
+        if ( !makePass( kMainEntries[q], Gtao.MainCsBlob[q].ReleaseAndGetAddressOf(), Gtao.MainPSO[q].ReleaseAndGetAddressOf() ) )
+            return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateMotion() {
     // Motion-vector G-buffer support passes (D3D12Motion.cpp). Non-fatal throughout: the engine guards on each
     // PSO, and losing them costs the fill (leaving sky/grass/water at the clear sentinel) or the debug view,

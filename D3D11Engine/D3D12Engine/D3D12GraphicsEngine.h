@@ -990,6 +990,13 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AOBlurTempAlloc;
     UINT m_AOMaskSrvSlot = UINT_MAX;    // bindless index the lit PS reads (final blurred result)
     UINT m_AOMaskUavSlot = UINT_MAX;    // main-pass output + blur-pass-2 output
+    // Second UAV over the SAME m_AOMask texels, typed R8_UINT instead of R8_UNORM. That is why m_AOMask is
+    // created R8_TYPELESS: XeGTAO's denoise writes the AO term as a raw `uint(value * 255 + 0.5)` (Intel's
+    // packing, shared with its bent-normal variant), while every reader — the lit pixel shaders and the simple
+    // SSAO blur — wants a float in [0,1]. An R8_UNORM SRV over the same bits decodes that byte back to exactly
+    // the value written, so the two AO implementations can share one output texture and one consumer path
+    // without either shader converting.
+    UINT m_AOMaskUintUavSlot = UINT_MAX;
     UINT m_AOBlurTempUavSlot = UINT_MAX; // blur-pass-1 output
     // The blur passes' SRV descriptor TABLE needs its 2 entries (AO input, depth) heap-contiguous — m_DepthSrvSlot
     // lives elsewhere in the heap, so each direction gets its own 2-slot pair with a private copy of the depth
@@ -1036,7 +1043,48 @@ private:
     void UploadAoReprojConstants();           // publishes m_PrevDepth* into the shadow CB for the lit PS
     void CopyDepthForAO();                    // end-of-world-render snapshot of the complete depth buffer
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp/m_PrevDepth + persistent SRV/UAV slots
-    void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
+    void RenderSSAO();                        // the AO entry point: publishes the reprojection CB, then runs XeGTAO or simple SSAO
+    void RenderSimpleSSAO();                  // main estimate -> separable blur (Shaders/D3D12/SSAO.hlsl)
+
+    // ---- Intel XeGTAO (D3D12GTAO.cpp) ----------------------------------------------------------------------
+    // Ground-truth ambient occlusion; this is what AOMode::AO_ASSAO selects on D3D12 (D3D11 keeps its own ASSAO
+    // port). Reads the SAME previous-frame depth snapshot the simple SSAO path does, for the same reason (see
+    // m_PrevDepth above) and writes the SAME m_AOMask, so the whole consumer side — the reprojected bindless
+    // fetch in include/ScreenSpaceAO.hlsl — is untouched and the two implementations are interchangeable.
+    //
+    // Four private intermediates, all recreated on resize alongside m_AOMask:
+    //   m_GtaoWorkingDepth  R32_FLOAT with 5 MIPs — view-space depth pyramid built by the prefilter pass. FP32
+    //                       rather than Intel's default R16_FLOAT because Gothic's view depths run past fp16's
+    //                       65504 ceiling near the horizon (see the header of Shaders/D3D12/XeGTAO.hlsl).
+    //   m_GtaoNormals       R32_UINT — view-space normals packed R11G11B10_UNORM, generated from the same depth
+    //                       snapshot. Deliberately NOT the prepass normal G-buffer: that one omits grass/water
+    //                       and belongs to this frame's camera, not the snapshot's.
+    //   m_GtaoEdges         R8_UNORM — packed depth edges the denoiser weights by.
+    //   m_GtaoAOTerm[2]     R8_UINT — the working AO term, ping-ponged across denoise passes. The final pass
+    //                       writes m_AOMask through m_AOMaskUintUavSlot instead.
+    // All four rest in UNORDERED_ACCESS between frames, like the bloom pyramid and the AO mask.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoWorkingDepth;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoWorkingDepthAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoNormals;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoNormalsAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoEdges;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoEdgesAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoAOTerm[2];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoAOTermAlloc[2];
+    static constexpr UINT kGtaoDepthMipLevels = 5;   // must match XE_GTAO_DEPTH_MIP_LEVELS (hard-coded to 5)
+    UINT m_GtaoWorkingDepthSrvSlot = UINT_MAX;                   // full MIP chain, read by the main pass
+    UINT m_GtaoWorkingDepthUavSlot[kGtaoDepthMipLevels] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
+    UINT m_GtaoNormalsSrvSlot = UINT_MAX;
+    UINT m_GtaoNormalsUavSlot = UINT_MAX;
+    UINT m_GtaoEdgesSrvSlot = UINT_MAX;
+    UINT m_GtaoEdgesUavSlot = UINT_MAX;
+    UINT m_GtaoAOTermSrvSlot[2] = { UINT_MAX, UINT_MAX };
+    UINT m_GtaoAOTermUavSlot[2] = { UINT_MAX, UINT_MAX };
+    bool m_GtaoResourcesReady = false;
+    UINT m_GtaoFrameNumber = 0;                // drives the temporal noise rotation; only advances while TAA is on
+    bool CreateGtaoResources( INT2 size );     // (re)builds the four intermediates + their persistent heap slots
+    bool IsGtaoEnabled() const;                // AoMode == AO_ASSAO and every resource/PSO it needs exists
+    void RenderGTAO();                         // prefilter -> normals -> GTAO integral -> N denoise passes
 
     // ---- Motion-vector + normal G-buffer (D3D12Motion.cpp) -------------------------------------------------
     // Two extra full-resolution targets the Forward+ DEPTH PREPASS writes alongside depth, via the *GBuf PSO

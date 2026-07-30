@@ -917,7 +917,7 @@ void ImGuiShim::RenderSettingsWindow()
                     {"Disabled", AOMode::AO_NONE, nullptr},
                     {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
                     {"SAO", AOMode::AO_SAO, nullptr},
-                    {"ASSAO", AOMode::AO_ASSAO, "Intel ASSAO (Adaptive Screen Space Ambient Occlusion)"},
+                    {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
             };
             if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
@@ -1974,7 +1974,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     {"Disabled", AOMode::AO_NONE, nullptr},
                     {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
                     {"SAO", AOMode::AO_SAO, nullptr},
-                    {"ASSAO", AOMode::AO_ASSAO, "Intel ASSAO (Adaptive Screen Space Ambient Occlusion)"},
+                    {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
                 };
                 if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
                         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
@@ -2016,6 +2016,47 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     ImGui::DragFloat( "Intensity", &settings.SaoSettings.Intensity, 0.01f, 0.0f, 10.0f );
                     ImGui::SliderInt( "Samples", &settings.SaoSettings.NumSamples, 4, 64 );
                     ImGui::DragFloat( "Blur Sharpness", &settings.SaoSettings.BlurSharpness, 0.01f, 0.0f, 16.0f );
+                } else if ( settings.AoMode == AOMode::AO_ASSAO
+                            && settings.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+                    // D3D12 implements AO_ASSAO with Intel XeGTAO instead of ASSAO, so it gets its own controls.
+                    // Defaults and ranges are Intel's (XeGTAO.h GTAOImGuiSettings); Radius is the one that
+                    // differs, being in Gothic world units rather than metres.
+                    ImGui::SeparatorText( "XeGTAO Settings (D3D12)" );
+                    ImGui::TextUnformatted( "Intel XeGTAO — ground-truth ambient occlusion." );
+
+                    static std::vector<std::pair<const char*, int>> gtaoQuality = {
+                        {"Low", 0}, {"Medium", 1}, {"High", 2}, {"Ultra", 3}
+                    };
+                    if ( ImComboBox( "Quality Level", gtaoQuality, &settings.GtaoSettings.QualityLevel ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Higher levels take more samples per pixel (slices x steps: 1x2, 2x2, 3x3, 9x3)." );
+
+                    static std::vector<std::pair<const char*, int>> gtaoDenoise = {
+                        {"Disabled", 0}, {"Sharp", 1}, {"Medium", 2}, {"Soft", 3}
+                    };
+                    if ( ImComboBox( "Denoising", gtaoDenoise, &settings.GtaoSettings.DenoisePasses ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Number of edge-aware spatial denoise passes.\n'Sharp' is enough with TAA on." );
+
+                    ImGui::DragFloat( "Radius", &settings.GtaoSettings.Radius, 1.0f, 1.0f, 10000.0f, "%.0f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "World-space radius of the occlusion sphere, in GOTHIC UNITS (1 m = 100).\nDefault 50 (0.5 m)." );
+
+                    if ( ImGui::CollapsingHeader( "Auto-tuned settings (heuristics)" ) ) {
+                        ImGui::DragFloat( "Radius Multiplier", &settings.GtaoSettings.RadiusMultiplier, 0.01f, 0.3f, 3.0f, "%.3f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.3, 3.0] Counters inherent screen-space bias. Intel's auto-tune result: 1.457." );
+                        ImGui::DragFloat( "Falloff Range", &settings.GtaoSettings.FalloffRange, 0.01f, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.0, 1.0] Fades sample impact towards the radius edge. Default 0.615." );
+                        ImGui::DragFloat( "Sample Distribution Power", &settings.GtaoSettings.SampleDistributionPower, 0.01f, 1.0f, 3.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[1.0, 3.0] >1 focuses samples near the centre (small crevices). Default 2.0." );
+                        ImGui::DragFloat( "Thin Occluder Compensation", &settings.GtaoSettings.ThinOccluderCompensation, 0.01f, 0.0f, 0.7f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.0, 0.7] Discards samples behind the centre sooner, countering depth-only geometry bias. Default 0.0." );
+                        ImGui::DragFloat( "Final Power", &settings.GtaoSettings.FinalValuePower, 0.01f, 0.5f, 5.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[0.5, 5.0] occlusion = pow( occlusion, this ). Default 2.2 — raise to darken." );
+                        ImGui::DragFloat( "Depth MIP Sampling Offset", &settings.GtaoSettings.DepthMIPSamplingOffset, 0.05f, 0.0f, 30.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                        ImGui::SetItemTooltip( "[2.0, 6.0] Bandwidth/quality trade-off. Lower = sharper but less temporally stable. Default 3.30." );
+                    }
                 } else if ( settings.AoMode == AOMode::AO_ASSAO ) {
                     ImGui::SeparatorText( "ASSAO Settings" );
 

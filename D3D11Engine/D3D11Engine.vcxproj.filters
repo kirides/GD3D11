@@ -1000,6 +1000,9 @@
     <ClCompile Include="D3D12Engine\D3D12Taa.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GTAO.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Cull.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>

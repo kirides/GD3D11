@@ -262,13 +262,19 @@ XRESULT D3D12GraphicsEngine::Init() {
         // leaves the AO mask at white (no occlusion) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
     }
+    // Intel XeGTAO — AoMode::AO_ASSAO on this backend. Non-fatal: IsGtaoEnabled() reports false and RenderSSAO
+    // falls back to the simple SSAO path above, so a failure here costs AO quality, never AO.
+    if ( !m_Pipelines.CreateGtao() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the XeGTAO pipeline "
+                     "(AO mode 'ASSAO' will fall back to the simple SSAO).";
+    }
     // Motion-vector G-buffer support (camera-velocity fill + debug overlay). Non-fatal: nothing consumes the
-    // velocity/normal targets yet (TAA/FSR3/XeGTAO are the consumers and none exist), so a failure here costs
-    // the future upscaler/AO inputs, never the frame. CreateMotionConstantBuffers must succeed too — without
+    // velocity/normal targets yet (TAA consumes velocity; FSR3 is still to come, and XeGTAO deliberately derives
+    // its own normals from the depth snapshot instead), so a failure here costs TAA, never the frame. CreateMotionConstantBuffers must succeed too — without
     // the CB the *GBuf prepass PSOs would have an unbound root CBV, so failure disables the whole feature.
     if ( !m_Pipelines.CreateMotion() || !CreateMotionConstantBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the motion-vector pipeline "
-                     "(no motion vectors / normal buffer — TAA, FSR3 and XeGTAO will have no input).";
+                     "(no motion vectors / normal buffer — TAA and FSR3 will have no input).";
         m_MotionResourcesReady = false;
     }
     // Temporal AA (Intel's TAA resolve). Non-fatal: RenderTAA and AdvanceJitter both guard through
@@ -1546,6 +1552,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     CreateLdrCopyResource( size );   // non-fatal: shared LDR scratch for SMAA/sharpen; both no-op without it
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
     CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
+    CreateGtaoResources( size );     // must follow CreateAOResources: XeGTAO writes ITS m_AOMask
     // Motion-vector + normal G-buffer (D3D12Motion.cpp). Non-fatal in the same way as the AO resources: on
     // failure m_MotionResourcesReady stays false, the depth prepass falls back to its plain depth-only PSOs and
     // the frame is unchanged — nothing consumes either target yet.
@@ -2417,6 +2424,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     CreateLdrCopyResource( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
     CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
+    CreateGtaoResources( size );     // must follow CreateAOResources: XeGTAO writes ITS m_AOMask
     // Motion-vector + normal G-buffer (D3D12Motion.cpp). Non-fatal in the same way as the AO resources: on
     // failure m_MotionResourcesReady stays false, the depth prepass falls back to its plain depth-only PSOs and
     // the frame is unchanged — nothing consumes either target yet.

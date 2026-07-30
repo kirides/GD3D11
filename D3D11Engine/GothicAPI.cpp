@@ -5596,6 +5596,17 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "SAO", "NumSamples", to_string_locale_independent( s.SaoSettings.NumSamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "BlurSharpness", to_string_locale_independent( s.SaoSettings.BlurSharpness ).c_str(), ini.c_str() );
 
+    // XeGTAO (D3D12's AO_ASSAO implementation)
+    WritePrivateProfileStringA( "GTAO", "QualityLevel", to_string_locale_independent( s.GtaoSettings.QualityLevel ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "DenoisePasses", to_string_locale_independent( s.GtaoSettings.DenoisePasses ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "Radius", to_string_locale_independent( s.GtaoSettings.Radius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "RadiusMultiplier", to_string_locale_independent( s.GtaoSettings.RadiusMultiplier ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "FalloffRange", to_string_locale_independent( s.GtaoSettings.FalloffRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "SampleDistributionPower", to_string_locale_independent( s.GtaoSettings.SampleDistributionPower ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "ThinOccluderCompensation", to_string_locale_independent( s.GtaoSettings.ThinOccluderCompensation ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "FinalValuePower", to_string_locale_independent( s.GtaoSettings.FinalValuePower ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GTAO", "DepthMIPSamplingOffset", to_string_locale_independent( s.GtaoSettings.DepthMIPSamplingOffset ).c_str(), ini.c_str() );
+
     WritePrivateProfileStringA( "FontRendering", "Enable", to_string_locale_independent( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Inventory", "FastInventoryRendering", to_string_locale_independent( s.FastInventoryRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5792,6 +5803,20 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SaoSettings.Intensity = GetPrivateProfileFloatA( "SAO", "Intensity", defaultSAOSettings.Intensity, ini );
         s.SaoSettings.NumSamples = GetPrivateProfileIntA( "SAO", "NumSamples", defaultSAOSettings.NumSamples, ini.c_str() );
         s.SaoSettings.BlurSharpness = GetPrivateProfileFloatA( "SAO", "BlurSharpness", defaultSAOSettings.BlurSharpness, ini );
+
+        // XeGTAO (D3D12's AO_ASSAO implementation)
+        const GTAOSettings& dGtao = ds.GtaoSettings;
+        s.GtaoSettings.QualityLevel = GetPrivateProfileIntA( "GTAO", "QualityLevel", dGtao.QualityLevel, ini.c_str() );
+        s.GtaoSettings.DenoisePasses = GetPrivateProfileIntA( "GTAO", "DenoisePasses", dGtao.DenoisePasses, ini.c_str() );
+        s.GtaoSettings.Radius = GetPrivateProfileFloatA( "GTAO", "Radius", dGtao.Radius, ini );
+        s.GtaoSettings.RadiusMultiplier = GetPrivateProfileFloatA( "GTAO", "RadiusMultiplier", dGtao.RadiusMultiplier, ini );
+        s.GtaoSettings.FalloffRange = GetPrivateProfileFloatA( "GTAO", "FalloffRange", dGtao.FalloffRange, ini );
+        s.GtaoSettings.SampleDistributionPower = GetPrivateProfileFloatA( "GTAO", "SampleDistributionPower", dGtao.SampleDistributionPower, ini );
+        s.GtaoSettings.ThinOccluderCompensation = GetPrivateProfileFloatA( "GTAO", "ThinOccluderCompensation", dGtao.ThinOccluderCompensation, ini );
+        s.GtaoSettings.FinalValuePower = GetPrivateProfileFloatA( "GTAO", "FinalValuePower", dGtao.FinalValuePower, ini );
+        s.GtaoSettings.DepthMIPSamplingOffset = GetPrivateProfileFloatA( "GTAO", "DepthMIPSamplingOffset", dGtao.DepthMIPSamplingOffset, ini );
+        s.GtaoSettings.QualityLevel = std::clamp( s.GtaoSettings.QualityLevel, 0, 3 );
+        s.GtaoSettings.DenoisePasses = std::clamp( s.GtaoSettings.DenoisePasses, 0, 3 );
 
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
 

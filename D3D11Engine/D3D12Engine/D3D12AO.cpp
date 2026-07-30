@@ -1,4 +1,7 @@
-// D3D12GraphicsEngine — simple screen-space AO (plan item #4, "SAO"). Forward+ has no GBuffer normals before
+// D3D12GraphicsEngine — the AO entry point plus the simple screen-space AO ("SAO"). Intel XeGTAO, which is
+// what AoMode == AO_ASSAO selects on this backend, lives in D3D12GTAO.cpp and shares this file's m_PrevDepth
+// input, m_AOMask output and reprojection constants.
+// Simple SSAO ("SAO", plan item #4). Forward+ has no GBuffer normals before
 // lighting, so the main compute pass reconstructs view-space normals from neighbouring depth samples (mirrors
 // D3D11's CS_PFX_SAO.hlsl SAO_RECONSTRUCT_NORMALS fallback); a depth-aware separable blur denoises it
 // (mirrors CS_PFX_SAO_Blur.hlsl). See Shaders/D3D12/SSAO.hlsl for the shader source.
@@ -34,7 +37,12 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
         dd.Height = static_cast<UINT>( size.y );
         dd.DepthOrArraySize = 1;
         dd.MipLevels = 1;
-        dd.Format = DXGI_FORMAT_R8_UNORM;
+        // R8_TYPELESS, not R8_UNORM: m_AOMask needs both an R8_UNORM view (what the lit pixel shaders and this
+        // file's blur passes read/write) and an R8_UINT UAV (XeGTAO's denoise writes Intel's packed
+        // `uint(value * 255 + 0.5)` term) over the same texels. Every view below states its format explicitly,
+        // so the resource itself carries none. m_AOBlurTemp gets the same desc for free; it only ever uses the
+        // R8_UNORM view.
+        dd.Format = DXGI_FORMAT_R8_TYPELESS;
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -79,8 +87,8 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
         if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
         return slot != UINT_MAX;
         };
-    if ( !ensureSlot( m_AOMaskSrvSlot ) || !ensureSlot( m_AOMaskUavSlot ) || !ensureSlot( m_AOBlurTempUavSlot )
-        || !ensureSlot( m_PrevDepthSrvSlot ) )
+    if ( !ensureSlot( m_AOMaskSrvSlot ) || !ensureSlot( m_AOMaskUavSlot ) || !ensureSlot( m_AOMaskUintUavSlot )
+        || !ensureSlot( m_AOBlurTempUavSlot ) || !ensureSlot( m_PrevDepthSrvSlot ) )
         return false;
     // 2 contiguous slots per blur direction (see the header comment on m_AOBlurHPairSlot/m_AOBlurVPairSlot).
     if ( m_AOBlurHPairSlot == UINT_MAX ) {
@@ -106,6 +114,13 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
     device->CreateShaderResourceView( m_AOMask.Get(), &srv, GetSrvCpuHandle( m_AOMaskSrvSlot ) );
     device->CreateUnorderedAccessView( m_AOMask.Get(), nullptr, &uav, GetSrvCpuHandle( m_AOMaskUavSlot ) );
     device->CreateUnorderedAccessView( m_AOBlurTemp.Get(), nullptr, &uav, GetSrvCpuHandle( m_AOBlurTempUavSlot ) );
+
+    // R8_UINT alias of the very same m_AOMask texels — XeGTAO's final denoise output (see the header comment on
+    // m_AOMaskUintUavSlot). Writing uint(v*255+0.5) here and reading the R8_UNORM SRV above round-trips exactly.
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uintUav = {};
+    uintUav.Format = DXGI_FORMAT_R8_UINT;
+    uintUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    device->CreateUnorderedAccessView( m_AOMask.Get(), nullptr, &uintUav, GetSrvCpuHandle( m_AOMaskUintUavSlot ) );
 
     // R32_FLOAT view of the typeless depth SNAPSHOT (same view shape CreateDepthBuffer builds for the live
     // buffer). Read by the AO main+blur compute passes AND, bindlessly, by the lit pixel shaders' reprojection
@@ -197,16 +212,32 @@ void D3D12GraphicsEngine::UploadAoReprojConstants() {
 }
 
 void D3D12GraphicsEngine::RenderSSAO() {
-    // Called from OnStartWorldRendering right after DispatchLightCulling, before the lit geometry passes bind
-    // m_ActiveAOMaskSrvSlot. Reads m_PrevDepth (last frame's complete depth — see the file header), so unlike
-    // every other consumer of depth in this frame it needs NO barriers on the live m_DepthBuffer and does not
-    // serialise against the prepass. Simple-SSAO is the D3D12 substitute for every AO mode (D3D11's HBAO+/ASSAO
-    // have no D3D12 port yet) — any AoMode != AO_NONE runs it.
+    // THE AO entry point. Called from OnStartWorldRendering right after DispatchLightCulling, before the lit
+    // geometry passes bind m_ActiveAOMaskSrvSlot. Reads m_PrevDepth (last frame's complete depth — see the file
+    // header), so unlike every other consumer of depth in this frame it needs NO barriers on the live
+    // m_DepthBuffer and does not serialise against the prepass.
+    //
+    // Two implementations write the same m_AOMask and are selected by AoMode:
+    //   AO_ASSAO -> Intel XeGTAO (D3D12GTAO.cpp) — D3D12's replacement for D3D11's ASSAO port.
+    //   anything else non-NONE -> the simple SSAO below. HBAO+ and SAO have no D3D12 port of their own, so both
+    //   land here; that is unchanged behaviour.
     m_ActiveAOMaskSrvSlot = m_WhiteTexture ? m_WhiteTexture->GetSrvSlot() : UINT_MAX;   // default: no occlusion
     UploadAoReprojConstants();
 
+    if ( Engine::GAPI->GetRendererState().RendererSettings.AoMode == AOMode::AO_NONE ) return;
+
+    if ( IsGtaoEnabled() ) {
+        RenderGTAO();
+        return;
+    }
+    RenderSimpleSSAO();
+}
+
+void D3D12GraphicsEngine::RenderSimpleSSAO() {
+    // The depth-reconstructed-normals Alchemy-AO estimate plus a separable depth-aware blur
+    // (Shaders/D3D12/SSAO.hlsl). Callers go through RenderSSAO, which owns the mode selection and has already
+    // published the reprojection constants and the white-mask default.
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    if ( settings.AoMode == AOMode::AO_NONE ) return;
     if ( !m_FrameOpen || !m_AOResourcesReady || !m_PrevDepth || !m_PrevDepthValid
         || !m_Pipelines.AO.MainPSO || !m_Pipelines.AO.MainRootSig
         || !m_Pipelines.AO.BlurPSO || !m_Pipelines.AO.BlurRootSig )

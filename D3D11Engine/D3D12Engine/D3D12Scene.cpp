@@ -2211,9 +2211,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Forward+ tiled light cull: consume this frame's light buffer + the prepass depth to record which point
 	// lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
 	DispatchLightCulling();
-	// Simple screen-space AO (plan item #4): reconstructs normals from the prepass depth (no GBuffer normals
-	// pre-lighting in Forward+) and writes the blurred AO mask the lit passes below sample bindlessly via
-	// m_ActiveAOMaskSrvSlot. No-op (mask stays white) when AoMode == AO_NONE or resources are unavailable.
+	// Screen-space AO: Intel XeGTAO when AoMode == AO_ASSAO, the simple depth-reconstructed SSAO otherwise.
+	// Both derive normals from the previous frame's depth snapshot (Forward+ has no GBuffer normals before
+	// lighting) and write the AO mask the lit passes below sample bindlessly via m_ActiveAOMaskSrvSlot.
+	// No-op (mask stays white) when AoMode == AO_NONE or resources are unavailable.
 	RenderSSAO();
 	// Sky image-based lighting: rebuilds the indirect-light cubes (specular chain + irradiance) when Gothic's
 	// sky state has moved, and publishes their bindless indices into the shadow CB the lit passes bind. Must

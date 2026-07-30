@@ -220,6 +220,27 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;
     };
 
+    // Intel XeGTAO (Shaders/D3D12/XeGTAO.hlsl + the vendored XeGTAO.h/.hlsli) — what AOMode::AO_ASSAO selects
+    // on D3D12. Eight compute pipelines over ONE root signature: prefilter (raw depth -> view depth + 4 MIPs),
+    // generate-normals (from the same depth), the GTAO integral at four quality levels, and the edge-aware
+    // denoise in a non-final and a final variant. Fully bindless (SM6.6 ResourceDescriptorHeap) like the TAA
+    // resolve, so there are no descriptor tables and every pass rebinds nothing but two root-constant blocks.
+    // Non-fatal — RenderGTAO() guards on the PSOs and falls back to the simple SSAO path.
+    struct GtaoPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PrefilterCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PrefilterPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            NormalsCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> NormalsPSO;
+        // [0]=Low, [1]=Medium, [2]=High, [3]=Ultra — indexed by GTAOSettings::QualityLevel.
+        Microsoft::WRL::ComPtr<ID3DBlob>            MainCsBlob[4];
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> MainPSO[4];
+        Microsoft::WRL::ComPtr<ID3DBlob>            DenoiseCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DenoisePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            DenoiseLastCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DenoiseLastPSO;
+    };
+
     // Motion-vector G-buffer support passes (D3D12Motion.cpp). The per-object velocity/normal writes themselves
     // ride the World/Skeletal *GBuf prepass PSOs above; these two are the fill and the debug view:
     //   Fill  — CameraVelocity.hlsl CSMain: camera-only velocity for every pixel the prepass never covered.
@@ -442,6 +463,7 @@ public:
     // strips) and true for particle prog-meshes, which are closed 3D meshes D3D11 draws with SetDefaultStates.
     ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite, bool cullBack = false );
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
+    bool CreateGtao();        // Intel XeGTAO compute pipelines (AO_ASSAO on D3D12); textures stay in engine
     bool CreateMotion();      // motion-vector fill compute + debug-overlay pipelines; textures stay in engine
     bool CreateTaa();         // Intel TAA resolve compute pipeline; history buffers stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
@@ -498,6 +520,7 @@ public:
     SharpenPipeline  Sharpen;       // post-tonemap sharpening (Shaders/D3D12/Sharpen.hlsl)
     FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;
+    GtaoPipeline     Gtao;
     MotionPipeline   Motion;
     TaaPipeline      Taa;
     SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
