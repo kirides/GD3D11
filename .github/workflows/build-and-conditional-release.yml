@@ -80,7 +80,8 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      artifact-id: ${{ steps.package-artifacts.outputs.artifact-id }}
+      artifact-id-release: ${{ steps.package-artifacts.outputs.artifact-id-release }}
+      artifact-id-debug: ${{ steps.package-artifacts.outputs.artifact-id-debug }}
 
     steps:
       - name: Checkout repository
@@ -106,5 +107,6 @@ jobs:
         uses: ./.github/actions/create-release
         with:
           nightly: ${{ github.ref_type != 'tag' }}
-          artifact-id: ${{ needs.package-artifacts.outputs.artifact-id }}
+          artifact-id-release: ${{ needs.package-artifacts.outputs.artifact-id-release }}
+          artifact-id-debug: ${{ needs.package-artifacts.outputs.artifact-id-debug }}
           token: ${{ secrets.GITHUB_TOKEN }}

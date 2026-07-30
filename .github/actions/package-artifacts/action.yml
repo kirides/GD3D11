@@ -1,9 +1,12 @@
 name: 'Package artifacts'
 
 outputs:
-  artifact-id:
-    description: "ID of the artifact that was uploaded"
-    value: ${{ steps.artifact-upload.outputs.artifact-id }}
+  artifact-id-release:
+    description: "ID of the release-zip artifact that was uploaded"
+    value: ${{ steps.artifact-upload-release.outputs.artifact-id }}
+  artifact-id-debug:
+    description: "ID of the debug-zip artifact that was uploaded"
+    value: ${{ steps.artifact-upload-debug.outputs.artifact-id }}
 
 runs:
   using: composite
@@ -62,11 +65,20 @@ runs:
         $relDir = "${{ steps.calc-path.outputs.release-dir }}"
         7z a -tzip -mx=7 -mmt=on "$relDir-debug.zip" "./$relDir/*"        
 
-    - name: Upload Zip artifact
-      id: artifact-upload
+    - name: Upload release Zip artifact
+      id: artifact-upload-release
       uses: actions/upload-artifact@v6
       with:
         name: ${{ steps.calc-path.outputs.release-dir }}
-        path: "*.zip"
+        path: "${{ steps.calc-path.outputs.release-dir }}.zip"
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Upload debug Zip artifact
+      id: artifact-upload-debug
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ steps.calc-path.outputs.release-dir }}-debug
+        path: "${{ steps.calc-path.outputs.release-dir }}-debug.zip"
         if-no-files-found: error
         compression-level: 0

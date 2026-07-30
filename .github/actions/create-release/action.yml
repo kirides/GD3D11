@@ -7,26 +7,32 @@ inputs:
   nightly:
     description: "Boolean string ('true'/'false')"
     required: true
-  artifact-id:
-    description: "ID of the artifact that contains files for deployment"
+  artifact-id-release:
+    description: "ID of the artifact that contains the release zip"
+    required: true
+  artifact-id-debug:
+    description: "ID of the artifact that contains the debug zip"
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Download build artifact
+    - name: Download build artifacts
       id: download-artifact
       uses: actions/download-artifact@v7
       with:
-        artifact-ids: ${{ inputs.artifact-id }}
+        artifact-ids: ${{ inputs.artifact-id-release }},${{ inputs.artifact-id-debug }}
+        merge-multiple: true
 
-    - name: Delete old nightly
+    - name: Calculate nightly release info
       if: ${{ inputs.nightly == 'true' }}
-      shell: bash
+      id: nightly-info
+      shell: pwsh
       run: |
-        gh release delete nightly --yes --cleanup-tag || echo "No nightly release found to delete"
-      env:
-        GITHUB_TOKEN: ${{ inputs.token }}
+        $shortHash = $env:GITHUB_SHA.Substring(0, 7)
+        $date = Get-Date -Format 'dd.MM.yyyy HH:mm'
+        "tag=nightly/$env:GITHUB_RUN_ID" >> $env:GITHUB_OUTPUT
+        "name=Nightly - $shortHash ($date)" >> $env:GITHUB_OUTPUT
 
     - name: Create nightly release
       if: ${{ inputs.nightly == 'true' }}
@@ -36,10 +42,10 @@ runs:
         artifactErrorsFailBuild: true
         artifacts: "${{ steps.download-artifact.outputs.download-path }}/*.zip"
         generateReleaseNotes: true
-        name: Nightly
+        name: ${{ steps.nightly-info.outputs.name }}
         prerelease: true
         removeArtifacts: true
-        tag: nightly
+        tag: ${{ steps.nightly-info.outputs.tag }}
         token: ${{ inputs.token }}
 
     - name: Create regular release
