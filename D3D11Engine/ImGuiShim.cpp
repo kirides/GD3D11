@@ -867,16 +867,22 @@ void ImGuiShim::RenderSettingsWindow()
 
     // RenderSettingsWindowModern(); -- Disabled while in development ;)
 
+    static std::string settingsLabel;
+    if ( settingsLabel.empty() && Engine::GraphicsEngine ) {
+        settingsLabel.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12
+        ? "D3D12 "
+        : "D3D11 " )
+        .append( VERSION_NUMBER );
+
 #ifdef IS_DEV_BUILD
-    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER " - (" BUILD_DATE ")";
-#else
-    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER;
+        settingsLabel.append(" - (").append(BUILD_DATE).append(")");
 #endif
+    }
 
     ShaderCategory shadersToReload = ShaderCategory::None;
 
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
-    if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
+    if ( ImGui::Begin( settingsLabel.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
         FixupSettings(settings);
 

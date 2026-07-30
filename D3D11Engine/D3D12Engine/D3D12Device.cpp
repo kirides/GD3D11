@@ -57,7 +57,7 @@ namespace {
                     if ( SUCCEEDED( hr ) && sdkConfig ) {
                         hr = sdkConfig->SetSDKVersion( agilitySdkVersion, agilitySdkDeployPath );
                         if ( !SUCCEEDED( hr ) ) {
-                            LogWarn() << "Failed to initialize agility SDK (version " << agilitySdkVersion << "); using system D3D12.";
+                            LogWarn() << "Failed to initialize agility SDK (version " << agilitySdkVersion << ", result: " << hr << " ); using system D3D12.";
                         } else {
                             LogInfo() << "D3D12 Agility SDK " << agilitySdkVersion << " activated from " << agilitySdkDeployPath;
                         }
@@ -197,6 +197,8 @@ bool D3D12Device::IsAvailable( std::string* outDescription, std::string* outReas
 }
 
 bool D3D12Device::Init() {
+    InitAgilitySdk();
+    
     PFN_D3D12_CREATE_DEVICE createDevice = LoadD3D12CreateDevice();
     if ( !createDevice ) {
         LogWarn() << "D3D12Device::Init: d3d12.dll / D3D12CreateDevice unavailable.";

@@ -371,7 +371,9 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( c
     pso.DepthStencilState.StencilEnable = FALSE;
 
     ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    HRESULT hr;
+    LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
+    if ( FAILED(hr) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed for world-transparency key 0x" << std::hex << key << ".";
         return nullptr;
     }
@@ -1297,7 +1299,9 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
     ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    HRESULT hr;
+    LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
+    if ( FAILED(hr) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI pipeline key 0x" << std::hex << key << ".";
         return nullptr;
     }
@@ -1394,7 +1398,9 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateParticlePipeline( const Goth
     pso.DepthStencilState.StencilEnable = FALSE;
 
     ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    HRESULT hr;
+    LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
+    if ( FAILED(hr) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed for particle blend key 0x" << std::hex << key << ".";
         return nullptr;
     }
@@ -1526,7 +1532,9 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateDecalBlendPipeline( const Go
     pso.DepthStencilState.StencilEnable = FALSE;
 
     ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    HRESULT hr;
+    LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
+    if ( FAILED(hr) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed for decal blend key 0x" << std::hex << key << ".";
         return nullptr;
     }
@@ -2552,7 +2560,9 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateQuadMarkPipeline( const Goth
     pso.DepthStencilState.StencilEnable = FALSE;
 
     ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    HRESULT hr;
+    LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
+    if ( FAILED(hr) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed for lit quad-mark key 0x" << std::hex << key << ".";
         return nullptr;
     }
@@ -2654,7 +2664,9 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlen
     pso.DepthStencilState.StencilEnable = FALSE;
 
     ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    HRESULT hr;
+    LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
+    if ( FAILED(hr) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed for FX key 0x" << std::hex << key << ".";
         return nullptr;
     }
