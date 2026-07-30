@@ -3866,10 +3866,23 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 groundLight = float4( lightStat.z / 255.0f, lightStat.y / 255.0f, lightStat.x / 255.0f, 1.0f );
             }
 
-            // Base skinned mesh — skipped entirely for attachment-only MOBs (empty SkeletalMeshes). Mirrors
-            // D3D11 DrawSkeletalMeshVobs, which guards its base pass on !SkeletalMeshes.empty() but always runs
-            // attachments.
-            if ( !visual->SkeletalMeshes.empty() ) {
+            // First-person hands: when the player model is set to hands-only (Gothic's own first-person
+            // view mode), the base skinned mesh (the whole body) must NOT draw, and node attachments are
+            // filtered to HAND-named nodes only (weapons/gloves) — further filtered below. Mirrors D3D11
+            // DrawSkeletalMeshVob's GetDrawHandVisualsOnly gates exactly, including the G2 2.6 fix build's
+            // exception: an engine patch at 0x57A694 that, when active, forces the base mesh to draw anyway
+            // and additionally allows ARM-named nodes through the attachment filter.
+            const bool rawHandsOnly = model->GetDrawHandVisualsOnly() != 0;
+#ifdef BUILD_GOTHIC_2_6_fix
+            const bool skipBaseMesh = rawHandsOnly && *reinterpret_cast<BYTE*>( 0x57A694 ) != 0x90;
+#else
+            const bool skipBaseMesh = rawHandsOnly;
+#endif
+
+            // Base skinned mesh — skipped entirely for attachment-only MOBs (empty SkeletalMeshes), or for
+            // hands-only first-person models. Mirrors D3D11 DrawSkeletalMeshVobs, which guards its base pass
+            // on !SkeletalMeshes.empty() && !GetDrawHandVisualsOnly() but always runs attachments.
+            if ( !visual->SkeletalMeshes.empty() && !skipBaseMesh ) {
                 // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can
                 // be bound as a root CBV). Uploaded ONCE here; every consumer (prepass/color/shadow cascades)
                 // reuses these two GPU addresses via the cache.
@@ -3927,6 +3940,20 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             for ( int n = 0; n < nodeCount; ++n ) {
                 zCModelNodeInst* node = nodeList->Array[n];
                 if ( !node || !node->NodeVisual ) continue;   // no attachment on this node (e.g. sheathed weapon)
+
+                // Hands-only first-person filter: only HAND-named nodes draw (the ARM exception is the
+                // same 0x57A694 engine patch as the base-mesh gate above). Mirrors D3D11
+                // DrawSkeletalMeshVob's per-attachment GetDrawHandVisualsOnly check.
+                if ( rawHandsOnly ) {
+                    std::string_view nodeName = node->ProtoNode ? node->ProtoNode->NodeName.ToView() : std::string_view();
+#ifdef BUILD_GOTHIC_2_6_fix
+                    if ( !nodeName.contains( "HAND" ) && (*reinterpret_cast<BYTE*>( 0x57A694 ) != 0x90 || !nodeName.contains( "ARM" )) ) {
+#else
+                    if ( !nodeName.contains( "HAND" ) ) {
+#endif
+                        continue;
+                    }
+                }
 
                 // Extraction runs on a worker thread: unpacking the wedge lists and — dominating it —
                 // creating this attachment's vertex/index/shadow-index buffers costs ~0.1ms per
