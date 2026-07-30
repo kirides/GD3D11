@@ -104,6 +104,12 @@ struct GothicMemoryLocations {
 
     struct CGameManager {
         static const unsigned int ExitGame = 0x00425780;
+
+        // CALL sysEvent inside CGameManager::Run()'s ingame do-while loop - the single
+        // funnel point every loop iteration passes through (verified via Ghidra against
+        // Gothic2.exe). Patched to wrap frame pacing around the whole iteration instead
+        // of nesting it inside Render(). See CGameManager.h.
+        static const unsigned int RunLoopSysEventCallSite = 0x00425e35;
     };
 
     struct zCOption {

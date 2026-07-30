@@ -6,6 +6,7 @@
 #include "ShaderIDs.h"
 #include "GfxVertexBuffer.h"
 #include "GfxTexture.h"
+#include "fpslimiter.h"
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
@@ -18,6 +19,11 @@ struct VobLightInfo;
 class zFont;
 
 static void UpdateShouldBlockGameInput();
+
+/** Set by CGameManager::Hook() when the CGameManager::Run() inline main-loop patch was
+    installed for the running game build. When true, D3D11GraphicsEngine::OnBeginFrame/
+    OnEndFrame must NOT also drive the frame limiter, or every frame would get paced twice. */
+inline bool g_MainLoopFramePacingInstalled = false;
 
 struct GraphicsEventName {
     const wchar_t* wide;
@@ -122,6 +128,19 @@ public:
 
     /** Called when the game ended it's frame */
     virtual XRESULT OnEndFrame() PURE;
+
+    /** Paces out the frame that just finished (frame limiter Wait()). Normally invoked
+        once per CGameManager::Run() loop iteration by the inline main-loop patch in
+        CGameManager.h, wrapping the whole iteration instead of being nested inside
+        Render(). Falls back to being called from OnEndFrame on builds where that patch
+        isn't installed (see g_MainLoopFramePacingInstalled). Implemented once here so
+        every backend (D3D11, D3D12, ...) gets frame limiting for free. */
+    virtual void FrameLimiterEndFrame();
+
+    /** Arms the frame limiter for the frame about to start (SetLimit + Start()).
+        Counterpart to FrameLimiterEndFrame(); see that method for why this lives outside
+        of OnBeginFrame. */
+    virtual void FrameLimiterBeginFrame();
 
     /** Called to set the current viewport */
     virtual XRESULT SetViewport( const ViewportInfo& viewportInfo ) PURE;
@@ -352,4 +371,7 @@ protected:
     bool m_IsWindowActive = false;
     INT2 m_NewResolution = {};
     std::vector<DisplayModeInfo> m_CachedDisplayModes;
+
+    /** Shared by every backend via FrameLimiterBeginFrame/FrameLimiterEndFrame. */
+    std::unique_ptr<FpsLimiter> m_FrameLimiter = std::make_unique<FpsLimiter>();
 };

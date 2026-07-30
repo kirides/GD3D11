@@ -24,6 +24,15 @@ struct GothicMemoryLocations {
         static const unsigned int zCParser = 0x008dce08;
     };
 
+    struct CGameManager {
+        // CALL sysEvent inside CGameManager::Run()'s ingame do-while loop - the single
+        // funnel point every loop iteration passes through (verified via Ghidra against
+        // GothicMod.exe, base 1.08k build). Only valid for plain BUILD_GOTHIC_1_08k
+        // without BUILD_1_12F - the 1.12f binary hasn't been checked, so this patch is
+        // skipped there (see CGameManager.h::Hook()).
+        static const unsigned int RunLoopSysEventCallSite = 0x00424f50;
+    };
+
     struct zCParser {
         static const unsigned int CallFunc = 0x006e9690;
         static const unsigned int GetIndex = 0x006ea0c0;

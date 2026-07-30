@@ -489,7 +489,6 @@ private:
 
 protected:
 
-    std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
 
 

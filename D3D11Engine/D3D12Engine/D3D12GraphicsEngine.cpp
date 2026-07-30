@@ -1643,6 +1643,11 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
 
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
+
+    if ( !g_MainLoopFramePacingInstalled ) {
+        FrameLimiterBeginFrame();
+    }
+
     FrameMark;
     TracyD3D12BeginFrame
 
@@ -1772,6 +1777,10 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     m_FrameOpen = false;
     m_PresentPending = false;
     TracyD3D12CollectHere
+
+    if ( !g_MainLoopFramePacingInstalled ) {
+        FrameLimiterEndFrame();
+    }
 
     return XR_SUCCESS;
 }

@@ -1,7 +1,33 @@
 #include "BaseGraphicsEngine.h"
 #include "ImGuiShim.h"
+#include "GothicAPI.h"
 #include <iostream>
 #include <string>
+
+/** Arms the frame limiter for the frame about to start. Shared by every backend; see
+    BaseGraphicsEngine.h for why this lives outside of OnBeginFrame. */
+void BaseGraphicsEngine::FrameLimiterBeginFrame() {
+    auto& rendererState = Engine::GAPI->GetRendererState();
+
+    if ( !m_IsWindowActive && rendererState.RendererSettings.EnableInactiveFpsLock ) {
+        m_FrameLimiter->SetLimit( 20 );
+        m_FrameLimiter->Start();
+    } else if ( rendererState.RendererSettings.FpsLimit != 0 ) {
+        m_FrameLimiter->SetLimit( rendererState.RendererSettings.FpsLimit );
+        m_FrameLimiter->Start();
+    } else {
+        m_FrameLimiter->Reset();
+    }
+}
+
+/** Paces out the frame that just finished. Shared by every backend; see
+    BaseGraphicsEngine.h for why this lives outside of OnEndFrame. */
+void BaseGraphicsEngine::FrameLimiterEndFrame() {
+    auto& rendererState = Engine::GAPI->GetRendererState();
+    if ( !rendererState.RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
+        m_FrameLimiter->Wait();
+    }
+}
 
 void BaseGraphicsEngine::OnUIEvent(EUIEvent uiEvent)
 {

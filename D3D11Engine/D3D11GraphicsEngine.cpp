@@ -277,8 +277,6 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() :
     LineRenderer = std::make_unique<D3D11LineRenderer>();
     Occlusion = std::make_unique<D3D11OcclusionQuerry>();
 
-    m_FrameLimiter = std::make_unique<FpsLimiter>();
-
     // Initialize previous view-proj matrix to identity for motion vectors
     XMStoreFloat4x4(&m_PrevViewProjMatrix, XMMatrixIdentity());
 
@@ -1568,16 +1566,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     rendererState.RendererSettings.EnableInactiveFpsLock = false;
 #endif //  BUILD_SPACERNET
 
-    if ( !m_IsWindowActive && rendererState.RendererSettings.EnableInactiveFpsLock ) {
-        m_FrameLimiter->SetLimit( 20 );
-        m_FrameLimiter->Start();
-    } else {
-        if ( rendererState.RendererSettings.FpsLimit != 0 ) {
-            m_FrameLimiter->SetLimit( rendererState.RendererSettings.FpsLimit );
-            m_FrameLimiter->Start();
-        } else {
-            m_FrameLimiter->Reset();
-        }
+    if ( !g_MainLoopFramePacingInstalled ) {
+        FrameLimiterBeginFrame();
     }
 
     SteamOverlay::Update();
@@ -1662,8 +1652,8 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     DynamicConstantBufferPool->EndFrame();
     FrameMarkEnd( beginFrameEventName );
 
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
-        m_FrameLimiter->Wait();
+    if ( !g_MainLoopFramePacingInstalled ) {
+        FrameLimiterEndFrame();
     }
     return XR_SUCCESS;
 }
