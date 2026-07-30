@@ -3558,7 +3558,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                 if ( !texture
                                     // don't draw certain textures in the shadow pass, like human teeth, those will never be visible anyway.
                                     || (isShadowPass && (strncmp(texture->__GetName().ToChar(), "HUM_TEETH_V0.TGA", std::size("HUM_TEETH_V0.TGA") - 1) == 0))
-                                    || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                                    || (isShadowPass ? texture->GetCacheState() : texture->CacheIn( 0.6f )) != zRES_CACHED_IN ) {
                                     // need to cache in in order to know its alpha/material state
                                     continue;
                                 }
@@ -5685,7 +5685,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                     if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
                         zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
-                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
                             void* engineTex = aniTex->GetSurface()->GetEngineTexture();
                             if ( lastTex != engineTex ) {
                                 aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
@@ -5745,7 +5745,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                             if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
                                 if ( alphaRef > 0.0f &&
-                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
+                                    meshInfoByKey->first.Material->GetTexture()->GetCacheState() ==
                                     zRES_CACHED_IN ) {
                                     void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
                                     if ( lastTex != engineTex ) {
@@ -5838,7 +5838,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                             || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
                         ) {
                         zCTexture* aniTex = materialMesh.first->GetAniTexture();
-                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
                             isAlpha = true;
                             if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
                                 lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
@@ -6042,7 +6042,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                     if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
                         zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
-                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
                             lastTex = aniTex->GetSurface()->GetEngineTexture();
                             aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                             ActivePS->Apply();
@@ -6100,7 +6100,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                             if ( meshInfoByKey->first.Material ->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel()) {
                                 if ( alphaRef > 0.0f &&
-                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
+                                    meshInfoByKey->first.Material->GetTexture()->GetCacheState() ==
                                     zRES_CACHED_IN ) {
 
                                     lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
@@ -6200,7 +6200,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
                         ) {
                         zCTexture* aniTex = materialMesh.first->GetAniTexture();
-                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
                             isAlpha = true;
                             if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
                                 lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
@@ -6371,7 +6371,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
 
                 if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
                     zCTexture* tex = meshPair.first.Material->GetAniTexture();
-                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, mesh );
                     }
                     indexCount = GetShadowAwareIndexCount( mesh, true );
@@ -6461,7 +6461,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
-                if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( tex->GetCacheState() == zRES_CACHED_IN ) {
                     auto t = GetSrvFromGfx( tex->GetSurface()->GetEngineTexture() );
                     Context->PSSetShaderResources( 0, 1, &t );
                     lastTex = tex;
@@ -6521,7 +6521,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                 if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
                     // Need alpha testing - cache texture
                     zCTexture* tex = meshPair.first.Material->GetAniTexture();
-                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, meshPair.second );
                     }
                 } else {
@@ -6600,7 +6600,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
-                if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( tex->GetCacheState() == zRES_CACHED_IN ) {
                     auto t = GetSrvFromGfx(tex->GetSurface()->GetEngineTexture());
                     Context->PSSetShaderResources( 0, 1, &t );
                     lastTex = tex;
@@ -6897,7 +6897,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
                 uint64_t sortKeyBase = 0;
                 if ( itt.first.Material && itt.first.Material->GetAniTexture() ) {
-                    if ( itt.first.Material->GetAniTexture()->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                    if ( itt.first.Material->GetAniTexture()->GetCacheState() != zRES_CACHED_IN ) {
                         continue; // cant draw if no texture
                     }
                     sortKeyBase = BuildSortKeyBase( itt.first.Material );
@@ -6936,7 +6936,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             // Bind texture
             if ( bindTexture ) {
                 if ( previousTx != tx ) {
-                    if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( tx->GetCacheState() == zRES_CACHED_IN ) {
                         auto t = GetSrvFromGfx(tx->GetSurface()->GetEngineTexture());
                         Context->PSSetShaderResources( 0, 1, &t );
                         auto nextPs = defaultPS.get();
