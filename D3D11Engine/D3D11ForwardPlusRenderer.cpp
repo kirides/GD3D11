@@ -424,6 +424,17 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
 
     const auto& active = activePS;
     auto newShader = activePS;
+    
+    if (texture->GetCacheState() != zRES_CACHED_IN) {
+        newShader = shaderManager.GetPShader( PShaderID::PS_Diffuse );
+        if ( active != newShader ) {
+            activePS = newShader;
+            activePS->Apply();
+            return true;
+        }
+        return false;
+    }
+    
     if ( texture->HasAlphaChannel() || forceAlphaTest ) {
         if ( texture->GetSurface()->GetFxMap() ) {
             newShader = shaderManager.GetPShader( PShaderID::PS_FP_DiffuseNormalmappedAlphaTestFxMap );

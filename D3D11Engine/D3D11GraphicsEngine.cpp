@@ -5345,7 +5345,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 // Get diffuse and normalmap. If the texture is still streaming in (async load),
                 // draw with a black placeholder instead of whatever happens to be bound in slot 0,
                 // so it doesn't flash the clear-color background.
-                const bool diffuseReady = mesh.first.Texture->CacheIn( 0.6f ) == zRES_CACHED_IN;
+                const bool diffuseReady = mesh.first.Texture->CacheIn( 0.6f ) == zRES_CACHED_IN && surface;
                 srv[0] = diffuseReady ? GetSrvFromGfx( surface->GetEngineTexture() ) : GetSrvFromGfx( BlackTexture.get() );
                 srv[1] = diffuseReady ? GetSrvFromGfx( surface->GetNormalmap() ) : nullptr;
                 srv[2] = diffuseReady ? GetSrvFromGfx( surface->GetFxMap() ) : nullptr;
