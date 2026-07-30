@@ -56,6 +56,7 @@ namespace Engine {
         GraphicsEngine = nullptr;
         bool initialized = false;   // set when the chosen backend's Init() has already run below
         if ( ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+            GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D12;
             GraphicsEngine = new D3D12GraphicsEngine;
             if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
                 initialized = true;
@@ -73,6 +74,7 @@ namespace Engine {
         }
 
         if ( !GraphicsEngine ) {
+            GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D11;
             GraphicsEngine = new D3D11GraphicsEngine;
         }
 
