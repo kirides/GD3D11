@@ -18,21 +18,21 @@
 // it is a deferred/forward hybrid whose velocity consumer runs post-shading anyway. Here the prepass is both
 // cheaper and better placed.
 //
-// COVERAGE, AND THE SENTINEL
-// The prepass contains world mesh + instanced VOBs + skeletals + node attachments. It does NOT contain the sky,
-// grass/vegetation, water, decals, blended VOBs, particles or poly strips — those write depth (or don't) later
-// in the frame. So the velocity target is CLEARED TO kVelocitySentinel, and FillCameraVelocity (end of world
-// rendering, when depth is final) replaces every pixel still holding it with a camera-only depth reprojection.
-// For anything static that reprojection is exact; it under-reports only for things that moved without being in
-// the prepass, i.e. grass sway and water flow. Folding grass into the depth prepass is already a pending item
-// (it would also fix grass SSAO) and would upgrade it to true velocity for free.
+// COVERAGE, AND THE SENTINELS
+// The prepass contains world mesh + instanced VOBs + skeletals + node attachments + vegetation (the last one
+// range-limited — see DrawVegetationDepthPrepass). It does NOT contain the sky, water, decals, blended VOBs,
+// particles or poly strips — those write depth (or don't) later in the frame. So the velocity target is
+// CLEARED TO kVelocitySentinel, and FillCameraVelocity (end of world rendering, when depth is final) replaces
+// every pixel still holding it with a camera-only depth reprojection. For anything static that reprojection is
+// exact; it under-reports only for things that moved without being in the prepass, i.e. water flow.
 //
-// The NORMAL target is deliberately NOT filled: a pixel with no prepass coverage has no meaningful normal, and
-// an AO pass must treat that as absent geometry rather than consume an invented one.
+// The NORMAL target is deliberately NOT filled — a pixel with no prepass coverage has no meaningful normal, and
+// an AO pass must treat that as absent geometry rather than consume an invented one. It is cleared to
+// kGBufferNormalSentinel (not 0, which is a legal octahedral encoding) precisely so XeGTAO's LoadNormal can
+// tell the two apart.
 //
-// NOTHING READS EITHER TARGET YET. TAA, FSR3 and XeGTAO are the consumers and none exist. Verification is
-// therefore via RenderMotionDebugOverlay (the shared RendererSettings.DebugSettings.TAA.DisplayVelocity
-// setting), which is the whole reason that overlay is in this first increment.
+// CONSUMERS: XeGTAO reads the normal target (D3D12GTAO.cpp's RenderGTAO), the TAA resolve reads velocity, and
+// RenderMotionDebugOverlay renders either one for the DebugSettings.TAA.Display* flags.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "../Engine.h"
@@ -93,7 +93,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
         };
 
     const float velocityClear[4] = { kVelocitySentinel, kVelocitySentinel, 0.0f, 0.0f };
-    const float normalClear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float normalClear[4] = { kGBufferNormalSentinel, kGBufferNormalSentinel, 0.0f, 0.0f };
     // The velocity target additionally needs UAV: FillCameraVelocity writes it from compute.
     if ( !makeTarget( m_VelocityBuffer, m_VelocityAlloc, kVelocityFormat, true, velocityClear, L"MotionVectors(RG16F)" ) )
         return false;
@@ -244,7 +244,7 @@ void D3D12GraphicsEngine::BeginMotionGBuffer() {
     // The sentinel clear is what lets FillCameraVelocity tell "no prepass draw covered this pixel" from a
     // genuine zero velocity (a static pixel under a static camera legitimately has velocity exactly 0).
     const float velocityClear[4] = { kVelocitySentinel, kVelocitySentinel, 0.0f, 0.0f };
-    const float normalClear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float normalClear[4] = { kGBufferNormalSentinel, kGBufferNormalSentinel, 0.0f, 0.0f };
     m_CmdList->ClearRenderTargetView( m_VelocityRtv, velocityClear, 0, nullptr );
     m_CmdList->ClearRenderTargetView( m_NormalRtv, normalClear, 0, nullptr );
 
@@ -265,8 +265,8 @@ void D3D12GraphicsEngine::EndMotionGBuffer() {
 }
 
 /** Camera-only velocity for every pixel the depth prepass never covered — see the file header. Runs at the end
-    of world rendering, right next to CopyDepthForAO, because it needs the FINAL depth buffer (grass, water,
-    decals and the transparents have all written by then). */
+    of world rendering because it needs the FINAL depth buffer (water, decals and the transparents have all
+    written by then). */
 void D3D12GraphicsEngine::FillCameraVelocity() {
     if ( !m_FrameOpen || !m_MotionResourcesReady || !m_CmdList ) return;
     if ( !m_Pipelines.Motion.FillPSO || !m_Pipelines.Motion.FillRootSig ) return;
@@ -298,7 +298,7 @@ void D3D12GraphicsEngine::FillCameraVelocity() {
     m_CmdList->SetComputeRoot32BitConstants( 1, 4, fillConsts, 0 );
     m_CmdList->Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
 
-    // Depth back to DEPTH_WRITE (CopyDepthForAO and the fog/god-ray block downstream both expect it there);
+    // Depth back to DEPTH_WRITE (the fog/god-ray block downstream expects it there);
     // velocity to the combined shader-read state, which is where the debug overlay and next frame's
     // BeginMotionGBuffer both expect to find it.
     D3D12_RESOURCE_BARRIER toRead[] = {

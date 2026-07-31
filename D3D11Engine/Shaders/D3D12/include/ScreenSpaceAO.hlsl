@@ -1,47 +1,26 @@
-// Screen-space AO lookup for the lit Forward+ pixel shaders (World.hlsl / Vob.hlsl / Skeletal.hlsl).
+// Screen-space AO lookup for the lit Forward+ pixel shaders (World / Vob / Skeletal / Vegetation / Decal).
 //
-// The AO mask is produced by D3D12GraphicsEngine::RenderSSAO from the PREVIOUS frame's COMPLETE depth buffer
-// (m_PrevDepth, snapshotted by CopyDepthForAO after every depth-writing pass) rather than from this frame's
-// depth prepass. That is what lets grass/foliage, decals and the other late depth writers both cast AO and be
-// correctly shaded by it — the prepass never contained them.
+// The AO mask is produced by D3D12GraphicsEngine::RenderSSAO from THIS frame's DEPTH PREPASS, immediately after
+// the prepass and before any lit pass runs. The mask is therefore already in this frame's screen space: the
+// lookup is a plain read at the pixel being shaded — no reprojection, no disocclusion test, no one-frame lag.
+// (It used to run off a full-frame depth SNAPSHOT of the PREVIOUS frame, which bought coverage of the late
+// depth writers at the cost of all of the above; vegetation joining the prepass is what made that trade
+// unnecessary — see D3D12Scene.cpp's DrawVegetationDepthPrepass.)
 //
-// The price is that the mask lives in the PREVIOUS frame's screen space, so this reprojects into it per-pixel:
-// the surface's world position is pushed through AoPrevViewProj (the exact camera that rasterized the
-// snapshot) to get the UV it occupied last frame. For static geometry that is exact — not a camera-motion
-// approximation — and it only lags on objects that themselves moved. Two rejections fall back to "unoccluded":
-//   * the reprojected UV leaving the screen (the surface simply wasn't visible last frame), and
-//   * a depth mismatch at that UV (disocclusion — last frame something ELSE was in front here, so its AO
-//     has nothing to do with this surface).
+// COVERAGE. The prepass contains the world mesh, instanced VOBs, skeletals + node attachments and vegetation
+// (the last range-limited to kVegetationPrepassRange). Water, decals, particles and the blended transparencies
+// write depth later and are not AO occluders; a pixel of one of those simply reads the mask of the opaque
+// surface behind it, which is the right answer for a decal and a harmless one for the rest.
 //
-// Requires, declared BEFORE this include: the ShadowCB reprojection tail (AoPrevViewProj/AoPrevDepthIndex/
-// AoPrevProjZ*/AoReprojValid), `cbuffer AOCB { uint AoMaskIndex; }` and `SamplerState smpAoClamp`.
+// Requires, declared BEFORE this include: `cbuffer AOCB { uint AoMaskIndex; }`, `SamplerState smpAoClamp`,
+// and the ShadowCB screen-space-AO block that carries AoInvRes. (AoInvRes rides ShadowCB rather than AOCB
+// because the World root signature is at 63 of its 64 DWORDs — two more root constants would not fit.)
 
-// Relative view-depth tolerance for the disocclusion test. Generous enough to survive the sub-pixel
-// reprojection error on a steeply-slanted surface, tight enough to reject a genuinely different surface.
-static const float kAoReprojDepthTolerance = 0.05;
-
-float SampleScreenSpaceAO( float3 wpos )
+// SampleLevel through the clamp sampler rather than Load(): when AO is off or its resources are unavailable the
+// host binds the 1x1 WHITE texture here, and a Load() at any real screen coordinate would fall outside that
+// single texel and return 0 — fully occluded — instead of 1.
+float SampleScreenSpaceAO( float2 svPos )
 {
-    // No snapshot yet (first frame of a world, or right after a resize) — nothing to reproject into.
-    if ( AoReprojValid < 0.5 ) return 1.0;
-
-    float4 prevClip = mul( float4( wpos, 1.0 ), AoPrevViewProj );
-    if ( prevClip.w <= 0.0 ) return 1.0;                      // behind last frame's camera
-    float invW = 1.0 / prevClip.w;
-    float2 uv = prevClip.xy * invW * float2( 0.5, -0.5 ) + 0.5;
-    if ( any( uv < 0.0 ) || any( uv > 1.0 ) ) return 1.0;     // off-screen last frame
-
-    // Disocclusion test: what the snapshot actually stored at that UV must be this same surface.
-    Texture2D prevDepthTex = ResourceDescriptorHeap[AoPrevDepthIndex];
-    float storedDepth = prevDepthTex.SampleLevel( smpAoClamp, uv, 0 ).r;
-    if ( storedDepth <= 0.0 ) return 1.0;                     // reversed-Z: cleared == sky, no occluder data
-
-    // Compare in linear view Z (reversed-Z depth is wildly non-uniform, so a raw depth epsilon is meaningless).
-    float thisDepth = prevClip.z * invW;
-    float zStored = AoPrevProjZY / ( storedDepth - AoPrevProjZX );
-    float zThis   = AoPrevProjZY / ( thisDepth   - AoPrevProjZX );
-    if ( abs( zStored - zThis ) > kAoReprojDepthTolerance * abs( zThis ) ) return 1.0;
-
     Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
-    return aoTex.SampleLevel( smpAoClamp, uv, 0 ).r;
+    return aoTex.SampleLevel( smpAoClamp, svPos * AoInvRes, 0 ).r;
 }

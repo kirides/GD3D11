@@ -4,16 +4,18 @@
 // see their headers). XeGTAO is what AOMode::AO_ASSAO selects on the D3D12 backend — the D3D11 renderer keeps
 // its own ASSAO port, untouched. Every other AO mode still lands on D3D12AO.cpp's simple SSAO.
 //
-// WHY IT LOOKS SO MUCH LIKE THE SSAO PATH IT REPLACES. It reads the same input (m_PrevDepth: the previous
-// frame's COMPLETE depth buffer, snapshotted by CopyDepthForAO after the last depth writer) and writes the same
-// output (m_AOMask, sampled with per-pixel reprojection by include/ScreenSpaceAO.hlsl). Both of those are
-// forced by Forward+, not by XeGTAO: lighting resolves inside the geometry pass, so this frame's depth does not
-// exist yet when the mask is needed, and the prepass alone would omit grass/foliage/decals/water. Keeping the
-// contract identical is what makes the two implementations interchangeable and leaves every consumer untouched.
+// WHY IT LOOKS SO MUCH LIKE THE SSAO PATH IT REPLACES. It reads the same input (m_DepthBuffer, straight out of
+// the Forward+ depth prepass) and writes the same output (m_AOMask, read at face value by
+// include/ScreenSpaceAO.hlsl). Both are forced by Forward+, not by XeGTAO: lighting resolves inside the
+// geometry pass, so the prepass is the only depth that exists when the mask is needed. Keeping the contract
+// identical is what makes the two implementations interchangeable and leaves every consumer untouched.
 //
-// THE FOUR DISPATCH STAGES:
+// THE DISPATCH STAGES:
 //   1. CSPrefilterDepths16x16  raw reversed-Z NDC depth -> a 5-level view-space depth pyramid.
-//   2. CSGenerateNormals       view-space normals from the same depth, packed R11G11B10_UNORM.
+//   2. CSGenerateNormals       view-space normals reconstructed from the same depth (R11G11B10_UNORM).
+//                              SKIPPED whenever the depth prepass's own normal G-buffer is available: those are
+//                              real shading normals for the exact geometry that wrote this depth, and they cost
+//                              nothing extra. See LoadNormal in XeGTAO.hlsl for the two decodes.
 //   3. CSGTAO{Low,...,Ultra}   the GTAO horizon integral -> working AO term (R8_UINT) + packed depth edges.
 //   4. CSDenoise[Last]Pass     1-3 edge-aware passes; the last writes m_AOMask and re-applies Intel's
 //                              XE_GTAO_OCCLUSION_TERM_SCALE. Even with denoising "disabled" one pass runs,
@@ -82,17 +84,27 @@ namespace {
         uint32_t Out2Index;
         uint32_t Out3Index;
         uint32_t Out4Index;
+        // 1 -> NormalsIndex is the prepass's RG16F octahedral WORLD-space normal G-buffer, which LoadNormal
+        // decodes and rotates into view space with the three rows below. 0 -> it is CSGenerateNormals' packed
+        // R11G11B10 view-space map, which needs neither.
+        uint32_t NormalsAreGBuffer;
         uint32_t Pad0;
-        uint32_t Pad1;
+        // This frame's view matrix, uploaded VERBATIM (row-major, as every other matrix in this backend is).
+        // The shader reads it back column-major and mul()s a w=0 direction through it; nothing transposes it
+        // on either side. The 12 uints above are exactly 3 cbuffer rows, so this lands 16-byte aligned.
+        XMFLOAT4X4 ViewMatrix;
 
         GtaoBindings() {
             RawDepthIndex = WorkingDepthIndex = NormalsIndex = EdgesIndex = AOTermIndex = 0xFFFFFFFFu;
             Out0Index = Out1Index = Out2Index = Out3Index = Out4Index = 0xFFFFFFFFu;
-            Pad0 = Pad1 = 0;
+            NormalsAreGBuffer = 0;
+            Pad0 = 0;
+            ViewMatrix = {};
         }
     };
-    static_assert( sizeof( GtaoBindings ) == 12 * sizeof( uint32_t ),
-        "GtaoBindings must match XeGTAO.hlsl's b1 block and the 12 root constants CreateGtao declares" );
+    static_assert( sizeof( GtaoBindings ) == 28 * sizeof( uint32_t ),
+        "GtaoBindings must match XeGTAO.hlsl's b1 block and the 28 root constants CreateGtao declares" );
+    constexpr UINT kGtaoBindingConstants = 28;
 
     // Intel's DenoiseBlurBeta convention: a very large beta makes the centre tap dominate to the point that the
     // spatial filter is a no-op, which is how "denoising disabled" is expressed without a separate shader.
@@ -101,9 +113,8 @@ namespace {
 }
 
 /** (Re)creates the four private intermediates and their persistent heap slots. Called from the same resize path
-    as CreateAOResources — which owns m_AOMask and m_PrevDepth, the input and output this pass shares with the
-    simple SSAO path, so this must run AFTER it. Heap slots persist across recreations; only resources and views
-    are rebuilt. */
+    as CreateAOResources — which owns m_AOMask, the output this pass shares with the simple SSAO path, so this
+    must run AFTER it. Heap slots persist across recreations; only resources and views are rebuilt. */
 bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     m_GtaoResourcesReady = false;
     // The working-depth pyramid is a fixed 5 levels (XE_GTAO_DEPTH_MIP_LEVELS is hard-coded upstream), and
@@ -210,13 +221,13 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     return true;
 }
 
-/** XeGTAO is the selected AO mode and everything it needs exists. Shares m_AOMask/m_PrevDepth with the simple
-    SSAO path, so it depends on that path's resources being ready too. */
+/** XeGTAO is the selected AO mode and everything it needs exists. Shares m_AOMask and the depth-prepass depth
+    with the simple SSAO path, so it depends on that path's resources being ready too. */
 bool D3D12GraphicsEngine::IsGtaoEnabled() const {
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.AoMode != AOMode::AO_ASSAO ) return false;
     if ( !m_GtaoResourcesReady || !m_AOResourcesReady ) return false;
-    if ( !m_PrevDepth || !m_PrevDepthValid || m_PrevDepthSrvSlot == UINT_MAX ) return false;
+    if ( !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return false;
     if ( m_AOMaskUintUavSlot == UINT_MAX ) return false;
     const auto& p = m_Pipelines.Gtao;
     if ( !p.RootSig || !p.PrefilterPSO || !p.NormalsPSO || !p.DenoisePSO || !p.DenoiseLastPSO ) return false;
@@ -224,8 +235,8 @@ bool D3D12GraphicsEngine::IsGtaoEnabled() const {
     return p.MainPSO[quality] != nullptr;
 }
 
-/** The full chain. Caller (RenderSSAO) has already published the reprojection constants and defaulted
-    m_ActiveAOMaskSrvSlot to the white "no occlusion" texture, and has verified IsGtaoEnabled(). */
+/** The full chain. Caller (RenderSSAO) has already defaulted m_ActiveAOMaskSrvSlot to the white "no occlusion" texture and
+    verified IsGtaoEnabled(). */
 void D3D12GraphicsEngine::RenderGTAO() {
     if ( !m_FrameOpen || !m_CmdList ) return;
 
@@ -243,10 +254,23 @@ void D3D12GraphicsEngine::RenderGTAO() {
     const UINT height = static_cast<UINT>( m_Resolution.y );
 
     // --- Constants -------------------------------------------------------------------------------------------
-    // Everything derives from the projection that rasterized the SNAPSHOT, not this frame's — the depth being
-    // unprojected here was produced with it. (Its _13/_23 carry the TAA jitter, which this ignores; that is a
-    // sub-pixel shift applied uniformly to the centre and every sample, so it cancels within the pass.)
-    const XMFLOAT4X4& projM = m_PrevDepthProj;
+    // This frame's projection — the one the depth prepass below was rasterized with. (Its _13/_23 carry the TAA
+    // jitter, which this ignores; that is a sub-pixel shift applied uniformly to the centre and every sample,
+    // so it cancels within the pass.)
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+
+    // World -> view for the G-buffer normal path (LoadNormal). The SAME view matrix every geometry pass uploads,
+    // passed through untouched — see the warning in LoadNormal about hand-expanding it instead of mul()ing.
+    // Re-derived exactly like DrawWorldMesh does, so it cannot drift from the camera the prepass used.
+    XMMATRIX viewXM = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( viewXM );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+
+    // Feed XeGTAO the depth prepass's own normals when they exist — real shading normals for exactly the
+    // geometry that wrote this depth. CSGenerateNormals (reconstruction from depth) stays as the fallback for
+    // when the G-buffer PSOs/targets failed to create.
+    const bool gbufNormals = MotionGBufferActive() && m_NormalBuffer && m_NormalSrvSlot != UINT_MAX;
 
     GtaoConstants cb = {};
     cb.ViewportSize[0] = static_cast<int32_t>( width );
@@ -294,10 +318,23 @@ void D3D12GraphicsEngine::RenderGTAO() {
     m_CmdList->SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
     m_CmdList->SetComputeRoot32BitConstants( 0, 24, &cb, 0 );
 
+    // The per-dispatch bindings block, pre-seeded with everything that is the same for all of them.
+    GtaoBindings common;
+    common.NormalsAreGBuffer = gbufNormals ? 1u : 0u;
+    common.ViewMatrix = viewM;
+
     // --- Barriers --------------------------------------------------------------------------------------------
-    // Every resource here rests in UNORDERED_ACCESS, so the only pre-work is flipping m_AOMask back if a
-    // previous successful AO run left it readable for the lit passes. m_PrevDepth already rests in a
-    // shader-read state (kPrevDepthReadState) and is never written by this pass.
+    // Every private intermediate rests in UNORDERED_ACCESS. The depth buffer comes out of the prepass in
+    // DEPTH_WRITE and has to be flipped to a shader-read state (and back, at the bottom); the normal G-buffer
+    // comes out of it in RENDER_TARGET and gets the same treatment, since FillCameraVelocity at the end of the
+    // frame is what normally moves it and still expects to find it there.
+    BeginAoDepthRead();
+    if ( gbufNormals ) {
+        auto b = TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        m_CmdList->ResourceBarrier( 1, &b );
+    }
+    // ...and flip m_AOMask back if a previous successful AO run left it readable for the lit passes.
     if ( m_AOMaskInPixelState ) {
         auto b = TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
@@ -319,38 +356,40 @@ void D3D12GraphicsEngine::RenderGTAO() {
     // --- 1. Prefilter depths ---------------------------------------------------------------------------------
     // 8x8 threads, each handling a 2x2 block: one group covers 16x16 pixels.
     {
-        GtaoBindings b;
-        b.RawDepthIndex = m_PrevDepthSrvSlot;
+        GtaoBindings b = common;
+        b.RawDepthIndex = m_DepthSrvSlot;
         b.Out0Index = m_GtaoWorkingDepthUavSlot[0];
         b.Out1Index = m_GtaoWorkingDepthUavSlot[1];
         b.Out2Index = m_GtaoWorkingDepthUavSlot[2];
         b.Out3Index = m_GtaoWorkingDepthUavSlot[3];
         b.Out4Index = m_GtaoWorkingDepthUavSlot[4];
-        m_CmdList->SetComputeRoot32BitConstants( 1, 12, &b, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
         m_CmdList->SetPipelineState( m_Pipelines.Gtao.PrefilterPSO.Get() );
         m_CmdList->Dispatch( ( width + 15 ) / 16, ( height + 15 ) / 16, 1 );
     }
 
-    // --- 2. Generate view-space normals from the same snapshot -----------------------------------------------
-    {
-        GtaoBindings b;
-        b.RawDepthIndex = m_PrevDepthSrvSlot;
+    // --- 2. Normals ------------------------------------------------------------------------------------------
+    // Only when there is no prepass G-buffer to take them from: that one already holds this frame's real
+    // shading normals for every prepass writer, so reconstructing worse ones from depth would be pure cost.
+    if ( !gbufNormals ) {
+        GtaoBindings b = common;
+        b.RawDepthIndex = m_DepthSrvSlot;
         b.Out0Index = m_GtaoNormalsUavSlot;
-        m_CmdList->SetComputeRoot32BitConstants( 1, 12, &b, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
         m_CmdList->SetPipelineState( m_Pipelines.Gtao.NormalsPSO.Get() );
         m_CmdList->Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
     }
 
     // --- 3. The GTAO integral --------------------------------------------------------------------------------
     toRead( m_GtaoWorkingDepth.Get() );
-    toRead( m_GtaoNormals.Get() );
+    if ( !gbufNormals ) toRead( m_GtaoNormals.Get() );
     {
-        GtaoBindings b;
+        GtaoBindings b = common;
         b.WorkingDepthIndex = m_GtaoWorkingDepthSrvSlot;
-        b.NormalsIndex = m_GtaoNormalsSrvSlot;
+        b.NormalsIndex = gbufNormals ? m_NormalSrvSlot : m_GtaoNormalsSrvSlot;
         b.Out0Index = m_GtaoAOTermUavSlot[0];
         b.Out1Index = m_GtaoEdgesUavSlot;
-        m_CmdList->SetComputeRoot32BitConstants( 1, 12, &b, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
         m_CmdList->SetPipelineState( m_Pipelines.Gtao.MainPSO[quality].Get() );
         m_CmdList->Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
     }
@@ -365,11 +404,11 @@ void D3D12GraphicsEngine::RenderGTAO() {
         const bool lastPass = ( pass == denoisePassCount - 1 );
         const int dstTerm = 1 - srcTerm;
 
-        GtaoBindings b;
+        GtaoBindings b = common;
         b.AOTermIndex = m_GtaoAOTermSrvSlot[srcTerm];
         b.EdgesIndex = m_GtaoEdgesSrvSlot;
         b.Out0Index = lastPass ? m_AOMaskUintUavSlot : m_GtaoAOTermUavSlot[dstTerm];
-        m_CmdList->SetComputeRoot32BitConstants( 1, 12, &b, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
         m_CmdList->SetPipelineState( ( lastPass ? m_Pipelines.Gtao.DenoiseLastPSO : m_Pipelines.Gtao.DenoisePSO ).Get() );
         m_CmdList->Dispatch( ( width + 15 ) / 16, ( height + 7 ) / 8, 1 );
 
@@ -383,24 +422,35 @@ void D3D12GraphicsEngine::RenderGTAO() {
     }
 
     // --- Rest states -----------------------------------------------------------------------------------------
-    // m_AOMask readable for the lit geometry passes' bindless fetch; everything else back to UNORDERED_ACCESS,
-    // which is what the next frame's barriers assert as the "before" state. Skipping any of these produces a
-    // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH on the next frame rather than a visible artifact.
+    // m_AOMask readable for the lit geometry passes' bindless fetch; every private intermediate back to
+    // UNORDERED_ACCESS, the depth buffer back to DEPTH_WRITE and the normal G-buffer back to RENDER_TARGET —
+    // which is what the next barrier on each asserts as its "before" state. Skipping any of these produces a
+    // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible artifact.
     {
-        D3D12_RESOURCE_BARRIER post[] = {
+        D3D12_RESOURCE_BARRIER post[5] = {
             TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
             TransitionBarrier( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_GtaoNormals.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
             TransitionBarrier( m_GtaoEdges.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
             TransitionBarrier( m_GtaoAOTerm[srcTerm].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+            {},   // m_GtaoNormals, only when the reconstruction path actually ran (see below)
         };
-        m_CmdList->ResourceBarrier( _countof( post ), post );
+        UINT postCount = 4;
+        if ( !gbufNormals ) {
+            post[postCount++] = TransitionBarrier( m_GtaoNormals.Get(),
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        }
+        m_CmdList->ResourceBarrier( postCount, post );
     }
+    if ( gbufNormals ) {
+        auto b = TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET );
+        m_CmdList->ResourceBarrier( 1, &b );
+    }
+    EndAoDepthRead();
 
     m_AOMaskInPixelState = true;
     m_ActiveAOMaskSrvSlot = m_AOMaskSrvSlot;

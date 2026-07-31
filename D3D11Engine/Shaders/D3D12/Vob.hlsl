@@ -40,10 +40,14 @@ cbuffer ShadowCB : register(b3)
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // Screen-space AO reprojection tail — see World.hlsl for the layout notes; must stay identical in all
-    // three lit shaders and in the CPU-side AoReprojCBData.
-    float4x4 AoPrevViewProj;
-    uint     AoPrevDepthIndex;  float AoPrevProjZX;      float AoPrevProjZY;  float AoReprojValid;
+    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
+    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
+    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
+    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
+    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
+    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
+    float2   AoInvRes;          float2 _aopad0;
+    float4   _aoReserved[4];
     // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
     // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
     // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
@@ -65,7 +69,7 @@ TextureCubeArray        PointShadowCubes : register(t5);
 cbuffer AOCB : register(b7) { uint AoMaskIndex; };
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
 SamplerState smpAoClamp : register(s1);
-// SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp + the ShadowCB reprojection tail declared above.
+// SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp declared above.
 #include "include/ScreenSpaceAO.hlsl"
 
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
@@ -143,7 +147,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
-    float ssao = SampleScreenSpaceAO( i.wpos );
+    float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
@@ -240,7 +244,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
-    float ssao = SampleScreenSpaceAO( i.wpos );
+    float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
@@ -280,7 +284,7 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float shadow = ComputeSunShadow( i.wpos, N, i.col.g );
-    float ssao = SampleScreenSpaceAO( i.wpos );
+    float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     return float4( rgb, t.a * i.col.a );

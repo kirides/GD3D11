@@ -428,11 +428,9 @@ void D3D12GraphicsEngine::OnLoadWorld()
         v.Reset();
     }
     m_RainShadowVobs.Reset();
-    // The AO depth snapshot still holds the OLD world seen through the old camera — reprojecting the new
-    // world's geometry into it would produce garbage occlusion for one frame. RenderSSAO falls back to the
-    // white "no occlusion" mask until CopyDepthForAO refills it at the end of the first frame here.
-    m_PrevDepthValid = false;
-    // Same reasoning for TAA: the accumulated history and its depth snapshot belong to the world being left.
+    // AO needs no reset here — it runs entirely off THIS frame's depth prepass, so the first frame of the new
+    // world already produces a correct mask.
+    // TAA does: the accumulated history and its depth snapshot belong to the world being left.
     // Blending them into the new one would smear the old level across the first frames of the new one, and the
     // depth-confidence test would reject essentially every pixel while doing it.
     m_TaaHistoryValid = false;
@@ -1906,6 +1904,136 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 }
 
 
+D3D12GraphicsEngine::GrassCBData D3D12GraphicsEngine::MakeGrassConstants() const {
+	// Mirrors GVegetationBox::PopulateConstantBuffer, minus G_NormalVS (see Vegetation.hlsl) — 8 32-bit values
+	// to match GrassCB's HLSL layout exactly (root constants map by DWORD offset).
+	// Every grass pass in a frame MUST push the value this returns: Vegetation.hlsl's GrassWorldPos derives the
+	// swayed blade position from G_Time/G_WindStrength/the hero push, so a pass that read a different G_Time
+	// would rasterize the blade somewhere else than the depth prepass put it.
+	static_assert( sizeof( GrassCBData ) == 32, "GrassCBData must be 8 DWORDs to match Vegetation.hlsl's GrassCB" );
+	const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	GrassCBData gcb = {};
+	gcb.Time = Engine::GAPI->GetTimeSeconds();
+	gcb.WindStrength = settings.WindQuality > 0 ? settings.GlobalWindStrength : 0.0f;
+	if ( settings.HeroAffectsObjects ) {
+		gcb.PlayerPosWS = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+		gcb.HeroAffectStrength = 1.0f;
+	} else {
+		gcb.PlayerPosWS = XMFLOAT3( 0, 0, 0 );
+		gcb.HeroAffectStrength = 0.0f;
+	}
+	return gcb;
+}
+
+
+void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
+	// Grass into the Forward+ depth prepass — see the header comment on kVegetationPrepassRange for why, and for
+	// why the range is capped independently of the lit pass's OutdoorSmallVobDrawRadius.
+	//
+	// Deliberately a near-clone of DrawVegetation's cull + bind + draw loop rather than a shared helper: the two
+	// differ in the PSO, the cull radius, the root arguments they bind (this one touches neither lights, shadows,
+	// the ground texture nor the AO mask) and, in the G-buffer case, the extra MotionCB — which is most of what
+	// that loop is. What they MUST share is the vertex-position math, and that lives in the shader
+	// (GrassWorldPos) plus MakeGrassConstants, both of which they do share.
+	if ( !m_FrameOpen || !m_Pipelines.Grass.RootSig || !m_DepthBuffer ) return;
+
+	// The prepass is all-or-nothing about its render targets (see MotionGBufferActive): whichever variant the
+	// world/VOB/skeletal draws chose, this must choose too, or the PSO's RT formats won't match what is bound.
+	const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
+	const bool gbuf = motionCb && MotionGBufferActive();
+	ID3D12PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
+	                                : m_Pipelines.Grass.DepthPrepassPSO.Get();
+	if ( !pso ) return;
+
+	const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
+	if ( vegetationBoxes.empty() ) return;
+
+	DX_ZONE( m_CmdList, "Depth Prepass (vegetation)" );
+	TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (vegetation)" );
+
+	// ViewProj — identical derivation to DrawVegetation, so the depth laid down here is what the lit pass
+	// re-tests GREATER_EQUAL against.
+	XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+	Engine::GAPI->SetViewTransformXM( view );
+	Engine::GAPI->ResetWorldTransform();
+	const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+	XMFLOAT4X4 viewProj;
+	XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+	Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
+	if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+		const auto& camView = cam->trafoView;
+		const auto& camProj = cam->trafoProjection;
+		playerFrustum.BuildPerspective( XMMatrixTranspose( XMLoadFloat4x4( &camView ) ), XMLoadFloat4x4( &camProj ) );
+	}
+
+	const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+	const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	// min(), not the hard limit alone: a player who lowered the vegetation draw radius below it must not get
+	// prepass depth for grass the lit pass then never draws — that would punch grass-shaped AO holes into the
+	// terrain behind it.
+	const float cullRadius = std::min( settings.OutdoorSmallVobDrawRadius, kVegetationPrepassRange );
+	const GrassCBData gcb = MakeGrassConstants();
+	// The PS only alpha-clips against t0, so t1/the fog CB/the lights/the shadow CB/the AO CB all stay unbound —
+	// D3D12 requires only the root parameters a bound shader statically references to be set.
+	const D3D12_GPU_DESCRIPTOR_HANDLE fallbackSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+
+	bool bound = false;
+	for ( GVegetationBox* box : vegetationBoxes ) {
+		if ( !box || box->GetSpotCount() == 0 ) continue;
+
+		XMFLOAT3 bbMin, bbMax;
+		box->GetBoundingBox( &bbMin, &bbMax );
+		if ( Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax ) > cullRadius ) continue;
+		if ( !playerFrustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
+
+		GMeshSimple* mesh = box->GetVegetationMesh();
+		GfxVertexBuffer* instBuf = box->GetInstancingBuffer();
+		if ( !mesh || !instBuf ) continue;
+		D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetVertexBuffer() );
+		D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetIndexBuffer() );
+		D3D12VertexBuffer* mib_inst = D3D12VertexBuffer::From( instBuf );
+		if ( !mvb || !mib || !mib_inst || !mvb->GetResource() || !mib->GetResource() || !mib_inst->GetResource() ) continue;
+
+		if ( !bound ) {
+			bound = true;
+			m_CmdList->SetPipelineState( pso );
+			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
+			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );         // b1 GrassCB (the sway)
+			if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b6 MotionCB
+			m_CmdList->RSSetViewports( 1, &vp );
+			m_CmdList->RSSetScissorRects( 1, &sc );
+			m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+		}
+
+		// The alpha cutout must match the lit pass exactly or the two disagree about which texels exist — so
+		// the blade texture is bound here too. No ground texture: the prepass shades nothing.
+		D3D12_GPU_DESCRIPTOR_HANDLE grassSrv = fallbackSrv;
+		if ( GfxTexture* grassTex = box->GetVegetationTexture() ) {
+			D3D12Texture* d12 = D3D12Texture::From( grassTex );
+			if ( d12 && d12->HasSRV() ) grassSrv = d12->GetSrvGpuHandle();
+		}
+		m_CmdList->SetGraphicsRootDescriptorTable( 1, grassSrv );
+
+		const UINT numIndices = mesh->GetNumIndices();
+		const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
+		const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
+		const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
+		const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
+		m_CmdList->IASetVertexBuffers( 0, 2, views );
+		const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+		m_CmdList->IASetIndexBuffer( &ibv );
+		m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
+	}
+	// Deliberately NOT counted into RendererInfo.FrameDrawnTriangles — the lit pass counts the same geometry,
+	// and reporting it twice would make the on-screen triangle count meaningless.
+}
+
+
 void D3D12GraphicsEngine::DrawVegetation() {
 	// GVegetationBox instanced grass cards (P2.12). Bypasses GVegetationBox's own D3D11-only
 	// PrepareRenderGeometryPipeline()/RenderVegetation() (a SetActiveVertexShader/SetupVS_Ex* state-machine
@@ -1942,20 +2070,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	const float drawRadius = settings.OutdoorSmallVobDrawRadius;
 	const FogConstants fog = MakeFogConstants();
 
-	// Mirrors GVegetationBox::PopulateConstantBuffer, minus G_NormalVS (see Vegetation.hlsl) — 8 32-bit values
-	// to match GrassCB's HLSL layout exactly (root constants map by DWORD offset).
-	struct GrassCBData { float Time; float WindStrength; float HeroAffectStrength; float _pad0; XMFLOAT3 PlayerPosWS; float _pad1; };
-	static_assert( sizeof( GrassCBData ) == 32, "GrassCBData must be 8 DWORDs to match Vegetation.hlsl's GrassCB" );
-	GrassCBData gcb = {};
-	gcb.Time = Engine::GAPI->GetTimeSeconds();
-	gcb.WindStrength = settings.WindQuality > 0 ? settings.GlobalWindStrength : 0.0f;
-	if ( settings.HeroAffectsObjects ) {
-		gcb.PlayerPosWS = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
-		gcb.HeroAffectStrength = 1.0f;
-	} else {
-		gcb.PlayerPosWS = XMFLOAT3( 0, 0, 0 );
-		gcb.HeroAffectStrength = 0.0f;
-	}
+	const GrassCBData gcb = MakeGrassConstants();
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
@@ -2222,6 +2337,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		}
 	    DrawVobDepthPrepass();
 	    DrawSkeletalDepthPrepass();
+		// Vegetation last in the prepass — after the GPU VOB cull, which must see world-mesh-only depth, and
+		// after every other prepass writer, so the grass cards' alpha-tested fill is rejected early wherever
+		// solid geometry already sits in front. Range-limited (kVegetationPrepassRange); its reason for being
+		// here is RenderSSAO, which builds the AO mask out of exactly this depth.
+		DrawVegetationDepthPrepass();
 		// Back to the scene-color RT for the lit passes. The G-buffer targets stay in RENDER_TARGET until
 		// FillCameraVelocity flips them at the end of the frame.
 		EndMotionGBuffer();
@@ -2230,8 +2350,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
 	DispatchLightCulling();
 	// Screen-space AO: Intel XeGTAO when AoMode == AO_ASSAO, the simple depth-reconstructed SSAO otherwise.
-	// Both derive normals from the previous frame's depth snapshot (Forward+ has no GBuffer normals before
-	// lighting) and write the AO mask the lit passes below sample bindlessly via m_ActiveAOMaskSrvSlot.
+	// Both run off the depth prepass laid down just above and write the AO mask the lit passes below sample
+	// bindlessly via m_ActiveAOMaskSrvSlot. XeGTAO additionally takes its normals from the prepass' normal G-buffer.
 	// No-op (mask stays white) when AoMode == AO_NONE or resources are unavailable.
 	RenderSSAO();
 	// Sky image-based lighting: rebuilds the indirect-light cubes (specular chain + irradiance) when Gothic's
@@ -2340,16 +2460,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// far above) and after the collection lists are final. See D3D12Motion.cpp.
 	StoreVobPreviousTransforms();
 
-	// Snapshot the now-COMPLETE depth buffer for the next frame's SSAO (see D3D12AO.cpp). Deliberately here:
-	// every depth-writing pass (world, VOBs, skeletal, grass, decals, water, particles) has run, and
-	// RenderFogAndGodRays below is the first thing that moves the depth buffer out of DEPTH_WRITE.
-	CopyDepthForAO();
-
-	// Camera-only motion vectors for every pixel the depth prepass never covered — sky, grass, water, decals,
-	// the blended VOBs and the particle passes. Deliberately here, for the same reason CopyDepthForAO is: this
-	// is the first point at which the depth buffer is COMPLETE, and the fill reconstructs world positions from
-	// it. Only touches pixels still holding the clear sentinel, so the true per-object velocities the prepass
-	// wrote are left alone. See D3D12Motion.cpp.
+	// Camera-only motion vectors for every pixel the depth prepass never covered — sky, water, decals, the
+	// blended VOBs and the particle passes. Deliberately here: this is the first point at which the depth
+	// buffer is COMPLETE, and the fill reconstructs world positions from it. Only touches pixels still holding
+	// the clear sentinel, so the true per-object velocities the prepass wrote are left alone. See D3D12Motion.cpp.
 	FillCameraVelocity();
 
 	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same

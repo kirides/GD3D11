@@ -1,7 +1,8 @@
-// Input is the PREVIOUS frame's COMPLETE depth buffer (D3D12GraphicsEngine::CopyDepthForAO), not this frame's
-// depth prepass — that is what puts grass/foliage, decals and water into the occluder set. The one-frame
-// staleness is undone per-pixel in the lit shaders (include/ScreenSpaceAO.hlsl reprojects through the camera
-// that produced this depth), so everything below still works in a single consistent view space.
+// Input is THIS frame's depth buffer as the Forward+ DEPTH PREPASS left it: world mesh + instanced VOBs +
+// skeletals + node attachments + (range-limited) vegetation. So the mask is already in this frame's screen
+// space and the lit shaders read it straight (include/ScreenSpaceAO.hlsl) — no reprojection, no one-frame lag.
+// Water, decals and the late transparents are not in that depth and therefore not occluders; folding grass in
+// (D3D12Scene.cpp's DrawVegetationDepthPrepass) is what made that an acceptable trade.
 // Forward+ has no GBuffer normals before lighting (see PBRLighting.hlsl), so this reconstructs a view-space
 // normal from neighbouring depth samples (D3D11's CS_PFX_SAO SAO_RECONSTRUCT_NORMALS fallback) — same
 // Alchemy-AO/SAO spiral-sample formula as D3D11's CS_PFX_SAO.hlsl, self-contained (no shared D3D11 headers;

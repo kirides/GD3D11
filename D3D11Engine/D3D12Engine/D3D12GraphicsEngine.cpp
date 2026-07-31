@@ -898,10 +898,10 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // The per-frame-in-flight shadow CB every lit pass binds (b3 on the world/VOB root sig). Small and written
     // once per frame, so a persistently-mapped UPLOAD buffer per frame context — no ring offset needed.
     //
-    // 512, not 256: FOUR owners write four DISJOINT byte ranges of the same buffer, so none clobbers another.
+    // 512, not 256: THREE owners write three DISJOINT byte ranges of the same buffer, so none clobbers another.
     // [0, kWetnessCbOffset)  D3D12ShadowMap::Prepare       — cascade view-projs + sun dir/color/strength + texels
     // [kWetnessCbOffset, ..) UploadWetnessConstants        — scene wetness (needs the rain-shadow camera first)
-    // [kAoReprojCbOffset,..) UploadAoReprojConstants       — previous-frame depth reprojection for the AO mask
+    // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.

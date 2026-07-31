@@ -43,8 +43,14 @@ cbuffer ShadowCB : register(b3)
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    float4x4 AoPrevViewProj;
-    uint     AoPrevDepthIndex;  float AoPrevProjZX;      float AoPrevProjZY;  float AoReprojValid;
+    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
+    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
+    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
+    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
+    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
+    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
+    float2   AoInvRes;          float2 _aopad0;
+    float4   _aoReserved[4];
     uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
 };
 Texture2DArray          ShadowMap : register(t4);
@@ -108,7 +114,7 @@ float3 ShadeDecal( float3 albedo, float3 wpos, float3 nrm, float3 svpos )
     if ( dot( N, normalize( CamPosWS - wpos ) ) < 0.0 ) N = -N;
 
     float shadow = ComputeSunShadow( wpos, N, 1.0 );
-    float ssao   = SampleScreenSpaceAO( wpos );
+    float ssao   = SampleScreenSpaceAO( svpos.xy );
     // vertLighting = 1: decals carry no Gothic vertex/ground light, and 1.0 is the neutral value for the two
     // AO terms it feeds inside ComputeSunLightingPBR (lerp(1, vertLighting, strength) == 1).
     float3 rgb = ComputeSunLightingPBR( wpos, N, albedo, 1.0, shadow,

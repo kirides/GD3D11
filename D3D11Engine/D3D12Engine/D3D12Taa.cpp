@@ -42,8 +42,7 @@ namespace {
     constexpr uint32_t kTaaLongestVelocityVector = 0x40;
 
     // Relative view-Z tolerance for the disocclusion test. Generous enough to survive the sub-pixel reprojection
-    // error on a steeply slanted surface, tight enough to reject a genuinely different one — the same reasoning
-    // (and the same 5%) as ScreenSpaceAO.hlsl's kAoReprojDepthTolerance, which solves the identical problem.
+    // error on a steeply slanted surface, tight enough to reject a genuinely different one.
     constexpr float kTaaDepthTolerance = 0.05f;
 }
 
@@ -85,7 +84,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
     }
 
     // Private previous-depth snapshot. Same resource desc as m_DepthBuffer so CopyResource is unambiguously
-    // legal — identical reasoning to m_PrevDepth in CreateAOResources.
+    // legal — the same reasoning the water pass's depth copy follows.
     {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -307,8 +306,8 @@ void D3D12GraphicsEngine::RenderTAA() {
         m_CmdList->CopyResource( m_SceneColor.Get(), m_TaaHistory[writeIdx].Get() );
     }
 
-    // Snapshot this frame's depth for the NEXT frame's disocclusion test. Must be here rather than borrowed
-    // from m_PrevDepth: CopyDepthForAO already refilled that one with this frame's depth earlier in the frame.
+    // Snapshot this frame's depth for the NEXT frame's disocclusion test. Nothing else in the frame keeps a
+    // previous-frame depth, so this pass owns the copy.
     if ( m_TaaPrevDepth ) {
         D3D12_RESOURCE_BARRIER toCopy[] = {
             TransitionBarrier( m_TaaPrevDepth.Get(), kPrevDepthReadState, D3D12_RESOURCE_STATE_COPY_DEST ),
