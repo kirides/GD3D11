@@ -34,12 +34,12 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerPurgeCaches, hooked_PurgeCaches );
+        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerPurgeCaches, hooked_PurgeCaches );
         //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerCacheOut, hooked_CacheOut  );
 #if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_GOTHIC_2_6_fix)
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheInsertRes, hooked_InsertRes );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheTouchRes, hooked_TouchRes );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheRemoveRes, hooked_RemoveRes );
+        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheInsertRes, hooked_InsertRes );
+        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheTouchRes, hooked_TouchRes );
+        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheRemoveRes, hooked_RemoveRes );
 #endif
     }
 
