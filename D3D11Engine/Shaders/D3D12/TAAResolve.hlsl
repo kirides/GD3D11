@@ -58,7 +58,7 @@
 
 // Whether to use real 16-bit floats. Requires SM6.2 and "-enable-16bit-types"; see note 5 above.
 #ifndef USE_FP16
-#define USE_FP16 1
+#define USE_FP16 0
 #endif
 
 typedef float  fp32_t;
