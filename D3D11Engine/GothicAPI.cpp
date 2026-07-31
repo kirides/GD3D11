@@ -6560,8 +6560,12 @@ static void CollectLeafVobs(
         // with one pointer compare; a miss falls back to the map and repairs the slot.
         const bool mirrorUsable = static_cast<int>(base->Lights.size()) == numLights;
 
+        const bool dropStaticLights = Engine::GAPI->GetRendererState().RendererSettings.DisableStaticPointlights;
+
         for ( int i = 0; i < numLights; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
+
+            if ( dropStaticLights && vob->IsStatic() ) continue;
 
             // Range test first - it needs nothing but the zCVobLight, and keeping it ahead of the
             // resolve below preserves the original rule that an out-of-range light never causes a
