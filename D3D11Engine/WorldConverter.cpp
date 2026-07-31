@@ -149,6 +149,8 @@ namespace {
         meshInfo->HasBoundingBox = true;
     }
 
+    void RepairZeroLengthVertexNormals( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices );
+
     void BuildWorldMeshBuffers( WorldMeshInfo* mesh ) {
         ZoneScoped;
         std::vector<ExVertexStruct> indexedVertices;
@@ -163,8 +165,15 @@ namespace {
         Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshIndexBuffer );
 
-        // Generate normals
-        WorldConverter::GenerateVertexNormals( mesh->Vertices, mesh->Indices );
+        // Keep ZenGin's own per-wedge vertex normals (zCVertFeature::vertNormal).
+        // The level compiler produced them with crease-angle smoothing across BSP
+        // neighbors (zCMesh::CalcVertexNormals in MAT mode, using the material's
+        // smoothAngle), so they smooth across UV seams, material changes and
+        // section boundaries alike. Recomputing them here could only ever do worse:
+        // this mesh is a single (section x material) bucket, so every seam the
+        // bucketing introduces would turn into a hard shading edge.
+        // Only patch up degenerate normals from broken source data.
+        RepairZeroLengthVertexNormals( mesh->Vertices, mesh->Indices );
 
         // Precompute MikkTSpace tangents (after final normals; survives the remap passes below
         // because they move the whole ExVertexStruct stride, including Tangent).
@@ -894,13 +903,24 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
     }
 
+    size_t totalWorldVertices = 0;
+    size_t totalWorldIndices = 0;
     for ( WorldMeshInfo* mesh : allMeshes ) {
         vertexBuffers.emplace_back( &mesh->Vertices );
         indexBuffers.emplace_back( &mesh->Indices );
         shadowIndexBuffers.emplace_back( mesh->ShadowIndices.empty()
             ? &mesh->Indices
             : &mesh->ShadowIndices );
+
+        totalWorldVertices += mesh->Vertices.size();
+        totalWorldIndices += mesh->Indices.size();
     }
+
+    // Worth watching in a 32-bit process: the vertex count follows the weld key
+    // in CmpClass, which keeps wedges apart when their normal or baked color differs.
+    LogInfo() << "Worldmesh: " << allMeshes.size() << " meshes, " << totalWorldVertices
+        << " vertices (" << (totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)
+        << " MB CPU-side), " << totalWorldIndices << " indices";
 
     std::vector<ExVertexStruct> wrappedVertices;
     std::vector<unsigned int> wrappedIndices;
@@ -1952,6 +1972,18 @@ struct CmpClass // class comparing vertices in the set
         if ( fabs( p1.first.TexCoord.x - p2.first.TexCoord.x ) > eps ) return p1.first.TexCoord.x < p2.first.TexCoord.x;
         if ( fabs( p1.first.TexCoord.y - p2.first.TexCoord.y ) > eps ) return p1.first.TexCoord.y < p2.first.TexCoord.y;
 
+        // Normal and Color are part of the key: these are per-wedge values from
+        // ZenGin (crease-smoothed vertNormal / baked lightStatic), and merging two
+        // wedges that only agree on position+UV would silently throw one of them
+        // away - which used to flatten shading across creases and destroy baked
+        // light. Color additionally carries the wave amplitude/speed bytes for
+        // water materials, so it must never be merged away either.
+        if ( fabs( p1.first.Normal.x - p2.first.Normal.x ) > eps ) return p1.first.Normal.x < p2.first.Normal.x;
+        if ( fabs( p1.first.Normal.y - p2.first.Normal.y ) > eps ) return p1.first.Normal.y < p2.first.Normal.y;
+        if ( fabs( p1.first.Normal.z - p2.first.Normal.z ) > eps ) return p1.first.Normal.z < p2.first.Normal.z;
+
+        if ( p1.first.Color != p2.first.Color ) return p1.first.Color < p2.first.Color;
+
         return false;
     }
 };
@@ -2021,49 +2053,6 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     outVertices.resize( vertices.size() );
     for ( auto const& it : vertices )
         outVertices[it.second] = it.first;
-}
-
-/** Computes vertex normals for a mesh with face normals */
-void WorldConverter::GenerateVertexNormals( std::vector<ExVertexStruct>& vertices, std::vector<VERTEX_INDEX>& indices ) {
-    std::vector<XMFLOAT3> normals( vertices.size(), XMFLOAT3( 0, 0, 0 ) );
-
-    for ( unsigned int i = 0; i < indices.size(); i += 3 ) {
-        XMFLOAT3 v[3] = { vertices[indices[i]].Position, vertices[indices[i + 1]].Position, vertices[indices[i + 2]].Position };
-        FXMVECTOR normal = XMVector3Cross( (XMLoadFloat3( &v[1] ) - XMLoadFloat3( &v[0] )), (XMLoadFloat3( &v[2] ) - XMLoadFloat3( &v[0] )) );
-
-        for ( int j = 0; j < 3; ++j ) {
-            XMVECTOR a = XMLoadFloat3( &v[(j + 1) % 3] ) - XMLoadFloat3( &v[j] );
-            XMVECTOR b = XMLoadFloat3( &v[(j + 2) % 3] ) - XMLoadFloat3( &v[j] );
-            float lenA = XMVectorGetX( XMVector3Length( a ) );
-            float lenB = XMVectorGetX( XMVector3Length( b ) );
-
-            // Degenerate edge (duplicate/collapsed vertices): dividing by a
-            // zero length turns the ACos argument into NaN, which then
-            // poisons this vertex's accumulated normal (and every other
-            // triangle sharing it, since they add into the same slot).
-            // Skip the contribution instead.
-            if ( lenA <= 1e-8f || lenB <= 1e-8f )
-                continue;
-
-            float cosAngle = std::clamp( XMVectorGetX( XMVector3Dot( a, b ) ) / (lenA * lenB), -1.0f, 1.0f );
-            XMVECTOR weight = XMVectorReplicate( acosf( cosAngle ) );
-            XMVECTOR XMV_normals_indices = XMLoadFloat3( &normals[indices[(i + j)]] );
-            XMV_normals_indices += weight * normal;
-            XMStoreFloat3( &normals[indices[(i + j)]], XMV_normals_indices );
-        }
-    }
-
-    // Normalize everything and store it into the vertices
-    XMFLOAT3 Normal;
-    for ( unsigned int i = 0; i < normals.size(); i++ ) {
-        XMVECTOR n = XMLoadFloat3( &normals[i] );
-        // Isolated vertex or all contributing triangles were degenerate:
-        // fall back to a safe default instead of normalizing a zero vector into NaN.
-        if ( XMVectorGetX( XMVector3LengthSq( n ) ) <= 1e-12f )
-            n = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
-        XMStoreFloat3( &Normal, XMVector3Normalize( n ) );
-        vertices[i].Normal = Normal;
-    }
 }
 
 /** Marks the edges of the mesh */

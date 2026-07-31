@@ -95,9 +95,6 @@ public:
     /** Marks the edges of the mesh */
     static void MarkEdges( std::vector<ExVertexStruct>& vertices, std::vector<VERTEX_INDEX>& indices );
 
-    /** Computes vertex normals for a mesh with face normals */
-    static void GenerateVertexNormals( std::vector<ExVertexStruct>& vertices, std::vector<VERTEX_INDEX>& indices );
-
     /** Creates the FullSectionMesh for the given section */
     static void GenerateFullSectionMesh( WorldMeshSectionInfo& section );
 
