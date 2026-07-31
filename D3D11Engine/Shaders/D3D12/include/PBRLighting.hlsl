@@ -261,8 +261,11 @@ float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
 float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
 
 // Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
+// specularScale scales ONLY the specular lobe (diffuse is untouched): 0 turns the light into a pure area-brightener.
+// Mirrors D3D11's `spec = PLS_CalcBlinnPhongLighting(...) * light.Color.w` in ForwardPlusLighting.hlsl /
+// CS_TiledShading.hlsl / PS_DS_PointLight*.hlsl — see ApplyTiledLight for who passes 0.
 float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                           float roughness, float metallic, float attenuation )
+                           float roughness, float metallic, float attenuation, float specularScale )
 {
     float NdotL = saturate( dot( N, L ) );
     float NdotV = saturate( dot( N, V ) );
@@ -276,7 +279,7 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     float  D = PBR_DistributionGGX( NdotH, cr );
     float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
     float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 ) * specularScale;
     float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
     float3 diffuse = kD * baseColor / PBR_PI;
     return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
@@ -463,7 +466,7 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
 
     // Direct Sun term
     float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, 1.0 );
 
     return ambientSun + directSun;
 }
@@ -492,7 +495,11 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
     dir /= dist;
     float nd  = saturate( 1.0 - dist / L.Range );
     float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
-    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
+    // Color.w is the 0/1 "not static" flag BuildFrameLightBuffer packs (D3D12Scene.cpp), fed straight in as the
+    // specular scale: an isStatic() zCVobLight is one of the "atmospheric" fill lights Gothic pre-places to
+    // brighten a room, not a physical source, so it must contribute diffuse only — a highlight from it reads as a
+    // phantom lamp. Same suppression D3D11 does with light.Color.w.
+    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w );
     if ( L.ShadowCubeIndex >= 0 )
     {
         // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube
