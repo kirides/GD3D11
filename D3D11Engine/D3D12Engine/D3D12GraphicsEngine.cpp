@@ -947,8 +947,8 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
 	}
 
 	CreateTexture( m_DefaultOrmTexture );
-	const uint32_t orm = 0xFF00E6FFu;
-	if ( XR_SUCCESS != m_DefaultOrmTexture->Init( INT2( 1, 1 ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &orm, "DefaultOrmTexture(1,0.9,0)" ) ) {
+	const uint32_t orm = 0xFF00B2FFu;
+	if ( XR_SUCCESS != m_DefaultOrmTexture->Init( INT2( 1, 1 ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &orm, "DefaultOrmTexture(1,0.69,0)" ) ) {
 		return false;
 	}
 
