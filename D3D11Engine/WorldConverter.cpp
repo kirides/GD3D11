@@ -47,6 +47,112 @@ namespace {
             D3D11VertexBuffer::U_IMMUTABLE );
     }
 
+    /** ZENGIN's zPMINDEX_NONE: terminator of a WedgeMap collapse chain. */
+    constexpr VERTEX_INDEX PM_INDEX_NONE = 0xFFFF;
+
+    /** Builds a reduced index list for one sub-mesh out of ZENGIN's own progressive-mesh data, at
+        SHADOW_LOD_VERTEX_FRACTION of that mesh's collapse sequence.
+
+        The .MRM/.MDM formats store a Hoppe-style edge collapse: VertexUpdates[n] gives the number of
+        triangles and wedges still live once n vertex positions are active, and WedgeMap chains every
+        dead wedge onto the wedge it collapsed into. Rebuilding a level is therefore just "keep the first
+        numTri triangles, and pull each of their wedge indices down below numWedge" - which is exactly
+        what zCProgMeshProto::RenderStaticLOD does per frame in the original engine. Because a collapse
+        only ever redirects indices onto wedges that already exist, the result indexes the caller's
+        unchanged vertex buffer; it is a second index buffer, not a second mesh. Winding matches the
+        caller's (wedge 2,1,0).
+
+        Returns false when the visual ships no LOD data (~2% of the vanilla .MRMs), when the sub-mesh is
+        too small to be worth a buffer, or when the collapse data does not check out. */
+    bool BuildProgMeshLodIndices( zCSubMesh* submesh, std::vector<VERTEX_INDEX>& outIndices ) {
+        outIndices.clear();
+        if ( !submesh ) {
+            return false;
+        }
+
+        const int numUpdates = submesh->VertexUpdates.NumInArray;
+        const int numWedges = submesh->WedgeList.NumInArray;
+        const int numTris = submesh->TriList.NumInArray;
+
+        // numUpdates <= 1 is ZENGIN's own "no LOD" marker (zCProgMeshProto::HasLOD).
+        if ( numUpdates <= 1 || numWedges <= 0 || numTris < SHADOW_LOD_MIN_TRIANGLES ) {
+            return false;
+        }
+        if ( !submesh->VertexUpdates.Array || !submesh->WedgeMap.Array
+            || submesh->WedgeMap.NumInArray < numWedges ) {
+            return false;
+        }
+
+        int posIndex = static_cast<int>(SHADOW_LOD_VERTEX_FRACTION * (numUpdates - 1));
+        if ( posIndex < 0 ) posIndex = 0;
+        if ( posIndex > numUpdates - 1 ) posIndex = numUpdates - 1;
+        const zTPMVertexUpdate& update = submesh->VertexUpdates.Array[posIndex];
+        const int lodTris = update.numNewTri;
+        const int lodWedges = update.numNewWedge;
+
+        // Collapsed to nothing, or no saving to be had - either way there is no point in a second buffer.
+        if ( lodTris <= 0 || lodTris >= numTris || lodWedges <= 0 || lodWedges > numWedges ) {
+            return false;
+        }
+
+        // Wedges below lodWedges survive as themselves; the rest follow their collapse chain down.
+        static thread_local std::vector<VERTEX_INDEX> wedgeRemap;
+        wedgeRemap.resize( numWedges );
+        for ( int i = 0; i < lodWedges; ++i ) {
+            wedgeRemap[i] = static_cast<VERTEX_INDEX>(i);
+        }
+        for ( int i = lodWedges; i < numWedges; ++i ) {
+            int wedge = i;
+            int guard = 0;
+            while ( wedge >= lodWedges ) {
+                const VERTEX_INDEX next = submesh->WedgeMap.Array[wedge];
+                // A chain that terminates, loops, or leaves the array means the collapse data does not
+                // describe this mesh - drop the whole level rather than emit indices we can't justify.
+                if ( next == PM_INDEX_NONE || next >= numWedges || ++guard > numWedges ) {
+                    return false;
+                }
+                wedge = next;
+            }
+            wedgeRemap[i] = static_cast<VERTEX_INDEX>(wedge);
+        }
+
+        outIndices.reserve( static_cast<size_t>(lodTris) * 3 );
+        for ( int t = 0; t < lodTris; ++t ) {
+            const zTPMTriangle& tri = submesh->TriList.Array[t];
+            if ( tri.wedge[0] >= numWedges || tri.wedge[1] >= numWedges || tri.wedge[2] >= numWedges ) {
+                return false;
+            }
+
+            const VERTEX_INDEX a = wedgeRemap[tri.wedge[2]];
+            const VERTEX_INDEX b = wedgeRemap[tri.wedge[1]];
+            const VERTEX_INDEX c = wedgeRemap[tri.wedge[0]];
+
+            // Triangles whose corners collapsed onto each other have no area left. ZENGIN still submits
+            // them; we drop them, which is free silhouette-neutral savings in a depth-only pass.
+            if ( a == b || b == c || a == c ) {
+                continue;
+            }
+
+            outIndices.emplace_back( a );
+            outIndices.emplace_back( b );
+            outIndices.emplace_back( c );
+        }
+
+        return !outIndices.empty();
+    }
+
+    void CreateLodIndexBuffer( MeshInfo* meshInfo ) {
+        if ( !meshInfo || meshInfo->LodIndices.empty() ) {
+            return;
+        }
+
+        Engine::GraphicsEngine->CreateVertexBuffer( meshInfo->MeshLodIndexBuffer );
+        meshInfo->MeshLodIndexBuffer->Init( meshInfo->LodIndices.data(),
+            meshInfo->LodIndices.size() * sizeof( VERTEX_INDEX ),
+            D3D11VertexBuffer::B_INDEXBUFFER,
+            D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
     /** Builds a position-only (float3) companion buffer in the same vertex ordering as the source
         interleaved vertices. Bound for opaque depth/shadow passes; indices remain valid because the
         ordering matches the mesh/shadow index buffers built from the same array. */
@@ -1899,6 +2005,11 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
         } else {
+            // Reduced caster geometry for the distant shadow cascades, rebuilt from this sub-mesh's own
+            // progressive-mesh data. Built here because it is expressed in the pre-optimization wedge
+            // numbering; OptimizeVertices below carries it through the vertex remap it applies.
+            BuildProgMeshLodIndices( s, mi->LodIndices );
+
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
                 reinterpret_cast<byte*>(&mi->Vertices[0]),
@@ -1912,16 +2023,19 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->Indices.size(),
                 mi->Vertices.size(),
                 sizeof( ExVertexStruct ),
-                &mi->ShadowIndices );
+                &mi->ShadowIndices,
+                &mi->LodIndices );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         }
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mi );
+        CreateLodIndexBuffer( mi );
 
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
+        Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->LodIndices.size() * sizeof( VERTEX_INDEX );
 
         zCMaterial* mat = s->Material;
         meshInfo->Meshes[mat].emplace_back( mi );

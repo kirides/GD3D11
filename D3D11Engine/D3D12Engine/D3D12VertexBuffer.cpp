@@ -39,6 +39,43 @@ namespace {
         return true;
     }
 
+    /** Carries a baked progressive-mesh LOD index list through the vertex-fetch remap OptimizeVertices
+        just applied to the mesh, then position-welds it exactly like the shadow index list. On anything
+        unexpected the list is cleared instead of left half-remapped - callers treat an empty LOD list as
+        "this mesh has no reduced level" and fall back to full detail, which is always correct. */
+    void OptimizeLodIndices( std::vector<VERTEX_INDEX>& lodIndices,
+        const std::vector<unsigned int>& remap,
+        const std::vector<uint8_t>& remappedVertices,
+        size_t fetchedVertexCount,
+        unsigned int stride ) {
+        if ( lodIndices.size() % 3 != 0 ) {
+            lodIndices.clear();
+            return;
+        }
+
+        std::vector<unsigned int> lod;
+        ConvertIndicesToUInt32( lodIndices.data(), lodIndices.size(), lod );
+
+        for ( unsigned int& idx : lod ) {
+            // A collapsed triangle can only reference wedges that survive, and every surviving wedge is
+            // referenced by the full-detail index buffer too - so remap never hands back the ~0u it
+            // reserves for unreferenced vertices. Verified rather than trusted: mod content is content.
+            if ( idx >= remap.size() || remap[idx] >= fetchedVertexCount ) {
+                lodIndices.clear();
+                return;
+            }
+            idx = remap[idx];
+        }
+
+        std::vector<unsigned int> welded( lod.size() );
+        meshopt_generateShadowIndexBuffer( welded.data(), lod.data(), lod.size(),
+            remappedVertices.data(), fetchedVertexCount, sizeof( float ) * 3, stride );
+
+        if ( !ConvertIndicesToVertexIndex( welded, lodIndices.data(), lodIndices.size() ) ) {
+            lodIndices.clear();
+        }
+    }
+
     float DequantizeSnorm( int v, int bits ) {
         const int maxValue = (1 << (bits - 1)) - 1;
         if ( v > maxValue ) {
@@ -258,15 +295,18 @@ XRESULT D3D12VertexBuffer::Unmap() {
 }
 
 XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* vertices, unsigned int numIndices,
-    unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices ) {
+    unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices,
+    std::vector<VERTEX_INDEX>* inOutLodIndices ) {
     if ( !indices || !vertices || numIndices == 0 || numVertices == 0 || stride == 0 ) {
         if ( outShadowIndices ) outShadowIndices->clear();
+        if ( inOutLodIndices ) inOutLodIndices->clear();
         return XR_SUCCESS;
     }
 
     // meshoptimizer supports per-vertex element sizes up to 256 bytes.
     if ( stride > 256 ) {
         if ( outShadowIndices ) outShadowIndices->clear();
+        if ( inOutLodIndices ) inOutLodIndices->clear();
         return XR_SUCCESS;
     }
 
@@ -309,9 +349,14 @@ XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* ver
         }
     }
 
+    if ( inOutLodIndices && !inOutLodIndices->empty() ) {
+        OptimizeLodIndices( *inOutLodIndices, remap, remappedVertices, fetchedVertexCount, stride );
+    }
+
     if ( !ConvertIndicesToVertexIndex( remappedIndices, indices, numIndices ) ) {
         LogError() << "OptimizeVertices: remapped index exceeds VERTEX_INDEX range";
         if ( outShadowIndices ) outShadowIndices->clear();
+        if ( inOutLodIndices ) inOutLodIndices->clear();
         return XR_FAILED;
     }
 

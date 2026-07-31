@@ -600,8 +600,11 @@ void D3D12GraphicsEngine::CollectRainShadowVobs() {
 
     // culled=false, resolveMaps=false: CPU-culled like the cascades (never GPU-compacted), and the void
     // alpha-clip PS reads nothing but the diffuse, so normal/ORM resolution is pure waste here.
+    // shadowCascade=0: depth-only, so the position-welded shadow indices apply, but not the LOD level —
+    // the wetness map is one coarse projection over the whole scene rather than a distance band, so there
+    // is no near/far split here that would justify dropping caster detail.
     m_RainVobDrawCount = BuildVobDrawCommands( rainUploads, m_RainVobDrawArgsPtr[frame], false,
-        kMaxRainVobDrawCommands, false );
+        kMaxRainVobDrawCommands, false, true, 0 );
 }
 
 

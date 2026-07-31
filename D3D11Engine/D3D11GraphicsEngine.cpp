@@ -3934,7 +3934,13 @@ namespace {
         }
     }
 
-    GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha ) {
+    // Cascade 0 covers everything close to the camera and keeps full-detail casters; from cascade 1 out
+    // the shadow is small enough on screen that the baked progressive-mesh LOD is free silhouette. Both
+    // reduced buffers are position-welded, so neither may be used where the pixel shader alpha-tests:
+    // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
+    constexpr int FIRST_LOD_SHADOW_CASCADE = 1;
+
+    GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1 ) {
         if ( !mesh ) {
             return nullptr;
         }
@@ -3943,13 +3949,18 @@ namespace {
             return mesh->GetMeshIndexBuffer();
         }
 
+        if ( cascadeIndex >= FIRST_LOD_SHADOW_CASCADE
+            && mesh->MeshLodIndexBuffer && !mesh->LodIndices.empty() ) {
+            return mesh->GetMeshLodIndexBuffer();
+        }
+
         if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
             return mesh->GetMeshShadowIndexBuffer();
         }
         return mesh->GetMeshIndexBuffer();
     }
 
-    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha ) {
+    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1 ) {
         if ( !mesh ) {
             return 0;
         }
@@ -3957,6 +3968,9 @@ namespace {
         if ( isAlpha ) {
         return mesh->Indices.size();
     }
+        if ( cascadeIndex >= FIRST_LOD_SHADOW_CASCADE && !mesh->LodIndices.empty() ) {
+            return static_cast<unsigned int>( mesh->LodIndices.size() );
+        }
         return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
     }
 }
@@ -6960,7 +6974,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             /* Dont re-bind buffer all the time*/
             const auto vb = D3D11VertexBuffer::From( mi->GetMeshVertexBuffer() );
-            const auto ib = D3D11VertexBuffer::From( GetShadowAwareIndexBuffer( mi, isAlpha ) );
+            const auto ib = D3D11VertexBuffer::From( GetShadowAwareIndexBuffer( mi, isAlpha, params.CascadeIndex ) );
 
             UINT offset[] = { 0 };
             UINT uStride[] = { sizeof( ExVertexStruct ) };
@@ -6968,7 +6982,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 vb->GetVertexBuffer().Get()
             };
 
-            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha ));
+            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha, params.CascadeIndex ));
             const auto numInstances = staticMeshVisual->Instances.size();
             const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
             const auto indexOffset = 0;

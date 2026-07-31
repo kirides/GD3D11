@@ -52,7 +52,8 @@ public:
     XRESULT Unmap() override;
 
     XRESULT OptimizeVertices( VERTEX_INDEX* indices, uint8_t* vertices, unsigned int numIndices,
-        unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr ) override;
+        unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr,
+        std::vector<VERTEX_INDEX>* inOutLodIndices = nullptr ) override;
     XRESULT OptimizeFaces( VERTEX_INDEX* indices, uint8_t* vertices, unsigned int numIndices,
         unsigned int numVertices, unsigned int stride ) override;
 

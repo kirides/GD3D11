@@ -757,8 +757,17 @@ private:
     // the build a pure read so it can run on a cascade's worker thread (CacheIn mutates Gothic's resource
     // manager). A texture that has not been pulled in yet simply alpha-clips against black for that frame —
     // a caster silhouette, not a visible surface, so the inaccuracy never reaches the screen as a wrong pixel.
+    // shadowCascade picks which of a sub-mesh's index buffers each command draws, mirroring D3D11's
+    // GetShadowAwareIndexBuffer: kVobIndicesMainView keeps the full render indices (the lit and prepass
+    // draws need per-wedge normals/UVs), a cascade index >= 0 takes the position-welded shadow indices,
+    // and >= kFirstLodShadowCascade takes the baked progressive-mesh LOD on top of that. Both reduced
+    // buffers merge wedges that share a position but not a UV, so a material the caster alpha-clips
+    // always keeps its render indices regardless of pass.
+    static constexpr int kVobIndicesMainView = -1;
+    static constexpr int kFirstLodShadowCascade = 1;
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-        UINT maxCommands, bool culled = false, bool cacheIn = true );
+        UINT maxCommands, bool culled = false, bool cacheIn = true,
+        int shadowCascade = kVobIndicesMainView );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
     // The prerequisite was the bindless-skeletal / bindless-attachment work: neither Skeletal.RootSig nor the

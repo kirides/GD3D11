@@ -2972,7 +2972,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
 
 UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-    UINT maxCommands, bool culled, bool cacheIn ) {
+    UINT maxCommands, bool culled, bool cacheIn, int shadowCascade ) {
     // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
     // indices (diffuse always; normal/ORM only when resolveMaps — the depth/shadow passes just alpha-clip on
     // diffuse), pack the mesh + instance VB views + IB view, the per-visual wind min/max, and DrawIndexedInstanced.
@@ -3031,6 +3031,13 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             const bool blended = peelBlended
                 && ( alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD );
 
+            // The caster PS alpha-clips against this material's diffuse, and both reduced index buffers are
+            // position-welded — which merges wedges that share a position but not a UV. Feeding a leaf card
+            // the wrong UV would clip away the wrong texels, so alpha-relevant materials keep full indices
+            // in every pass. Same condition D3D11's shadow VOB loop gates on.
+            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
+                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
                     continue;
@@ -3067,6 +3074,29 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     return count;
                 }
 
+                // Pick this command's index buffer. A missing level just falls through to the next-best one,
+                // so a mesh that ships no LOD data still gets the welded shadow indices, and one that has
+                // neither still draws — the only cost of an absent level is that nothing is saved.
+                D3D12VertexBuffer* cmdIb = mib;
+                UINT cmdIndexCount = static_cast<UINT>( mi->Indices.size() );
+                if ( shadowCascade != kVobIndicesMainView && !alphaTested ) {
+                    if ( shadowCascade >= kFirstLodShadowCascade && !mi->LodIndices.empty()
+                        && mi->GetMeshLodIndexBuffer() ) {
+                        if ( D3D12VertexBuffer* lodIb = D3D12VertexBuffer::From( mi->GetMeshLodIndexBuffer() );
+                            lodIb->GetResource() ) {
+                            cmdIb = lodIb;
+                            cmdIndexCount = static_cast<UINT>( mi->LodIndices.size() );
+                        }
+                    }
+                    if ( cmdIb == mib && !mi->ShadowIndices.empty() && mi->GetMeshShadowIndexBuffer() ) {
+                        if ( D3D12VertexBuffer* shadowIb = D3D12VertexBuffer::From( mi->GetMeshShadowIndexBuffer() );
+                            shadowIb->GetResource() ) {
+                            cmdIb = shadowIb;
+                            cmdIndexCount = static_cast<UINT>( mi->ShadowIndices.size() );
+                        }
+                    }
+                }
+
                 VobDrawCommand& c = cmds[count++];
                 c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                 // GPU-culled: draw from the compacted buffer CSCull writes (same byte range, different base)
@@ -3074,19 +3104,19 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 c.InstVBV = culled ? up.culledInstView : up.instView;
                 c.VisualIndex = culled ? up.cullVisualIndex : 0xFFFFFFFFu;
                 c._cmdPad = 0;
-                c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                c.IBV     = { cmdIb->GetGpuVirtualAddress(), cmdIb->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
                 c.MatNormalIndex  = normalIdx;
                 c.MatOrmIndex     = ormIdx;
                 c.MatDiffuseIndex = diffuseIdx;
                 c.WindMinHeight   = minH;
                 c.WindMaxHeight   = maxH;
-                c.Draw.IndexCountPerInstance = static_cast<UINT>( mi->Indices.size() );
+                c.Draw.IndexCountPerInstance = cmdIndexCount;
                 c.Draw.InstanceCount         = up.numInstances;
                 c.Draw.StartIndexLocation    = 0;
                 c.Draw.BaseVertexLocation    = 0;
                 c.Draw.StartInstanceLocation = 0;
                 if ( resolveMaps )
-                    m_VobDrawnTriangles += (static_cast<unsigned int>( mi->Indices.size() ) / 3) * up.numInstances;
+                    m_VobDrawnTriangles += (cmdIndexCount / 3) * up.numInstances;
             }
         }
     }
