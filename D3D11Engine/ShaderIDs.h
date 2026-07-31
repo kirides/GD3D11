@@ -144,5 +144,6 @@ enum class CShaderID : size_t {
     CS_PFX_Bloom_Downsample,
     CS_PFX_Bloom_Upsample,
     CS_GenerateNormalsFromDepth,
+    CS_PFX_TAAResolve,
     COUNT
 };

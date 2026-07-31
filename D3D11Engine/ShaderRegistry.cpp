@@ -439,6 +439,9 @@ void ShaderRegistry::Build() {
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_Bloom_Upsample>( "CS_PFX_Bloom_Upsample.hlsl" ));
 
+        // Intel Graphics Optimized TAA resolve (port of the D3D12 backend's TAAResolve.hlsl to cs_5_0).
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_TAAResolve>( "CS_PFX_TAAResolve.hlsl" ));
+
         // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));
 
