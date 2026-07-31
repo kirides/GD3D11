@@ -137,6 +137,7 @@ void D3D11PointLight::ReleaseShadowMap() {
     ReleaseStaticAsideShadowMap();
     m_CurrentResolution = 0;
     DrawnOnce = false;
+    m_HasDynamicOverlay = false;
 
 }
 
@@ -148,6 +149,7 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
     StartReInit();
     DrawnOnce = false;
     m_StaticShadowReady = false;
+    m_HasDynamicOverlay = false;
 }
 
 void D3D11PointLight::ClearTiledSlot() {
@@ -158,7 +160,7 @@ void D3D11PointLight::ClearTiledSlot() {
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
     m_StaticShadowReady = false;
-
+    m_HasDynamicOverlay = false;
 }
 
 int D3D11PointLight::GetCurrentShadowMode() const {
@@ -179,6 +181,7 @@ void D3D11PointLight::HandleShadowModeChange( int shadowMode ) {
     m_LastShadowMode = shadowMode;
     m_StaticShadowReady = false;
     DrawnOnce = false;
+    m_HasDynamicOverlay = false;
 
     if ( shadowMode != GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
         ReleaseStaticAsideShadowMap();
@@ -342,8 +345,12 @@ bool D3D11PointLight::NeedsUpdate() {
         return false;
 
     const int shadowMode = GetCurrentShadowMode();
+    // Report the pending mode switch, but do NOT latch it here. HandleShadowModeChange() is what acts on the
+    // transition (drops the cached static depth and the dynamic overlay), and it only runs once RenderCubemap()
+    // is actually called - which is *after* DrawPointlightShadows() has asked us this question. Consuming
+    // m_LastShadowMode here made that handler a no-op, so a light toggled to static kept advertising its
+    // frozen overlay and burned that NPC into the shadow permanently.
     if ( shadowMode != m_LastShadowMode ) {
-        m_LastShadowMode = shadowMode;
         return shadowMode > 0;
     }
 
@@ -404,6 +411,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
         // Invalidate worldcache
         WorldCacheInvalid = true;
         m_StaticShadowReady = false;
+        m_HasDynamicOverlay = false;
     }
 
     if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY && !moved && m_StaticShadowReady && DrawnOnce ) {
@@ -506,6 +514,33 @@ void D3D11PointLight::RenderFullCubemap() {
     }
 
     if ( shadowMode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
+        // Tiled path: static depth stays resident in this slot of the main cube array and is only re-rendered
+        // when the light moves, while the moving casters go into the SAME slot of the dynamic-overlay array.
+        // The shader min's the two, which reproduces the old composited cube without the per-update 6-face
+        // CopySubresourceRegion (and without the per-light aside cube that fed it).
+        if ( m_TiledSlotIndex >= 0 && m_TiledOwner ) {
+            if ( RenderToDepthStencilBuffer* dynTarget = m_TiledOwner->GetDynSlotTarget( m_TiledSlotIndex ) ) {
+                // Nothing composites out of the aside cube on this path, so give its slab back to the pool if
+                // this light still holds one from the fallback path. Its clearing of m_StaticShadowReady is
+                // wanted, not incidental: the active slot would still hold the fallback path's COMPOSITED
+                // depth, so keeping it would bake that update's NPC in as a permanent static shadow.
+                if ( m_StaticDepthCubemap ) {
+                    ReleaseStaticAsideShadowMap();
+                }
+
+                if ( !m_StaticShadowReady ) {
+                    RenderStaticShadowPass( *activeTarget, true );
+                    m_StaticShadowReady = true;
+                }
+
+                // Clear: the overlay must hold ONLY this update's movers, never the previous one's.
+                RenderAnimatedShadowPass( *dynTarget, true );
+                m_HasDynamicOverlay = true;
+                return;
+            }
+            // Overlay array unavailable - fall through to the composited single-cube path below.
+        }
+
         DepthStencilPool* dsPool = engine->GetPfxRenderer()->GetDepthStencilPool();
         AcquireStaticAsideShadowMap( dsPool, m_CurrentResolution );
 
@@ -557,6 +592,7 @@ bool D3D11PointLight::IsReady()
 void D3D11PointLight::Invalidate() {
     DrawnOnce = false;
     m_StaticShadowReady = false;
+    m_HasDynamicOverlay = false;
     VobCache.clear();
     SkeletalVobCache.clear();
     WorldCacheInvalid = true;
@@ -648,6 +684,7 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
         SkeletalVobCache.clear();
         DrawnOnce = false;
         m_StaticShadowReady = false;
+        m_HasDynamicOverlay = false;
     }
 
     if (vob->Vob == LightInfo->Vob) {

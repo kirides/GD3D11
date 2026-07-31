@@ -16,12 +16,19 @@ constexpr uint32_t MAX_TILED_LIGHTS = 400;
 constexpr uint32_t MAX_SHADOW_CUBEMAPS = 128;
 constexpr uint32_t SHADOW_CUBE_SIZE = 128; // Must match POINTLIGHT_SHADOWMAP_SIZE
 
+// ShadowCubeIndex encoding: -1 = unshadowed, else (slot | flags). Bit 30 marks that the slot also has a valid
+// dynamic (skeletal overlay) cube in the second array, which the shader samples and min's with the static one.
+// Keeping the flag in bit 30 leaves the value positive, so "ShadowCubeIndex >= 0" still means shadowed.
+// Mirrors PLS_SHADOW_HAS_DYNAMIC / PLS_SHADOW_SLOT_MASK in Shaders/include/PointLightShadows.h.
+constexpr int32_t SHADOW_CUBE_HAS_DYNAMIC = 0x40000000;
+constexpr int32_t SHADOW_CUBE_SLOT_MASK = 0x3FFFFFFF;
+
 struct TiledPointLight {
     DirectX::XMFLOAT3 PositionView;
     float Range;
     DirectX::XMFLOAT4 Color;
     DirectX::XMFLOAT3 PositionWorld;
-    int32_t ShadowCubeIndex; // -1 = no shadow, else index into TextureCubeArray
+    int32_t ShadowCubeIndex; // -1 = no shadow, else (slot | SHADOW_CUBE_HAS_DYNAMIC)
 };
 
 struct LightGrid {
@@ -60,15 +67,21 @@ public:
     ID3D11ShaderResourceView* GetLightIndexListSRV() const { return m_LightIndexListSRV.Get(); }
     ID3D11ShaderResourceView* GetShadowCubeArraySRV() const { return m_ShadowCubeArraySRV.Get(); }
     bool IsShadowArrayCreated() const { return m_ShadowArrayCreated; }
+    ID3D11ShaderResourceView* GetShadowDynCubeArraySRV() const { return m_ShadowDynCubeArraySRV.Get(); }
+    bool IsDynShadowArrayCreated() const { return m_ShadowDynArrayCreated; }
 
     // Shadow cubemap array slot management
     int AllocateSlot();
     void FreeSlot( int slot );
     RenderToDepthStencilBuffer* GetSlotTarget( int slot );
+    /** Same slot index as GetSlotTarget, but into the dynamic-overlay array. Creates that array on first use,
+        so worlds that never render a moving caster into a point-light cube never pay for it. */
+    RenderToDepthStencilBuffer* GetDynSlotTarget( int slot );
 
 private:
     void EnsureBuffers( uint32_t numTilesX, uint32_t numTilesY );
     void EnsureShadowArray();
+    void EnsureDynShadowArray();
 
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
@@ -98,6 +111,16 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_SHADOW_CUBEMAPS> m_SlotDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_SHADOW_CUBEMAPS> m_SlotViews;
     bool m_ShadowArrayCreated = false;
+
+    // Dynamic-overlay cube array: a second, identically-indexed array holding ONLY the moving (skeletal)
+    // casters of a slot. It exists so the static depth can stay resident in m_ShadowCubeArray instead of being
+    // re-composited every update via a 6-face CopySubresourceRegion out of a per-light aside cube. Lazily
+    // created - only PLS_UPDATE_DYNAMIC ever renders into it.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_ShadowDynCubeArray;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowDynCubeArraySRV;
+    std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_SHADOW_CUBEMAPS> m_SlotDynDSVs;
+    std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_SHADOW_CUBEMAPS> m_SlotDynViews;
+    bool m_ShadowDynArrayCreated = false;
 
     uint32_t m_lastNumTilesX = 0;
     uint32_t m_lastNumTilesY = 0;
