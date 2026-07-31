@@ -1722,6 +1722,23 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "(D3D11's atmospheric scattering hardcodes the same idea). 0 disables the floor.\n"
             "Blue-weighted, so it reads as moonlight rather than grey underexposure." );
 
+        // Default material roughness — only the discrete values the backend built a 1x1 ORM texture for at
+        // startup are reachable, so this is a slider over the step index that displays the roughness itself.
+        ImGui::SeparatorText( "Default Material (D3D12)##AdvancedDefaultMaterial" );
+        {
+            int step = DefaultRoughness::StepFor( settings.DefaultMaterialRoughness );
+            char label[16];
+            snprintf( label, sizeof( label ), "%.2f", DefaultRoughness::ForStep( step ) );
+            if ( ImGui::SliderInt( "Default roughness", &step, 0, DefaultRoughness::kNumSteps - 1, label,
+                ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
+                settings.DefaultMaterialRoughness = DefaultRoughness::ForStep( step );
+            }
+            ImGui::SetItemTooltip( "D3D12 only. Roughness used for materials that ship with no _FX/_ORM map,\n"
+                "which is most of Gothic's. Lower = glossier (damp stone, worn wood);\n"
+                "higher = flatter and chalkier (plaster, cloth). AO stays 1 and metallic 0.\n"
+                "Only these fixed steps exist - each one is a 1x1 texture built at startup." );
+        }
+
         ImGui::Separator();
 
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );

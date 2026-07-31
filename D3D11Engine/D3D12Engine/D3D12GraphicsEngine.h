@@ -631,7 +631,20 @@ private:
 
     std::unique_ptr<D3D12Texture> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     std::unique_ptr<D3D12Texture> m_BlackTexture;         // 1x1 black fallback for untextured draws
-    std::unique_ptr<D3D12Texture> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
+    // One 1x1 ORM texture per selectable default roughness (AO 1, rough = DefaultRoughness::ForStep(i),
+    // metal 0), all created up front by CreateWhiteTexture. Materials Gothic ships with no _FX/_ORM map —
+    // most of them — are handed one of these bindlessly, and the shader can't be given a scalar instead
+    // (MatOrmIndex is an SRV slot), hence a texture per step rather than a uniform. Never freed: FreeSrvSlot
+    // skips all of them, same as the white/black fallbacks.
+    std::unique_ptr<D3D12Texture> m_DefaultOrmTextures[DefaultRoughness::kNumSteps];
+    // SRV slot of the currently selected one. Resolved once per frame in OnBeginFrame rather than per
+    // material: the command builders read it thousands of times a frame, and the cascade builds read it
+    // from worker threads, so it must not move mid-frame. UINT_MAX until the textures exist.
+    UINT m_DefaultOrmSrvSlot = UINT_MAX;
+    /** SRV heap slot of the default ORM texture for this frame's DefaultMaterialRoughness setting. */
+    UINT GetDefaultOrmSrvSlot() const { return m_DefaultOrmSrvSlot; }
+    /** Re-resolves m_DefaultOrmSrvSlot from RendererSettings.DefaultMaterialRoughness. Frame-start only. */
+    void RefreshDefaultOrmSlot();
     std::unique_ptr<D3D12Texture> m_DistortionTexture;    // distortion2.dds — wet-ground normal fallback (see LoadDistortionTexture)
     bool LoadDistortionTexture();                         // one-time, non-fatal load (mirrors LoadSmaaTextures)
 

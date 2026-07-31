@@ -5489,6 +5489,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "BloomStrength", float_to_string( s.BloomStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomKnee", float_to_string( s.BloomKnee, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomRadius", float_to_string( s.BloomRadius, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DefaultMaterialRoughness", float_to_string( s.DefaultMaterialRoughness, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableDebugLog", to_string_locale_independent( s.EnableDebugLog ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableAutoupdates", to_string_locale_independent( s.EnableAutoupdates ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableGodRays", to_string_locale_independent( s.EnableGodRays ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5660,6 +5661,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.BloomStrength = GetPrivateProfileFloatA( "General", "BloomStrength", ds.BloomStrength, ini );
         s.BloomKnee = GetPrivateProfileFloatA( "General", "BloomKnee", ds.BloomKnee, ini );
         s.BloomRadius = GetPrivateProfileFloatA( "General", "BloomRadius", ds.BloomRadius, ini );
+        // Snap to a step the D3D12 backend actually built a 1x1 ORM texture for — the ini is hand-editable.
+        s.DefaultMaterialRoughness = DefaultRoughness::ForStep( DefaultRoughness::StepFor(
+            GetPrivateProfileFloatA( "General", "DefaultMaterialRoughness", ds.DefaultMaterialRoughness, ini ) ) );
         s.EnableDebugLog = GetPrivateProfileBoolA( "General", "EnableDebugLog", ds.EnableDebugLog, ini );
         s.EnableAutoupdates = GetPrivateProfileBoolA( "General", "EnableAutoupdates", ds.EnableAutoupdates, ini );
         s.EnableGodRays = GetPrivateProfileBoolA( "General", "EnableGodRays", ds.EnableGodRays, ini );

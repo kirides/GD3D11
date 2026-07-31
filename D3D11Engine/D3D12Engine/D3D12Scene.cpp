@@ -2725,7 +2725,7 @@ namespace {
 
     // Packs an SRV heap slot with the FxMap's channel layout for the D3D12 PS to unpack (see kOrmFormatShift).
     // EAdditionalMaterial::None/Specular (no _FX loaded, or the legacy D3D11-only _FX.dds) fall through to format
-    // 0 (ORM) — correct because m_DefaultOrmTexture is itself laid out as full AO/Rough/Metal in that case.
+    // 0 (ORM) — correct because the default ORM textures are themselves laid out as full AO/Rough/Metal.
     uint32_t EncodeOrmSlot( uint32_t srvSlot, EAdditionalMaterial availableMat ) {
         uint32_t fmt = 0;   // ORM: r=AO g=Roughness b=Metallic (also the default-texture / no-_FX case)
         switch ( availableMat ) {
@@ -2838,7 +2838,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             zCTexture* tex = meshKey.Material->GetAniTexture();
             uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
             uint32_t normalIdx  = 0xFFFFFFFFu;
-            uint32_t ormIdx     = m_DefaultOrmTexture->GetSrvSlot();
+            uint32_t ormIdx     = GetDefaultOrmSrvSlot();
             float normalStrength = 1.0f;
             if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
@@ -2972,7 +2972,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( argPtr );
     UINT count = 0;
     const uint32_t whiteSlot   = m_BlackTexture->GetSrvSlot();
-    const uint32_t defaultOrm  = m_DefaultOrmTexture->GetSrvSlot();
+    const uint32_t defaultOrm  = GetDefaultOrmSrvSlot();
     // Attribute the triangle stat to the main-view build only (resolveMaps): the shadow cascades build the same
     // geometry and would double-count. Reset here; the color pass adds it to FrameDrawnTriangles once.
     // NOTE: with GPU culling (culled=true) this is a pre-cull UPPER BOUND — the real instance counts only exist
@@ -3431,7 +3431,7 @@ void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, U
 
 void D3D12GraphicsEngine::ResolveMaterialMapSlots( zCTexture* tex, UINT* outNormalOrm ) const {
     outNormalOrm[0] = 0xFFFFFFFFu;
-    outNormalOrm[1] = m_DefaultOrmTexture->GetSrvSlot();
+    outNormalOrm[1] = GetDefaultOrmSrvSlot();
     if ( tex ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* n = s->GetNormalmap() ) {
