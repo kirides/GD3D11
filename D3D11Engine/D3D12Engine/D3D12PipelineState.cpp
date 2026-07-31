@@ -3053,6 +3053,59 @@ bool D3D12PipelineState::CreateTaa() {
     return true;
 }
 
+bool D3D12PipelineState::CreateDoF() {
+    // Depth of field (Shaders/D3D12/DoF.hlsl) — the compute port of D3D11PFX_DepthOfField::RenderCS. Non-fatal:
+    // RenderDepthOfField guards on every PSO and simply leaves the scene in focus if this fails.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // One root signature for all four PSOs: b0 as 16 root constants (the three tuning values, the history-valid
+    // flag, six bindless heap indices and the two resolutions — see DoF.hlsl's DoFCB). Every texture and UAV is
+    // fetched through ResourceDescriptorHeap, so there is no descriptor table — hence
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, same as the TAA resolve above.
+    D3D12RootLayout& rs = Layout( "DoF" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 DoFCB
+    // s0 linear-clamp only. The one place the D3D11 shader deliberately avoids filtering — the half-res pass's
+    // centre depth — uses Load() rather than a point sampler, so there is nothing for an s1 to do here.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP ) );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    DoF.RootSig = rs.RootSig();
+
+    // The Gaussian variant is the same CSBlur entry point recompiled with DOF_GAUSS_BLUR — exactly how the D3D11
+    // side splits CS_PFX_DoF into CS_PFX_DoF / CS_PFX_DoF_Gauss.
+    const D3D_SHADER_MACRO gaussMacros[] = { { "DOF_GAUSS_BLUR", "1" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "DoF.hlsl", "CSFocusResolve", Shadermodel_CS, DoF.FocusCsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.BlurCsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.GaussCsBlob.ReleaseAndGetAddressOf(), gaussMacros )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSComposite", Shadermodel_CS, DoF.CompositeCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( {
+        { DoF.FocusCsBlob.Get(),     "DoF.hlsl:CSFocusResolve",           D3D12_SHADER_VISIBILITY_ALL },
+        { DoF.BlurCsBlob.Get(),      "DoF.hlsl:CSBlur",                   D3D12_SHADER_VISIBILITY_ALL },
+        { DoF.GaussCsBlob.Get(),     "DoF.hlsl:CSBlur (DOF_GAUSS_BLUR)",  D3D12_SHADER_VISIBILITY_ALL },
+        { DoF.CompositeCsBlob.Get(), "DoF.hlsl:CSComposite",              D3D12_SHADER_VISIBILITY_ALL },
+        } );
+
+    struct { ID3DBlob* cs; Microsoft::WRL::ComPtr<ID3D12PipelineState>* pso; const char* name; } passes[] = {
+        { DoF.FocusCsBlob.Get(),     &DoF.FocusPSO,     "focus resolve" },
+        { DoF.BlurCsBlob.Get(),      &DoF.BlurPSO,      "bokeh blur" },
+        { DoF.GaussCsBlob.Get(),     &DoF.GaussPSO,     "gaussian blur" },
+        { DoF.CompositeCsBlob.Get(), &DoF.CompositePSO, "composite" },
+    };
+    for ( const auto& p : passes ) {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = DoF.RootSig.Get();
+        pso.CS = { p.cs->GetBufferPointer(), p.cs->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( p.pso->ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (depth of field, " << p.name << ").";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateSky() {
     // Procedural atmospheric-scattering sky dome (Shaders/D3D12/Sky.hlsl) — the replacement for Gothic's
     // fixed-function sky. Non-fatal: DrawAtmosphereSkyDome() guards on both PSOs and DrawSky() falls back to
@@ -3501,6 +3554,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     runOptional( "Gtao", &D3D12PipelineState::CreateGtao );
     runOptional( "Motion", &D3D12PipelineState::CreateMotion );
     runOptional( "Taa", &D3D12PipelineState::CreateTaa );
+    runOptional( "DoF", &D3D12PipelineState::CreateDoF );
     runOptional( "SkyIbl", &D3D12PipelineState::CreateSkyIbl );
     runOptional( "Sky", &D3D12PipelineState::CreateSky );
     runOptional( "Fog", &D3D12PipelineState::CreateFog );

@@ -2513,6 +2513,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// scene colour back in place, so nothing below needs to know it ran. No-op unless AA_TAA.
 	RenderTAA();
 
+	// Depth of field, on the resolved LINEAR HDR scene: D3D11 runs it as the first pass of its "Post-processing
+	// B" block, i.e. after the upscale/TAA stage and before bloom. Blurring before bloom is what makes an
+	// out-of-focus highlight bloom as the disc it has become rather than as the point it was; being after TAA
+	// keeps a moving focus point from smearing through the temporal history. No-op unless EnableDoF.
+	RenderDepthOfField();
+
 	RenderBloom();
 	RenderLuminanceAdapt();
 
