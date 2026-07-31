@@ -2561,19 +2561,9 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
  *  (zParticle.cpp:2460) and every particle spawns on the vob's pivot - the "fire beast burns at one
  *  point until re-spawned" bug. Re-run the assignment here once the visual does exist. */
 void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
-#ifndef BUILD_GOTHIC_1_08k
-    zCParticleEmitter* emitter = fx->GetEmitter();
-    if ( !emitter || emitter->GetVisShpType() != 5 )
-        return;
-
-    // Only when ZENGIN left the shape unset - never second-guess a shape it did resolve.
-    if ( emitter->GetVisShpModel() || emitter->GetVisShpMesh() || emitter->GetVisShpProgMesh() )
-        return;
-
-    // emAdjustShpToOrigin is what makes oCVisualFX the *owner* of the shape mesh, so it is also
-    // what guarantees ReleasePFXMesh will drop the reference we add below. Without it we would leak.
+#ifndef BUILD_SPACER
     oCVisualFX* visFx = source ? source->As<oCVisualFX>() : nullptr;
-    if ( !visFx || !visFx->GetAdjustShapeToOrigin() )
+    if ( !visFx )
         return;
 
     zCVob* origin = visFx->GetOrigin();
@@ -2584,18 +2574,49 @@ void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
     if ( !originVisual )
         return; // Still nothing to point at - try again next frame
 
-    // Mirror CalcPFXMesh's zDYNAMIC_CAST<zCModel> branch. Only the model case is repaired here:
-    // zCMesh/zCProgMeshProto origins are served by ZENGIN itself and never reach our LOD hooks.
+    // Both repairs below mirror a `zDYNAMIC_CAST<zCModel>(origin->GetVisual())` test in ZENGIN.
     const char* ext = originVisual->GetFileExtension( 0 );
     if ( !ext || (strcmp( ext, ".MDS" ) != 0 && strcmp( ext, ".ASC" ) != 0) )
         return;
 
     zCModel* originModel = static_cast<zCModel*>(originVisual);
-    emitter->SetVisShpModel( originModel );
-    zCObject_AddRef( originModel ); // matches CalcPFXMesh's orgModel->AddRef()
 
-    LogInfo() << "Repaired shape-mesh emitter for '" << originModel->GetModelName().ToChar()
-        << "' - oCVisualFX started before the origin had a visual";
+    // (a) The emitter's shape mesh (oCVisualFX::CalcPFXMesh). Governs WHERE particles spawn:
+    //     without it the MESH case yields (0,0,0) and the whole effect sits on the pivot.
+#ifndef BUILD_GOTHIC_1_08k
+    if ( zCParticleEmitter* emitter = fx->GetEmitter();
+        emitter && emitter->GetVisShpType() == 5
+        && !emitter->GetVisShpModel() && !emitter->GetVisShpMesh() && !emitter->GetVisShpProgMesh()
+        // emAdjustShpToOrigin is what makes oCVisualFX the *owner* of the shape mesh, so it is also
+        // what guarantees ReleasePFXMesh drops the reference we add here. Without it we would leak.
+        && visFx->GetAdjustShapeToOrigin() ) {
+
+        emitter->SetVisShpModel( originModel );
+        zCObject_AddRef( originModel ); // matches CalcPFXMesh's orgModel->AddRef()
+
+        LogInfo() << "Repaired shape-mesh emitter for '" << originModel->GetModelName().ToChar()
+            << "' - oCVisualFX started before the origin had a visual";
+    }
+#endif
+
+    // (b) The origin NODE binding (oCVisualFX::Init, oVisFx.cpp:2305-2309). Governs WHERE THE WHOLE
+    //     EFFECT rides: with orgNode null, oCVisualFX::DoMovements' EM_TRJ_FIXED branch falls back
+    //     from origin->GetTrafoModelNodeToWorld(orgNode) to origin->GetNewTrafoObjToWorld(), i.e.
+    //     the vob pivot instead of the bone. This is what pinned the undead dragon's eye effects to
+    //     its origin. Same one-shot-resolve trap as (a), so the same repair applies.
+    if ( !visFx->GetOriginNode() ) {
+        const zSTRING* nodeName = visFx->GetOriginNodeName();
+        if ( nodeName && nodeName->Length() > 0 ) {
+            // ZENGIN uppercases emTrjOriginNode_S before the lookup; node names are upper case and
+            // so are the script instances in practice, so a mixed-case name simply fails to resolve
+            // here and we retry next frame rather than mutating Gothic's string.
+            if ( zCModelNodeInst* node = originModel->SearchNode( *nodeName ) ) {
+                visFx->SetOriginNode( node );
+                LogInfo() << "Repaired VisualFX origin node '" << nodeName->ToChar() << "' on '"
+                    << originModel->GetModelName().ToChar() << "'";
+            }
+        }
+    }
 #endif
 }
 

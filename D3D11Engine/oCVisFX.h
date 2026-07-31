@@ -22,6 +22,22 @@ public:
     bool GetAdjustShapeToOrigin() const {
         return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::oCVisualFX::Offset_emAdjustShpToOrigin )) != 0;
     }
+
+    /** Name of the origin model's node this effect rides on, from the VisualFX script instance
+        (emTrjOriginNode). Empty when the effect is not node-bound. */
+    const zSTRING* GetOriginNodeName() const {
+        return reinterpret_cast<zSTRING*>(THISPTR_OFFSET( GothicMemoryLocations::oCVisualFX::Offset_emTrjOriginNode_S ));
+    }
+
+    /** Resolved node for GetOriginNodeName. ZENGIN resolves it once in oCVisualFX::Init and leaves
+        it null if the origin had no zCModel visual yet - see GothicAPI::RepairShapeMeshEmitter. */
+    zCModelNodeInst* GetOriginNode() const {
+        return *reinterpret_cast<zCModelNodeInst**>(THISPTR_OFFSET( GothicMemoryLocations::oCVisualFX::Offset_orgNode ));
+    }
+
+    void SetOriginNode( zCModelNodeInst* node ) {
+        *reinterpret_cast<zCModelNodeInst**>(THISPTR_OFFSET( GothicMemoryLocations::oCVisualFX::Offset_orgNode )) = node;
+    }
 };
 
 class oCItem : public zCVob {

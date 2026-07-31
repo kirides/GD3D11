@@ -577,6 +577,7 @@ struct GothicMemoryLocations {
     struct zCModel {
         static const unsigned int RenderNodeList = 0x00577E70;
         static const unsigned int UpdateAttachedVobs = 0x0057F330;
+        static const unsigned int SearchNode = 0x0057C810;
         static const unsigned int Offset_HomeVob = 0x54;
         static const unsigned int Offset_ModelProtoList = 0x58;
         static const unsigned int Offset_NodeList = 0x64;
@@ -642,6 +643,8 @@ struct GothicMemoryLocations {
     struct oCVisualFX
     {
         static const unsigned int Offset_origin = 0x458;
+        static const unsigned int Offset_orgNode = 0x44c;
+        static const unsigned int Offset_emTrjOriginNode_S = 0x15c;
         static const unsigned int Offset_emAdjustShpToOrigin = 0x29c;
     };
     

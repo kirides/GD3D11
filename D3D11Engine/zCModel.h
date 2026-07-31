@@ -314,6 +314,14 @@ public:
         return reinterpret_cast<zCArray<zTMdl_NodeVobAttachment>*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_AttachedVobList ));
     }
 
+#ifndef BUILD_SPACER
+    /** Looks a node up by name, exactly as ZENGIN does. Case sensitive - node names are upper case. */
+    zCModelNodeInst* SearchNode( const zSTRING& name ) {
+        return reinterpret_cast<zCModelNodeInst*( __fastcall* )( zCModel*, int, const zSTRING& )>
+            ( GothicMemoryLocations::zCModel::SearchNode )( this, 0, name );
+    }
+#endif
+
     /* Updates the world matrices of the attached VOBs */
     void UpdateAttachedVobs() {
         reinterpret_cast<void( __fastcall* )( zCModel* )>( GothicMemoryLocations::zCModel::UpdateAttachedVobs )( this );
