@@ -844,12 +844,12 @@ struct GothicRendererSettings {
         GothicUIScale = 1.0f;
         //DisableEverything();
 
-        LimitLightIntesity = false;
+        LimitLightIntesity = true;
         AllowNormalmaps = 0;
         CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
-        EnableDebugLog = true;
+        EnableDebugLog = false;
         EnableCustomFontRendering = true;
         FastInventoryRendering = true;
 
@@ -859,13 +859,13 @@ struct GothicRendererSettings {
         StretchWindow = true;
         SmoothShadowCameraUpdate = true;
         SmoothShadowFrequency = 500.0f;
-        DisplayFlip = false;
+        DisplayFlip = true;
         LowLatency = false;
         HDR_Monitor = false;
         HDR_AutoMaxBrightness = true;
         HDR_MaxBrightness = 1000.0f;
         HDR_PaperWhite = 200.0f;
-        EnableInactiveFpsLock = true;
+        EnableInactiveFpsLock = false;
         MTResoureceManager = true;
         CompressBackBuffer = false;
         AnimateStaticVobs = true;
