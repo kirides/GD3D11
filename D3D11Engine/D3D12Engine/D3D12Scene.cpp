@@ -1677,7 +1677,7 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	unsigned int drawnTris = 0;
 	const UINT frame = m_FrameIndex;
-	const auto now = Engine::GAPI->GetTotalTimeDW();
+	const auto now = Engine::GAPI->GetFrameNumber();
 	static std::vector<XMFLOAT4X4> ghostBoneCache;
 
 	// D3D11 draws these back-to-front (painter's algorithm) via a min/max-heap drain; the legacy
@@ -3853,7 +3853,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
     // measures against the camera and only routes vobs closer than kMorphMeshMaxDistance through the morph path.
     const XMVECTOR camPosXm = Engine::GAPI->GetCameraPositionXM();
     const UINT frame = m_FrameIndex;
-    const auto now = Engine::GAPI->GetTotalTimeDW();
+    const auto now = Engine::GAPI->GetFrameNumber();
     static std::vector<XMFLOAT4X4> boneCache;
 
     for ( SkeletalVobInfo* vi : vobs ) {

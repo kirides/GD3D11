@@ -1777,7 +1777,7 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
     zCMorphMesh* visual = reinterpret_cast<zCMorphMesh*>(v);
     visual->GetTexAniState()->UpdateTexList(); // always update tex list, otherwise texture corrupt (very rarely).
 
-    const auto now = Engine::GAPI->GetTotalTimeDW();
+    const auto now = Engine::GAPI->GetFrameNumber();
     if ( meshInfo->LastAniUpdateFrame == now ) {
         return;
     }

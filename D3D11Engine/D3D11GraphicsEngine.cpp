@@ -3023,7 +3023,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     ConstantBufferAllocation defaultMaterialInfoAllocation = {};
 
-    const auto now = Engine::GAPI->GetTotalTimeDW();
+    const auto now = Engine::GAPI->GetFrameNumber();
 
     bool wantShader = true;
     if ( RenderingStage != DES_GHOST ) {

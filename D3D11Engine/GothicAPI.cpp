@@ -529,6 +529,7 @@ void GothicAPI::UpdateTextureMaxSize() {
 /** Called to update the world, before rendering */
 void GothicAPI::OnWorldUpdate() {
     ZoneScopedN( "GothicAPI::OnWorldUpdate" );
+    ++FrameNumber;
 #if BUILD_SPACER
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
@@ -1695,6 +1696,11 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
                 if ( auto vis = it->GetVisual() ) {
                     // Do update particle state, even if not in frustum, so that if player turns back to it, it doesn't restart.
                     auto particleFx = reinterpret_cast<zCParticleFX*>(vis);
+                    if ( IsUnservableSkeletalShapeEmitter( particleFx ) ) {
+                        // Its shape-mesh isn't skinned yet - ticking it would spawn every particle
+                        // on the model's origin. Let it start a few frames late instead.
+                        continue;
+                    }
                     particleFx->UpdateParticleFX();
                     if ( !particleFx->GetVisualDied() ) {
                         zCParticleFX::GetStaticPFXList()->TouchPfx( particleFx );
@@ -2496,10 +2502,11 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
     return mi;
 }
 
-int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
-    int numPolys = 0;
-
+/** Looks up the extracted skeletal mesh data for a live zCModel. Returns nullptr while the data
+ *  does not exist yet or a background LoadzCModelData extraction is still running. */
+SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
     SkeletalMeshVisualInfo* skeletalMesh = nullptr;
+
     zCVob* homeVob = model->GetHomeVob();
     if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
         oCNPC* npc = static_cast<oCNPC*>(homeVob);
@@ -2521,7 +2528,39 @@ int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
         }
     }
 
-    if ( skeletalMesh && skeletalMesh->Ready.load() ) {
+    if ( !skeletalMesh || !skeletalMesh->Ready.load() )
+        return nullptr; // Still being built on a worker thread - don't touch its mesh data yet
+
+    return skeletalMesh;
+}
+
+/** True if this emitter samples its spawn positions off a skeletal shape-mesh we cannot serve yet.
+ *  ZENGIN's zCParticleEmitter::GetPosition falls back to (0,0,0) - the model's own origin - when
+ *  GetLowestLODNumPolys returns 0, so the whole effect would visibly collapse onto the model's
+ *  pivot. Skipping the emitter tick until the data is there is the lesser evil: the effect simply
+ *  starts a few frames late instead of starting wrong. */
+bool GothicAPI::IsUnservableSkeletalShapeEmitter( zCParticleFX* fx ) {
+    zCParticleEmitter* emitter = fx->GetEmitter();
+    if ( !emitter )
+        return false;
+
+    // zPFX_EMITTER_SHAPE_MESH. shpModel is only non-null on the oCVisualFX "emAdjustShpToOrigin"
+    // path, where it points at the *origin vob's live zCModel* (oVisFx.cpp).
+    if ( emitter->GetVisShpType() != 5 )
+        return false;
+
+    zCModel* shapeModel = emitter->GetVisShpModel();
+    if ( !shapeModel )
+        return false; // Plain zCMesh/zCProgMeshProto shapes are handled by ZENGIN itself
+
+    return ResolveSkeletalVisualInfo( shapeModel ) == nullptr;
+}
+
+int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
+    int numPolys = 0;
+
+    SkeletalMeshVisualInfo* skeletalMesh = ResolveSkeletalVisualInfo( model );
+    if ( skeletalMesh ) {
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
                 numPolys += static_cast<int>(mesh->Indices.size() / 3);
@@ -2537,38 +2576,33 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
     size_t polyIndex = static_cast<size_t>(polyId) * 3;
     polyNormal = &defaultPolyNormal;
 
-    SkeletalMeshVisualInfo* skeletalMesh = nullptr;
-    zCVob* homeVob = model->GetHomeVob();
-    if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
-        oCNPC* npc = static_cast<oCNPC*>(homeVob);
-        auto it = SkeletalMeshNpcs.find( npc );
-        if ( it != SkeletalMeshNpcs.end() ) {
-            skeletalMesh = it->second;
-        }
-    } else {
-        auto visName = model->GetVisualName();
-        std::string str( visName.data(), visName.size() );
-        if ( str.empty() ) { // Happens when the model has no skeletal-mesh
-            zSTRING mds = model->GetModelName();
-            str.append( mds.ToView() );
-        }
-
-        auto it = SkeletalMeshVisuals.find( str );
-        if ( it != SkeletalMeshVisuals.end() ) {
-            skeletalMesh = it->second;
-        }
-    }
-
-    if ( skeletalMesh && skeletalMesh->Ready.load() ) {
+    SkeletalMeshVisualInfo* skeletalMesh = ResolveSkeletalVisualInfo( model );
+    if ( skeletalMesh ) {
+        // ZENGIN calls this once per spawned particle, so the skeleton is evaluated once per
+        // (model, frame) and reused. GetBoneTransformsTo writes into our own scratch buffer
+        // instead of zCModelNodeInst::TrafoObjToCam - we are inside an engine callback here and
+        // must not clobber ZENGIN's world-space node cache (see GetBoneTransformsTo).
         static std::vector<XMFLOAT4X4> transforms;
+        static zCModel* cachedModel = nullptr;
+        static size_t cachedFrame = static_cast<size_t>(-1);
+
+        const size_t now = GetFrameNumber();
+        if ( cachedModel != model || cachedFrame != now ) {
+            transforms.clear();
+            model->GetBoneTransformsTo( transforms );
+            cachedModel = model;
+            cachedFrame = now;
+        }
+
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
                 if ( polyIndex >= mesh->Indices.size() ) {
                     polyIndex -= mesh->Indices.size();
                 } else {
+                    if ( transforms.empty() )
+                        break; // No node list on this model - fall through to the guard below
+
                     float fatness = model->GetModelFatness();
-                    transforms.clear();
-                    model->GetBoneTransforms( &transforms );
 
                     for ( int i = 0; i < 3; ++i ) {
                         VERTEX_INDEX _polyId = mesh->Indices[polyIndex + i];
@@ -2612,6 +2646,16 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
         }
     }
 
+    // Last-resort guard. Every particle placed from here lands on the model's own origin, so this
+    // must stay rare - IsUnservableSkeletalShapeEmitter is supposed to stop the emitter from
+    // ticking at all while we cannot serve it. Log once per model so a regression is visible.
+    static std::unordered_set<zCModel*> loggedOriginFallback;
+    if ( loggedOriginFallback.insert( model ).second ) {
+        zSTRING mds = model->GetModelName();
+        LogWarn() << "GetLowestLODPoly_SkeletalMesh: no skinned mesh data for '" << mds.ToChar()
+            << "' - particles from this shape-mesh emitter fall back to the model origin";
+    }
+
     returnPositions[0] = float3( 0.f, 0.f, 0.f );
     returnPositions[1] = float3( 0.f, 0.f, 0.f );
     returnPositions[2] = float3( 0.f, 0.f, 0.f );
@@ -2649,7 +2693,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     if ( !vi->Vob->GetShowVisual() )
         return;
 
-    const auto now = Engine::GAPI->GetTotalTimeDW();
+    const auto now = Engine::GAPI->GetFrameNumber();
 
     if ( updateState ) {
         // Update attachments
@@ -2912,7 +2956,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     if ( !vi->Vob->GetShowVisual() )
         return;
 
-    const auto now = Engine::GAPI->GetTotalTimeDW();
+    const auto now = Engine::GAPI->GetFrameNumber();
 
     if ( updateState ) {
         // Update attachments
@@ -3293,6 +3337,18 @@ void GothicAPI::OnParticleFXDeleted( zCParticleFX* pfx ) {
 
 /** Draws a zCParticleFX */
 void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameData& data ) {
+    if ( IsUnservableSkeletalShapeEmitter( fx ) ) {
+        // This emitter samples its spawn positions off a skeletal mesh whose skinned data we
+        // haven't extracted yet (LoadzCModelData runs on a worker). Spawning now would put every
+        // particle on the model's origin, so hold the effect instead - see
+        // IsUnservableSkeletalShapeEmitter. Nothing is drawn this frame either - anything already
+        // spawned sits on the origin and is exactly what we don't want on screen.
+        if ( !fx->GetVisualDied() ) {
+            zCParticleFX::GetStaticPFXList()->TouchPfx( fx );
+        }
+        return;
+    }
+
     // Update effects time
     fx->UpdateTime();
 

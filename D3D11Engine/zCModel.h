@@ -345,6 +345,43 @@ public:
         }
     }
 
+    /** Same accumulation as GetBoneTransforms, but into a caller-owned scratch buffer.
+        GetBoneTransforms writes its result into zCModelNodeInst::TrafoObjToCam, which ZENGIN uses
+        as the *world*-space node cache (zCModel::CalcNodeListBBoxWorld, read back by
+        GetNodePositionWorld/GetBBox3DNodeWorld). Overwriting it with model-space matrices is fine
+        while we own the frame, but not from inside an engine callback - use this there. */
+    void GetBoneTransformsTo( std::vector<XMFLOAT4X4>& transforms ) const {
+        zCArray<zCModelNodeInst*>* nodeList = GetNodeList();
+        if ( !nodeList )
+            return;
+
+        const auto num = nodeList->NumInArray;
+        const auto array = nodeList->Array;
+
+        const size_t base = transforms.size();
+        transforms.resize( base + num );
+
+        for ( int i = 0; i < num; i++ ) {
+            zCModelNodeInst* node = array[i];
+            const zCModelNodeInst* parent = node->ParentNode;
+
+            if ( parent ) {
+                // The node list is parent-before-child, and the parent is nearly always the
+                // immediately preceding entry, so this walk back is O(1) in practice.
+                int parentIdx = -1;
+                for ( int j = i - 1; j >= 0; --j ) {
+                    if ( array[j] == parent ) { parentIdx = j; break; }
+                }
+                if ( parentIdx >= 0 ) {
+                    XMStoreFloat4x4( &transforms[base + i],
+                        XMMatrixMultiply( XMLoadFloat4x4( &transforms[base + parentIdx] ), XMLoadFloat4x4( &node->Trafo ) ) );
+                    continue;
+                }
+            }
+            transforms[base + i] = node->Trafo;
+        }
+    }
+
     const std::string_view GetVisualName() const {
         if ( GetMeshSoftSkinList()->NumInArray > 0 )
             return GetMeshSoftSkinList()->Array[0]->GetObjectNameView();

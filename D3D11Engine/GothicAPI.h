@@ -625,6 +625,10 @@ public:
     /** Returns total time DWORD */
     DWORD GetTotalTimeDW();
 
+    /** Monotonic frame counter, bumped once per OnWorldUpdate. Unlike GetTotalTimeDW (a
+        millisecond wall clock) two distinct frames can never share a value. */
+    size_t GetFrameNumber() const { return FrameNumber; }
+
     /** Returns the current frame time */
     float GetFrameTimeSec();
 
@@ -1023,6 +1027,21 @@ private:
     /** Map for skeletal mesh visuals */
     gtl::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
     gtl::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
+
+    /** Bumped once per OnWorldUpdate. See GetFrameNumber(). */
+    size_t FrameNumber = 0;
+
+    /** Looks up the extracted skeletal mesh data for a live zCModel, NPC-keyed first, then by
+     *  visual name. Returns nullptr while no data exists or a background extraction is still
+     *  running - callers must not substitute a placeholder position in that case, see
+     *  GetLowestLODPoly_SkeletalMesh. */
+    SkeletalMeshVisualInfo* ResolveSkeletalVisualInfo( zCModel* model );
+
+    /** True if this emitter samples its spawn positions from a skeletal shape-mesh
+     *  (zPFX_EMITTER_SHAPE_MESH + shpModel, set by oCVisualFX's emAdjustShpToOrigin) that we
+     *  cannot serve yet. Ticking such an emitter would spawn every particle at the model's
+     *  origin, so the caller must skip the update entirely. */
+    bool IsUnservableSkeletalShapeEmitter( zCParticleFX* fx );
 
     /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
      *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
