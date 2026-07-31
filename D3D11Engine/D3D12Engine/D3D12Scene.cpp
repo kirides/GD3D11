@@ -1103,6 +1103,15 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 			}
 			break;
 		}
+		// Advance ZENGIN's own light animation before reading the colour, exactly where D3D11 does it
+		// (D3D11TiledDeferredShading.cpp:433). zCVobLight::lightColor is only meaningful AFTER this call for any
+		// preset with colorAniFPS > 0: DoAnimation() samples colorAniList at colorAniActFrame and SetColor()s the
+		// result, so the stored lightColor of an animated light is nothing but the level/preset author's leftover
+		// base value — which is why every spell light (oCVisualFX builds its light via SetByPreset, and the spell
+		// presets are all colour-animated) rendered at one fixed wrong colour instead of its animated one.
+		// Must stay exactly once per frame per light: DoAnimation advances colorAniActFrame by the frame time.
+		vob->DoAnimation();
+
 		const DWORD c = vob->GetLightColor();   // 0xAARRGGBB
 		const float r = ((c >> 16) & 0xFF) / 255.0f;
 		const float g = ((c >> 8) & 0xFF) / 255.0f;
