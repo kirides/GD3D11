@@ -180,6 +180,7 @@ namespace {
 #else
         arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
 #endif
+        arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
 
         // Translate any legacy macro preprocessors into modern DXC -D parameters
         std::vector<std::wstring> wDefinesStore;

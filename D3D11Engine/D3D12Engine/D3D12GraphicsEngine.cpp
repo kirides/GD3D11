@@ -829,9 +829,13 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	if ( slot == UINT_MAX
 		|| slot == m_WhiteTexture->GetSrvSlot()
 		|| slot == m_BlackTexture->GetSrvSlot()
-		|| slot == m_DefaultOrmTexture->GetSrvSlot()
 		) {
 		return;
+	}
+	// Every default-ORM step is permanent, not just the one currently selected — the player can move the
+	// roughness slider back at any time, and a freed slot would already have been handed to a game texture.
+	for ( const auto& orm : m_DefaultOrmTextures ) {
+		if ( orm && slot == orm->GetSrvSlot() ) return;
 	}
 
 	ID3D12Device* device = m_Device.GetDevice();
@@ -898,10 +902,10 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // The per-frame-in-flight shadow CB every lit pass binds (b3 on the world/VOB root sig). Small and written
     // once per frame, so a persistently-mapped UPLOAD buffer per frame context — no ring offset needed.
     //
-    // 512, not 256: FOUR owners write four DISJOINT byte ranges of the same buffer, so none clobbers another.
+    // 512, not 256: THREE owners write three DISJOINT byte ranges of the same buffer, so none clobbers another.
     // [0, kWetnessCbOffset)  D3D12ShadowMap::Prepare       — cascade view-projs + sun dir/color/strength + texels
     // [kWetnessCbOffset, ..) UploadWetnessConstants        — scene wetness (needs the rain-shadow camera first)
-    // [kAoReprojCbOffset,..) UploadAoReprojConstants       — previous-frame depth reprojection for the AO mask
+    // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
@@ -946,13 +950,32 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
 		return false;
 	}
 
-	CreateTexture( m_DefaultOrmTexture );
-	const uint32_t orm = 0xFF00E6FFu;
-	if ( XR_SUCCESS != m_DefaultOrmTexture->Init( INT2( 1, 1 ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &orm, "DefaultOrmTexture(1,0.9,0)" ) ) {
-		return false;
+	// One default-ORM texture per selectable roughness step. R = AO (1), G = roughness, B = metallic (0),
+	// laid out as a full ORM so EncodeOrmSlot's format 0 reads it correctly. Nine 1x1 textures cost nine
+	// SRV slots and 36 bytes of VRAM, which is why this is a table rather than one texture we rewrite:
+	// the slot then never moves, so nothing that baked it into a frame's draw commands can go stale.
+	for ( int i = 0; i < DefaultRoughness::kNumSteps; ++i ) {
+		CreateTexture( m_DefaultOrmTextures[i] );
+		const float roughness = DefaultRoughness::ForStep( i );
+		const uint32_t g = static_cast<uint32_t>( roughness * 255.0f + 0.5f ) & 0xFFu;
+		const uint32_t orm = 0xFF000000u | ( g << 8 ) | 0xFFu;   // ABGR in memory: R=255 G=rough B=0 A=255
+		char name[64];
+		snprintf( name, sizeof( name ), "DefaultOrmTexture(1,%.2f,0)", roughness );
+		if ( XR_SUCCESS != m_DefaultOrmTextures[i]->Init( INT2( 1, 1 ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &orm, name ) ) {
+			return false;
+		}
 	}
+	RefreshDefaultOrmSlot();
 
 	return true;
+}
+
+
+void D3D12GraphicsEngine::RefreshDefaultOrmSlot() {
+	const int step = DefaultRoughness::StepFor( Engine::GAPI->GetRendererState().RendererSettings.DefaultMaterialRoughness );
+	if ( m_DefaultOrmTextures[step] ) {
+		m_DefaultOrmSrvSlot = m_DefaultOrmTextures[step]->GetSrvSlot();
+	}
 }
 
 
@@ -1767,6 +1790,9 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_DecalInstanceBufferOffset = 0;
     m_DecalInstanceOverflowLogged = false;
     m_LightOverflowLogged = false;   // light buffer is rebuilt from 0 each frame in BuildFrameLightBuffer
+    // Pick up an ImGui roughness change once, here, so every command builder this frame — including the
+    // cascade builds running on worker threads — reads the same slot.
+    RefreshDefaultOrmSlot();
     if ( !Engine::GAPI->IsGamePaused() )
         UpdateWindAnimation( m_WindBuffer );   // advances windDir/globalTime; DrawVobsInstanced fills min/maxHeight/playerPos
     m_CurrentTexture = nullptr;

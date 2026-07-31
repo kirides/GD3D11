@@ -32,6 +32,20 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            CsBlob;
     };
+    // GVegetationBox grass. PSO/VsBlob/PsBlob are the LIT pass; the two below are its Forward+ depth-prepass
+    // variants (DrawVegetationDepthPrepass — grass joins the prepass so the AO mask contains the blades). Both
+    // are optional: DrawVegetationDepthPrepass simply skips the pass if the one it needs is null, which costs
+    // grass its AO contribution and nothing else. Only ONE of them may be used per frame, and which is decided
+    // by MotionGBufferActive() exactly as it is for the world/VOB/skeletal prepass draws — the whole prepass
+    // has to agree on the bound render targets.
+    struct GrassPipeline : GraphicsPipeline {
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPSO;       // VSDepth + PSShadowClip, mask-0 RTV
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthVsBlob;           // Vegetation.hlsl VSDepth
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPsBlob;           // Vegetation.hlsl PSShadowClip
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassGBufPSO;   // + velocity/normal G-buffer MRT
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthGBufVsBlob;       // Vegetation.hlsl VSDepthGBuf
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthGBufPsBlob;       // Vegetation.hlsl PSDepthClipGBuf
+    };
     // The shared opaque "world family": one root signature (b0 ViewProj, t0 diffuse, Forward+ light SRVs,
     // CSM + point-shadow tables, bindless material indices) anchors the lit world-mesh PSO, the lit
     // instanced-VOB PSO, and the depth-prepass PSOs. Skeletal + shadow-caster PSOs still living in the
@@ -479,6 +493,9 @@ public:
                                 // b2 bone-palette CBV, b7 GhostAlpha, t0 diffuse); reuses Skeletal.hlsl's VSDepth
     bool CreateGrass();       // GVegetationBox instanced grass cards (own root sig: b0 ViewProj, t0/t1 grass+ground
                               // textures, b1 GrassCB, b2 fog, Forward+ lights, b4 shadow CB, t5 CSM shadow map)
+    // The two Forward+ depth-prepass PSOs for grass; called by (and non-fatal to) CreateGrass, which passes its
+    // own input layout through since both prepass VS variants consume it unchanged.
+    bool CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC* layout, UINT layoutCount );
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
     bool CreateSharpen();     // post-tonemap sharpen (bindless root sig + simple/CAS PSOs); LDR copy stays in engine
@@ -541,7 +558,7 @@ public:
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;
     GraphicsPipeline GhostSkeletal;
-    GraphicsPipeline Grass;
+    GrassPipeline    Grass;
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
     SharpenPipeline  Sharpen;       // post-tonemap sharpening (Shaders/D3D12/Sharpen.hlsl)

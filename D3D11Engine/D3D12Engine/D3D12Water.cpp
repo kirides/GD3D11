@@ -177,8 +177,8 @@ bool D3D12GraphicsEngine::EnsureWaterCopyResources() {
     }
 
     // Depth copy: SAME resource desc as m_DepthBuffer (R32_TYPELESS + ALLOW_DEPTH_STENCIL, see
-    // CreateDepthBuffer) so CopyResource is unambiguously legal — identical reasoning to m_PrevDepth in
-    // CreateAOResources.
+    // CreateDepthBuffer) so CopyResource is unambiguously legal — identical reasoning to m_TaaPrevDepth in
+    // CreateTaaResources.
     {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;

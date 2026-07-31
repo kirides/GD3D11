@@ -142,6 +142,12 @@ public:
     zCModel* GetVisShpModel() {
         return *reinterpret_cast<zCModel**>(THISPTR_OFFSET( GothicMemoryLocations::zCParticleEmitter::Offset_VisShpModel ));
     }
+
+    /** Only valid to call when the emitter's shape is owned by oCVisualFX (emAdjustShpToOrigin) -
+        ReleasePFXMesh will then drop the reference we add here. See GothicAPI::RepairShapeMeshEmitter. */
+    void SetVisShpModel( zCModel* model ) {
+        *reinterpret_cast<zCModel**>(THISPTR_OFFSET( GothicMemoryLocations::zCParticleEmitter::Offset_VisShpModel )) = model;
+    }
 #else
     float GetAlphaDist() {
         return 0;

@@ -64,6 +64,12 @@ float2 EncodeOctNormal( float3 n )
     return n.xy;
 }
 
+// The value the NORMAL target is cleared to (kGBufferNormalSentinel on the CPU side, D3D12Motion.cpp). A real
+// octahedral pair lives in [-1,1], so -2 is unreachable by EncodeOctNormal and unambiguously means "no prepass
+// draw covered this pixel". A plain 0 would NOT do: (0,0) is the legal encoding of the world normal (0,0,1).
+static const float kOctNormalSentinel = -2.0;
+bool IsOctNormalSentinel( float2 e ) { return e.x < -1.5; }
+
 // Kept next to the encoder so a consumer (XeGTAO) can decode without pulling in the whole world shader.
 float3 DecodeOctNormalMV( float2 e )
 {

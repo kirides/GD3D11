@@ -116,6 +116,66 @@ void D3D11TiledDeferredShading::EnsureShadowArray() {
     }
 }
 
+void D3D11TiledDeferredShading::EnsureDynShadowArray() {
+    if ( m_ShadowDynArrayCreated ) return;
+    m_ShadowDynArrayCreated = true;
+
+    // Same shape and slot indexing as m_ShadowCubeArray - the shader addresses both with one slot index.
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = SHADOW_CUBE_SIZE;
+    desc.Height = SHADOW_CUBE_SIZE;
+    desc.MipLevels = 1;
+    desc.ArraySize = MAX_SHADOW_CUBEMAPS * 6;
+    desc.Format = DXGI_FORMAT_R16_TYPELESS;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+
+    // Unlike the main array this one can be declined without losing shadows entirely: GetDynSlotTarget()
+    // then returns null and the lights fall back to the composited single-cube path. Failing quietly would
+    // be much worse - a null SRV reads as 0, i.e. every light carrying the flag goes fully shadowed.
+    if ( FAILED( m_device->CreateTexture2D( &desc, nullptr, m_ShadowDynCubeArray.ReleaseAndGetAddressOf() ) ) ) {
+        LogWarn() << "Failed to create the point-light dynamic shadow overlay array; falling back to the "
+            "composited static+dynamic cube path.";
+        m_ShadowDynCubeArray.Reset();
+        return;
+    }
+    SetDebugName( m_ShadowDynCubeArray.Get(), "TiledDeferred_ShadowDynCubeArray" );
+
+    // 32-bit address space is scarce, so log what this costs (SHADOW_CUBE_SIZE^2 * 2 bytes * 6 faces * slots).
+    LogInfo() << "Allocated point-light dynamic shadow overlay array: " << MAX_SHADOW_CUBEMAPS << " cubes @ "
+        << SHADOW_CUBE_SIZE << "^2 R16 ("
+        << ( static_cast<size_t>(SHADOW_CUBE_SIZE) * SHADOW_CUBE_SIZE * 2 * 6 * MAX_SHADOW_CUBEMAPS ) / (1024 * 1024 )
+        << " MB)";
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R16_UNORM;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
+    srvDesc.TextureCubeArray.MostDetailedMip = 0;
+    srvDesc.TextureCubeArray.MipLevels = 1;
+    srvDesc.TextureCubeArray.First2DArrayFace = 0;
+    srvDesc.TextureCubeArray.NumCubes = MAX_SHADOW_CUBEMAPS;
+
+    m_device->CreateShaderResourceView( m_ShadowDynCubeArray.Get(), &srvDesc, m_ShadowDynCubeArraySRV.ReleaseAndGetAddressOf() );
+    SetDebugName( m_ShadowDynCubeArraySRV.Get(), "TiledDeferred_ShadowDynCubeArray_SRV" );
+
+    for ( uint32_t slot = 0; slot < MAX_SHADOW_CUBEMAPS; slot++ ) {
+        D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        dsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsvDesc.Texture2DArray.FirstArraySlice = slot * 6;
+        dsvDesc.Texture2DArray.ArraySize = 6;
+        dsvDesc.Texture2DArray.MipSlice = 0;
+
+        m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() );
+
+        m_SlotDynViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
+            m_ShadowDynCubeArray, m_SlotDynDSVs[slot], nullptr,
+            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE );
+    }
+}
+
 int D3D11TiledDeferredShading::AllocateSlot() {
     EnsureShadowArray();
     for ( uint32_t i = 0; i < MAX_SHADOW_CUBEMAPS; i++ ) {
@@ -136,6 +196,13 @@ RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetSlotTarget( int slot )
     if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_SHADOW_CUBEMAPS && m_ShadowArrayCreated )
         return m_SlotViews[slot].get();
     return nullptr;
+}
+
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetDynSlotTarget( int slot ) {
+    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_SHADOW_CUBEMAPS )
+        return nullptr;
+    EnsureDynShadowArray();
+    return m_SlotDynViews[slot].get();
 }
 
 void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numTilesY ) {
@@ -270,9 +337,12 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // even if the shader branches around SampleCmpLevelZero
         graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
 
-        // Bind shadow cubemap array SRV
+        // Bind shadow cubemap array SRVs (static at t11, dynamic overlay at t12). The overlay array may not
+        // exist yet - a null SRV is fine, no light can carry SHADOW_CUBE_HAS_DYNAMIC before it is created.
         if ( cullResult.HasShadowedTiledLights && m_ShadowArrayCreated ) {
             context->CSSetShaderResources( 11, 1, m_ShadowCubeArraySRV.GetAddressOf() );
+            ID3D11ShaderResourceView* dynSRV = m_ShadowDynArrayCreated ? m_ShadowDynCubeArraySRV.Get() : nullptr;
+            context->CSSetShaderResources( 12, 1, &dynSRV );
         }
 
         // Bind HDR UAV
@@ -284,8 +354,8 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // Unbind everything
         ID3D11UnorderedAccessView* nullUAV = nullptr;
         context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
-        ID3D11ShaderResourceView* nullSRVs[12] = {};
-        context->CSSetShaderResources( 0, 12, nullSRVs );
+        ID3D11ShaderResourceView* nullSRVs[13] = {};
+        context->CSSetShaderResources( 0, 13, nullSRVs ); // t0-t12, incl. both shadow cube arrays
         context->CSSetShader( nullptr, nullptr, 0 );
 
         // Restore HDR as RTV
@@ -397,7 +467,10 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
 
         if ( hasShadow ) {
-            tl.ShadowCubeIndex = pl->GetTiledSlot();
+            // The slot's static depth lives in the main array; flag the ones that also have this frame's
+            // skeletal overlay in the dynamic array so the shader knows to take the second sample.
+            tl.ShadowCubeIndex = pl->GetTiledSlot()
+                | ( pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
             hasShadowedTiledLights = true;
         } else {
             tl.ShadowCubeIndex = -1;

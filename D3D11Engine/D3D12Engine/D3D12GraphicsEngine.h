@@ -328,6 +328,22 @@ private:
     // drains this list, so skipping the call would leak one entry per ghost vob per frame forever.
     void DrawGhostVobs();
     void DrawVegetation();    // GVegetationBox instanced grass cards (own PSO — see D3D12PipelineState::CreateGrass)
+    // Grass in the Forward+ DEPTH PREPASS. Runs from the prepass block, after the skeletal draws. Its whole
+    // purpose is the AO mask: RenderSSAO builds that from the prepass depth, so without this a grass pixel
+    // would sample the occlusion of the terrain BEHIND the blade and the blades would cast none of their own.
+    // It also gives grass true prepass velocity/normals instead of FillCameraVelocity's depth reprojection.
+    //
+    // HARD RANGE LIMIT, independent of OutdoorSmallVobDrawRadius: the prepass rasterizes every blade a second
+    // time, and at distance the cards are sub-pixel alpha-test noise whose AO contribution is invisible while
+    // the fill cost is not. Beyond it grass is simply absent from the mask and reads the terrain's AO, which is
+    // the pre-existing behaviour and barely noticeable at that distance.
+    static constexpr float kVegetationPrepassRange = 7500.0f;
+    void DrawVegetationDepthPrepass();
+    // The per-frame GrassCB (b1). Built ONCE per frame and pushed identically by the prepass, the CSM caster
+    // and the lit pass — every grass VS derives its swayed world position from these, so a pass that saw a
+    // different G_Time would place the blade somewhere else and z-fight against the prepass' own depth.
+    struct GrassCBData { float Time; float WindStrength; float HeroAffectStrength; float _pad0; XMFLOAT3 PlayerPosWS; float _pad1; };
+    GrassCBData MakeGrassConstants() const;
 
     // Binds every frame-constant root argument of World.RootSig (b0 ViewProj, b1 fog, the Forward+ light
     // SRV/count, the CSM CB + array, the point-shadow cubes, the SSAO mask index). Shared by the lit world
@@ -615,7 +631,20 @@ private:
 
     std::unique_ptr<D3D12Texture> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     std::unique_ptr<D3D12Texture> m_BlackTexture;         // 1x1 black fallback for untextured draws
-    std::unique_ptr<D3D12Texture> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
+    // One 1x1 ORM texture per selectable default roughness (AO 1, rough = DefaultRoughness::ForStep(i),
+    // metal 0), all created up front by CreateWhiteTexture. Materials Gothic ships with no _FX/_ORM map —
+    // most of them — are handed one of these bindlessly, and the shader can't be given a scalar instead
+    // (MatOrmIndex is an SRV slot), hence a texture per step rather than a uniform. Never freed: FreeSrvSlot
+    // skips all of them, same as the white/black fallbacks.
+    std::unique_ptr<D3D12Texture> m_DefaultOrmTextures[DefaultRoughness::kNumSteps];
+    // SRV slot of the currently selected one. Resolved once per frame in OnBeginFrame rather than per
+    // material: the command builders read it thousands of times a frame, and the cascade builds read it
+    // from worker threads, so it must not move mid-frame. UINT_MAX until the textures exist.
+    UINT m_DefaultOrmSrvSlot = UINT_MAX;
+    /** SRV heap slot of the default ORM texture for this frame's DefaultMaterialRoughness setting. */
+    UINT GetDefaultOrmSrvSlot() const { return m_DefaultOrmSrvSlot; }
+    /** Re-resolves m_DefaultOrmSrvSlot from RendererSettings.DefaultMaterialRoughness. Frame-start only. */
+    void RefreshDefaultOrmSlot();
     std::unique_ptr<D3D12Texture> m_DistortionTexture;    // distortion2.dds — wet-ground normal fallback (see LoadDistortionTexture)
     bool LoadDistortionTexture();                         // one-time, non-fatal load (mirrors LoadSmaaTextures)
 
@@ -897,10 +926,10 @@ private:
     bool m_ShadowRecordingPending = false;   // BeginShadowRecording fanned work out; FinishShadowPasses must join
     bool m_ShadowRecordFailureLogged = false;   // one warning per session, not per frame
 
-    // Per-frame-in-flight shadow constant buffer, bound by every lit pass. FOUR disjoint byte ranges written by
-    // four owners: D3D12ShadowMap::Prepare owns the head [0, kWetnessCbOffset) (cascade view-projs + sun dir +
-    // strength + texel sizes), then UploadWetnessConstants, UploadAoReprojConstants and UploadSkyIblConstants
-    // each own a tail block. The buffer lives here because it is shared; see kWetnessCbOffset below.
+    // Per-frame-in-flight shadow constant buffer, bound by every lit pass. Three disjoint byte ranges written by
+    // three owners: D3D12ShadowMap::Prepare owns the head [0, kWetnessCbOffset) (cascade view-projs + sun dir +
+    // strength + texel sizes), then UploadWetnessConstants and UploadSkyIblConstants each own a tail block —
+    // with an unused 80-byte hole between them (kAoReprojCbOffset). The buffer lives here because it is shared.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferMax];
     uint8_t* m_ShadowCBMapped[kBackBufferMax] = {};
@@ -1011,8 +1040,8 @@ private:
     // final blurred result; m_AOBlurTemp is the horizontal-blur scratch target), recreated on resize like the
     // bloom pyramid. RenderSSAO dispatches main-estimate -> blurH -> blurV (Shaders/D3D12/SSAO.hlsl) and leaves
     // m_AOMask in PIXEL_SHADER_RESOURCE for the lit geometry passes (World/Vob/Skeletal PS) to sample bindlessly.
-    // m_ActiveAOMaskSrvSlot is refreshed every frame by RenderSSAO: the AO mask's slot when SSAO ran, else the
-    // white texture's slot (mask = no occlusion) — mirrors D3D11's white-clear "AO disabled" default.
+    // m_ActiveAOMaskSrvSlot is refreshed every frame by RenderSSAO: the AO mask's slot when SSAO ran, else the white texture's
+    // slot (mask = no occlusion) — mirrors D3D11's white-clear "AO disabled" default.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_AOMask;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AOMaskAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_AOBlurTemp;
@@ -1033,7 +1062,10 @@ private:
     // pyramid's per-frame-rewritten pair slots, nothing here changes frame-to-frame, so no double-buffering race.
     UINT m_AOBlurHPairSlot = UINT_MAX;  // [0]=AOMask SRV (raw estimate), [1]=Depth SRV
     UINT m_AOBlurVPairSlot = UINT_MAX;  // [0]=AOBlurTemp SRV, [1]=Depth SRV
-    UINT m_ActiveAOMaskSrvSlot = UINT_MAX;   // this frame's bindless AO index for World/Vob/Skeletal PS (b7/b8 AOCB)
+    // The single b5/b7/b8 AOCB root constant every lit PS binds — this frame's AO mask heap slot. The matching
+    // 1/screen-size lives in the shadow CB instead (see kAoReprojCbOffset): the World root signature sits at
+    // 63 of its 64 DWORDs, so two more root constants would not fit there.
+    UINT m_ActiveAOMaskSrvSlot = UINT_MAX;
     bool m_AOResourcesReady = false;
     // m_AOMask rests in UNORDERED_ACCESS between RenderSSAO runs (its creation state) except right after a
     // successful run, which leaves it PIXEL_SHADER_RESOURCE for the lit passes' bindless read — tracks that so
@@ -1041,53 +1073,49 @@ private:
     // m_SceneColorInPixelState/m_LightGridInPixelState). Toggling AO off skips RenderSSAO entirely, so without
     // this the resource would still show PIXEL_SHADER_RESOURCE if AO is re-enabled a frame later.
     bool m_AOMaskInPixelState = false;
-    // --- Previous-frame depth (the AO source) --------------------------------------------------------------
-    // SSAO no longer runs off THIS frame's depth prepass: the prepass only covers world + instanced VOBs +
-    // skeletal, so everything drawn later in the color pass (grass/foliage, decals, water) was invisible to
-    // the AO and, worse, its screen pixels sampled the mask of whatever sat BEHIND it. Instead we snapshot
-    // the COMPLETE depth buffer at the end of world rendering (CopyDepthForAO, after every depth-writing pass)
-    // and run the whole AO chain off that copy on the next frame. The mask is therefore one frame stale and
-    // lives in the PREVIOUS frame's screen space, so the lit pixel shaders reproject into it per-pixel:
-    // world position -> m_PrevDepthViewProj -> UV (see Shaders/D3D12/include/ScreenSpaceAO.hlsl). That is exact
-    // for static geometry (not a camera-motion approximation) and only lags on moving objects.
-    // Side benefits: the AO chain never touches m_DepthBuffer, so RenderSSAO needs no depth barriers at all and
-    // no longer serialises against the prepass.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_PrevDepth;        // full copy of last frame's D32 depth (R32_TYPELESS)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_PrevDepthAlloc;
-    UINT m_PrevDepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV: SSAO's t0 AND the lit PS's bindless disocclusion test
-    // Rest state is the combined shader-read state: the AO compute dispatches read it non-pixel, the lit pixel
-    // shaders read it pixel-side, and CopyDepthForAO flips it to COPY_DEST and straight back once per frame.
-    static constexpr D3D12_RESOURCE_STATES kPrevDepthReadState =
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    bool m_PrevDepthValid = false;        // false until the first CopyDepthForAO of a world (reset on resize/world load)
-    XMFLOAT4X4 m_PrevDepthViewProj = {};  // the camera that produced m_PrevDepth — the reprojection matrix
-    XMFLOAT4X4 m_PrevDepthProj = {};      // ...and its projection, for the AO pass's depth -> view-position math
-    // Reprojection tail of the shared shadow CB, written every frame by UploadAoReprojConstants (the third
-    // disjoint byte range of m_ShadowCB, after the D3D12ShadowMap::Prepare head and the UploadWetnessConstants block).
+    // --- The AO depth source ---------------------------------------------------------------------------------
+    // THIS frame's m_DepthBuffer, read straight after the Forward+ depth prepass and before any lit pass. The
+    // mask is therefore in this frame's screen space and the lit shaders read it at their own pixel — no
+    // reprojection, no lag (see Shaders/D3D12/include/ScreenSpaceAO.hlsl).
+    //
+    // This used to be a full-frame COPY of the PREVIOUS frame's completed depth (m_PrevDepth + CopyDepthForAO),
+    // because the prepass omitted grass — a grass pixel would then sample the AO of the terrain behind it, and
+    // the blades cast no AO of their own. Folding vegetation into the prepass (DrawVegetationDepthPrepass) fixed
+    // the cause, so the snapshot, its depth-sized allocation, the per-frame CopyResource and the per-pixel
+    // reprojection in five pixel shaders are all gone. Water/decals/particles still write depth after the
+    // prepass and are still not occluders; that was true of the whole scheme's near field anyway.
+    //
+    // Cost: RenderSSAO now has to round-trip m_DepthBuffer DEPTH_WRITE <-> NON_PIXEL_SHADER_RESOURCE and
+    // therefore serialises against the prepass, exactly like BuildHiZ does a few calls earlier.
+    //
+    // 80 bytes of the shared shadow CB, between the wetness block and the sky-IBL tail. Only the leading float2
+    // is live (1/screen-size, so the lit shaders can turn SV_Position into a mask UV); the rest is the hole the
+    // reprojection constants used to occupy, kept because the offsets of everything after it are baked into
+    // five HLSL cbuffer layouts.
     static constexpr UINT kAoReprojCbOffset = 352;
-    struct AoReprojCBData {
-        XMFLOAT4X4 PrevViewProj;
-        UINT  PrevDepthIndex;   float PrevProjZX;   float PrevProjZY;   float ReprojValid;
-    };
-    void UploadAoReprojConstants();           // publishes m_PrevDepth* into the shadow CB for the lit PS
-    void CopyDepthForAO();                    // end-of-world-render snapshot of the complete depth buffer
-    bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp/m_PrevDepth + persistent SRV/UAV slots
-    void RenderSSAO();                        // the AO entry point: publishes the reprojection CB, then runs XeGTAO or simple SSAO
+    static constexpr UINT kAoReprojCbReservedBytes = 80;
+    struct AoScreenCBData { float InvResX; float InvResY; float _pad[2]; };
+    void UploadAoScreenConstants();           // publishes AoInvRes into the shadow CB (unconditional, every frame)
+    bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
+    void RenderSSAO();                        // the AO entry point: publishes the AO constants, then runs XeGTAO or simple SSAO
     void RenderSimpleSSAO();                  // main estimate -> separable blur (Shaders/D3D12/SSAO.hlsl)
+    void BeginAoDepthRead();                  // m_DepthBuffer DEPTH_WRITE -> NON_PIXEL_SHADER_RESOURCE
+    void EndAoDepthRead();                    // ...and straight back (both AO implementations bracket with these)
 
     // ---- Intel XeGTAO (D3D12GTAO.cpp) ----------------------------------------------------------------------
     // Ground-truth ambient occlusion; this is what AOMode::AO_ASSAO selects on D3D12 (D3D11 keeps its own ASSAO
-    // port). Reads the SAME previous-frame depth snapshot the simple SSAO path does, for the same reason (see
-    // m_PrevDepth above) and writes the SAME m_AOMask, so the whole consumer side — the reprojected bindless
-    // fetch in include/ScreenSpaceAO.hlsl — is untouched and the two implementations are interchangeable.
+    // port). Reads the SAME depth-prepass depth the simple SSAO path does and writes the SAME m_AOMask, so the
+    // whole consumer side — the bindless fetch in include/ScreenSpaceAO.hlsl — is untouched and the two
+    // implementations are interchangeable.
     //
     // Four private intermediates, all recreated on resize alongside m_AOMask:
     //   m_GtaoWorkingDepth  R32_FLOAT with 5 MIPs — view-space depth pyramid built by the prefilter pass. FP32
     //                       rather than Intel's default R16_FLOAT because Gothic's view depths run past fp16's
     //                       65504 ceiling near the horizon (see the header of Shaders/D3D12/XeGTAO.hlsl).
-    //   m_GtaoNormals       R32_UINT — view-space normals packed R11G11B10_UNORM, generated from the same depth
-    //                       snapshot. Deliberately NOT the prepass normal G-buffer: that one omits grass/water
-    //                       and belongs to this frame's camera, not the snapshot's.
+    //   m_GtaoNormals       R32_UINT — view-space normals packed R11G11B10_UNORM, reconstructed from the depth.
+    //                       FALLBACK ONLY: when the prepass normal G-buffer (m_NormalBuffer) is available
+    //                       RenderGTAO skips this dispatch and feeds XeGTAO the real shading normals instead
+    //                       (LoadNormal in XeGTAO.hlsl decodes + rotates them into view space).
     //   m_GtaoEdges         R8_UNORM — packed depth edges the denoiser weights by.
     //   m_GtaoAOTerm[2]     R8_UINT — the working AO term, ping-ponged across denoise passes. The final pass
     //                       writes m_AOMask through m_AOMaskUintUavSlot instead.
@@ -1113,7 +1141,7 @@ private:
     UINT m_GtaoFrameNumber = 0;                // drives the temporal noise rotation; only advances while TAA is on
     bool CreateGtaoResources( INT2 size );     // (re)builds the four intermediates + their persistent heap slots
     bool IsGtaoEnabled() const;                // AoMode == AO_ASSAO and every resource/PSO it needs exists
-    void RenderGTAO();                         // prefilter -> normals -> GTAO integral -> N denoise passes
+    void RenderGTAO();                         // prefilter -> (normals) -> GTAO integral -> N denoise passes
 
     // ---- Motion-vector + normal G-buffer (D3D12Motion.cpp) -------------------------------------------------
     // Two extra full-resolution targets the Forward+ DEPTH PREPASS writes alongside depth, via the *GBuf PSO
@@ -1126,9 +1154,10 @@ private:
     //                      per-object velocity (static world via camera reprojection, VOBs via the instance
     //                      stream's prevWorld, skeletals via a second skinning pass through the previous bone
     //                      pose); FillCameraVelocity then replaces whatever sentinel is left.
-    //   m_NormalBuffer   — RG16F octahedral world-space normal, the XeGTAO input. Untouched by the fill pass:
-    //                      a pixel with no prepass coverage has no meaningful normal, and AO must treat it as
-    //                      "no geometry" rather than invent one.
+    //   m_NormalBuffer   — RG16F octahedral world-space shading normal, the XeGTAO input (see RenderGTAO /
+    //                      LoadNormal). Untouched by the fill pass: a pixel with no prepass coverage has no
+    //                      meaningful normal, so it keeps the kGBufferNormalSentinel clear and AO treats it as
+    //                      "no geometry" rather than integrating against an invented orientation.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VelocityBuffer;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VelocityAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_NormalBuffer;
@@ -1193,11 +1222,14 @@ private:
     UINT m_TaaHistorySrvSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_TaaHistoryUavSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_TaaHistoryIndex = 0;
-    // TAA needs the PREVIOUS frame's depth for its disocclusion test, and cannot borrow m_PrevDepth: that one is
-    // refilled by CopyDepthForAO earlier in the SAME frame, so by the time TAA runs it already holds THIS
-    // frame's depth. Hence a private snapshot, taken at the end of RenderTAA.
+    // TAA needs the PREVIOUS frame's depth for its disocclusion test — nothing else in the frame keeps one, so
+    // this is a private snapshot taken at the end of RenderTAA.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_TaaPrevDepth;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TaaPrevDepthAlloc;
+    // Rest state of that snapshot: the combined shader-read state, flipped to COPY_DEST and straight back once
+    // per frame by the snapshot copy.
+    static constexpr D3D12_RESOURCE_STATES kPrevDepthReadState =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     UINT m_TaaPrevDepthSrvSlot = UINT_MAX;
     bool m_TaaPrevDepthValid = false;
     bool m_TaaResourcesReady = false;
@@ -1259,8 +1291,8 @@ private:
     };
     SkyIblParams m_SkyLastParams;
     bool m_SkyEnvInReadState = false;              // tracks the rest state of m_SkyEnvCube (see RenderSkyIBL's barriers)
-    // Sky-IBL tail of the shared shadow CB — the FOURTH disjoint byte range of m_ShadowCB, after the
-    // D3D12ShadowMap::Prepare head [0,256), UploadWetnessConstants [256,352) and UploadAoReprojConstants [352,432).
+    // Sky-IBL tail of the shared shadow CB — the last byte range of m_ShadowCB, after the D3D12ShadowMap::Prepare
+    // head [0,256), UploadWetnessConstants [256,352) and the unused AO-reprojection hole [352,432).
     // Riding the CB the lit shaders already bind is what keeps this feature free of root-signature churn:
     // World/Vob/Skeletal/Vegetation all declare ShadowCB at their own register and just gained four fields.
     static constexpr UINT kSkyIblCbOffset = 432;

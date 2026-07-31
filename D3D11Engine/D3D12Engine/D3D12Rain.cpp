@@ -624,7 +624,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     m_RainVobDrawCount = 0;
 
     ID3D12PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
-    if ( !m_FrameOpen || !casterPso || !m_Pipelines.World.RootSig || !m_BlackTexture || !m_DefaultOrmTexture )
+    if ( !m_FrameOpen || !casterPso || !m_Pipelines.World.RootSig || !m_BlackTexture || GetDefaultOrmSrvSlot() == UINT_MAX )
         return;
 
     auto& state = Engine::GAPI->GetRendererState();
@@ -750,7 +750,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
             d.indexCount = static_cast<UINT>( mesh->Indices.size() );
             d.startIndex = mesh->BaseIndexLocation;
             d.NormalIdx = 0xFFFFFFFFu;
-            d.OrmIdx = m_DefaultOrmTexture->GetSrvSlot();
+            d.OrmIdx = GetDefaultOrmSrvSlot();
             d.DiffuseIdx = diffuseIdx;
             g_RainShadowDraws.push_back( d );
         }

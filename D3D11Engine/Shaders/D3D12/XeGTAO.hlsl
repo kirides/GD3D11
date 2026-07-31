@@ -6,11 +6,11 @@
 // D3D12 ONLY. This replaces ASSAO on the D3D12 backend (AoMode == AO_ASSAO); the D3D11 renderer keeps its own
 // ASSAO port untouched.
 //
-// DEPTH SOURCE. Every pass reads the PREVIOUS frame's COMPLETE depth buffer (m_PrevDepth, snapshotted by
-// CopyDepthForAO after the last depth writer of the frame), exactly like the simple-SSAO path it replaces —
-// Forward+ resolves lighting in the geometry pass, so this frame's depth does not exist yet when the AO mask is
-// needed, and the prepass alone would omit grass/foliage/decals/water. The resulting mask lives in the previous
-// frame's screen space and the lit pixel shaders reproject into it per-pixel (include/ScreenSpaceAO.hlsl).
+// DEPTH SOURCE. THIS frame's depth buffer, straight after the Forward+ depth prepass and before any lit pass —
+// world mesh + instanced VOBs + skeletals + node attachments + (range-limited) vegetation. Same for the simple
+// SSAO path this replaces. It used to run off a full-frame depth SNAPSHOT of the PREVIOUS frame, which bought
+// coverage of the late depth writers at the price of a one-frame lag and a per-pixel reprojection in every lit
+// shader; folding vegetation into the prepass removed the reason for that trade.
 //
 // FP32, NOT FP16. XE_GTAO_USE_HALF_FLOAT_PRECISION is off and XE_GTAO_FP32_DEPTHS on (Intel's own
 // `m_use32bitDepth` configuration). Two reasons, in order: Gothic's view-space depths run to tens of thousands
@@ -55,8 +55,15 @@ cbuffer GTAOBindingsCB : register( b1 )
     uint g_Out2Index;           // depth MIP2
     uint g_Out3Index;           // depth MIP3
     uint g_Out4Index;           // depth MIP4
+    // 0 -> g_NormalsIndex is the R32_UINT R11G11B10 VIEW-space map CSGenerateNormals derived from depth.
+    // 1 -> it is the depth prepass's RG16F OCTAHEDRAL WORLD-space normal G-buffer (D3D12Motion.cpp), which
+    //      LoadNormal then decodes and rotates into view space with g_ViewRow* below. See LoadNormal.
+    uint g_NormalsAreGBuffer;
     uint g_Pad0;
-    uint g_Pad1;
+    // THIS frame's view matrix, uploaded as the same row-major XMFLOAT4X4 every other matrix in this backend
+    // is (default column-major packing reads it back transposed, which is what makes plain mul() correct — see
+    // World.hlsl's header). Only read when g_NormalsAreGBuffer is set.
+    float4x4 g_ViewMatrix;
 };
 
 // Point-clamp. XeGTAO gathers depth quads and samples explicit MIP levels; any filtering would blend across
@@ -65,15 +72,47 @@ SamplerState g_samplerPointClamp : register( s0 );
 
 #include "XeGTAO.hlsli"
 
-// Engine-specific normal loader. The normals are GENERATED from the same depth snapshot by CSGenerateNormals
-// below, so they are already in the view space of that snapshot and need no basis change here.
+// Octahedral decode — same mapping as include/MotionVectors.hlsl's DecodeOctNormalMV and World.hlsl's
+// DecodeOctNormal. Duplicated rather than included: pulling MotionVectors.hlsl in here would also declare its
+// MotionCB, which this pass's root signature does not have.
+float3 XeGTAO_DecodeOctNormal( float2 e )
+{
+    float3 n = float3( e.xy, 1.0 - abs( e.x ) - abs( e.y ) );
+    float t = saturate( -n.z );
+    n.xy += select( n.xy >= 0.0, -t, t );
+    return normalize( n );
+}
+
+// Engine-specific normal loader, with two sources (g_NormalsAreGBuffer picks; the host decides per dispatch).
 //
-// Deliberately not the depth-prepass normal G-buffer (D3D12Motion.cpp), even though it exists and carries real
-// per-vertex normals: that buffer covers only the prepass writers, so grass, foliage and water would read the
-// sentinel, and it belongs to THIS frame's camera while everything else in this pass belongs to the previous
-// one's. Depth-derived normals are consistent with the depth by construction.
+// PREFERRED: the depth PREPASS's normal G-buffer (D3D12Motion.cpp) — real per-vertex/shading normals for the
+// exact geometry that wrote the depth this pass is integrating over, at no extra cost. They are octahedral
+// WORLD space, so they get rotated into view space here. Pixels no prepass draw covered carry the clear
+// sentinel (see kOctNormalSentinel in include/MotionVectors.hlsl); those are sky and the late transparents,
+// and reporting a camera-facing normal there collapses the horizon search to "unoccluded", which is right.
+//
+// FALLBACK: normals GENERATED from the depth itself by CSGenerateNormals below, already in view space. Used
+// whenever the G-buffer is unavailable (its PSOs or targets failed to create). Depth-derived normals are
+// consistent with the depth by construction, but they round off every real edge the depth doesn't resolve.
 lpfloat3 LoadNormal( int2 pos )
 {
+    if ( g_NormalsAreGBuffer )
+    {
+        Texture2D<float2> srcOctNormals = ResourceDescriptorHeap[g_NormalsIndex];
+        float2 e = srcOctNormals.Load( int3( pos, 0 ) ).xy;
+        if ( e.x < -1.5 )                             // clear sentinel: no prepass coverage
+            return lpfloat3( 0, 0, -1 );              // XeGTAO view space is +Z away from the eye
+        float3 n = XeGTAO_DecodeOctNormal( e );
+        // World -> view: the same mul() every other pass in this backend uses for a matrix, w = 0 for a
+        // direction. Do NOT hand-expand this into a linear combination of the uploaded matrix's rows — that
+        // computes R^T*n (the INVERSE rotation), because mul() sums v[i] * row i of the HLSL matrix, and a
+        // row-major upload read back column-major means row i of the HLSL matrix is COLUMN i of what was
+        // uploaded. That mistake shipped once: it is exact when the camera faces the identity direction and
+        // grows with yaw until dot(N, viewVec) flips sign, at which point XeGTAO's horizon integral degenerates
+        // to fully occluded and large flat walls turn black as you turn.
+        return (lpfloat3)normalize( mul( float4( n, 0.0 ), g_ViewMatrix ).xyz );
+    }
+
     Texture2D<uint> srcNormalmap = ResourceDescriptorHeap[g_NormalsIndex];
     uint packedInput = srcNormalmap.Load( int3( pos, 0 ) ).x;
     float3 unpackedOutput = XeGTAO_R11G11B10_UNORM_to_FLOAT3( packedInput );

@@ -29,7 +29,8 @@
 
 // Per-frame visible point light (torches/campfires/spells), 64 B. Must stay in lockstep with the C++ GPULight
 // in D3D12Engine/D3D12EngineCommon.h and with LightCull.hlsl's TiledPointLight copy.
-// Forward shaders read PositionWorld/Range/Color for shading; PositionView feeds the tile cull;
+// Forward shaders read PositionWorld/Range/Color for shading (Color.w = 0 for an isStatic() light, and is used as
+// the specular scale so those diffuse-only fill lights cast no highlight); PositionView feeds the tile cull;
 // ShadowCubeIndex/ShadowOrigin/ShadowRange feed the point-shadow lookup.
 //
 // ShadowOrigin/ShadowRange are the CUBE's centre and far-plane basis, which are NOT the light's own whenever

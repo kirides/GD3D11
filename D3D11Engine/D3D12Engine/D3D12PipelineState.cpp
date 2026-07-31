@@ -654,11 +654,16 @@ bool D3D12PipelineState::CreateGrass() {
     rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 CSM shadow-map array
     // 11: t6 point-shadow cube array (PBRLighting.hlsl requires this symbol)
     rs.AddTable( D3D12RootLayout::SRVRange( 6 ), D3D12_SHADER_VISIBILITY_PIXEL );
-    // 12 = simple-SSAO mask bindless SRV-heap index (b5 AOCB, PS only), set once per frame by
-    // DrawVegetation. Grass gets real AO now that RenderSSAO builds the mask from the PREVIOUS frame's COMPLETE
-    // depth rather than the depth prepass grass never joins — see Vegetation.hlsl's PSMain. The grass shadow
-    // CASTER (D3D12ShadowMap::CreateGrassCaster) shares this root sig but reads none of this.
+    // 12 = simple-SSAO mask bindless SRV-heap index (b5 AOCB, PS only), set once per frame by DrawVegetation.
+    // Grass gets real AO now that it joins the depth prepass RenderSSAO builds the mask from — see
+    // Vegetation.hlsl's PSMain. The grass shadow CASTER (D3D12ShadowMap::CreateGrassCaster) shares this root sig
+    // but reads none of this.
     rs.AddConstants( 5, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b5 AOCB { AoMaskIndex }
+    // 13 = b6 MotionCB (root CBV), read ONLY by the G-buffer depth-prepass entry points (VSDepthGBuf). b6
+    // because b0..b5 above are all spoken for; a root CBV rather than constants because it is three matrices.
+    // Every other PSO on this root signature leaves the parameter unbound, which is legal for a parameter no
+    // bound shader statically references.
+    rs.AddCBV( 6, D3D12_SHADER_VISIBILITY_VERTEX );            // 13: b6 MotionCB
 
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );      // s0 diffuse
     // s2 PCF, matches World/Vob/Skeletal.
@@ -722,6 +727,77 @@ bool D3D12PipelineState::CreateGrass() {
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Grass.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass).";
+        return false;
+    }
+
+    if ( !CreateGrassDepthPrepass( layout, _countof( layout ) ) ) {
+        // Non-fatal by design, exactly like the World-family G-buffer prepass PSOs: the lit grass PSO above is
+        // untouched, and DrawVegetationDepthPrepass just skips itself. Cost is grass being absent from the depth
+        // prepass again, i.e. no AO on the blades — never a broken frame.
+        LogWarn() << "D3D12: grass depth-prepass PSOs unavailable — vegetation stays out of the depth prepass "
+                     "(no screen-space AO on grass).";
+        Grass.DepthPrepassPSO.Reset();
+        Grass.DepthPrepassGBufPSO.Reset();
+    }
+    return true;
+}
+
+/** The two Forward+ depth-prepass PSOs for grass (see GrassPipeline). Split out of CreateGrass so a failure here
+    can be swallowed without also losing the lit grass pass. `layout`/`layoutCount` are CreateGrass's input
+    layout, reused verbatim: both prepass vertex shaders read the same POSITION/TEXCOORD + instance matrix. */
+bool D3D12PipelineState::CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC* layout, UINT layoutCount ) {
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !Grass.RootSig ) return false;
+
+    if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "VSDepth", Shadermodel_VS, Grass.DepthVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "PSShadowClip", Shadermodel_PS, Grass.DepthPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "VSDepthGBuf", Shadermodel_VS, Grass.DepthGBufVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "PSDepthClipGBuf", Shadermodel_PS, Grass.DepthGBufPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    // Shared state: identical to the LIT grass PSO's (CULL_NONE for the crossed double-sided cards, reversed-Z
+    // GREATER_EQUAL with depth-write) so the depth laid down here is bit-identical to what the lit pass would
+    // write — which is the whole point, since the lit pass then re-tests GREATER_EQUAL against it.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Grass.RootSig.Get();
+    pso.InputLayout = { layout, layoutCount };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    // Depth-only variant: one scene-color RTV with every channel masked off, matching what the prepass has bound
+    // when the motion G-buffer is unavailable (same shape as World.DepthPrepassPSO).
+    pso.VS = { Grass.DepthVsBlob->GetBufferPointer(), Grass.DepthVsBlob->GetBufferSize() };
+    pso.PS = { Grass.DepthPsBlob->GetBufferPointer(), Grass.DepthPsBlob->GetBufferSize() };
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Grass.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass depth prepass).";
+        return false;
+    }
+
+    // G-buffer variant: the two real prepass targets instead.
+    pso.VS = { Grass.DepthGBufVsBlob->GetBufferPointer(), Grass.DepthGBufVsBlob->GetBufferSize() };
+    pso.PS = { Grass.DepthGBufPsBlob->GetBufferPointer(), Grass.DepthGBufPsBlob->GetBufferSize() };
+    pso.NumRenderTargets = 2;
+    pso.RTVFormats[0] = kVelocityFormat;
+    pso.RTVFormats[1] = kGBufferNormalFormat;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Grass.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass G-buffer depth prepass).";
         return false;
     }
     return true;
@@ -2814,7 +2890,8 @@ bool D3D12PipelineState::CreateGtao() {
     // Intel XeGTAO — what AOMode::AO_ASSAO selects on D3D12 (Shaders/D3D12/XeGTAO.hlsl drives the vendored
     // XeGTAO.h/.hlsli next to it). One root signature for all eight passes:
     //   0 = b0, 24 root constants: XeGTAO's GTAOConstants block (see the static_assert in D3D12GTAO.cpp).
-    //   1 = b1, 12 root constants: the bindless heap indices for whichever pass is dispatching.
+    //   1 = b1, 28 root constants: the bindless heap indices for whichever pass is dispatching, plus the
+    //       normal-source flag and the view matrix LoadNormal needs for the G-buffer normal path.
     // Every texture and UAV is fetched through ResourceDescriptorHeap (SM6.6), so there are no descriptor
     // tables — hence CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, the same shape as the TAA resolve.
     // Non-fatal throughout: RenderGTAO() guards on the PSOs and the AO chain falls back to the simple SSAO path.
@@ -2823,7 +2900,7 @@ bool D3D12PipelineState::CreateGtao() {
 
     D3D12RootLayout& rs = Layout( "Gtao" );
     rs.AddConstants( 0, 24, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 GTAOConstants
-    rs.AddConstants( 1, 12, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 GTAOBindingsCB
+    rs.AddConstants( 1, 28, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 GTAOBindingsCB
     // s0 point-clamp: XeGTAO gathers depth quads and samples explicit MIP levels. Any filtering would blend
     // across depth discontinuities and, per Intel's note in the main pass, interpolate depths within a MIP.
     rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 0, D3D12_SHADER_VISIBILITY_ALL ) );

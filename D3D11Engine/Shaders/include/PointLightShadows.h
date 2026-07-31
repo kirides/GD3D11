@@ -6,6 +6,13 @@
 
 #if !defined(__cplusplus)
 
+// TiledPointLight::ShadowCubeIndex encoding: -1 = unshadowed, else (slot | flags). Bit 30 marks that the slot
+// also has a valid dynamic (skeletal overlay) cube in the SECOND array, which must be sampled and min'd with
+// the static one. Keeping the flag in bit 30 leaves the value positive, so "ShadowCubeIndex >= 0" still means
+// shadowed. Mirrors D3D11TiledDeferredShading.h.
+static const int PLS_SHADOW_HAS_DYNAMIC = 0x40000000;
+static const int PLS_SHADOW_SLOT_MASK = 0x3FFFFFFF;
+
 static const int PLS_SHADOW_BLUR_COUNT = 8;
 static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2( 0.076849f, -0.078216f),
@@ -167,13 +174,17 @@ float PLS_SampleShadowCube(
 
 float PLS_SampleShadowCubeArray(
     TextureCubeArray shadowCubeArray,
+    TextureCubeArray dynShadowCubeArray,
     SamplerComparisonState samplerState,
     float3 wsPosition,
-    float3 N, 
+    float3 N,
     float3 lightPosWorld,
     float lightRange,
-    int cubeIndex )
+    int encodedIndex )
 {
+    int cubeIndex = encodedIndex & PLS_SHADOW_SLOT_MASK;
+    bool hasDyn = ( encodedIndex & PLS_SHADOW_HAS_DYNAMIC ) != 0;
+
     float3 dir;
     float compareDistance;
     float fixedBias;
@@ -196,7 +207,17 @@ float PLS_SampleShadowCubeArray(
         float3 perturbedDir = normalize( dir + (right * rotatedKernel.x + up * rotatedKernel.y) * fixedBlurScale );
         float4 sampleCoord = float4( perturbedDir, (float)cubeIndex );
 
-        shd += shadowCubeArray.SampleCmpLevelZero( samplerState, sampleCoord, compareDistance - fixedBias );
+        // The slot keeps its STATIC depth in shadowCubeArray and this frame's moving (skeletal) casters in a
+        // SEPARATE array; taking the min of the two comparisons is "occluded by either", which is exactly what
+        // the old composited cube produced - minus the per-slot CopySubresourceRegion that used to build it
+        // every update. The flag is only set for slots whose overlay was actually rendered, so a light with no
+        // NPC nearby pays for no extra sample at all.
+        float s = shadowCubeArray.SampleCmpLevelZero( samplerState, sampleCoord, compareDistance - fixedBias );
+        if ( hasDyn )
+        {
+            s = min( s, dynShadowCubeArray.SampleCmpLevelZero( samplerState, sampleCoord, compareDistance - fixedBias ) );
+        }
+        shd += s;
     }
 
     float finalShadow = shd / PLS_SHADOW_BLUR_COUNT;

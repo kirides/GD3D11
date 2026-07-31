@@ -561,6 +561,31 @@ struct GTAOSettings {
     float DepthMIPSamplingOffset;       // [2.0, 6.0] bandwidth/quality trade-off in the MIP selection
 };
 
+/** D3D12 only: the discrete roughness values the default (no _FX/_ORM map) material can be set to.
+    The D3D12 backend can't sample an arbitrary roughness for these materials — it hands the shader a
+    bindless 1x1 ORM texture, so every selectable value needs its own texture created up front (see
+    D3D12GraphicsEngine::CreateWhiteTexture / m_DefaultOrmTextures). Nine steps of 0.05 from 0.50 to 0.90
+    is nine 1x1 textures, i.e. nothing, and covers everything from damp stone to chalky plaster.
+    Kept here rather than in the D3D12 headers so ImGuiShim can drive the slider without including them. */
+namespace DefaultRoughness {
+    constexpr float kMin  = 0.50f;
+    constexpr float kStep = 0.05f;
+    constexpr int   kNumSteps = 9;                          // 0.50 0.55 ... 0.90
+    constexpr float kMax = kMin + kStep * ( kNumSteps - 1 );
+
+    /** Roughness for step index i (clamped). */
+    inline float ForStep( int i ) {
+        if ( i < 0 ) i = 0;
+        if ( i >= kNumSteps ) i = kNumSteps - 1;
+        return kMin + kStep * static_cast<float>( i );
+    }
+    /** Nearest step index for an arbitrary roughness — the ini is free text, so this also sanitizes it. */
+    inline int StepFor( float roughness ) {
+        const int i = static_cast<int>( ( roughness - kMin ) / kStep + 0.5f );
+        return i < 0 ? 0 : ( i >= kNumSteps ? kNumSteps - 1 : i );
+    }
+}
+
 struct GothicRendererSettings {
     enum EPointLightShadowMode {
         PLS_DISABLED = 0,
@@ -671,7 +696,7 @@ struct GothicRendererSettings {
 
         DrawSky = true;
         DrawFog = true;
-        FogRange = SWITCH_ENGINE12(1.0f, 3.0f);
+        FogRange = SwitchG1G2(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
         ReplaceSunDirection = false;
@@ -758,8 +783,9 @@ struct GothicRendererSettings {
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
-        SkyOcclusionStrength = 0.0f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
+        SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
         SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
+        DefaultMaterialRoughness = 0.80f; // D3D12 only: roughness for materials with no _FX/_ORM map
 
         BloomStrength = 1.0f;
         EnableBloom = false;
@@ -844,12 +870,12 @@ struct GothicRendererSettings {
         GothicUIScale = 1.0f;
         //DisableEverything();
 
-        LimitLightIntesity = false;
+        LimitLightIntesity = true;
         AllowNormalmaps = 0;
         CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
-        EnableDebugLog = true;
+        EnableDebugLog = false;
         EnableCustomFontRendering = true;
         FastInventoryRendering = true;
 
@@ -859,13 +885,13 @@ struct GothicRendererSettings {
         StretchWindow = true;
         SmoothShadowCameraUpdate = true;
         SmoothShadowFrequency = 500.0f;
-        DisplayFlip = false;
+        DisplayFlip = true;
         LowLatency = false;
         HDR_Monitor = false;
         HDR_AutoMaxBrightness = true;
         HDR_MaxBrightness = 1000.0f;
         HDR_PaperWhite = 200.0f;
-        EnableInactiveFpsLock = true;
+        EnableInactiveFpsLock = false;
         MTResoureceManager = true;
         CompressBackBuffer = false;
         AnimateStaticVobs = true;
@@ -883,7 +909,7 @@ struct GothicRendererSettings {
 
         ResetDebugSettings();
     }
-    
+
     void ApplyDx12Defaults()
     {
         EnableHDR = true;
@@ -1128,6 +1154,10 @@ struct GothicRendererSettings {
     // the deliberate non-physical fill that Gothic itself applies; D3D11's atmospheric scattering hardcodes the
     // equivalent (AtmosphericScattering.h: nightColor = (0.2,0.2,0.4) * NIGHT_BRIGHTNESS). 0 disables the floor.
     float SkyIblNightFloor;
+    // D3D12 only: the roughness handed to materials Gothic ships with no _FX/_ORM map, which is most of them.
+    // Snapped to one of the DefaultRoughness:: steps on load and on every ImGui edit, because the backend can
+    // only serve values it built a 1x1 ORM texture for at startup. AO stays 1 and metallic 0 for these.
+    float DefaultMaterialRoughness;
 
     float GodRayDecay;
     float GodRayWeight;

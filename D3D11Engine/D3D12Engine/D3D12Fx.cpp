@@ -222,7 +222,7 @@ void D3D12GraphicsEngine::DrawQuadMarks() {
         // b6 MaterialCB, the same four root constants the world ExecuteIndirect commands push per draw:
         // no normal map (0xFFFFFFFF -> PSMain skips the perturb), the 1x1 default ORM (AO 1 / rough .5 /
         // metal 0, channel layout 0 = full RGB ORM), the mark's diffuse, and a zero normal strength.
-        const uint32_t matCb[4] = { 0xFFFFFFFFu, m_DefaultOrmTexture->GetSrvSlot(), diffuseSlot, 0u };
+        const uint32_t matCb[4] = { 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), diffuseSlot, 0u };
         m_CmdList->SetGraphicsRoot32BitConstants( 10, 4, matCb, 0 );
 
         const UINT numVerts = static_cast<UINT>( info.NumVertices );

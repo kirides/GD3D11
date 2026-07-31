@@ -312,6 +312,12 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                     tiledDeferred->IsShadowArrayCreated() ? tiledDeferred->GetShadowCubeArraySRV() : nullptr,
                 };
                 context->PSSetShaderResources( 8, 4, lightSRVs );
+
+                // --- Dynamic point-shadow overlay array at t14 (t12/t13 are the shadow and AO masks) ---
+                // May be null: no light can carry SHADOW_CUBE_HAS_DYNAMIC before the array exists.
+                ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
+                    ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
+                context->PSSetShaderResources( 14, 1, &dynCubeSRV );
             }
 
             // --- Bind shadow mask at t12 ---
@@ -337,7 +343,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             context->PSSetShaderResources( 3, 1, s_nullSRVs );
             context->PSSetShaderResources( 6, 1, s_nullSRVs );
             context->PSSetShaderResources( 8, 4, s_nullSRVs );
-            context->PSSetShaderResources( 12, 2, s_nullSRVs );
+            context->PSSetShaderResources( 12, 3, s_nullSRVs ); // shadow mask, AO mask, dynamic shadow cubes
 
             // Restore default depth comparison
             depthState.SetDefault();

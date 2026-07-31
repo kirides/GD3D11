@@ -52,6 +52,16 @@ public:
         return m_StaticShadowReady;
     }
 
+    /** True when this light's tiled slot in the dynamic-overlay cube array holds a valid, already-rendered set
+        of moving casters. Drives SHADOW_CUBE_HAS_DYNAMIC, i.e. whether the shader takes the second sample.
+        Only PLS_UPDATE_DYNAMIC ever refreshes that overlay, so the mode is re-checked here rather than trusted
+        to have been cleared: any other mode would otherwise keep sampling whatever the last update left in the
+        slot, freezing that NPC into the shadow. */
+    bool HasDynamicShadowOverlay() const {
+        return m_HasDynamicOverlay
+            && GetCurrentShadowMode() == GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+    }
+
     bool HasShadowMap(int shadowMapKind ) const { 
         if ( shadowMapKind == 0 ) return m_DepthCubemap != nullptr;
         return m_TiledDepthTarget != nullptr;
@@ -104,6 +114,10 @@ protected:
     std::atomic<bool> InitDone;
     bool DrawnOnce;
     bool m_StaticShadowReady = false;
+    /** Set once the animated pass has rendered into this light's slot of the dynamic-overlay array; cleared
+        whenever the slot changes hands or the light's caches are invalidated, so we never advertise an
+        overlay that still holds another light's (or a stale) depth. */
+    bool m_HasDynamicOverlay = false;
     int m_LastShadowMode = -1;
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)

@@ -294,6 +294,7 @@ struct PolyStripInfo {
     release builds, so the queue keeps both resources alive by itself instead of relying on whoever
     created them still being around. */
 struct DeferredMipUpload {
+    GfxTexture* Texture; // only to know which one to delete in case its removed
     UINT Mip;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> Staging;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> Destination;
@@ -624,6 +625,10 @@ public:
     /** Returns total time DWORD */
     DWORD GetTotalTimeDW();
 
+    /** Monotonic frame counter, bumped once per OnWorldUpdate. Unlike GetTotalTimeDW (a
+        millisecond wall clock) two distinct frames can never share a value. */
+    size_t GetFrameNumber() const { return FrameNumber; }
+
     /** Returns the current frame time */
     float GetFrameTimeSec();
 
@@ -847,11 +852,11 @@ public:
     XRESULT LoadMenuSettings( const std::string& file );
 
     /** Adds a staging texture to the list of the staging textures for this frame */
-    void AddStagingTexture( UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
+    void AddStagingTexture( GfxTexture* gfx, UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
         const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture );
 
     /** Gets a list of the staging textures for this frame */
-    std::vector<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
+    std::deque<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
 
     /** Adds a mip map generation deferred command */
     void AddMipMapGeneration( GfxTexture* texture );
@@ -861,7 +866,7 @@ public:
     void RemovePendingTextureCommands( GfxTexture* texture );
 
     /** Gets a list of the mip map generation commands for this frame */
-    std::list<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
+    std::deque<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
 
     /** Adds a texture to the list of the loaded textures for this frame */
     void AddFrameLoadedTexture( MyDirectDrawSurface7* srf );
@@ -1023,6 +1028,25 @@ private:
     gtl::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
     gtl::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
+    /** Bumped once per OnWorldUpdate. See GetFrameNumber(). */
+    size_t FrameNumber = 0;
+
+    /** Looks up the extracted skeletal mesh data for a live zCModel, NPC-keyed first, then by
+     *  visual name. Returns nullptr while no data exists or a background extraction is still
+     *  running - callers must not substitute a placeholder position in that case, see
+     *  GetLowestLODPoly_SkeletalMesh. */
+    SkeletalMeshVisualInfo* ResolveSkeletalVisualInfo( zCModel* model );
+
+    /** True if this emitter samples its spawn positions from a skeletal shape-mesh
+     *  (zPFX_EMITTER_SHAPE_MESH + shpModel, set by oCVisualFX's emAdjustShpToOrigin) that we
+     *  cannot serve yet. Ticking such an emitter would spawn every particle at the model's
+     *  origin, so the caller must skip the update entirely. */
+    bool IsUnservableSkeletalShapeEmitter( zCParticleFX* fx );
+
+    /** Re-points a mesh-shaped emitter at its origin's model when ZENGIN's one-shot assignment
+     *  missed it (origin had no visual yet). Cheap no-op once the shape is set. */
+    void RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx );
+
     /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
      *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
      *  reads from) is destroyed - see WaitForPendingSkeletalLoad(). */
@@ -1105,8 +1129,8 @@ private:
     DWORD MainThreadID;
 
     /** Textures loaded this frame */
-    std::vector<DeferredMipUpload> FrameStagingTextures;
-    std::list<GfxTexture*> FrameMipMapGenerations;
+    std::deque<DeferredMipUpload> FrameStagingTextures;
+    std::deque<GfxTexture*> FrameMipMapGenerations;
     std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
 
     /** Quad marks loaded in the world */

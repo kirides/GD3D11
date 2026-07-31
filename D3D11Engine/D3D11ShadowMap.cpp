@@ -1053,10 +1053,29 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         }
     }
 
-    // Render the immediate priority lights
+    // Render the immediate priority lights - but never more than a handful in one frame.
+    //
+    // A global shadow-mode toggle dirties EVERY light at once. Each rebuild allocates its cubemap
+    // view-matrix CB from the 4 MB per-frame ring and keeps it bound at VS b3 / GS b2 across every draw of
+    // both its passes, while those draws keep allocating from that same ring. Once the ring wraps
+    // (ConstantBufferPool.cpp:61 resets the offset to 0 and overwrites in place) the earlier lights' view
+    // matrices are replaced mid-frame, so their cubes finish rendering with another light's projection -
+    // which shows up as point-light shadows randomly cut off along a cube-face edge, on a different set of
+    // lights every time. Overflow keeps its UpdateShadows flag and drains through the round-robin below.
+    constexpr int maxImportantUpdates = 8;
+    int importantDone = 0;
     for ( auto const& importantUpdate : importantUpdates ) {
+        if ( importantDone >= maxImportantUpdates ) {
+            auto& queue = graphicsEngine->FrameShadowUpdateLights;
+            if ( std::find( queue.begin(), queue.end(), importantUpdate ) == queue.end() ) {
+                queue.emplace_back( importantUpdate );
+            }
+            continue;
+        }
+
         static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( importantUpdate->UpdateShadows );
         importantUpdate->UpdateShadows = false;
+        importantDone++;
     }
 
     // Process Background Queue (Round-Robin)

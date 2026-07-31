@@ -944,7 +944,7 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	if ( uint8_t* argPtr = m_WorldDrawArgsPtr[c][m_E->m_FrameIndex] ) {
 		auto* cmds = reinterpret_cast<D3D12GraphicsEngine::WorldDrawCommand*>( argPtr );
 		UINT drawCount = 0;
-		const uint32_t defaultOrm = m_E->m_DefaultOrmTexture->GetSrvSlot();
+		const uint32_t defaultOrm = m_E->GetDefaultOrmSrvSlot();
 		for ( const ShadowWorldCaster& caster : g_WorldCasters ) {
 			if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( caster.mesh, frustum ) ) continue;
 			if ( drawCount >= D3D12GraphicsEngine::kMaxWorldDrawCommands ) break;

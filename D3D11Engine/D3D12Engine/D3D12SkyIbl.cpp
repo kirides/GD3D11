@@ -176,8 +176,8 @@ void D3D12GraphicsEngine::UploadSkyIblConstants() {
     // disjoint block — see the static_asserts). Written UNCONDITIONALLY every frame: a frame that skipped the
     // write would leave the previous frame's indices standing, and on the frame the IBL first becomes
     // unavailable that would be a stale-but-valid descriptor rather than the intended flat-ambient fallback.
-    static_assert( kAoReprojCbOffset + sizeof( AoReprojCBData ) == kSkyIblCbOffset,
-        "sky-IBL CB block must start right after the AO-reprojection block" );
+    static_assert( kAoReprojCbOffset + kAoReprojCbReservedBytes == kSkyIblCbOffset,
+        "sky-IBL CB block must start right after the (now unused) AO-reprojection hole" );
     static_assert( kSkyIblCbOffset + sizeof( SkyIblCBData ) <= 512, "shadow CB overflow" );
     if ( !m_ShadowCBMapped[m_FrameIndex] ) return;
 

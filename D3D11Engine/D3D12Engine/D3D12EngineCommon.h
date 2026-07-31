@@ -213,9 +213,17 @@ inline constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
 
 // Sentinel the velocity target is cleared to each frame. FillCameraVelocity (end of world rendering, when depth
 // is final) replaces every pixel STILL holding it with a camera-only depth reprojection — that is what covers
-// the sky, grass, water, decals and the transparents, none of which are in the depth prepass. Real velocities
+// the sky, water, decals and the transparents, none of which are in the depth prepass. Real velocities
 // are fractions of a screen (|v| <= ~2), so this can never collide with one, and it survives fp16 exactly.
 inline constexpr float kVelocitySentinel = -1.0e4f;
+
+// ...and the sentinel the NORMAL target is cleared to. Nothing ever fills these in (a pixel with no prepass
+// coverage has no normal), so XeGTAO's LoadNormal has to be able to RECOGNISE them: -2 is outside the [-1,1]
+// an octahedral pair can encode, whereas the obvious 0 clear is the perfectly legal encoding of world (0,0,1)
+// and would silently misreport every surface facing exactly +Z. Must match kOctNormalSentinel in
+// Shaders/D3D12/include/MotionVectors.hlsl and the ClearRenderTargetView call in BeginMotionGBuffer (which in
+// turn must match the optimized clear value CreateMotionResources passes, or fast-clear is lost).
+inline constexpr float kGBufferNormalSentinel = -2.0f;
 
 // --- CPU breadcrumb / debug-marker ring (DRED forensics + PIX events) ---
 // Why is BeginEvent not working as intended with Context on debugging this 32 bit app !!

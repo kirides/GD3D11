@@ -94,7 +94,7 @@ extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 
 #ifdef BUILD_GOTHIC_2_6_fix
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G2A
-#elif defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#elif defined(BUILD_GOTHIC_1_CLASSIC)
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1
 #elif defined(BUILD_GOTHIC_1_08k) && defined(BUILD_1_12F)
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1A
@@ -103,3 +103,25 @@ extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 #endif
 
 #define SWITCH_ENGINE12(G1, G2) SWITCH_ENGINE(G1, G1, G2, G2)
+
+template<typename T>
+[[nodiscard]] constexpr T SwitchEngine( T g1, T g1a, T g2a, T other ) {
+#ifdef BUILD_GOTHIC_2_6_fix
+    return g2a;
+#elif defined(BUILD_GOTHIC_1_CLASSIC)
+    return g1;
+#elif defined(BUILD_GOTHIC_1_08k) && defined(BUILD_1_12F)
+    return g1a;
+#else
+    return g2;
+#endif
+}
+
+template<typename T>
+[[nodiscard]] constexpr T SwitchG1G2( T g1, T g2 ) {
+#if defined(BUILD_GOTHIC_1_08k) // both G1 and G1 sequel
+    return g1;
+#else
+    return g2;
+#endif
+}
