@@ -34,12 +34,12 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerPurgeCaches, hooked_PurgeCaches );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerPurgeCaches, hooked_PurgeCaches );
         //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerCacheOut, hooked_CacheOut  );
 #if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_GOTHIC_2_6_fix)
-        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheInsertRes, hooked_InsertRes );
-        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheTouchRes, hooked_TouchRes );
-        // DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheRemoveRes, hooked_RemoveRes );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheInsertRes, hooked_InsertRes );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheTouchRes, hooked_TouchRes );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCClassCacheRemoveRes, hooked_RemoveRes );
 #endif
     }
 
@@ -129,6 +129,7 @@ public:
     static void __fastcall hooked_PurgeCaches( zCResourceManager* thisptr, void* unknwn, unsigned int classDef ) {
         hook_infunc
 
+            // HookedFunctions::OriginalFunctions.original_zCResourceManagerPurgeCaches( thisptr, classDef );
             thisptr->PurgeCachesWithProgressGuarantee( classDef );
 
         hook_outfunc
@@ -223,26 +224,28 @@ private:
     };
 
     struct ScanResult {
-        std::vector<zCResource*> lockedByUs;
+        // Resources whose cacheOutLock bit WE set, and must therefore clear again. A set rather than
+        // a vector because the undo pass looks entries up while re-walking the class caches instead
+        // of dereferencing these pointers - see UnlockResourcesWeLocked().
+        std::unordered_set<zCResource*> lockedByUs;
         // Indices into classCacheList whose resListHead is cyclic/did not terminate. ZENGIN's own
         // PurgeCaches loop has no bound at all, so calling it on one of these hangs for real - the
         // caller must skip these class caches entirely rather than delegate to it.
         std::vector<int> corruptedClassCacheIndices;
     };
 
-    /** Sets cacheOutLock on every resource ZENGIN's CacheOut could not unlink, so its
-        restart-from-head loop is forced to advance. Returns the resources we touched, so the caller
-        can undo it once the purge is over, plus any class cache whose list turned out to be cyclic
-        (a visited-set, not just a counter, so a legitimately large class cache is never mistaken for
-        a corrupt one). */
-    ScanResult LockOutUnremovableResources( unsigned int classDef ) {
+    /** Cycle-safe walk over every resource currently linked into the class caches that
+        PurgeCaches(classDef) would touch, calling fn(res) for each. nextRes is read before fn runs,
+        so fn may change the resource's state. A visited-set, not just a counter, decides whether a
+        list is cyclic, so a legitimately large class cache is never mistaken for a corrupt one; a
+        cyclic list is abandoned mid-walk and its index appended to corrupted (may be nullptr). */
+    template<class F>
+    void ForEachResourceInScope( unsigned int classDef, std::vector<int>* corrupted, F&& fn ) {
         // Generous cap - the texture cache holds a few thousand entries at most - so a corrupt
         // (cyclic) list can't hang us even if it never repeats a node we've already tracked.
         constexpr size_t MAX_RESOURCES_PER_CACHE = 1u << 20;
 
-        ScanResult result;
         const int numCaches = GetNumClassCaches();
-
         for ( int i = 0; i < numCaches; ++i ) {
             zCClassCache* cache = GetClassCache( i );
             if ( !cache ) break;
@@ -252,47 +255,79 @@ private:
                 continue;
 
             std::unordered_set<zCResource*> seen;
-            zCResource* res = cache->GetResListHead();
-            bool corrupted = false;
+            bool isCorrupted = false;
 
-            while ( res ) {
-                if ( !seen.insert( res ).second ) {
-                    corrupted = true;
-                    break;
-                }
-                if ( seen.size() > MAX_RESOURCES_PER_CACHE ) {
-                    corrupted = true;
+            for ( zCResource* res = cache->GetResListHead(); res; ) {
+                if ( !seen.insert( res ).second || seen.size() > MAX_RESOURCES_PER_CACHE ) {
+                    isCorrupted = true;
                     break;
                 }
 
                 zCResource* next = res->GetNextRes();
-
-                zCResource::ScopedStateChangeLock lock( res );
-                // ZENGIN's own PurgeCaches/CacheOut/Evict never write this bit - the only writer is
-                // this hook. So a resource that is removable but still shows cacheOutLock==true is a
-                // stale bit left over from an earlier call rather than something we must leave alone;
-                // left alone it would exempt the resource from being purged forever, so self-heal it
-                // here instead of only ever adding bits.
-                if ( res->IsRemovableFromClassCache() ) {
-                    if ( res->GetCacheOutLock() )
-                        res->SetCacheOutLock( false );
-                } else if ( !res->GetCacheOutLock() ) {
-                    res->SetCacheOutLock( true );
-                    result.lockedByUs.push_back( res );
-                }
-
+                fn( res );
                 res = next;
             }
 
-            if ( corrupted ) {
+            if ( isCorrupted ) {
                 LogWarn() << "zCResourceManager::PurgeCaches: class cache " << i << " (\""
                     << cache->GetResClassDefName() << "\") has a corrupted resource list - excluding "
                     "it from this purge.";
-                result.corruptedClassCacheIndices.push_back( i );
+                if ( corrupted )
+                    corrupted->push_back( i );
             }
         }
+    }
+
+    /** Sets cacheOutLock on every resource ZENGIN's CacheOut could not unlink, so its
+        restart-from-head loop is forced to advance. Returns the resources we touched, so the caller
+        can undo it once the purge is over, plus any class cache whose list turned out to be cyclic.
+
+        This only ever *adds* bits. cacheOutLock is emphatically not ours alone - ZENGIN sets it
+        itself to pin resources it is still using, and clearing one of those hands a live resource to
+        PurgeCaches:
+          - zCSndSys_MSS::PlaySound/PlaySound3D/PlaySound3DAmbient each do
+            `sndFX->SetCacheOutLock(TRUE); sndFX->CacheIn(-1);` for every sound they start, and only
+            zCSndFX_MSS::CheckCanBeCachedOut() clears it again, after confirming no frame's wave is
+            still active in the zCWavePool. Cache such a sound out anyway and its wave data is freed
+            while Miles still holds the sample handle - the crash shows up later inside Mss32.dll /
+            MssDsp.flt on garbage addresses, which is what made this look like a sound bug.
+          - lightmaps are pinned the same way on purpose ("Lightmaps sollen im Speicher bleiben" -
+            zCMesh/zCWorld lightmap setup, zCTexture and the D3D texture backend).
+        Note the pinned-sound case satisfies IsRemovableFromClassCache() (CACHED_IN and
+        managedByResMan), so "removable but locked" is a perfectly normal state and must be left
+        exactly as found - it is never a stale bit of ours. Ours cannot go stale: every bit we set is
+        recorded here and cleared by UnlockResourcesWeLocked() before this hook returns. */
+    ScanResult LockOutUnremovableResources( unsigned int classDef ) {
+        ScanResult result;
+
+        ForEachResourceInScope( classDef, &result.corruptedClassCacheIndices, [&result]( zCResource* res ) {
+            zCResource::ScopedStateChangeLock lock( res );
+            if ( res->IsRemovableFromClassCache() || res->GetCacheOutLock() )
+                return;
+
+            res->SetCacheOutLock( true );
+            result.lockedByUs.insert( res );
+        } );
 
         return result;
+    }
+
+    /** Clears the bits LockOutUnremovableResources() set. Deliberately re-walks the class caches and
+        clears only resources still linked into one, instead of iterating the recorded pointers: the
+        resources we lock survive the purge, but ZENGIN's own PurgeCaches loop restarts from the head
+        after every CacheOut precisely because "nextRes kann schon rekursiv beseitigt worden sein" -
+        a cached-out resource can drop the last reference to another one and destroy it. Dereferencing
+        a recorded pointer would then be a use-after-free, on the very path that is supposed to make
+        this purge safe. Must run while the resource thread is still parked. */
+    void UnlockResourcesWeLocked( unsigned int classDef, const std::unordered_set<zCResource*>& lockedByUs ) {
+        if ( lockedByUs.empty() ) return;
+
+        ForEachResourceInScope( classDef, nullptr, [&lockedByUs]( zCResource* res ) {
+            if ( !lockedByUs.contains( res ) ) return;
+
+            zCResource::ScopedStateChangeLock lock( res );
+            res->SetCacheOutLock( false );
+        } );
     }
 
     /** If the resource thread will not park, the class-cache lists are not ours to walk safely (the
@@ -342,10 +377,7 @@ private:
             }
         }
 
-        for ( zCResource* res : scan.lockedByUs ) {
-            zCResource::ScopedStateChangeLock lock( res );
-            res->SetCacheOutLock( false );
-        }
+        UnlockResourcesWeLocked( classDef, scan.lockedByUs );
     }
 
 public:
