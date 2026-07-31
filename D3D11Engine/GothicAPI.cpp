@@ -1696,6 +1696,7 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
                 if ( auto vis = it->GetVisual() ) {
                     // Do update particle state, even if not in frustum, so that if player turns back to it, it doesn't restart.
                     auto particleFx = reinterpret_cast<zCParticleFX*>(vis);
+                    RepairShapeMeshEmitter( it, particleFx );
                     if ( IsUnservableSkeletalShapeEmitter( particleFx ) ) {
                         // Its shape-mesh isn't skinned yet - ticking it would spawn every particle
                         // on the model's origin. Let it start a few frames late instead.
@@ -2531,6 +2532,18 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
     if ( !skeletalMesh || !skeletalMesh->Ready.load() )
         return nullptr; // Still being built on a worker thread - don't touch its mesh data yet
 
+    // A model can reach OnAddVob before Gothic has built its soft-skin list (freshly spawned NPCs
+    // do). LoadzCModelData then caches an EMPTY extraction against this oCNPC*/visual and, since it
+    // only re-runs from OnAddVob, that empty result survives until the vob is removed and re-added.
+    // ZENGIN reads 0 polys from it and drops every particle on the model's origin - permanently.
+    // Repair it here, the same way the D3D12 skeletal prepare does (D3D12Scene.cpp:3905). Safe to
+    // do synchronously: Ready is true, so no background job is writing to this info, and it happens
+    // once per model. Interactive MOBs whose only content is a node attachment legitimately stay
+    // empty, hence the NumInArray guard.
+    if ( skeletalMesh->SkeletalMeshes.empty() && model->GetMeshSoftSkinList()->NumInArray > 0 ) {
+        WorldConverter::ExtractSkeletalMeshFromVob( model, skeletalMesh );
+    }
+
     return skeletalMesh;
 }
 
@@ -2539,6 +2552,53 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
  *  GetLowestLODNumPolys returns 0, so the whole effect would visibly collapse onto the model's
  *  pivot. Skipping the emitter tick until the data is there is the lesser evil: the effect simply
  *  starts a few frames late instead of starting wrong. */
+/** ZENGIN's oCVisualFX::CalcPFXMesh (oVisFx.cpp:3961) points a zPFX_EMITTER_SHAPE_MESH emitter at
+ *  the origin vob's visual exactly once - while the FX's own visual is being created. If the origin
+ *  had no visual yet at that instant, none of its shpMesh/shpProgMesh/shpModel branches assign, and
+ *  the pointer stays null for the whole life of the effect (oCNpc::StartEffect's follow-up
+ *  SetPFXShapeVisual is likewise guarded by `if (GetVisual())`, oNpc.cpp:14437). ZENGIN's
+ *  zCParticleEmitter::GetPosition then falls through its MESH case to `return zVEC3(0,0,0)`
+ *  (zParticle.cpp:2460) and every particle spawns on the vob's pivot - the "fire beast burns at one
+ *  point until re-spawned" bug. Re-run the assignment here once the visual does exist. */
+void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
+#ifndef BUILD_GOTHIC_1_08k
+    zCParticleEmitter* emitter = fx->GetEmitter();
+    if ( !emitter || emitter->GetVisShpType() != 5 )
+        return;
+
+    // Only when ZENGIN left the shape unset - never second-guess a shape it did resolve.
+    if ( emitter->GetVisShpModel() || emitter->GetVisShpMesh() || emitter->GetVisShpProgMesh() )
+        return;
+
+    // emAdjustShpToOrigin is what makes oCVisualFX the *owner* of the shape mesh, so it is also
+    // what guarantees ReleasePFXMesh will drop the reference we add below. Without it we would leak.
+    oCVisualFX* visFx = source ? source->As<oCVisualFX>() : nullptr;
+    if ( !visFx || !visFx->GetAdjustShapeToOrigin() )
+        return;
+
+    zCVob* origin = visFx->GetOrigin();
+    if ( !origin )
+        return;
+
+    zCVisual* originVisual = origin->GetVisual();
+    if ( !originVisual )
+        return; // Still nothing to point at - try again next frame
+
+    // Mirror CalcPFXMesh's zDYNAMIC_CAST<zCModel> branch. Only the model case is repaired here:
+    // zCMesh/zCProgMeshProto origins are served by ZENGIN itself and never reach our LOD hooks.
+    const char* ext = originVisual->GetFileExtension( 0 );
+    if ( !ext || (strcmp( ext, ".MDS" ) != 0 && strcmp( ext, ".ASC" ) != 0) )
+        return;
+
+    zCModel* originModel = static_cast<zCModel*>(originVisual);
+    emitter->SetVisShpModel( originModel );
+    zCObject_AddRef( originModel ); // matches CalcPFXMesh's orgModel->AddRef()
+
+    LogInfo() << "Repaired shape-mesh emitter for '" << originModel->GetModelName().ToChar()
+        << "' - oCVisualFX started before the origin had a visual";
+#endif
+}
+
 bool GothicAPI::IsUnservableSkeletalShapeEmitter( zCParticleFX* fx ) {
     zCParticleEmitter* emitter = fx->GetEmitter();
     if ( !emitter )
@@ -2553,7 +2613,11 @@ bool GothicAPI::IsUnservableSkeletalShapeEmitter( zCParticleFX* fx ) {
     if ( !shapeModel )
         return false; // Plain zCMesh/zCProgMeshProto shapes are handled by ZENGIN itself
 
-    return ResolveSkeletalVisualInfo( shapeModel ) == nullptr;
+    // Not just "no info yet" - an info that resolves but carries no skinned geometry is equally
+    // unservable, and ZENGIN would never even reach GetLowestLODPoly for it (GetPosition bails on
+    // numPolys==0), so this is the only place that failure mode can be caught.
+    SkeletalMeshVisualInfo* info = ResolveSkeletalVisualInfo( shapeModel );
+    return info == nullptr || info->SkeletalMeshes.empty();
 }
 
 int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
@@ -3337,6 +3401,9 @@ void GothicAPI::OnParticleFXDeleted( zCParticleFX* pfx ) {
 
 /** Draws a zCParticleFX */
 void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameData& data ) {
+    // ZENGIN may have left this emitter's shape mesh unset because the origin had no visual yet.
+    RepairShapeMeshEmitter( source, fx );
+
     if ( IsUnservableSkeletalShapeEmitter( fx ) ) {
         // This emitter samples its spawn positions off a skeletal mesh whose skinned data we
         // haven't extracted yet (LoadzCModelData runs on a worker). Spawning now would put every

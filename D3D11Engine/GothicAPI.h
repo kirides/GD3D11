@@ -1043,6 +1043,10 @@ private:
      *  origin, so the caller must skip the update entirely. */
     bool IsUnservableSkeletalShapeEmitter( zCParticleFX* fx );
 
+    /** Re-points a mesh-shaped emitter at its origin's model when ZENGIN's one-shot assignment
+     *  missed it (origin had no visual yet). Cheap no-op once the shape is set. */
+    void RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx );
+
     /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
      *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
      *  reads from) is destroyed - see WaitForPendingSkeletalLoad(). */

@@ -642,6 +642,7 @@ struct GothicMemoryLocations {
     struct oCVisualFX
     {
         static const unsigned int Offset_origin = 0x458;
+        static const unsigned int Offset_emAdjustShpToOrigin = 0x29c;
     };
     
     struct zAllocator

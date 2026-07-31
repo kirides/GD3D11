@@ -16,6 +16,12 @@ public:
     zCVob* GetOrigin() const {
         return *reinterpret_cast<zCVob**>(THISPTR_OFFSET( GothicMemoryLocations::oCVisualFX::Offset_origin ));
     }
+
+    /** When set, oCVisualFX owns the particle emitter's shape mesh and points it at the origin
+        vob's visual (oCVisualFX::CalcPFXMesh). */
+    bool GetAdjustShapeToOrigin() const {
+        return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::oCVisualFX::Offset_emAdjustShpToOrigin )) != 0;
+    }
 };
 
 class oCItem : public zCVob {

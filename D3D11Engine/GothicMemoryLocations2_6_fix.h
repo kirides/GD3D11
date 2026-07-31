@@ -807,6 +807,7 @@ struct GothicMemoryLocations {
     struct oCVisualFX
     {
         static const unsigned int Offset_origin = 0x4a8;
+        static const unsigned int Offset_emAdjustShpToOrigin = 0x2d0;
     };
 
 #define zALLOCATOR_SUPPORTED
