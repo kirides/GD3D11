@@ -256,7 +256,8 @@ namespace {
 
     // Per-decal instance data (per-instance vertex stream, slot 1). World = world*offset*scale (view NOT
     // baked in — unlike D3D11, the D3D12 decal VS applies the standard ViewProj, so the CPU only needs the
-    // model matrix). Color.a = the material's ghost alpha ((GetColor()>>24)/255); rgb is unused. 80 bytes.
+    // model matrix). Color.a = the material's ghost alpha ((GetColor()>>24)/255); Color.r is the
+    // shade-lit flag (0 for the unlit ADD/MUL/MUL2 modes — see Decal.hlsl's PSMainBlend); .gb unused. 80 bytes.
     struct DecalInstanceInfo {
         DirectX::XMFLOAT4X4 World;
         DirectX::XMFLOAT4   Color;
@@ -1409,7 +1410,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	// Build the per-decal instance data on the CPU (filter + camera alignment) — a direct port of D3D11's
 	// DrawDecalList, minus the baked-in view matrix (the VS applies the standard ViewProj). The received
 	// list is already sorted back-to-front; we keep that order (painter's algorithm) and DON'T batch.
-	struct DecalMeta { zCTexture* texture; int alphaFunc; };
+	struct DecalMeta { zCTexture* texture; int alphaFunc; };   // both taken from the ANIMATED texture, see below
 	static std::vector<DecalInstanceInfo> gpu;
 	static std::vector<DecalMeta> meta;
 	gpu.clear(); meta.clear();
@@ -1516,12 +1517,32 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			}
 		}
 
+		// Texture + blend mode come from the ANIMATED texture, not the single one used for the pass filter
+		// above — same as D3D11, which re-derives both from GetAniTexture() in its draw loop. Gothic's
+		// animated decals (candle flames, torches) hand out a different frame every tick, and the frames do
+		// not all agree with the base texture on HasAlphaChannel(), so deriving the blend mode from
+		// GetTextureSingle() picks the wrong one for exactly the decals that look worst when it's wrong.
+		zCTexture* aniTex = material->GetAniTexture();
+		if ( !aniTex ) continue;
+
+		int drawAlphaFunc = material->GetAlphaFunc();
+		if ( drawAlphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
+			drawAlphaFunc = zMAT_ALPHA_FUNC_BLEND;
+			if ( !aniTex->HasAlphaChannel() ) drawAlphaFunc = zMAT_ALPHA_FUNC_NONE;
+		}
+
+		// Only the alpha-blend modes are shaded; ADD is emissive and MUL/MUL2 multiply against the already
+		// lit scene, so lighting those blackens them. See the PSMainBlend comment in Decal.hlsl.
+		const bool shadeLit = lighting
+			|| drawAlphaFunc == zMAT_ALPHA_FUNC_BLEND
+			|| drawAlphaFunc == zMAT_ALPHA_FUNC_BLEND_TEST;
+
 		DecalInstanceInfo inst;
 		XMStoreFloat4x4( &inst.World, world * offset * scale );
 		const float ghostAlpha = lighting ? 1.0f : ((material->GetColor() >> 24) * (1.0f / 255.0f));
-		inst.Color = XMFLOAT4( 1.0f, 1.0f, 1.0f, ghostAlpha );
+		inst.Color = XMFLOAT4( shadeLit ? 1.0f : 0.0f, 1.0f, 1.0f, ghostAlpha );
 		gpu.push_back( inst );
-		meta.push_back( { material->GetAniTexture(), alphaFunc } );
+		meta.push_back( { aniTex, drawAlphaFunc } );
 	}
 
 	if ( gpu.empty() ) return;
@@ -1578,36 +1599,40 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	ID3D12PipelineState* lastPso = nullptr;
 	if ( lighting ) { m_CmdList->SetPipelineState( m_Pipelines.Decal.LitPSO.Get() ); lastPso = m_Pipelines.Decal.LitPSO.Get(); }
 
-	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
-	zCTexture* lastTex = reinterpret_cast<zCTexture*>(~static_cast<uintptr_t>(0));  // force first bind
+	zCTexture* lastTex = nullptr;
 	unsigned int drawnTris = 0;
 
 	for ( size_t i = 0; i < gpu.size(); ++i ) {
 		if ( !lighting ) {
 			GothicBlendStateInfo blend;
 			switch ( meta[i].alphaFunc ) {
-			case zMAT_ALPHA_FUNC_ADD:  blend.SetAdditiveBlending();  break;
-			case zMAT_ALPHA_FUNC_MUL:  blend.SetModulateBlending();  break;
-			case zMAT_ALPHA_FUNC_MUL2: blend.SetModulate2Blending(); break;
-			default:                   blend.SetAlphaBlending();     break;  // BLEND / BLEND_TEST
+			case zMAT_ALPHA_FUNC_BLEND:
+			case zMAT_ALPHA_FUNC_BLEND_TEST: blend.SetAlphaBlending();    break;
+			case zMAT_ALPHA_FUNC_ADD:        blend.SetAdditiveBlending(); break;
+			case zMAT_ALPHA_FUNC_MUL:        blend.SetModulateBlending(); break;
+			case zMAT_ALPHA_FUNC_MUL2:       blend.SetModulate2Blending(); break;
+			// The ani texture re-derived a mode this pass doesn't draw (NONE/TEST belong to the lit pass).
+			// D3D11 skips those too rather than falling back to alpha blending.
+			default: continue;
 			}
 			ID3D12PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
 			if ( !pso ) continue;
 			if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 		}
 
+		// Not-yet-cached surfaces are SKIPPED, never drawn with a fallback: the fallback is the 1x1 OPAQUE
+		// BLACK texture, so a decal whose texture is still streaming in used to rasterize as a solid black
+		// quad (alpha 1 passes both the lit pass's clip and the blend pass's alpha) instead of not being
+		// there yet. Same reason D3D11's draw loop `continue`s on a failed CacheIn.
 		zCTexture* tex = meta[i].texture;
 		if ( tex != lastTex ) {
-			D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-			if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-				if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-					if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-						D3D12Texture* d12 = D3D12Texture::From( gfx );
-						if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-					}
-				}
-			}
-			m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+			if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+			MyDirectDrawSurface7* surface = tex->GetSurface();
+			GfxTexture* gfx = surface ? surface->GetEngineTexture() : nullptr;
+			if ( !gfx ) continue;
+			D3D12Texture* d12 = D3D12Texture::From( gfx );
+			if ( !d12->HasSRV() ) continue;
+			m_CmdList->SetGraphicsRootDescriptorTable( 1, d12->GetSrvGpuHandle() );
 			lastTex = tex;
 		}
 

@@ -2,7 +2,8 @@
 // these as camera-aligned or wall-mounted zCDecal quads; DrawDecalList (D3D12Scene.cpp) draws them in two
 // passes — alpha-tested/opaque with the lit scene (PSMainLit), then blended over it (PSMainBlend).
 //
-// Both shaders are LIT. They used to emit the raw (linearized) texel with no lighting at all, which is what
+// The opaque pass is LIT, and so is the alpha-BLENDED half of the transparent pass (ADD/MUL/MUL2 stay unlit —
+// see PSMainBlend). They used to emit the raw (linearized) texel with no lighting at all, which is what
 // made every cobweb in a torch-lit cellar read as a blazing white slab: the D3D12 scene target holds LINEAR
 // radiance that is auto-exposed and tonemapped later, so a wall lit by one distant torch lands far below 1.0
 // while an unlit decal sat at its full ~0.9 albedo — and the eye adaptation, seeing a dark room, then scaled
@@ -76,7 +77,7 @@ struct VS_IN
     float3   pos    : POSITION;
     float2   uv     : TEXCOORD0;
     float4x4 iworld : INSTANCE_WORLD_MATRIX;   // per-instance model matrix (world*offset*scale)
-    float4   icolor : INSTANCE_COLOR;          // .a = ghost alpha, .rgb unused
+    float4   icolor : INSTANCE_COLOR;          // .a = ghost alpha, .r = shade-lit flag, .gb unused
 };
 struct VS_OUT
 {
@@ -86,6 +87,7 @@ struct VS_OUT
     float3 wpos    : TEXCOORD2;
     float3 wnrm    : TEXCOORD3;
     float  fogDist : TEXCOORD4;
+    float  lit     : TEXCOORD5;
 };
 
 VS_OUT VSMain( VS_IN i )
@@ -95,6 +97,7 @@ VS_OUT VSMain( VS_IN i )
     o.clip  = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv    = i.uv;
     o.alpha = i.icolor.a;
+    o.lit   = i.icolor.r;
     o.wpos  = worldPos;
     // The quad lies in its local XY plane, so +Z is its face normal. The instance matrix's non-uniform XY
     // scale (DecalSize * 2, y negated) doesn't rotate that axis, so transforming it by the 3x3 is exact up to
@@ -136,8 +139,17 @@ float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully 
 float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend state picks add/alpha/modulate
 {
     float4 t = tx.Sample( smp, i.uv );
-    // Deliberately NOT fogged: this one PS is shared by the ADD/MUL/MUL2 blend modes, where lerping toward the
-    // fog colour would brighten (ADD) or darken (MUL) the surface instead of fading it into the distance.
-    // D3D11's PS_Transparency doesn't fog these either.
-    return float4( ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xyz ), t.a * i.alpha );
+    float3 albedo = SrgbToLinear( t.rgb );
+    // Only the true alpha-blend modes (BLEND / BLEND_TEST) are shaded. That is the case the "blazing white
+    // cobweb" fix above was actually about; ADD and MUL/MUL2 must stay unlit, exactly like D3D11 draws all of
+    // them with the unlit PS_Transparency:
+    //   * ADD is emissive by construction (candle flames, spell glows). Shading it turns the flame in a dark
+    //     cellar into a near-black quad added onto the scene, i.e. it disappears.
+    //   * MUL/MUL2 multiply against the ALREADY LIT scene colour, so shading the source applies the lighting a
+    //     second time and a floor stain reads as a black blob.
+    // Same split Fx.hlsl makes for the quad marks, which carry the identical blend modes.
+    // Deliberately NOT fogged: this one PS is shared by all the blend modes, where lerping toward the fog
+    // colour would brighten (ADD) or darken (MUL) the surface instead of fading it into the distance.
+    float3 rgb = ( i.lit != 0.0 ) ? ShadeDecal( albedo, i.wpos, i.wnrm, i.clip.xyz ) : albedo;
+    return float4( rgb, t.a * i.alpha );
 }
