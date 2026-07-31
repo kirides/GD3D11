@@ -6721,6 +6721,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
     }
 
+    const bool isCloseCascade = params.CascadeIndex < std::clamp(renderState.RendererSettings.NumShadowCascades, 1, 3);
     if ( renderState.RendererSettings.DrawVOBs ) {
         ZoneScopedN( "Shadows::DrawVOBs" );
 
@@ -6999,7 +7000,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
     }
 
-    if ( renderState.RendererSettings.DrawSkeletalMeshes ) {
+    if ( renderState.RendererSettings.DrawSkeletalMeshes
+        && (isCloseCascade || renderState.RendererSettings.ShadowFrustumCullingMode == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_DISABLED) ) {
         ZoneScopedN( "Shadows::DrawSkeletalMeshes" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawSkeletalMeshes" ) );
 
@@ -7042,7 +7044,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, FLT_MAX, false, drawAttachments );
     }
 
-    if ( renderState.RendererSettings.DrawVOBs ) {
+    if ( renderState.RendererSettings.DrawVOBs
+        && isCloseCascade ) {
         ZoneScopedN( "Shadows::DrawVegetation" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVegetation" ) );
 
