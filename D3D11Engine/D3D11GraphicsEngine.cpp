@@ -1594,8 +1594,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     for ( DeferredMipUpload& upload : stagingTextures ) {
         GetContext()->CopySubresourceRegion( upload.Destination.Get(), upload.Mip, 0, 0, 0, upload.Staging.Get(), 0, nullptr );
     }
-    // Both resources are ref-counted by the queue itself, so clearing it releases them - including the
-    // destinations of textures that got cached out again while their upload was still in flight.
+        // Both resources are ref-counted by the queue itself, so clearing it releases them - including the
+        // destinations of textures that got cached out again while their upload was still in flight.
     stagingTextures.clear();
 
     auto& mipMaps = Engine::GAPI->GetMipMapGeneration();

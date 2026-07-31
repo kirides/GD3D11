@@ -294,6 +294,7 @@ struct PolyStripInfo {
     release builds, so the queue keeps both resources alive by itself instead of relying on whoever
     created them still being around. */
 struct DeferredMipUpload {
+    GfxTexture* Texture; // only to know which one to delete in case its removed
     UINT Mip;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> Staging;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> Destination;
@@ -847,11 +848,11 @@ public:
     XRESULT LoadMenuSettings( const std::string& file );
 
     /** Adds a staging texture to the list of the staging textures for this frame */
-    void AddStagingTexture( UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
+    void AddStagingTexture( GfxTexture* gfx, UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
         const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture );
 
     /** Gets a list of the staging textures for this frame */
-    std::vector<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
+    std::deque<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
 
     /** Adds a mip map generation deferred command */
     void AddMipMapGeneration( GfxTexture* texture );
@@ -861,7 +862,7 @@ public:
     void RemovePendingTextureCommands( GfxTexture* texture );
 
     /** Gets a list of the mip map generation commands for this frame */
-    std::list<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
+    std::deque<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
 
     /** Adds a texture to the list of the loaded textures for this frame */
     void AddFrameLoadedTexture( MyDirectDrawSurface7* srf );
@@ -1105,8 +1106,8 @@ private:
     DWORD MainThreadID;
 
     /** Textures loaded this frame */
-    std::vector<DeferredMipUpload> FrameStagingTextures;
-    std::list<GfxTexture*> FrameMipMapGenerations;
+    std::deque<DeferredMipUpload> FrameStagingTextures;
+    std::deque<GfxTexture*> FrameMipMapGenerations;
     std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
 
     /** Quad marks loaded in the world */

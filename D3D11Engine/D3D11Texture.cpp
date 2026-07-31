@@ -309,7 +309,7 @@ XRESULT D3D11Texture::UpdateDataDeferred( void* data, int mip ) {
         return XR_FAILED;
     ::SetDebugName( stagingTexture.Get(), "D3D11Texture->UpdateDataDeferred->stagingTexture" );
 
-    Engine::GAPI->AddStagingTexture( mip, stagingTexture, destination );
+    Engine::GAPI->AddStagingTexture( this, mip, stagingTexture, destination );
     return XR_SUCCESS;
 }
 
