@@ -5796,7 +5796,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
 
                     // Check vob range
-                    if ( XMVector3Greater( XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ), vRangeSquared ) ) {
+                    if ( XMVector3Greater( XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
                         continue;
                     }
 
