@@ -1407,6 +1407,15 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 // — exactly "same brightness in sun or in shadow".
                 XMStoreFloat3( &vx.Normal, XMVector3Normalize( XMVector3TransformNormal( XMLoadFloat3( &wedge.normal ), nodeTrafo ) ) );
                 vx.Color = 0xFFFFFFFF;
+
+                // Check bounding box
+                bbmin.x = bbmin.x > vx.Position.x ? vx.Position.x : bbmin.x;
+                bbmin.y = bbmin.y > vx.Position.y ? vx.Position.y : bbmin.y;
+                bbmin.z = bbmin.z > vx.Position.z ? vx.Position.z : bbmin.z;
+
+                bbmax.x = bbmax.x < vx.Position.x ? vx.Position.x : bbmax.x;
+                bbmax.y = bbmax.y < vx.Position.y ? vx.Position.y : bbmax.y;
+                bbmax.z = bbmax.z < vx.Position.z ? vx.Position.z : bbmax.z;
             }
 
 
@@ -1493,6 +1502,14 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
         wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
         meshInfo->FullMesh = wmi;
+    }
+
+    // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
+    // seeds would otherwise survive into MeshSize as an infinity, and MeshSize drives
+    // the small-vob/draw-distance and pointlight-shadow cull radii.
+    if ( vertexBuffers.empty() ) {
+        bbmin = XMFLOAT3( 0, 0, 0 );
+        bbmax = XMFLOAT3( 0, 0, 0 );
     }
 
     meshInfo->BBox.Min = bbmin;
@@ -1949,6 +1966,12 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
         meshInfo->FullMesh = wmi;
+    }
+
+    // Every submesh was empty: don't let the ±FLT_MAX seeds turn MeshSize into an infinity.
+    if ( vertexBuffers.empty() ) {
+        bbmin = XMFLOAT3( 0, 0, 0 );
+        bbmax = XMFLOAT3( 0, 0, 0 );
     }
 
     meshInfo->BBox.Min = bbmin;
