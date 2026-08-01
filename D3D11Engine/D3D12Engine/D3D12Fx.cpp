@@ -355,14 +355,13 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
 
-    // D3D11's state machine: the FIRST blended material turns blending on and depth-write off, and every
-    // later material keeps that state (the test is `(blendAdd||blendBlend) && !BlendState.BlendEnabled`) —
-    // so a pass that starts with an ADD strip stays additive even across a later BLEND strip. Faithful,
-    // order-dependent, and cheap: at most one PSO switch for the whole pass.
+    // Depth-tested, never depth-writing, for the whole pass. ZenGin wraps the barrier's thunder list in
+    // SetZBufferWriteEnabled(FALSE) (oCBarrier::Render) and trails are ordinary late alpha content; a strip
+    // must never occlude what is drawn after it. Matches D3D11's DrawPolyStrips.
     GothicBlendStateInfo blend;
     blend.SetDefault();
-    bool blendEnabled = false;
-    bool depthWrite = true;
+    int lastAlphaFunc = -1;
+    constexpr bool depthWrite = false;
     ID3D12PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
     if ( !pso ) return XR_SUCCESS;
     m_CmdList->SetPipelineState( pso );
@@ -384,11 +383,14 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         const int matAlphaFunc = mat->GetAlphaFunc();
         const bool blendAdd = matAlphaFunc == zMAT_ALPHA_FUNC_ADD;
         const bool blendBlend = matAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-        if ( ( blendAdd || blendBlend ) && !blendEnabled ) {
-            if ( blendAdd ) blend.SetAdditiveBlending();
-            else            blend.SetAlphaBlending();
-            blendEnabled = true;
-            depthWrite = false;
+        // Blend mode per material, not latched on the first blended one: the map is iterated in texture
+        // order, so an ADD strip followed by a BLEND strip (or the reverse) used to get the wrong mode.
+        // The list is short and PSOs are cached, so the extra switches are noise.
+        if ( matAlphaFunc != lastAlphaFunc ) {
+            if ( blendAdd )        blend.SetAdditiveBlending();
+            else if ( blendBlend ) blend.SetAlphaBlending();
+            else                   blend.SetDefault();
+            lastAlphaFunc = matAlphaFunc;
             ID3D12PipelineState* next = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
             if ( !next ) continue;
             m_CmdList->SetPipelineState( next );

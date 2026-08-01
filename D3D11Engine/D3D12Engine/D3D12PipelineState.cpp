@@ -2729,7 +2729,13 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlen
     // keep SetDefaultStates' CM_CULL_BACK — they are closed meshes, and drawing both faces would double the
     // contribution of every additively-blended one.
     pso.RasterizerState.CullMode = cullBack ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
+    // FALSE, unlike the world PSOs: the barrier's lightning lives on the "magicfrontier" sky sphere, tens
+    // of thousands of units out, and ZenGin draws it with the far clip pushed to 2,000,000
+    // (oCBarrier::Render). We keep our own projection so the depth values stay comparable to the scene's
+    // depth buffer, and let the far part of a bolt clamp to the far plane instead of being clipped into
+    // angular fragments. This also matches D3D11, whose GothicRasterizerStateInfo::SetDefault leaves depth
+    // clipping off for every FF draw.
+    pso.RasterizerState.DepthClipEnable = FALSE;
 
     // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.
     D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];

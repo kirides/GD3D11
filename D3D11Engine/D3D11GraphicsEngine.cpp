@@ -4486,14 +4486,24 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     graph.AddPass( RG_PASS_NAME("Draw PolyStrips"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this](const RenderGraph&) {
+        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw PolyStrips" );
 
             // Calc weapon/effect trail mesh data
             Engine::GAPI->CalcPolyStripMeshes();
             // Calc lightning flashes mesh data
             Engine::GAPI->CalcFlashMeshes();
-            // Draw those
+
+            // Poly-strips are world geometry and have to be depth-tested against the scene, but the
+            // preceding particle pass ends on a PfxRenderer blit which leaves the OM with an RTV and
+            // NO depth-stencil view. Drawing on top of that made trails and the barrier's lightning
+            // punch straight through walls whenever any particle effect was on screen. Re-bind the
+            // scene's depth buffer here; DrawPolyStrips keeps depth-writes off.
+            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+
             // For some reasons the viewport gets messed up, so set it again
             SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
             DrawPolyStrips();
@@ -7954,9 +7964,32 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
 
     SetDefaultStates();
 
+    auto& polyStripState = Engine::GAPI->GetRendererState();
+
     // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    polyStripState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+
+    // ZenGin draws the barrier's lightning from oCBarrier::Render, which bumps the camera's far
+    // clip to 2,000,000 first: the bolts sit on the "magicfrontier" sky sphere, tens of thousands
+    // of units above and away from the player, well past our own far plane. We keep our projection
+    // - the depth values have to stay comparable to the scene's depth buffer - and rely on depth
+    // clipping being off (SetDefault's value, spelled out here because this pass depends on it) so
+    // a bolt crossing the far plane is depth-clamped to the far plane instead of being sliced up.
+    polyStripState.RasterizerState.DepthClipEnable = false;
+    polyStripState.RasterizerState.SetDirty();
+
+    // Depth-tested, but never depth-writing - oCBarrier::Render wraps its thunder list in
+    // SetZBufferWriteEnabled(FALSE), and it renders during RenderSkyPre, i.e. before the world, so
+    // in the original the scene always covers the bolts. Testing against the finished scene depth
+    // gives the same result here, and rejects the sky-wide bolt quads that are behind geometry
+    // before they are ever shaded.
+    polyStripState.DepthState.DepthBufferEnabled = true;
+    polyStripState.DepthState.DepthWriteEnabled = false;
+    polyStripState.DepthState.SetDirty();
+
+    // Commit them now: DrawVertexBuffer does not resolve pipeline state, and only the per-material
+    // blend branch below calls UpdateRenderStates.
+    UpdateRenderStates();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -8019,17 +8052,20 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             // Bind both
             Context->PSSetShaderResources( 0, 3, srv );
 
-            if ( (blendAdd || blendBlend) && !Engine::GAPI->GetRendererState().BlendState.BlendEnabled ) {
+            // Pick the blend mode per material. This used to be guarded by "&& !BlendEnabled",
+            // which meant the first blended material latched the mode for the whole pass and an
+            // ADD strip following a BLEND one (or vice versa) got the wrong one.
+            if ( blendAdd || blendBlend ) {
                 if ( blendAdd )
-                    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-                else if ( blendBlend )
-                    Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                    polyStripState.BlendState.SetAdditiveBlending();
+                else
+                    polyStripState.BlendState.SetAlphaBlending();
 
-                Engine::GAPI->GetRendererState().BlendState.SetDirty();
-
-                Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-                Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
+                polyStripState.BlendState.SetDirty();
+                UpdateRenderStates();
+            } else if ( polyStripState.BlendState.BlendEnabled ) {
+                polyStripState.BlendState.SetDefault();
+                polyStripState.BlendState.SetDirty();
                 UpdateRenderStates();
             }
 

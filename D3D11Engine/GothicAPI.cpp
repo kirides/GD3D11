@@ -1471,7 +1471,7 @@ void GothicAPI::CalcPolyStripMeshes() {
     PolyStripInfos.clear();
 
     for ( const auto& pStrip : PolyStripVisuals ) {
-        if ( !pStrip ) return;
+        if ( !pStrip ) continue;
 
         //Pointer passed is a placeholder, it'll not be used inside the function.
         //We need gothic engine to only execute relevant calculations inside native Render()
@@ -1526,9 +1526,10 @@ void GothicAPI::CalcPolyStripMeshes() {
             }
 #endif
 #ifdef BUILD_GOTHIC_2_6_fix
-            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems) 
+            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems)
             //and vertices should be taken from vertList, while preserving a correct order making up a
             //properly winded polygon
+            uint8_t maxSegAlpha = 0;
             for ( int n = 0; n < 4; n++ ) {
                 //In similar fashion to segment index - vertex index should overflow numVert.
                 int vInd = ((segIndex << 1) + vertOrder[n]) % pStripInst->numVert;
@@ -1545,7 +1546,13 @@ void GothicAPI::CalcPolyStripMeshes() {
                 float alpha = alphaList[vSegInd];
                 if ( alpha < 0.f ) alpha = 0.f;
                 reinterpret_cast<uint8_t*>(&vert.Color)[3] = alpha;
+                maxSegAlpha = std::max<uint8_t>( maxSegAlpha, reinterpret_cast<uint8_t*>(&vert.Color)[3] );
             }
+
+            // A fully faded-out segment contributes nothing: both blend modes poly-strips use
+            // (ADD and BLEND) scale the source colour by SRC_ALPHA. Dropping it here saves the
+            // rasterizer a screen-filling, completely invisible quad.
+            if ( maxSegAlpha == 0 ) continue;
 #endif
 
             //Convert list of quads to list of triangles
@@ -1569,8 +1576,12 @@ void GothicAPI::CalcFlashMeshes() {
     for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
         zCFlash* flash = it->first;
         if ( XMVector3Greater(XMVector3LengthSq( flash->GetStartPositionWorld() - camPos ), vVfxRangeSq) &&
-            XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) )
+            XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) ) {
+            // Out of range this frame - skip it, but keep it alive. Advancing the iterator here is
+            // not optional: this loop only steps at its own tail, so a bare continue hangs the game.
+            ++it;
             continue;
+        }
 
         if ( flash->RenderFlash( polyStrips ) ) {
             zCVob* connectedVob = it->second;
@@ -1641,9 +1652,10 @@ void GothicAPI::CalcFlashMeshes() {
             }
 #endif
 #ifdef BUILD_GOTHIC_2_6_fix
-            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems) 
+            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems)
             //and vertices should be taken from vertList, while preserving a correct order making up a
             //properly winded polygon
+            uint8_t maxSegAlpha = 0;
             for ( int n = 0; n < 4; n++ ) {
                 //In similar fashion to segment index - vertex index should overflow numVert.
                 int vInd = ((segIndex << 1) + vertOrder[n]) % pStripInst->numVert;
@@ -1660,7 +1672,14 @@ void GothicAPI::CalcFlashMeshes() {
                 float alpha = alphaList[vSegInd];
                 if ( alpha < 0.f ) alpha = 0.f;
                 reinterpret_cast<uint8_t*>( &vert.Color )[3] = alpha;
+                maxSegAlpha = std::max<uint8_t>( maxSegAlpha, reinterpret_cast<uint8_t*>( &vert.Color )[3] );
             }
+
+            // A fully faded-out segment contributes nothing: both blend modes poly-strips use
+            // (ADD and BLEND) scale the source colour by SRC_ALPHA. Dropping it here saves the
+            // rasterizer a screen-filling, completely invisible quad - the barrier's lightning
+            // spans the whole sky dome and spends most of its life fading in and out.
+            if ( maxSegAlpha == 0 ) continue;
 #endif
 
             //Convert list of quads to list of triangles
