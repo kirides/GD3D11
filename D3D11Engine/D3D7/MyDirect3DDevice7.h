@@ -253,6 +253,16 @@ public:
             state.DepthState.SetDirty();
             break;
         }
+
+        case D3DRENDERSTATE_ZWRITEENABLE: {
+            if ( state.RendererInfo.RenderStage == STAGE_DRAW_SKY ) {
+                // we do custom Sky rendering behavior
+                break;
+            }
+            state.DepthState.DepthWriteEnabled = Value != 0;
+            state.DepthState.SetDirty();
+            break;
+        }
 		case D3DRENDERSTATE_ALPHATESTENABLE: state.GraphicsState.SetGraphicsSwitch( GSWITCH_ALPHAREF, Value != 0 );	break;
 		case D3DRENDERSTATE_SRCBLEND: state.BlendState.SrcBlend = static_cast<GothicBlendStateInfo::EBlendFunc>(Value); state.BlendState.SetDirty(); break;
 		case D3DRENDERSTATE_DESTBLEND: state.BlendState.DestBlend = static_cast<GothicBlendStateInfo::EBlendFunc>(Value); state.BlendState.SetDirty(); break;
@@ -544,8 +554,8 @@ public:
                 ? VShaderID::VS_TransformedEx_MAX_Z
                 : VShaderID::VS_TransformedEx;
 
-			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_TransformedEx );
-			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
+			Engine::GraphicsEngine->SetActiveVertexShader( vs );
+			Engine::GraphicsEngine->BindViewportInformation( vs, 0 );
 			break;
         }
 

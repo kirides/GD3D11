@@ -8233,13 +8233,18 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
         rendererState.RasterizerState.SetDirty();
         UpdateRenderStates();
 
-        skyCtrl->RenderSkyPre();
+        // The override renders the stock sky before the barrier; drop that half so it doesn't paint over
+        // the dome we just rendered. The barrier's own draws still go through.
+        {
+            zCSkyController_Outdoor::ScopedBarrierRender barrierScope;
+            skyCtrl->RenderSkyPre();
+        }
+        rendererState.RendererInfo.RenderStage = oldBarrierStage;
 
         // The engine breaks the far plane on its way through; restore it.
         Engine::GAPI->SetFarPlane(
             rendererState.RendererSettings.SectionDrawRadius *
             WORLD_SECTION_SIZE );
-        rendererState.RendererInfo.RenderStage = oldBarrierStage;
     }
 
     return XR_SUCCESS;

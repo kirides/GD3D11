@@ -2618,11 +2618,16 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 			rs.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
 			rs.RasterizerState.SetDirty();
 
-			skyCtrl->RenderSkyPre();   // virtual -> oCSkyControler_Barrier's override when one is installed
+			// The override renders the stock sky before the barrier; drop that half so it doesn't paint
+			// over the dome we just rendered. The barrier's own draws still go through.
+			{
+				zCSkyController_Outdoor::ScopedBarrierRender barrierScope;
+				skyCtrl->RenderSkyPre();
+			}
+			rs.RendererInfo.RenderStage = oldBarrierStage;
 
 			// The engine breaks the far plane on its way through; restore it as D3D11's DrawSky does.
 			Engine::GAPI->SetFarPlane( rs.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
-			rs.RendererInfo.RenderStage = oldBarrierStage;
 		}
 		return XR_SUCCESS;
 	}

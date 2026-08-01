@@ -148,7 +148,26 @@ public:
 
         if ( HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground )
             DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground, &zCSkyController_Outdoor::hooked_zCSkyControler_ClearBackground  );
+
+        if constexpr ( GothicMemoryLocations::zCSkyController_Outdoor::RenderSkyPre != 0 )
+            DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCSkyControler_Outdoor_RenderSkyPre, &zCSkyController_Outdoor::hooked_RenderSkyPre );
     }
+
+    /** Set while we call a barrier controller's RenderSkyPre override just to get the barrier out of it.
+        The override always renders the stock sky first, which would paint Gothic's fixed-function sky over
+        our atmospheric-scattering dome; the hook below drops that half of the call. */
+    static inline bool SuppressStockSky = false;
+
+    static void __fastcall hooked_RenderSkyPre( void* thisPtr, void* ) {
+        if ( SuppressStockSky ) return;
+        HookedFunctions::OriginalFunctions.original_zCSkyControler_Outdoor_RenderSkyPre( thisPtr );
+    }
+
+    /** RAII for SuppressStockSky. */
+    struct ScopedBarrierRender {
+        ScopedBarrierRender() { SuppressStockSky = true; }
+        ~ScopedBarrierRender() { SuppressStockSky = false; }
+    };
 
     static void __fastcall hooked_zCSkyControler_ClearBackground( void* thisPtr, void* vtbl, zColor color ) {
         // Prevent the skycontroller from clearing the backbuffer/depth buffer.
