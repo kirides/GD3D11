@@ -3938,7 +3938,7 @@ namespace {
     // the shadow is small enough on screen that the baked progressive-mesh LOD is free silhouette. Both
     // reduced buffers are position-welded, so neither may be used where the pixel shader alpha-tests:
     // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
-    constexpr int FIRST_LOD_SHADOW_CASCADE = 1;
+    constexpr int FIRST_LOD_SHADOW_CASCADE = 2;
 
     GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1 ) {
         if ( !mesh ) {
