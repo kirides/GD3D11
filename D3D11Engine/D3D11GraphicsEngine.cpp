@@ -3940,7 +3940,7 @@ namespace {
     // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
     constexpr int FIRST_LOD_SHADOW_CASCADE = 2;
 
-    GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1 ) {
+    GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
         if ( !mesh ) {
             return nullptr;
         }
@@ -3949,7 +3949,7 @@ namespace {
             return mesh->GetMeshIndexBuffer();
         }
 
-        if ( cascadeIndex >= FIRST_LOD_SHADOW_CASCADE
+        if ( cascadeIndex >= lodCascadeIndex
             && mesh->MeshLodIndexBuffer && !mesh->LodIndices.empty() ) {
             return mesh->GetMeshLodIndexBuffer();
         }
@@ -6938,14 +6938,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT && lastWindVisual != staticMeshVisual ) {
                 lastWindVisual = staticMeshVisual;
                 g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
-                g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
+                g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y; 
                 BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
             }
 
             zCTexture* tx = meshKey.Material->GetAniTexture();
 
             bool bindTexture = tx
-                && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest());
+                && ((tx->GetCacheState() == zRES_CACHED_IN && tx->HasAlphaChannel()) 
+                    || colorWritesEnabled
+                    || meshKey.Material->GetAlphaFunc() != zRND_ALPHA_FUNC_NONE);
+
             const bool isAlpha = bindTexture;
 
             // Bind texture

@@ -169,9 +169,9 @@ public:
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
         /* 1 */ { 1.0f, 1.0f },
-        /* 2 */ { 0.90f, 1.0f }, // 2 cascades really is bare minimum for quality
-        /* 3 */ { 0.85f, 1.0f }, // with 3 cascades, we can show higher quality shadows further
-        /* 4 */ { 0.80f, 1.0f }, // Players should really want to use 4 cascades for best quality and furthest
+        /* 2 */ { 0.80f, 1.0f }, // 2 cascades really is bare minimum for quality
+        /* 3 */ { 0.70f, 1.0f }, // with 3 cascades, we can show higher quality shadows further
+        /* 4 */ { 0.50f, 1.0f }, // Players should really want to use 4 cascades for best quality and furthest
     };
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
