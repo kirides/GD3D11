@@ -168,6 +168,7 @@ void D3D12GraphicsEngine::AdvanceJitter() {
         // which TAA is switched off mid-session cannot inherit the previous frame's offset.
         if ( m_TaaJitterActive ) {
             m_TaaJitterPixels = XMFLOAT2( 0.0f, 0.0f );
+            m_TaaPrevJitterPixels = XMFLOAT2( 0.0f, 0.0f );
             m_TaaJitterActive = false;
             m_TaaHistoryValid = false;   // the accumulated history was built with jitter; do not blend it later
         }
@@ -189,6 +190,7 @@ void D3D12GraphicsEngine::AdvanceJitter() {
 
     // FSR returns the offset in PIXELS, in [-0.5, 0.5]. The resolve's previous-depth lookup wants it in pixels;
     // the projection wants it in clip units, where a whole pixel is 2/resolution.
+    m_TaaPrevJitterPixels = m_TaaJitterPixels;   // before the overwrite — this is what m_TaaPrevDepth was drawn with
     m_TaaJitterPixels = XMFLOAT2( jitterX, jitterY );
     m_TaaJitterActive = true;
     ++m_TaaFrameNumber;
@@ -264,9 +266,10 @@ void D3D12GraphicsEngine::RenderTAA() {
         uint32_t OutIndex;
         float    DepthTolerance;
         uint32_t HistoryValid;
+        float    PrevJitter[2];
     } cb = {};
-    static_assert( sizeof( TaaConstants ) == 16 * sizeof( uint32_t ),
-        "TaaConstants must match TAAResolve.hlsl's b1 TaaCB and the 16 root constants pushed below" );
+    static_assert( sizeof( TaaConstants ) == 18 * sizeof( uint32_t ),
+        "TaaConstants must match TAAResolve.hlsl's b1 TaaCB and the 18 root constants pushed below" );
 
     cb.Resolution[0] = static_cast<float>( m_Resolution.x );
     cb.Resolution[1] = static_cast<float>( m_Resolution.y );
@@ -287,7 +290,9 @@ void D3D12GraphicsEngine::RenderTAA() {
     cb.PrevDepthIndex = m_TaaPrevDepthValid ? m_TaaPrevDepthSrvSlot : m_DepthSrvSlot;
     cb.OutIndex = m_TaaHistoryUavSlot[writeIdx];
     cb.DepthTolerance = kTaaDepthTolerance;
-    m_CmdList->SetComputeRoot32BitConstants( 1, 16, &cb, 0 );
+    cb.PrevJitter[0] = m_TaaPrevJitterPixels.x;
+    cb.PrevJitter[1] = m_TaaPrevJitterPixels.y;
+    m_CmdList->SetComputeRoot32BitConstants( 1, 18, &cb, 0 );
 
     m_CmdList->Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
 

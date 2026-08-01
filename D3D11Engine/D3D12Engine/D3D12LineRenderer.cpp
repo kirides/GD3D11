@@ -167,7 +167,14 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     Engine::GAPI->SetViewTransformXM( Engine::GAPI->GetViewMatrixXM() );
     Engine::GAPI->ResetWorldTransform();
     const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    // By VALUE, with the TAA jitter stripped. AdvanceJitter wrote the sub-pixel offset straight into
+    // TransformProj._13/_23 and nothing clears it for the rest of the frame — but this pass runs AFTER the
+    // resolve, on the tonemapped backbuffer, so there is nothing left to resolve the jitter away. Leaving it
+    // in makes every world-space debug line wobble a sub-pixel per frame along the FSR3 phase sequence, which
+    // on a one-pixel line reads as full-amplitude flicker (very visible with the ImGui editor's gizmos).
+    XMFLOAT4X4 projM = Engine::GAPI->GetProjectionMatrix();
+    projM._13 = 0.0f;
+    projM._23 = 0.0f;
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );

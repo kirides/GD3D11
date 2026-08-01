@@ -76,6 +76,9 @@ cbuffer TaaCB : register( b0 )
     float4x4 PrevViewProj;           // previous frame's UNJITTERED view-projection
     float4 Resolution;      // width, height, 1/width, 1/height
     float4 JitterTolerance;  // jitter.xy (pixels), DepthTolerance, unused
+    // PREVIOUS frame's sub-pixel jitter in PIXELS (.xy; .zw unused) — the previous depth buffer was rasterized
+    // with this offset baked in, so the disocclusion lookup has to put it back on. See GetDepthConfidenceFactor.
+    float4 PrevJitter;
     uint   FrameNumber;
     uint   DebugFlags;      // see the Allow* helpers at the bottom
     uint   HistoryValid;    // 0 = no accumulated history yet; forces the no-history branch (see the main body)
@@ -340,7 +343,11 @@ fp16_t GetCurrentViewZ( int2 inST, out bool outIsOnEdge, out float outRawDepth )
 // is view Z by construction, since the projection pins _34 = NearClip = 1.
 fp16_t GetExpectedPreviousViewZ( int2 inST, float inCurrentDepth )
 {
-    const float2 uv  = GetUV( inST );
+    // UNJITTERED sample position. inCurrentDepth was rasterized through the JITTERED projection, so the surface
+    // point that landed on pixel inST sits at inST - Jitter in the unjittered frame InvUnjitteredViewProj
+    // inverts. Unprojecting at inST instead walks the ray up to half a pixel sideways, which along a silhouette
+    // lands it on the wrong surface entirely.
+    const float2 uv  = GetUV( float2( inST ) - Jitter.xy );
     const float2 ndc = float2( uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f );
     const float4 world = mul( float4( ndc, inCurrentDepth, 1.0f ), InvUnjitteredViewProj );
     if ( world.w == 0.0f )
@@ -359,9 +366,17 @@ fp16_t GetDepthConfidenceFactor( int2 inST, fp16_t2 inVelocity, float inCurrentD
         return fp16_t( 1.0f );
 #endif
 
-    // The jitter has to come off the lookup: the previous depth buffer was rasterized with ITS OWN sub-pixel
-    // offset, and chasing it with this frame's would bias the comparison by up to a texel at silhouettes.
-    const float2 prevUV = GetUV( float2( inST ) + float2( inVelocity ) + Jitter.xy );
+    // The jitter has to come off the lookup, and the PREVIOUS frame's has to go back on. The chain is:
+    //   this pixel's unjittered position        = inST - Jitter        (the current frame was rasterized with
+    //                                                                   the projection shifted by +Jitter px)
+    //   where that surface was last frame       = ... + inVelocity     (velocity is unjittered->unjittered:
+    //                                                                   AdvanceJitter keeps m_UnjitteredViewProj)
+    //   where it was RASTERIZED into prev depth = ... + PrevJitter     (that buffer has its own offset baked in)
+    // Adding this frame's Jitter instead (as the original port did) is wrong by 2*Jitter - PrevJitter, up to
+    // ~1.5 px, oscillating with the phase sequence. depthDiffFactor is binary, so at any depth discontinuity
+    // that flips accept/reject frame to frame and history is thrown away on alternate frames — one frame fully
+    // aliased, the next accumulated. That is the thin-object / silhouette flicker.
+    const float2 prevUV = GetUV( float2( inST ) - Jitter.xy + float2( inVelocity ) + PrevJitter.xy );
     const float4 prevDepths = PrevDepthTex.Gather( MinMagMipPointClamp, prevUV );
 
     const fp16_t expectedViewZ = GetExpectedPreviousViewZ( inST, inCurrentDepth );
@@ -484,7 +499,15 @@ fp16_t3 ClipHistoryColour( fp16_t3 inCurrentColour, fp16_t3 inHistoryColour, FRA
 #if 1 == USE_VARIANCE_CLIPPING
     const fp16_t3 minC = fp16_t3( mean - variance );
     const fp16_t3 maxC = fp16_t3( mean + variance );
-    return clamp( inHistoryColour, YCoCg2RGB( minC ), YCoCg2RGB( maxC ) );
+    // Clamp IN YCoCg, then convert back — NOT clamp in RGB against converted corners. YCoCg2RGB has negative
+    // coefficients (r = y + co - cg, b = y - co - cg), so the transformed corners are not the component-wise
+    // RGB bounds: for blue the "min" is B_mean - vy + vco + vcg and the "max" is B_mean + vy - vco - vcg, which
+    // INVERT whenever vco + vcg > vy (routine on saturated edges — foliage against sky, torchlight). clamp() is
+    // min(max(x,lo),hi), so an inverted pair silently forces the history to `hi` regardless of the current
+    // colour, and whether it inverts flips with the jitter phase — i.e. per-frame colour popping on exactly the
+    // high-contrast thin edges TAA is supposed to stabilize. The #else branch below was already doing it this
+    // way round (it converts the HISTORY into YCoCg, not the box).
+    return YCoCg2RGB( clamp( RGB2YCoCg( inHistoryColour ), minC, maxC ) );
 #else
     return YCoCg2RGB( ClipToAABB( RGB2YCoCg( inHistoryColour ), fp16_t3( currentColourInYCoCg ), mean, variance ) );
 #endif

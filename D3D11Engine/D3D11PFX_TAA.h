@@ -13,6 +13,7 @@ struct TAAResolveConstantBuffer {
     XMFLOAT4X4 PrevViewProj;
     XMFLOAT4 Resolution;        // width, height, 1/width, 1/height
     XMFLOAT4 JitterTolerance;   // jitter.xy (pixels), DepthTolerance, unused
+    XMFLOAT4 PrevJitter;        // previous frame's jitter.xy (pixels), .zw unused
     uint32_t FrameNumber;
     uint32_t DebugFlags;
     uint32_t HistoryValid;
@@ -98,6 +99,9 @@ private:
     XMFLOAT2 m_CurrentJitter;
     XMFLOAT2 m_CurrentJitterUnscaled;
     XMFLOAT2 m_PreviousJitter;
+    // Previous frame's jitter in PIXELS. m_PreviousJitter is the UV-scaled one the velocity CB wants; the
+    // resolve's disocclusion lookup works in pixels, so it needs its own snapshot.
+    XMFLOAT2 m_PreviousJitterUnscaled;
     uint32_t m_FrameNumber = 0;
 
     // Previous frame matrices for reprojection

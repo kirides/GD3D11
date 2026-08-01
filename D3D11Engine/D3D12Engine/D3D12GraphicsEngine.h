@@ -1256,6 +1256,10 @@ private:
     // gets it in clip units. Zero whenever TAA is off, so an un-resolved jittered image can never reach the
     // screen.
     XMFLOAT2 m_TaaJitterPixels = { 0.0f, 0.0f };
+    // Last frame's offset, also in pixels. The previous depth buffer the resolve's disocclusion test gathers
+    // from was rasterized with THIS offset baked in, so the lookup has to put it back on after taking the
+    // current one off — see GetDepthConfidenceFactor in Shaders/D3D12/TAAResolve.hlsl.
+    XMFLOAT2 m_TaaPrevJitterPixels = { 0.0f, 0.0f };
     int  m_TaaJitterIndex = 0;
     UINT m_TaaFrameNumber = 0;
     bool m_TaaJitterActive = false;
