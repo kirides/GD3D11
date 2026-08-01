@@ -3967,7 +3967,7 @@ namespace {
         return mesh->GetMeshIndexBuffer();
     }
 
-    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1 ) {
+    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
         if ( !mesh ) {
             return 0;
         }
@@ -3975,7 +3975,7 @@ namespace {
         if ( isAlpha ) {
         return mesh->Indices.size();
     }
-        if ( cascadeIndex >= FIRST_LOD_SHADOW_CASCADE && !mesh->LodIndices.empty() ) {
+        if ( cascadeIndex >= lodCascadeIndex && !mesh->LodIndices.empty() ) {
             return static_cast<unsigned int>( mesh->LodIndices.size() );
         }
         return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
@@ -6941,6 +6941,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         zCTexture* previousTx = nullptr;
         MeshVisualInfo* lastWindVisual = nullptr;
 
+        // use LOD shadows only for last cascade for now, as it looks uuuugly in gothic 1 due to mesh trees becoming large blobs.
+        // TODO: Maybe we need more LOD levels for large geometry?
+        const int lodCascadeStart = std::max(renderState.RendererSettings.NumShadowCascades - 1, 2);
+
         for ( auto const& [staticMeshVisual, meshKey, meshInfo, _] : instancedMeshesToDraw ) {
             if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT && lastWindVisual != staticMeshVisual ) {
                 lastWindVisual = staticMeshVisual;
@@ -6956,7 +6960,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     || colorWritesEnabled
                     || meshKey.Material->GetAlphaFunc() != zRND_ALPHA_FUNC_NONE);
 
-            const bool isAlpha = bindTexture;
+            // also ignore the fact that something is alpha-tested if its the last cascade
+            // will cause some pop-in, but allows us to render much less expensive verticies
+            const bool isAlpha = bindTexture && (params.CascadeIndex != lodCascadeStart);
 
             // Bind texture
             if ( bindTexture ) {
@@ -6991,7 +6997,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             /* Dont re-bind buffer all the time*/
             const auto vb = D3D11VertexBuffer::From( mi->GetMeshVertexBuffer() );
-            const auto ib = D3D11VertexBuffer::From( GetShadowAwareIndexBuffer( mi, isAlpha, params.CascadeIndex ) );
+            const auto ib = D3D11VertexBuffer::From( GetShadowAwareIndexBuffer( mi, isAlpha, params.CascadeIndex, lodCascadeStart ) );
 
             UINT offset[] = { 0 };
             UINT uStride[] = { sizeof( ExVertexStruct ) };
@@ -6999,7 +7005,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 vb->GetVertexBuffer().Get()
             };
 
-            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha, params.CascadeIndex ));
+            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha, params.CascadeIndex, lodCascadeStart ));
             const auto numInstances = staticMeshVisual->Instances.size();
             const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
             const auto indexOffset = 0;
