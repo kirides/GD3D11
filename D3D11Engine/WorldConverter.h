@@ -16,6 +16,28 @@ const float4 DEFAULT_LIGHTMAP_POLY_COLOR_F = float4( 0.05f, 0.05f, 0.05f, 0.05f 
 const DWORD DEFAULT_LIGHTMAP_POLY_COLOR = DEFAULT_LIGHTMAP_POLY_COLOR_F.ToDWORD();
 const float3 DEFAULT_INDOOR_VOB_AMBIENT = float3( 0.15f, 0.15f, 0.15f );
 
+/** Strength of the progressive-mesh LOD baked for distant shadow cascades, as the fraction of a
+    visual's active vertices kept: 1.0f is full detail, 0.25f a quarter of the vertices. ZENGIN meshes
+    ship Hoppe-style edge-collapse data (zCSubMesh::WedgeMap + VertexUpdates, ~98% of the vanilla .MRMs
+    have it), so this picks one entry out of that collapse sequence and bakes the resulting triangle set
+    into a second index buffer over the unchanged vertex buffer. Measured over Meshes.vdf +
+    Meshes_Addon.vdf: 0.75f keeps ~72% of the triangles, 0.5f ~45%, 0.25f ~19%, 0.1f ~6%.
+
+    Compile-time on purpose: the buffers are baked once at visual-extraction time, so changing this at
+    runtime would mean re-extracting every loaded visual. */
+constexpr float SHADOW_LOD_VERTEX_FRACTION = 0.35f;
+
+/** Sub-meshes below this triangle count do not get a LOD index buffer at all. Reducing a 40-triangle
+    crate saves nothing worth measuring, while every extra buffer costs 32-bit address space - which is
+    the scarce resource here, not GPU time. */
+constexpr int SHADOW_LOD_MIN_TRIANGLES = 96;
+
+/** First shadow cascade that may use the baked LOD index buffer. An edge collapse moves the caster
+    surface, so a cascade biased tighter than that deviation self-shadows itself black (building facades
+    going dark as the camera tilts up) - cascades 0 and 1 are too tight for it.
+    NOTE: D3D11's GetShadowAwareIndexBuffer still carries its own FIRST_LOD_SHADOW_CASCADE = 1. */
+constexpr int SHADOW_LOD_FIRST_CASCADE = 2;
+
 class zCProgMeshProto;
 class zCModel;
 class zCModelPrototype;

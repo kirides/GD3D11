@@ -56,8 +56,11 @@ public:
     virtual XRESULT Map( int flags, void** dataPtr, unsigned int* size ) = 0;
     virtual XRESULT Unmap() = 0;
 
-    /** CPU-side vertex-cache optimization (meshoptimizer; backend-agnostic in practice) */
-    virtual XRESULT OptimizeVertices( VERTEX_INDEX* indices, uint8_t* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr ) = 0;
+    /** CPU-side vertex-cache optimization (meshoptimizer; backend-agnostic in practice).
+        inOutLodIndices, if given, is an index list over the SAME pre-optimization vertex numbering (a
+        baked progressive-mesh LOD, say) that gets carried through the vertex remap and position-welded
+        in place, so it stays valid against the reordered vertex buffer. */
+    virtual XRESULT OptimizeVertices( VERTEX_INDEX* indices, uint8_t* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr, std::vector<VERTEX_INDEX>* inOutLodIndices = nullptr ) = 0;
     virtual XRESULT OptimizeFaces( VERTEX_INDEX* indices, uint8_t* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride ) = 0;
 
     /** Returns the size in bytes of this buffer */

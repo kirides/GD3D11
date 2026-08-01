@@ -920,8 +920,10 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	// culled=false: the cascades CPU-cull against their own frustum (a caster invisible to the player can
 	// still cast into view), so they draw the uncompacted ring with the CPU's instance counts.
 	// cacheIn=false: see above — this runs on a worker thread and must not mutate Gothic.
+	// shadowCascade=c: cascade 0 keeps full-detail casters (it covers what the player is standing in),
+	// the outer cascades draw the baked progressive-mesh LOD instead — same command count, fewer triangles.
 	m_VobDrawCount[c] = m_E->BuildVobDrawCommands( cascadeUploads, m_VobDrawArgsPtr[c][frame], false,
-		D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false, false );
+		D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false, false, static_cast<int>( c ) );
 }
 
 

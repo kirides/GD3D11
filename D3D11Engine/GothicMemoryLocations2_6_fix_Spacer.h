@@ -100,6 +100,9 @@ struct GothicMemoryLocations {
     struct zCSkyController_Outdoor {
         static const unsigned int OBJ_ActivezCSkyController = 0x00B186AC;
 
+        // Not determined for Spacer.exe. 0 means unknown, and HasDerivedRenderSkyPre() then answers false.
+        static const unsigned int RenderSkyPre = 0;
+
         static const unsigned int Offset_Sun = 0x5F4; // First of the two planets
         // zCSkyPlanet planets[2] — [0] sun, [1] moon. Same member layout as the retail 2.6fix build.
         static const unsigned int Offset_Planets = 0x5F4;

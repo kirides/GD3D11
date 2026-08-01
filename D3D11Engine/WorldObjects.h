@@ -106,6 +106,7 @@ struct MeshInfo {
     GfxVertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
     GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
     GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
+    GfxVertexBuffer* GetMeshLodIndexBuffer() const { return MeshLodIndexBuffer.get(); }
 
     std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
@@ -114,9 +115,16 @@ struct MeshInfo {
     std::unique_ptr<GfxVertexBuffer> MeshPositionBuffer;
     std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
     std::unique_ptr<GfxVertexBuffer> MeshShadowIndexBuffer;
+    // Optional reduced index buffer for distant shadow cascades, baked from ZENGIN's own progressive-mesh
+    // data (zCSubMesh::WedgeMap/VertexUpdates) at SHADOW_LOD_VERTEX_FRACTION. Indexes the very same
+    // MeshVertexBuffer as the other two - a collapse only ever redirects indices onto surviving vertices,
+    // it never produces new ones. Only populated for meshes that actually ship LOD data and clear the
+    // SHADOW_LOD_MIN_TRIANGLES gate, so it is nullptr far more often than not.
+    std::unique_ptr<GfxVertexBuffer> MeshLodIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
+    std::vector<VERTEX_INDEX> LodIndices;
 
     // Offset in wrapped world mesh
     unsigned int BaseIndexLocation;

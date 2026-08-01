@@ -2513,6 +2513,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// scene colour back in place, so nothing below needs to know it ran. No-op unless AA_TAA.
 	RenderTAA();
 
+	// Depth of field, on the resolved LINEAR HDR scene: D3D11 runs it as the first pass of its "Post-processing
+	// B" block, i.e. after the upscale/TAA stage and before bloom. Blurring before bloom is what makes an
+	// out-of-focus highlight bloom as the disc it has become rather than as the point it was; being after TAA
+	// keeps a moving focus point from smearing through the temporal history. No-op unless EnableDoF.
+	RenderDepthOfField();
+
 	RenderBloom();
 	RenderLuminanceAdapt();
 
@@ -2593,28 +2599,15 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	// time of day — it is driven by the same AC_* constants D3D11's sky is — so that failure mode is gone, but
 	// the fallback is kept for exactly the case where the dome cannot draw.)
 	if ( rs.RendererSettings.AtmosphericScattering && DrawAtmosphereSkyDome() ) {
-#if defined(BUILD_GOTHIC_1_CLASSIC)
-		// G1's magic barrier. In G1 the active sky controller may be an oCSkyControler_Barrier, whose
-		// RenderSkyPre() override draws the barrier dome + its lightning (verified against
-		// Gothic_I_Classic/API/oBarrier.h: oCSkyControler_Barrier::RenderSkyPre == 0x632140, a virtual
-		// override of zCSkyControler_Outdoor::RenderSkyPre == 0x5C0900). D3D11's DrawSky calls 0x632140
-		// directly here in its scattering path; this goes through the VTABLE instead
-		// (zCSkyController::RenderSkyPre dispatches via VTBL_RenderSkyPre), which is the same call whenever a
-		// barrier controller IS installed but strictly safer and more mod-friendly otherwise:
-		//   * hardcoding 0x632140 reads `barrier` at this+0x680, one dword PAST the end of a plain
-		//     zCSkyControler_Outdoor (sizeof 0x680) — fine for a barrier controller (sizeof 0x688), an
-		//     out-of-bounds read for any other. The vtable resolves to the base instead, which is safe.
-		//   * a mod that re-enables the barrier — or installs any other derived sky controller — gets ITS
-		//     override called, rather than one hardcoded address for one game version.
-		//
-		// The override internally calls zCSkyControler_Outdoor::RenderSkyPre() first, so on G1 the
-		// fixed-function sky is still drawn over our dome and G1 keeps paying for it. That is pre-existing
-		// D3D11 behaviour, mirrored deliberately rather than "fixed": the guard conditions inside the override
-		// are NOT verifiable from the available source (the oBarrier.cpp in the G2 tree gates on
-		// renderLightning/weather members that G1-Classic's zCSkyControler_Outdoor does not even have), so
-		// reimplementing the barrier half to skip the redundant sky draw would be guesswork on a path that
-		// cannot be GPU-tested here. The draw-call win is therefore G2-only for now; correctness is both.
-		if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor() ) {
+		// The magic barrier (dome + lightning) is drawn by a derived sky controller's RenderSkyPre override -
+		// vanilla oCWorld installs an oCSkyControler_Barrier in every world of both games. Called through the
+		// vtable so a mod's own controller gets its override; hardcoding G1's 0x632140 would also read
+		// `barrier` one dword past the end of a plain zCSkyControler_Outdoor.
+		if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor();
+			skyCtrl && skyCtrl->HasDerivedRenderSkyPre() && skyCtrl->WantsBarrierRender() ) {
+			// Required: STAGE_DRAW_SKY picks the FORCE_MAX_Z vertex shaders for Gothic's XYZRHW sky draws and
+			// ignores its D3DRENDERSTATE_ZENABLE writes. Without it the sky keeps its screen-space Z, which
+			// under reversed-Z lands in front of the whole scene.
 			const RenderStage oldBarrierStage = rs.RendererInfo.RenderStage;
 			rs.RendererInfo.RenderStage = STAGE_DRAW_SKY;
 			rs.DepthState.DepthBufferEnabled = true;
@@ -2625,13 +2618,17 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 			rs.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
 			rs.RasterizerState.SetDirty();
 
-			skyCtrl->RenderSkyPre();   // virtual -> oCSkyControler_Barrier's override when one is installed
+			// The override renders the stock sky before the barrier; drop that half so it doesn't paint
+			// over the dome we just rendered. The barrier's own draws still go through.
+			{
+				zCSkyController_Outdoor::ScopedBarrierRender barrierScope;
+				skyCtrl->RenderSkyPre();
+			}
+			rs.RendererInfo.RenderStage = oldBarrierStage;
 
 			// The engine breaks the far plane on its way through; restore it as D3D11's DrawSky does.
 			Engine::GAPI->SetFarPlane( rs.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
-			rs.RendererInfo.RenderStage = oldBarrierStage;
 		}
-#endif
 		return XR_SUCCESS;
 	}
 
@@ -2972,7 +2969,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
 
 UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-    UINT maxCommands, bool culled, bool cacheIn ) {
+    UINT maxCommands, bool culled, bool cacheIn, int shadowCascade ) {
     // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
     // indices (diffuse always; normal/ORM only when resolveMaps — the depth/shadow passes just alpha-clip on
     // diffuse), pack the mesh + instance VB views + IB view, the per-visual wind min/max, and DrawIndexedInstanced.
@@ -3031,6 +3028,13 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             const bool blended = peelBlended
                 && ( alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD );
 
+            // The caster PS alpha-clips against this material's diffuse, and both reduced index buffers are
+            // position-welded — which merges wedges that share a position but not a UV. Feeding a leaf card
+            // the wrong UV would clip away the wrong texels, so alpha-relevant materials keep full indices
+            // in every pass. Same condition D3D11's shadow VOB loop gates on.
+            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
+                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
                     continue;
@@ -3067,6 +3071,29 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     return count;
                 }
 
+                // Pick this command's index buffer. A missing level just falls through to the next-best one,
+                // so a mesh that ships no LOD data still gets the welded shadow indices, and one that has
+                // neither still draws — the only cost of an absent level is that nothing is saved.
+                D3D12VertexBuffer* cmdIb = mib;
+                UINT cmdIndexCount = static_cast<UINT>( mi->Indices.size() );
+                if ( shadowCascade != kVobIndicesMainView && !alphaTested ) {
+                    if ( shadowCascade >= kFirstLodShadowCascade && !mi->LodIndices.empty()
+                        && mi->GetMeshLodIndexBuffer() ) {
+                        if ( D3D12VertexBuffer* lodIb = D3D12VertexBuffer::From( mi->GetMeshLodIndexBuffer() );
+                            lodIb->GetResource() ) {
+                            cmdIb = lodIb;
+                            cmdIndexCount = static_cast<UINT>( mi->LodIndices.size() );
+                        }
+                    }
+                    if ( cmdIb == mib && !mi->ShadowIndices.empty() && mi->GetMeshShadowIndexBuffer() ) {
+                        if ( D3D12VertexBuffer* shadowIb = D3D12VertexBuffer::From( mi->GetMeshShadowIndexBuffer() );
+                            shadowIb->GetResource() ) {
+                            cmdIb = shadowIb;
+                            cmdIndexCount = static_cast<UINT>( mi->ShadowIndices.size() );
+                        }
+                    }
+                }
+
                 VobDrawCommand& c = cmds[count++];
                 c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                 // GPU-culled: draw from the compacted buffer CSCull writes (same byte range, different base)
@@ -3074,19 +3101,19 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 c.InstVBV = culled ? up.culledInstView : up.instView;
                 c.VisualIndex = culled ? up.cullVisualIndex : 0xFFFFFFFFu;
                 c._cmdPad = 0;
-                c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                c.IBV     = { cmdIb->GetGpuVirtualAddress(), cmdIb->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
                 c.MatNormalIndex  = normalIdx;
                 c.MatOrmIndex     = ormIdx;
                 c.MatDiffuseIndex = diffuseIdx;
                 c.WindMinHeight   = minH;
                 c.WindMaxHeight   = maxH;
-                c.Draw.IndexCountPerInstance = static_cast<UINT>( mi->Indices.size() );
+                c.Draw.IndexCountPerInstance = cmdIndexCount;
                 c.Draw.InstanceCount         = up.numInstances;
                 c.Draw.StartIndexLocation    = 0;
                 c.Draw.BaseVertexLocation    = 0;
                 c.Draw.StartInstanceLocation = 0;
                 if ( resolveMaps )
-                    m_VobDrawnTriangles += (static_cast<unsigned int>( mi->Indices.size() ) / 3) * up.numInstances;
+                    m_VobDrawnTriangles += (cmdIndexCount / 3) * up.numInstances;
             }
         }
     }

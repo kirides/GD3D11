@@ -6,6 +6,7 @@
 
 #include "../BaseGraphicsEngine.h"
 #include "../Frustum.h"
+#include "../WorldConverter.h"   // SHADOW_LOD_FIRST_CASCADE
 #include "D3D12Device.h"
 #include <memory>
 #include <unordered_map>
@@ -757,8 +758,21 @@ private:
     // the build a pure read so it can run on a cascade's worker thread (CacheIn mutates Gothic's resource
     // manager). A texture that has not been pulled in yet simply alpha-clips against black for that frame —
     // a caster silhouette, not a visible surface, so the inaccuracy never reaches the screen as a wrong pixel.
+    // shadowCascade picks which of a sub-mesh's index buffers each command draws, mirroring D3D11's
+    // GetShadowAwareIndexBuffer: kVobIndicesMainView keeps the full render indices (the lit and prepass
+    // draws need per-wedge normals/UVs), a cascade index >= 0 takes the position-welded shadow indices,
+    // and >= kFirstLodShadowCascade takes the baked progressive-mesh LOD on top of that. Both reduced
+    // buffers merge wedges that share a position but not a UV, so a material the caster alpha-clips
+    // always keeps its render indices regardless of pass.
+    //
+    // The LOD gate is shared with D3D11 (WorldConverter.h) rather than picked per backend: an edge
+    // collapse MOVES the caster surface, so a cascade whose bias is smaller than that deviation
+    // self-shadows the full-detail surface black. See the constant's comment for the failure mode.
+    static constexpr int kVobIndicesMainView = -1;
+    static constexpr int kFirstLodShadowCascade = SHADOW_LOD_FIRST_CASCADE;
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-        UINT maxCommands, bool culled = false, bool cacheIn = true );
+        UINT maxCommands, bool culled = false, bool cacheIn = true,
+        int shadowCascade = kVobIndicesMainView );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
     // The prerequisite was the bindless-skeletal / bindless-attachment work: neither Skeletal.RootSig nor the
@@ -1250,6 +1264,46 @@ private:
     void AdvanceJitter();                  // per-frame jitter into TransformProj._13/_23 (no-op when TAA is off)
     void RenderTAA();                      // the resolve dispatch + copy back over the scene colour
     bool IsTaaEnabled() const;             // AntiAliasingMode == AA_TAA and everything it needs exists
+
+    // ---- Depth of field (D3D12DoF.cpp) ----------------------------------------------------------------------
+    // Compute port of D3D11PFX_DepthOfField::RenderCS (Shaders/D3D12/DoF.hlsl). Three passes on the LINEAR HDR
+    // scene colour, in D3D11's slot: after the TAA resolve and BEFORE bloom — D3D11 runs it at the head of its
+    // "Post-processing B" block, which is exactly there. Scene colour in, scene colour out, so nothing
+    // downstream needs to know it ran.
+    //
+    //   m_DoFFocus[2]  1x1 R32_FLOAT ping-pong. The auto-focus distance, temporally smoothed against the
+    //                  previous frame's value — pass 0 reads [m_DoFFocusIndex] and writes [1 - m_DoFFocusIndex].
+    //   m_DoFHalf      half-res kSceneColorFormat: rgb = bokeh blur, a = centre CoC (pass 1).
+    //   m_DoFComposite full-res kSceneColorFormat scratch. Compute cannot read and write the scene colour in one
+    //                  dispatch, so pass 2 writes here and the result is CopyResource'd back — same shape as the
+    //                  TAA resolve's history copy, and both are kSceneColorFormat so the copy is a straight one.
+    //
+    // Unlike the bloom/AO/TAA resources these are built LAZILY (see CreateDoFResources): DoF is off in a stock
+    // config, and a full-res RGBA16F scratch plus a half-res one is ~20 MB of virtual address space at 1080p —
+    // real money in a 32-bit process. The resize path only rebuilds them if they already exist.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFFocus[2];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFFocusAlloc[2];
+    UINT m_DoFFocusSrvSlot[2] = { UINT_MAX, UINT_MAX };
+    UINT m_DoFFocusUavSlot[2] = { UINT_MAX, UINT_MAX };
+    UINT m_DoFFocusIndex = 0;
+    // The focus textures' initial contents are undefined, so the first resolve must SNAP to the measured depth
+    // instead of blending against garbage (DoFCB::FocusValid). Cleared whenever the pair is (re)created.
+    bool m_DoFFocusValid = false;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFHalf;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFHalfAlloc;
+    UINT m_DoFHalfSrvSlot = UINT_MAX;
+    UINT m_DoFHalfUavSlot = UINT_MAX;
+    INT2 m_DoFHalfSize = { 0, 0 };
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFComposite;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFCompositeAlloc;
+    UINT m_DoFCompositeUavSlot = UINT_MAX;
+    bool m_DoFResourcesReady = false;
+    // Set once creation has been attempted at the current resolution, so a failure (out of heap slots, out of
+    // memory) is logged once and not retried every frame while DoF stays enabled. Cleared on resize.
+    bool m_DoFCreateAttempted = false;
+
+    bool CreateDoFResources( INT2 size );  // (re)builds the focus pair, the half-res blur target and the scratch
+    void RenderDepthOfField();             // focus resolve -> half-res blur -> composite -> copy back
 
     // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------
     // Replaces the flat greyscale ambient floor in PBRLighting.hlsl's ComputeSunLightingPBR

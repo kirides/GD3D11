@@ -1,0 +1,295 @@
+// D3D12GraphicsEngine — depth of field.
+//
+// Compute port of D3D11PFX_DepthOfField::RenderCS. The three passes and all of their maths live in
+// Shaders/D3D12/DoF.hlsl (which documents where it diverges from the three D3D11 CS_PFX_DoF* shaders — only in
+// the plumbing); this file is the host side: the resources, the focus ping-pong and the dispatches.
+//
+// FRAME SLOT. RenderDepthOfField runs on the LINEAR HDR scene colour, after the TAA resolve and before bloom.
+// That is D3D11's slot exactly: DoF is the first pass of its "Post-processing B" block, which sits after the
+// upscale/TAA stage and ahead of bloom and the tonemap. Blurring before bloom is what makes an out-of-focus
+// highlight bloom as the disc it has become rather than as the point it was, and it keeps DoF out of the
+// temporal accumulation — a blur inside TAA history smears as the focus point moves.
+//
+// TRANSPARENCY TO THE REST OF THE CHAIN. Scene colour in, scene colour out (the composite goes to a scratch
+// texture and is copied back), so nothing downstream has to know the pass ran.
+#include "../pch.h"
+#include "D3D12GraphicsEngine.h"
+#include "../Engine.h"
+#include "../GothicAPI.h"
+
+using Microsoft::WRL::ComPtr;
+#include "D3D12EngineCommon.h"
+
+namespace {
+    // Combined shader-read state for the depth buffer, matching what the fog/god-ray and AO passes use: the
+    // blur and composite read it from compute (NON_PIXEL), and keeping PIXEL in the mask costs nothing while
+    // making the state identical to the one every other depth-reading pass parks it in.
+    constexpr D3D12_RESOURCE_STATES kDoFDepthRead =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+}
+
+/** (Re)creates the focus ping-pong pair, the half-res blur target and the full-res composite scratch.
+
+    Called LAZILY from RenderDepthOfField the first time DoF is actually switched on, and from the resize path
+    only if they already exist — see the header note on why these are not built unconditionally like the bloom
+    pyramid. Heap slots are allocated once and re-pointed at the fresh resources, the same pattern the bloom /
+    AO / TAA resources follow. Non-fatal: on failure m_DoFResourcesReady stays false and RenderDepthOfField
+    no-ops, leaving the scene in focus. */
+bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
+    m_DoFResourcesReady = false;
+    m_DoFCreateAttempted = true;
+    if ( size.x < 4 || size.y < 4 ) return false;
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device || !m_Allocator ) return false;
+    // Init runs before the first CreateSwapChain; don't build resources for a pipeline that failed there.
+    if ( !m_Pipelines.DoF.FocusPSO || !m_Pipelines.DoF.CompositePSO ) return false;
+
+    D3D12MA::ALLOCATION_DESC heapDefault = {};
+    heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+    auto ensureSlot = [&]( UINT& slot ) -> bool {
+        if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
+        return slot != UINT_MAX;
+        };
+
+    auto makeTex = [&]( int w, int h, DXGI_FORMAT fmt, ComPtr<ID3D12Resource>& out,
+        ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+        D3D12_RESOURCE_DESC dd = {};
+        dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        dd.Width = static_cast<UINT64>( w );
+        dd.Height = static_cast<UINT>( h );
+        dd.DepthOrArraySize = 1;
+        dd.MipLevels = 1;
+        dd.Format = fmt;
+        dd.SampleDesc.Count = 1;
+        dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        // Every one of these rests in UNORDERED_ACCESS between frames (see RenderDepthOfField), so create them
+        // in it — that makes the "before" state at the top of the pass deterministic on the very first frame.
+        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: failed to create a depth-of-field texture (" << w << "x" << h << ").";
+            return false;
+        }
+        out->SetName( name );
+        return true;
+        };
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+
+    // --- Focus pair: 1x1 R32_FLOAT, the auto-focus distance. Resolution-independent, but rebuilt with the rest
+    // so there is exactly one creation path; the history is worthless across a resolution change anyway.
+    for ( UINT i = 0; i < 2; ++i ) {
+        if ( !makeTex( 1, 1, DXGI_FORMAT_R32_FLOAT, m_DoFFocus[i], m_DoFFocusAlloc[i],
+            i == 0 ? L"DoFFocus0" : L"DoFFocus1" ) ) return false;
+        if ( !ensureSlot( m_DoFFocusSrvSlot[i] ) || !ensureSlot( m_DoFFocusUavSlot[i] ) ) return false;
+        srv.Format = DXGI_FORMAT_R32_FLOAT;
+        uav.Format = DXGI_FORMAT_R32_FLOAT;
+        device->CreateShaderResourceView( m_DoFFocus[i].Get(), &srv, GetSrvCpuHandle( m_DoFFocusSrvSlot[i] ) );
+        device->CreateUnorderedAccessView( m_DoFFocus[i].Get(), nullptr, &uav, GetSrvCpuHandle( m_DoFFocusUavSlot[i] ) );
+    }
+    m_DoFFocusIndex = 0;
+    m_DoFFocusValid = false;   // contents are undefined until the first resolve writes one of them
+
+    // --- Half-res bokeh target (rgb = blur, a = centre CoC). Integer-divided like D3D11's res.x / 2, and never
+    // below 1 texel so a tiny window can't produce a zero-sized resource.
+    m_DoFHalfSize = { std::max( 1, size.x / 2 ), std::max( 1, size.y / 2 ) };
+    if ( !makeTex( m_DoFHalfSize.x, m_DoFHalfSize.y, kSceneColorFormat, m_DoFHalf, m_DoFHalfAlloc, L"DoFHalfRes" ) )
+        return false;
+    if ( !ensureSlot( m_DoFHalfSrvSlot ) || !ensureSlot( m_DoFHalfUavSlot ) ) return false;
+    srv.Format = kSceneColorFormat;
+    uav.Format = kSceneColorFormat;
+    device->CreateShaderResourceView( m_DoFHalf.Get(), &srv, GetSrvCpuHandle( m_DoFHalfSrvSlot ) );
+    device->CreateUnorderedAccessView( m_DoFHalf.Get(), nullptr, &uav, GetSrvCpuHandle( m_DoFHalfUavSlot ) );
+
+    // --- Full-res composite scratch. Same format as the scene colour, which is what lets the result be handed
+    // back with a plain CopyResource instead of a full-screen blit (the TAA history does the same).
+    if ( !makeTex( size.x, size.y, kSceneColorFormat, m_DoFComposite, m_DoFCompositeAlloc, L"DoFComposite" ) )
+        return false;
+    if ( !ensureSlot( m_DoFCompositeUavSlot ) ) return false;
+    device->CreateUnorderedAccessView( m_DoFComposite.Get(), nullptr, &uav, GetSrvCpuHandle( m_DoFCompositeUavSlot ) );
+
+    m_DoFResourcesReady = true;
+    return true;
+}
+
+
+/** Focus resolve -> half-res blur -> full-res composite -> copy back over the scene colour. */
+void D3D12GraphicsEngine::RenderDepthOfField() {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( !settings.EnableDoF ) return;
+    if ( !m_FrameOpen || !m_CmdList || !m_SceneColor || m_SceneColorSrvSlot == UINT_MAX
+        || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX )
+        return;
+    if ( !m_Pipelines.DoF.RootSig || !m_Pipelines.DoF.FocusPSO || !m_Pipelines.DoF.CompositePSO )
+        return;
+
+    // Lazily build the textures the first time DoF is switched on (they are ~20 MB of VA at 1080p and DoF is off
+    // in a stock config — see the header). Creating a resource mid-frame is safe: nothing is destroyed here, so
+    // there is no in-flight resource to fence against. m_DoFCreateAttempted keeps a failure from retrying every
+    // frame; it is cleared on resize, which is the only thing that could change the outcome.
+    if ( !m_DoFResourcesReady ) {
+        if ( m_DoFCreateAttempted ) return;
+        if ( !CreateDoFResources( m_Resolution ) ) {
+            LogWarn() << "D3D12: depth of field is enabled but its textures could not be created — DoF disabled.";
+            return;
+        }
+    }
+    // Resolution changed without the resources following (the resize path only rebuilds them if they already
+    // exist, so this is a belt-and-braces check rather than an expected state).
+    if ( m_DoFHalfSize.x != std::max( 1, m_Resolution.x / 2 ) || m_DoFHalfSize.y != std::max( 1, m_Resolution.y / 2 ) )
+        return;
+
+    ID3D12PipelineState* blurPso = settings.DoFGaussBlur
+        ? m_Pipelines.DoF.GaussPSO.Get()
+        : m_Pipelines.DoF.BlurPSO.Get();
+    if ( !blurPso ) return;
+
+    DX_ZONE( m_CmdList, "Depth of Field" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth of Field" );
+
+    const UINT prevIdx = m_DoFFocusIndex;
+    const UINT curIdx = 1 - m_DoFFocusIndex;
+
+    // b0 DoFCB — see Shaders/D3D12/DoF.hlsl. One block for all three passes; the per-pass fields (OutIndex and
+    // the output resolution) are rewritten between dispatches, everything else is set once here.
+    struct DoFConsts {
+        float    FocusRange;
+        float    BokehRadius;
+        float    MaxBlur;
+        uint32_t FocusValid;
+        uint32_t SceneIndex;
+        uint32_t DepthIndex;
+        uint32_t PrevFocusIndex;
+        uint32_t FocusIndex;
+        uint32_t BlurIndex;
+        uint32_t FocusUavIndex;
+        uint32_t OutIndex;
+        uint32_t Pad;
+        float    FullResX;
+        float    FullResY;
+        float    OutResX;
+        float    OutResY;
+    } cb = {};
+    static_assert( sizeof( DoFConsts ) == 16 * sizeof( uint32_t ),
+        "DoFConsts must match DoF.hlsl's b0 DoFCB and the 16 root constants pushed below" );
+
+    // The same three tuning values D3D11PFX_DepthOfField pushes, straight from the shared settings. D3D11 also
+    // uploads DoF_ProjParams / near / far, which none of the three compute shaders read (depth linearization is
+    // the parameter-free reversed-Z reciprocal) — so they are not carried over.
+    cb.FocusRange = settings.DoFFocusRange;
+    cb.BokehRadius = settings.DoFBokehRadius;
+    cb.MaxBlur = settings.DoFMaxBlur;
+    cb.FocusValid = m_DoFFocusValid ? 1u : 0u;
+    cb.SceneIndex = m_SceneColorSrvSlot;
+    cb.DepthIndex = m_DepthSrvSlot;
+    cb.PrevFocusIndex = m_DoFFocusSrvSlot[prevIdx];
+    cb.FocusIndex = m_DoFFocusSrvSlot[curIdx];
+    cb.BlurIndex = m_DoFHalfSrvSlot;
+    cb.FocusUavIndex = m_DoFFocusUavSlot[curIdx];
+    cb.FullResX = static_cast<float>( m_Resolution.x );
+    cb.FullResY = static_cast<float>( m_Resolution.y );
+
+    // Scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus UAV -> readable.
+    // The DSV/RTV must be unbound first: a resource cannot be bound as a render target while it is read through
+    // an SRV (same dance RenderTAA / RenderBloom / RenderFogAndGodRays do).
+    m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+    {
+        D3D12_RESOURCE_BARRIER pre[3];
+        UINT n = 0;
+        if ( !m_SceneColorInPixelState ) {
+            pre[n++] = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        }
+        pre[n++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDoFDepthRead );
+        pre[n++] = TransitionBarrier( m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        m_CmdList->ResourceBarrier( n, pre );
+        m_SceneColorInPixelState = true;
+    }
+
+    m_CmdList->SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
+
+    // --- Pass 0: focus resolve (1x1) ---
+    // This pass writes through FocusUavIndex, not OutIndex, and reads neither OutRes — it is the one pass whose
+    // output is a fixed 1x1 texel, so those three fields stay at their zero-init values here.
+    m_CmdList->SetPipelineState( m_Pipelines.DoF.FocusPSO.Get() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 16, &cb, 0 );
+    m_CmdList->Dispatch( 1, 1, 1 );
+
+    // This frame's focus value becomes the read side for the two passes below; hand the previous one back to its
+    // resting UAV state. A UAV-write -> SRV-read handover needs a real state transition, not a UAV barrier: a
+    // UAV barrier only orders UAV access and performs no cache flush, so the SRV read would be undefined.
+    {
+        D3D12_RESOURCE_BARRIER b[2] = {
+            TransitionBarrier( m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
+            TransitionBarrier( m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+        };
+        m_CmdList->ResourceBarrier( 2, b );
+    }
+    m_DoFFocusIndex = curIdx;
+    m_DoFFocusValid = true;
+
+    // --- Pass 1: half-res bokeh (or Gaussian) blur ---
+    m_CmdList->SetPipelineState( blurPso );
+    cb.OutIndex = m_DoFHalfUavSlot;
+    cb.OutResX = static_cast<float>( m_DoFHalfSize.x );
+    cb.OutResY = static_cast<float>( m_DoFHalfSize.y );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 16, &cb, 0 );
+    m_CmdList->Dispatch( ( m_DoFHalfSize.x + 7 ) / 8, ( m_DoFHalfSize.y + 7 ) / 8, 1 );
+
+    {
+        auto b = TransitionBarrier( m_DoFHalf.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        m_CmdList->ResourceBarrier( 1, &b );
+    }
+
+    // --- Pass 2: full-res composite into the scratch texture ---
+    m_CmdList->SetPipelineState( m_Pipelines.DoF.CompositePSO.Get() );
+    cb.OutIndex = m_DoFCompositeUavSlot;
+    cb.OutResX = static_cast<float>( m_Resolution.x );
+    cb.OutResY = static_cast<float>( m_Resolution.y );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 16, &cb, 0 );
+    m_CmdList->Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
+
+    // Hand the result back to the scene colour. Both are kSceneColorFormat, so this is a straight CopyResource.
+    {
+        D3D12_RESOURCE_BARRIER toCopy[2] = {
+            TransitionBarrier( m_DoFComposite.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE ),
+            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_DEST ),
+        };
+        m_CmdList->ResourceBarrier( 2, toCopy );
+        m_CmdList->CopyResource( m_SceneColor.Get(), m_DoFComposite.Get() );
+    }
+
+    // Resting states for the next frame: every DoF texture back to UNORDERED_ACCESS, depth back to DEPTH_WRITE,
+    // scene colour back to RENDER_TARGET for bloom / the tonemap.
+    {
+        D3D12_RESOURCE_BARRIER post[5] = {
+            TransitionBarrier( m_DoFComposite.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+            TransitionBarrier( m_DoFHalf.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+            TransitionBarrier( m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+            TransitionBarrier( m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
+            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_RENDER_TARGET ),
+        };
+        m_CmdList->ResourceBarrier( 5, post );
+        m_SceneColorInPixelState = false;
+    }
+
+    // Rebind the scene colour + depth for whatever comes next in the frame (bloom re-transitions the scene
+    // colour itself, but the render target must not be left unbound).
+    BindSceneColorTarget();
+}

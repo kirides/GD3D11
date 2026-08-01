@@ -289,6 +289,12 @@ XRESULT D3D12GraphicsEngine::Init() {
     if ( !m_Pipelines.CreateTaa() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the TAA pipeline (temporal AA unavailable).";
     }
+    // Depth of field. Non-fatal and opt-in (RendererSettings.EnableDoF, off by default): RenderDepthOfField
+    // guards on the PSOs and leaves the whole scene in focus if this failed. Its textures are built lazily the
+    // first time DoF is switched on, not here — see CreateDoFResources.
+    if ( !m_Pipelines.CreateDoF() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth-of-field pipeline (DoF unavailable).";
+    }
     if ( !m_Pipelines.CreateSkyIbl() ) {
         // Non-fatal: the lit shaders test the sky-IBL cube indices for 0xFFFFFFFF and fall back to the flat
         // ambient term they used before this existed, so a failure here costs indirect specular, not lighting.
@@ -1603,6 +1609,11 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     // TAA history + its private previous-depth snapshot. Non-fatal for the same reason; also resets the
     // accumulated history, which a resolution change invalidates outright.
     CreateTaaResources( size );
+    // Depth-of-field textures are built lazily on first use (they are ~20 MB of VA and DoF is off by default),
+    // so only track the new resolution here if they already exist. Clearing m_DoFCreateAttempted lets a
+    // previously-failed creation retry at the new, possibly smaller, size.
+    m_DoFCreateAttempted = false;
+    if ( m_DoFResourcesReady ) CreateDoFResources( size );
     CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
     ReleaseWaterCopyResources();     // lazily rebuilt at the new size by the next frame that renders water
@@ -2496,6 +2507,10 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     // TAA history + its private previous-depth snapshot. Non-fatal for the same reason; also resets the
     // accumulated history, which a resolution change invalidates outright.
     CreateTaaResources( size );
+    // See the CreateSwapChain call site: lazily built, so only re-sized here if they are already up. The GPU is
+    // idle at this point (WaitForGpuIdle above), which is what makes releasing the old ones safe.
+    m_DoFCreateAttempted = false;
+    if ( m_DoFResourcesReady ) CreateDoFResources( size );
     CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site
     CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
     ReleaseWaterCopyResources();     // GPU is idle here; the next water frame rebuilds them at the new size

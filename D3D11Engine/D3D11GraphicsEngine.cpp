@@ -3450,8 +3450,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world * curTransform );
 
+                // Motion vectors: the node's own bone transform animates as well (a head shaking,
+                // a weapon swinging), so the previous world matrix has to be paired with the
+                // *previous* bone transform. Using curTransform here cancels out all node-local
+                // motion and leaves attachments with only the vob's root velocity.
                 const XMMATRIX prevWorldXm = XMLoadFloat4x4( &prevWorld );
-                XMFLOAT4X4 finalPrevWorld; XMStoreFloat4x4( &finalPrevWorld, prevWorldXm * curTransform );
+                const XMMATRIX prevTransform = ( vi->HasValidPrevTransforms && i < vi->PrevBoneTransforms.size() )
+                    ? XMLoadFloat4x4( &vi->PrevBoneTransforms[i] )
+                    : curTransform;
+                XMFLOAT4X4 finalPrevWorld; XMStoreFloat4x4( &finalPrevWorld, prevWorldXm * prevTransform );
 
                 for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
 
@@ -3934,7 +3941,13 @@ namespace {
         }
     }
 
-    GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha ) {
+    // Cascade 0 covers everything close to the camera and keeps full-detail casters; from cascade 1 out
+    // the shadow is small enough on screen that the baked progressive-mesh LOD is free silhouette. Both
+    // reduced buffers are position-welded, so neither may be used where the pixel shader alpha-tests:
+    // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
+    constexpr int FIRST_LOD_SHADOW_CASCADE = 2;
+
+    GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
         if ( !mesh ) {
             return nullptr;
         }
@@ -3943,13 +3956,18 @@ namespace {
             return mesh->GetMeshIndexBuffer();
         }
 
+        if ( cascadeIndex >= lodCascadeIndex
+            && mesh->MeshLodIndexBuffer && !mesh->LodIndices.empty() ) {
+            return mesh->GetMeshLodIndexBuffer();
+        }
+
         if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
             return mesh->GetMeshShadowIndexBuffer();
         }
         return mesh->GetMeshIndexBuffer();
     }
 
-    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha ) {
+    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
         if ( !mesh ) {
             return 0;
         }
@@ -3957,6 +3975,9 @@ namespace {
         if ( isAlpha ) {
         return mesh->Indices.size();
     }
+        if ( cascadeIndex >= lodCascadeIndex && !mesh->LodIndices.empty() ) {
+            return static_cast<unsigned int>( mesh->LodIndices.size() );
+        }
         return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
     }
 }
@@ -4472,14 +4493,21 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     graph.AddPass( RG_PASS_NAME("Draw PolyStrips"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this](const RenderGraph&) {
+        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw PolyStrips" );
 
             // Calc weapon/effect trail mesh data
             Engine::GAPI->CalcPolyStripMeshes();
             // Calc lightning flashes mesh data
             Engine::GAPI->CalcFlashMeshes();
-            // Draw those
+
+            // Re-bind the depth buffer: the preceding particle pass ends on a PfxRenderer blit that leaves
+            // the OM with an RTV and no DSV, so trails and lightning drew through walls.
+            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+
             // For some reasons the viewport gets messed up, so set it again
             SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
             DrawPolyStrips();
@@ -6913,19 +6941,28 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         zCTexture* previousTx = nullptr;
         MeshVisualInfo* lastWindVisual = nullptr;
 
+        // use LOD shadows only for last cascade for now, as it looks uuuugly in gothic 1 due to mesh trees becoming large blobs.
+        // TODO: Maybe we need more LOD levels for large geometry?
+        const int lodCascadeStart = std::max(renderState.RendererSettings.NumShadowCascades - 1, 2);
+
         for ( auto const& [staticMeshVisual, meshKey, meshInfo, _] : instancedMeshesToDraw ) {
             if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT && lastWindVisual != staticMeshVisual ) {
                 lastWindVisual = staticMeshVisual;
                 g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
-                g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
+                g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y; 
                 BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
             }
 
             zCTexture* tx = meshKey.Material->GetAniTexture();
 
             bool bindTexture = tx
-                && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest());
-            const bool isAlpha = bindTexture;
+                && ((tx->GetCacheState() == zRES_CACHED_IN && tx->HasAlphaChannel()) 
+                    || colorWritesEnabled
+                    || meshKey.Material->GetAlphaFunc() != zRND_ALPHA_FUNC_NONE);
+
+            // also ignore the fact that something is alpha-tested if its the last cascade
+            // will cause some pop-in, but allows us to render much less expensive verticies
+            const bool isAlpha = bindTexture && (params.CascadeIndex != lodCascadeStart);
 
             // Bind texture
             if ( bindTexture ) {
@@ -6960,7 +6997,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             /* Dont re-bind buffer all the time*/
             const auto vb = D3D11VertexBuffer::From( mi->GetMeshVertexBuffer() );
-            const auto ib = D3D11VertexBuffer::From( GetShadowAwareIndexBuffer( mi, isAlpha ) );
+            const auto ib = D3D11VertexBuffer::From( GetShadowAwareIndexBuffer( mi, isAlpha, params.CascadeIndex, lodCascadeStart ) );
 
             UINT offset[] = { 0 };
             UINT uStride[] = { sizeof( ExVertexStruct ) };
@@ -6968,7 +7005,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 vb->GetVertexBuffer().Get()
             };
 
-            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha ));
+            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha, params.CascadeIndex, lodCascadeStart ));
             const auto numInstances = staticMeshVisual->Instances.size();
             const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
             const auto indexOffset = 0;
@@ -7940,9 +7977,24 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
 
     SetDefaultStates();
 
+    auto& polyStripState = Engine::GAPI->GetRendererState();
+
     // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    polyStripState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+
+    // The barrier's bolts sit on the "magicfrontier" sky sphere, way past our far plane - oCBarrier::Render
+    // raises the far clip to 2,000,000 for them. We keep our projection so the depth values stay comparable
+    // to the scene's, and let depth clipping stay off so a bolt crossing the far plane is clamped, not sliced.
+    polyStripState.RasterizerState.DepthClipEnable = false;
+    polyStripState.RasterizerState.SetDirty();
+
+    // Depth-tested, never depth-writing (oCBarrier::Render does SetZBufferWriteEnabled(FALSE)).
+    polyStripState.DepthState.DepthBufferEnabled = true;
+    polyStripState.DepthState.DepthWriteEnabled = false;
+    polyStripState.DepthState.SetDirty();
+
+    // DrawVertexBuffer does not resolve pipeline state, and only the blend branch below calls this.
+    UpdateRenderStates();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -8005,17 +8057,19 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             // Bind both
             Context->PSSetShaderResources( 0, 3, srv );
 
-            if ( (blendAdd || blendBlend) && !Engine::GAPI->GetRendererState().BlendState.BlendEnabled ) {
+            // Per material, not latched on the first blended one - an ADD strip after a BLEND one
+            // (or the reverse) used to get the wrong mode.
+            if ( blendAdd || blendBlend ) {
                 if ( blendAdd )
-                    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-                else if ( blendBlend )
-                    Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                    polyStripState.BlendState.SetAdditiveBlending();
+                else
+                    polyStripState.BlendState.SetAlphaBlending();
 
-                Engine::GAPI->GetRendererState().BlendState.SetDirty();
-
-                Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-                Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
+                polyStripState.BlendState.SetDirty();
+                UpdateRenderStates();
+            } else if ( polyStripState.BlendState.BlendEnabled ) {
+                polyStripState.BlendState.SetDefault();
+                polyStripState.BlendState.SetDirty();
                 UpdateRenderStates();
             }
 
@@ -8175,20 +8229,39 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     if ( sky->GetSkyDome() ) sky->GetSkyDome()->DrawMesh();
 
-    #if defined(BUILD_GOTHIC_1_CLASSIC)
-    {
+    // The magic barrier (dome + lightning) is drawn by a derived sky controller's RenderSkyPre override -
+    // vanilla oCWorld installs an oCSkyControler_Barrier in every world of both games. Called through the
+    // vtable so a mod's own controller gets its override, instead of one hardcoded address per version.
+    if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor();
+        skyCtrl && skyCtrl->HasDerivedRenderSkyPre() && skyCtrl->WantsBarrierRender() ) {
+        // Required: STAGE_DRAW_SKY picks the FORCE_MAX_Z vertex shaders for Gothic's XYZRHW sky draws and
+        // ignores its D3DRENDERSTATE_ZENABLE writes. Without it the sky keeps its screen-space Z, which
+        // under reversed-Z lands in front of the whole scene.
+        const auto oldBarrierStage = rendererState.RendererInfo.RenderStage;
+        rendererState.RendererInfo.RenderStage = STAGE_DRAW_SKY;
+
         SetDefaultStates();
+        rendererState.DepthState.DepthBufferEnabled = true;
         rendererState.DepthState.DepthWriteEnabled = false;
+        rendererState.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_GREATER_EQUAL;
         rendererState.DepthState.SetDirty();
+        rendererState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+        rendererState.RasterizerState.SetDirty();
         UpdateRenderStates();
 
-        // Draw barrier after sky
-        reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x632140)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
+        // The override renders the stock sky before the barrier; drop that half so it doesn't paint over
+        // the dome we just rendered. The barrier's own draws still go through.
+        {
+            zCSkyController_Outdoor::ScopedBarrierRender barrierScope;
+            skyCtrl->RenderSkyPre();
+        }
+        rendererState.RendererInfo.RenderStage = oldBarrierStage;
+
+        // The engine breaks the far plane on its way through; restore it.
         Engine::GAPI->SetFarPlane(
             rendererState.RendererSettings.SectionDrawRadius *
             WORLD_SECTION_SIZE );
     }
-    #endif
 
     return XR_SUCCESS;
 }

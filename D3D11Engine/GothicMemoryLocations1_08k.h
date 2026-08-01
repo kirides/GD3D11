@@ -152,6 +152,10 @@ struct GothicMemoryLocations {
     struct zCSkyController_Outdoor {
         static const unsigned int OBJ_ActivezCSkyController = 0x0099AC8C;
 
+        // Stock zCSkyControler_Outdoor::RenderSkyPre. Never called - only compared against the live
+        // controller's vtable slot to detect a derived controller. See HasDerivedRenderSkyPre().
+        static const unsigned int RenderSkyPre = 0x005C0900;
+
         // zCSkyPlanet planets[2] — [0] sun, [1] moon. 0x5F4 is the GOTHIC 2 offset (see the 2_6_fix header);
         // G1's zCSkyControler_Outdoor lays out differently, verified 0x5DC against
         // ZenGin/Gothic_I_Classic/API/zSky.h (`zCSkyPlanet planets[NUM_PLANETS]; // offset 5DCh`), which also

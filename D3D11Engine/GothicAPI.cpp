@@ -1471,7 +1471,7 @@ void GothicAPI::CalcPolyStripMeshes() {
     PolyStripInfos.clear();
 
     for ( const auto& pStrip : PolyStripVisuals ) {
-        if ( !pStrip ) return;
+        if ( !pStrip ) continue;
 
         //Pointer passed is a placeholder, it'll not be used inside the function.
         //We need gothic engine to only execute relevant calculations inside native Render()
@@ -1526,9 +1526,10 @@ void GothicAPI::CalcPolyStripMeshes() {
             }
 #endif
 #ifdef BUILD_GOTHIC_2_6_fix
-            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems) 
+            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems)
             //and vertices should be taken from vertList, while preserving a correct order making up a
             //properly winded polygon
+            uint8_t maxSegAlpha = 0;
             for ( int n = 0; n < 4; n++ ) {
                 //In similar fashion to segment index - vertex index should overflow numVert.
                 int vInd = ((segIndex << 1) + vertOrder[n]) % pStripInst->numVert;
@@ -1545,7 +1546,11 @@ void GothicAPI::CalcPolyStripMeshes() {
                 float alpha = alphaList[vSegInd];
                 if ( alpha < 0.f ) alpha = 0.f;
                 reinterpret_cast<uint8_t*>(&vert.Color)[3] = alpha;
+                maxSegAlpha = std::max<uint8_t>( maxSegAlpha, reinterpret_cast<uint8_t*>(&vert.Color)[3] );
             }
+
+            // Both blend modes scale by SRC_ALPHA, so a fully faded-out segment is an invisible quad.
+            if ( maxSegAlpha == 0 ) continue;
 #endif
 
             //Convert list of quads to list of triangles
@@ -1559,6 +1564,9 @@ void GothicAPI::CalcPolyStripMeshes() {
 void GothicAPI::CalcFlashMeshes() {
     ZoneScopedN( "GothicAPI::CalcFlashMeshes" );
     if ( !RendererState.RendererSettings.DrawParticleEffects || (FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
+        // Only consumer of the list, so drain it even when we draw nothing - otherwise it grows for as
+        // long as the barrier keeps pushing bolts.
+        FrameThunderPolyStrips.clear();
         return;
     }
     
@@ -1569,8 +1577,11 @@ void GothicAPI::CalcFlashMeshes() {
     for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
         zCFlash* flash = it->first;
         if ( XMVector3Greater(XMVector3LengthSq( flash->GetStartPositionWorld() - camPos ), vVfxRangeSq) &&
-            XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) )
+            XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) ) {
+            // Out of range this frame, but keep it alive. Must advance - the loop only steps at its tail.
+            ++it;
             continue;
+        }
 
         if ( flash->RenderFlash( polyStrips ) ) {
             zCVob* connectedVob = it->second;
@@ -1641,9 +1652,10 @@ void GothicAPI::CalcFlashMeshes() {
             }
 #endif
 #ifdef BUILD_GOTHIC_2_6_fix
-            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems) 
+            //For G2 polyList only contains a single polygon (supposed to be kind of a reference it seems)
             //and vertices should be taken from vertList, while preserving a correct order making up a
             //properly winded polygon
+            uint8_t maxSegAlpha = 0;
             for ( int n = 0; n < 4; n++ ) {
                 //In similar fashion to segment index - vertex index should overflow numVert.
                 int vInd = ((segIndex << 1) + vertOrder[n]) % pStripInst->numVert;
@@ -1660,7 +1672,12 @@ void GothicAPI::CalcFlashMeshes() {
                 float alpha = alphaList[vSegInd];
                 if ( alpha < 0.f ) alpha = 0.f;
                 reinterpret_cast<uint8_t*>( &vert.Color )[3] = alpha;
+                maxSegAlpha = std::max<uint8_t>( maxSegAlpha, reinterpret_cast<uint8_t*>( &vert.Color )[3] );
             }
+
+            // Both blend modes scale by SRC_ALPHA, so a fully faded-out segment is an invisible quad -
+            // and the barrier's sky-wide bolts spend most of their life fading.
+            if ( maxSegAlpha == 0 ) continue;
 #endif
 
             //Convert list of quads to list of triangles
