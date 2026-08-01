@@ -642,6 +642,14 @@ bool GothicAPI::IsCameraIndoor() {
     return ogame->_zCSession_camVob->GetGroundPoly()->GetLightmap() != nullptr;
 }
 
+/** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...) */
+bool GothicAPI::IsIndoorWorld() const {
+    if ( !LoadedWorldInfo || !LoadedWorldInfo->BspTree )
+        return false;
+
+    return LoadedWorldInfo->BspTree->GetBspTreeMode() == zBSP_MODE_INDOOR;
+}
+
 /** Returns total time */
 float GothicAPI::GetTotalTime() {
     if ( zCTimer* timer = zCTimer::GetTimer() )

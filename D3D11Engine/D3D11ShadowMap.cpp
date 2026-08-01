@@ -1449,6 +1449,9 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
             scb.SQ_ShadowStrength = 0.0f;
 #endif
             scb.SQ_WorldAOStrength = 1.0f;
+            // ...and no shadow AO on top of it. Both terms multiply the same baked vertLighting into the
+            // result, so keeping them both on darkens interiors twice over.
+            scb.SQ_ShadowAOStrength = 0.0f;
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
@@ -1599,8 +1602,10 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
             scb.SQ_ShadowStrength = 0.0f;
 #endif
 
-            // Only use world AO
+            // Only use world AO - shadow AO would multiply the same baked vertLighting in a second
+            // time and over-darken the interior.
             scb.SQ_WorldAOStrength = 1.0f;
+            scb.SQ_ShadowAOStrength = 0.0f;
             // Darken the lights
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
