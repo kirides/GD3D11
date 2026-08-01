@@ -2599,28 +2599,15 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	// time of day — it is driven by the same AC_* constants D3D11's sky is — so that failure mode is gone, but
 	// the fallback is kept for exactly the case where the dome cannot draw.)
 	if ( rs.RendererSettings.AtmosphericScattering && DrawAtmosphereSkyDome() ) {
-#if defined(BUILD_GOTHIC_1_CLASSIC)
-		// G1's magic barrier. In G1 the active sky controller may be an oCSkyControler_Barrier, whose
-		// RenderSkyPre() override draws the barrier dome + its lightning (verified against
-		// Gothic_I_Classic/API/oBarrier.h: oCSkyControler_Barrier::RenderSkyPre == 0x632140, a virtual
-		// override of zCSkyControler_Outdoor::RenderSkyPre == 0x5C0900). D3D11's DrawSky calls 0x632140
-		// directly here in its scattering path; this goes through the VTABLE instead
-		// (zCSkyController::RenderSkyPre dispatches via VTBL_RenderSkyPre), which is the same call whenever a
-		// barrier controller IS installed but strictly safer and more mod-friendly otherwise:
-		//   * hardcoding 0x632140 reads `barrier` at this+0x680, one dword PAST the end of a plain
-		//     zCSkyControler_Outdoor (sizeof 0x680) — fine for a barrier controller (sizeof 0x688), an
-		//     out-of-bounds read for any other. The vtable resolves to the base instead, which is safe.
-		//   * a mod that re-enables the barrier — or installs any other derived sky controller — gets ITS
-		//     override called, rather than one hardcoded address for one game version.
-		//
-		// The override internally calls zCSkyControler_Outdoor::RenderSkyPre() first, so on G1 the
-		// fixed-function sky is still drawn over our dome and G1 keeps paying for it. That is pre-existing
-		// D3D11 behaviour, mirrored deliberately rather than "fixed": the guard conditions inside the override
-		// are NOT verifiable from the available source (the oBarrier.cpp in the G2 tree gates on
-		// renderLightning/weather members that G1-Classic's zCSkyControler_Outdoor does not even have), so
-		// reimplementing the barrier half to skip the redundant sky draw would be guesswork on a path that
-		// cannot be GPU-tested here. The draw-call win is therefore G2-only for now; correctness is both.
-		if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor() ) {
+		// The magic barrier (dome + lightning) is drawn by a derived sky controller's RenderSkyPre override -
+		// vanilla oCWorld installs an oCSkyControler_Barrier in every world of both games. Called through the
+		// vtable so a mod's own controller gets its override; hardcoding G1's 0x632140 would also read
+		// `barrier` one dword past the end of a plain zCSkyControler_Outdoor.
+		if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor();
+			skyCtrl && skyCtrl->HasDerivedRenderSkyPre() && skyCtrl->WantsBarrierRender() ) {
+			// Required: STAGE_DRAW_SKY picks the FORCE_MAX_Z vertex shaders for Gothic's XYZRHW sky draws and
+			// ignores its D3DRENDERSTATE_ZENABLE writes. Without it the sky keeps its screen-space Z, which
+			// under reversed-Z lands in front of the whole scene.
 			const RenderStage oldBarrierStage = rs.RendererInfo.RenderStage;
 			rs.RendererInfo.RenderStage = STAGE_DRAW_SKY;
 			rs.DepthState.DepthBufferEnabled = true;
@@ -2637,7 +2624,6 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 			Engine::GAPI->SetFarPlane( rs.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
 			rs.RendererInfo.RenderStage = oldBarrierStage;
 		}
-#endif
 		return XR_SUCCESS;
 	}
 

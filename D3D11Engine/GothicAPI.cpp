@@ -1549,9 +1549,7 @@ void GothicAPI::CalcPolyStripMeshes() {
                 maxSegAlpha = std::max<uint8_t>( maxSegAlpha, reinterpret_cast<uint8_t*>(&vert.Color)[3] );
             }
 
-            // A fully faded-out segment contributes nothing: both blend modes poly-strips use
-            // (ADD and BLEND) scale the source colour by SRC_ALPHA. Dropping it here saves the
-            // rasterizer a screen-filling, completely invisible quad.
+            // Both blend modes scale by SRC_ALPHA, so a fully faded-out segment is an invisible quad.
             if ( maxSegAlpha == 0 ) continue;
 #endif
 
@@ -1566,6 +1564,9 @@ void GothicAPI::CalcPolyStripMeshes() {
 void GothicAPI::CalcFlashMeshes() {
     ZoneScopedN( "GothicAPI::CalcFlashMeshes" );
     if ( !RendererState.RendererSettings.DrawParticleEffects || (FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
+        // Only consumer of the list, so drain it even when we draw nothing - otherwise it grows for as
+        // long as the barrier keeps pushing bolts.
+        FrameThunderPolyStrips.clear();
         return;
     }
     
@@ -1577,8 +1578,7 @@ void GothicAPI::CalcFlashMeshes() {
         zCFlash* flash = it->first;
         if ( XMVector3Greater(XMVector3LengthSq( flash->GetStartPositionWorld() - camPos ), vVfxRangeSq) &&
             XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) ) {
-            // Out of range this frame - skip it, but keep it alive. Advancing the iterator here is
-            // not optional: this loop only steps at its own tail, so a bare continue hangs the game.
+            // Out of range this frame, but keep it alive. Must advance - the loop only steps at its tail.
             ++it;
             continue;
         }
@@ -1675,10 +1675,8 @@ void GothicAPI::CalcFlashMeshes() {
                 maxSegAlpha = std::max<uint8_t>( maxSegAlpha, reinterpret_cast<uint8_t*>( &vert.Color )[3] );
             }
 
-            // A fully faded-out segment contributes nothing: both blend modes poly-strips use
-            // (ADD and BLEND) scale the source colour by SRC_ALPHA. Dropping it here saves the
-            // rasterizer a screen-filling, completely invisible quad - the barrier's lightning
-            // spans the whole sky dome and spends most of its life fading in and out.
+            // Both blend modes scale by SRC_ALPHA, so a fully faded-out segment is an invisible quad -
+            // and the barrier's sky-wide bolts spend most of their life fading.
             if ( maxSegAlpha == 0 ) continue;
 #endif
 

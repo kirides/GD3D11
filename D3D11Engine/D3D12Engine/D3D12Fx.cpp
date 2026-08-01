@@ -355,9 +355,7 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
 
-    // Depth-tested, never depth-writing, for the whole pass. ZenGin wraps the barrier's thunder list in
-    // SetZBufferWriteEnabled(FALSE) (oCBarrier::Render) and trails are ordinary late alpha content; a strip
-    // must never occlude what is drawn after it. Matches D3D11's DrawPolyStrips.
+    // Depth-tested, never depth-writing (oCBarrier::Render does SetZBufferWriteEnabled(FALSE)).
     GothicBlendStateInfo blend;
     blend.SetDefault();
     int lastAlphaFunc = -1;
@@ -383,9 +381,8 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         const int matAlphaFunc = mat->GetAlphaFunc();
         const bool blendAdd = matAlphaFunc == zMAT_ALPHA_FUNC_ADD;
         const bool blendBlend = matAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-        // Blend mode per material, not latched on the first blended one: the map is iterated in texture
-        // order, so an ADD strip followed by a BLEND strip (or the reverse) used to get the wrong mode.
-        // The list is short and PSOs are cached, so the extra switches are noise.
+        // Per material, not latched on the first blended one - an ADD strip after a BLEND one (or the
+        // reverse) used to get the wrong mode. PSOs are cached, so the extra switches are noise.
         if ( matAlphaFunc != lastAlphaFunc ) {
             if ( blendAdd )        blend.SetAdditiveBlending();
             else if ( blendBlend ) blend.SetAlphaBlending();

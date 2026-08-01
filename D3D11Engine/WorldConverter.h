@@ -32,11 +32,9 @@ constexpr float SHADOW_LOD_VERTEX_FRACTION = 0.35f;
     the scarce resource here, not GPU time. */
 constexpr int SHADOW_LOD_MIN_TRIANGLES = 96;
 
-/** First shadow cascade that may draw the baked LOD index buffer instead of the full-detail (but still
-    position-welded) shadow indices. An edge collapse MOVES the caster surface, so a cascade whose depth
-    bias is smaller than that deviation self-shadows the full-detail surface it is casting onto - the
-    failure mode is building facades going black as the camera tilts up. Cascades 0 and 1 are too tightly
-    biased for that, so the LOD only starts at 2.
+/** First shadow cascade that may use the baked LOD index buffer. An edge collapse moves the caster
+    surface, so a cascade biased tighter than that deviation self-shadows itself black (building facades
+    going dark as the camera tilts up) - cascades 0 and 1 are too tight for it.
     NOTE: D3D11's GetShadowAwareIndexBuffer still carries its own FIRST_LOD_SHADOW_CASCADE = 1. */
 constexpr int SHADOW_LOD_FIRST_CASCADE = 2;
 

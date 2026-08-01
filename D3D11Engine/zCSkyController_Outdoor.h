@@ -160,6 +160,32 @@ public:
         HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground( thisPtr, color );
     }
 
+    /** True when a derived class overrides RenderSkyPre - normally oCSkyControler_Barrier, which vanilla
+        oCWorld installs in every world of both games. Lets us skip the barrier path entirely if a mod
+        installs a plain controller instead. */
+    bool HasDerivedRenderSkyPre() {
+        constexpr unsigned int stockRenderSkyPre = GothicMemoryLocations::zCSkyController_Outdoor::RenderSkyPre;
+        if constexpr ( stockRenderSkyPre == 0 ) {
+            return false; // address unknown for this build - assume stock and change nothing
+        } else {
+            DWORD* vtbl = reinterpret_cast<DWORD*>(*reinterpret_cast<DWORD*>(this));
+            return vtbl[GothicMemoryLocations::zCSkyController::VTBL_RenderSkyPre] != stockRenderSkyPre;
+        }
+    }
+
+    /** Whether calling the RenderSkyPre override is worth it. The override's own guards decide if the
+        barrier draws; we only skip the call when sky effects are off altogether. */
+    bool WantsBarrierRender() {
+#ifdef BUILD_GOTHIC_1_08k
+        return true;
+#else
+#ifdef OPT_MANAGE_SKY_EFFECTS_SUPPORTED
+        if ( !GetSkyEffectsEnabled() ) return false;
+#endif
+        return true;
+#endif
+    }
+
     /** Updates the rain-weight and sound-effects */
     void ProcessRainFX() {
         reinterpret_cast<void( __fastcall* )( zCSkyController_Outdoor* )>

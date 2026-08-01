@@ -4494,11 +4494,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             // Calc lightning flashes mesh data
             Engine::GAPI->CalcFlashMeshes();
 
-            // Poly-strips are world geometry and have to be depth-tested against the scene, but the
-            // preceding particle pass ends on a PfxRenderer blit which leaves the OM with an RTV and
-            // NO depth-stencil view. Drawing on top of that made trails and the barrier's lightning
-            // punch straight through walls whenever any particle effect was on screen. Re-bind the
-            // scene's depth buffer here; DrawPolyStrips keeps depth-writes off.
+            // Re-bind the depth buffer: the preceding particle pass ends on a PfxRenderer blit that leaves
+            // the OM with an RTV and no DSV, so trails and lightning drew through walls.
             auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
             GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
             GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
@@ -7969,26 +7966,18 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     // Setup renderstates
     polyStripState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
 
-    // ZenGin draws the barrier's lightning from oCBarrier::Render, which bumps the camera's far
-    // clip to 2,000,000 first: the bolts sit on the "magicfrontier" sky sphere, tens of thousands
-    // of units above and away from the player, well past our own far plane. We keep our projection
-    // - the depth values have to stay comparable to the scene's depth buffer - and rely on depth
-    // clipping being off (SetDefault's value, spelled out here because this pass depends on it) so
-    // a bolt crossing the far plane is depth-clamped to the far plane instead of being sliced up.
+    // The barrier's bolts sit on the "magicfrontier" sky sphere, way past our far plane - oCBarrier::Render
+    // raises the far clip to 2,000,000 for them. We keep our projection so the depth values stay comparable
+    // to the scene's, and let depth clipping stay off so a bolt crossing the far plane is clamped, not sliced.
     polyStripState.RasterizerState.DepthClipEnable = false;
     polyStripState.RasterizerState.SetDirty();
 
-    // Depth-tested, but never depth-writing - oCBarrier::Render wraps its thunder list in
-    // SetZBufferWriteEnabled(FALSE), and it renders during RenderSkyPre, i.e. before the world, so
-    // in the original the scene always covers the bolts. Testing against the finished scene depth
-    // gives the same result here, and rejects the sky-wide bolt quads that are behind geometry
-    // before they are ever shaded.
+    // Depth-tested, never depth-writing (oCBarrier::Render does SetZBufferWriteEnabled(FALSE)).
     polyStripState.DepthState.DepthBufferEnabled = true;
     polyStripState.DepthState.DepthWriteEnabled = false;
     polyStripState.DepthState.SetDirty();
 
-    // Commit them now: DrawVertexBuffer does not resolve pipeline state, and only the per-material
-    // blend branch below calls UpdateRenderStates.
+    // DrawVertexBuffer does not resolve pipeline state, and only the blend branch below calls this.
     UpdateRenderStates();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -8052,9 +8041,8 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             // Bind both
             Context->PSSetShaderResources( 0, 3, srv );
 
-            // Pick the blend mode per material. This used to be guarded by "&& !BlendEnabled",
-            // which meant the first blended material latched the mode for the whole pass and an
-            // ADD strip following a BLEND one (or vice versa) got the wrong one.
+            // Per material, not latched on the first blended one - an ADD strip after a BLEND one
+            // (or the reverse) used to get the wrong mode.
             if ( blendAdd || blendBlend ) {
                 if ( blendAdd )
                     polyStripState.BlendState.SetAdditiveBlending();
@@ -8225,20 +8213,34 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     if ( sky->GetSkyDome() ) sky->GetSkyDome()->DrawMesh();
 
-    #if defined(BUILD_GOTHIC_1_CLASSIC)
-    {
+    // The magic barrier (dome + lightning) is drawn by a derived sky controller's RenderSkyPre override -
+    // vanilla oCWorld installs an oCSkyControler_Barrier in every world of both games. Called through the
+    // vtable so a mod's own controller gets its override, instead of one hardcoded address per version.
+    if ( zCSkyController_Outdoor* skyCtrl = Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor();
+        skyCtrl && skyCtrl->HasDerivedRenderSkyPre() && skyCtrl->WantsBarrierRender() ) {
+        // Required: STAGE_DRAW_SKY picks the FORCE_MAX_Z vertex shaders for Gothic's XYZRHW sky draws and
+        // ignores its D3DRENDERSTATE_ZENABLE writes. Without it the sky keeps its screen-space Z, which
+        // under reversed-Z lands in front of the whole scene.
+        const auto oldBarrierStage = rendererState.RendererInfo.RenderStage;
+        rendererState.RendererInfo.RenderStage = STAGE_DRAW_SKY;
+
         SetDefaultStates();
+        rendererState.DepthState.DepthBufferEnabled = true;
         rendererState.DepthState.DepthWriteEnabled = false;
+        rendererState.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_GREATER_EQUAL;
         rendererState.DepthState.SetDirty();
+        rendererState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+        rendererState.RasterizerState.SetDirty();
         UpdateRenderStates();
 
-        // Draw barrier after sky
-        reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x632140)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
+        skyCtrl->RenderSkyPre();
+
+        // The engine breaks the far plane on its way through; restore it.
         Engine::GAPI->SetFarPlane(
             rendererState.RendererSettings.SectionDrawRadius *
             WORLD_SECTION_SIZE );
+        rendererState.RendererInfo.RenderStage = oldBarrierStage;
     }
-    #endif
 
     return XR_SUCCESS;
 }
