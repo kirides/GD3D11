@@ -530,6 +530,94 @@ float ComputeShadowValue(float2 uv, float3 wsPosition, Texture2D shadowmap, Samp
 }
 
 //--------------------------------------------------------------------------------------
+// Rain reach ("is this spot wet") sampling of the rain shadowmap.
+//
+// This is deliberately NOT ComputeShadowValueDirect. A sun shadow wants to keep the
+// occluder's silhouette; wetness does not - real ground under a single leaf does not stay
+// bone dry with a razor-sharp leaf outline, it is at most slightly less soaked, and the
+// wet/dry boundary under a real occluder is metres wide (wind, splash, run-off). The old
+// 4x4 box at 2.5 texels reproduced every small occluder's exact shape, so:
+//
+//   * The kernel is sized in WORLD units, not texels. The two backends give the rain map
+//     very different world coverage (D3D11 2048 tex / 16384 units = 8 u/texel, D3D12 2048
+//     / 49152 = 24 u/texel), and the blur has to look the same in both. The UV radius is
+//     derived from the rain view-projection itself (row-vector convention: clip.x =
+//     dot(wpos, m._11_21_31) + m._41), so no extra uniform is needed.
+//   * The taps are Gaussian-weighted over two Poisson rings instead of a flat box. A box
+//     kernel ramps linearly and kinks hard at both ends of the transition - visible as an
+//     edge even when it is wide. A Gaussian rolls off smoothly.
+//   * The result is remapped through smoothstep, which flattens the last of the ramp ends.
+//
+// The depth bias scales with the kernel: a tap RAIN_WET_BLUR_WORLD units to the side of a
+// sloped ground pixel is legitimately that much deeper, and with the tight 0.0001 bias it
+// would compare as "occluded" and paint acne-shaped dry patches on every slope. Allowing
+// one filter-radius of depth slack (~45 degrees) removes that; the side effect is that
+// occluders lower than the filter radius above the ground stop casting dryness, which is
+// the desired behaviour anyway.
+//--------------------------------------------------------------------------------------
+#ifndef RAIN_WET_BLUR_WORLD
+#define RAIN_WET_BLUR_WORLD 100.0f   // ~1m filter radius => ~2m wide wet/dry transition
+#endif
+
+float ComputeRainWetness(float3 wsPosition, Texture2D rainMap, SamplerComparisonState samplerState, matrix viewProj)
+{
+    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
+    // Orthographic rain camera, w == 1. Kept as a divide for parity with IsWet().
+    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
+
+    float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
+
+    // Outside the rain camera there is no occluder information, and the common case out
+    // there is open sky - return "exposed" rather than drawing a dry ring at the border.
+    if (projectedTexCoords.x < 0.0f || projectedTexCoords.x > 1.0f ||
+        projectedTexCoords.y < 0.0f || projectedTexCoords.y > 1.0f)
+    {
+        return 1.0f;
+    }
+
+    // World -> clip scale per axis (row-vector mul, so the columns of viewProj).
+    float sx = length(float3(viewProj._11, viewProj._21, viewProj._31));
+    float sy = length(float3(viewProj._12, viewProj._22, viewProj._32));
+    float sz = length(float3(viewProj._13, viewProj._23, viewProj._33));
+
+    // clip -> uv is a 0.5 scale on both axes (the y flip does not change the radius).
+    float2 radiusUV = float2(sx, sy) * (0.5f * RAIN_WET_BLUR_WORLD);
+    float bias = 0.0001f + RAIN_WET_BLUR_WORLD * sz;
+    float zReceiver = vShadowSamplingPos.z - bias;
+
+    // Gaussian weights, sigma = 0.5 * radius: exp(-r^2 / (2*sigma^2)).
+    const float wCenter = 1.0f;
+    const float rInner = 0.45f;
+    const float wInner = 0.66698f;  // exp(-0.45^2 * 2)
+    const float wOuter = 0.13534f;  // exp(-1.00^2 * 2)
+
+    float sum = wCenter * rainMap.SampleCmpLevelZero(samplerState, projectedTexCoords, zReceiver);
+    float weight = wCenter;
+
+    // Inner ring: the first 8 Poisson entries form a valid distribution on their own.
+    [unroll]
+    for (int i = 0; i < 8; ++i)
+    {
+        float2 offset = g_PoissonDisk32[i] * (rInner * radiusUV);
+        sum += wInner * rainMap.SampleCmpLevelZero(samplerState, projectedTexCoords + offset, zReceiver);
+        weight += wInner;
+    }
+
+#if SHD_FILTER_16TAP_PCF
+    // Outer ring: entries 8..23 keep the disk evenly covered at full radius.
+    [unroll]
+    for (int j = 8; j < 24; ++j)
+    {
+        float2 offset = g_PoissonDisk32[j] * radiusUV;
+        sum += wOuter * rainMap.SampleCmpLevelZero(samplerState, projectedTexCoords + offset, zReceiver);
+        weight += wOuter;
+    }
+#endif
+
+    return smoothstep(0.0f, 1.0f, saturate(sum / weight));
+}
+
+//--------------------------------------------------------------------------------------
 // CSM: Shadow-Sampling with soft shadows and cascade blending
 // Uses SQ_ShadowSoftness for configurable shadow edge softness
 //

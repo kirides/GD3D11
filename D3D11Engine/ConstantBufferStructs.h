@@ -371,7 +371,7 @@ struct RefractionInfoConstantBuffer {
     float RI_Far;
 
     float3 RI_CameraPosition;
-    float RI_Pad2;
+    float RI_SSREnabled;    // 0 disables the SSR trace at runtime (e.g. camera underwater)
 
     XMFLOAT4X4 RI_View; // World->view, for screen-space reflection ray marching
 };

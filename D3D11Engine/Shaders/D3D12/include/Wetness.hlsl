@@ -26,10 +26,32 @@
 static const float WET_WEIGHT_BIAS = -0.55;
 static const float WET_WEIGHT_MUL  = 0.7;
 
+// Poisson disk for the rain-reach filter. Same first 16 entries as ShadowSampling.h's g_PoissonDisk32
+// (duplicated because the D3D12 shaders don't include that D3D11 header); the first 8 form a valid
+// distribution on their own and are reused for the inner ring.
+static const float2 g_RainPoisson16[16] = {
+    float2( -0.94201624, -0.39906216 ), float2(  0.94558609, -0.76890725 ),
+    float2( -0.09418410, -0.92938870 ), float2(  0.34495938,  0.29387760 ),
+    float2( -0.91588581,  0.45771432 ), float2( -0.81544232, -0.87912464 ),
+    float2( -0.38277543,  0.27676845 ), float2(  0.97484398,  0.75648379 ),
+    float2(  0.44323325, -0.97511554 ), float2(  0.53742981, -0.47373420 ),
+    float2( -0.26496911, -0.41893023 ), float2(  0.79197514,  0.19090188 ),
+    float2( -0.24188840,  0.99706507 ), float2( -0.81409955,  0.91437590 ),
+    float2(  0.19984126,  0.78641367 ), float2(  0.14383161, -0.14100790 )
+};
+
+// ~1m filter radius => ~2m wide wet/dry transition. Kept identical to D3D11's RAIN_WET_BLUR_WORLD.
+#define RAIN_WET_BLUR_WORLD 100.0
+
 // Returns 1 where rain reaches this world position, 0 where geometry above it blocks the rain. The rain
-// shadowmap is a single ORTHOGRAPHIC normal-Z slice cast along the rain velocity (RenderRainShadowmap),
-// so this mirrors D3D11's rain call into ComputeShadowValueDirect: bias 0.0001, softnessScale 2.5,
-// 4x4 PCF. Read bindlessly, like Rain.hlsl's IsWet().
+// shadowmap is a single ORTHOGRAPHIC normal-Z slice cast along the rain velocity (RenderRainShadowmap).
+// Read bindlessly, like Rain.hlsl's IsWet(). 1:1 with D3D11's ComputeRainWetness (ShadowSampling.h) —
+// see that function's header for why wetness gets a wide, world-sized, Gaussian-weighted kernel instead
+// of the sun shadow's tight silhouette-preserving PCF, and why the bias scales with the kernel.
+//
+// The kernel radius is in WORLD units, derived from RainViewProj itself, because the two backends cover
+// very different world spans with the same 2048² map (D3D11 16384 units, D3D12 kRainShadowWorldSpan
+// 49152) — a texel-sized kernel would blur 3x less here than there.
 //
 // OUTSIDE the rain camera the answer is 1 (EXPOSED), not 0. The map only covers a slab around the
 // player, so "outside" means "no occluder information", and the overwhelmingly common case out there is
@@ -47,13 +69,36 @@ float SampleRainReach( float3 wpos )
     if ( any( uv < 0.0 ) || any( uv > 1.0 ) || clip.z < 0.0 || clip.z > 1.0 )
         return 1.0;                                           // outside the rain camera → assume open sky
 
-    const float texStep = 2.5 / max( RainShadowMapSize, 1.0 );   // softnessScale 2.5, in texels
-    const float bias = 0.0001;
-    float sum = 0.0;
-    [unroll] for ( float y = -1.5; y <= 1.5; y += 1.0 )
-    [unroll] for ( float x = -1.5; x <= 1.5; x += 1.0 )
-        sum += rainMap.SampleCmpLevelZero( shadowCmp, uv + float2( x, y ) * texStep, clip.z - bias );
-    return saturate( sum / 16.0 );
+    // World -> clip scale per axis (row-vector mul, so the columns of RainViewProj); clip -> uv adds a
+    // 0.5 scale on x/y (the y flip doesn't change the radius).
+    float sx = length( float3( RainViewProj._11, RainViewProj._21, RainViewProj._31 ) );
+    float sy = length( float3( RainViewProj._12, RainViewProj._22, RainViewProj._32 ) );
+    float sz = length( float3( RainViewProj._13, RainViewProj._23, RainViewProj._33 ) );
+
+    float2 radiusUV = float2( sx, sy ) * ( 0.5 * RAIN_WET_BLUR_WORLD );
+    float zReceiver = clip.z - ( 0.0001 + RAIN_WET_BLUR_WORLD * sz );
+
+    // Gaussian weights, sigma = 0.5 * radius: exp(-r^2 / (2*sigma^2)).
+    const float wCenter = 1.0;
+    const float rInner  = 0.45;
+    const float wInner  = 0.66698;   // exp(-0.45^2 * 2)
+    const float wOuter  = 0.13534;   // exp(-1.00^2 * 2)
+
+    float sum = wCenter * rainMap.SampleCmpLevelZero( shadowCmp, uv, zReceiver );
+    float weight = wCenter;
+
+    [unroll] for ( int i = 0; i < 8; ++i )
+    {
+        sum += wInner * rainMap.SampleCmpLevelZero( shadowCmp, uv + g_RainPoisson16[i] * ( rInner * radiusUV ), zReceiver );
+        weight += wInner;
+    }
+    [unroll] for ( int j = 0; j < 16; ++j )
+    {
+        sum += wOuter * rainMap.SampleCmpLevelZero( shadowCmp, uv + g_RainPoisson16[j] * radiusUV, zReceiver );
+        weight += wOuter;
+    }
+
+    return smoothstep( 0.0, 1.0, saturate( sum / weight ) );
 }
 
 // Animated tri-planar rain-ripple normal. 1:1 with D3D11's ApplyRainNormalDeformation apart from

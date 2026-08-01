@@ -5587,7 +5587,9 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         ricb.RI_ViewportSize = float2( Resolution.x, Resolution.y );
         ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
         ricb.RI_CameraPosition = float3( Engine::GAPI->GetCameraPosition() );
-        ricb.RI_Pad2 = 0.0f;
+        // Kill SSR while the camera is underwater: the trace assumes the eye is above the
+        // surface, so from below it reflects the shoreline over the underwater view.
+        ricb.RI_SSREnabled = Engine::GAPI->IsUnderWater() ? 0.0f : 1.0f;
         ricb.RI_View = Engine::GAPI->GetRendererState().TransformState.TransformView; // not transposed, PS takes care of proper mul-order
 
         ActivePS->UpdateBuffer("RefractionInfo", &ricb, sizeof(ricb));
