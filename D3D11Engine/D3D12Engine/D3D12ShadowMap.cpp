@@ -647,21 +647,21 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	const float sunStrength = set.SunLightStrength
 		+ (set.RainSunLightStrength - set.SunLightStrength) * std::min( 1.0f, rain * 2.0f );
 
+	// BSP-indoor override (parity with D3D11): interiors get NO direct sun at all — Prepare() forces sunUp
+	// false for indoor worlds, so the cascades are cleared to unshadowed and never rendered — and worldAO
+	// fully tracks the baked light. We keep a non-zero ambient (D3D11 zeroes it for G2 -> torch-only) so
+	// interiors that already look fine don't go dark.
+	const bool indoor = Engine::GAPI->IsIndoorWorld();
+
 	// Ambient/sky strength (SQ_ShadowStrength). Night is a bit brighter than before (0.3 -> 0.5, per user)
 	// so interiors aren't too dark after dusk; interiors also self-darken via baked vertLighting-as-AO.
-	float ambient = sunUp ? set.ShadowStrength : set.ShadowStrength * 0.5f;
-
-	// BSP-indoor override (parity with D3D11): interiors use a NEUTRAL white sun (no warm outdoor tint) at a
-	// softened intensity (no hard raking sun through a cave), and worldAO fully tracks the baked light. We keep
-	// a non-zero ambient (D3D11 zeroes it for G2 -> torch-only) so interiors that already look fine don't go dark.
-	bool indoor = false;
-	if ( auto* wi = Engine::GAPI->GetLoadedWorldInfo() )
-		if ( wi->BspTree )
-			indoor = (wi->BspTree->GetBspTreeMode() == zBSP_MODE_INDOOR);
+	// Indoors the dusk halving is skipped: `sunUp` is forced false there regardless of the clock, and a mine
+	// does not get darker at night — without this the forced sun-down would silently halve interior ambient.
+	float ambient = (sunUp || indoor) ? set.ShadowStrength : set.ShadowStrength * 0.5f;
 
 	if ( indoor ) {
 		cb.SunColor = XMFLOAT3( 1.0f, 1.0f, 1.0f );
-		cb.SunIntensity = sunUp ? sunStrength * 0.5f : 0.0f;
+		cb.SunIntensity = 0.0f;
 		cb.AmbientStrength = ambient;
 		cb.WorldAOStrength = 1.0f;
 	} else {
@@ -670,7 +670,10 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		cb.AmbientStrength = ambient;
 		cb.WorldAOStrength = set.WorldAOStrength;
 	}
-	cb.ShadowAOStrength = set.ShadowAOStrength;
+	// Indoors worldAO already applies the baked vertLighting at full strength (above); shadowAO folds the
+	// SAME vertLighting in a second time (lerp(1, vertLighting, ShadowAOStrength) in PBRLighting.hlsl), which
+	// over-darkens interiors. Parity with D3D11's indoor override in D3D11ShadowMap.
+	cb.ShadowAOStrength = indoor ? 0.0f : set.ShadowAOStrength;
 	// Gates the sky-IBL ambient by the baked vertex light so interiors stop catching the open sky — see
 	// PBRLighting.hlsl ComputeSunLightingPBR. Only the IBL branch reads it; the flat fallback already carries
 	// vertLighting through shadowAO.
@@ -727,7 +730,12 @@ void D3D12ShadowMap::Prepare() {
 
 	// Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip ALL casting.
 	const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
-	const bool sunUp = (lp.y > 0.0f);
+	// Indoor levels (mines, dungeons) have no sun at all — ZenGin runs them off a zCSkyControler_Indoor.
+	// Treating the sun as down is the cheapest way to reach D3D11's indoor behaviour (which skips
+	// DrawWorldShadow outright for !isOutdoor and zeroes SQ_ShadowStrength): every cascade clears to
+	// unshadowed and phases A/B/C are skipped entirely, so a mine pays no shadow cost and nothing
+	// double-darkens the baked interior lighting.
+	const bool sunUp = !Engine::GAPI->IsIndoorWorld() && (lp.y > 0.0f);
 	m_SunUp = sunUp;   // RecordCascade may run on a pool thread, so it can't re-read the sky itself
 
 	UploadSamplingConstants( sunUp );

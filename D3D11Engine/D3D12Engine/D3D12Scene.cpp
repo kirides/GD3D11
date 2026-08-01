@@ -290,6 +290,16 @@ namespace {
     // of day — the sky never darkened at night, matching the reported "always looks like fog color" bug.
     DirectX::XMVECTOR GetSceneFogColorXM() {
         const auto& rs = Engine::GAPI->GetRendererState();
+
+        // Indoor levels (mines, dungeons, ...) have no sky and no fog - ZenGin runs them with a
+        // zCSkyControler_Indoor and oCGame::EnvironmentInit never sets up the outdoor fog/farclip
+        // there. Both consumers of this color want black in that case: the sky fill (there is no sky
+        // to fade into) and the per-pixel distance fog in the lit shaders (which would otherwise wash
+        // the far end of a mine shaft in daylight).
+        if ( Engine::GAPI->IsIndoorWorld() ) {
+            return DirectX::XMVectorZero();
+        }
+
         XMFLOAT3 fogColorBase = rs.RendererSettings.AtmosphericScattering
             ? rs.RendererSettings.FogColorMod
             : rs.GraphicsState.FF_FogColor;
@@ -2588,6 +2598,12 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	m_CmdList->ClearRenderTargetView( m_SceneColorRtv, clear, 0, nullptr );
 
 	Engine::GAPI->GetSky()->RenderSky(); // does not render, but calculates atmosphere data (AC_LightPos etc.)
+
+	// Indoor levels have no sky at all (ZenGin uses a zCSkyControler_Indoor there, which draws nothing).
+	// The clear above already turned black via GetSceneFogColorXM; drawing the atmosphere dome or handing
+	// off to the outdoor controller's RenderSkyPre would paint daylight over it. RenderSky() still ran, so
+	// the atmosphere constants other passes read stay current.
+	if ( Engine::GAPI->IsIndoorWorld() ) return XR_SUCCESS;
 
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
 

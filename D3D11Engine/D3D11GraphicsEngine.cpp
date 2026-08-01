@@ -4086,6 +4086,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         ShadowMaps->PrepareRender();
     }
 
+    // Indoor levels (mines, dungeons, ...) have no sky and no fog at all - ZenGin runs them with a
+    // zCSkyControler_Indoor, which renders nothing, and oCGame::EnvironmentInit never sets up the
+    // outdoor fog/farclip there. Tinting the background with the outdoor fog color would light up
+    // every gap in the geometry with daylight, so those worlds get a plain black background instead.
+    const bool isIndoorWorld = Engine::GAPI->IsIndoorWorld();
+
     RGResourceHandle colorResource = backBufferHandle;
     graph.AddPass( RG_PASS_NAME("Initialize Buffers"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = GetResolution();
@@ -4096,7 +4102,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( colorResource );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this, &rendererState, colorResource](const RenderGraph& graph)->void {
+        pass.m_executeCallback = [this, &rendererState, colorResource, isIndoorWorld](const RenderGraph& graph)->void {
             const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
             context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
             context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
@@ -4115,9 +4121,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 context->ClearRenderTargetView( MSAAColorBuffer->GetRenderTargetView().Get(), clearColor );
             }
 
-            float4 fogColor( rendererState.RendererSettings.AtmosphericScattering
-                ? rendererState.RendererSettings.FogColorMod
-                : rendererState.GraphicsState.FF_FogColor, 0.0f );
+            // Indoor worlds get a black background instead of the sky/fog tint (see isIndoorWorld above)
+            float4 fogColor = isIndoorWorld
+                ? float4( 0.0f, 0.0f, 0.0f, 0.0f )
+                : float4( rendererState.RendererSettings.AtmosphericScattering
+                    ? rendererState.RendererSettings.FogColorMod
+                    : rendererState.GraphicsState.FF_FogColor, 0.0f );
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
     });
@@ -4183,6 +4192,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     bool compositionHeightFog = (rendererState.RendererSettings.DrawFog && isOutdoor);
     bool compositionActive = compositionGodRays || compositionHeightFog;
 
+    // Note: the pass still runs for indoor worlds - DrawSky() has to call GSky::RenderSky() there to
+    // keep the atmosphere constants (sun direction, wetness, ...) other passes read up to date, and
+    // bails out before drawing anything.
     if ( rendererState.RendererSettings.DrawSky ) {
         graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Write( backBufferHandle );
@@ -8117,6 +8129,13 @@ void D3D11GraphicsEngine::SetDefaultStates( bool force ) {
 XRESULT D3D11GraphicsEngine::DrawSky() {
     GSky* sky = Engine::GAPI->GetSky();
     sky->RenderSky();
+
+    // Indoor levels (mines, dungeons, ...) have no sky: ZenGin runs them with a zCSkyControler_Indoor,
+    // which draws nothing at all. Rendering the outdoor sky dome (or handing off to the outdoor
+    // controller's RenderSkyPre) would paint a lit sky over the black background wherever the geometry
+    // has a gap. RenderSky() above already ran, so the atmosphere constants stay current.
+    if ( Engine::GAPI->IsIndoorWorld() )
+        return XR_SUCCESS;
 
     auto& rendererState = Engine::GAPI->GetRendererState();
     if ( !rendererState.RendererSettings.AtmosphericScattering ) {

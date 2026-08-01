@@ -607,6 +607,12 @@ public:
     /** Returns wether the camera is indoor or not */
     bool IsCameraIndoor();
 
+    /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...).
+        This is a per-world property baked into the compiled BSP-tree, not a per-frame camera
+        test - ZenGin swaps in a zCSkyControler_Indoor for these worlds, which renders no sky
+        and sets up no fog (see oCGame::EnvironmentInit). */
+    bool IsIndoorWorld() const;
+
     /** Returns gothics fps-counter */
     int GetFramesPerSecond();
 
