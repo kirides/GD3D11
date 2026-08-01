@@ -456,7 +456,12 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
     const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
-    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    // By VALUE, with the TAA jitter stripped — see the same treatment in DrawLines. Inventory previews are
+    // drawn from Gothic's own UI phase, long after RenderTAA has resolved and tonemapped the frame, so the
+    // sub-pixel offset AdvanceJitter left in TransformProj._13/_23 would just shimmer here unopposed.
+    XMFLOAT4X4 projM = Engine::GAPI->GetProjectionMatrix();
+    projM._13 = 0.0f;
+    projM._23 = 0.0f;
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 

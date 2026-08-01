@@ -3026,12 +3026,13 @@ bool D3D12PipelineState::CreateTaa() {
     // which is how the depth-confidence test works without Intel's third velocity channel (the motion-vector
     // buffer stays a 2-channel RG16F for the other temporal consumers). Three matrices are far past the
     // root-constant budget, hence a CBV.
-    // 1 = b1 16 root constants (resolution, jitter, frame number, feature flags, six bindless heap indices and
-    // the depth tolerance). Every texture and the output UAV are fetched through ResourceDescriptorHeap, so
-    // there is no descriptor table at all — hence CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED.
+    // 1 = b1 18 root constants (resolution, this frame's AND the previous frame's jitter, frame number, feature
+    // flags, six bindless heap indices and the depth tolerance). Every texture and the output UAV are fetched
+    // through ResourceDescriptorHeap, so there is no descriptor table at all — hence
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED.
     D3D12RootLayout& rs = Layout( "Taa" );
     rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 0: b0 MotionCB
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 TaaCB
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_ALL );   // 1: b1 TaaCB
     // s0 linear-clamp: the bicubic/bilinear history fetches. s1 point-clamp: the depth gathers, which must not
     // filter across a depth discontinuity.
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,

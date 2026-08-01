@@ -36,6 +36,7 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
 
     m_CurrentJitter = XMFLOAT2(0, 0);
     m_PreviousJitter = XMFLOAT2(0, 0);
+    m_PreviousJitterUnscaled = XMFLOAT2(0, 0);
     m_PrevCameraPosition = XMFLOAT3(0, 0, 0);
     XMStoreFloat4x4( &m_PrevViewProj, XMMatrixIdentity() );
     XMStoreFloat4x4( &m_UnjitteredViewProj, XMMatrixIdentity() );
@@ -95,6 +96,8 @@ bool D3D11PFX_TAA::Init() {
     m_FrameNumber = 0;
     m_CurrentJitter = XMFLOAT2(0, 0);
     m_PreviousJitter = XMFLOAT2(0, 0);
+    m_CurrentJitterUnscaled = XMFLOAT2(0, 0);
+    m_PreviousJitterUnscaled = XMFLOAT2(0, 0);
 
     return true;
 }
@@ -111,6 +114,8 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
 void D3D11PFX_TAA::OnDisabled() {
     m_CurrentJitter = XMFLOAT2( 0, 0 );
     m_PreviousJitter = XMFLOAT2( 0, 0 );
+    m_CurrentJitterUnscaled = XMFLOAT2( 0, 0 );
+    m_PreviousJitterUnscaled = XMFLOAT2( 0, 0 );
     m_JitterIndex = 0;
     m_FirstFrame = true;
     // The accumulated history was (or will be) built with jitter; do not blend against it once TAA comes back.
@@ -135,8 +140,10 @@ void D3D11PFX_TAA::ReleaseResources() {
 }
 
 void D3D11PFX_TAA::AdvanceJitter() {
-    // Store the previous jitter for removal
+    // Store the previous jitter for removal. Both forms: the UV-scaled one the velocity CB consumes, and the
+    // pixel one the resolve's previous-depth lookup needs (the previous depth buffer was rasterized with it).
     m_PreviousJitter = m_CurrentJitter;
+    m_PreviousJitterUnscaled = m_CurrentJitterUnscaled;
 
     // Advance to next jitter sample
     auto renderWidth = Engine::GraphicsEngine->GetResolution().x;
@@ -327,6 +334,7 @@ void D3D11PFX_TAA::RenderPostFX(
         static_cast<float>( m_Width ), static_cast<float>( m_Height ),
         1.0f / static_cast<float>( m_Width ), 1.0f / static_cast<float>( m_Height ) );
     cb.JitterTolerance = XMFLOAT4( m_CurrentJitterUnscaled.x, m_CurrentJitterUnscaled.y, kTaaDepthTolerance, 0.0f );
+    cb.PrevJitter = XMFLOAT4( m_PreviousJitterUnscaled.x, m_PreviousJitterUnscaled.y, 0.0f, 0.0f );
     cb.FrameNumber = m_FrameNumber;
     cb.DebugFlags = debugFlags;
     // HistoryValid hard-forces the no-history branch in the shader when there is nothing accumulated yet — see
