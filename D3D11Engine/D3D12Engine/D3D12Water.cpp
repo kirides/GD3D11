@@ -436,6 +436,13 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             ? m_DistortionTexture->GetSrvSlot() : m_BlackTexture->GetSrvSlot();
         cb.ReflectionCubeIndex = m_ReflectionCubeSrvSlot;   // UINT_MAX => shader skips the cube
         SsrStepsForQuality( settings.WaterSSRQuality, cb.SsrMaxSteps, cb.SsrRefineSteps );
+        // Underwater the trace is invalid — it assumes the eye sits above the surface, so from below it
+        // marches up through the water body and mirrors the shoreline over the underwater view. 0 steps
+        // is the shader's "SSR off" path (Water.hlsl line 323), same effect as D3D11's RI_SSREnabled=0.
+        if ( Engine::GAPI->IsUnderWater() ) {
+            cb.SsrMaxSteps = 0;
+            cb.SsrRefineSteps = 0;
+        }
 
         // GSky::RenderSky() refreshes the AC_* constants every frame (DrawSky runs before this), even though
         // D3D12 renders Gothic's fixed-function sky — same reasoning as RenderFogAndGodRays. Without them the

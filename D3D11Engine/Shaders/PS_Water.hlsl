@@ -24,7 +24,11 @@ cbuffer RefractionInfo : register( b2 )
 	float RI_Pad1;
 
 	float3 RI_CameraPosition;
-	float RI_SSRIntensity; // reserved/unused (SSR quality is a compile-time permutation)
+	// Runtime SSR gate (quality itself is the compile-time SSR_QUALITY permutation). 0 while the
+	// camera is underwater: from below the surface the "reflection" ray marches up through the
+	// water body into geometry that is in front of the camera, so every hit is bogus and the
+	// water reads as a mirror of the shoreline instead of the underwater view.
+	float RI_SSREnabled;
 
 	float4x4 RI_View; // World->view, for screen-space reflections
 };
@@ -272,6 +276,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float ssrConfidence = 0.0f;
 	float3 ssrColor = float3(0.0f, 0.0f, 0.0f);
 #if SSR_QUALITY > 0
+	[branch] if ( RI_SSREnabled > 0.0f )
 	{
 		// reflect_vec above is negated (reflect(-viewDirection,N)) for the cube lookup.
 		// The true eye-reflection direction, which marches UP into the scene, is
