@@ -3450,8 +3450,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world * curTransform );
 
+                // Motion vectors: the node's own bone transform animates as well (a head shaking,
+                // a weapon swinging), so the previous world matrix has to be paired with the
+                // *previous* bone transform. Using curTransform here cancels out all node-local
+                // motion and leaves attachments with only the vob's root velocity.
                 const XMMATRIX prevWorldXm = XMLoadFloat4x4( &prevWorld );
-                XMFLOAT4X4 finalPrevWorld; XMStoreFloat4x4( &finalPrevWorld, prevWorldXm * curTransform );
+                const XMMATRIX prevTransform = ( vi->HasValidPrevTransforms && i < vi->PrevBoneTransforms.size() )
+                    ? XMLoadFloat4x4( &vi->PrevBoneTransforms[i] )
+                    : curTransform;
+                XMFLOAT4X4 finalPrevWorld; XMStoreFloat4x4( &finalPrevWorld, prevWorldXm * prevTransform );
 
                 for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
 
