@@ -20,10 +20,53 @@
 //     see below.
 //
 // d3d12.dll is loaded dynamically (no d3d12.lib link, to keep the D3D11 path's Windows 7 floor), so
-// D3D12SerializeRootSignature is resolved by GetProcAddress. The builder caches that resolution once
+// the serialize entry point is resolved by GetProcAddress. The builder caches that resolution once
 // for the process instead of re-resolving it per root signature.
+//
+// ---- Root signature 1.1 -----------------------------------------------------------------------
+// Layouts are serialized as VERSION_1_1 when the driver supports it (falling back to 1_0 otherwise —
+// see Build()). 1.1's whole point is that the declaration can PROMISE the driver that a descriptor or
+// its referenced data won't change between the bind and the end of execution, which is what lets the
+// driver preload the descriptor / the constant data into SGPRs at the Set call instead of re-reading
+// it per shader invocation. Under 1.0 every parameter is implicitly fully volatile and no such
+// promotion is legal.
+//
+// Those promises are UNCHECKED by the runtime outside the debug layer: breaking one reads stale or
+// garbage data on the GPU. So the flag arguments below all DEFAULT to the fully-volatile values,
+// which are exactly 1.0's semantics — a layout that says nothing behaves precisely as it did before
+// the 1.1 migration. Tightening is opt-in, per parameter, at the declaration site, and the reason it
+// is safe belongs in a comment there. See the Volatile/Static constants right below for the vocabulary.
 class D3D12RootLayout {
 public:
+    // ---- Descriptor-range flag vocabulary -----------------------------------------------------
+    // DEFAULT. Both the descriptor in the heap and the data it points at may change after this table
+    // is recorded into a command list. Identical to root signature 1.0 behaviour; always correct,
+    // never optimal. Right for any table whose SRV slot is owned by the Gothic texture cache (slots
+    // are recycled) or whose contents a later pass in the same list rewrites.
+    static constexpr D3D12_DESCRIPTOR_RANGE_FLAGS RangeVolatile =
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    // The heap slot may still be rewritten, but the RESOURCE CONTENTS are final from the moment the
+    // table is set until the command list finishes. The common upgrade: a render target another pass
+    // (or another command list executed earlier) already finished writing.
+    static constexpr D3D12_DESCRIPTOR_RANGE_FLAGS RangeDataStatic =
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+    // Descriptor AND data are both final from the set. Engine-owned, long-lived resources whose SRV
+    // slot is allocated once at create time and only ever rewritten behind a WaitForGpuIdle (resize).
+    static constexpr D3D12_DESCRIPTOR_RANGE_FLAGS RangeStatic = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    // A UAV range is written BY the GPU, so its data is volatile by definition. Never upgrade one.
+    static constexpr D3D12_DESCRIPTOR_RANGE_FLAGS RangeUavVolatile =
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE | D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+
+    // ---- Root-descriptor flag vocabulary ------------------------------------------------------
+    // DEFAULT: 1.0 semantics — the buffer behind this root CBV/SRV/UAV may change at any point.
+    static constexpr D3D12_ROOT_DESCRIPTOR_FLAGS RootVolatile = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_VOLATILE;
+    // The buffer contents are final from the moment this root descriptor is SET until the command
+    // list finishes executing. This is the flag that matters for the Forward+ hot path: the per-frame
+    // light buffer / cluster grid / shadow CB are all written to their frame-index slice long before
+    // any pass binds them, and nothing rewrites them afterwards within the frame.
+    static constexpr D3D12_ROOT_DESCRIPTOR_FLAGS RootDataStatic =
+        D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+
     // ---- Declaration --------------------------------------------------------------------------
     // One range inside a descriptor table. Use the SRV/UAV/CBV/Sampler factories below.
     struct Range {
@@ -31,17 +74,27 @@ public:
         UINT BaseRegister;
         UINT NumDescriptors;   // UINT_MAX = unbounded
         UINT Space;
+        D3D12_DESCRIPTOR_RANGE_FLAGS Flags;   // 1.1 only; ignored when serializing as 1.0
     };
-    static Range SRVRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0 );
-    static Range UAVRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0 );
-    static Range CBVRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0 );
-    static Range SamplerRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0 );
+    static Range SRVRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0,
+        D3D12_DESCRIPTOR_RANGE_FLAGS flags = RangeVolatile );
+    static Range UAVRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0,
+        D3D12_DESCRIPTOR_RANGE_FLAGS flags = RangeUavVolatile );
+    static Range CBVRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0,
+        D3D12_DESCRIPTOR_RANGE_FLAGS flags = RangeVolatile );
+    // Sampler ranges take no data flags (there is no data behind a sampler); only the DESCRIPTORS_*
+    // bits are meaningful, and D3D12 rejects any DATA_* flag on one.
+    static Range SamplerRange( UINT baseRegister, UINT numDescriptors = 1, UINT space = 0,
+        D3D12_DESCRIPTOR_RANGE_FLAGS flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE );
 
     // Each returns the root-parameter index it was assigned (i.e. the value to pass to
     // SetGraphicsRoot*/SetComputeRoot* at bind time). Parameters are assigned in call order.
     UINT AddConstants( UINT shaderRegister, UINT num32BitValues, D3D12_SHADER_VISIBILITY vis, UINT space = 0 );
-    UINT AddCBV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0 );
-    UINT AddSRV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0 );
+    UINT AddCBV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0,
+        D3D12_ROOT_DESCRIPTOR_FLAGS flags = RootVolatile );
+    UINT AddSRV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0,
+        D3D12_ROOT_DESCRIPTOR_FLAGS flags = RootVolatile );
+    // No flags argument: a root UAV is GPU-written, so DATA_VOLATILE is the only correct choice.
     UINT AddUAV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0 );
     UINT AddTable( std::initializer_list<Range> ranges, D3D12_SHADER_VISIBILITY vis );
     // Convenience for the overwhelmingly common single-range table.
@@ -107,10 +160,12 @@ private:
         UINT Num32BitValues;      // Constants only
         size_t FirstRange;        // Table only: index into m_Ranges
         size_t RangeCount;
+        D3D12_ROOT_DESCRIPTOR_FLAGS DescriptorFlags;   // CBV/SRV/UAV only; 1.1, ignored when serializing as 1.0
     };
 
     UINT AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE type, UINT shaderRegister,
-                             D3D12_SHADER_VISIBILITY vis, UINT space );
+                             D3D12_SHADER_VISIBILITY vis, UINT space,
+                             D3D12_ROOT_DESCRIPTOR_FLAGS flags );
 
     std::vector<ParamInfo> m_Params;
     std::deque<Range> m_Ranges;                 // stable storage; tables index into this
