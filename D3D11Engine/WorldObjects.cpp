@@ -7,6 +7,15 @@
 #include "zCMaterial.h"
 #include "zCTexture.h"
 #include "D3D11_Helpers.h"
+#include "SharedVisualRegistry.h"
+
+SkeletalVobInfo::~SkeletalVobInfo() {
+    for ( auto& [k, meshes] : NodeAttachments ) {
+        for ( MeshVisualInfo* mvi : meshes ) {
+            s_SharedVisualRegistry->Release( mvi );
+        }
+    }
+}
 
 /** Updates the vobs constantbuffer */
 void VobInfo::UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb) {
