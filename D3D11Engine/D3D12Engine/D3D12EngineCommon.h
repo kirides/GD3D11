@@ -12,6 +12,7 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 #include "D3D12TracyDebug.h"
+#include "../ConstantBufferStructs.h"   // VobInstanceInfo — held by value in FrameAttachDraw
 
 class zCTexture;
 class zCVob;
@@ -61,6 +62,10 @@ struct FrameSkelDraw {
 // alphaTested = can the depth/caster PS' `clip(diffuse.a - 0.5)` ever discard for this attachment? Resolved on
 // the main thread with srvSlot (a pool-thread recorder must not read Gothic texture state), and used by every
 // depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
+// inst = the per-instance data this attachment already uploaded at collection time (the same bytes instView
+// points at). Carried by value so the main-view batcher (BuildSkeletalDrawCommands) can re-emit runs of
+// instances CONTIGUOUSLY without reading back the write-combined UPLOAD ring — see the node-attachment
+// batching there. The per-draw consumers (CSM cascades, point shadows) ignore it and keep using instView.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
@@ -68,6 +73,13 @@ struct FrameAttachDraw {
     const zCVob*                owner;
     UINT                        srvSlot;
     bool                        alphaTested;
+    VobInstanceInfo             inst;
+    // May this attachment share an instanced draw with others of the same MeshInfo::meshId? False for .MMS
+    // morph meshes (facial morphs, bow/crossbow draw meshes): they share a meshId with every other instance
+    // of the same zCSubMesh, but zCMorphMesh deforms each one into its OWN dynamic vertex buffer, so a batch
+    // would give every instance the head-of-batch's morph. D3D11 excludes them from batching the same way
+    // (the "Non-MMS, non-cube" branch in D3D11GraphicsEngine.cpp's node-attachment collection).
+    bool                        batchable;
 };
 
 // Per-frame GPU point light. Filled by BuildFrameLightBuffer (D3D12Scene.cpp); the point-shadow slot
