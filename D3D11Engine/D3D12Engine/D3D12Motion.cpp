@@ -213,11 +213,27 @@ void D3D12GraphicsEngine::UploadMotionConstants() {
     memcpy( m_MotionCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
 }
 
-/** Clears both G-buffer targets and makes them the depth prepass's render targets (replacing the scene-color
-    RTV the prepass used to bind with an all-zero write mask). The depth buffer stays bound — the prepass's whole
-    point is still laying down depth. */
+bool D3D12GraphicsEngine::MotionGBufferNeeded() const {
+    // Does ANYTHING downstream read the velocity or normal target this frame?
+    //   velocity -> RenderTAA (the only consumer; D3D12Taa.cpp) and the debug overlay
+    //   normals  -> XeGTAO (D3D12GTAO.cpp; it has a depth-derived fallback and is happy without them)
+    // Neither is on in a stock config (AntiAliasingMode defaults to AA_SMAA, AoMode to AO_HBAO), and writing
+    // two extra full-screen render targets across every opaque prepass draw for nobody is the single most
+    // expensive thing the D3D12 prepass was doing. Gate the whole G-buffer on an actual reader.
+    //
+    // Everything that touches the two targets keys off MotionGBufferActive(), so this one predicate turns off
+    // the MRT binding, both clears, the G-buffer PSO variants AND FillCameraVelocity together — which also
+    // keeps the velocity/normal barrier state machine paired (BeginMotionGBuffer flips them to RENDER_TARGET,
+    // FillCameraVelocity flips them back; running one without the other transitions from the wrong state).
+    if ( IsTaaEnabled() ) return true;
+    if ( IsGtaoEnabled() ) return true;   // wants the real normals over its depth-derived fallback
+    const auto& taa = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.TAA;
+    return taa.DisplayVelocity || taa.DisplayNormals;
+}
+
 bool D3D12GraphicsEngine::MotionGBufferActive() const {
-    return m_MotionResourcesReady
+    return MotionGBufferNeeded()
+        && m_MotionResourcesReady
         && m_MotionCB[m_FrameIndex]
         && m_Pipelines.World.DepthPrepassGBufPSO
         && m_Pipelines.World.DepthPrepassVobGBufPSO
@@ -225,6 +241,10 @@ bool D3D12GraphicsEngine::MotionGBufferActive() const {
         && m_Pipelines.Skeletal.DepthPrepassGBufPSO;
 }
 
+/** Clears both G-buffer targets and makes them the depth prepass's render targets (replacing the scene-color
+    RTV the prepass used to bind with an all-zero write mask). The depth buffer stays bound — the prepass's whole
+    point is still laying down depth. No-op when nothing reads the two targets (MotionGBufferNeeded), in which
+    case the prepass keeps the masked-off scene-color RTV and its PS-less/depth-only PSOs. */
 void D3D12GraphicsEngine::BeginMotionGBuffer() {
     if ( !MotionGBufferActive() || !m_CmdList || !m_FrameOpen ) return;
 
@@ -269,7 +289,11 @@ void D3D12GraphicsEngine::EndMotionGBuffer() {
     of world rendering because it needs the FINAL depth buffer (water, decals and the transparents have all
     written by then). */
 void D3D12GraphicsEngine::FillCameraVelocity() {
-    if ( !m_FrameOpen || !m_MotionResourcesReady || !m_CmdList ) return;
+    if ( !m_FrameOpen || !m_CmdList ) return;
+    // MUST use the same predicate BeginMotionGBuffer does: this pass' opening barrier assumes velocity is in
+    // RENDER_TARGET, which is only true when BeginMotionGBuffer put it there. Running one without the other
+    // transitions from a state the resource isn't in.
+    if ( !MotionGBufferActive() ) return;
     if ( !m_Pipelines.Motion.FillPSO || !m_Pipelines.Motion.FillRootSig ) return;
     if ( !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return;
     const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();

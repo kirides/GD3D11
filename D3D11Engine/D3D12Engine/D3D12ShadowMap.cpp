@@ -52,6 +52,10 @@ namespace {
         uint32_t diffuseIdx;          // bindless SRV slot for PSShadowClip's alpha cutout
         UINT     indexCount;
         UINT     startIndex;
+        // Can PSShadowClip's `clip(diffuse.a - 0.5)` ever discard for this material? If not, the caster is
+        // drawn by the no-pixel-shader PSO instead (double-rate depth). Resolved on the main thread in
+        // Phase A alongside diffuseIdx; CullCascade uses it to partition each cascade's command set.
+        bool     alphaTested;
     };
     std::vector<ShadowWorldCaster> g_WorldCasters;
 
@@ -227,6 +231,17 @@ bool D3D12ShadowMap::Init() {
 		LogWarn() << "D3D12: CreateGraphicsPipelineState failed (shadow caster).";
 		return false;
 	}
+	// No-pixel-shader twin for the casters that need no cutout — see m_CasterWorldNoAlphaPSO. These are already
+	// NumRenderTargets=0 / void-PS PSOs, so dropping the PS entirely is a one-field change. Non-fatal.
+	{
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+		noAlpha.PS = {};
+		if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterWorldNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (shadow caster, no-alpha) — "
+			             "world casters keep alpha-clipping every material.";
+			m_CasterWorldNoAlphaPSO.Reset();
+		}
+	}
 
 	// VOB caster PSO (P2.9c-2): reuse the VOB depth-prepass VSDepth (two-stream: packed vertex + per-instance
 	// world matrix) + m_Pipelines.World.RootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
@@ -269,6 +284,14 @@ bool D3D12ShadowMap::Init() {
 			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, indirect).";
 			return false;
 		}
+		{
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+			noAlpha.PS = {};
+			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterVobIndirectNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+				LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, no-alpha).";
+				m_CasterVobIndirectNoAlphaPSO.Reset();
+			}
+		}
 	}
 
 	// Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of wind —
@@ -297,6 +320,14 @@ bool D3D12ShadowMap::Init() {
 			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster).";
 			return false;
 		}
+		{
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+			noAlpha.PS = {};
+			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+				LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster, no-alpha).";
+				m_CasterVobAttachNoAlphaPSO.Reset();
+			}
+		}
 	}
 
 	// Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth (matrix-palette skinning) +
@@ -322,6 +353,14 @@ bool D3D12ShadowMap::Init() {
 		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
 			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster).";
 			return false;
+		}
+		{
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+			noAlpha.PS = {};
+			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+				LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster, no-alpha).";
+				m_CasterSkeletalNoAlphaPSO.Reset();
+			}
 		}
 	}
 	return true;
@@ -799,8 +838,11 @@ void D3D12ShadowMap::Prepare() {
 					}
 				}
 
+				const bool alphaTested = ( tex && tex->HasAlphaChannel() )
+					|| meshKey.Material->HasAlphaTest();
+
 				g_WorldCasters.push_back( { mesh, diffuseIdx,
-					static_cast<UINT>( mesh->Indices.size() ), mesh->BaseIndexLocation } );
+					static_cast<UINT>( mesh->Indices.size() ), mesh->BaseIndexLocation, alphaTested } );
 			}
 		}
 	}
@@ -957,7 +999,8 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	// shadowCascade=c: cascade 0 keeps full-detail casters (it covers what the player is standing in),
 	// the outer cascades draw the baked progressive-mesh LOD instead — same command count, fewer triangles.
 	m_VobDrawCount[c] = m_E->BuildVobDrawCommands( cascadeUploads, m_VobDrawArgsPtr[c][frame], false,
-		D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false, false, static_cast<int>( c ) );
+		D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false, false, static_cast<int>( c ),
+		&m_VobOpaqueDrawCount[c] );
 }
 
 
@@ -977,15 +1020,22 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 
 	// --- World mesh: bbox-test the pre-resolved caster set into this cascade's ExecuteIndirect arg buffer ---
 	m_WorldDrawCount[c] = 0;
+	m_WorldOpaqueDrawCount[c] = 0;
 	if ( uint8_t* argPtr = m_WorldDrawArgsPtr[c][m_E->m_FrameIndex] ) {
 		auto* cmds = reinterpret_cast<D3D12GraphicsEngine::WorldDrawCommand*>( argPtr );
 		UINT drawCount = 0;
 		const uint32_t defaultOrm = m_E->GetDefaultOrmSrvSlot();
+		// Alpha-test partition: no-cutout casters go straight into the ring, the rest are staged and appended
+		// after the loop so RecordCascade can draw the leading run with no pixel shader bound. thread_local —
+		// one CullCascade per cascade runs concurrently on the pool. (Same scheme as BuildWorldDrawCommands;
+		// staged in normal RAM rather than compacted inside the write-combined UPLOAD ring.)
+		thread_local std::vector<D3D12GraphicsEngine::WorldDrawCommand> alphaCmds;
+		alphaCmds.clear();
 		for ( const ShadowWorldCaster& caster : g_WorldCasters ) {
 			if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( caster.mesh, frustum ) ) continue;
-			if ( drawCount >= D3D12GraphicsEngine::kMaxWorldDrawCommands ) break;
+			if ( drawCount + alphaCmds.size() >= D3D12GraphicsEngine::kMaxWorldDrawCommands ) break;
 
-			auto& cmd = cmds[drawCount++];
+			D3D12GraphicsEngine::WorldDrawCommand cmd{};
 			cmd.MatNormalIndex = 0xFFFFFFFFu;
 			cmd.MatOrmIndex = defaultOrm;
 			cmd.MatDiffuseIndex = caster.diffuseIdx;
@@ -997,6 +1047,14 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 			cmd.Draw.StartIndexLocation = caster.startIndex;
 			cmd.Draw.BaseVertexLocation = 0;
 			cmd.Draw.StartInstanceLocation = 0;
+			if ( caster.alphaTested ) alphaCmds.push_back( cmd );
+			else                      cmds[drawCount++] = cmd;
+		}
+		m_WorldOpaqueDrawCount[c] = drawCount;
+		if ( !alphaCmds.empty() ) {
+			std::memcpy( cmds + drawCount, alphaCmds.data(),
+				alphaCmds.size() * sizeof( D3D12GraphicsEngine::WorldDrawCommand ) );
+			drawCount += static_cast<UINT>( alphaCmds.size() );
 		}
 		m_WorldDrawCount[c] = drawCount;
 	}
@@ -1111,7 +1169,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		DX_ZONE( cmdList.Get(), "World Mesh" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
 
-		cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+		// Split at the alpha-test partition CullCascade laid out: the leading opaque run needs no cutout, so it
+		// draws with no pixel shader bound (double-rate depth); only the tail pays for PSShadowClip.
+		const bool splitAlpha = m_CasterWorldNoAlphaPSO != nullptr;
+
+		cmdList->SetPipelineState( splitAlpha ? m_CasterWorldNoAlphaPSO.Get() : m_CasterWorldPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 
@@ -1120,8 +1182,22 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->IASetVertexBuffers( 0, 1, &vbv );
 		cmdList->IASetIndexBuffer( &ibv );
 
-		cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
-			m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
+		if ( !splitAlpha ) {
+			cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
+				m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
+		} else {
+			if ( m_WorldOpaqueDrawCount[c] > 0 ) {
+				cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldOpaqueDrawCount[c],
+					m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
+			}
+			if ( m_WorldDrawCount[c] > m_WorldOpaqueDrawCount[c] ) {
+				cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+				cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(),
+					m_WorldDrawCount[c] - m_WorldOpaqueDrawCount[c], m_WorldDrawArgs[c][frame].Get(),
+					static_cast<UINT64>( m_WorldOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::WorldDrawCommand ),
+					nullptr, 0 );
+			}
+		}
 	}
 
 	// --- Instanced VOBs: one ExecuteIndirect over the command set Phase C built for this cascade ---
@@ -1129,12 +1205,29 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		&& m_VobDrawArgs[c][frame] ) {
 		DX_ZONE( cmdList.Get(), "Vobs" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
-		cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+		// Same alpha-test split as the world casters above — BuildVobDrawCommands partitioned this cascade's
+		// command set (its outOpaqueCount landed in m_VobOpaqueDrawCount[c]).
+		const bool splitAlpha = m_CasterVobIndirectNoAlphaPSO != nullptr;
+		cmdList->SetPipelineState( splitAlpha ? m_CasterVobIndirectNoAlphaPSO.Get() : m_CasterVobIndirectPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );   // b4 frame-global wind baseline
-		cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(), m_VobDrawCount[c],
-			m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
+		if ( !splitAlpha ) {
+			cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(), m_VobDrawCount[c],
+				m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
+		} else {
+			if ( m_VobOpaqueDrawCount[c] > 0 ) {
+				cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(), m_VobOpaqueDrawCount[c],
+					m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
+			}
+			if ( m_VobDrawCount[c] > m_VobOpaqueDrawCount[c] ) {
+				cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
+				cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(),
+					m_VobDrawCount[c] - m_VobOpaqueDrawCount[c], m_VobDrawArgs[c][frame].Get(),
+					static_cast<UINT64>( m_VobOpaqueDrawCount[c] ) * sizeof( D3D12GraphicsEngine::VobDrawCommand ),
+					nullptr, 0 );
+			}
+		}
 	}
 
 	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
@@ -1142,7 +1235,14 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		DX_ZONE( cmdList.Get(), "Skeletals" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 
-		cmdList->SetPipelineState( m_CasterSkeletalPSO.Get() );
+		// Per-material PSO choice rather than a partitioned command set: this is a CPU draw loop, not an
+		// ExecuteIndirect, so switching only when the flag actually flips is cheaper than reordering the
+		// records. boundPso tracks which of the two is currently set (nothing assumed bound at the start).
+		ID3D12PipelineState* const skelClipPso = m_CasterSkeletalPSO.Get();
+		ID3D12PipelineState* const skelNoAlphaPso = m_CasterSkeletalNoAlphaPSO ? m_CasterSkeletalNoAlphaPSO.Get()
+		                                                                      : skelClipPso;
+		ID3D12PipelineState* boundPso = nullptr;
+
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
@@ -1151,16 +1251,24 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 			// snapshotted on the main thread right after ITS UpdateMeshLibTexAniState (see
 			// [[skeletal-texani-shared-slots]] and g_SkelMatSrvs) — calling it here would both be wrong for a
 			// second instance of the same model and unsafe from a pool thread.
-			const std::vector<UINT>* matSrvs =
+			const std::vector<SkelMatSlot>* matSrvs =
 				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
 
 			cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
 			cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
 			size_t matIdx = 0;
 			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-				const UINT diffuseSlot = (matSrvs && matIdx < matSrvs->size())
-					? (*matSrvs)[matIdx] : blackSlot;
+				const bool haveSlot = matSrvs && matIdx < matSrvs->size();
+				const UINT diffuseSlot = haveSlot ? (*matSrvs)[matIdx].slot : blackSlot;
+				// No snapshot for this material -> assume it clips (the conservative side: a missed cutout is a
+				// visible solid shadow, a needless clip is only slower).
+				const bool alphaTested = !haveSlot || (*matSrvs)[matIdx].alphaTested;
 				++matIdx;
+				ID3D12PipelineState* wantPso = alphaTested ? skelClipPso : skelNoAlphaPso;
+				if ( wantPso != boundPso ) {
+					cmdList->SetPipelineState( wantPso );
+					boundPso = wantPso;
+				}
 				// PSShadowClip reads only MatDiffuseIndex, the THIRD constant of the b6 MaterialCB (param 11) —
 				// push just that one at offset 2 rather than resolving normal/ORM maps the caster never samples.
 				cmdList->SetGraphicsRoot32BitConstant( 11, diffuseSlot, 2 );
@@ -1186,11 +1294,21 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 		// Attachment variant (Fatness/Scaling instead of wind, needs NORMAL) — must match the depth prepass/
 		// color pass PSO choice for the same reason the wind fix required it (bit-identical transform).
-		cmdList->SetPipelineState( m_CasterVobAttachPSO.Get() );
+		// Per-attachment PSO choice, same scheme as the skeletal loop above (CPU draw loop, so switch on flip).
+		ID3D12PipelineState* const attClipPso = m_CasterVobAttachPSO.Get();
+		ID3D12PipelineState* const attNoAlphaPso = m_CasterVobAttachNoAlphaPSO ? m_CasterVobAttachNoAlphaPSO.Get()
+		                                                                      : attClipPso;
+		ID3D12PipelineState* boundAttachPso = nullptr;
+
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		for ( const FrameAttachDraw& a : AttachDraws[c] ) {
 			if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+			ID3D12PipelineState* wantPso = a.alphaTested ? attClipPso : attNoAlphaPso;
+			if ( wantPso != boundAttachPso ) {
+				cmdList->SetPipelineState( wantPso );
+				boundAttachPso = wantPso;
+			}
 			D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
 			D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
 			if ( !mvb->GetResource() || !mib->GetResource() ) continue;

@@ -690,6 +690,12 @@ private:
     uint8_t* m_WorldDrawArgsPtr[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferMax] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
+    // Alpha-test partition. BuildWorldDrawCommands orders the command set so [0, m_WorldOpaqueDrawCount) is
+    // every material that needs NO alpha cutout and [m_WorldOpaqueDrawCount, m_WorldDrawCount) is the ones that
+    // do. Only the depth prepass cares: it submits the prefix through a PS-less PSO (double-rate Z) and the
+    // suffix through the clipping one. The color pass draws the whole range as before — opaque geometry is
+    // order-independent, so the reordering is invisible to it.
+    UINT m_WorldOpaqueDrawCount = 0;
     unsigned int m_WorldDrawnIndices = 0;            // total indices in this frame's command set (triangle counter)
     bool m_WorldDrawArgsOverflowLogged = false;
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
@@ -749,6 +755,7 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
+    UINT m_VobOpaqueDrawCount = 0;                    // alpha-test partition of the above — see m_WorldOpaqueDrawCount
     unsigned int m_VobDrawnTriangles = 0;            // triangles in this frame's main-view VOB command set (stats)
     bool m_VobDrawArgsOverflowLogged = false;
     // The shadow-caster variant of this pipeline (VSDepth + PSShadowClipBindless) and the per-cascade arg rings
@@ -774,9 +781,13 @@ private:
     // self-shadows the full-detail surface black. See the constant's comment for the failure mode.
     static constexpr int kVobIndicesMainView = -1;
     static constexpr int kFirstLodShadowCascade = SHADOW_LOD_FIRST_CASCADE;
+    // outOpaqueCount (optional): how many of the returned commands form the leading no-alpha-cutout run. The
+    // build always partitions — opaque materials first, alpha-tested ones after — so the depth prepass can
+    // submit the prefix through a PS-less PSO. Callers that don't split (the color pass, the shadow cascades)
+    // just pass nullptr and draw the whole range. See m_WorldOpaqueDrawCount.
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
         UINT maxCommands, bool culled = false, bool cacheIn = true,
-        int shadowCascade = kVobIndicesMainView );
+        int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
     // The prerequisite was the bindless-skeletal / bindless-attachment work: neither Skeletal.RootSig nor the
@@ -813,10 +824,12 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
+    UINT m_SkeletalOpaqueDrawCount = 0;              // alpha-test partition — see m_WorldOpaqueDrawCount
     Microsoft::WRL::ComPtr<ID3D12Resource> m_AttachDrawArgs[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AttachDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_AttachDrawArgsPtr[kBackBufferMax] = {};
     UINT m_AttachDrawCount = 0;                      // VobDrawCommands built this frame (prepass + color share them)
+    UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
@@ -1226,6 +1239,7 @@ private:
     // the tail of CreateSkeletal), so a partial success is genuinely reachable — hence one gate, tested by
     // BeginMotionGBuffer and by each of the three prepass draws.
     bool MotionGBufferActive() const;
+    bool MotionGBufferNeeded() const;   // does any pass actually read velocity/normals this frame? see the impl
 
     // ---- Temporal anti-aliasing (D3D12Taa.cpp) --------------------------------------------------------------
     // Port of Intel's Graphics Optimized TAA (MIT; Shaders/D3D12/TAAResolve.hlsl carries the attribution). The
@@ -1558,6 +1572,7 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainVobDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_RainVobDrawArgsPtr[kBackBufferMax] = {};
     UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
+    UINT     m_RainVobOpaqueDrawCount = 0;   // alpha-test partition — see m_WorldOpaqueDrawCount
     // Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
     // main-view / per-cascade views, since the bucket index IS the visual index.
     RenderView m_RainShadowVobs;
