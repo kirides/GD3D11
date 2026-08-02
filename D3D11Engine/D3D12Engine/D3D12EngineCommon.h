@@ -74,11 +74,11 @@ struct FrameAttachDraw {
     UINT                        srvSlot;
     bool                        alphaTested;
     VobInstanceInfo             inst;
-    // May this attachment share an instanced draw with others of the same MeshInfo::meshId? False for .MMS
-    // morph meshes (facial morphs, bow/crossbow draw meshes): they share a meshId with every other instance
-    // of the same zCSubMesh, but zCMorphMesh deforms each one into its OWN dynamic vertex buffer, so a batch
-    // would give every instance the head-of-batch's morph. D3D11 excludes them from batching the same way
-    // (the "Non-MMS, non-cube" branch in D3D11GraphicsEngine.cpp's node-attachment collection).
+    // May this attachment share an instanced draw with others pointing at the same MeshInfo? False only for
+    // an ACTIVELY MORPHING .MMS (a facial morph or bow/crossbow draw mesh within kMorphMeshMaxDistance):
+    // zCMorphMesh re-deforms its vertex buffer every frame for whichever instance is being drawn, so a batch
+    // would give every member the head-of-batch's morph. Out of morph range the attachment switches to the
+    // shared undeformed rest mesh (MeshVisualInfo::RestVisual) and becomes batchable like anything else.
     bool                        batchable;
 };
 

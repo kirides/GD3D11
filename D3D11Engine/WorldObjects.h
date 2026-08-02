@@ -129,6 +129,15 @@ struct MeshInfo {
     // Offset in wrapped world mesh
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
+
+    /** MeshManager's id for the SOURCE zCSubMesh this was built from. Do NOT use it as an
+        "these are the same buffers" key - it is a weaker claim than that, and two MeshInfos sharing a
+        meshId can hold completely different geometry: a morph attachment and its undeformed RestVisual are
+        both extracted from one zCProgMeshProto, and .MDS/.ASC node visuals bake their own node transform
+        into their vertices. Node-attachment batching used to key on this and aliased both cases together;
+        it now keys on the MeshInfo pointer, which the SharedVisualRegistry made a stable shared identity.
+        Still used by the static-vob instancing sort, where StaticMeshVisuals guarantees exactly one
+        MeshInfo per progmesh submesh and the ambiguity cannot arise. */
     uint16_t meshId;
 };
 

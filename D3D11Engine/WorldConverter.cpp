@@ -1727,24 +1727,12 @@ namespace {
             return src;
         }
 
-        // Deliberately no rest mesh for instances carrying a refShape ani, even though GetRestPositions
-        // handles them correctly. A rest mesh is extracted from the same zCProgMeshProto as the morph
-        // copy, so its MeshInfos inherit the SAME zCSubMesh-derived meshIds - and both backends batch on
-        // meshId and then bind the head-of-batch's buffers (D3D11GraphicsEngine's batchMesh loop,
-        // D3D12's AttachBatchKey). Two different rest poses of one head would therefore collide on the
-        // batch key and render each other's geometry. One rest pose per inner progmesh keeps that
-        // impossible; shape-ani heads simply stay on the (unbatchable) morph path exactly as before.
-        if ( mm->GetRefShapeAni() ) {
-            static bool s_loggedRefShapeSkip = false;
-            if ( !s_loggedRefShapeSkip ) {
-                s_loggedRefShapeSkip = true;
-                LogInfo() << "Morph attachment with a refShape ani seen - those keep using their deformed "
-                    "copy and stay unbatchable. If this shows up a lot, the rest-mesh key needs to include "
-                    "the shape ani and the batch keys need to stop aliasing on meshId.";
-            }
-            return src;
-        }
-
+        // Instances carrying a refShape ani are handled too, and GetRestPoseKey separates them: their rest
+        // pose comes from the shape ani rather than from morphRefMeshVertPos, so they get their own shared
+        // rest mesh and batch among themselves. That is only safe because both backends now key attachment
+        // batches on the MeshInfo POINTER. They used to key on meshId, which a rest mesh inherits from the
+        // zCSubMesh it was extracted from - so two different rest poses of one head would have collided on
+        // the batch key and rendered each other's geometry.
         const void* key = mm->GetRestPoseKey();
         if ( !key ) {
             return src;
