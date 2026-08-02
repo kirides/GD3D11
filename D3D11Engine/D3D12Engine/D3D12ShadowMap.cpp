@@ -1081,12 +1081,14 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
 	ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
 	ctx.drawDistances.OutdoorVobs = std::max( 20000.0f, shadowDistance );
-	ctx.drawDistances.OutdoorVobsSmall = std::max( 20000.0f, shadowDistance );
-	ctx.drawDistances.IndoorVobs = std::max( 20000.0f, shadowDistance );
+	ctx.drawDistances.OutdoorVobsSmall = (c == 2) 
+        ? 0.0f // last cascade gets nothing
+        : std::max( 18000.0f, shadowDistance );
+    ctx.drawDistances.IndoorVobs = 0.0f; // why would we WANT to include Indoor vobs in the shadows?
 	ctx.drawDistances.VisualFX = 0.0f;
 	ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
 	ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
-	ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+    ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
 	ctx.drawDistancesSq.VisualFX = 0.0f;
 
 	ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
@@ -1109,7 +1111,10 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 			if ( !box || box->GetSpotCount() == 0 ) continue;
 			XMFLOAT3 bbMin, bbMax;
 			box->GetBoundingBox( &bbMin, &bbMax );
+
+            if ( Toolbox::ComputePointAABBDistance( ctx.cameraPosition, bbMin, bbMax ) > ctx.drawDistances.OutdoorVobsSmall ) continue;
 			if ( !frustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
+
 			g_GrassBoxes[c].push_back( box );
 		}
 	}
