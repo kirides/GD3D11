@@ -15,8 +15,7 @@ MeshVisualInfo::~MeshVisualInfo() {
     if ( !Ready.load( std::memory_order_acquire ) ) {
         WaitForPendingNodeVisualExtraction( this );
     }
-    // One reference, taken when this morph visual was first built. The rest mesh is shared with every
-    // other zCMorphMesh resolving to the same rest pose, so it only dies with the last of them.
+    // The rest mesh is shared with every other zCMorphMesh resolving to the same rest pose.
     if ( RestVisual ) {
         s_SharedVisualRegistry->Release( RestVisual );
         RestVisual = nullptr;

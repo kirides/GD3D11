@@ -3430,8 +3430,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
                     // Check for deleted attachment
                     if ( !node->NodeVisual ) {
-                        // Remove attachment. Shared with every other vob carrying this visual, so it
-                        // goes back to the registry rather than being deleted here.
+                        // Remove attachment. Shared, so it goes back to the registry, not deleted here.
                         WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
                         LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
@@ -3549,12 +3548,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instData.Color = modelColor;
                         instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
 
-                        // Anything .MMS that gets here is out of morph range (the branch above consumed
-                        // every in-range one), so it must draw the SHARED undeformed rest mesh rather than
-                        // its own copy - that copy still holds the deformation from the last time it was in
-                        // range. This also makes the batching below correct: these records already share a
-                        // meshId, so a batch was binding one member's stale buffers for all of them. Falls
-                        // back to the morph copy while the rest mesh is still being built.
+                        // Any .MMS reaching here is out of morph range (the branch above took the rest),
+                        // so it draws the shared rest mesh - its own copy still holds the deformation from
+                        // when it was last in range. Falls back to that copy until the rest mesh is built.
                         MeshVisualInfo* drawVis = mvi;
                         if ( isMMS && mvi->RestVisual
                             && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
@@ -3580,10 +3576,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             }
 
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                // Deliberately no mesh component in the sort key: the sort below tie-breaks on
-                                // the MeshInfo pointer instead. Since the SharedVisualRegistry gives every
-                                // distinct converted mesh exactly one MeshInfo, that pointer IS the geometry
-                                // identity - and unlike meshId it cannot alias two different meshes together.
+                                // No mesh component in the key - the sort below tie-breaks on the
+                                // MeshInfo pointer, the geometry identity now that the registry dedupes.
                                 instancedDrawItems.emplace_back( sortKeyBase.sortKey, itm.second[m].get(), texture, itm.first, instData,
                                     (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
                                 );
@@ -3612,9 +3606,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
             std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
                 []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
-                        // Tie-break on the MeshInfo pointer so identical geometry ends up contiguous and the
-                        // batch loop below can merge it. Ordering between distinct meshes is arbitrary and
-                        // irrelevant (all opaque, depth-tested); all that matters is that equal meshes group.
+                        // Tie-break on the MeshInfo pointer so identical geometry is contiguous for the
+                        // batch loop. Order between distinct meshes is irrelevant (all opaque, depth-tested).
                         if ( a.sortKey != b.sortKey ) return a.sortKey < b.sortKey;
                         return a.mesh < b.mesh;
                 } );
@@ -3647,15 +3640,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             unsigned int currentIdx = 0;
 
             for ( size_t i = 0; i < instancedDrawItems.size(); ) {
-                // Find the end of this batch (same mesh + texture). Keyed on the MeshInfo POINTER, not on
-                // meshId: the draw below binds batchMesh's vertex/index buffers for every member, so the
-                // key has to mean "same buffers". meshId only meant "same source zCSubMesh", which is a
-                // weaker claim - a morph attachment and its undeformed rest mesh, or two .MDS/.ASC node
-                // visuals that baked different node transforms into their vertices, share a zCSubMesh while
-                // holding completely different geometry. The pointer is exact, and it is only usable as a
-                // batch key at all because the SharedVisualRegistry made one converted mesh serve every vob
-                // that references it. It also drops the old "meshId 0 means unbatchable" gate, which could
-                // leave 'i' unadvanced and spin this loop forever if an id ever came back 0.
+                // Find the end of this batch (same mesh + texture). Keyed on the MeshInfo POINTER, not
+                // meshId: the draw binds batchMesh's buffers for every member, so the key must mean "same
+                // buffers", and meshId only means "same source zCSubMesh" (see MeshInfo::meshId). The
+                // pointer works as a key because the registry dedupes conversions. Dropping the old
+                // "meshId 0 is unbatchable" gate also removes a spin - it could leave 'i' unadvanced.
                 size_t batchStart = i;
                 auto batchMesh = instancedDrawItems[i].mesh;
                 zCTexture* batchTex = instancedDrawItems[i].texture;
