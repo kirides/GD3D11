@@ -109,6 +109,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
     m_NormalRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 5 ) * m_RtvDescriptorSize;
     device->CreateRenderTargetView( m_VelocityBuffer.Get(), nullptr, m_VelocityRtv );
     device->CreateRenderTargetView( m_NormalBuffer.Get(), nullptr, m_NormalRtv );
+    m_CmdList.InvalidateRenderTargets();   // descriptors rewritten in place — see D3D12StateCache.h
 
     auto ensureSlot = [&]( UINT& slot ) -> bool {
         if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
@@ -274,7 +275,7 @@ void D3D12GraphicsEngine::FillCameraVelocity() {
     const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
     if ( !motionCb ) return;
 
-    DX_ZONE( m_CmdList, "Camera velocity fill" );
+    DX_ZONE( m_CmdList.Get(), "Camera velocity fill" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Camera velocity fill" );
 
     // Velocity RENDER_TARGET -> UAV (the compute pass writes it), depth DEPTH_WRITE -> shader-read. The DSV must
@@ -375,7 +376,7 @@ void D3D12GraphicsEngine::RenderMotionDebugOverlay() {
     // target and reading it would be invalid. Bail rather than emit a mismatched-state read.
     if ( !m_VelocityInPixelState ) return;
 
-    DX_ZONE( m_CmdList, "Motion debug overlay" );
+    DX_ZONE( m_CmdList.Get(), "Motion debug overlay" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Motion debug overlay" );
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();

@@ -183,7 +183,7 @@ void D3D12GraphicsEngine::AdvanceRain() {
     }
     if ( !m_RainBuffersReady ) return;
 
-    DX_ZONE( m_CmdList, "AdvanceRain" );
+    DX_ZONE( m_CmdList.Get(), "AdvanceRain" );
 
     // Establish the invariant DrawRainParticles relies on — by the time AdvanceRain returns (buffers
     // ready), m_RainBufferDynamic is always in UNORDERED_ACCESS, whether or not the CS actually dispatched
@@ -247,7 +247,7 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     const UINT texArraySlot = isSnow ? m_SnowTextureArraySrvSlot : m_RainTextureArraySrvSlot;
     if ( texArraySlot == UINT_MAX ) return;
 
-    DX_ZONE( m_CmdList, "DrawRainParticles" );
+    DX_ZONE( m_CmdList.Get(), "DrawRainParticles" );
 
     // Flip the dynamic buffer UAV -> NON_PIXEL_SHADER_RESOURCE for the VS's root-SRV read (AdvanceRain
     // guarantees it's in UNORDERED_ACCESS by the time it returns, whether or not it actually dispatched).
@@ -475,6 +475,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     dsv.Format = DXGI_FORMAT_D32_FLOAT;
     dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     device->CreateDepthStencilView( m_RainShadowMap.Get(), &dsv, m_RainShadowDsv );
+    m_CmdList.InvalidateRenderTargets();   // descriptor rewritten in place — see D3D12StateCache.h
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
     srv.Format = DXGI_FORMAT_R32_FLOAT;
@@ -761,7 +762,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
 }
 
 
-void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdList ) {
+void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     // The pure-D3D12 half: no Gothic access, so it is safe on a pool thread.
     if ( !cmdList || !m_RainShadowPassReady ) return;
 
@@ -771,8 +772,8 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
         cmdList->SetDescriptorHeaps( 1, heaps );
     }
 
-    DX_ZONE( cmdList, "RainShadowmap" );
-    TracyD3D12ZoneCGX( cmdList, "RainShadowmap" );
+    DX_ZONE( cmdList.Get(), "RainShadowmap" );
+    TracyD3D12ZoneCGX( cmdList.Get(), "RainShadowmap" );
 
     // Return the map to DEPTH_WRITE if last frame's readers left it in ALL_SHADER_RESOURCE.
     if ( m_RainShadowInReadState ) {
@@ -811,8 +812,8 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
     // world had no casters), so re-establish them here rather than depending on that branch having run.
     if ( m_RainVobDrawCount > 0 && m_ShadowMap.GetVobIndirectCasterPSO() && m_VobIndirectCmdSig
         && m_RainVobDrawArgs[m_FrameIndex] ) {
-        DX_ZONE( cmdList, "Vobs" );
-        TracyD3D12ZoneCGX( cmdList, "Vobs" );
+        DX_ZONE( cmdList.Get(), "Vobs" );
+        TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 
         const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kRainShadowMapSize), static_cast<float>(kRainShadowMapSize), 0.0f, 1.0f };
         const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kRainShadowMapSize), static_cast<LONG>(kRainShadowMapSize) };

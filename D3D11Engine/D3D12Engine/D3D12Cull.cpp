@@ -209,7 +209,7 @@ void D3D12GraphicsEngine::BuildHiZ() {
     if ( !m_FrameOpen || !m_HiZReady || !m_HiZ || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return;
     if ( !m_Pipelines.Cull.HiZCopyPSO || !m_Pipelines.Cull.HiZReducePSO || !m_Pipelines.Cull.HiZRootSig ) return;
 
-    DX_ZONE( m_CmdList, "Hi-Z build" );
+    DX_ZONE( m_CmdList.Get(), "Hi-Z build" );
 
     D3D12_RESOURCE_BARRIER pre[2] = {};
     UINT preCount = 0;
@@ -267,7 +267,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     if ( !m_GpuVobCullActive || !m_FrameOpen ) return;
     if ( !m_VobCullVisuals[m_FrameIndex] || !m_VobInstanceBuffer[m_FrameIndex] ) return;
 
-    DX_ZONE( m_CmdList, "VOB cull (compute)" );
+    DX_ZONE( m_CmdList.Get(), "VOB cull (compute)" );
 
     // --- Restore rest states the previous frame's draws left behind (same pattern as m_LightGridInPixelState) ---
     {

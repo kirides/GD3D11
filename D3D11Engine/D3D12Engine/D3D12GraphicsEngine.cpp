@@ -1048,6 +1048,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	dsv.Format = DXGI_FORMAT_D32_FLOAT;   // typeless resource viewed as depth here
 	dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
 	device->CreateDepthStencilView( m_DepthBuffer.Get(), &dsv, m_DsvHeap->GetCPUDescriptorHandleForHeapStart() );
+	m_CmdList.InvalidateRenderTargets();   // descriptor rewritten in place — see D3D12StateCache.h
 
 	// R32_FLOAT SRV of the same texels for the light cull's per-tile far-Z read. Slot allocated once; the view is
 	// (re)created every call so it always points at the current (post-resize) resource.
@@ -1109,6 +1110,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	m_SceneColorRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	m_SceneColorRtv.ptr += static_cast<SIZE_T>(kBackBufferMax) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_SceneColor.Get(), nullptr, m_SceneColorRtv );
+	m_CmdList.InvalidateRenderTargets();
 
 	// SRV for the tonemap resolve (slot allocated once; view re-created each call to point at the current resource).
 	if ( m_SceneColorSrvSlot == UINT_MAX ) {
@@ -1179,7 +1181,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	// Tonemap the finished HDR scene onto the display target, then leave it bound so the 2D UI (drawn after
 	// OnStartWorldRendering) composites on top. If HDR is unavailable, no-op (nothing to show).
 	if ( !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig || !m_CmdList ) return;
-	DX_ZONE( m_CmdList, "Tonemap resolve (HDR->display)" );
+	DX_ZONE( m_CmdList.Get(), "Tonemap resolve (HDR->display)" );
 
 	if ( !m_SceneColorInPixelState ) {
 		auto toSrv = TransitionBarrier( m_SceneColor.Get(),
@@ -1372,6 +1374,7 @@ bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 	m_HdrDisplayRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	m_HdrDisplayRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 3 ) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_HdrDisplay.Get(), nullptr, m_HdrDisplayRtv );
+	m_CmdList.InvalidateRenderTargets();
 
 	if ( m_HdrDisplaySrvSlot == UINT_MAX ) m_HdrDisplaySrvSlot = AllocateSrvSlot();
 	if ( m_HdrDisplaySrvSlot == UINT_MAX ) return false;
@@ -1392,7 +1395,7 @@ bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 	if ( !m_HdrOutputActive || !m_HdrDisplay || !m_CmdList ) return;
 	if ( !m_Pipelines.HdrEncode.PSO || !m_Pipelines.HdrEncode.RootSig || m_HdrDisplaySrvSlot == UINT_MAX ) return;
-	DX_ZONE( m_CmdList, "HDR scanout encode (display->swapchain)" );
+	DX_ZONE( m_CmdList.Get(), "HDR scanout encode (display->swapchain)" );
 
 	auto toSrv = TransitionBarrier( m_HdrDisplay.Get(),
 		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
@@ -1691,6 +1694,7 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
             return false;
         m_BackBuffers[i]->SetName( i == 0 ? L"BackBuffer0" : L"BackBuffer1" );
         device->CreateRenderTargetView( m_BackBuffers[i].Get(), nullptr, rtvHandle );
+        m_CmdList.InvalidateRenderTargets();
         rtvHandle.ptr += m_RtvDescriptorSize;
     }
     return true;
@@ -1754,9 +1758,12 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         hr = m_CmdAllocators[m_FrameIndex]->Reset();
         if ( FAILED( hr ) ) return XR_FAILED;
     }
-    hr = m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
+    // Goes through the state cache, which drops its shadow with the list state Reset just discarded.
+    hr = m_CmdList.Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
     if ( FAILED( hr ) ) return XR_FAILED;
     ResetCpuContextTracker();
+    m_CmdList.ResetStats();
+    for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
     auto toRT = TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(),
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
@@ -1975,12 +1982,33 @@ static void DiagnoseErrors(ID3D12Device* device) {
 XRESULT D3D12GraphicsEngine::Present() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
 
+    // Publish this frame's state-cache tally into the shared stats block the ImGui overlay reads
+    // ("StateChanges"). Issued = binds that actually reached the driver, across the main list and every
+    // shadow-recording list; the filtered count is what the cache saved. Written here, immediately before
+    // the overlay draws, because GothicAPI::OnWorldUpdate zeroes RendererInfo at the top of each frame.
+    {
+        UINT issued = m_CmdList.GetStats().Issued;
+        UINT filtered = m_CmdList.GetStats().Filtered;
+        for ( UINT s = 0; s < kShadowRecordSlots; ++s ) {
+            issued += m_ShadowCmdLists[s][m_FrameIndex].GetStats().Issued;
+            filtered += m_ShadowCmdLists[s][m_FrameIndex].GetStats().Filtered;
+        }
+        GothicRendererInfo& info = Engine::GAPI->GetRendererState().RendererInfo;
+        info.StateChanges = issued;
+        info.FramePipelineStates = filtered;   // "SC_PipelineStates" row — redundant binds dropped
+    }
+
     // Draw the ImGui overlay last, on top of the 2D UI, while the backbuffer is still a render target.
     // The SRV heap is bound (OnBeginFrame); re-bind the RTV defensively in case a draw changed it.
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "ImGui" );
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
         Engine::ImGuiHandle->RenderLoopD3D12( m_CmdList.Get() );
+        // imgui_impl_dx12 records on the RAW list: its own PSO, root signature, descriptor heaps, RTV,
+        // viewport, scissor, topology, blend factor and vertex/index buffers. The state cache cannot see
+        // any of it, so drop the whole shadow — this is the one place in the backend that goes behind it.
+        m_CmdList.InvalidateAll();
     }
 
     // With real HDR output the frame so far lives in the FP16 display buffer; this is the one pass that turns
@@ -2364,6 +2392,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     }
     D3D12_CPU_DESCRIPTOR_HANDLE captureRtv = captureRtvHeap->GetCPUDescriptorHandleForHeapStart();
     device->CreateRenderTargetView( captureTex.Get(), nullptr, captureRtv );
+    m_CmdList.InvalidateRenderTargets();
 
     // m_SceneColor was left in PIXEL_SHADER_RESOURCE state by OnStartWorldRendering's ResolveSceneToBackBuffer
     // call (now genuinely true on the GPU after the flush above) — safe to sample without re-transitioning.

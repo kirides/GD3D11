@@ -553,18 +553,19 @@ namespace {
 }
 
 
-ID3D12GraphicsCommandList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
+D3D12CmdList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
 	// Resets one deferred-shadow (slot x frame-in-flight) allocator/list pair for recording, and returns the
 	// open list (nullptr on failure — the caller then leaves that slot unrecorded and FinishShadowPasses
 	// re-issues the pass inline). Safe without a GPU wait: this pair was last used kBackBufferCount frames ago
 	// and Present() already fenced on that frame.
-	ID3D12CommandAllocator*    alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
-	ID3D12GraphicsCommandList* cl    = m_ShadowCmdLists[slot][m_FrameIndex].Get();
+	ID3D12CommandAllocator* alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
+	D3D12CmdList&           cl    = m_ShadowCmdLists[slot][m_FrameIndex];
 	if ( !alloc || !cl ) return nullptr;
 	if ( FAILED( alloc->Reset() ) ) return nullptr;
-	if ( FAILED( cl->Reset( alloc, nullptr ) ) ) return nullptr;
+	// Goes through the wrapper, so this slot's state shadow is dropped with the list state it describes.
+	if ( FAILED( cl.Reset( alloc, nullptr ) ) ) return nullptr;
 	ResetCpuContextTracker();   // per-thread breadcrumb ring — see D3D12EngineCommon.h
-	return cl;
+	return &cl;
 }
 
 
@@ -616,8 +617,8 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 		// Degrade to the original single-threaded driver: record inline, right here. Same output, same queue
 		// order — just no overlap with the prepass. (The cascades still record in FinishShadowPasses, since
 		// their caster data does not exist until the concurrent cull is joined there.)
-		m_PointShadows.Record( m_CmdList.Get() );
-		RecordRainShadowmap( m_CmdList.Get() );
+		m_PointShadows.Record( m_CmdList );
+		RecordRainShadowmap( m_CmdList );
 		// Those passes leave no render target bound (their DSVs have just left DEPTH_WRITE) and the depth
 		// prepass the caller records next does not bind its own — re-establish the scene-color RT + depth.
 		BindSceneColorTarget();
@@ -638,9 +639,9 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 			[]( const std::stop_token& token, D3D12GraphicsEngine* self ) {
 				if ( token.stop_requested() ) return;
 				ZoneScopedN( "Record point shadows" );
-				ID3D12GraphicsCommandList* cl = self->BeginShadowList( kPointShadowListIndex );
+				D3D12CmdList* cl = self->BeginShadowList( kPointShadowListIndex );
 				if ( !cl ) return;
-				self->m_PointShadows.Record( cl );
+				self->m_PointShadows.Record( *cl );
 				self->m_ShadowListRecorded[kPointShadowListIndex] = SUCCEEDED( cl->Close() );
 			}, this ).future );
 	}
@@ -649,9 +650,9 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 			[]( const std::stop_token& token, D3D12GraphicsEngine* self ) {
 				if ( token.stop_requested() ) return;
 				ZoneScopedN( "Record rain shadowmap" );
-				ID3D12GraphicsCommandList* cl = self->BeginShadowList( kRainShadowListIndex );
+				D3D12CmdList* cl = self->BeginShadowList( kRainShadowListIndex );
 				if ( !cl ) return;
-				self->RecordRainShadowmap( cl );
+				self->RecordRainShadowmap( *cl );
 				self->m_ShadowListRecorded[kRainShadowListIndex] = SUCCEEDED( cl->Close() );
 			}, this ).future );
 	}
@@ -689,7 +690,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 			m_ShadowRecordingPending = true;   // there is now at least one own-list batch to execute below
 		} else {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
-				m_ShadowMap.RecordCascade( c, m_CmdList.Get(), m_ShadowMap.IsSunUp() );
+				m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() );
 		}
 	}
 
@@ -714,14 +715,14 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		// cascade inline and re-issuing here would draw each of them twice.
 		if ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() ) {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
-				if ( !m_ShadowListRecorded[c] ) { m_ShadowMap.RecordCascade( c, m_CmdList.Get(), m_ShadowMap.IsSunUp() ); anyFailed = true; }
+				if ( !m_ShadowListRecorded[c] ) { m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() ); anyFailed = true; }
 		}
 		if ( m_PointShadows.IsPassReady() && !m_ShadowListRecorded[kPointShadowListIndex] ) {
-			m_PointShadows.Record( m_CmdList.Get() );
+			m_PointShadows.Record( m_CmdList );
 			anyFailed = true;
 		}
 		if ( m_RainShadowPassReady && !m_ShadowListRecorded[kRainShadowListIndex] ) {
-			RecordRainShadowmap( m_CmdList.Get() );
+			RecordRainShadowmap( m_CmdList );
 			anyFailed = true;
 		}
 		if ( anyFailed && !m_ShadowRecordFailureLogged ) {
@@ -734,7 +735,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 	// Hand the cascade array to PIXEL_SHADER_RESOURCE for the lit-pass PCF sampling; reverted at the top of next
 	// frame's D3D12ShadowMap::Prepare. (The point-shadow cube and the rain map do their own transition inside
 	// their own pass, which is self-contained in one list.)
-	m_ShadowMap.TransitionToReadState( m_CmdList.Get() );
+	m_ShadowMap.TransitionToReadState( m_CmdList );
 
 	// Every shadow list for this frame is now recorded and submitted (or was re-issued inline above), so the
 	// point-shadow static cubes this frame (re)rendered have actually reached the GPU — only now may their slots
@@ -1997,7 +1998,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
 	if ( vegetationBoxes.empty() ) return;
 
-	DX_ZONE( m_CmdList, "Depth Prepass (vegetation)" );
+	DX_ZONE( m_CmdList.Get(), "Depth Prepass (vegetation)" );
 	TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (vegetation)" );
 
 	// ViewProj — identical derivation to DrawVegetation, so the depth laid down here is what the lit pass
@@ -2094,7 +2095,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
 	if ( vegetationBoxes.empty() ) return;
 
-	DX_ZONE( m_CmdList, "Draw vegetation" );
+	DX_ZONE( m_CmdList.Get(), "Draw vegetation" );
 	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw vegetation" );
 
 	XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -2366,7 +2367,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// specifically NOT safe to move any Gothic read INTO a recorder for the same reason.
 	BuildSkeletalDrawCommands();
     {
-        DX_ZONE( m_CmdList, "Depth Prepass" );
+        DX_ZONE( m_CmdList.Get(), "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
 		// Swap the (write-masked-off) scene-color RTV the prepass used to bind for the two motion/normal
 		// G-buffer targets, and clear velocity to its sentinel. The three prepass passes below then run their
@@ -2413,11 +2414,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// re-establishes the scene-color RT + depth for them.
 	FinishShadowPasses();
     {
-        DX_ZONE( m_CmdList, "Lit Geometry Pass" );
+        DX_ZONE( m_CmdList.Get(), "Lit Geometry Pass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Lit Geometry Pass" );
 	    DrawWorldMesh();
 	    {
-		    DX_ZONE( m_CmdList, "Draw skeletal (color)" );
+		    DX_ZONE( m_CmdList.Get(), "Draw skeletal (color)" );
 		    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal (color)" );
 		    DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
 	    }
@@ -2438,7 +2439,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	decals.clear();
 	Engine::GAPI->GetVisibleDecalList( decals );
 	{
-		DX_ZONE( m_CmdList, "Draw decals (opaque)" );
+		DX_ZONE( m_CmdList.Get(), "Draw decals (opaque)" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (opaque)" );
 		DrawDecalList( decals, true );
 	}
@@ -2457,7 +2458,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	DrawWorldTransparencyMeshes();
 
 	{
-		DX_ZONE( m_CmdList, "Draw decals (transparent)" );
+		DX_ZONE( m_CmdList.Get(), "Draw decals (transparent)" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (transparent)" );
 		DrawDecalList( decals, false );
 	}
@@ -2469,7 +2470,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Particles last: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested
 	// against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
 	{
-		DX_ZONE( m_CmdList, "Draw particles" );
+		DX_ZONE( m_CmdList.Get(), "Draw particles" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particles" );
 		DrawParticleEffects();
 	}
@@ -2477,7 +2478,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Rain/snow (D3D12 rain parity, step 2): unlit placeholder billboards, always "wet" — see
 	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.
 	{
-		DX_ZONE( m_CmdList, "Draw rain" );
+		DX_ZONE( m_CmdList.Get(), "Draw rain" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw rain" );
 		DrawRainParticles();
 	}
@@ -2491,7 +2492,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// pass placement (after the transparency waterfall/decals, before post-FX). MUST run every frame even if
 	// EnableBloom/etc. are off — it also drains GothicAPI::TransparencyVobs, which nothing else consumes.
 	{
-		DX_ZONE( m_CmdList, "Draw ghosts" );
+		DX_ZONE( m_CmdList.Get(), "Draw ghosts" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw ghosts" );
 		DrawGhostVobs();
 	}
@@ -2560,7 +2561,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// pass (after post-FX, before Gothic's 2D UI composites on top). Both calls also CLEAR their cache, so this
 	// is what keeps the line lists from growing unbounded across frames.
 	{
-		DX_ZONE( m_CmdList, "Draw debug lines" );
+		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
 		m_LineRenderer->Flush();
 		m_LineRenderer->FlushScreenSpace();
@@ -2580,7 +2581,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 XRESULT D3D12GraphicsEngine::DrawSky() {
 	if ( !m_FrameOpen ) return XR_SUCCESS;
-	DX_ZONE( m_CmdList, "Draw sky" );
+	DX_ZONE( m_CmdList.Get(), "Draw sky" );
 	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw sky" );
 
 	// Base fallback fill: Gothic's current sky/fog color (see GetSceneFogColorXM — tracks time of day when
@@ -3366,7 +3367,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     if ( !vb->GetResource() || !ib->GetResource() ) return;
     if ( ib->GetSizeInBytes() / sizeof( uint32_t ) == 0 ) return;
 
-    DX_ZONE( m_CmdList, "Depth Prepass (world)" );
+    DX_ZONE( m_CmdList.Get(), "Depth Prepass (world)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (world)" );
 
     // ViewProj — identical derivation to DrawWorldMesh so the prepass depth matches the opaque pass exactly.
@@ -3417,7 +3418,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     if ( !m_LightBuffer[m_FrameIndex] || m_NumTilesX == 0 || m_NumTilesY == 0 )
         return;
 
-    DX_ZONE( m_CmdList, "Light Culling (compute)" );
+    DX_ZONE( m_CmdList.Get(), "Light Culling (compute)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Light Culling (compute)" );
 
     // The lit geometry passes left the grid buffer in PIXEL_SHADER_RESOURCE last frame; transition it back to
@@ -3541,7 +3542,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     const UINT numIndices = ib->GetSizeInBytes() / sizeof( uint32_t );
     if ( numIndices == 0 ) return XR_SUCCESS;
 
-    DX_ZONE( m_CmdList, "Draw World Mesh" );
+    DX_ZONE( m_CmdList.Get(), "Draw World Mesh" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw World Mesh" );
 
     // Camera matrices — replicate the D3D11 DrawWorldMesh setup exactly so ViewProj is byte-identical:
@@ -3755,7 +3756,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     ID3D12Resource* drawArgs = GetVobDrawArgsBuffer();
     if ( m_VobDrawCount == 0 || !drawArgs ) return;
 
-    DX_ZONE( m_CmdList, "Depth Prepass (vobs)" );
+    DX_ZONE( m_CmdList.Get(), "Depth Prepass (vobs)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (vobs)" );
 
     // ViewProj — identical derivation to DrawVobsInstanced so the prepass depth matches the color pass exactly.
@@ -3847,7 +3848,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
 
     {
-        DX_ZONE( m_CmdList, "Draw Vobs" );
+        DX_ZONE( m_CmdList.Get(), "Draw Vobs" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw Vobs" );
         // One GPU-driven submit over the command set BuildVobDrawCommands filled: each command sets its mesh/
         // instance VBVs + IBV, b6 { normal, orm, diffuse } bindless indices (PSMainBindless samples all three),
@@ -4308,7 +4309,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // cutout and ignores the normal/ORM constants each command also carries).
     if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex]
         && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
-        DX_ZONE( m_CmdList, "Depth Prepass (skeletal)" );
+        DX_ZONE( m_CmdList.Get(), "Depth Prepass (skeletal)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (skeletal)" );
         // Motion vectors + normals — see DrawDepthPrepass. VSDepthGBuf skins each vertex twice (current pose and
         // the previous pose out of the same b2 palette), so NPCs get true per-vertex velocity on limbs.
@@ -4332,7 +4333,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // won't reflect the same inflate/scale as the color pass, the same class of bug the wind fix addressed).
     if ( m_AttachDrawCount > 0 && m_VobIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
         && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
-        DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
+        DX_ZONE( m_CmdList.Get(), "Depth Prepass (attachments)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (attachments)" );
         const bool attachGbuf = motionCb && MotionGBufferActive();
         m_CmdList->SetPipelineState( attachGbuf ? m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get()
@@ -4376,7 +4377,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
 
     // Base skinned meshes (lit) — one ExecuteIndirect over the shared command set (see the prepass).
     if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex] ) {
-        DX_ZONE( m_CmdList, "Draw skeletal" );
+        DX_ZONE( m_CmdList.Get(), "Draw skeletal" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal" );
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
@@ -4400,7 +4401,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     // unbound count would run the loop on garbage → GPU TDR hang.
     if ( m_AttachDrawCount > 0 && m_VobIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
         && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig ) {
-        DX_ZONE( m_CmdList, "Draw attachments" );
+        DX_ZONE( m_CmdList.Get(), "Draw attachments" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw attachments" );
         m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );

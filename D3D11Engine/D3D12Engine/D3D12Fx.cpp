@@ -242,7 +242,7 @@ void D3D12GraphicsEngine::DrawMQuadMarks() {
     if ( g_MulQuadMarks.empty() ) return;
     if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig ) { g_MulQuadMarks.clear(); return; }
 
-    DX_ZONE( m_CmdList, "Draw quad marks (modulate)" );
+    DX_ZONE( m_CmdList.Get(), "Draw quad marks (modulate)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw quad marks (modulate)" );
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -331,7 +331,7 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     if ( polyStripInfos.empty() ) return XR_SUCCESS;
     if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig || !m_FxVertexBuffer[m_FrameIndex] ) return XR_SUCCESS;
 
-    DX_ZONE( m_CmdList, "Draw poly strips" );
+    DX_ZONE( m_CmdList.Get(), "Draw poly strips" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw poly strips" );
 
     // Strip vertices are already in world space (GothicAPI builds them that way), so the world matrix is
@@ -435,7 +435,7 @@ void D3D12GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     if ( progMeshes.empty() ) return;
     if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig || !m_DepthBuffer ) return;
 
-    DX_ZONE( m_CmdList, "Draw particle meshes" );
+    DX_ZONE( m_CmdList.Get(), "Draw particle meshes" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particle meshes" );
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();

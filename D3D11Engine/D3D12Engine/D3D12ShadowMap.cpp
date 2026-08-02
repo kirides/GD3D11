@@ -866,9 +866,9 @@ void D3D12ShadowMap::Prepare() {
 					{ ZoneScopedN( "Build shadow cascade" ); self->BuildCascade( cascade ); }
 					if ( !record ) return;
 					ZoneScopedN( "Record shadow cascade" );
-					ID3D12GraphicsCommandList* cl = self->m_E->BeginShadowList( cascade );
+					D3D12CmdList* cl = self->m_E->BeginShadowList( cascade );
 					if ( !cl ) return;   // slot unusable — FinishShadowPasses re-issues this cascade inline
-					self->RecordCascade( cascade, cl, self->m_SunUp );
+					self->RecordCascade( cascade, *cl, self->m_SunUp );
 					// Only a successfully closed list may be executed; a failed Close leaves it unusable.
 					self->m_E->m_ShadowListRecorded[cascade] = SUCCEEDED( cl->Close() );
 				}, this, c, recordInJob ).future );
@@ -1032,7 +1032,7 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 }
 
 
-void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmdList, bool sunUp ) {
+void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool sunUp ) {
 	// Issues one cascade's caster draws into the command list it is handed (m_CmdList on the serial path, that
 	// cascade's own list on the MT path). Pool-thread safe for the same reason CullCascade is: it reads ONLY
 	// per-cascade state and values already resolved on the main thread — the arg buffers + counts, the
@@ -1052,8 +1052,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 		cmdList->SetDescriptorHeaps( 1, heaps );
 	}
 
-	DX_ZONE( cmdList, "Sun Shadow Cascade" );
-	TracyD3D12ZoneCGX( cmdList, "Sun Shadow Cascade" );
+	DX_ZONE( cmdList.Get(), "Sun Shadow Cascade" );
+	TracyD3D12ZoneCGX( cmdList.Get(), "Sun Shadow Cascade" );
 
 	cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // DSV stays bound across the PSO switches below
 	cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );   // normal-Z far
@@ -1077,8 +1077,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 
 	// --- World mesh (root sig: m_Pipelines.World.RootSig; b0 = cascade view-proj; b6 bindless material) ---
 	if ( m_WorldDrawCount[c] > 0 && vb && ib && m_WorldDrawArgs[c][frame] ) {
-		DX_ZONE( cmdList, "World Mesh" );
-		TracyD3D12ZoneCGX( cmdList, "World Mesh" );
+		DX_ZONE( cmdList.Get(), "World Mesh" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
 
 		cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
@@ -1096,8 +1096,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 	// --- Instanced VOBs: one ExecuteIndirect over the command set Phase C built for this cascade ---
 	if ( m_VobDrawCount[c] > 0 && m_CasterVobIndirectPSO && m_E->m_VobIndirectCmdSig
 		&& m_VobDrawArgs[c][frame] ) {
-		DX_ZONE( cmdList, "Vobs" );
-		TracyD3D12ZoneCGX( cmdList, "Vobs" );
+		DX_ZONE( cmdList.Get(), "Vobs" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 		cmdList->SetPipelineState( m_CasterVobIndirectPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
@@ -1108,8 +1108,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 
 	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
 	if ( m_CasterSkeletalPSO && m_E->m_Pipelines.Skeletal.RootSig && !SkelDraws[c].empty() ) {
-		DX_ZONE( cmdList, "Skeletals" );
-		TracyD3D12ZoneCGX( cmdList, "Skeletals" );
+		DX_ZONE( cmdList.Get(), "Skeletals" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 
 		cmdList->SetPipelineState( m_CasterSkeletalPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
@@ -1150,8 +1150,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 
 	// --- Node attachments (weapons/heads) through the VOB caster PSO (packed vertex + single instance) ---
 	if ( m_CasterVobAttachPSO && m_E->m_Pipelines.World.RootSig && !AttachDraws[c].empty() ) {
-		DX_ZONE( cmdList, "Skeletal Nodes" );
-		TracyD3D12ZoneCGX( cmdList, "Skeletal Nodes" );
+		DX_ZONE( cmdList.Get(), "Skeletal Nodes" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletal Nodes" );
 
 		// Attachment variant (Fatness/Scaling instead of wind, needs NORMAL) — must match the depth prepass/
 		// color pass PSO choice for the same reason the wind fix required it (bit-identical transform).
@@ -1180,8 +1180,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 	// applies, t0 grass texture for the alpha-clip) — CULL_NONE caster, see CreateGrassCaster. The boxes were
 	// culled against this cascade's frustum in CullCascade; the CB was filled in Phase A. ---
 	if ( !g_GrassBoxes[c].empty() && m_CasterGrassPSO && m_E->m_Pipelines.Grass.RootSig ) {
-		DX_ZONE( cmdList, "Grass" );
-		TracyD3D12ZoneCGX( cmdList, "Grass" );
+		DX_ZONE( cmdList.Get(), "Grass" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Grass" );
 
 		bool grassBound = false;
 		for ( GVegetationBox* box : g_GrassBoxes[c] ) {
@@ -1222,7 +1222,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 }
 
 
-void D3D12ShadowMap::TransitionToReadState( ID3D12GraphicsCommandList* cmdList ) {
+void D3D12ShadowMap::TransitionToReadState( D3D12CmdList& cmdList ) {
 	// Hand the cascade array to PIXEL_SHADER_RESOURCE for the lit-pass PCF sampling; reverted at the top of next
 	// frame's Prepare(). (The point-shadow cube and the rain map do their own transition inside their own pass,
 	// which is self-contained in one list.)

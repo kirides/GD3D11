@@ -918,6 +918,9 @@
     <ClInclude Include="D3D12Engine\D3D12ShaderBackend.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12StateCache.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\InstancingUtils.h" />
     <ClInclude Include="D3D12Engine\D3D12RenderQueue.h">
       <Filter>Engine\D3D12</Filter>
@@ -925,6 +928,7 @@
     <ClInclude Include="D3D12Engine\D3D12TracyDebug.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="BspPortalCuller.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1323,6 +1327,9 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
+    <ClCompile Include="BspPortalCuller.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

@@ -165,7 +165,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 		|| !m_Pipelines.Bloom.UpsamplePSO || !m_Pipelines.Bloom.CompositePSO || !m_SceneColor )
 		return;
 
-	DX_ZONE( m_CmdList, "Bloom" );
+	DX_ZONE( m_CmdList.Get(), "Bloom" );
 	const int mipCount = m_BloomMipCount;
 
 	struct BloomCB { float texelSizeX, texelSizeY, threshold, knee, intensity, filterRadius, padX, padY; };
@@ -383,7 +383,7 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 		|| m_LumGroupsX == 0 || m_LumGroupsY == 0 )
 		return;
 
-	DX_ZONE( m_CmdList, "Dynamic Exposure (luminance reduce+adapt)" );
+	DX_ZONE( m_CmdList.Get(), "Dynamic Exposure (luminance reduce+adapt)" );
 
 	if ( !m_SceneColorInPixelState ) {
 		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
@@ -586,6 +586,7 @@ bool D3D12GraphicsEngine::CreateSmaaResources( INT2 size ) {
 	m_SmaaBlendRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	m_SmaaBlendRtv.ptr += static_cast<SIZE_T>( kBackBufferMax + 2 ) * m_RtvDescriptorSize;
 	device->CreateRenderTargetView( m_SmaaBlend.Get(), &rtvDesc, m_SmaaBlendRtv );
+	m_CmdList.InvalidateRenderTargets();   // descriptors rewritten in place — see D3D12StateCache.h
 
 	m_SmaaResourcesReady = true;
 	return true;
@@ -604,7 +605,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 		|| !m_Pipelines.Smaa.RootSig || !m_Pipelines.Smaa.EdgePSO || !m_Pipelines.Smaa.BlendPSO || !m_Pipelines.Smaa.NeighborPSO )
 		return;
 
-	DX_ZONE( m_CmdList, "SMAA" );
+	DX_ZONE( m_CmdList.Get(), "SMAA" );
 
 	ID3D12Resource* backBuffer = GetDisplayTarget();
 	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
@@ -703,7 +704,7 @@ void D3D12GraphicsEngine::RenderSharpen() {
 		: m_Pipelines.Sharpen.SimplePSO.Get();
 	if ( !pso ) return;
 
-	DX_ZONE( m_CmdList, "Sharpen" );
+	DX_ZONE( m_CmdList.Get(), "Sharpen" );
 
 	ID3D12Resource* backBuffer = GetDisplayTarget();
 	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();

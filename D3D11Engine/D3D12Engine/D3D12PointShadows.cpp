@@ -971,7 +971,7 @@ void D3D12PointShadows::CommitStaticCache() {
 }
 
 
-void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
+void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// The pure-D3D12 half of the pass: no Gothic access whatsoever, so it is safe on a pool thread. Phases mirror
 	// Prepare()'s comment: A) static casters into m_Cube, C) the dynamic (skeletal + attachment) overlay into its
 	// own m_DynCube, cleared per slot, D) hand the touched slots of BOTH arrays back to the lit pass as
@@ -987,8 +987,8 @@ void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
 		cmdList->SetDescriptorHeaps( 1, heaps );
 	}
 
-	DX_ZONE( cmdList, "Point Shadows (cubes)" );
-	TracyD3D12ZoneCGX( cmdList, "Point Shadows (cubes)" );
+	DX_ZONE( cmdList.Get(), "Point Shadows (cubes)" );
+	TracyD3D12ZoneCGX( cmdList.Get(), "Point Shadows (cubes)" );
 
 	// Face size differs per tier, so the viewport is (re)set per record in Phase A rather than once here. Phases
 	// B-D issue no draws, so they need none. Both tiers share the PSOs — same D16 target format, same topology.
@@ -1069,8 +1069,8 @@ void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
 	// long as Slot::staticValid says it does. The dynamic overlay lives in its own array (Phase C) and the lit pass
 	// mins the two. This is what used to be the `useAside` split plus a per-slot copy every frame.
 	if ( g_PsAnyStatic ) {
-		DX_ZONE( cmdList, "Static Pass" );
-		TracyD3D12ZoneCGX( cmdList, "Static Pass" );
+		DX_ZONE( cmdList.Get(), "Static Pass" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Static Pass" );
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
 			if ( !L.renderStatic ) continue;
 			if ( L.lowRes ) pushSlot( m_LowCube.Get(), m_LowSlotState,    LowIndex( L.slot ), D3D12_RESOURCE_STATE_DEPTH_WRITE );
@@ -1093,8 +1093,8 @@ void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
 			cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
 
 			if ( L.staticWorldEnd > L.staticWorldBegin ) {
-				DX_ZONE( cmdList, "World Mesh" );
-				TracyD3D12ZoneCGX( cmdList, "World Mesh" );
+				DX_ZONE( cmdList.Get(), "World Mesh" );
+				TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
 				cmdList->SetPipelineState( psPipe.CasterWorldPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
@@ -1107,8 +1107,8 @@ void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
 			}
 
 			if ( L.staticVobEnd > L.staticVobBegin ) {
-				DX_ZONE( cmdList, "Vobs" );
-				TracyD3D12ZoneCGX( cmdList, "Vobs" );
+				DX_ZONE( cmdList.Get(), "Vobs" );
+				TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 				cmdList->SetPipelineState( psPipe.CasterVobPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
@@ -1133,8 +1133,8 @@ void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
 	// static depth. SamplePointShadow takes min(static, dynamic), which is the same "occluded by either" result
 	// the composite used to produce.
 	{
-		DX_ZONE( cmdList, "Dynamic Overlay (skeletals)" );
-		TracyD3D12ZoneCGX( cmdList, "Dynamic Overlay (skeletals)" );
+		DX_ZONE( cmdList.Get(), "Dynamic Overlay (skeletals)" );
+		TracyD3D12ZoneCGX( cmdList.Get(), "Dynamic Overlay (skeletals)" );
 		// Phase A leaves whichever tier's viewport its LAST record used still bound. This phase only ever draws
 		// into the full-res active cube, so a low-res viewport surviving from Phase A would squeeze the whole
 		// dynamic overlay into the top-left 32x32 of each 128^2 face — i.e. dynamic point-light shadows visibly
@@ -1185,8 +1185,8 @@ void D3D12PointShadows::Record( ID3D12GraphicsCommandList* cmdList ) {
 			}
 
 			if ( haveAttachDraws ) {
-				DX_ZONE( cmdList, "Skeletal Nodes" );
-				TracyD3D12ZoneCGX( cmdList, "Skeletal Nodes" );
+				DX_ZONE( cmdList.Get(), "Skeletal Nodes" );
+				TracyD3D12ZoneCGX( cmdList.Get(), "Skeletal Nodes" );
 				cmdList->SetPipelineState( psPipe.CasterVobPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );

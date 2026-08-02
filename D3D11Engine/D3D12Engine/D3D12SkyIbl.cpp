@@ -334,7 +334,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
         || std::fabs( p.SunIntensity - m_SkyLastParams.SunIntensity ) > 0.01f;
     if ( !dirty ) return;
 
-    DX_ZONE( m_CmdList, "Sky IBL" );
+    DX_ZONE( m_CmdList.Get(), "Sky IBL" );
 
     // --- Pass 1: analytic radiance -> env cube mip 0 -------------------------------------------------------
     // BOTH cubes go back to UNORDERED_ACCESS: the flag covers the pair because the tail of this function
