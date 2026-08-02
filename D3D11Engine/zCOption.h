@@ -166,6 +166,11 @@ public:
             return 10000;
         } else if ( _stricmp( var, "zSndCacheSizeMaxBytes" ) == 0 ) {
             return 40000000;
+        } else if ( _stricmp( var, "zMaxFPS" ) == 0 ) {
+            // Force zMaxFPS = 0, otherwise OUR frame limiter collides with Gothics frame limite.
+            // Which causes massive stutter and gameplay slow-down/stuttering depending on the value.
+            // low values like 50 cause slow downs, and high values like 250 cause massive stuttering.
+            return 0;
         }
 
         return HookedFunctions::OriginalFunctions.original_zCOptionReadDWORD( thisptr, section, var, def );
