@@ -931,7 +931,9 @@ private:
     bool CreateShadowRecordCommandLists();
     // Closes + submits whatever is currently recorded in m_CmdList and immediately reopens it on the SAME
     // frame allocator (no allocator Reset, no GPU wait) so a batch of independently-recorded lists can be
-    // slotted into the queue at this exact point in the frame. Used by BeginShadowRecording.
+    // slotted into the queue at this exact point in the frame — or simply so the GPU can start on what is
+    // already recorded instead of idling until Present. Used by BeginShadowRecording and, again, right before
+    // FinishShadowPasses.
     void SubmitRecordedCommandsAndReopen();
 
     // ---- The deferred shadow driver, called from OnStartWorldRendering (see D3D12Scene.cpp for the rationale).
@@ -944,7 +946,8 @@ private:
     //                          RETURN IMMEDIATELY. The main thread then records the depth prepass, the GPU VOB
     //                          cull, the light cull and SSAO into the reopened m_CmdList while the pool works.
     //   FinishShadowPasses   — join, execute the finished lists (they land in the queue ahead of the still-open
-    //                          part B), re-record any slot that failed, then the post-barriers + RT rebind.
+    //                          part B2 — the lit passes — because the caller submits part B1 immediately before
+    //                          calling this), re-record any slot that failed, then the post-barriers + RT rebind.
     // NOTE the CSM cascades do NOT go through this driver: each cascade is one self-contained job (cull ->
     // build -> record -> close) launched by D3D12ShadowMap::Prepare, far earlier in the frame. Only the join
     // is shared, in FinishShadowPasses. See the phase table in D3D12ShadowMap.h.
