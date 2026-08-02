@@ -234,9 +234,25 @@ bool D3D12PipelineState::CreateWorld() {
 
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
-    // Reversed-Z: test + write depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
+    // Reversed-Z: test depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
+    //
+    // Depth write is OFF. The Forward+ depth prepass already laid down this exact geometry's depth, so every
+    // write here would only restore the value that is already in the buffer. Dropping it (a) removes a
+    // full-resolution depth write per opaque pixel, (b) leaves the depth surface clean for the many passes
+    // that read it later (AO, GPU cull, fog, DoF, TAA) instead of dirtying it again, and (c) lets an
+    // alpha-clipping lit shader take the plain early-Z path rather than Re-Z, since with no write there is
+    // nothing for a `discard` to invalidate.
+    //
+    // GREATER_EQUAL is kept rather than tightened to EQUAL on purpose. The prepass and this pass run DIFFERENT
+    // vertex shaders (DepthPrepass.hlsl:VSWorld vs World.hlsl:VSMain), and HLSL guarantees no cross-shader
+    // invariance for SV_Position — one ULP of difference under EQUAL makes the whole surface vanish, while
+    // under GREATER_EQUAL it still draws. The set of fragments that pass is identical to before this change;
+    // only the redundant write is gone. Same reasoning at the VOB/attachment/skeletal color PSOs.
+    //
+    // Does NOT apply to vegetation: DrawVegetationDepthPrepass is range-limited (kVegetationPrepassRange), so
+    // distant grass has no prepass depth and must keep writing its own or it stops occluding other grass.
     pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
     pso.DepthStencilState.StencilEnable = FALSE;
 
@@ -1197,7 +1213,11 @@ bool D3D12PipelineState::CreateVob() {
     pso.RasterizerState.DepthClipEnable = TRUE;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    // Depth write OFF — DrawVobDepthPrepass already wrote this geometry's depth. See the long note at the
+    // world color PSO (CreateWorld) for why, and for why the test stays GREATER_EQUAL instead of EQUAL.
+    // Inherited by VobAttachPSO and VobIndirectPSO below, which draw the same prepassed geometry; the two
+    // alpha-BLENDED VOB PSOs after them set the mask themselves (they were never in the prepass at all).
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
     pso.DepthStencilState.StencilEnable = FALSE;
 
@@ -1782,7 +1802,9 @@ bool D3D12PipelineState::CreateSkeletal() {
     pso.RasterizerState.DepthClipEnable = TRUE;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    // Depth write OFF — DrawSkeletalDepthPrepass already wrote it. See the world color PSO (CreateWorld).
+    // NOTE: the depth-prepass PSO built further down re-enables the write; it is the one that lays the depth.
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
     pso.DepthStencilState.StencilEnable = FALSE;
 
@@ -1811,6 +1833,10 @@ bool D3D12PipelineState::CreateSkeletal() {
     pso.VS = { Skeletal.DepthPrepassVsBlob->GetBufferPointer(), Skeletal.DepthPrepassVsBlob->GetBufferSize() };
     pso.PS = { Skeletal.DepthPrepassPsBlob->GetBufferPointer(), Skeletal.DepthPrepassPsBlob->GetBufferSize() };
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
+    // ...and depth write back ON. The color PSO above deliberately leaves it OFF (it re-passes over depth this
+    // pass lays down); inheriting that here would make the prepass write nothing at all. Every PSO built from
+    // `pso` from here down is a prepass/G-buffer variant and wants the write.
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
         return false;
