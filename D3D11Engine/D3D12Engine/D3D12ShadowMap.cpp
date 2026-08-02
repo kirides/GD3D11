@@ -869,6 +869,7 @@ void D3D12ShadowMap::Prepare() {
 		m_CascadeMatricesValid = false;   // the frozen matrices no longer describe any rendered slice
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
 			m_WorldDrawCount[c] = 0;
+			m_WorldDepthMergedCount[c] = 0;
 			m_VobDrawCount[c] = 0;
 			g_GrassBoxes[c].clear();
 			SkelDraws[c].clear();
@@ -1021,6 +1022,8 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	// --- World mesh: bbox-test the pre-resolved caster set into this cascade's ExecuteIndirect arg buffer ---
 	m_WorldDrawCount[c] = 0;
 	m_WorldOpaqueDrawCount[c] = 0;
+	m_WorldDepthMergedFirst[c] = 0;
+	m_WorldDepthMergedCount[c] = 0;
 	if ( uint8_t* argPtr = m_WorldDrawArgsPtr[c][m_E->m_FrameIndex] ) {
 		auto* cmds = reinterpret_cast<D3D12GraphicsEngine::WorldDrawCommand*>( argPtr );
 		UINT drawCount = 0;
@@ -1031,6 +1034,10 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 		// staged in normal RAM rather than compacted inside the write-combined UPLOAD ring.)
 		thread_local std::vector<D3D12GraphicsEngine::WorldDrawCommand> alphaCmds;
 		alphaCmds.clear();
+		// Opaque commands mirrored into normal RAM for the depth-only draw-call merge below — see
+		// D3D12GraphicsEngine::CoalesceWorldDepthCommands. thread_local for the same reason alphaCmds is.
+		thread_local std::vector<D3D12GraphicsEngine::WorldDrawCommand> opaqueCmds;
+		opaqueCmds.clear();
 		for ( const ShadowWorldCaster& caster : g_WorldCasters ) {
 			if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( caster.mesh, frustum ) ) continue;
 			if ( drawCount + alphaCmds.size() >= D3D12GraphicsEngine::kMaxWorldDrawCommands ) break;
@@ -1047,8 +1054,8 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 			cmd.Draw.StartIndexLocation = caster.startIndex;
 			cmd.Draw.BaseVertexLocation = 0;
 			cmd.Draw.StartInstanceLocation = 0;
-			if ( caster.alphaTested ) alphaCmds.push_back( cmd );
-			else                      cmds[drawCount++] = cmd;
+			if ( caster.alphaTested ) { alphaCmds.push_back( cmd ); }
+			else                      { cmds[drawCount++] = cmd; opaqueCmds.push_back( cmd ); }
 		}
 		m_WorldOpaqueDrawCount[c] = drawCount;
 		if ( !alphaCmds.empty() ) {
@@ -1057,6 +1064,16 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 			drawCount += static_cast<UINT>( alphaCmds.size() );
 		}
 		m_WorldDrawCount[c] = drawCount;
+
+		// Coalesce the opaque prefix for this cascade's PS-less caster run, appended past the per-material
+		// set (see m_WorldDepthMergedFirst). Same wrapped world IB as the main view, so the same merge holds;
+		// the far cascade is where it pays most (it accepts nearly every section, so its opaque casters are
+		// long contiguous index runs). Pool-thread safe: touches only this cascade's ring and counters.
+		m_WorldDepthMergedFirst[c] = drawCount;
+		m_WorldDepthMergedCount[c] = ( drawCount < D3D12GraphicsEngine::kMaxWorldDrawCommands )
+			? D3D12GraphicsEngine::CoalesceWorldDepthCommands( opaqueCmds, cmds + drawCount,
+				D3D12GraphicsEngine::kMaxWorldDrawCommands - drawCount )
+			: 0;
 	}
 
 	// --- Instanced VOBs: collect this cascade's visible set. The instance-ring upload + indirect-arg build
@@ -1191,7 +1208,15 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 			cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
 				m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 		} else {
-			if ( m_WorldOpaqueDrawCount[c] > 0 ) {
+			// Prefer the coalesced mirror of the opaque prefix (see m_WorldDepthMergedFirst): identical index
+			// coverage in far fewer commands, and this run binds no pixel shader, so the per-material b6
+			// constants it drops are dead.
+			if ( m_WorldDepthMergedCount[c] > 0 ) {
+				cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDepthMergedCount[c],
+					m_WorldDrawArgs[c][frame].Get(),
+					static_cast<UINT64>( m_WorldDepthMergedFirst[c] ) * sizeof( D3D12GraphicsEngine::WorldDrawCommand ),
+					nullptr, 0 );
+			} else if ( m_WorldOpaqueDrawCount[c] > 0 ) {
 				cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldOpaqueDrawCount[c],
 					m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 			}

@@ -193,6 +193,12 @@ private:
     UINT                      m_WorldDrawCount[kShadowCascades] = {};
     // Alpha-test partition point: [0, opaque) needs no cutout, [opaque, total) does. See m_CasterWorldNoAlphaPSO.
     UINT                      m_WorldOpaqueDrawCount[kShadowCascades] = {};
+    // Coalesced mirror of that opaque prefix, appended past m_WorldDrawCount in the same ring — see
+    // D3D12GraphicsEngine::m_WorldDepthMergedFirst. Nothing else reads a cascade's ring, but keeping the
+    // per-material prefix intact keeps the two build sites identical and leaves the fallback available.
+    // 0 = not built (no tail room); RecordCascade then submits the per-material prefix instead.
+    UINT                      m_WorldDepthMergedFirst[kShadowCascades] = {};
+    UINT                      m_WorldDepthMergedCount[kShadowCascades] = {};
     // Per-cascade instanced-VOB arg rings — the VOB analogue of the above (engine sig m_VobIndirectCmdSig).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferMax];

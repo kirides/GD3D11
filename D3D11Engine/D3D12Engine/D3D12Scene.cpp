@@ -2793,6 +2793,42 @@ namespace {
     }
 }
 
+UINT D3D12GraphicsEngine::CoalesceWorldDepthCommands(
+    std::vector<WorldDrawCommand>& opaque, WorldDrawCommand* out, UINT outCapacity ) {
+    // Draw-call merge for the depth-only world submits. Every command here indexes the SAME wrapped world
+    // VB/IB, so two commands whose index ranges touch are one DrawIndexed over the union. Strictly
+    // conservative: only EXACTLY adjacent ranges merge, so not one extra index is ever rasterized — bridging
+    // a gap would re-lay depth for geometry the color pass peeled out (water, portals, alpha-blended) or
+    // frustum-culled, and punch holes in the scene.
+    if ( opaque.empty() || !out || outCapacity == 0 ) return 0;
+
+    std::sort( opaque.begin(), opaque.end(),
+        []( const WorldDrawCommand& a, const WorldDrawCommand& b ) {
+            return a.Draw.StartIndexLocation < b.Draw.StartIndexLocation;
+        } );
+
+    // The surviving command keeps the FIRST constituent's b6 material constants. Nothing on a depth-only PSO
+    // reads them (the opaque run binds no pixel shader at all), but they stay a valid bindless slot rather
+    // than a stale ring value, so a future prepass shader that does read b6 degrades to "wrong texture on a
+    // merged run" instead of sampling a freed descriptor.
+    UINT n = 0;
+    WorldDrawCommand run = opaque[0];
+    for ( size_t i = 1; i < opaque.size(); ++i ) {
+        const WorldDrawCommand& c = opaque[i];
+        if ( c.Draw.StartIndexLocation == run.Draw.StartIndexLocation + run.Draw.IndexCountPerInstance ) {
+            run.Draw.IndexCountPerInstance += c.Draw.IndexCountPerInstance;
+            continue;
+        }
+        if ( n >= outCapacity ) return 0;   // no tail room — caller falls back to the per-material prefix
+        out[n++] = run;
+        run = c;
+    }
+    if ( n >= outCapacity ) return 0;
+    out[n++] = run;
+    return n;
+}
+
+
 void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     // Build this frame's world-mesh ExecuteIndirect command set ONCE (P2.11): frustum-collect the visible sections,
     // then per non-water material append { bindless material indices, DrawIndexedArguments (its index range into
@@ -2828,6 +2864,12 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     // capacity retained across frames (same idiom as `sections` above; no per-frame allocation).
     static std::vector<WorldDrawCommand> alphaCmds;
     alphaCmds.clear();
+
+    // Every opaque command as written, mirrored into normal RAM so CoalesceWorldDepthCommands can sort and
+    // scan it — the ring itself is UPLOAD (write-combined), where a read-back would cost far more than the
+    // copy. static for the same reason alphaCmds is: no per-frame allocation.
+    static std::vector<WorldDrawCommand> opaqueCmds;
+    opaqueCmds.clear();
 
     // Camera position for the alpha-blended peel's painter-order sort key (see the branch below).
     const XMVECTOR transparencyCamPos = Engine::GAPI->GetCameraPositionXM();
@@ -2946,8 +2988,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             c.Draw.StartIndexLocation = mesh->BaseIndexLocation;
             c.Draw.BaseVertexLocation = 0;
             c.Draw.StartInstanceLocation = 0;
-            if ( alphaTested ) alphaCmds.push_back( c );
-            else               cmds[count++] = c;
+            if ( alphaTested ) { alphaCmds.push_back( c ); }
+            else               { cmds[count++] = c; opaqueCmds.push_back( c ); }
             m_WorldDrawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
         }
     }
@@ -2959,6 +3001,15 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         count += static_cast<UINT>( alphaCmds.size() );
     }
     m_WorldDrawCount = count;
+
+    // Coalesced opaque run for the depth prepass, appended PAST the color pass' set so that set is unchanged
+    // (see m_WorldDepthMergedFirst). Degrades to 0 — and the prepass to the per-material prefix — if the
+    // ring's tail can't hold it, so the overflow guard above needs no extra headroom.
+    m_WorldDepthMergedFirst = count;
+    m_WorldDepthMergedCount = ( count < kMaxWorldDrawCommands )
+        ? CoalesceWorldDepthCommands( opaqueCmds, cmds + count, kMaxWorldDrawCommands - count )
+        : 0;
+
     // Painter's order for the peeled alpha-blended surfaces (far -> near), once per frame.
     SortWorldTransparencyMeshes();
 }
@@ -3516,7 +3567,13 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
         return;
     }
     // Opaque prefix, no pixel shader bound at all (set above) — this is the run that gets double-rate Z.
-    if ( m_WorldOpaqueDrawCount > 0 ) {
+    // Prefer the coalesced mirror of that prefix (see m_WorldDepthMergedFirst): identical index coverage,
+    // far fewer commands, and with no PS bound the per-material constants it drops are dead anyway.
+    if ( m_WorldDepthMergedCount > 0 ) {
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDepthMergedCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(),
+            static_cast<UINT64>( m_WorldDepthMergedFirst ) * sizeof( WorldDrawCommand ), nullptr, 0 );
+    } else if ( m_WorldOpaqueDrawCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldOpaqueDrawCount,
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
