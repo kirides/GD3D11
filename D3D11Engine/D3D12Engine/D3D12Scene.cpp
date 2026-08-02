@@ -720,7 +720,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 				// up the "failed to record" warning below every third frame).
 				if ( !m_ShadowMap.ShouldUpdateCascade( c ) ) continue;
 				if ( !m_ShadowListRecorded[c] ) { m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() ); anyFailed = true; }
-		}
+			}
 		}
 		if ( m_PointShadows.IsPassReady() && !m_ShadowListRecorded[kPointShadowListIndex] ) {
 			m_PointShadows.Record( m_CmdList );
@@ -3412,8 +3412,8 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
 
 
 void D3D12GraphicsEngine::DispatchLightCulling() {
-    // CLUSTERED Forward+ light cull (P2.14; tiled P2.9b-2 predecessor). One thread group per (16x16 screen
-    // tile x Z slice) cluster writes a 64-bit light-membership mask into m_LightGridBuffer — see
+    // CLUSTERED Forward+ light cull (P2.14; tiled P2.9b-2 predecessor). One thread group per 16x16 screen tile
+    // writes that tile's whole column of kNumZSlices light-membership masks into m_LightGridBuffer — see
     // Shaders/D3D12/LightCull.hlsl. Cluster Z bounds are analytic (log-distributed over CullCB's NearZ/FarZ),
     // so unlike the old per-tile scheme this pass never touches the depth buffer: no prepass ordering
     // dependency, no depth-SRV round-trip. Verify in RenderDoc: m_LightGridBuffer's Mask should be non-zero for
@@ -3462,7 +3462,10 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LightGridBuffer->GetGPUVirtualAddress() );
-    m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, kNumZSlices );
+    // One group per SCREEN TILE — the shader bins all kNumZSlices clusters of the tile column itself (the 16
+    // clusters share their XY bounds, so culling once per column and Z-binning the survivors is ~16x less work
+    // than the old group-per-cluster dispatch). Do NOT re-add the Z dimension without changing LightCull.hlsl.
+    m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
 
     D3D12_RESOURCE_BARRIER post = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     m_CmdList->ResourceBarrier( 1, &post );
