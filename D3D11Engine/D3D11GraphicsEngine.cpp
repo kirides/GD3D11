@@ -3430,9 +3430,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
                     // Check for deleted attachment
                     if ( !node->NodeVisual ) {
-                        // Remove attachment
-                        delete nodeAttachments[i][0];
-                        nodeAttachments[i].clear();
+                        // Remove attachment. Shared with every other vob carrying this visual, so it
+                        // goes back to the registry rather than being deleted here.
+                        WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
                         LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
 

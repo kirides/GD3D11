@@ -87,6 +87,11 @@ public:
     /** Extracts a zCProgMeshProto from a zCMesh */
     static void ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo* meshInfo );
 
+    /** Releases this node's attachment(s) back to the SharedVisualRegistry and empties the slot without
+        erasing it. Use this instead of deleting a MeshVisualInfo out of a NodeAttachments map - the
+        object is shared with every other vob carrying the same visual. */
+    static void ReleaseNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments, int index );
+
     /** Extracts a node-visual */
     static void ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
 

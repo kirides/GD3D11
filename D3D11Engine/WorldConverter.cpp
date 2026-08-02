@@ -24,6 +24,7 @@
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
+#include "SharedVisualRegistry.h"
 #include "ThreadPool.h"
 #include "vendor/mikktspace.h"
 #include "VertexPacking.h"
@@ -1711,15 +1712,23 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     meshInfo->Visual = reinterpret_cast<zCVisual*>(mesh);
 }
 
+/** Drops this node's attachment(s) back to the shared registry and empties the slot. Leaves the slot
+    itself present in the map: callers use find() != end() to mean "extraction was already attempted
+    for this node", and re-creating it every frame would re-kick extraction forever. */
+void WorldConverter::ReleaseNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments, int index ) {
+    auto& slot = attachments[index];
+    for ( MeshVisualInfo* mvi : slot ) {
+        s_SharedVisualRegistry->Release( mvi );
+    }
+    slot.clear();
+}
+
 /** Extracts a node-visual */
 void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
     ZoneScoped;
 
     // Only allow 1 attachment
-    if ( !attachments[index].empty() ) {
-        delete attachments[index][0];
-        attachments[index].clear();
-    }
+    ReleaseNodeAttachments( attachments, index );
 
     // Extract node visuals
     if ( node->NodeVisual ) {
@@ -1736,21 +1745,31 @@ void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::f
                 return;
             }
 
-            MeshVisualInfo* mi = new MeshVisualInfo;
-            if ( isMMS ) {
-                mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
-                zCObject_AddRef( mi->MorphMeshVisual );
-            }
+            // Every other vob carrying this exact visual gets the same object back - the conversion
+            // and its buffers only happen for the first one. See SharedVisualRegistry.h.
+            bool needsFill = false;
+            MeshVisualInfo* mi = s_SharedVisualRegistry->Acquire( node->NodeVisual, needsFill );
+            if ( needsFill ) {
+                if ( isMMS && !mi->MorphMeshVisual ) {
+                    mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
+                    zCObject_AddRef( mi->MorphMeshVisual );
+                }
 
-            Extract3DSMeshFromVisual2( pm, mi );
-            if ( isMMS ) {
-                mi->Visual = node->NodeVisual;
+                Extract3DSMeshFromVisual2( pm, mi );
+                if ( isMMS ) {
+                    mi->Visual = node->NodeVisual;
+                }
+                mi->Ready.store( true, std::memory_order_release );
             }
 
             attachments[index].emplace_back( mi );
         } else if ( strcmp( ext, ".MDS" ) == 0 || strcmp( ext, ".ASC" ) == 0 ) {
-            MeshVisualInfo* mi = new MeshVisualInfo;
-            ExtractProgMeshProtoFromModel( static_cast<zCModel*>(node->NodeVisual), mi );
+            bool needsFill = false;
+            MeshVisualInfo* mi = s_SharedVisualRegistry->Acquire( node->NodeVisual, needsFill );
+            if ( needsFill ) {
+                ExtractProgMeshProtoFromModel( static_cast<zCModel*>(node->NodeVisual), mi );
+                mi->Ready.store( true, std::memory_order_release );
+            }
             attachments[index].emplace_back( mi );
         }
     }
@@ -1836,21 +1855,26 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
 
     // Only allow 1 attachment (same rule as the synchronous path). The MeshVisualInfo destructor blocks
     // on this visual's own job, so replacing an attachment that is still being extracted is safe.
-    if ( !attachments[index].empty() ) {
-        delete attachments[index][0];
-        attachments[index].clear();
+    ReleaseNodeAttachments( attachments, index );
+
+    // Shared across every vob carrying this visual. If somebody already built (or is building) it, we
+    // are done here - no second conversion, no second set of buffers, no second worker job. This is
+    // where a crowd of identically-armed NPCs stops costing anything past the first one.
+    bool needsFill = false;
+    MeshVisualInfo* mi = s_SharedVisualRegistry->Acquire( node->NodeVisual, needsFill );
+    attachments[index].emplace_back( mi );
+    if ( !needsFill ) {
+        return;
     }
 
     // Build the shell on this thread so the caller can already identify the attachment (Visual is what
     // the "did the visual change?" check compares against), then let a worker fill in the meshes.
-    MeshVisualInfo* mi = new MeshVisualInfo;
     mi->Visual = node->NodeVisual;
-    if ( isMMS ) {
+    if ( isMMS && !mi->MorphMeshVisual ) {
         mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
         zCObject_AddRef( mi->MorphMeshVisual );
     }
     mi->Ready.store( false, std::memory_order_relaxed );
-    attachments[index].emplace_back( mi );
 
     zCVisual* nodeVisual = node->NodeVisual;
     auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS]( const std::stop_token& token ) {

@@ -50,6 +50,7 @@
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
+#include "SharedVisualRegistry.h"
 #include "ThreadPool.h"
 #include "zFILE.h"
 #include "zFILE_VDFS.h"
@@ -898,6 +899,11 @@ void GothicAPI::ResetVobs() {
     }
     SkeletalMeshVobs.clear();
     AnimatedSkeletalVobs.clear();
+
+    // Every skeletal vob is gone now, so every node-attachment reference is released and this should
+    // find nothing left to own. It drops whatever is still there anyway (and logs it) rather than
+    // carrying converted meshes - and the zCVisual keys they hang off - into the next world.
+    s_SharedVisualRegistry->Clear();
 }
 
 /** Called when the game loaded a new level */
@@ -1862,6 +1868,11 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     // Gothic frees this visual once we return - make sure no background node-attachment extraction
     // (WorldConverter::ExtractNodeVisualAsync) is still reading from it.
     WorldConverter::WaitForPendingNodeVisuals( visual );
+
+    // Retire it as a shared-attachment lookup key: the allocator can hand this exact address back out
+    // for an unrelated visual, and matching it would serve a sword's mesh for a lamp. Any attachment
+    // still holding the entry keeps it alive until its own "visual changed" check retires it.
+    s_SharedVisualRegistry->Unregister( visual );
 
     std::vector<std::string> extv;
 
@@ -2930,9 +2941,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
-                // Remove attachment
-                delete nodeAttachments[i][0];
-                nodeAttachments[i].clear();
+                // Remove attachment. Shared with every other vob carrying this visual, so it goes
+                // back to the registry rather than being deleted here.
+                WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
                 LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
 
@@ -3181,9 +3192,9 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
         if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
-                // Remove attachment
-                delete nodeAttachments[i][0];
-                nodeAttachments[i].clear();
+                // Remove attachment. Shared with every other vob carrying this visual, so it goes
+                // back to the registry rather than being deleted here.
+                WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
                 LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
 

@@ -283,6 +283,15 @@ struct MeshVisualInfo : public BaseVisualInfo {
         it flips to true - reading the containers before that races the extraction. Synchronously
         extracted visuals (every other path) leave it at true. */
     std::atomic<bool> Ready{ true };
+
+    /** Set only on node-attachment visuals owned by the SharedVisualRegistry, which hands the same
+        object to every vob attaching the same zCVisual. SharedKey is the registry's lookup key and,
+        unlike Visual, is never rewritten by a background extraction - it is cleared when the entry
+        is unregistered. SharedRefs is the number of NodeAttachments slots pointing here; the visual
+        is destroyed when it hits zero. Both stay 0/null for the non-shared visuals (static meshes,
+        particle effect meshes) that continue to be owned outright by their holder. */
+    zCVisual* SharedKey = nullptr;
+    uint32_t SharedRefs = 0;
 };
 
 /** Holds the converted mesh of a VOB */
@@ -478,14 +487,10 @@ struct SkeletalVobInfo : public BaseVobInfo {
     SkeletalVobInfo(const SkeletalVobInfo& other) = delete;
     SkeletalVobInfo& operator=(const SkeletalVobInfo& other) = delete;
 
-    ~SkeletalVobInfo() override
-    {
-        for ( auto& [k, meshes] : NodeAttachments ) {
-            for ( MeshVisualInfo* mvi : meshes ) {
-                delete mvi;
-            }
-        }
-    }
+    /** Releases this vob's attachments back to the SharedVisualRegistry - they are shared with every
+        other vob carrying the same visuals, so they are not ours to delete. Out of line because it
+        needs the registry. */
+    ~SkeletalVobInfo() override;
 
     /** Updates the vobs constantbuffer */
     void UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb);

@@ -3487,6 +3487,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         batchIndex.clear();
         for ( AttachBatch& b : batches ) b.members.clear();   // keep the inner vectors' capacity
         size_t usedBatches = 0;
+        size_t unbatchable = 0;   // .MMS morph meshes + meshId 0 — forced singletons, see the plots below
 
         for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
             if ( !a.mesh || a.mesh->Indices.empty() || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() )
@@ -3523,8 +3524,18 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 if ( batchable ) batchIndex.emplace( key, bi );
             }
             batches[bi].members.push_back( &a );
+            if ( !batchable ) ++unbatchable;
             m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
         }
+
+        // Live batching telemetry — readable in a real city, where a RenderDoc capture can't be taken at all
+        // (its overhead exhausts the 32-bit address space). "in" vs "batches" is the collapse ratio; "unbatch"
+        // is how much of the gap is structural rather than key-splitting: every NPC head is a .MMS morph mesh
+        // and can never batch (see FrameAttachDraw::batchable), so a high value here means no amount of
+        // refining the batch key will help.
+        TracyPlot( "Attach records in", static_cast<int64_t>( g_FrameAttachDraws.size() ) );
+        TracyPlot( "Attach batches out", static_cast<int64_t>( usedBatches ) );
+        TracyPlot( "Attach unbatchable", static_cast<int64_t>( unbatchable ) );
 
         // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single
         // InstVBV spans them. This is a SECOND copy of the instance data (the collection-time write the
