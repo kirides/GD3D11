@@ -102,6 +102,10 @@ public:
 
     bool IsPassReady() const { return m_PassReady; }
     bool IsSunUp() const { return m_SunUp; }
+    // False for a cascade that is being re-used from an earlier frame this frame (lazy update, see
+    // m_ShouldUpdateCascade). Such a cascade is neither culled, built nor recorded — its slice keeps the depth
+    // it already holds and its matrices stay frozen so the lit pass keeps sampling it correctly.
+    bool ShouldUpdateCascade( UINT cascade ) const { return m_ShouldUpdateCascade[cascade]; }
     // World-space direction TOWARD the sun (this frame, temporally smoothed). Read by the sky-IBL pass.
     const DirectX::XMFLOAT3& GetSunDirWS() const { return m_SunDirWS; }
     const Frustum* CascadeFrusta() const { return m_CascadeFrustum; }
@@ -178,6 +182,19 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
+
+    // Lazy cascade update (parity with D3D11ShadowMap's RendererSettings.DebugSettings.ShadowCascades.
+    // LazyCascadeUpdate): the LAST cascade covers the whole world and is by far the most expensive to cull and
+    // record, while also being the one where a two-frame-old shadow is least visible (it starts thousands of
+    // units out, at a couple of texels per caster). So it only refreshes every kLazyLastCascadeInterval-th
+    // frame; on the other frames its matrices, its frustum and its depth slice are all left exactly as they
+    // were, and the whole cull -> build -> record chain for it is skipped. Only valid because each cascade owns
+    // its own array slice and clears it itself in RecordCascade — skipping the record simply preserves the
+    // contents (this is why D3D11 has to disable the same optimization on its atlas path, which clears wholesale).
+    static constexpr size_t kLazyLastCascadeInterval = 3;
+    size_t m_LazyFrameCounter = 0;
+    bool m_ShouldUpdateCascade[kShadowCascades] = {};   // resolved in ComputeCascadeMatrices, read everywhere else
+    bool m_CascadeMatricesValid = false;                // first frame (and after a Resize) nothing may be frozen
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read
     bool m_RecordedInJob = false;    // this frame's jobs also RECORDED (not just culled/built) — see RecordedInJob()

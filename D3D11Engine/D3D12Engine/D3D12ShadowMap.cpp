@@ -154,6 +154,9 @@ bool D3D12ShadowMap::Resize( UINT newSize ) {
 
 	m_MapSize = newSize;
 	if ( !CreateTextureAndViews( m_MapSize ) ) return false;
+	// Fresh texture -> every slice's depth is gone, and the texel-snap grid changed with the resolution. Nothing
+	// may be frozen next frame; force a full re-render of all cascades.
+	m_CascadeMatricesValid = false;
 
 	LogInfo() << "D3D12: shadow map resized to " << m_MapSize << "x" << m_MapSize;
 	return true;
@@ -527,7 +530,20 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	const float lightDotUp = std::max( fabsf( XMVectorGetX( XMVector3Dot( lightDir, worldUp ) ) ), 0.05f );
 	const float dynamicPullback = std::clamp( 4000.0f / lightDotUp, 2000.0f, 15000.0f );
 
+	// Lazy update decision for this frame (see kLazyLastCascadeInterval). Resolved HERE, ahead of the per-cascade
+	// loop, because a frozen cascade must keep its matrices as well as its depth — recomputing the view-proj of a
+	// slice we are not going to re-render would make the lit pass sample last frame's depth with this frame's
+	// transform. Mirrors D3D11ShadowMap's frameCount-modulo gate.
+	++m_LazyFrameCounter;
+	const bool lazyUpdate = shadowDirSettings.DebugSettings.ShadowCascades.LazyCascadeUpdate && m_CascadeMatricesValid;
+	for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
+	if ( lazyUpdate && kShadowCascades > 1 )
+		m_ShouldUpdateCascade[kShadowCascades - 1] = (m_LazyFrameCounter % kLazyLastCascadeInterval) == 0;
+	m_CascadeMatricesValid = true;
+
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
+		if ( !m_ShouldUpdateCascade[c] ) continue;   // frozen: keep m_CascadeViewProj/m_CascadeFrustum/m_CascadeTexelWorld
+
 		// 8 world-space corners of the camera frustum slice [splits[c], splits[c+1]].
 		XMFLOAT3 corners[8];
 		int ci = 0;
@@ -804,6 +820,11 @@ void D3D12ShadowMap::Prepare() {
 	if ( !sunUp ) {
 		// Nothing casts; each cascade still gets its slice cleared to far (= unshadowed) at record time. No cull
 		// jobs are launched, so FinishPrepare has nothing to wait for and skips Phase C outright.
+		// The lazy gate is overridden here: a frozen cascade skips its RecordCascade entirely, so at dusk the
+		// last cascade would keep the daytime depth it was frozen with for up to two more frames and go on
+		// shadowing after the sun set. Clearing is cheap — always do it.
+		for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
+		m_CascadeMatricesValid = false;   // the frozen matrices no longer describe any rendered slice
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
 			m_WorldDrawCount[c] = 0;
 			m_VobDrawCount[c] = 0;
@@ -858,6 +879,10 @@ void D3D12ShadowMap::Prepare() {
 	g_CullJobs.clear();
 	if ( threadedCull ) {
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
+			// Lazily-frozen cascade: no cull, no build, no record — its slice already holds the depth that its
+			// (equally frozen) matrices describe. m_ShadowListRecorded[c] stays false, and RecordCascade's own
+			// gate keeps FinishShadowPasses' inline fallback from re-issuing it.
+			if ( !m_ShouldUpdateCascade[c] ) continue;
 			// (The flags were cleared at the top of this function, before ANY early-out — see there.)
 			g_CullJobs.push_back( Engine::RenderingThreadPool->enqueue(
 				[]( const std::stop_token& token, D3D12ShadowMap* self, UINT cascade, bool record ) {
@@ -876,6 +901,7 @@ void D3D12ShadowMap::Prepare() {
 		m_CullingPending = true;
 	} else {
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
+			if ( !m_ShouldUpdateCascade[c] ) continue;   // frozen — see the threaded branch above
 			CullCascade( c );
 			BuildCascade( c );
 		}
@@ -1040,6 +1066,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	// (g_SkelMatSrvs / FrameAttachDraw::srv). No Gothic mutation, no UpdateMeshLibTexAniState, no ring writes.
 	if ( !cmdList || !m_DsvHeap ) return;
 	const UINT c = cascade;
+	// Lazily frozen this frame (see kLazyLastCascadeInterval): its slice keeps the depth it already holds and
+	// must NOT even be cleared. Gated here rather than only at the call sites so that every path reaching this
+	// function — the job, FinishShadowPasses' "recording was off" loop and its "the list failed to close"
+	// fallback — agrees, and none of them re-renders a cascade that was never culled or built this frame.
+	if ( !m_ShouldUpdateCascade[c] ) return;
 	const UINT frame = m_E->m_FrameIndex;
 
 	D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
