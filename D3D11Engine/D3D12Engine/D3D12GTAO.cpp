@@ -240,7 +240,7 @@ bool D3D12GraphicsEngine::IsGtaoEnabled() const {
 void D3D12GraphicsEngine::RenderGTAO() {
     if ( !m_FrameOpen || !m_CmdList ) return;
 
-    DX_ZONE( m_CmdList, "XeGTAO" );
+    DX_ZONE( m_CmdList.Get(), "XeGTAO" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "XeGTAO" );
 
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;

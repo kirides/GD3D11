@@ -31,6 +31,7 @@
 
 #include "../Frustum.h"
 #include "D3D12EngineCommon.h"
+#include "D3D12StateCache.h"
 #include "InstancingUtils.h"   // RenderView — the per-cascade visible-VOB collection target
 
 class D3D12GraphicsEngine;
@@ -88,7 +89,7 @@ public:
     void Prepare();
     void CullCascade( UINT cascade );
     void BuildCascade( UINT cascade );
-    void RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmdList, bool sunUp );
+    void RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool sunUp );
     // The single join point for the concurrent per-cascade jobs (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
     void WaitCascadeJobs();
     // True when this frame's cascades recorded into their OWN command lists inside their jobs. False whenever
@@ -97,7 +98,7 @@ public:
     bool RecordedInJob() const { return m_RecordedInJob; }
     // Hand the cascade array to PIXEL_SHADER_RESOURCE for the lit-pass sampling (reverted at the top of the
     // next Prepare()). Issued on the main command list, after every cascade list has been executed.
-    void TransitionToReadState( ID3D12GraphicsCommandList* cmdList );
+    void TransitionToReadState( D3D12CmdList& cmdList );
 
     bool IsPassReady() const { return m_PassReady; }
     bool IsSunUp() const { return m_SunUp; }

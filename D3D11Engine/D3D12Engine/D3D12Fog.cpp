@@ -246,7 +246,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
 
     if ( !heightFog && !godRays ) return;
 
-    DX_ZONE( m_CmdList, "Height fog + god rays" );
+    DX_ZONE( m_CmdList.Get(), "Height fog + god rays" );
 
     // The depth buffer is still bound as the DSV from the geometry passes — drop it (color target only)
     // before transitioning it to a shader-resource state. Combined NON_PIXEL|PIXEL because the god-ray mask

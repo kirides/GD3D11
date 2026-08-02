@@ -283,7 +283,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyMeshes() {
     D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
     if ( !vb->GetResource() || !ib->GetResource() ) { clearLists(); return; }
 
-    DX_ZONE( m_CmdList, "DrawWorldTransparencyMeshes" );
+    DX_ZONE( m_CmdList.Get(), "DrawWorldTransparencyMeshes" );
 
     // ViewProj — identical derivation to DrawWorldMesh/DrawWaterSurfaces (world verts are world-space).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -325,15 +325,15 @@ void D3D12GraphicsEngine::DrawWorldTransparencyMeshes() {
     // Sub-pass order is D3D11's render-graph order: blended surfaces, then the forest portals, then the
     // waterfall foam.
     {
-        DX_ZONE( m_CmdList, "World transparency (blended)" );
+        DX_ZONE( m_CmdList.Get(), "World transparency (blended)" );
         DrawWorldTransparencyList( g_FrameWorldTransparency, EKind::Simple, true );
     }
     if ( drawPortals ) {
-        DX_ZONE( m_CmdList, "World transparency (forest portals)" );
+        DX_ZONE( m_CmdList.Get(), "World transparency (forest portals)" );
         DrawWorldTransparencyList( g_FrameWorldTransparencyPortal, EKind::Portal, false );
     }
     {
-        DX_ZONE( m_CmdList, "World transparency (waterfall foam)" );
+        DX_ZONE( m_CmdList.Get(), "World transparency (waterfall foam)" );
         DrawWorldTransparencyList( g_FrameWorldTransparencyFoam, EKind::Foam, true );
     }
 
@@ -361,7 +361,7 @@ void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
         return;
     }
 
-    DX_ZONE( m_CmdList, "DrawVobAlphaMeshes" );
+    DX_ZONE( m_CmdList.Get(), "DrawVobAlphaMeshes" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw Vobs (blended)" );
 
     // ViewProj — identical derivation to DrawVobsInstanced, so a peeled mesh lands on exactly the pixels it

@@ -14,6 +14,7 @@
 
 #include "D3D12Texture.h"
 #include "D3D12ShaderBackend.h"
+#include "D3D12StateCache.h"
 #include "D3D12PipelineState.h"
 #include "D3D12ShadowMap.h"
 #include "D3D12PointShadows.h"
@@ -53,7 +54,7 @@ public:
     /** Actual configured frame-in-flight count (<= kBackBufferMax). Set once in the constructor from
         RendererSettings.LowLatency, before D3D12ShadowMap::Attach/D3D12PointShadows::Attach copy it -
         never changes afterwards (switching it requires a restart, like D3D11's swapchain waitable flag). */
-    UINT kBackBufferCount = 2;
+    UINT kBackBufferCount = 3;
 
     D3D12GraphicsEngine();
     ~D3D12GraphicsEngine() override;
@@ -456,7 +457,10 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferMax];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferMax];
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CmdList;
+    // The frame's direct command list, behind the engine-wide redundant-state filter (D3D12StateCache.h).
+    // Reads exactly like the ComPtr it replaces (`m_CmdList->Foo()`, `.Get()`, `if (!m_CmdList)`), but every
+    // PSO / root-signature / root-argument / IA / RS / OM bind now goes through the shadow first.
+    D3D12CmdList m_CmdList;
 
     Microsoft::WRL::ComPtr<ID3D12Fence> m_Fence;
     UINT64 m_FenceValues[kBackBufferMax] = {};
@@ -906,7 +910,10 @@ private:
     static constexpr UINT kRainShadowListIndex  = kShadowCascades + 1;
     static constexpr UINT kShadowRecordSlots    = kShadowCascades + 2;
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferMax];
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_ShadowCmdLists[kShadowRecordSlots][kBackBufferMax];
+    // Each recording slot owns its OWN state cache: a D3D12CmdList shadow is per-list and unsynchronized, and
+    // these lists are recorded concurrently on pool threads (one slot per thread) while the main thread records
+    // m_CmdList. Sharing one cache across them would race; per-slot wrappers can't.
+    D3D12CmdList m_ShadowCmdLists[kShadowRecordSlots][kBackBufferMax];
     bool m_ShadowCmdListsReady = false;
     bool CreateShadowRecordCommandLists();
     // Closes + submits whatever is currently recorded in m_CmdList and immediately reopens it on the SAME
@@ -933,7 +940,7 @@ private:
     void FinishShadowPasses();
     // Resets one (slot x frame-in-flight) allocator/list pair and hands back the open list, or nullptr on
     // failure. Public to the recording lambdas only in the sense that they are defined inside member functions.
-    ID3D12GraphicsCommandList* BeginShadowList( UINT slot );
+    D3D12CmdList* BeginShadowList( UINT slot );
     bool m_ShadowListRecorded[kShadowRecordSlots] = {};   // per slot: recorded AND closed successfully this frame
     bool m_ShadowThreadedRecord = false;   // this frame's BeginShadowRecording took the pooled-recording path
     bool m_RainShadowPassReady = false;   // PrepareRainShadowmap produced a valid camera + caster set this frame
@@ -1562,7 +1569,7 @@ private:
     // list it is handed.
     void PrepareRainShadowmap();
     void CollectRainShadowVobs();   // the VOB half of PrepareRainShadowmap (cull -> instance upload -> arg build)
-    void RecordRainShadowmap( ID3D12GraphicsCommandList* cmdList );
+    void RecordRainShadowmap( D3D12CmdList& cmdList );
 
     // Scene wetness ("wet ground"): the port of D3D11's deferred ApplySceneWettness into the Forward+ lit
     // pixel shaders (Shaders/D3D12/include/Wetness.hlsl). All of its inputs ride in the TAIL of the shared
