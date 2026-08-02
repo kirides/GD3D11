@@ -591,11 +591,13 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 	// and return immediately. The caller then records the depth prepass, the GPU VOB cull, the tiled light cull
 	// and SSAO into m_CmdList while the pool records shadows into its own lists.
 	//
-	// Queue ordering: the finished lists must land BETWEEN what is already recorded this frame (OnBeginFrame's
-	// clears, DrawSky, AdvanceRain, the indirect-arg builds) and everything recorded after this point. So
-	// close+submit m_CmdList here and reopen it on the SAME frame allocator; FinishShadowPasses then executes
-	// the shadow lists while the reopened list is still open and unsubmitted, which gives the GPU
-	// [part A][cascades][point cubes][rain map][part B] even though the CPU recorded part B first.
+	// Queue ordering: the finished lists must land AHEAD of the lit geometry passes (the first readers of the
+	// cascade map / point cubes). So close+submit m_CmdList here and reopen it on the SAME frame allocator;
+	// FinishShadowPasses then executes the shadow lists while the reopened list is still open and unsubmitted,
+	// which gives the GPU [part A][part B1][cascades][point cubes][rain map][part B2] even though the CPU
+	// recorded B1 first. (B1 — the depth prepass through sky IBL — is submitted by a second
+	// SubmitRecordedCommandsAndReopen right before FinishShadowPasses, purely so the GPU can start on it
+	// instead of idling until Present; it reads nothing the shadow passes write.)
 	m_ShadowRecordingPending = false;
 	m_ShadowThreadedRecord = false;
 	// ONLY the point/rain slots. The cascade slots belong to the per-cascade jobs launched way back in
@@ -669,8 +671,9 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 	//      gone (its Gothic-mutating half moved into Prepare, its per-cascade half into BuildCascade), so the
 	//      chains have been running since Prepare and this join should find them already finished.
 	//   2. Emit inline anything that could not record into its own list.
-	//   3. Execute every finished list. m_CmdList part B (prepass, culls, SSAO) is still OPEN and unsubmitted,
-	//      so the GPU order stays [part A][shadows][part B] even though the CPU recorded part B first.
+	//   3. Execute every finished list. The caller submitted part B1 (prepass, culls, SSAO, sky IBL) just before
+	//      calling us and reopened m_CmdList, so what is OPEN and unsubmitted here is part B2 — the lit passes
+	//      onwards. GPU order: [part A][part B1][shadows][part B2].
 	// Anything that failed to record is re-issued inline rather than dropped: skipping a pass would desync its
 	// cross-frame resource-state tracking (D3D12PointShadows' per-slot cube states, m_RainShadowInReadState).
 	if ( !m_FrameOpen ) return;
@@ -2415,9 +2418,28 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// run after D3D12ShadowMap::Prepare (it reads its sun direction) and before the lit passes below. No-op on an unchanged
 	// sky; the shaders fall back to the old flat ambient whenever the indices are the 0xFFFFFFFF sentinel.
 	RenderSkyIBL();
-	// Join the shadow recorders and slot their lists into the queue ahead of everything recorded above — the lit
-	// passes below are the first thing this frame that samples the cascade map / point-shadow cubes. Also
-	// re-establishes the scene-color RT + depth for them.
+
+	// Submit part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) NOW instead of letting
+	// it ride along to Present. Without this the GPU sat idle from the shadow lists all the way to the end of the
+	// frame: everything above was recorded long ago but stayed in an open, unsubmitted list while the main thread
+	// went on recording the lit passes, transparency, particles and post-FX. Costs one extra ExecuteCommandLists
+	// (plus the RT/heap rebind Reset drops) and buys the GPU that whole span.
+	//
+	// The reorder this introduces is [A][B1][shadows][B2] rather than [A][shadows][B1+B2]: none of the passes in
+	// B1 read anything a shadow pass writes (the tile cull and SSAO consume only the prepass depth/normals, and
+	// the IBL compute is self-contained on its own cubes), so their new position ahead of the shadow lists is
+	// safe. What still must NOT move is FinishShadowPasses' TransitionToReadState and the lit passes below —
+	// both are recorded into the reopened list and therefore stay behind the shadow lists.
+	if ( m_FrameOpen ) {
+		SubmitRecordedCommandsAndReopen();
+		// The reopen Resets m_CmdList, dropping its render targets/viewport (FinishShadowPasses re-establishes
+		// them again at its tail, but a cascade re-issued inline records before that point).
+		BindSceneColorTarget();
+	}
+
+	// Join the shadow recorders and slot their lists into the queue between the block submitted just above and
+	// everything recorded from here on — the lit passes below are the first thing this frame that samples the
+	// cascade map / point-shadow cubes. Also re-establishes the scene-color RT + depth for them.
 	FinishShadowPasses();
     {
         DX_ZONE( m_CmdList.Get(), "Lit Geometry Pass" );
