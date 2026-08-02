@@ -24,6 +24,7 @@ static void __cdecl CGameManagerRunLoop_PaceFrame() {
         Engine::GraphicsEngine->FrameLimiterEndFrame();
         Engine::GraphicsEngine->WaitForFrameLatencyWaitable();
         Engine::GraphicsEngine->FrameLimiterBeginFrame();
+        FrameMark;
     }
 }
 
