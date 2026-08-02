@@ -51,6 +51,11 @@ namespace {
 		D3D12_VERTEX_BUFFER_VIEW    instView = {};       // 2nd stream (VOBs/attachments); SizeInBytes 0 => single stream
 		D3D12_GPU_VIRTUAL_ADDRESS   instCb = 0;          // skeletal b1
 		D3D12_GPU_VIRTUAL_ADDRESS   boneCb = 0;          // skeletal b2
+		// Can PSCubeClip's `clip(diffuse.a - 0.5)` ever discard here? If not, the record is drawn by the
+		// caster PSO's no-pixel-shader twin — a PS that merely might discard costs the whole draw the
+		// hardware's double-rate depth path, and this pass rasterizes six faces per caster. Resolved by the
+		// builders below (main thread, Gothic-side reads); the recorder just reads the flag.
+		bool                        alphaTested = true;
 	};
 	// Per shadowed light: its cube slot, its 6-face view-proj CB, and the [begin,end) spans it owns in each
 	// of the four draw lists below.
@@ -775,6 +780,7 @@ void D3D12PointShadows::Prepare() {
 							d.startIndex = mesh->BaseIndexLocation;
 							d.instanceCount = 6;
 							d.srv = boundSrv;
+							d.alphaTested = ( tex && tex->HasAlphaChannel() ) || meshKey.Material->HasAlphaTest();
 							g_PsStaticWorldDraws.push_back( d );
 						}
 					}
@@ -816,7 +822,10 @@ void D3D12PointShadows::Prepare() {
 
 					const D3D12_VERTEX_BUFFER_VIEW instView = { viGpu + gatherStart, count * static_cast<UINT>(sizeof( XMFLOAT4X4 )), static_cast<UINT>(sizeof( XMFLOAT4X4 )) };
 					for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( meshKey.Material->GetAniTexture() );
+						zCTexture* const matTex = meshKey.Material->GetAniTexture();
+						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
+							|| meshKey.Material->HasAlphaTest();
 						for ( MeshInfo* mi : meshList ) {
 							if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
 							D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
@@ -830,6 +839,7 @@ void D3D12PointShadows::Prepare() {
 							d.instanceCount = count * 6;
 							d.srv = srv;
 							d.instView = instView;
+							d.alphaTested = matAlphaTested;
 							g_PsStaticVobDraws.push_back( d );
 						}
 					}
@@ -880,7 +890,10 @@ void D3D12PointShadows::Prepare() {
 				model->UpdateMeshLibTexAniState();
 
 				for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
-					const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( mat ? mat->GetAniTexture() : nullptr );
+					zCTexture* const matTex = mat ? mat->GetAniTexture() : nullptr;
+					const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+					const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
+						|| ( mat && mat->HasAlphaTest() );
 					for ( auto const& mesh : meshList ) {
 						if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
 						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
@@ -895,6 +908,7 @@ void D3D12PointShadows::Prepare() {
 						d.srv = srv;
 						d.instCb = sd.instCb;
 						d.boneCb = sd.boneCb;
+						d.alphaTested = matAlphaTested;
 						g_PsDynSkelDraws.push_back( d );
 					}
 				}
@@ -921,6 +935,7 @@ void D3D12PointShadows::Prepare() {
 					d.instanceCount = 6;
 					d.srv = resolveDiffuse( a.tex );
 					d.instView = a.instView;
+					d.alphaTested = a.alphaTested;   // resolved with a.srvSlot on the main thread
 					g_PsDynAttachDraws.push_back( d );
 				}
 			}
@@ -1042,6 +1057,18 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		lastVb = nullptr; lastIb = nullptr; lastSrv = 0;
 		lastInstCb = 0; lastBoneCb = 0; lastInstVbAddr = 0; lastInstVbSize = 0;
 		};
+	// Alpha-clip PSO selection, per draw. Deliberately NOT part of resetBindCache: unlike descriptor tables and
+	// root CBVs, the bound PSO survives a root-signature change, so one filter spanning all four phases is both
+	// correct and the fewest switches. `noAlpha` falls back to the clipping PSO when the twin failed to build,
+	// which collapses the filter back to today's behaviour without a second code path.
+	ID3D12PipelineState* boundPso = nullptr;
+	auto bindCasterPso = [&]( ID3D12PipelineState* clip, ID3D12PipelineState* noAlpha, bool alphaTested ) {
+		ID3D12PipelineState* want = ( alphaTested || !noAlpha ) ? clip : noAlpha;
+		if ( want != boundPso ) {
+			cmdList->SetPipelineState( want );
+			boundPso = want;
+		}
+		};
 	auto emitGeometry = [&]( const PointShadowDraw& d ) {
 		const bool twoStreams = d.instView.SizeInBytes != 0;
 		if ( d.vb != lastVb || d.ib != lastIb
@@ -1095,12 +1122,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			if ( L.staticWorldEnd > L.staticWorldBegin ) {
 				DX_ZONE( cmdList.Get(), "World Mesh" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
-				cmdList->SetPipelineState( psPipe.CasterWorldPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
 				resetBindCache();
 				for ( UINT i = L.staticWorldBegin; i < L.staticWorldEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticWorldDraws[i];
+					bindCasterPso( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldNoAlphaPSO.Get(), d.alphaTested );
 					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
@@ -1109,12 +1136,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			if ( L.staticVobEnd > L.staticVobBegin ) {
 				DX_ZONE( cmdList.Get(), "Vobs" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
-				cmdList->SetPipelineState( psPipe.CasterVobPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
 				resetBindCache();
 				for ( UINT i = L.staticVobBegin; i < L.staticVobEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticVobDraws[i];
+					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
 					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
@@ -1171,12 +1198,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				// smaller root signature), so the skeletal root sig/PSO can't be assumed still bound once we're
 				// past the first light (bug: 2nd+ shadowed light's instCb/boneCb/diffuse binds landed on the
 				// wrong root signature's parameter slots — GPU device hang, caught via D3D12 validation).
-				cmdList->SetPipelineState( psPipe.CasterSkeletalPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.SkeletalRootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
 				resetBindCache();
 				for ( UINT i = L.dynSkelBegin; i < L.dynSkelEnd; ++i ) {
 					const PointShadowDraw& d = g_PsDynSkelDraws[i];
+					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
 					if ( d.instCb != lastInstCb ) { cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb ); lastInstCb = d.instCb; }
 					if ( d.boneCb != lastBoneCb ) { cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb ); lastBoneCb = d.boneCb; }
 					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
@@ -1187,12 +1214,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			if ( haveAttachDraws ) {
 				DX_ZONE( cmdList.Get(), "Skeletal Nodes" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "Skeletal Nodes" );
-				cmdList->SetPipelineState( psPipe.CasterVobPSO.Get() );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
 				resetBindCache();
 				for ( UINT i = L.dynAttachBegin; i < L.dynAttachEnd; ++i ) {
 					const PointShadowDraw& d = g_PsDynAttachDraws[i];
+					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
 					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}

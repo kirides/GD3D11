@@ -945,6 +945,20 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         return false;
     }
 
+    // ...and the same thing with NO pixel shader, for the materials that don't need the cutout (the large
+    // majority of the world). PSClip can `discard`, which forces the whole draw onto the late-Z path; with no
+    // PS bound at all the rasterizer runs depth-only at double rate. See DepthPrepassNoAlphaPSO's declaration.
+    // Non-fatal: DrawDepthPrepass falls back to submitting everything through the clipping PSO if this is null.
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+        noAlpha.PS = {};
+        if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( World.DepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth prepass, no-alpha) — "
+                         "the world prepass keeps alpha-clipping every material.";
+            World.DepthPrepassNoAlphaPSO.Reset();
+        }
+    }
+
     // Instanced-VOB depth prepass PSO (P2.9b-4a): same depth-only state, but the VOB two-stream input layout
     // (packed vertex slot 0 + per-instance world matrix slot 1) and the VOB shader's VSDepth/PSDepthClip.
     if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepth", Shadermodel_VS, World.DepthPrepassVobVsBlob.ReleaseAndGetAddressOf() ) ) {
@@ -1010,6 +1024,14 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass).";
         return false;
     }
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+        noAlpha.PS = {};
+        if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( World.DepthPrepassVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass, no-alpha).";
+            World.DepthPrepassVobAttachNoAlphaPSO.Reset();
+        }
+    }
 
     // Bindless-diffuse VOB depth-prepass PSO (ExecuteIndirect, P2.12): same VSDepth blob + wind-only vobLayout +
     // depth-only state as DepthPrepassVobPSO, only the PS swapped to PSDepthClipBindless (compiled above, shared
@@ -1020,6 +1042,14 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, indirect).";
         return false;
+    }
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+        noAlpha.PS = {};
+        if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( World.DepthPrepassVobNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, no-alpha).";
+            World.DepthPrepassVobNoAlphaPSO.Reset();
+        }
     }
 
     if ( !CreateDepthPrepassGBuf() ) {
@@ -1785,6 +1815,14 @@ bool D3D12PipelineState::CreateSkeletal() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
         return false;
     }
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+        noAlpha.PS = {};
+        if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( Skeletal.DepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass, no-alpha).";
+            Skeletal.DepthPrepassNoAlphaPSO.Reset();
+        }
+    }
 
     // G-buffer prepass variant: motion vectors + normals for skinned meshes (VSDepthGBuf skins the vertex TWICE,
     // once through the current pose and once through the previous one out of the same b2 palette). Optional —
@@ -1885,6 +1923,15 @@ bool D3D12PipelineState::CreatePointShadow() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster).";
         return false;
     }
+    // No-pixel-shader twin — see PointShadowPipeline::CasterWorldNoAlphaPSO. Non-fatal.
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+        noAlpha.PS = {};
+        if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( PointShadow.CasterWorldNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster, no-alpha).";
+            PointShadow.CasterWorldNoAlphaPSO.Reset();
+        }
+    }
 
     // --- VOB caster PSO (P2.10e): same root sig (per-instance world rides the vertex stream, not the root) + the
     // same caster state, but VSCubeVob and a two-stream layout whose instance rows carry InstanceDataStepRate=6 —
@@ -1909,6 +1956,14 @@ bool D3D12PipelineState::CreatePointShadow() {
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PointShadow.CasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster).";
             return false;
+        }
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+            noAlpha.PS = {};
+            if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( PointShadow.CasterVobNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+                LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster, no-alpha).";
+                PointShadow.CasterVobNoAlphaPSO.Reset();
+            }
         }
     }
 
@@ -1953,6 +2008,14 @@ bool D3D12PipelineState::CreatePointShadow() {
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PointShadow.CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster).";
             return false;
+        }
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+            noAlpha.PS = {};
+            if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( PointShadow.CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+                LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster, no-alpha).";
+                PointShadow.CasterSkeletalNoAlphaPSO.Reset();
+            }
         }
     }
     return true;

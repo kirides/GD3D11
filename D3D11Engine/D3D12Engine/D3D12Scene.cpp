@@ -62,7 +62,7 @@ std::vector<VobInfo*> g_FrameVobs;
 // g_SkelUploadCache or a growth of this container can't dangle a record.
 // Deque rather than vector so that growing it cannot invalidate the element pointers the concurrent CSM
 // cascade recorders are holding — see the declaration in D3D12EngineCommon.h.
-std::deque<std::vector<UINT>> g_SkelMatSrvs;
+std::deque<std::vector<SkelMatSlot>> g_SkelMatSrvs;
 size_t g_SkelMatSrvCount = 0;
 
 namespace {
@@ -2358,9 +2358,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// vertex/index binds happen once/frame instead of per-pass, and neither pass issues per-mesh CPU draw calls).
 	if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs && m_VobDrawArgsPtr[m_FrameIndex] ) {
 		m_VobDrawCount = BuildVobDrawCommands( g_FrameVobUploads, m_VobDrawArgsPtr[m_FrameIndex], true,
-			kMaxVobDrawCommands, m_GpuVobCullActive );
+			kMaxVobDrawCommands, m_GpuVobCullActive, true, kVobIndicesMainView, &m_VobOpaqueDrawCount );
 	} else {
 		m_VobDrawCount = 0;
+		m_VobOpaqueDrawCount = 0;
 	}
 	// Build the skeletal + node-attachment ExecuteIndirect command sets ONCE (T9) from g_FrameSkelDraws/
 	// g_FrameAttachDraws, resolving each material's full bindless index set — the depth prepass ignores the
@@ -2776,6 +2777,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     // the shared world VB/IB) }. Water is peeled here into g_FrameWaterSurfaces (drawn later, alpha-blended). Both
     // world passes then consume the result, so the BSP walk + per-material CacheIn happen once/frame (was 2-3x).
     m_WorldDrawCount = 0;
+    m_WorldOpaqueDrawCount = 0;
     m_WorldDrawnIndices = 0;
     g_FrameWaterSurfaces.clear();
     g_FrameWorldTransparency.clear();
@@ -2796,6 +2798,14 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;
+
+    // Alpha-test partition (see m_WorldOpaqueDrawCount): opaque materials go straight into the arg ring, the
+    // alpha-tested minority is staged here and appended after the loop. Staged rather than written straight
+    // into the ring's tail because the ring is UPLOAD (write-combined) memory — compacting the two runs by
+    // reading it back would be far slower than one forward copy out of normal RAM. static: main thread only,
+    // capacity retained across frames (same idiom as `sections` above; no per-frame allocation).
+    static std::vector<WorldDrawCommand> alphaCmds;
+    alphaCmds.clear();
 
     // Camera position for the alpha-blended peel's painter-order sort key (see the branch below).
     const XMVECTOR transparencyCamPos = Engine::GAPI->GetCameraPositionXM();
@@ -2857,7 +2867,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
                 continue;
             }
-            if ( count >= kMaxWorldDrawCommands ) {
+            if ( count + alphaCmds.size() >= kMaxWorldDrawCommands ) {
                 if ( !m_WorldDrawArgsOverflowLogged ) {
                     LogWarn() << "D3D12: world draw-command ring overflow (" << kMaxWorldDrawCommands
                         << " draws/frame); some world materials dropped this frame.";
@@ -2898,7 +2908,13 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 normalStrength = kWetDistortionNormalStrength;
             }
 
-            WorldDrawCommand& c = cmds[count];
+            // Does this material actually need the depth prepass' alpha cutout? Same predicate D3D11 uses to
+            // decide between PS_DiffuseAlphaTestShadows and no pixel shader at all in its Z-prepass / shadow
+            // batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
+            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
+                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+
+            WorldDrawCommand c{};
             c.MatNormalIndex     = normalIdx;
             c.MatOrmIndex        = ormIdx;
             c.MatDiffuseIndex    = diffuseIdx;
@@ -2908,9 +2924,17 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             c.Draw.StartIndexLocation = mesh->BaseIndexLocation;
             c.Draw.BaseVertexLocation = 0;
             c.Draw.StartInstanceLocation = 0;
-            ++count;
+            if ( alphaTested ) alphaCmds.push_back( c );
+            else               cmds[count++] = c;
             m_WorldDrawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
         }
+    }
+    // Append the alpha-tested run behind the opaque one, so the prepass can draw [0, opaque) with no pixel
+    // shader and [opaque, total) with the clipping one.
+    m_WorldOpaqueDrawCount = count;
+    if ( !alphaCmds.empty() ) {
+        std::memcpy( cmds + count, alphaCmds.data(), alphaCmds.size() * sizeof( WorldDrawCommand ) );
+        count += static_cast<UINT>( alphaCmds.size() );
     }
     m_WorldDrawCount = count;
     // Painter's order for the peeled alpha-blended surfaces (far -> near), once per frame.
@@ -2996,14 +3020,30 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
 
 UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-    UINT maxCommands, bool culled, bool cacheIn, int shadowCascade ) {
+    UINT maxCommands, bool culled, bool cacheIn, int shadowCascade, UINT* outOpaqueCount ) {
     // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
     // indices (diffuse always; normal/ORM only when resolveMaps — the depth/shadow passes just alpha-clip on
     // diffuse), pack the mesh + instance VB views + IB view, the per-visual wind min/max, and DrawIndexedInstanced.
     // Same CacheIn/From resolution the per-draw path did — but done ONCE per built buffer instead of per pass.
-    if ( !argPtr ) return 0;
+    if ( !argPtr ) { if ( outOpaqueCount ) *outOpaqueCount = 0; return 0; }
     VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( argPtr );
     UINT count = 0;
+    // Alpha-test partition staging — see the identical block in BuildWorldDrawCommands for why the tail is
+    // staged in normal RAM instead of compacted inside the write-combined UPLOAD ring. thread_local, not
+    // static: the shadow cascades call this concurrently on the worker pool (cacheIn=false).
+    thread_local std::vector<VobDrawCommand> alphaCmds;
+    alphaCmds.clear();
+    // Appends the staged alpha-tested run behind the opaque one and reports the partition point. Both exits
+    // below (ring overflow and normal completion) go through this, or an overflowing frame would silently
+    // drop every alpha-tested draw instead of just the ones past the cap.
+    auto finish = [&]() -> UINT {
+        if ( outOpaqueCount ) *outOpaqueCount = count;
+        if ( !alphaCmds.empty() ) {
+            std::memcpy( cmds + count, alphaCmds.data(), alphaCmds.size() * sizeof( VobDrawCommand ) );
+            count += static_cast<UINT>( alphaCmds.size() );
+        }
+        return count;
+        };
     const uint32_t whiteSlot   = m_BlackTexture->GetSrvSlot();
     const uint32_t defaultOrm  = GetDefaultOrmSrvSlot();
     // Attribute the triangle stat to the main-view build only (resolveMaps): the shadow cascades build the same
@@ -3089,13 +3129,13 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     continue;
                 }
 
-                if ( count >= maxCommands ) {
+                if ( count + alphaCmds.size() >= maxCommands ) {
                     if ( !m_VobDrawArgsOverflowLogged ) {
                         LogWarn() << "D3D12: VOB draw-command ring overflow (" << maxCommands
                             << " draws/frame); some VOBs dropped this frame.";
                         m_VobDrawArgsOverflowLogged = true;
                     }
-                    return count;
+                    return finish();
                 }
 
                 // Pick this command's index buffer. A missing level just falls through to the next-best one,
@@ -3121,7 +3161,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     }
                 }
 
-                VobDrawCommand& c = cmds[count++];
+                VobDrawCommand c{};
                 c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                 // GPU-culled: draw from the compacted buffer CSCull writes (same byte range, different base)
                 // and let CSPatchArgs replace InstanceCount below with the surviving count for this visual.
@@ -3139,12 +3179,17 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 c.Draw.StartIndexLocation    = 0;
                 c.Draw.BaseVertexLocation    = 0;
                 c.Draw.StartInstanceLocation = 0;
+                // Partition by alpha cutout (see m_WorldOpaqueDrawCount): opaque first, alpha-tested appended
+                // by finish(). `alphaTested` is the same flag that already gates the reduced shadow index
+                // buffers above, so there is nothing new to compute here.
+                if ( alphaTested ) alphaCmds.push_back( c );
+                else               cmds[count++] = c;
                 if ( resolveMaps )
                     m_VobDrawnTriangles += (cmdIndexCount / 3) * up.numInstances;
             }
         }
     }
-    return count;
+    return finish();
 }
 
 
@@ -3238,9 +3283,16 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     // submits: they used to do this work after the fan-out.
     m_SkeletalDrawCount = 0;
     m_AttachDrawCount = 0;
+    m_SkeletalOpaqueDrawCount = 0;
+    m_AttachOpaqueDrawCount = 0;
     m_SkeletalDrawnTriangles = 0;
     if ( !m_FrameOpen ) return;
     const UINT frame = m_FrameIndex;
+
+    // Alpha-test partition staging for both command sets below — see BuildWorldDrawCommands for the rationale.
+    // Main thread only (this runs before BeginShadowRecording fans anything out), so plain statics.
+    static std::vector<SkeletalDrawCommand> alphaSkelCmds;
+    static std::vector<VobDrawCommand>      alphaAttachCmds;
 
     auto logOverflow = [this]( const char* what, UINT cap ) {
         if ( !m_SkeletalDrawArgsOverflowLogged ) {
@@ -3254,6 +3306,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     if ( !g_FrameSkelDraws.empty() && m_SkeletalDrawArgsPtr[frame] ) {
         SkeletalDrawCommand* cmds = reinterpret_cast<SkeletalDrawCommand*>( m_SkeletalDrawArgsPtr[frame] );
         UINT count = 0;
+        alphaSkelCmds.clear();
         for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
             if ( !d.visual || !d.vobInfo || !d.vobInfo->Vob ) continue;
             zCModel* model = static_cast<zCModel*>( d.vobInfo->Vob->GetVisual() );
@@ -3270,6 +3323,8 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 UINT mats[3];
                 ResolveMaterialMapSlots( tex, mats );
                 mats[2] = ResolveDiffuseSlotCacheIn( tex );
+                // Alpha-test partition — same predicate as the world/VOB builds (see m_WorldOpaqueDrawCount).
+                const bool alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
 
                 for ( auto const& mesh : meshList ) {
                     if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
@@ -3277,9 +3332,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                     D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
                     D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
                     if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-                    if ( count >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
+                    if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
 
-                    SkeletalDrawCommand& c = cmds[count++];
+                    SkeletalDrawCommand c{};
                     c.InstCB  = d.instCb;
                     c.BoneCB  = d.boneCb;
                     c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
@@ -3292,11 +3347,19 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                     c.Draw.StartIndexLocation    = 0;
                     c.Draw.BaseVertexLocation    = 0;
                     c.Draw.StartInstanceLocation = 0;
+                    if ( alphaTested ) alphaSkelCmds.push_back( c );
+                    else               cmds[count++] = c;
                     m_SkeletalDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
                 }
-                if ( count >= kMaxSkeletalDrawCommands ) break;
+                if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) break;
             }
-            if ( count >= kMaxSkeletalDrawCommands ) break;
+            if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) break;
+        }
+        // Alpha-tested run appended behind the opaque one — see m_WorldOpaqueDrawCount.
+        m_SkeletalOpaqueDrawCount = count;
+        if ( !alphaSkelCmds.empty() ) {
+            std::memcpy( cmds + count, alphaSkelCmds.data(), alphaSkelCmds.size() * sizeof( SkeletalDrawCommand ) );
+            count += static_cast<UINT>( alphaSkelCmds.size() );
         }
         m_SkeletalDrawCount = count;
     }
@@ -3308,19 +3371,25 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     if ( !g_FrameAttachDraws.empty() && m_AttachDrawArgsPtr[frame] ) {
         VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( m_AttachDrawArgsPtr[frame] );
         UINT count = 0;
+        alphaAttachCmds.clear();
         for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
             if ( !a.mesh || a.mesh->Indices.empty() || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() )
                 continue;
             D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
             D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
             if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-            if ( count >= kMaxAttachDrawCommands ) { logOverflow( "attachment", kMaxAttachDrawCommands ); break; }
+            if ( count + alphaAttachCmds.size() >= kMaxAttachDrawCommands ) { logOverflow( "attachment", kMaxAttachDrawCommands ); break; }
 
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
             mats[2] = ResolveDiffuseSlotCacheIn( a.tex );
+            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material — but that
+            // costs nothing here: the prepass cutout is `clip(diffuse.a - 0.5)`, which can only ever discard
+            // when the diffuse actually HAS an alpha channel. The material's HasAlphaTest() flag that the
+            // other three builds also test is pure conservatism (a=1 everywhere never clips).
+            const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
 
-            VobDrawCommand& c = cmds[count++];
+            VobDrawCommand c{};
             c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
             c.InstVBV = a.instView;
             c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
@@ -3336,7 +3405,14 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             c.Draw.StartInstanceLocation = 0;
             c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
             c._cmdPad     = 0;
+            if ( alphaTested ) alphaAttachCmds.push_back( c );
+            else               cmds[count++] = c;
             m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
+        }
+        m_AttachOpaqueDrawCount = count;
+        if ( !alphaAttachCmds.empty() ) {
+            std::memcpy( cmds + count, alphaAttachCmds.data(), alphaAttachCmds.size() * sizeof( VobDrawCommand ) );
+            count += static_cast<UINT>( alphaAttachCmds.size() );
         }
         m_AttachDrawCount = count;
     }
@@ -3384,8 +3460,14 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
+    // Split the submit whenever the no-alpha PSO exists and the G-buffer is off (with the G-buffer on there is
+    // a pixel shader either way, so the split buys nothing). BuildWorldDrawCommands ordered the command set
+    // opaque-prefix / alpha-tested-suffix precisely for this. See World.DepthPrepassNoAlphaPSO.
+    const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassNoAlphaPSO != nullptr;
+
     m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassGBufPSO.Get()
-                                      : m_Pipelines.World.DepthPrepassPSO.Get() );
+                                      : ( splitAlpha ? m_Pipelines.World.DepthPrepassNoAlphaPSO.Get()
+                                                     : m_Pipelines.World.DepthPrepassPSO.Get() ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSWorldGBuf)
@@ -3406,8 +3488,23 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // sets the b6 diffuse index (PSClip alpha-clips bindless) then draws its material's index range. Replaces the
     // per-material descriptor-table binds + DrawIndexedInstanced calls (the CPU cost this optimization targets).
     if ( m_WorldDrawCount == 0 ) return;
-    m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
-        m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+    if ( !splitAlpha ) {
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        return;
+    }
+    // Opaque prefix, no pixel shader bound at all (set above) — this is the run that gets double-rate Z.
+    if ( m_WorldOpaqueDrawCount > 0 ) {
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldOpaqueDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+    }
+    // Alpha-tested suffix through the clipping PSO, starting at the partition point.
+    if ( m_WorldDrawCount > m_WorldOpaqueDrawCount ) {
+        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+        m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount - m_WorldOpaqueDrawCount,
+            m_WorldDrawArgs[m_FrameIndex].Get(),
+            static_cast<UINT64>( m_WorldOpaqueDrawCount ) * sizeof( WorldDrawCommand ), nullptr, 0 );
+    }
 }
 
 
@@ -3782,8 +3879,12 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
     const bool gbuf = motionCb && MotionGBufferActive();
 
+    // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
+    const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassVobNoAlphaPSO != nullptr;
+
     m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassVobGBufPSO.Get()
-                                      : m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
+                                      : ( splitAlpha ? m_Pipelines.World.DepthPrepassVobNoAlphaPSO.Get()
+                                                     : m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() ) );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
     if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB (VSDepthGBuf)
@@ -3802,7 +3903,21 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // wind, then DrawIndexedInstanced — replacing the per-mesh IASetVertexBuffers/table/draw the CPU path issued.
     // drawArgs (GetVobDrawArgsBuffer): the GPU-culled DEFAULT copy (instance counts patched by CullVobsGPU) when
     // culling is active, else the CPU-written UPLOAD ring.
-    m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+    if ( !splitAlpha ) {
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        return;
+    }
+    // drawArgs may be the GPU-culled DEFAULT copy — but CSPatchArgs only rewrites each command's
+    // InstanceCount in place (keyed on the VisualIndex embedded in the command itself), so the opaque/
+    // alpha-tested partition the CPU build laid out survives the cull byte-for-byte. See D3D12Cull.cpp.
+    if ( m_VobOpaqueDrawCount > 0 ) {
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobOpaqueDrawCount, drawArgs, 0, nullptr, 0 );
+    }
+    if ( m_VobDrawCount > m_VobOpaqueDrawCount ) {
+        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount - m_VobOpaqueDrawCount, drawArgs,
+            static_cast<UINT64>( m_VobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
+    }
 }
 
 
@@ -4034,10 +4149,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             if ( g_SkelMatSrvCount >= g_SkelMatSrvs.size() )
                 g_SkelMatSrvs.emplace_back();
             {
-                std::vector<UINT>& matSrvs = g_SkelMatSrvs[g_SkelMatSrvCount];
+                std::vector<SkelMatSlot>& matSrvs = g_SkelMatSrvs[g_SkelMatSrvCount];
                 matSrvs.clear();
-                for ( auto const& [mat, meshList] : visual->SkeletalMeshes )
-                    matSrvs.push_back( ResolveShadowDiffuseSlot( mat ? mat->GetAniTexture() : nullptr ) );
+                for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
+                    zCTexture* matTex = mat ? mat->GetAniTexture() : nullptr;
+                    matSrvs.push_back( { ResolveShadowDiffuseSlot( matTex ),
+                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) } );
+                }
                 entry.matSrvIndex = static_cast<uint32_t>( g_SkelMatSrvCount++ );
             }
 
@@ -4260,7 +4378,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately
                             // must not do.
                             entry.attachments.push_back( { attMesh.get(), attTex, attInstView, vi->Vob,
-                                ResolveShadowDiffuseSlot( attTex ) } );
+                                ResolveShadowDiffuseSlot( attTex ),
+                                attTex && attTex->HasAlphaChannel() } );
                         }
                     }
                 }
@@ -4322,8 +4441,11 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         // Motion vectors + normals — see DrawDepthPrepass. VSDepthGBuf skins each vertex twice (current pose and
         // the previous pose out of the same b2 palette), so NPCs get true per-vertex velocity on limbs.
         const bool skelGbuf = motionCb && MotionGBufferActive();
+        // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
+        const bool splitAlpha = !skelGbuf && m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO != nullptr;
         m_CmdList->SetPipelineState( skelGbuf ? m_Pipelines.Skeletal.DepthPrepassGBufPSO.Get()
-                                              : m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
+                                              : ( splitAlpha ? m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO.Get()
+                                                             : m_Pipelines.Skeletal.DepthPrepassPSO.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b9 MotionCB
@@ -4332,8 +4454,21 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
         // Each command sets its own b1 instance CBV + b2 bone CBV + skinned VBV + IBV + b6 material consts,
         // then DrawIndexed — replacing the per-vob root-CBV sets and per-mesh IA binds the CPU path issued.
-        m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
-            m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        if ( !splitAlpha ) {
+            m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
+                m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        } else {
+            if ( m_SkeletalOpaqueDrawCount > 0 ) {
+                m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalOpaqueDrawCount,
+                    m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+            }
+            if ( m_SkeletalDrawCount > m_SkeletalOpaqueDrawCount ) {
+                m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
+                m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(),
+                    m_SkeletalDrawCount - m_SkeletalOpaqueDrawCount, m_SkeletalDrawArgs[m_FrameIndex].Get(),
+                    static_cast<UINT64>( m_SkeletalOpaqueDrawCount ) * sizeof( SkeletalDrawCommand ), nullptr, 0 );
+            }
+        }
     }
 
     // Node attachments (depth only) through the VOB attachment depth PSO (Fatness/Scaling variant — see
@@ -4344,8 +4479,11 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass (attachments)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (attachments)" );
         const bool attachGbuf = motionCb && MotionGBufferActive();
+        // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
+        const bool attachSplit = !attachGbuf && m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO != nullptr;
         m_CmdList->SetPipelineState( attachGbuf ? m_Pipelines.World.DepthPrepassVobAttachGBufPSO.Get()
-                                                : m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
+                                                : ( attachSplit ? m_Pipelines.World.DepthPrepassVobAttachNoAlphaPSO.Get()
+                                                                : m_Pipelines.World.DepthPrepassVobAttachPSO.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         if ( attachGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b5 MotionCB
@@ -4355,8 +4493,21 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
-            m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        if ( !attachSplit ) {
+            m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
+                m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        } else {
+            if ( m_AttachOpaqueDrawCount > 0 ) {
+                m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachOpaqueDrawCount,
+                    m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+            }
+            if ( m_AttachDrawCount > m_AttachOpaqueDrawCount ) {
+                m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
+                m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(),
+                    m_AttachDrawCount - m_AttachOpaqueDrawCount, m_AttachDrawArgs[m_FrameIndex].Get(),
+                    static_cast<UINT64>( m_AttachOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
+            }
+        }
     }
 }
 

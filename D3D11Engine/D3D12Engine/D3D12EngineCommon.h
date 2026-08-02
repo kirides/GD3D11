@@ -58,12 +58,16 @@ struct FrameSkelDraw {
 // reason — the attachment passes are fully bindless (b6 MaterialCB, no t0 table), so what the recorder needs
 // is the heap index, not a table handle. The main-view prepass/color paths still resolve `tex` themselves
 // (they CacheIn, which the shadow paths deliberately don't), so both fields stay live.
+// alphaTested = can the depth/caster PS' `clip(diffuse.a - 0.5)` ever discard for this attachment? Resolved on
+// the main thread with srvSlot (a pool-thread recorder must not read Gothic texture state), and used by every
+// depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
     D3D12_VERTEX_BUFFER_VIEW    instView;
     const zCVob*                owner;
     UINT                        srvSlot;
+    bool                        alphaTested;
 };
 
 // Per-frame GPU point light. Filled by BuildFrameLightBuffer (D3D12Scene.cpp); the point-shadow slot
@@ -117,7 +121,14 @@ extern std::vector<VobInfo*> g_FrameVobs;
 // still appending to it — the point-shadow prepare runs its own PrepareFrameSkeletals after the cascade jobs
 // have launched. A vector's push_back would reallocate and turn those pointers into use-after-free; deque
 // guarantees references to existing elements survive a push_back.
-extern std::deque<std::vector<UINT>> g_SkelMatSrvs;
+// alphaTested rides along for the same reason it does on FrameAttachDraw: the shadow/depth casters want to skip
+// the alpha-clip pixel shader entirely for a material whose diffuse has no alpha channel, and only the main
+// thread may ask Gothic that question.
+struct SkelMatSlot {
+    UINT slot;
+    bool alphaTested;
+};
+extern std::deque<std::vector<SkelMatSlot>> g_SkelMatSrvs;
 extern size_t g_SkelMatSrvCount;
 
 // Water surfaces peeled out of the opaque world pass (BuildWorldDrawCommands, D3D12Scene.cpp) and drawn

@@ -114,6 +114,10 @@ public:
     // through the engine's shared VOB command signature, so the two passes are byte-compatible.
     ID3D12PipelineState* GetWorldCasterPSO() const { return m_CasterWorldPSO.Get(); }
     ID3D12PipelineState* GetVobIndirectCasterPSO() const { return m_CasterVobIndirectPSO.Get(); }
+    // ...and their no-pixel-shader twins, for the leading opaque run of a partitioned caster command set.
+    // Null when PSO creation failed, in which case the caller submits everything through the clipping PSO.
+    ID3D12PipelineState* GetWorldCasterNoAlphaPSO() const { return m_CasterWorldNoAlphaPSO.Get(); }
+    ID3D12PipelineState* GetVobIndirectCasterNoAlphaPSO() const { return m_CasterVobIndirectNoAlphaPSO.Get(); }
 
     // ---- Per-cascade caster records, filled by the engine's shared collectors ----
     // The skeletal/attachment records are written by D3D12GraphicsEngine::PrepareFrameSkeletals (multi-cascade
@@ -155,6 +159,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterVobAttachPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterSkeletalPSO;
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterSkeletalPsBlob;
+    // NO-PIXEL-SHADER caster twins (`PS = {}`) of the four above. A caster whose diffuse has no alpha channel
+    // cannot be clipped by PSShadowClip's `clip(a - 0.5)` — binding a PS that merely *might* discard costs the
+    // whole draw the hardware's double-rate depth-only path, over three cascades plus the rain map plus the
+    // point-shadow cubes. Every caster list is partitioned opaque-first so each pass can submit the leading
+    // run through these and only the tail through the clipping PSOs. Mirror of the main-view
+    // World.DepthPrepassNoAlphaPSO family; likewise optional (null => no split, everything clips as before).
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterWorldNoAlphaPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterVobIndirectNoAlphaPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterVobAttachNoAlphaPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterSkeletalNoAlphaPSO;
     // CULL_NONE (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterGrassPSO;
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterGrassVsBlob;   // VSDepth (Vegetation.hlsl)
@@ -177,11 +191,14 @@ private:
     uint8_t*                  m_WorldDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kShadowCascades][kBackBufferMax] = {};
     UINT                      m_WorldDrawCount[kShadowCascades] = {};
+    // Alpha-test partition point: [0, opaque) needs no cutout, [opaque, total) does. See m_CasterWorldNoAlphaPSO.
+    UINT                      m_WorldOpaqueDrawCount[kShadowCascades] = {};
     // Per-cascade instanced-VOB arg rings — the VOB analogue of the above (engine sig m_VobIndirectCmdSig).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
+    UINT     m_VobOpaqueDrawCount[kShadowCascades] = {};   // alpha-test partition — see m_WorldOpaqueDrawCount
 
     // Lazy cascade update (parity with D3D11ShadowMap's RendererSettings.DebugSettings.ShadowCascades.
     // LazyCascadeUpdate): the LAST cascade covers the whole world and is by far the most expensive to cull and
