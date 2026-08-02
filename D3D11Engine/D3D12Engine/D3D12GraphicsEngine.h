@@ -696,10 +696,24 @@ private:
     // suffix through the clipping one. The color pass draws the whole range as before — opaque geometry is
     // order-independent, so the reordering is invisible to it.
     UINT m_WorldOpaqueDrawCount = 0;
+    // Coalesced mirror of the opaque prefix, appended at [m_WorldDepthMergedFirst, +m_WorldDepthMergedCount)
+    // — i.e. PAST m_WorldDrawCount, so the color pass' view of the ring is untouched. The wrapped world index
+    // buffer is packed section-major (WorldConverter::WrapVertexBuffers), so a visible section's opaque
+    // materials land in one contiguous index run; with no pixel shader bound their per-material b6 constants
+    // are dead, which makes those N commands one DrawIndexed over the merged range. Only the depth-only
+    // submits (this prepass + every CSM cascade's world casters) may use it. 0 = not built this frame (ring
+    // had no tail room), callers fall back to the per-material prefix.
+    UINT m_WorldDepthMergedFirst = 0;
+    UINT m_WorldDepthMergedCount = 0;
     unsigned int m_WorldDrawnIndices = 0;            // total indices in this frame's command set (triangle counter)
     bool m_WorldDrawArgsOverflowLogged = false;
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
+    // Merges the opaque world commands in `opaque` (sorted in place) into the fewest DrawIndexed commands
+    // covering the EXACT same index ranges, written to `out`. Shared by BuildWorldDrawCommands and
+    // D3D12ShadowMap::CullCascade. Returns the merged count, or 0 if `out` could not hold the result.
+    static UINT CoalesceWorldDepthCommands( std::vector<WorldDrawCommand>& opaque,
+        WorldDrawCommand* out, UINT outCapacity );
 
     // ---- Alpha-blended world-mesh surfaces (D3D12Transparency.cpp) — port of D3D11's
     // DrawMeshInfoListAlphablended. BuildWorldDrawCommands peels these out of the opaque command set into
