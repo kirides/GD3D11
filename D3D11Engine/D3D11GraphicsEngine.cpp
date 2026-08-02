@@ -3551,7 +3551,19 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instData.Color = modelColor;
                         instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
 
-                        for ( auto const& itm : mvi->Meshes ) {
+                        // Anything .MMS that gets here is out of morph range (the branch above consumed
+                        // every in-range one), so it must draw the SHARED undeformed rest mesh rather than
+                        // its own copy - that copy still holds the deformation from the last time it was in
+                        // range. This also makes the batching below correct: these records already share a
+                        // meshId, so a batch was binding one member's stale buffers for all of them. Falls
+                        // back to the morph copy while the rest mesh is still being built.
+                        MeshVisualInfo* drawVis = mvi;
+                        if ( isMMS && mvi->RestVisual
+                            && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
+                            drawVis = mvi->RestVisual;
+                        }
+
+                        for ( auto const& itm : drawVis->Meshes ) {
                             zCTexture* texture = nullptr;
                             FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
                             if ( itm.first ) {

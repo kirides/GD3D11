@@ -73,7 +73,12 @@ public:
     static void Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisualInfo* meshInfo );
 
     /** Extracts a 3DS-Mesh from a zCVisual */
-    static void Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo );
+    /** 'positionOverride' replaces the visual's live position list for the duration of the extraction,
+        which is how the undeformed rest mesh of a .MMS is built: zCMorphMesh deforms one SHARED position
+        list in place right before each instance draws, so the only way to capture the rest pose is to
+        read zCMorphMeshProto's pristine arrays instead. Ignored (with a fallback to the live list) unless
+        it covers every vertex the wedges can index. */
+    static void Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo, const float3* positionOverride = nullptr, int positionOverrideCount = 0 );
 
     /** Updates a Morph-Mesh visual */
     static void UpdateMorphMeshVisual( void* visual, MeshVisualInfo* meshInfo );
