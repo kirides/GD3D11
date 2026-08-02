@@ -3301,15 +3301,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         // rebinding two VBVs + an IBV — a full IA state change for ~200 vertices, which is what makes this
         // pass draw-bound rather than geometry-bound. Batch them the way D3D11 does (see the
         // NodeAttachmentDrawItem loop in D3D11GraphicsEngine.cpp): the batch head supplies the VB/IB for
-        // every member, so the key has to mean "same buffers" — and the MeshInfo POINTER says exactly that.
-        // It only works as a key because the SharedVisualRegistry gives every distinct converted mesh
-        // exactly one MeshInfo, shared by every vob referencing it; before that, identical geometry really
-        // did arrive as N distinct MeshInfos and meshId was the only thing that matched.
-        //
-        // meshId is NOT used here any more. It identifies the source zCSubMesh, which is a weaker claim
-        // than "same buffers": a morph attachment and its undeformed rest mesh are both extracted from the
-        // same zCProgMeshProto, and two .MDS/.ASC node visuals bake different node transforms into their
-        // vertices — in both cases equal meshId, different geometry. Keying on it aliased those together.
+        // every member, so the key must mean "same buffers" — the MeshInfo POINTER says exactly that, and
+        // works as a key because the SharedVisualRegistry dedupes conversions. Not meshId: it identifies
+        // the source zCSubMesh, which is weaker and aliases distinct geometry (see MeshInfo::meshId).
         //
         // Grouped through a hash map rather than a sort: the key is (mesh, material, alphaTested) and
         // nothing downstream depends on attachment draw ORDER (all opaque, depth-tested). The material is
@@ -3361,10 +3355,8 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             // other three builds also test is pure conservatism (a=1 everywhere never clips).
             const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
 
-            // !batchable = an actively morphing .MMS, whose vertex buffer is re-deformed per frame for this
-            // instance alone (see FrameAttachDraw::batchable). It gets its own singleton command and is
-            // never entered into the index, so nothing can join it either. The old "meshId 0" half of this
-            // gate is gone - a MeshInfo pointer is always a valid identity.
+            // !batchable = an actively morphing .MMS (see FrameAttachDraw::batchable). Its own singleton
+            // command, never entered into the index, so nothing can join it either.
             const bool batchable = a.batchable;
             const AttachBatchKey key{ a.mesh, { mats[0], mats[1], mats[2] }, alphaTested };
             size_t bi;
@@ -4358,13 +4350,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         // own LastAniUpdateFrame guard already limits this to once per animation frame.
                         WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
                     }
-                    // A non-morphing .MMS draws the SHARED undeformed rest mesh instead of its own copy.
-                    // That copy still holds whatever deformation was current the last time this head was
-                    // inside kMorphMeshMaxDistance, so drawing it out of range is both wrong and forces a
-                    // singleton command (every instance is stale differently). The rest mesh is one
-                    // MeshInfo for every head of this type, so they all collapse into one batch — this is
-                    // what turns the "Attach unbatchable" plot's NPC heads into batchable records. Falls
-                    // back to the morph copy while the rest mesh is still being built on a worker.
+                    // A non-morphing .MMS draws the shared rest mesh instead of its own copy, which still
+                    // holds the deformation from when it was last inside kMorphMeshMaxDistance. One MeshInfo
+                    // for every head of this type, so they batch — this is what drains "Attach unbatchable".
+                    // Falls back to the morph copy while the rest mesh is still being built on a worker.
                     MeshVisualInfo* drawVis = mvi;
                     if ( isMMS && !morphActive && mvi->RestVisual
                         && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {

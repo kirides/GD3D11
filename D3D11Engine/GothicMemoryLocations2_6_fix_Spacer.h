@@ -217,11 +217,9 @@ struct GothicMemoryLocations {
     struct zCMorphMesh {
         static const unsigned int Offset_MorphMesh = 0x38;
         static const unsigned int Offset_TexAniState = 0x40;
-        // Shared morph prototype and the optional "reference shape" ani. Together these give the
-        // UNDEFORMED rest positions: zCMorphMesh::CalcVertPositions zeroes morphMesh->posList, sums the
-        // active ani deltas into it, then adds refShapeAni->vertPosMatrix if a refShape ani was started
-        // and morphProto->morphRefMeshVertPos otherwise. With no active channels that final add IS the
-        // rest pose, so reading those arrays directly reproduces it without touching engine state.
+        // Shared morph prototype + optional refShape ani. CalcVertPositions zeroes posList, sums the
+        // active ani deltas, then adds refShapeAni->vertPosMatrix (or morphRefMeshVertPos) as the base -
+        // with no active channels that base IS the rest pose, readable without touching engine state.
         static const unsigned int Offset_MorphProto = 0x34;
         static const unsigned int Offset_RefShapeAni = 0x3C;
         // zCMorphMeshProto members (the per-.MMS shared prototype).

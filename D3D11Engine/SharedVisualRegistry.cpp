@@ -17,10 +17,8 @@ MeshVisualInfo* SharedVisualRegistry::Acquire( const void* key, bool& outNeedsFi
         MeshVisualInfo* mvi = it->second;
         mvi->SharedRefs++;
 
-        // A cancelled extraction (world change / shutdown flush) leaves a finished-but-empty entry
-        // behind. Without this it would stay empty forever and every vob sharing it would render an
-        // invisible weapon, because the "visual changed" check just re-enters here and gets the same
-        // dead object back. Hand it out for a refill instead.
+        // A cancelled extraction leaves a finished-but-empty entry. Hand it out for a refill, or it
+        // stays empty forever - the "visual changed" check just lands back here on the same dead object.
         outNeedsFill = mvi->Ready.load( std::memory_order_acquire ) && !mvi->Visual;
         if ( outNeedsFill ) {
             mvi->Ready.store( false, std::memory_order_release );
@@ -31,8 +29,7 @@ MeshVisualInfo* SharedVisualRegistry::Acquire( const void* key, bool& outNeedsFi
     MeshVisualInfo* mvi = new MeshVisualInfo;
     mvi->SharedKey = key;
     mvi->SharedRefs = 1;
-    // Not ready until the caller has filled it. Handing out a fresh entry as "ready" would let a second
-    // acquirer draw it while it is still empty (or, worse, while a worker is writing it).
+    // Not ready until filled, or a second acquirer could draw it mid-write.
     mvi->Ready.store( false, std::memory_order_release );
     m_Visuals[key] = mvi;
     m_TotalConversions++;
@@ -55,8 +52,7 @@ void SharedVisualRegistry::Release( MeshVisualInfo* mvi ) {
         }
 
         mvi->SharedRefs = 0;
-        // Unregister() may already have dropped the mapping, in which case there is nothing to erase.
-        if ( mvi->SharedKey ) {
+        if ( mvi->SharedKey ) {   // null if Unregister() already dropped the mapping
             auto it = m_Visuals.find( mvi->SharedKey );
             if ( it != m_Visuals.end() && it->second == mvi ) {
                 m_Visuals.erase( it );
@@ -65,8 +61,7 @@ void SharedVisualRegistry::Release( MeshVisualInfo* mvi ) {
         }
     }
 
-    // Outside the lock: ~MeshVisualInfo blocks on any in-flight extraction job for this visual, and
-    // that job has no business waiting on the registry mutex behind us.
+    // Outside the lock: ~MeshVisualInfo waits on any in-flight extraction job for this visual.
     delete mvi;
 }
 

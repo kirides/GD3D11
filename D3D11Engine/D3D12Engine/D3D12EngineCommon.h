@@ -75,10 +75,9 @@ struct FrameAttachDraw {
     bool                        alphaTested;
     VobInstanceInfo             inst;
     // May this attachment share an instanced draw with others pointing at the same MeshInfo? False only for
-    // an ACTIVELY MORPHING .MMS (a facial morph or bow/crossbow draw mesh within kMorphMeshMaxDistance):
-    // zCMorphMesh re-deforms its vertex buffer every frame for whichever instance is being drawn, so a batch
-    // would give every member the head-of-batch's morph. Out of morph range the attachment switches to the
-    // shared undeformed rest mesh (MeshVisualInfo::RestVisual) and becomes batchable like anything else.
+    // an actively morphing .MMS: its vertex buffer is re-deformed per frame for whichever instance is being
+    // drawn, so a batch would give every member the head-of-batch's morph. Out of range it switches to the
+    // shared rest mesh (MeshVisualInfo::RestVisual) and becomes batchable like anything else.
     bool                        batchable;
 };
 

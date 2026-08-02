@@ -130,14 +130,10 @@ struct MeshInfo {
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
 
-    /** MeshManager's id for the SOURCE zCSubMesh this was built from. Do NOT use it as an
-        "these are the same buffers" key - it is a weaker claim than that, and two MeshInfos sharing a
-        meshId can hold completely different geometry: a morph attachment and its undeformed RestVisual are
-        both extracted from one zCProgMeshProto, and .MDS/.ASC node visuals bake their own node transform
-        into their vertices. Node-attachment batching used to key on this and aliased both cases together;
-        it now keys on the MeshInfo pointer, which the SharedVisualRegistry made a stable shared identity.
-        Still used by the static-vob instancing sort, where StaticMeshVisuals guarantees exactly one
-        MeshInfo per progmesh submesh and the ambiguity cannot arise. */
+    /** MeshManager's id for the SOURCE zCSubMesh. NOT a "same buffers" key - a morph attachment and its
+        RestVisual, or two .MDS/.ASC node visuals with different baked node transforms, share a meshId
+        while holding different geometry. Attachment batching keys on the MeshInfo pointer for that
+        reason; only the static-vob sort still uses this, where StaticMeshVisuals rules out the case. */
     uint16_t meshId;
 };
 
@@ -283,23 +279,16 @@ struct MeshVisualInfo : public BaseVisualInfo {
         extracted visuals (every other path) leave it at true. */
     std::atomic<bool> Ready{ true };
 
-    /** Set only on node-attachment visuals owned by the SharedVisualRegistry, which hands the same
-        object to every vob attaching the same zCVisual. SharedKey is the registry's lookup key and,
-        unlike Visual, is never rewritten by a background extraction - it is cleared when the entry
-        is unregistered. SharedRefs is the number of NodeAttachments slots pointing here; the visual
-        is destroyed when it hits zero. Both stay 0/null for the non-shared visuals (static meshes,
-        particle effect meshes) that continue to be owned outright by their holder. */
+    /** SharedVisualRegistry bookkeeping; 0/null on visuals owned outright by their holder. SharedKey is
+        the lookup key - unlike Visual it is never rewritten by a background extraction. Destroyed when
+        SharedRefs (the number of NodeAttachments slots pointing here) hits zero. */
     const void* SharedKey = nullptr;
     uint32_t SharedRefs = 0;
 
-    /** For a .MMS morph attachment: the shared UNDEFORMED conversion of the same visual, used whenever
-        this instance isn't actively morphing (out of kMorphMeshMaxDistance range). ZENGIN deforms one
-        shared position list in place per draw, so our morph copy holds whatever deformation was current
-        the last time it was in range - drawing that when the morph is switched off is both wrong and
-        unbatchable, because every instance's copy is stale in a different way. The rest mesh is keyed on
-        zCMorphMesh::GetRestPoseKey(), so all instances that aren't morphing land on ONE MeshInfo and
-        collapse into a single instanced batch. Null for non-morph attachments. This object holds one
-        registry reference to it, released in the destructor. */
+    /** Shared undeformed conversion of a .MMS, drawn instead of this one whenever the instance isn't
+        actively morphing - our copy would still hold the deformation from the last time it was in range.
+        Keyed on GetRestPoseKey(), so every non-morphing instance lands on one MeshInfo and batches. Null
+        for non-morph attachments. Holds one registry reference, released in the destructor. */
     MeshVisualInfo* RestVisual = nullptr;
 };
 
@@ -496,9 +485,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
     SkeletalVobInfo(const SkeletalVobInfo& other) = delete;
     SkeletalVobInfo& operator=(const SkeletalVobInfo& other) = delete;
 
-    /** Releases this vob's attachments back to the SharedVisualRegistry - they are shared with every
-        other vob carrying the same visuals, so they are not ours to delete. Out of line because it
-        needs the registry. */
+    /** Releases this vob's attachments back to the SharedVisualRegistry - shared, so not ours to delete. */
     ~SkeletalVobInfo() override;
 
     /** Updates the vobs constantbuffer */
