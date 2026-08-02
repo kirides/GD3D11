@@ -714,8 +714,13 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		// Only when the jobs were SUPPOSED to record into their own lists — otherwise 2a already emitted every
 		// cascade inline and re-issuing here would draw each of them twice.
 		if ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() ) {
-			for ( UINT c = 0; c < kShadowCascades; ++c )
+			for ( UINT c = 0; c < kShadowCascades; ++c ) {
+				// A lazily-frozen cascade launched no job, so its slot is legitimately unrecorded — that is not a
+				// failure and must not be re-issued inline (RecordCascade would no-op anyway, but it would light
+				// up the "failed to record" warning below every third frame).
+				if ( !m_ShadowMap.ShouldUpdateCascade( c ) ) continue;
 				if ( !m_ShadowListRecorded[c] ) { m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() ); anyFailed = true; }
+		}
 		}
 		if ( m_PointShadows.IsPassReady() && !m_ShadowListRecorded[kPointShadowListIndex] ) {
 			m_PointShadows.Record( m_CmdList );
