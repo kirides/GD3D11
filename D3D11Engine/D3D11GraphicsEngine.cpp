@@ -1515,8 +1515,6 @@ static const char* beginFrameEventName = "Frame";
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
-    FrameMarkStart( beginFrameEventName );
-
     auto& rendererState = Engine::GAPI->GetRendererState();
     static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(rendererState.RendererSettings);
     WindowModes currentWindowMode = (WindowModes)rendererState.RendererSettings.ChangeWindowPreset;
@@ -1574,6 +1572,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     if ( !g_MainLoopFramePacingInstalled ) {
         WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
+        FrameMarkStart( beginFrameEventName );
     }
 
     SteamOverlay::Update();
@@ -1656,9 +1655,9 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     EndFrameTransientBufferPools();
     PerObjectMaterialInfoPooledBuffer->EndFrame();
     DynamicConstantBufferPool->EndFrame();
-    FrameMarkEnd( beginFrameEventName );
 
     if ( !g_MainLoopFramePacingInstalled ) {
+        FrameMarkEnd( beginFrameEventName );
         FrameLimiterEndFrame();
     }
     return XR_SUCCESS;
