@@ -9,6 +9,24 @@
 #include "D3D11_Helpers.h"
 #include "SharedVisualRegistry.h"
 
+MeshVisualInfo::~MeshVisualInfo() {
+    // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
+    // Never free the target out from under a running job.
+    if ( !Ready.load( std::memory_order_acquire ) ) {
+        WaitForPendingNodeVisualExtraction( this );
+    }
+    // One reference, taken when this morph visual was first built. The rest mesh is shared with every
+    // other zCMorphMesh resolving to the same rest pose, so it only dies with the last of them.
+    if ( RestVisual ) {
+        s_SharedVisualRegistry->Release( RestVisual );
+        RestVisual = nullptr;
+    }
+    if ( MorphMeshVisual ) {
+        zCObject_Release( MorphMeshVisual );
+    }
+    delete FullMesh;
+}
+
 SkeletalVobInfo::~SkeletalVobInfo() {
     for ( auto& [k, meshes] : NodeAttachments ) {
         for ( MeshVisualInfo* mvi : meshes ) {

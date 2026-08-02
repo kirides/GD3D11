@@ -1712,6 +1712,72 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     meshInfo->Visual = reinterpret_cast<zCVisual*>(mesh);
 }
 
+namespace {
+    /** Everything needed to build a morph attachment's undeformed rest mesh, resolved on the game thread
+        (these fields can change under us - StartAni can install a refShapeAni at any time). */
+    struct MorphRestSource {
+        const void* Key = nullptr;          // shared identity; null means "no rest mesh for this one"
+        const float3* Positions = nullptr;  // pristine, never written by the engine after load
+        int NumVert = 0;
+    };
+
+    MorphRestSource ResolveMorphRestSource( zCMorphMesh* mm ) {
+        MorphRestSource src;
+        if ( !mm ) {
+            return src;
+        }
+
+        // Deliberately no rest mesh for instances carrying a refShape ani, even though GetRestPositions
+        // handles them correctly. A rest mesh is extracted from the same zCProgMeshProto as the morph
+        // copy, so its MeshInfos inherit the SAME zCSubMesh-derived meshIds - and both backends batch on
+        // meshId and then bind the head-of-batch's buffers (D3D11GraphicsEngine's batchMesh loop,
+        // D3D12's AttachBatchKey). Two different rest poses of one head would therefore collide on the
+        // batch key and render each other's geometry. One rest pose per inner progmesh keeps that
+        // impossible; shape-ani heads simply stay on the (unbatchable) morph path exactly as before.
+        if ( mm->GetRefShapeAni() ) {
+            static bool s_loggedRefShapeSkip = false;
+            if ( !s_loggedRefShapeSkip ) {
+                s_loggedRefShapeSkip = true;
+                LogInfo() << "Morph attachment with a refShape ani seen - those keep using their deformed "
+                    "copy and stay unbatchable. If this shows up a lot, the rest-mesh key needs to include "
+                    "the shape ani and the batch keys need to stop aliasing on meshId.";
+            }
+            return src;
+        }
+
+        const void* key = mm->GetRestPoseKey();
+        if ( !key ) {
+            return src;
+        }
+        int numVert = 0;
+        const float3* positions = mm->GetRestPositions( numVert );
+        if ( !positions || numVert <= 0 ) {
+            return src;
+        }
+        src.Key = key;
+        src.Positions = positions;
+        src.NumVert = numVert;
+        return src;
+    }
+
+    /** Acquires (and fills, if we are the first) the shared rest mesh and hangs it off the morph visual.
+        Safe to call from a worker thread - the registry is locked and 'src' was resolved on the game
+        thread. */
+    void AttachMorphRestVisual( MeshVisualInfo* morphVisual, zCProgMeshProto* pm, const MorphRestSource& src ) {
+        if ( !src.Key || !pm || morphVisual->RestVisual ) {
+            return;
+        }
+
+        bool needsFill = false;
+        MeshVisualInfo* rest = s_SharedVisualRegistry->Acquire( src.Key, needsFill );
+        if ( needsFill ) {
+            WorldConverter::Extract3DSMeshFromVisual2( pm, rest, src.Positions, src.NumVert );
+            rest->Ready.store( true, std::memory_order_release );
+        }
+        morphVisual->RestVisual = rest;
+    }
+}
+
 /** Drops this node's attachment(s) back to the shared registry and empties the slot. Leaves the slot
     itself present in the map: callers use find() != end() to mean "extraction was already attempted
     for this node", and re-creating it every frame would re-kick extraction forever. */
@@ -1758,6 +1824,7 @@ void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::f
                 Extract3DSMeshFromVisual2( pm, mi );
                 if ( isMMS ) {
                     mi->Visual = node->NodeVisual;
+                    AttachMorphRestVisual( mi, pm, ResolveMorphRestSource( reinterpret_cast<zCMorphMesh*>(node->NodeVisual) ) );
                 }
                 mi->Ready.store( true, std::memory_order_release );
             }
@@ -1876,8 +1943,15 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
     }
     mi->Ready.store( false, std::memory_order_relaxed );
 
+    // Resolved here rather than in the job: refShapeAni can be installed by StartAni at any time, and the
+    // rest pose has to be the one this attachment was identified with. The arrays it points at are
+    // written once at load and never again, so the worker can read them freely.
+    const MorphRestSource restSource = isMMS
+        ? ResolveMorphRestSource( reinterpret_cast<zCMorphMesh*>(node->NodeVisual) )
+        : MorphRestSource{};
+
     zCVisual* nodeVisual = node->NodeVisual;
-    auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS]( const std::stop_token& token ) {
+    auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS, restSource]( const std::stop_token& token ) {
         if ( token.stop_requested() ) {
             // Cancelled before a worker picked it up (world change / shutdown flush) - the visual we
             // would read from may already be gone. Clear Visual so the next frame notices the mismatch
@@ -1891,6 +1965,9 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
             // Extract3DSMeshFromVisual2 sets Visual to the morph mesh's inner progmesh; the attachment
             // identity is the outer zCMorphMesh (mirrors ExtractNodeVisual).
             mi->Visual = reinterpret_cast<zCVisual*>(mi->MorphMeshVisual);
+            // Built on the worker too - it is a second full conversion, but only for the FIRST morph mesh
+            // resolving to this rest pose; every other head of the same type just takes a reference.
+            AttachMorphRestVisual( mi, pm, restSource );
         }
         mi->Ready.store( true, std::memory_order_release );
     } );
@@ -1950,13 +2027,18 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
 }
 
 /** Extracts a 3DS-Mesh from a zCVisual */
-void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo ) {
+void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo, const float3* positionOverride, int positionOverrideCount ) {
     ZoneScoped;
 
     XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
     XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 
-    float3* posList = visual->GetPositionList()->Array;
+    // Wedges index into the visual's position list, so an override has to cover all of it or the
+    // wedge indices would run off the end - fall back to the live list rather than read out of bounds.
+    zCArrayAdapt<float3>* livePositions = visual->GetPositionList();
+    const float3* posList = ( positionOverride && positionOverrideCount >= livePositions->NumInArray )
+        ? positionOverride
+        : livePositions->Array;
 
     std::list<std::vector<ExVertexStruct>*> vertexBuffers;
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;

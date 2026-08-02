@@ -45,7 +45,7 @@ public:
      *  false and draw sites skip it as usual) and the caller must not touch it.
      *
      *  Never returns nullptr. */
-    MeshVisualInfo* Acquire( zCVisual* key, bool& outNeedsFill );
+    MeshVisualInfo* Acquire( const void* key, bool& outNeedsFill );
 
     /** Drops one reference. Destroys the visual (and unregisters it) when the last one goes. */
     void Release( MeshVisualInfo* mvi );
@@ -54,7 +54,7 @@ public:
      *  visual: the pointer may be recycled for something completely different, so it must not stay
      *  a valid lookup key. Attachments still holding the entry keep it alive until they release it,
      *  and their own "visual changed" check retires them on the next frame. */
-    void Unregister( zCVisual* key );
+    void Unregister( const void* key );
 
     /** Drops every entry regardless of refcount. Only for world teardown, after all vobs (and hence
      *  all attachment references) are already gone. Logs anything still referenced. */
@@ -64,7 +64,7 @@ public:
 
 private:
     mutable std::mutex m_mutex;
-    gtl::flat_hash_map<zCVisual*, MeshVisualInfo*> m_Visuals;
+    gtl::flat_hash_map<const void*, MeshVisualInfo*> m_Visuals;
 
     /** Lifetime tallies for the summary Clear() logs - the ratio between them is the sharing factor
         this whole class exists for (how many attachment slots one converted mesh ended up serving). */

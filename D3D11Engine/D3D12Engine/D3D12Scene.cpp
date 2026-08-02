@@ -4530,7 +4530,21 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         // own LastAniUpdateFrame guard already limits this to once per animation frame.
                         WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
                     }
-                    for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
+                    // A non-morphing .MMS draws the SHARED undeformed rest mesh instead of its own copy.
+                    // That copy still holds whatever deformation was current the last time this head was
+                    // inside kMorphMeshMaxDistance, so drawing it out of range is both wrong and forces a
+                    // singleton command (every instance is stale differently). The rest mesh is one
+                    // MeshInfo for every head of this type, so they all collapse into one batch — this is
+                    // what turns the "Attach unbatchable" plot's NPC heads into batchable records. Falls
+                    // back to the morph copy while the rest mesh is still being built on a worker.
+                    MeshVisualInfo* drawVis = mvi;
+                    if ( isMMS && !morphActive && mvi->RestVisual
+                        && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
+                        drawVis = mvi->RestVisual;
+                    }
+                    const bool attBatchable = !isMMS || drawVis != mvi;
+
+                    for ( auto const& [attMat, attMeshes] : drawVis->Meshes ) {
                         zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
                         for ( auto const& attMesh : attMeshes ) {
                             if ( !attMesh || attMesh->Indices.empty() ) continue;
@@ -4561,7 +4575,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             // must not do.
                             entry.attachments.push_back( { attMesh.get(), attTex, attInstView, vi->Vob,
                                 ResolveShadowDiffuseSlot( attTex ),
-                                attTex && attTex->HasAlphaChannel(), vii, !isMMS } );
+                                attTex && attTex->HasAlphaChannel(), vii, attBatchable } );
                         }
                     }
                 }

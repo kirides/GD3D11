@@ -8,7 +8,7 @@ SharedVisualRegistry::~SharedVisualRegistry() {
     Clear();
 }
 
-MeshVisualInfo* SharedVisualRegistry::Acquire( zCVisual* key, bool& outNeedsFill ) {
+MeshVisualInfo* SharedVisualRegistry::Acquire( const void* key, bool& outNeedsFill ) {
     std::scoped_lock lock( m_mutex );
     m_TotalAcquires++;
 
@@ -31,6 +31,9 @@ MeshVisualInfo* SharedVisualRegistry::Acquire( zCVisual* key, bool& outNeedsFill
     MeshVisualInfo* mvi = new MeshVisualInfo;
     mvi->SharedKey = key;
     mvi->SharedRefs = 1;
+    // Not ready until the caller has filled it. Handing out a fresh entry as "ready" would let a second
+    // acquirer draw it while it is still empty (or, worse, while a worker is writing it).
+    mvi->Ready.store( false, std::memory_order_release );
     m_Visuals[key] = mvi;
     m_TotalConversions++;
     m_PeakSize = std::max( m_PeakSize, m_Visuals.size() );
@@ -67,7 +70,7 @@ void SharedVisualRegistry::Release( MeshVisualInfo* mvi ) {
     delete mvi;
 }
 
-void SharedVisualRegistry::Unregister( zCVisual* key ) {
+void SharedVisualRegistry::Unregister( const void* key ) {
     std::scoped_lock lock( m_mutex );
 
     auto it = m_Visuals.find( key );

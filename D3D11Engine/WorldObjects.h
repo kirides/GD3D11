@@ -240,18 +240,8 @@ struct MeshVisualInfo : public BaseVisualInfo {
     MeshVisualInfo(const MeshVisualInfo& other) = delete;
     MeshVisualInfo& operator=(const MeshVisualInfo& other) = delete;
 
-    ~MeshVisualInfo() override
-    {
-        // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
-        // Never free the target out from under a running job.
-        if ( !Ready.load( std::memory_order_acquire ) ) {
-            WaitForPendingNodeVisualExtraction( this );
-        }
-        if ( MorphMeshVisual ) {
-            zCObject_Release( MorphMeshVisual );
-        }
-        delete FullMesh;
-    }
+    /** Out of line because it releases RestVisual back to the SharedVisualRegistry. */
+    ~MeshVisualInfo() override;
 
     /** Starts a new frame for this mesh */
     void StartNewFrame() {
@@ -290,8 +280,18 @@ struct MeshVisualInfo : public BaseVisualInfo {
         is unregistered. SharedRefs is the number of NodeAttachments slots pointing here; the visual
         is destroyed when it hits zero. Both stay 0/null for the non-shared visuals (static meshes,
         particle effect meshes) that continue to be owned outright by their holder. */
-    zCVisual* SharedKey = nullptr;
+    const void* SharedKey = nullptr;
     uint32_t SharedRefs = 0;
+
+    /** For a .MMS morph attachment: the shared UNDEFORMED conversion of the same visual, used whenever
+        this instance isn't actively morphing (out of kMorphMeshMaxDistance range). ZENGIN deforms one
+        shared position list in place per draw, so our morph copy holds whatever deformation was current
+        the last time it was in range - drawing that when the morph is switched off is both wrong and
+        unbatchable, because every instance's copy is stale in a different way. The rest mesh is keyed on
+        zCMorphMesh::GetRestPoseKey(), so all instances that aren't morphing land on ONE MeshInfo and
+        collapse into a single instanced batch. Null for non-morph attachments. This object holds one
+        registry reference to it, released in the destructor. */
+    MeshVisualInfo* RestVisual = nullptr;
 };
 
 /** Holds the converted mesh of a VOB */
