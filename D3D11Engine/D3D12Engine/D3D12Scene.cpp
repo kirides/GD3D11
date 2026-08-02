@@ -3300,25 +3300,31 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         // 50 benches / a crowd's worth of identical swords arrive here as 50 one-instance commands, each
         // rebinding two VBVs + an IBV — a full IA state change for ~200 vertices, which is what makes this
         // pass draw-bound rather than geometry-bound. Batch them the way D3D11 does (see the
-        // NodeAttachmentDrawItem loop in D3D11GraphicsEngine.cpp): MeshInfo::meshId is MeshManager's stable
-        // id for the underlying zCSubMesh, so equal meshId means byte-identical geometry even though every
-        // vob extracted its OWN MeshInfo/VB/IB — which is why binding any one member's buffers serves the
-        // whole batch. meshId 0 means "not batchable" and stays a singleton.
+        // NodeAttachmentDrawItem loop in D3D11GraphicsEngine.cpp): the batch head supplies the VB/IB for
+        // every member, so the key has to mean "same buffers" — and the MeshInfo POINTER says exactly that.
+        // It only works as a key because the SharedVisualRegistry gives every distinct converted mesh
+        // exactly one MeshInfo, shared by every vob referencing it; before that, identical geometry really
+        // did arrive as N distinct MeshInfos and meshId was the only thing that matched.
         //
-        // Grouped through a hash map rather than a sort: the key is (meshId, material, alphaTested) and
+        // meshId is NOT used here any more. It identifies the source zCSubMesh, which is a weaker claim
+        // than "same buffers": a morph attachment and its undeformed rest mesh are both extracted from the
+        // same zCProgMeshProto, and two .MDS/.ASC node visuals bake different node transforms into their
+        // vertices — in both cases equal meshId, different geometry. Keying on it aliased those together.
+        //
+        // Grouped through a hash map rather than a sort: the key is (mesh, material, alphaTested) and
         // nothing downstream depends on attachment draw ORDER (all opaque, depth-tested). The material is
         // still part of the key here — folding it into the per-instance data (VobInstanceInfo::GP_Slot) so
-        // the key collapses to meshId alone is the follow-up step.
+        // the key collapses to the mesh alone is the follow-up step.
         struct AttachBatchKey {
-            uint16_t meshId; UINT mats[3]; bool alphaTested;
+            const MeshInfo* mesh; UINT mats[3]; bool alphaTested;
             bool operator==( const AttachBatchKey& o ) const {
-                return meshId == o.meshId && alphaTested == o.alphaTested
+                return mesh == o.mesh && alphaTested == o.alphaTested
                     && mats[0] == o.mats[0] && mats[1] == o.mats[1] && mats[2] == o.mats[2];
             }
         };
         struct AttachBatchKeyHash {
             size_t operator()( const AttachBatchKey& k ) const {
-                size_t h = k.meshId;
+                size_t h = reinterpret_cast<size_t>( k.mesh );
                 h = h * 1000003u ^ k.mats[0];
                 h = h * 1000003u ^ k.mats[1];
                 h = h * 1000003u ^ k.mats[2];
@@ -3337,7 +3343,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         batchIndex.clear();
         for ( AttachBatch& b : batches ) b.members.clear();   // keep the inner vectors' capacity
         size_t usedBatches = 0;
-        size_t unbatchable = 0;   // .MMS morph meshes + meshId 0 — forced singletons, see the plots below
+        size_t unbatchable = 0;   // actively morphing .MMS only — forced singletons, see the plots below
 
         for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
             if ( !a.mesh || a.mesh->Indices.empty() || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() )
@@ -3355,11 +3361,12 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             // other three builds also test is pure conservatism (a=1 everywhere never clips).
             const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
 
-            // meshId 0 = MeshManager never recorded it; !batchable = .MMS morph mesh with per-instance
-            // deformed vertices (see FrameAttachDraw::batchable). Either way: its own singleton command,
-            // never entered into the index so nothing can join it either.
-            const bool batchable = a.batchable && a.mesh->meshId != 0;
-            const AttachBatchKey key{ a.mesh->meshId, { mats[0], mats[1], mats[2] }, alphaTested };
+            // !batchable = an actively morphing .MMS, whose vertex buffer is re-deformed per frame for this
+            // instance alone (see FrameAttachDraw::batchable). It gets its own singleton command and is
+            // never entered into the index, so nothing can join it either. The old "meshId 0" half of this
+            // gate is gone - a MeshInfo pointer is always a valid identity.
+            const bool batchable = a.batchable;
+            const AttachBatchKey key{ a.mesh, { mats[0], mats[1], mats[2] }, alphaTested };
             size_t bi;
             auto it = batchable ? batchIndex.find( key ) : batchIndex.end();
             if ( it != batchIndex.end() ) {
