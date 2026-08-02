@@ -7,20 +7,50 @@
 using Microsoft::WRL::ComPtr;
 
 namespace {
-    // D3D12SerializeRootSignature is exported from the already-loaded d3d12.dll (we don't link
+    // Both serialize entry points are exported from the already-loaded d3d12.dll (we don't link
     // d3d12.lib — see D3D12Device.cpp). Resolved once for the process rather than per root signature.
     typedef HRESULT( WINAPI* PFN_SERIALIZE_ROOT_SIG )( const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob** );
+    typedef HRESULT( WINAPI* PFN_SERIALIZE_VERSIONED_ROOT_SIG )( const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob** );
+
+    HMODULE D3D12Module() {
+        static HMODULE s_module = LoadLibraryA( "d3d12.dll" );
+        return s_module;
+    }
 
     PFN_SERIALIZE_ROOT_SIG SerializeRootSignatureProc() {
-        static PFN_SERIALIZE_ROOT_SIG s_pfn = nullptr;
-        static bool s_attempted = false;
-        if ( s_attempted ) return s_pfn;
-        s_attempted = true;
-
-        HMODULE d3d12 = LoadLibraryA( "d3d12.dll" );
-        if ( !d3d12 ) return nullptr;
-        s_pfn = reinterpret_cast<PFN_SERIALIZE_ROOT_SIG>( GetProcAddress( d3d12, "D3D12SerializeRootSignature" ) );
+        static PFN_SERIALIZE_ROOT_SIG s_pfn = D3D12Module()
+            ? reinterpret_cast<PFN_SERIALIZE_ROOT_SIG>( GetProcAddress( D3D12Module(), "D3D12SerializeRootSignature" ) )
+            : nullptr;
         return s_pfn;
+    }
+
+    // Present since the 1.1 root signature was introduced (Win10 1511 / any Agility SDK d3d12.dll).
+    // Absent only on a d3d12.dll old enough that 1.1 doesn't exist at all, which the version query
+    // below independently reports as 1_0 — either check alone is enough to force the fallback.
+    PFN_SERIALIZE_VERSIONED_ROOT_SIG SerializeVersionedRootSignatureProc() {
+        static PFN_SERIALIZE_VERSIONED_ROOT_SIG s_pfn = D3D12Module()
+            ? reinterpret_cast<PFN_SERIALIZE_VERSIONED_ROOT_SIG>( GetProcAddress( D3D12Module(), "D3D12SerializeVersionedRootSignature" ) )
+            : nullptr;
+        return s_pfn;
+    }
+
+    // Highest root-signature version this device accepts. Cached per process: the backend only ever
+    // drives one D3D12 device, and every layout is built against it during Init.
+    D3D_ROOT_SIGNATURE_VERSION HighestRootSignatureVersion( ID3D12Device* device ) {
+        static D3D_ROOT_SIGNATURE_VERSION s_version = [device] {
+            D3D12_FEATURE_DATA_ROOT_SIGNATURE feature = {};
+            feature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+            if ( !device || FAILED( device->CheckFeatureSupport( D3D12_FEATURE_ROOT_SIGNATURE, &feature, sizeof( feature ) ) ) ) {
+                // CheckFeatureSupport rejects the struct outright when the runtime predates 1.1.
+                LogInfo() << "D3D12: root signature 1.1 unavailable; falling back to 1.0 (all root "
+                             "parameters stay fully volatile — no descriptor/data preload).";
+                return D3D_ROOT_SIGNATURE_VERSION_1_0;
+            }
+            if ( feature.HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1_1 )
+                LogInfo() << "D3D12: driver reports root signature 1.0 only; static-data promises will be dropped.";
+            return feature.HighestVersion;
+        }();
+        return s_version;
     }
 
     D3D12_STATIC_SAMPLER_DESC MakeSampler( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
@@ -37,17 +67,21 @@ namespace {
 
 // ---- Declaration ------------------------------------------------------------------------------
 
-D3D12RootLayout::Range D3D12RootLayout::SRVRange( UINT baseRegister, UINT numDescriptors, UINT space ) {
-    return { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, baseRegister, numDescriptors, space };
+D3D12RootLayout::Range D3D12RootLayout::SRVRange( UINT baseRegister, UINT numDescriptors, UINT space,
+    D3D12_DESCRIPTOR_RANGE_FLAGS flags ) {
+    return { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, baseRegister, numDescriptors, space, flags };
 }
-D3D12RootLayout::Range D3D12RootLayout::UAVRange( UINT baseRegister, UINT numDescriptors, UINT space ) {
-    return { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, baseRegister, numDescriptors, space };
+D3D12RootLayout::Range D3D12RootLayout::UAVRange( UINT baseRegister, UINT numDescriptors, UINT space,
+    D3D12_DESCRIPTOR_RANGE_FLAGS flags ) {
+    return { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, baseRegister, numDescriptors, space, flags };
 }
-D3D12RootLayout::Range D3D12RootLayout::CBVRange( UINT baseRegister, UINT numDescriptors, UINT space ) {
-    return { D3D12_DESCRIPTOR_RANGE_TYPE_CBV, baseRegister, numDescriptors, space };
+D3D12RootLayout::Range D3D12RootLayout::CBVRange( UINT baseRegister, UINT numDescriptors, UINT space,
+    D3D12_DESCRIPTOR_RANGE_FLAGS flags ) {
+    return { D3D12_DESCRIPTOR_RANGE_TYPE_CBV, baseRegister, numDescriptors, space, flags };
 }
-D3D12RootLayout::Range D3D12RootLayout::SamplerRange( UINT baseRegister, UINT numDescriptors, UINT space ) {
-    return { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, baseRegister, numDescriptors, space };
+D3D12RootLayout::Range D3D12RootLayout::SamplerRange( UINT baseRegister, UINT numDescriptors, UINT space,
+    D3D12_DESCRIPTOR_RANGE_FLAGS flags ) {
+    return { D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, baseRegister, numDescriptors, space, flags };
 }
 
 UINT D3D12RootLayout::AddConstants( UINT shaderRegister, UINT num32BitValues, D3D12_SHADER_VISIBILITY vis, UINT space ) {
@@ -62,24 +96,28 @@ UINT D3D12RootLayout::AddConstants( UINT shaderRegister, UINT num32BitValues, D3
 }
 
 UINT D3D12RootLayout::AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE type, UINT shaderRegister,
-    D3D12_SHADER_VISIBILITY vis, UINT space ) {
+    D3D12_SHADER_VISIBILITY vis, UINT space, D3D12_ROOT_DESCRIPTOR_FLAGS flags ) {
     ParamInfo p = {};
     p.Type = type;
     p.Visibility = vis;
     p.ShaderRegister = shaderRegister;
     p.Space = space;
+    p.DescriptorFlags = flags;
     m_Params.push_back( p );
     return static_cast<UINT>( m_Params.size() - 1 );
 }
 
-UINT D3D12RootLayout::AddCBV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space ) {
-    return AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE_CBV, shaderRegister, vis, space );
+UINT D3D12RootLayout::AddCBV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space,
+    D3D12_ROOT_DESCRIPTOR_FLAGS flags ) {
+    return AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE_CBV, shaderRegister, vis, space, flags );
 }
-UINT D3D12RootLayout::AddSRV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space ) {
-    return AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE_SRV, shaderRegister, vis, space );
+UINT D3D12RootLayout::AddSRV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space,
+    D3D12_ROOT_DESCRIPTOR_FLAGS flags ) {
+    return AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE_SRV, shaderRegister, vis, space, flags );
 }
 UINT D3D12RootLayout::AddUAV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space ) {
-    return AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE_UAV, shaderRegister, vis, space );
+    // A root UAV is written by the GPU; DATA_VOLATILE is the only legal choice, so it isn't exposed.
+    return AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE_UAV, shaderRegister, vis, space, RootVolatile );
 }
 
 UINT D3D12RootLayout::AddTable( std::initializer_list<Range> ranges, D3D12_SHADER_VISIBILITY vis ) {
@@ -138,15 +176,23 @@ void D3D12RootLayout::Reset( const char* debugName ) {
 }
 
 bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS flags ) {
-    PFN_SERIALIZE_ROOT_SIG serialize = SerializeRootSignatureProc();
-    if ( !serialize ) {
-        LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (" << m_DebugName << ").";
+    // Serialize as 1.1 when both the runtime export and the device support it, so the per-parameter
+    // DATA_STATIC*/DESCRIPTORS_* promises declared above actually reach the driver. Otherwise fall
+    // back to 1.0, which simply drops them — every layout stays valid under 1.0 semantics by
+    // construction (the flags only ever *narrow* what the layout is allowed to do, never widen it).
+    const bool useVersioned = SerializeVersionedRootSignatureProc() != nullptr
+        && HighestRootSignatureVersion( device ) >= D3D_ROOT_SIGNATURE_VERSION_1_1;
+
+    if ( !useVersioned && !SerializeRootSignatureProc() ) {
+        LogWarn() << "D3D12: no root signature serialize entry point available (" << m_DebugName << ").";
         return false;
     }
 
     // Materialize the retained declaration into the flat D3D12 structs. Ranges point into m_Ranges,
-    // which is stable for the lifetime of this object.
+    // which is stable for the lifetime of this object. Both version layouts are built — they are
+    // small, and it keeps the two serialize paths from each re-walking the declaration.
     std::vector<D3D12_DESCRIPTOR_RANGE> ranges( m_Ranges.size() );
+    std::vector<D3D12_DESCRIPTOR_RANGE1> ranges1( m_Ranges.size() );
     for ( size_t i = 0; i < m_Ranges.size(); ++i ) {
         const Range& r = m_Ranges[i];
         ranges[i] = {};
@@ -155,41 +201,69 @@ bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS fl
         ranges[i].BaseShaderRegister = r.BaseRegister;
         ranges[i].RegisterSpace = r.Space;
         ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        ranges1[i] = {};
+        ranges1[i].RangeType = r.Type;
+        ranges1[i].NumDescriptors = r.NumDescriptors;
+        ranges1[i].BaseShaderRegister = r.BaseRegister;
+        ranges1[i].RegisterSpace = r.Space;
+        ranges1[i].Flags = r.Flags;
+        ranges1[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     }
 
     std::vector<D3D12_ROOT_PARAMETER> params( m_Params.size() );
+    std::vector<D3D12_ROOT_PARAMETER1> params1( m_Params.size() );
     for ( size_t i = 0; i < m_Params.size(); ++i ) {
         const ParamInfo& src = m_Params[i];
         D3D12_ROOT_PARAMETER& dst = params[i];
+        D3D12_ROOT_PARAMETER1& dst1 = params1[i];
         dst = {};
-        dst.ParameterType = src.Type;
-        dst.ShaderVisibility = src.Visibility;
+        dst1 = {};
+        dst.ParameterType = dst1.ParameterType = src.Type;
+        dst.ShaderVisibility = dst1.ShaderVisibility = src.Visibility;
         switch ( src.Type ) {
         case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
-            dst.Constants.ShaderRegister = src.ShaderRegister;
-            dst.Constants.RegisterSpace = src.Space;
-            dst.Constants.Num32BitValues = src.Num32BitValues;
+            dst.Constants.ShaderRegister = dst1.Constants.ShaderRegister = src.ShaderRegister;
+            dst.Constants.RegisterSpace = dst1.Constants.RegisterSpace = src.Space;
+            dst.Constants.Num32BitValues = dst1.Constants.Num32BitValues = src.Num32BitValues;
             break;
         case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
             dst.DescriptorTable.NumDescriptorRanges = static_cast<UINT>( src.RangeCount );
             dst.DescriptorTable.pDescriptorRanges = src.RangeCount ? &ranges[src.FirstRange] : nullptr;
+            dst1.DescriptorTable.NumDescriptorRanges = static_cast<UINT>( src.RangeCount );
+            dst1.DescriptorTable.pDescriptorRanges = src.RangeCount ? &ranges1[src.FirstRange] : nullptr;
             break;
         default:   // CBV / SRV / UAV root descriptors
-            dst.Descriptor.ShaderRegister = src.ShaderRegister;
-            dst.Descriptor.RegisterSpace = src.Space;
+            dst.Descriptor.ShaderRegister = dst1.Descriptor.ShaderRegister = src.ShaderRegister;
+            dst.Descriptor.RegisterSpace = dst1.Descriptor.RegisterSpace = src.Space;
+            dst1.Descriptor.Flags = src.DescriptorFlags;   // 1.1 only — 1.0 is implicitly volatile
             break;
         }
     }
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = static_cast<UINT>( params.size() );
-    rsDesc.pParameters = params.empty() ? nullptr : params.data();
-    rsDesc.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
-    rsDesc.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
-    rsDesc.Flags = flags;
-
     ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+    HRESULT serializeHr = E_FAIL;
+    if ( useVersioned ) {
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned = {};
+        versioned.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+        versioned.Desc_1_1.NumParameters = static_cast<UINT>( params1.size() );
+        versioned.Desc_1_1.pParameters = params1.empty() ? nullptr : params1.data();
+        versioned.Desc_1_1.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
+        versioned.Desc_1_1.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
+        versioned.Desc_1_1.Flags = flags;
+        serializeHr = SerializeVersionedRootSignatureProc()( &versioned, rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
+    } else {
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = static_cast<UINT>( params.size() );
+        rsDesc.pParameters = params.empty() ? nullptr : params.data();
+        rsDesc.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
+        rsDesc.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
+        rsDesc.Flags = flags;
+        serializeHr = SerializeRootSignatureProc()( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+            rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
+    }
+
+    if ( FAILED( serializeHr ) ) {
         if ( rsErr )
             LogWarn() << "D3D12: root signature '" << m_DebugName << "' serialize error: "
                       << static_cast<const char*>( rsErr->GetBufferPointer() );
