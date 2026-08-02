@@ -8,12 +8,13 @@
 #define TILE_SIZE 16u
 // Clustered Forward+ (P2.14): a global cap on SIMULTANEOUSLY-SHADED point lights, not a per-tile cap. The
 // frame's light buffer (kMaxFrameLights in D3D12Scene.cpp, sorted nearest-to-camera) feeds only its first
-// MAX_ACTIVE_LIGHTS entries into the cluster bitmask — thread ti of LightCull.hlsl's CSMain tests light ti, and
-// the mask has exactly this many bits, so the constant is load-bearing on BOTH sides, not just a cap. Lights
-// beyond this rank in the sorted buffer simply never light anything (same "farthest dropped first" policy the
-// old per-tile prefix-sum cap used, just applied once globally instead of independently per tile).
-// Must match LightCull.hlsl's numthreads(MAX_ACTIVE_LIGHTS,1,1) AND kMaxFrameLights in D3D12Scene.cpp (raising
-// one without the other either wastes capacity or silently drops lights past the smaller of the two).
+// MAX_ACTIVE_LIGHTS entries into the cluster bitmask — the mask has exactly this many bits and bit i IS light i,
+// so the constant is load-bearing on BOTH sides, not just a cap. Lights beyond this rank in the sorted buffer
+// simply never light anything (same "farthest dropped first" policy the old per-tile prefix-sum cap used, just
+// applied once globally instead of independently per tile).
+// Must match kMaxFrameLights in D3D12Scene.cpp (raising one without the other either wastes capacity or
+// silently drops lights past the smaller of the two). LightCull.hlsl additionally packs a light index into 10
+// bits of its candidate list, so raising this past 1024 needs that packing widened too.
 // Raised from 64 (P2.14's initial cap clipped visibly in ambient-heavy scenes — Gothic can have 400+
 // simultaneously visible point lights once static "atmospheric" fill lights are counted) to 1024 = 32 * 32-bit
 // words. Each cluster's mask is MASK_WORDS * 4 bytes: at 1080p (~8160 16x16 tiles * NUM_Z_SLICES=16 slices =
