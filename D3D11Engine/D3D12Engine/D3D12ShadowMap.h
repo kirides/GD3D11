@@ -221,6 +221,11 @@ private:
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read
     bool m_RecordedInJob = false;    // this frame's jobs also RECORDED (not just culled/built) — see RecordedInJob()
-    bool m_SunUp = false;            // resolved in Prepare(); RecordCascade may run on a pool thread and can't re-read the sky
+    /** "This frame casts sun shadows": sun up AND not fully enclosed by portals. Resolved in Prepare()
+        since RecordCascade (its only consumer, via IsSunUp) may run on a pool thread. */
+    bool m_SunUp = false;
+    /** Portal culling says the view is fully enclosed, so the slices are cleared to SHADOWED (0.0)
+        instead of far and nothing casts. Resolved in Prepare() next to m_SunUp, for the same reason. */
+    bool m_SunOccluded = false;
     bool m_PassReady = false;        // Prepare() ran to completion this frame — the cascades have something to record
 };

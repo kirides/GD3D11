@@ -800,6 +800,7 @@ struct GothicRendererSettings {
         EnableOcclusionCulling = false;
         EnablePortalCulling = true;
         PortalCullingNearRadius = 1500.0f;
+        EnablePortalShadowSkip = true;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
@@ -1051,6 +1052,9 @@ struct GothicRendererSettings {
     /** Rooms within this distance of the camera are never portal-culled (Gothic units, 100 = 1m).
         Raise it if interiors pop while standing near a doorway. */
     float PortalCullingNearRadius;
+    /** Skip the sun-shadow cascades while the view is fully enclosed by sectors, clearing the slices to
+        "shadowed" instead. Requires EnablePortalCulling; see BspPortalCuller::IsOutdoorVisible. */
+    bool EnablePortalShadowSkip;
     bool SortRenderQueue;
     bool DrawThreaded;
     EPointLightShadowMode EnablePointlightShadows;
