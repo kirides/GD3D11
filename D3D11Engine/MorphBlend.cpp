@@ -1,0 +1,145 @@
+#include "pch.h"
+#include "MorphBlend.h"
+#include "zCMorphMesh.h"
+
+namespace MorphBlend {
+
+    float SinusEase( float t ) {
+        constexpr float kPi = 3.14159265358979323846f;
+        return (sinf( t * kPi - kPi * 0.5f ) + 1.0f) * 0.5f;
+    }
+
+    void CaptureChannels( zCMorphMesh* mm, std::vector<ChannelState>& outChannels ) {
+        outChannels.clear();
+        if ( !mm ) {
+            return;
+        }
+
+        const int numChannels = mm->GetNumAniChannels();
+        if ( numChannels <= 0 ) {
+            return;
+        }
+
+        outChannels.reserve( numChannels );
+        for ( int i = 0; i < numChannels; i++ ) {
+            zTMorphAniEntry* entry = mm->GetAniChannel( i );
+            if ( !entry ) {
+                continue;
+            }
+            zCMorphMeshAni* ani = entry->GetAni();
+            if ( !ani ) {
+                continue;
+            }
+
+            const int aniNumVert = ani->GetNumVert();
+            const float3* vertPos = ani->GetVertPosMatrix();
+            const int* vertIndexList = ani->GetVertIndexList();
+            if ( aniNumVert <= 0 || !vertPos || !vertIndexList ) {
+                continue;
+            }
+
+            ChannelState& c = outChannels.emplace_back();
+            c.Ani = ani;
+            c.NumVert = aniNumVert;
+            c.VertIndexList = vertIndexList;
+
+            const float weight = SinusEase( SinusEase( entry->GetWeight() ) );
+            c.Weight = weight;
+            c.Weight1M = ani->IsShape() ? 1.0f : (1.0f - weight);
+
+            const int numFrames = ani->GetNumFrames();
+            if ( numFrames > 1 ) {
+                c.FrameA = vertPos + static_cast<ptrdiff_t>(entry->GetActFrameInt()) * aniNumVert;
+                c.FrameB = vertPos + static_cast<ptrdiff_t>(entry->GetNextFrameInt()) * aniNumVert;
+                c.Frac = entry->GetFrac();
+            } else {
+                // Single-frame anis take CalcVertPositions' non-lerping branch.
+                c.FrameA = vertPos;
+                c.FrameB = vertPos;
+                c.Frac = 0.0f;
+            }
+        }
+    }
+
+    void Apply( const std::vector<ChannelState>& channels, const float3* restPositions, int numVert,
+        float3* outPositions ) {
+        if ( !outPositions || numVert <= 0 ) {
+            return;
+        }
+
+        for ( int i = 0; i < numVert; i++ ) {
+            outPositions[i] = float3( 0.0f, 0.0f, 0.0f );
+        }
+
+        for ( const ChannelState& c : channels ) {
+            for ( int j = 0; j < c.NumVert; j++ ) {
+                const int v = c.VertIndexList[j];
+                if ( v < 0 || v >= numVert ) {
+                    continue;   // an ani wider than the mesh we are folding onto - skip rather than scribble
+                }
+
+                float3 sample = c.FrameA[j];
+                if ( c.Frac != 0.0f ) {
+                    const float3& next = c.FrameB[j];
+                    sample.x += c.Frac * (next.x - sample.x);
+                    sample.y += c.Frac * (next.y - sample.y);
+                    sample.z += c.Frac * (next.z - sample.z);
+                }
+
+                float3& acc = outPositions[v];
+                acc.x = c.Weight1M * acc.x + sample.x * c.Weight;
+                acc.y = c.Weight1M * acc.y + sample.y * c.Weight;
+                acc.z = c.Weight1M * acc.z + sample.z * c.Weight;
+            }
+        }
+
+        // CalcVertPositions' trailing add of the rest base.
+        if ( restPositions ) {
+            for ( int i = 0; i < numVert; i++ ) {
+                outPositions[i].x += restPositions[i].x;
+                outPositions[i].y += restPositions[i].y;
+                outPositions[i].z += restPositions[i].z;
+            }
+        }
+    }
+
+    float CompareAgainstEngine( zCMorphMesh* mm ) {
+        if ( !mm ) {
+            return -1.0f;
+        }
+
+        int restCount = 0;
+        const float3* rest = mm->GetRestPositions( restCount );
+        zCProgMeshProto* pm = mm->GetMorphMesh();
+        if ( !rest || restCount <= 0 || !pm ) {
+            return -1.0f;
+        }
+
+        zCArrayAdapt<float3>* posList = pm->GetPositionList();
+        if ( !posList || !posList->Array || posList->NumInArray <= 0 ) {
+            return -1.0f;
+        }
+        const int numVert = std::min( restCount, posList->NumInArray );
+
+        // Capture first, then let the engine deform into its own (shared) position list. Order matters:
+        // CalcVertexPositions does not touch channel state, but capturing after keeps the two reads of
+        // that state adjacent and makes the comparison independent of any future reordering here.
+        static std::vector<ChannelState> channels;
+        CaptureChannels( mm, channels );
+
+        mm->CalcVertexPositions();
+
+        static std::vector<float3> ours;
+        ours.resize( numVert );
+        Apply( channels, rest, numVert, ours.data() );
+
+        const float3* theirs = posList->Array;
+        float worst = 0.0f;
+        for ( int i = 0; i < numVert; i++ ) {
+            worst = std::max( worst, std::abs( ours[i].x - theirs[i].x ) );
+            worst = std::max( worst, std::abs( ours[i].y - theirs[i].y ) );
+            worst = std::max( worst, std::abs( ours[i].z - theirs[i].z ) );
+        }
+        return worst;
+    }
+}

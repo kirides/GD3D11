@@ -16,9 +16,47 @@ public:
         return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Ani_Offset_NumVert ));
     }
 
+    int GetNumFrames() {
+        return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Ani_Offset_NumFrames ));
+    }
+
     /** numFrames * numVert positions; for a refShape ani the first numVert are the shape. */
     float3* GetVertPosMatrix() {
         return *reinterpret_cast<float3**>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Ani_Offset_VertPosMatrix ));
+    }
+
+    /** Maps this ani's slot j to a vertex index in the morph mesh's position list - the ani only
+        touches numVert of the mesh's vertices, and does so by indirection. */
+    int* GetVertIndexList() {
+        return *reinterpret_cast<int**>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Ani_Offset_VertIndexList ));
+    }
+
+    /** A "shape" ani replaces what earlier channels accumulated instead of blending against it
+        (CalcVertPositions forces weight1M to 1 for these). */
+    bool IsShape() {
+        return (*reinterpret_cast<uint8_t*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Ani_Offset_Flags ))
+            & GothicMemoryLocations::zCMorphMesh::Ani_Mask_Shape) != 0;
+    }
+};
+
+/** One active blend channel of a zCMorphMesh. AdvanceAnis owns these - it integrates the weight,
+    advances the frame and deletes the entry when it has faded out. We only ever read them. */
+class zTMorphAniEntry {
+public:
+    zCMorphMeshAni* GetAni() {
+        return *reinterpret_cast<zCMorphMeshAni**>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Entry_Offset_Ani ));
+    }
+    float GetWeight() {
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Entry_Offset_Weight ));
+    }
+    int GetActFrameInt() {
+        return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Entry_Offset_ActFrameInt ));
+    }
+    int GetNextFrameInt() {
+        return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Entry_Offset_NextFrameInt ));
+    }
+    float GetFrac() {
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Entry_Offset_Frac ));
     }
 };
 
@@ -53,6 +91,21 @@ public:
         as the base the morph deltas are added to. */
     zCMorphMeshAni* GetRefShapeAni() {
         return *reinterpret_cast<zCMorphMeshAni**>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Offset_RefShapeAni ));
+    }
+
+    /** Active blend channels, in the order CalcVertPositions folds them - the order is load-bearing,
+        see MorphBlend.h. Read the count off the THIRD dword: zCArraySort is
+        { T* array; int numAlloc; int numInArray; }, and this array shrinks as anis fade out, so
+        numAlloc (what zCArrayAdapt would report) is not the live count. */
+    int GetNumAniChannels() {
+        uint8_t* arr = reinterpret_cast<uint8_t*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Offset_AniChannels ));
+        return *reinterpret_cast<int*>(arr + GothicMemoryLocations::zCMorphMesh::ArraySort_Offset_NumInArray);
+    }
+
+    zTMorphAniEntry* GetAniChannel( int i ) {
+        uint8_t* arr = reinterpret_cast<uint8_t*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Offset_AniChannels ));
+        zTMorphAniEntry** entries = *reinterpret_cast<zTMorphAniEntry***>(arr + GothicMemoryLocations::zCMorphMesh::ArraySort_Offset_Array);
+        return entries ? entries[i] : nullptr;
     }
 
     zCModelTexAniState* GetTexAniState() {
