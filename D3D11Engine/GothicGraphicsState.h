@@ -686,6 +686,7 @@ struct GothicRendererSettings {
         SectionDrawRadius = 4;
 
         FpsLimit = 0;
+        PausedFpsLimit = 30;
         DrawVOBs = true;
         DrawWorldMesh = 3;
         DrawSkeletalMeshes = true;
@@ -1003,6 +1004,13 @@ struct GothicRendererSettings {
 
     /** Rendering options */
     int FpsLimit;
+    /** Cap applied on top of FpsLimit while an in-game menu holds the game paused. ZENGIN renders
+        those frames from a nested loop it never throttles in-game, which lets an idle menu reach
+        thousands of FPS and has been seen to crash drivers - so this cap is mandatory and only
+        its value is configurable, clamped to [PausedFpsLimitMin, PausedFpsLimitMax]. */
+    int PausedFpsLimit;
+    static constexpr int PausedFpsLimitMin = 10;
+    static constexpr int PausedFpsLimitMax = 100;
     bool DrawVOBs;
     bool DrawDynamicVOBs;
     int DrawWorldMesh;

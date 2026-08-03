@@ -1240,6 +1240,18 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::SliderInt( "##FPSLimit", &settings.FpsLimit, 10, 300 );
             ImGui::EndDisabled();
 
+            // Always on by design - Gothic renders paused frames from its own unthrottled loop, and
+            // letting that run free crashes some drivers. Only the value is up to the player.
+            ImText( "Paused FPS Limit", buttonWidth );
+            if ( ImGui::IsItemHovered() ) {
+                ImGui::SetTooltip( "Framerate while an in-game menu has the game paused.\n"
+                    "Gothic renders those frames from its own loop without any limit, which can\n"
+                    "reach thousands of FPS and crash some drivers, so this cap can't be turned off." );
+            }
+            ImGui::SameLine();
+            ImGui::SliderInt( "##PausedFPSLimit", &settings.PausedFpsLimit,
+                GothicRendererSettings::PausedFpsLimitMin, GothicRendererSettings::PausedFpsLimitMax );
+
             ImText( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
             float objectDrawDistance = settings.OutdoorVobDrawRadius / 1000.0f;
             if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 1.f, 100.0f, "%.0f" ) ) {

@@ -25,6 +25,12 @@ static void UpdateShouldBlockGameInput();
     OnEndFrame must NOT also drive the frame limiter, or every frame would get paced twice. */
 inline bool g_MainLoopFramePacingInstalled = false;
 
+/** Incremented once per CGameManager::Run() iteration by the same main-loop patch. Frames that
+    come and go without this changing were rendered from one of ZENGIN's *nested* frame loops
+    (see BaseGraphicsEngine::PausedFrameLimiterBeginFrame), which the main-loop patch cannot
+    reach. Wrap-around is harmless - only "did it change since the last frame" is ever asked. */
+inline unsigned int g_MainLoopFrameTick = 0;
+
 struct GraphicsEventName {
     const wchar_t* wide;
     const char* narrow;
@@ -141,6 +147,27 @@ public:
         Counterpart to FrameLimiterEndFrame(); see that method for why this lives outside
         of OnBeginFrame. */
     virtual void FrameLimiterBeginFrame();
+
+    /** Paces the frames ZENGIN renders from its *nested* frame loop while an in-game menu has
+        the game paused, which the main-loop patch above cannot see.
+
+        Every in-game menu (ESC main menu, inventory/status, log, map) calls oCGame::Pause() -
+        setting singleStep and freezing timeStep - and then blocks inside zCMenu::Run(), whose
+        HandleFrame -> Render() drives its own BeginFrame / screen->Render / EndFrame / Vid_Blit.
+        CGameManager::Run() never gets to iterate while that is happening, so neither the
+        main-loop pacing patch nor the frame-latency wait runs, and ZENGIN itself only throttles
+        that loop when *out* of game (zCMenu::Render: `if (!IsInGame()) Sleep(50);`). An in-game
+        menu therefore spins as fast as the GPU can blit an almost empty screen - thousands of
+        FPS, which has been observed to crash drivers.
+
+        Called from OnBeginFrame/OnEndFrame, which do fire for those frames since they come from
+        zrenderer->BeginFrame()/EndFrame(). Nested frames are told apart by g_MainLoopFrameTick
+        not having advanced, which also keeps this from double-waiting on frames the main-loop
+        patch already paces. */
+    void PausedFrameLimiterBeginFrame();
+
+    /** Counterpart to PausedFrameLimiterBeginFrame(); waits only if that call armed a frame. */
+    void PausedFrameLimiterEndFrame();
 
     /** Returns the DXGI frame-latency waitable handle for backends whose swapchain was created
         with DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, or nullptr if the backend/current
@@ -391,4 +418,19 @@ protected:
 
     /** Shared by every backend via FrameLimiterBeginFrame/FrameLimiterEndFrame. */
     std::unique_ptr<FpsLimiter> m_FrameLimiter = std::make_unique<FpsLimiter>();
+
+    /** Resolves the limit for the frame about to start: the inactive-window lock, the user's
+        FpsLimit and the paused/menu cap, whichever is lowest. 0 means "no limit". */
+    int ResolveFrameLimit() const;
+
+    /** Separate limiter instance for the nested paused/menu loop, so arming or waiting there
+        can never disturb the main loop's own in-flight frame timing. Costs nothing until the
+        first paused frame actually arms it. */
+    std::unique_ptr<FpsLimiter> m_PausedFrameLimiter = std::make_unique<FpsLimiter>();
+
+    /** g_MainLoopFrameTick as of the previous PausedFrameLimiterBeginFrame(). */
+    unsigned int m_LastSeenMainLoopTick = 0;
+
+    /** Set when PausedFrameLimiterBeginFrame() armed m_PausedFrameLimiter for this frame. */
+    bool m_PacingPausedFrame = false;
 };

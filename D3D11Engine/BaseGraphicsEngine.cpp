@@ -1,23 +1,71 @@
 #include "BaseGraphicsEngine.h"
 #include "ImGuiShim.h"
 #include "GothicAPI.h"
+#include <algorithm>
 #include <iostream>
 #include <string>
+
+/** Resolves the limit for the frame about to start; see BaseGraphicsEngine.h. */
+int BaseGraphicsEngine::ResolveFrameLimit() const {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    int limit = (!m_IsWindowActive && settings.EnableInactiveFpsLock) ? 20 : settings.FpsLimit;
+
+    // Nothing about a paused game is worth rendering at full speed, and ZENGIN's paused loop has
+    // no pacing of its own (see PausedFrameLimiterBeginFrame). Not optional - the runaway framerate
+    // it prevents crashes drivers. Videos and load screens still get to run unthrottled: they're
+    // paused too, but they're waiting on data, not on the player.
+    if ( Engine::GAPI->IsIngameMenuPaused()
+        && !settings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
+        const int pausedLimit = std::clamp( settings.PausedFpsLimit,
+            GothicRendererSettings::PausedFpsLimitMin, GothicRendererSettings::PausedFpsLimitMax );
+        limit = limit != 0 ? std::min( limit, pausedLimit ) : pausedLimit;
+    }
+    return limit;
+}
 
 /** Arms the frame limiter for the frame about to start. Shared by every backend; see
     BaseGraphicsEngine.h for why this lives outside of OnBeginFrame. */
 void BaseGraphicsEngine::FrameLimiterBeginFrame() {
-    auto& rendererState = Engine::GAPI->GetRendererState();
-
-    if ( !m_IsWindowActive && rendererState.RendererSettings.EnableInactiveFpsLock ) {
-        m_FrameLimiter->SetLimit( 20 );
-        m_FrameLimiter->Start();
-    } else if ( rendererState.RendererSettings.FpsLimit != 0 ) {
-        m_FrameLimiter->SetLimit( rendererState.RendererSettings.FpsLimit );
+    if ( int limit = ResolveFrameLimit(); limit != 0 ) {
+        m_FrameLimiter->SetLimit( limit );
         m_FrameLimiter->Start();
     } else {
         m_FrameLimiter->Reset();
     }
+}
+
+/** Arms the nested paused/menu loop's own limiter, if this frame is one of its frames.
+    See BaseGraphicsEngine.h for the whole story. */
+void BaseGraphicsEngine::PausedFrameLimiterBeginFrame() {
+    const bool mainLoopTicked = (g_MainLoopFrameTick != m_LastSeenMainLoopTick);
+    m_LastSeenMainLoopTick = g_MainLoopFrameTick;
+    m_PacingPausedFrame = false;
+
+    // Without the main-loop patch every frame is already paced from OnBeginFrame/OnEndFrame,
+    // nested ones included - ResolveFrameLimit() applies the paused cap there too.
+    if ( !g_MainLoopFramePacingInstalled ) return;
+    if ( mainLoopTicked ) return; // the main-loop patch is pacing this frame itself
+
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.BinkVideoRunning || Engine::GAPI->IsInSavingLoadingState() ) return;
+    if ( !Engine::GAPI->IsIngameMenuPaused() ) return;
+
+    const int limit = ResolveFrameLimit();
+    if ( limit == 0 ) return;
+
+    m_PacingPausedFrame = true;
+    // The main loop normally does this once per iteration; nobody does it in the nested loop.
+    WaitForFrameLatencyWaitable();
+    m_PausedFrameLimiter->SetLimit( limit );
+    m_PausedFrameLimiter->Start();
+}
+
+/** Paces out a nested paused/menu frame armed by PausedFrameLimiterBeginFrame(). */
+void BaseGraphicsEngine::PausedFrameLimiterEndFrame() {
+    if ( !m_PacingPausedFrame ) return;
+    m_PacingPausedFrame = false;
+    m_PausedFrameLimiter->Wait();
 }
 
 /** Paces out the frame that just finished. Shared by every backend; see

@@ -619,6 +619,10 @@ public:
     /** Returns true, if the game was paused */
     bool IsGamePaused();
 
+    /** Returns true while an in-game menu holds the game paused. Stricter than IsGamePaused():
+        requires a live game session, so startup/teardown don't read as "paused". */
+    bool IsIngameMenuPaused();
+
     /** Checks if a game is being saved now */
     bool IsSavingGameNow();
 
