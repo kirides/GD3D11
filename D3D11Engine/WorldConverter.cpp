@@ -25,6 +25,7 @@
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
+#include "MorphBlend.h"
 #include "ThreadPool.h"
 #include "vendor/mikktspace.h"
 #include "VertexPacking.h"
@@ -1966,14 +1967,52 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
     }
     meshInfo->LastAniUpdateFrame = now;
 
+    // Always the engine's: AdvanceAnis is the animation STATE machine (weights, frames, channel
+    // lifetime, random anis), not the deform. Only the deform below has an alternative.
     visual->AdvanceAnis();
-    visual->CalcVertexPositions();
 
     zCProgMeshProto* morphMesh = visual->GetMorphMesh();
     if ( !morphMesh )
         return;
 
-    float3* posList = morphMesh->GetPositionList()->Array;
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.VerifyMorphBlend ) {
+        // Runs both deforms and reports the worst disagreement. Deliberately rate-limited rather than
+        // per-mesh-per-frame; one bad visual will still show up within a second or two.
+        const float deviation = MorphBlend::CompareAgainstEngine( visual );
+        static size_t s_lastReportFrame = 0;
+        static float s_worstSeen = 0.0f;
+        if ( deviation >= 0.0f ) {
+            s_worstSeen = std::max( s_worstSeen, deviation );
+        }
+        if ( now - s_lastReportFrame > 300 ) {
+            s_lastReportFrame = now;
+            LogInfo() << "MorphBlend verify: worst deviation " << s_worstSeen << " units over the last 300 frames";
+            s_worstSeen = 0.0f;
+        }
+    }
+
+    // The deform. 'posList' ends up pointing at whichever one produced this frame's positions.
+    const float3* posList = nullptr;
+    static std::vector<float3> reimplementedPositions;
+    if ( settings.UseReimplementedMorphBlend && !settings.VerifyMorphBlend ) {
+        int restCount = 0;
+        const float3* rest = visual->GetRestPositions( restCount );
+        zCArrayAdapt<float3>* livePositions = morphMesh->GetPositionList();
+        if ( rest && restCount >= livePositions->NumInArray && livePositions->NumInArray > 0 ) {
+            static std::vector<MorphBlend::ChannelState> channels;
+            MorphBlend::CaptureChannels( visual, channels );
+            reimplementedPositions.resize( livePositions->NumInArray );
+            MorphBlend::Apply( channels, rest, livePositions->NumInArray, reimplementedPositions.data() );
+            posList = reimplementedPositions.data();
+        }
+    }
+    if ( !posList ) {
+        // Engine deform (also the fallback when the rest positions aren't available). VerifyMorphBlend
+        // already called this inside CompareAgainstEngine, but it is idempotent for a given state.
+        visual->CalcVertexPositions();
+        posList = morphMesh->GetPositionList()->Array;
+    }
     static std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
         vertices.clear();

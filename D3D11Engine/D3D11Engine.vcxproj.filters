@@ -929,6 +929,8 @@
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
     <ClInclude Include="BspPortalCuller.h" />
+    <ClInclude Include="MorphBlend.h" />
+    <ClInclude Include="SharedVisualRegistry.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1330,6 +1332,8 @@
     <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
     <ClCompile Include="BspPortalCuller.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
+    <ClCompile Include="MorphBlend.cpp" />
+    <ClCompile Include="SharedVisualRegistry.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

@@ -1086,6 +1086,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Logger.h" />
     <ClInclude Include="MemoryTracker.h" />
     <ClInclude Include="MeshManager.h" />
+    <ClInclude Include="MorphBlend.h" />
     <ClInclude Include="SharedVisualRegistry.h" />
     <ClInclude Include="MeshModifier.h" />
     <ClInclude Include="oCGame.h" />
@@ -1672,6 +1673,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="vendor\mikktspace.c" />
     <ClCompile Include="include\tracy\public\TracyClient.cpp" />
     <ClCompile Include="MeshManager.cpp" />
+    <ClCompile Include="MorphBlend.cpp" />
     <ClCompile Include="SharedVisualRegistry.cpp" />
     <ClCompile Include="MeshModifier.cpp" />
     <ClCompile Include="pch.cpp">

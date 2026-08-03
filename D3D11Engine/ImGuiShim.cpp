@@ -1437,6 +1437,13 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );
         ImGui::SliderFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 0.0f, 18000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SetItemTooltip( "Draw distance for NPCs" );
+        ImGui::Checkbox( "Reimplemented morph blend", &settings.UseReimplementedMorphBlend );
+        ImGui::SetItemTooltip( "Fold morph attachments (heads, bow draw meshes) with our own blend instead of\n"
+            "ZENGIN's CalcVertPositions. Same result; this is the A/B for moving it to the GPU.\n"
+            "Ignored while 'Verify morph blend' is on." );
+        ImGui::Checkbox( "Verify morph blend", &settings.VerifyMorphBlend );
+        ImGui::SetItemTooltip( "Run BOTH deforms and log the worst deviation every 300 frames.\n"
+            "Slower than either path, and always draws the engine's result." );
         ImGui::EndDisabled();
 
         ImGui::Checkbox( "Draw Mobs", &settings.DrawMobs );

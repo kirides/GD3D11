@@ -645,6 +645,24 @@ struct GothicMemoryLocations {
         // zCMorphMeshAni members (entries of zCMorphMeshProto::aniList, also shared).
         static const unsigned int Ani_Offset_NumVert = 0x40;
         static const unsigned int Ani_Offset_VertPosMatrix = 0x4C;
+        static const unsigned int Ani_Offset_NumFrames = 0x48;
+        // zCMorphMeshAni::flags bitfield byte: bit0 discontinuity, bit1 looping, bit2 shape, bit3 refShape.
+        static const unsigned int Ani_Offset_Flags = 0x3C;
+        static const unsigned int Ani_Mask_Shape = 0x04;
+        static const unsigned int Ani_Offset_VertIndexList = 0x44;
+        // Active blend channels: zCArraySort<zTMorphAniEntry*>. NOTE the layout is
+        // { T* array; int numAlloc; int numInArray; } - the COUNT is the third dword, not the second.
+        // zCArrayAdapt reads the second, which is fine for file-loaded arrays (numAlloc == numInArray)
+        // but wrong here: this array grows and shrinks as anis start and finish.
+        static const unsigned int Offset_AniChannels = 0x6C;
+        static const unsigned int ArraySort_Offset_Array = 0x00;
+        static const unsigned int ArraySort_Offset_NumInArray = 0x08;
+        // zTMorphAniEntry (sizeof 0x2C)
+        static const unsigned int Entry_Offset_Ani = 0x00;
+        static const unsigned int Entry_Offset_Weight = 0x04;
+        static const unsigned int Entry_Offset_ActFrameInt = 0x10;
+        static const unsigned int Entry_Offset_NextFrameInt = 0x14;
+        static const unsigned int Entry_Offset_Frac = 0x18;
         static const unsigned int AdvanceAnis = 0x00586E90;
         static const unsigned int CalcVertexPositions = 0x00586AE0;
 
