@@ -4059,6 +4059,16 @@ bool GothicAPI::IsGamePaused() {
     return game->GetSingleStep();
 }
 
+/** Returns true while an in-game menu holds the game paused */
+bool GothicAPI::IsIngameMenuPaused() {
+    // Deliberately stricter than IsGamePaused(): that one reports "paused" when there is no game
+    // session at all (out-game menu, startup, teardown), which is indistinguishable from loading.
+    // With a session present, singleStep can only have been set by oCGame::Pause(), which every
+    // in-game menu (ESC main menu, inventory/status, log, map) calls before entering zCMenu::Run().
+    oCGame* game = oCGame::GetGame();
+    return game && game->GetSingleStep();
+}
+
 /** Checks if a game is being saved now */
 bool GothicAPI::IsSavingGameNow() {
     oCGame* game = oCGame::GetGame();
@@ -5679,6 +5689,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "PausedFpsLimit", to_string_locale_independent( s.PausedFpsLimit ).c_str(), ini.c_str() );
     
     auto res = Engine::GraphicsEngine->GetBackbufferResolution();
     WritePrivateProfileStringA( "Display", "TextureQuality", to_string_locale_independent( s.textureMaxSize ).c_str(), ini.c_str() );
@@ -5854,6 +5865,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
+        s.PausedFpsLimit = GetPrivateProfileIntA( "General", "PausedFpsLimit", ds.PausedFpsLimit, ini.c_str() );
+        // Not optional: an unthrottled paused loop crashes drivers, so the ini can only pick a value
+        // inside the allowed band (0/garbage included) - it can't switch the cap off.
+        s.PausedFpsLimit = std::clamp( s.PausedFpsLimit,
+            GothicRendererSettings::PausedFpsLimitMin, GothicRendererSettings::PausedFpsLimitMax );
 
         // override INI settings with GMP minimum values.
         if ( GMPModeActive ) {

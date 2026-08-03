@@ -1574,6 +1574,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         FrameLimiterBeginFrame();
         FrameMarkStart( beginFrameEventName );
     }
+    PausedFrameLimiterBeginFrame();
 
     SteamOverlay::Update();
 #ifdef BUILD_1_12F
@@ -1660,6 +1661,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
         FrameMarkEnd( beginFrameEventName );
         FrameLimiterEndFrame();
     }
+    PausedFrameLimiterEndFrame();
     return XR_SUCCESS;
 }
 

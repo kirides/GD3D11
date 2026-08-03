@@ -1709,6 +1709,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
     }
+    PausedFrameLimiterBeginFrame();
 
     TracyD3D12BeginFrame
 
@@ -1848,6 +1849,7 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !g_MainLoopFramePacingInstalled ) {
         FrameLimiterEndFrame();
     }
+    PausedFrameLimiterEndFrame();
 
     return XR_SUCCESS;
 }
