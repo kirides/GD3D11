@@ -45,7 +45,7 @@ namespace {
     }
 
     ID3D12DeviceFactory* agilityDeviceFactory = nullptr;
-    void InitAgilitySdk() {
+    void InitAgilitySdkOnce() {
         InitAgilitySdkVersion();
         if ( agilitySdkVersion != 0 ) {
 
@@ -61,6 +61,24 @@ namespace {
                             LogWarn() << "Failed to initialize agility SDK (version " << agilitySdkVersion << ", result: " << hr << " ); using system D3D12.";
                         } else {
                             LogInfo() << "D3D12 Agility SDK " << agilitySdkVersion << " activated from " << agilitySdkDeployPath;
+
+                            // CreateDeviceFactory only redirects devices made through the factory — the
+                            // process-global runtime (and with it every exported free function) stays on
+                            // the OS D3D12. That split breaks root signature serialization: we serialize
+                            // through the exported D3D12SerializeVersionedRootSignature (see
+                            // D3D12RootLayout.cpp — we don't link d3d12.lib), so on an OS whose runtime
+                            // predates SM6.6 dynamic resources the old serializer rejects the
+                            // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag ("Unsupported bit-flag set (root
+                            // signature flags 401)") even though the Agility device supports it.
+                            // ApplyToGlobalState points the global state - hence the exports - at the
+                            // loaded core. Must happen before any device is created, which it does: this
+                            // runs once, from the first IsAvailable()/Init() call.
+                            HRESULT applyHr = agilityDeviceFactory->ApplyToGlobalState();
+                            if ( FAILED( applyHr ) ) {
+                                LogWarn() << "D3D12: ID3D12DeviceFactory::ApplyToGlobalState failed (0x" << std::hex
+                                          << applyHr << std::dec << "); the exported root signature serializer stays on "
+                                          "the OS runtime, which may reject SM6.6 bindless root signatures.";
+                            }
                         }
                     }
                 }
@@ -68,6 +86,14 @@ namespace {
         } else {
             LogInfo() << "D3D12 Agility SDK core not deployed; using the system D3D12 runtime.";
         }
+    }
+
+    // Called from both IsAvailable() and Init(); the SDK may only be activated once per process
+    // (a second CreateDeviceFactory would leak the first factory, and ApplyToGlobalState would fail
+    // once a device exists).
+    void InitAgilitySdk() {
+        static bool s_once = [] { InitAgilitySdkOnce(); return true; }();
+        (void)s_once;
     }
 
     // dxgi.dll factory-creation function pointers (dynamically resolved, like the D3D11 backend).
@@ -122,9 +148,33 @@ namespace {
         return SUCCEEDED( hr );
     }
 
-    /** Returns true if the adapter supports a FL11_0 D3D12 device (capability check only — passing
-        nullptr for the device output means "test support without creating"). */
-    bool AdapterSupportsD3D12( PFN_D3D12_CREATE_DEVICE createDevice, IDXGIAdapter1* adapter ) {
+    // Every scene root signature in this backend sets CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED and the
+    // shaders reach their material textures through SM6.6 ResourceDescriptorHeap[...], so a device
+    // without tier-3 binding / SM6.6 can't run the backend at all. Reject it here rather than in the
+    // middle of PSO creation, so the engine falls back to D3D11 with a readable reason.
+    bool DeviceSupportsBindless( ID3D12Device* device, std::string* outReason ) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+        if ( FAILED( device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) )
+            || options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_3 ) {
+            if ( outReason ) *outReason = "the GPU does not support resource binding tier 3 (required for bindless)";
+            return false;
+        }
+
+        // CheckFeatureSupport clamps HighestShaderModel down to what is supported, and fails outright
+        // on a runtime that doesn't even know the 6_6 enumerant — both mean "no dynamic resources".
+        D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = { D3D_SHADER_MODEL_6_6 };
+        if ( FAILED( device->CheckFeatureSupport( D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof( shaderModel ) ) )
+            || shaderModel.HighestShaderModel < D3D_SHADER_MODEL_6_6 ) {
+            if ( outReason ) *outReason = "the driver does not support shader model 6.6 (required for bindless resources)";
+            return false;
+        }
+        return true;
+    }
+
+    /** Returns true if the adapter supports a FL12_0 D3D12 device that can also do SM6.6 bindless
+        (capability check only — the temporary device is dropped again). */
+    bool AdapterSupportsD3D12( PFN_D3D12_CREATE_DEVICE createDevice, IDXGIAdapter1* adapter,
+        std::string* outReason = nullptr ) {
         Microsoft::WRL::ComPtr<ID3D12Device> tempDevice;
 
         // Actually attempt to create a temporary device instance
@@ -135,7 +185,11 @@ namespace {
             IID_PPV_ARGS_Helper( &tempDevice )
         );
 
-        return SUCCEEDED( hr );
+        if ( FAILED( hr ) ) {
+            if ( outReason ) *outReason = "no Feature-Level-12_0 D3D12 device could be created";
+            return false;
+        }
+        return DeviceSupportsBindless( tempDevice.Get(), outReason );
     }
 
     std::string DescriptionToNarrow( const DXGI_ADAPTER_DESC1& desc ) {
@@ -143,11 +197,12 @@ namespace {
         return std::string( w.begin(), w.end() );
     }
 
-    /** Selects the best FL11_0-capable, non-software adapter. Prefers the high-performance GPU via
+    /** Selects the best FL12_0-capable, non-software adapter. Prefers the high-performance GPU via
         IDXGIFactory6 when available, else rates candidates by VRAM + vendor (NVIDIA > AMD > Intel),
-        mirroring the D3D11 backend's adapter heuristic. Fills outDescription on success. */
+        mirroring the D3D11 backend's adapter heuristic. Fills outDescription on success, and on
+        failure outReason with why the last candidate was rejected. */
     bool SelectAdapter( IDXGIFactory4* factory, PFN_D3D12_CREATE_DEVICE createDevice,
-        ComPtr<IDXGIAdapter1>& outAdapter, std::string& outDescription ) {
+        ComPtr<IDXGIAdapter1>& outAdapter, std::string& outDescription, std::string* outReason = nullptr ) {
         ComPtr<IDXGIAdapter1> adapter;
 
         ComPtr<IDXGIFactory6> factory6;
@@ -157,9 +212,10 @@ namespace {
                 DXGI_ADAPTER_DESC1 desc;
                 adapter->GetDesc1( &desc );
                 if ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) continue;
-                if ( AdapterSupportsD3D12( createDevice, adapter.Get() ) ) {
+                if ( AdapterSupportsD3D12( createDevice, adapter.Get(), outReason ) ) {
                     outAdapter = adapter;
                     outDescription = DescriptionToNarrow( desc );
+                    if ( outReason ) outReason->clear();   // drop any earlier candidate's rejection reason
                     return true;
                 }
             }
@@ -172,7 +228,7 @@ namespace {
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1( &desc );
             if ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) continue;
-            if ( !AdapterSupportsD3D12( createDevice, adapter.Get() ) ) continue;
+            if ( !AdapterSupportsD3D12( createDevice, adapter.Get(), outReason ) ) continue;
 
             uint64_t rating = static_cast<uint64_t>( desc.DedicatedVideoMemory );
             if ( desc.VendorId == 0x10DE ) rating += 0x200000000; // NVIDIA
@@ -184,6 +240,7 @@ namespace {
         if ( candidates.empty() ) return false;
         outAdapter = candidates.rbegin()->second;
         outDescription = descriptions.rbegin()->second;
+        if ( outReason ) outReason->clear();
         return true;
     }
 
@@ -208,8 +265,12 @@ bool D3D12Device::IsAvailable( std::string* outDescription, std::string* outReas
 
     ComPtr<IDXGIAdapter1> adapter;
     std::string description;
-    if ( !SelectAdapter( factory.Get(), createDevice, adapter, description ) ) {
-        setReason( "no Feature-Level-11_0-capable GPU was found" );
+    std::string rejectReason;
+    if ( !SelectAdapter( factory.Get(), createDevice, adapter, description, &rejectReason ) ) {
+        // SelectAdapter reports why the last candidate was turned down (no FL12_0 device, or no
+        // SM6.6/tier-3 bindless support); fall back to a generic message when nothing was enumerated.
+        if ( outReason )
+            *outReason = rejectReason.empty() ? "no Feature-Level-12_0-capable GPU was found" : rejectReason;
         return false;
     }
 
@@ -258,8 +319,10 @@ bool D3D12Device::Init() {
         return false;
     }
 
-    if ( !SelectAdapter( m_Factory.Get(), createDevice, m_Adapter, m_DeviceDescription ) ) {
-        LogWarn() << "D3D12Device::Init: no Feature-Level-12_0-capable GPU found.";
+    std::string rejectReason;
+    if ( !SelectAdapter( m_Factory.Get(), createDevice, m_Adapter, m_DeviceDescription, &rejectReason ) ) {
+        LogWarn() << "D3D12Device::Init: no usable GPU found ("
+                  << ( rejectReason.empty() ? "no Feature-Level-12_0-capable GPU" : rejectReason.c_str() ) << ").";
         return false;
     }
 
