@@ -34,8 +34,8 @@ namespace MorphBlend {
         float Weight1M = 0.0f;            // 1 - Weight, or exactly 1 for a shape ani
     };
 
-    /** ZENGIN's zSinusEase (zTools.h): (sin(t*PI - PI/2) + 1) / 2. Applied twice by CalcVertPositions.
-        The engine uses a sin approximation; the difference is far below vertex precision. */
+    /** ZENGIN's zSinusEase: (zSinApprox(t*PI - PI/2) + 1) / 2, applied twice by CalcVertPositions.
+        zSinApprox is a 1-milliradian quantised sine, not sin() - see the implementation. */
     float SinusEase( float t );
 
     /** Snapshots this morph mesh's active channels. Must run on the game thread, after AdvanceAnis:

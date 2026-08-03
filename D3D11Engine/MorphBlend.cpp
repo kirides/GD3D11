@@ -4,9 +4,21 @@
 
 namespace MorphBlend {
 
+    /** ZENGIN's zSinApprox is a 1-milliradian lookup table, NOT sin(): it quantises the argument to
+        1/1000 rad (zFloat2Int == fistp, round-to-nearest-even), wraps it into [-3.142, +3.142] and
+        reads a precomputed sine. Reproducing the quantisation matters - using a true sin() here leaves
+        a ~0.0025-unit disagreement with the engine on a head, which is invisible but would sit as a
+        noise floor under VerifyMorphBlend and hide small regressions. Index 3142 is a == 0, so the
+        table entry is sin((index - 3142) / 1000). */
+    static float SinApprox( float a ) {
+        const int lookup = static_cast<int>( lrintf( 1000.0f * a ) );
+        const int index = (lookup + 3142 + 6284 * 1000) % 6284;
+        return sinf( static_cast<float>( index - 3142 ) * 0.001f );
+    }
+
     float SinusEase( float t ) {
         constexpr float kPi = 3.14159265358979323846f;
-        return (sinf( t * kPi - kPi * 0.5f ) + 1.0f) * 0.5f;
+        return (SinApprox( t * kPi - kPi * 0.5f ) + 1.0f) * 0.5f;
     }
 
     void CaptureChannels( zCMorphMesh* mm, std::vector<ChannelState>& outChannels ) {
