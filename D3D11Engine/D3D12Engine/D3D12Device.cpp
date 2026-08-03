@@ -44,6 +44,7 @@ namespace {
         agilitySdkVersion = GetD3D12CoreSDKVersion( GetAgilitySdkPath() );
     }
 
+    ID3D12DeviceFactory* agilityDeviceFactory = nullptr;
     void InitAgilitySdk() {
         InitAgilitySdkVersion();
         if ( agilitySdkVersion != 0 ) {
@@ -52,10 +53,10 @@ namespace {
                 auto pfnD3D12GetInterface = reinterpret_cast<PFN_D3D12_GET_INTERFACE>(GetProcAddress( hD3d12, "D3D12GetInterface" ));
 
                 if ( pfnD3D12GetInterface ) {
-                    Microsoft::WRL::ComPtr<ID3D12SDKConfiguration> sdkConfig;
+                    Microsoft::WRL::ComPtr<ID3D12SDKConfiguration1> sdkConfig;
                     HRESULT hr = pfnD3D12GetInterface( CLSID_D3D12SDKConfiguration, IID_PPV_ARGS( &sdkConfig ) );
                     if ( SUCCEEDED( hr ) && sdkConfig ) {
-                        hr = sdkConfig->SetSDKVersion( agilitySdkVersion, agilitySdkDeployPath );
+                        hr = sdkConfig->CreateDeviceFactory( agilitySdkVersion, agilitySdkDeployPath, IID_PPV_ARGS(&agilityDeviceFactory));
                         if ( !SUCCEEDED( hr ) ) {
                             LogWarn() << "Failed to initialize agility SDK (version " << agilitySdkVersion << ", result: " << hr << " ); using system D3D12.";
                         } else {
@@ -73,9 +74,29 @@ namespace {
     typedef HRESULT( WINAPI* PFN_CREATE_DXGI_FACTORY1 )( REFIID riid, void** ppFactory );
     typedef HRESULT( WINAPI* PFN_CREATE_DXGI_FACTORY2 )( UINT flags, REFIID riid, void** ppFactory );
 
+    
+    HRESULT WINAPI D3D12CreateDeviceAgilitySdk(
+    _In_opt_ IUnknown* pAdapter,
+    D3D_FEATURE_LEVEL MinimumFeatureLevel,
+    _In_ REFIID riid, // Expected: ID3D12Device
+    _COM_Outptr_opt_ void** ppDevice )
+    {
+        HRESULT hr = agilityDeviceFactory->CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+        if (FAILED(hr)) {
+            HMODULE d3d12 = LoadLibraryA( "d3d12.dll" );
+            if ( !d3d12 ) return E_FAIL;
+            return reinterpret_cast<PFN_D3D12_CREATE_DEVICE>( GetProcAddress( d3d12, "D3D12CreateDevice" ) )(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+        }
+        return hr;
+    }
+    
     /** Dynamically loads d3d12.dll and resolves D3D12CreateDevice. Returns nullptr if the DLL or
         the entry point is missing (i.e. the OS has no D3D12), so the caller can fall back. */
     PFN_D3D12_CREATE_DEVICE LoadD3D12CreateDevice() {
+        if (agilityDeviceFactory) {
+            return D3D12CreateDeviceAgilitySdk;
+        }
+        
         HMODULE d3d12 = LoadLibraryA( "d3d12.dll" );
         if ( !d3d12 ) return nullptr;
         return reinterpret_cast<PFN_D3D12_CREATE_DEVICE>( GetProcAddress( d3d12, "D3D12CreateDevice" ) );
