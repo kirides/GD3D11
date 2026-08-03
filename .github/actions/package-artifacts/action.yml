@@ -46,12 +46,42 @@ runs:
         Copy-Item -Path "blobs/Meshes" -Destination "$relDir/GD3D11/Meshes/" -Recurse -Force
         Copy-Item -Path "blobs/Textures" -Destination "$relDir/GD3D11/Textures/" -Recurse -Force
         Copy-Item -Path "blobs/libs/*" -Destination "$relDir/" -Recurse -Force
-        Copy-Item -Path "blobs/bin/wine-d2d1.dll" -Destination "$relDir/GD3D11/Bin/d2d1.dll" -Force
-        Copy-Item -Path "blobs/D3D12" -Destination "$relDir/GD3D11/D3D12/" -Force
 
         Copy-Item -Path "$artifactDir/*" -Destination $binDir -Force
         Move-Item -Path "$binDir/ddraw.dll" -Destination "$relDir/" -Force
         Move-Item -Path "$binDir/ddraw.pdb" -Destination "$relDir/" -Force
+
+    - name: Fetch D3D12 Agility SDK
+      shell: pwsh
+      env:
+        AGILITY_SDK_VERSION: '1.619.5'
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $version = $env:AGILITY_SDK_VERSION
+        $relDir = "${{ steps.calc-path.outputs.release-dir }}"
+        $targetDir = "$relDir/GD3D11/D3D12"
+        $nupkg = Join-Path ([System.IO.Path]::GetTempPath()) "microsoft.direct3d.d3d12.$version.nupkg"
+
+        Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/$version" -OutFile $nupkg
+
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+
+        # The .nupkg is a plain zip; pull only the Win32 runtime DLLs out of it.
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $nupkg))
+        try {
+          foreach ($name in @("D3D12Core.dll", "d3d12SDKLayers.dll", "D3D12StateObjectCompiler.dll")) {
+            $entryPath = "build/native/bin/win32/$name"
+            $entry = $zip.Entries | Where-Object { $_.FullName -ieq $entryPath }
+            if (-not $entry) { throw "Entry '$entryPath' not found in $nupkg" }
+            $dest = Join-Path $targetDir $name
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            Write-Host "Extracted $($entry.FullName) -> $dest"
+          }
+        } finally {
+          $zip.Dispose()
+        }
 
     - name: Create final Zip
       shell: pwsh
