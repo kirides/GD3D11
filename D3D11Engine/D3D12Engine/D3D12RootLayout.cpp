@@ -252,15 +252,72 @@ bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS fl
         versioned.Desc_1_1.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
         versioned.Desc_1_1.Flags = flags;
         serializeHr = SerializeVersionedRootSignatureProc()( &versioned, rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
-    } else {
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = static_cast<UINT>( params.size() );
-        rsDesc.pParameters = params.empty() ? nullptr : params.data();
-        rsDesc.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
-        rsDesc.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
-        rsDesc.Flags = flags;
-        serializeHr = SerializeRootSignatureProc()( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-            rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
+
+        if ( FAILED( serializeHr ) ) {
+            LogWarn() << "D3D12: root signature '" << m_DebugName << "' 1.1 serialize failed (flags 0x"
+                      << std::hex << flags << std::dec << "); retrying unversioned 1.0.";
+            if ( rsErr )
+                LogWarn() << "D3D12: root signature '" << m_DebugName << "' serialize error: "
+                          << static_cast<const char*>( rsErr->GetBufferPointer() );
+        }
+    }
+
+    // Unversioned 1.0 fallback — used both when 1.1 is unavailable and when its serializer rejected
+    // the desc. The case that matters in practice is a serializer older than the flag bits we ask for:
+    // the exported serialize entry points live in the *global* D3D12 state, which can be older than
+    // the Agility core the device itself came from (see D3D12Device.cpp), and such a serializer
+    // rejects the whole desc over one flag bit it doesn't recognize. The parameter layout is always
+    // valid under 1.0 by construction (1.1's per-parameter promises only ever narrow what a layout may
+    // do), but the *flags* are not, so the retry first keeps only the flag bits the original D3D12
+    // release defined and then drops the flags entirely.
+    if ( FAILED( serializeHr ) && SerializeRootSignatureProc() ) {
+        // The bits that shipped with D3D12 itself. Everything above them (LOCAL_ROOT_SIGNATURE,
+        // DENY_AMPLIFICATION/MESH, the two *_HEAP_DIRECTLY_INDEXED bindless bits) arrived in later
+        // runtimes and is what an old serializer chokes on.
+        constexpr D3D12_ROOT_SIGNATURE_FLAGS legacyMask =
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+            | D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS
+            | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
+            | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
+            | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS
+            | D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS
+            | D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
+
+        const D3D12_ROOT_SIGNATURE_FLAGS attempts[] = { flags, flags & legacyMask, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+        D3D12_ROOT_SIGNATURE_FLAGS tried = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>( ~0u );   // no legal flag set
+        for ( D3D12_ROOT_SIGNATURE_FLAGS attempt : attempts ) {
+            if ( attempt == tried ) continue;   // identical to the previous try — nothing new to learn
+            tried = attempt;
+
+            D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+            rsDesc.NumParameters = static_cast<UINT>( params.size() );
+            rsDesc.pParameters = params.empty() ? nullptr : params.data();
+            rsDesc.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
+            rsDesc.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
+            rsDesc.Flags = attempt;
+
+            rsBlob.Reset();
+            rsErr.Reset();
+            serializeHr = SerializeRootSignatureProc()( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+                rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
+            if ( SUCCEEDED( serializeHr ) ) {
+                if ( attempt != flags ) {
+                    // Loud on purpose: a layout that lost CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED here still
+                    // serializes, but any SM6.6 ResourceDescriptorHeap[...] shader bound to it will be
+                    // rejected at PSO creation. D3D12Device::IsAvailable() gates on SM6.6/tier-3 up
+                    // front so we normally never get here; if we do, the log says which bits went.
+                    LogWarn() << "D3D12: root signature '" << m_DebugName << "' serialized as 1.0 with reduced flags 0x"
+                              << std::hex << attempt << " (dropped 0x" << ( flags & ~attempt ) << std::dec
+                              << ") — this runtime's serializer is older than the flags requested.";
+                } else if ( useVersioned ) {
+                    LogInfo() << "D3D12: root signature '" << m_DebugName << "' serialized as 1.0 (1.1 rejected it).";
+                }
+                break;
+            }
+            if ( rsErr )
+                LogInfo() << "D3D12: root signature '" << m_DebugName << "' 1.0 serialize (flags 0x" << std::hex
+                          << attempt << std::dec << ") failed: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        }
     }
 
     if ( FAILED( serializeHr ) ) {
