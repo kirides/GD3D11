@@ -693,6 +693,15 @@ public:
     BspPortalCuller& GetPortalCuller() { return PortalCuller; }
     const BspPortalCuller& GetPortalCuller() const { return PortalCuller; }
 
+    /** True when the view is fully enclosed by sectors, so the sun cascades need not be rendered and
+        are cleared to "shadowed" instead. Reads the solve the main camera pass ran this frame, so call
+        it only after CollectVisibleVobs. */
+    bool AreSunShadowsFullyOccluded() const {
+        return RendererState.RendererSettings.EnablePortalShadowSkip
+            && PortalCuller.IsActive()
+            && !PortalCuller.IsOutdoorVisible();
+    }
+
     /** Returns the new node from tha base node */
     BspInfo* GetNewBspNode( zCBspBase* base );
 

@@ -104,6 +104,17 @@ public:
         visible sectors? Mirrors zCCamera::ScreenProjectionTouchesPortal. */
     bool IsBoxVisibleInLeafSectors( const BspInfo& leaf, const DirectX::XMFLOAT3& bbMin, const DirectX::XMFLOAT3& bbMax ) const;
 
+    /** Can any OUTDOOR geometry be on screen this frame? This is GD3D11's stand-in for
+     *  zCBspSector::IsOutdoorActive(), which the detoured traversal never gets to compute.
+     *
+     *  False only for a fully enclosed view: the camera stands in a room and no opening to the outdoor
+     *  is reachable through a chain of visible portals, so no surface the sun lights is on screen and
+     *  the cascades can be skipped. Note this is NOT Stats::CameraOutdoor, which merely says the
+     *  camera's BSP leaf touches a sector and is false on an open beach next to a hut.
+     *
+     *  Conservative: true when culling is inactive or the camera's room cannot be resolved. */
+    bool IsOutdoorVisible() const { return !IsActive() || OutdoorVisible; }
+
     /** Diagnostics for the ImGui overlay / Tracy. */
     struct Stats {
         int NumSectors = 0;
@@ -114,6 +125,16 @@ public:
         int UnreachableSectors = 0;
         bool CameraOutdoor = true;
         uint16_t CameraSector = SECTOR_OUTDOOR;
+        /** Mirrors IsOutdoorVisible() for this frame. False means the sun cascades were skippable. */
+        bool OutdoorVisible = true;
+
+        // --- Enclosure-test diagnostics: why the sun cascades were or were not skipped -------------
+        /** Room FindSectorBelow resolved, or SECTOR_OUTDOOR if none. */
+        uint16_t EnclosedInSector = SECTOR_OUTDOOR;
+        /** Room whose opening to the outdoor ended the walk. Set only when OutdoorVisible is true. */
+        uint16_t OutdoorSeenFromSector = SECTOR_OUTDOOR;
+        /** Rooms the enclosure walk reached before deciding. */
+        int EnclosureWalkSectors = 0;
     };
     const Stats& GetStats() const { return LastStats; }
 
@@ -130,6 +151,10 @@ private:
     struct Sector {
         /** Indices into Portals of the portals traversable when standing inside this sector. */
         std::vector<uint32_t> OutgoingPortals;
+        /** The subset of OutdoorEntryPortals targeting this sector. Their material has a null front,
+            so they appear in no sector's OutgoingPortals and a room whose doors are all stored that
+            way would look sealed from the inside. */
+        std::vector<uint32_t> IncomingOutdoorPortals;
         /** Union of this sector's leaf AABBs - used for the near-camera grace radius. */
         DirectX::XMFLOAT3 BoundsMin{ FLT_MAX, FLT_MAX, FLT_MAX };
         DirectX::XMFLOAT3 BoundsMax{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -148,8 +173,20 @@ private:
     /** Descends the BSP by position, like zCBspBase::FindLeaf. */
     zCBspBase* FindLeaf( const DirectX::XMFLOAT3& position ) const;
 
+    /** The room the camera stands in, or SECTOR_OUTDOOR - reproducing what zCBspTree::Render does to
+        pick its start sector: cast a ray straight down (portals included) and look at the nearest poly
+        below that carries the sector flag. See FindSectorBelow for why nothing cheaper works. */
+    uint16_t FindSectorBelow( const DirectX::XMFLOAT3& position ) const;
+
+    /** Recursive half of FindSectorBelow: nearest sector-flagged poly under `position`. */
+    void TraceSectorPolyDown( zCBspBase* node, const DirectX::XMFLOAT3& position,
+        float& bestY, zCPolygon*& bestPoly ) const;
+
     /** Marks every sector no chain of portals can reach from the outdoor as AlwaysActive. */
     void BuildReachability();
+
+    /** Backs IsOutdoorVisible(); evaluated once per Solve(). */
+    bool ComputeOutdoorVisible( uint16_t fromSector );
 
     bool IsSectorActive( uint16_t s ) const {
         return s < Stamps.size() && (Stamps[s] == CurrentStamp || Sectors[s].AlwaysActive);
@@ -177,6 +214,9 @@ private:
     bool WarnedBudget = false;
 
     bool Enabled = true;
+    /** Result of the last Solve(). Starts true so a world that never solves is never treated as
+        enclosed. */
+    bool OutdoorVisible = true;
     float NearSectorRadius = 2500.0f; // ~25m
     Stats LastStats;
 };

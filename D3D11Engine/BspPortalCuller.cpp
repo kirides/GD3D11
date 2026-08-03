@@ -34,6 +34,7 @@ void BspPortalCuller::Clear() {
     Apertures.clear();
     CurrentStamp = 0;
     WarnedBudget = false;
+    OutdoorVisible = true;
     LastStats = Stats{};
 }
 
@@ -143,7 +144,11 @@ void BspPortalCuller::BuildFromWorld( zCBspTree* tree ) {
                 portal.TargetSector = idOf( back );
                 if ( portal.TargetSector == SECTOR_OUTDOOR ) continue;
 
-                OutdoorEntryPortals.push_back( static_cast<uint32_t>(Portals.size()) );
+                const uint32_t entryIdx = static_cast<uint32_t>(Portals.size());
+                OutdoorEntryPortals.push_back( entryIdx );
+                // Also file it under the room it opens into, so the enclosure walk can find the
+                // openings of a room whose doors are all stored from the outdoor side.
+                Sectors[portal.TargetSector].IncomingOutdoorPortals.push_back( entryIdx );
                 Portals.push_back( std::move( portal ) );
             } else {
                 // Traversable from inside `front` (which is this sector) towards `back`.
@@ -231,6 +236,93 @@ zCBspBase* BspPortalCuller::FindLeaf( const XMFLOAT3& position ) const {
         node = next;
     }
     return (node && node->IsLeaf()) ? node : nullptr;
+}
+
+/** Nearest sector-flagged polygon straight below `position`. Every node is tested, not just leafs -
+    zCBspBase::PolyList is on the base and inner nodes carry polys too. */
+void BspPortalCuller::TraceSectorPolyDown( zCBspBase* node, const XMFLOAT3& position,
+    float& bestY, zCPolygon*& bestPoly ) const {
+    if ( !node )
+        return;
+
+    // Vertical ray: a subtree matters only if it spans XZ, reaches below us, and beats the best hit.
+    const zTBBox3D& box = node->BBox3D;
+    if ( position.x < box.Min.x || position.x > box.Max.x ) return;
+    if ( position.z < box.Min.z || position.z > box.Max.z ) return;
+    if ( box.Min.y > position.y ) return;
+    if ( box.Max.y < bestY ) return;
+
+    for ( int i = 0; i < node->NumPolys; i++ ) {
+        zCPolygon* poly = node->PolyList[i];
+        if ( !poly ) continue;
+
+        // zCBspTree::Render's GetSectorFlag test. Portals stay in - a doorway underfoot must resolve.
+        if ( !poly->GetPolyFlags()->SectorPoly ) continue;
+
+        const uint8_t numVerts = poly->GetNumPolyVertices();
+        zCVertex** verts = poly->getVertices();
+        if ( numVerts < 3 || !verts ) continue;
+
+        // A near-vertical poly is a wall, never the floor under the camera - and would divide by ~0.
+        const zTPlane& plane = poly->GetPolyPlane();
+        if ( std::fabs( plane.Normal.y ) < 1e-4f ) continue;
+
+        // Point-in-polygon in XZ (crossing test), then the plane's height at that XZ.
+        bool inside = false;
+        for ( uint8_t a = 0, b = numVerts - 1; a < numVerts; b = a++ ) {
+            if ( !verts[a] || !verts[b] ) { inside = false; break; }
+            const float az = verts[a]->Position.z, bz = verts[b]->Position.z;
+            const float ax = verts[a]->Position.x, bx = verts[b]->Position.x;
+            if ( (az > position.z) != (bz > position.z)
+                && position.x < ax + (bx - ax) * (position.z - az) / (bz - az) ) {
+                inside = !inside;
+            }
+        }
+        if ( !inside ) continue;
+
+        const float y = (plane.Distance - plane.Normal.x * position.x - plane.Normal.z * position.z)
+            / plane.Normal.y;
+        if ( y <= position.y && y > bestY ) {
+            bestY = y;
+            bestPoly = poly;
+        }
+    }
+
+    if ( node->IsNode() ) {
+        zCBspNode* n = static_cast<zCBspNode*>(node);
+        TraceSectorPolyDown( n->Front, position, bestY, bestPoly );
+        TraceSectorPolyDown( n->Back, position, bestY, bestPoly );
+    }
+}
+
+/** Mirrors the start-sector block of zCBspTree::Render. The cheaper substitutes all fail: ZenGin
+    warns against GetGroundPoly() here (portals are filtered out of groundPolys, and it is stale on the
+    camera vob), while BspInfo::SectorIds names a room from open sand because outdoor leafs straddle
+    walls - as do sector bounds, being a union of those leafs' AABBs. */
+uint16_t BspPortalCuller::FindSectorBelow( const XMFLOAT3& position ) const {
+    float bestY = -FLT_MAX;
+    zCPolygon* hitPoly = nullptr;
+    TraceSectorPolyDown( BspRoot, position, bestY, hitPoly );
+
+    if ( !hitPoly )
+        return SECTOR_OUTDOOR;
+
+    zCMaterial* mat = hitPoly->GetMaterial();
+    if ( !mat )
+        return SECTOR_OUTDOOR;
+
+    zCBspSector* front = mat->GetBspSectorFront();
+
+    // An indoor=>outdoor portal underfoot means we are standing in a doorway from the outdoor side;
+    // ZenGin treats that as outdoor (its front is the outdoor).
+    if ( hitPoly->IsPortal() && !front )
+        return SECTOR_OUTDOOR;
+
+    if ( !front )
+        return SECTOR_OUTDOOR;
+
+    auto it = SectorIdByPtr.find( front );
+    return it != SectorIdByPtr.end() ? it->second : SECTOR_OUTDOOR;
 }
 
 ScreenBox2D BspPortalCuller::ProjectPolygon( FXMMATRIX worldToClip, const XMFLOAT3* verts, size_t numVerts ) {
@@ -353,6 +445,9 @@ void BspPortalCuller::Solve( FXMMATRIX worldToClip, const XMFLOAT3& cameraPositi
     uint16_t cameraSector = SECTOR_OUTDOOR;
     bool cameraOutdoor = true;
     bool ambiguous = false;
+    /** Strictly resolved room the camera stands in - see the block that fills it. Only the enclosure
+        test (ComputeOutdoorVisible) uses this; VOB culling keeps the looser camSectors. */
+    uint16_t cameraEnclosedIn = SECTOR_OUTDOOR;
 
     // Under-culling here is harmless, over-culling empties the room the player is standing in,
     // so the camera's sector is resolved from two independent sources and both are activated.
@@ -392,6 +487,10 @@ void BspPortalCuller::Solve( FXMMATRIX worldToClip, const XMFLOAT3& cameraPositi
             cameraOutdoor = false;
             cameraSector = camSectors[0];
         }
+
+        // The room the camera actually stands in - enclosure test only, camSectors above stays
+        // over-inclusive for VOB culling.
+        cameraEnclosedIn = FindSectorBelow( cameraPosition );
     }
 
     const ScreenBox2D fullScreen = ScreenBox2D::FullViewport();
@@ -454,6 +553,14 @@ void BspPortalCuller::Solve( FXMMATRIX worldToClip, const XMFLOAT3& cameraPositi
         }
     }
 
+    // Enclosure test for the sun cascades. Reset the walk's stats so short-circuited frames don't
+    // report stale ones.
+    LastStats.EnclosedInSector = cameraEnclosedIn;
+    LastStats.OutdoorSeenFromSector = SECTOR_OUTDOOR;
+    LastStats.EnclosureWalkSectors = 0;
+    OutdoorVisible = ambiguous || cameraEnclosedIn == SECTOR_OUTDOOR
+        || ComputeOutdoorVisible( cameraEnclosedIn );
+
     int active = 0;
     for ( uint32_t s : Stamps ) {
         if ( s == CurrentStamp ) active++;
@@ -461,9 +568,110 @@ void BspPortalCuller::Solve( FXMMATRIX worldToClip, const XMFLOAT3& cameraPositi
     LastStats.ActiveSectors = active;
     LastStats.CameraOutdoor = cameraOutdoor;
     LastStats.CameraSector = cameraSector;
+    LastStats.OutdoorVisible = OutdoorVisible;
 
     ZoneText( "activeSectors", std::size( "activeSectors" ) - 1 );
     ZoneValue( active );
+}
+
+/** Reproduces what zCBspSector::ActivateSectorRec computes for zCBspSector::IsOutdoorActive(): walks
+    out from the camera's room propagating apertures, and returns true once an opening to the outdoor
+    is reachable through the chain. ZenGin skips RenderOutdoor and the sky when this is false.
+
+    Needs its own walk, not a scan of the sectors Solve() activated: activation seeds every room
+    within NearSectorRadius with a full-screen aperture, and ProjectPolygon knows nothing about
+    occlusion, so a flat scan called every indoor spot in a dense complex open to the sky.
+
+    Stricter than ZenGin in one place: it also checks IncomingOutdoorPortals, which ActivateSectorRec
+    skips. That can only decline a skip, never cause a wrong one. */
+bool BspPortalCuller::ComputeOutdoorVisible( uint16_t fromSector ) {
+    LastStats.OutdoorSeenFromSector = SECTOR_OUTDOOR;
+    LastStats.EnclosureWalkSectors = 0;
+    if ( fromSector >= Sectors.size() )
+        return true;
+
+    // Own visited/aperture state - must not disturb the Stamps/Apertures the VOB cull reads.
+    static thread_local std::vector<uint8_t> visited;
+    static thread_local std::vector<ScreenBox2D> apertures;
+    static thread_local std::vector<std::pair<uint16_t, uint16_t>> stack;   // sector, cameFrom
+    visited.assign( Sectors.size(), 0 );
+    apertures.assign( Sectors.size(), ScreenBox2D{} );
+    stack.clear();
+
+    const auto reachesOutdoor = [this]( uint32_t portalIdx, const ScreenBox2D& aperture ) {
+        const Portal& portal = Portals[portalIdx];
+        ScreenBox2D box = ProjectPolygon( SolveWorldToClip, portal.Verts.data(), portal.Verts.size() );
+        return !box.IsEmpty() && !box.ClippedTo( aperture ).IsEmpty();
+    };
+
+    visited[fromSector] = 1;
+    apertures[fromSector] = ScreenBox2D::FullViewport();
+    stack.push_back( { fromSector, SECTOR_OUTDOOR } );
+
+    int budget = MAX_SECTOR_VISITS;
+    while ( !stack.empty() ) {
+        if ( --budget < 0 )
+            return true;   // pathological graph - assume the outdoor is reachable rather than guess
+
+        const auto [sector, cameFrom] = stack.back();
+        stack.pop_back();
+        const ScreenBox2D aperture = apertures[sector];
+        LastStats.EnclosureWalkSectors++;
+
+        // Doorways into this room that are stored from the outdoor side.
+        for ( uint32_t portalIdx : Sectors[sector].IncomingOutdoorPortals ) {
+            if ( reachesOutdoor( portalIdx, aperture ) ) {
+                LastStats.OutdoorSeenFromSector = sector;
+                return true;
+            }
+        }
+
+        for ( uint32_t portalIdx : Sectors[sector].OutgoingPortals ) {
+            const Portal& portal = Portals[portalIdx];
+
+            if ( portal.TargetSector == SECTOR_OUTDOOR ) {
+                if ( reachesOutdoor( portalIdx, aperture ) ) {
+                    LastStats.OutdoorSeenFromSector = sector;
+                    return true;
+                }
+                continue;
+            }
+
+            // --- traversal into the next room: identical rules to ActivateSector ---
+            const float side = portal.PlaneNormal.x * SolveCameraPos.x
+                             + portal.PlaneNormal.y * SolveCameraPos.y
+                             + portal.PlaneNormal.z * SolveCameraPos.z
+                             - portal.PlaneDistance;
+            if ( side < 0.0f )
+                continue;
+
+            ScreenBox2D box = ProjectPolygon( SolveWorldToClip, portal.Verts.data(), portal.Verts.size() );
+            if ( box.IsEmpty() )
+                continue;
+            box = box.ClippedTo( aperture );
+            if ( box.IsEmpty() )
+                continue;
+
+            if ( portal.TargetSector == cameFrom )
+                continue;
+
+            const uint16_t next = portal.TargetSector;
+            if ( next >= Sectors.size() )
+                continue;
+
+            if ( !visited[next] ) {
+                visited[next] = 1;
+                apertures[next] = box;
+                stack.push_back( { next, sector } );
+            } else if ( !apertures[next].Contains( box ) ) {
+                // Reached again through a wider chain - re-expand, like ActivateSector does.
+                apertures[next].Merge( box );
+                stack.push_back( { next, sector } );
+            }
+        }
+    }
+
+    return false;
 }
 
 bool BspPortalCuller::IsLeafVisible( const BspInfo& leaf ) const {

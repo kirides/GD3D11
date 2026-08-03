@@ -791,8 +791,20 @@ void D3D12ShadowMap::Prepare() {
 	// unshadowed and phases A/B/C are skipped entirely, so a mine pays no shadow cost and nothing
 	// double-darkens the baked interior lighting.
 	const bool sunUp = !Engine::GAPI->IsIndoorWorld() && (lp.y > 0.0f);
-	m_SunUp = sunUp;   // RecordCascade may run on a pool thread, so it can't re-read the sky itself
 
+	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each
+	// slice to SHADOWED instead of far and cull/build/draw no casters. Safe to read here -
+	// OnStartWorldRendering ran this frame's CollectVisibleVobs (and BspPortalCuller::Solve) before
+	// Prepare(), which is also why D3D12 can skip the culls and D3D11 only the draws.
+	const bool sunFullyOccluded = sunUp && Engine::GAPI->AreSunShadowsFullyOccluded();
+	const bool castersNeeded = sunUp && !sunFullyOccluded;
+
+	m_SunUp = castersNeeded;            // RecordCascade runs on a pool thread; it can re-read neither
+	m_SunOccluded = sunFullyOccluded;   // the sky nor the portal culler
+
+	// The REAL sun state, not castersNeeded: an enclosed view is still daytime and must not take the
+	// sun-down branch, which halves ambient and would darken the interior. The shadowed cascade content
+	// is what removes the per-pixel sun term.
 	UploadSamplingConstants( sunUp );
 
 	// --- Phase A (main thread): resolve everything that is shared by ALL cascades ------------------------
@@ -807,7 +819,7 @@ void D3D12ShadowMap::Prepare() {
 		&& (ib->GetSizeInBytes() / sizeof( uint32_t )) > 0;
 
 	g_WorldCasters.clear();
-	if ( haveWorld && sunUp ) {
+	if ( haveWorld && castersNeeded ) {
 		const Frustum& unionShadowFrustum = m_CascadeFrustum[kShadowCascades - 1];
 		static std::vector<WorldMeshSectionInfo*> shadowSections;
 		shadowSections.clear();
@@ -859,8 +871,9 @@ void D3D12ShadowMap::Prepare() {
 		g_GrassCB.HeroAffectStrength = 1.0f;
 	}
 
-	if ( !sunUp ) {
-		// Nothing casts; each cascade still gets its slice cleared to far (= unshadowed) at record time. No cull
+	if ( !castersNeeded ) {
+		// Nothing casts; each cascade still gets its slice cleared at record time - to far (= unshadowed) with the
+		// sun down, or to near (= fully shadowed) for an enclosed view, see m_SunOccluded / RecordCascade. No cull
 		// jobs are launched, so FinishPrepare has nothing to wait for and skips Phase C outright.
 		// The lazy gate is overridden here: a frozen cascade skips its RecordCascade entirely, so at dusk the
 		// last cascade would keep the daytime depth it was frozen with for up to two more frames and go on
@@ -1167,8 +1180,10 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	TracyD3D12ZoneCGX( cmdList.Get(), "Sun Shadow Cascade" );
 
 	cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // DSV stays bound across the PSO switches below
-	cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );   // normal-Z far
-	// Sun below the horizon → the slice stays cleared to far, i.e. fully unshadowed, and nothing casts.
+	// normal-Z under the LESS_EQUAL comparison sampler: far (1.0) reads as unshadowed, near (0.0) as
+	// fully shadowed - which is what an enclosed view wants, and what its shell would have cast.
+	cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, m_SunOccluded ? 0.0f : 1.0f, 0, 0, nullptr );
+	// Sun below the horizon (or enclosed) → the slice keeps that clear and nothing casts.
 	if ( !sunUp ) return;
 
 	// Resolved once: GetSrvGpuHandle takes m_SrvHeapMutex and linear-scans the free-slot list, and all three

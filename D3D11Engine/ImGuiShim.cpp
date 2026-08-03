@@ -1861,6 +1861,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip( "Rooms closer than this are never culled (100 units = 1m).\n"
                                        "Raise it if interiors pop while standing near a doorway." );
+                ImGui::Checkbox( "Skip sun shadows when enclosed", &settings.EnablePortalShadowSkip );
+                ImGui::SetItemTooltip( "While no room you can see reaches the outdoors, skip the sun shadow\n"
+                                       "cascades entirely and clear them to fully shadowed - the same result\n"
+                                       "the room's own walls and roof would have cast." );
                 ImGui::EndDisabled();
 
                 const auto& ps = portalCuller.GetStats();
@@ -1870,6 +1874,18 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ImGui::Text( "sectors: %d active / %d  (portals: %d)",
                         ps.ActiveSectors, ps.NumSectors, ps.NumPortals );
                     ImGui::Text( "camera: %s", ps.CameraOutdoor ? "outdoor" : "in sector" );
+
+                    // Broken down so a wrong verdict says which step decided it.
+                    if ( ps.EnclosedInSector == BspPortalCuller::SECTOR_OUTDOOR ) {
+                        ImGui::TextDisabled( "enclosure: camera not strictly in a room" );
+                    } else if ( ps.OutdoorVisible ) {
+                        ImGui::Text( "enclosure: in room %u, outdoor seen from room %u (walked %d)",
+                            ps.EnclosedInSector, ps.OutdoorSeenFromSector, ps.EnclosureWalkSectors );
+                    } else {
+                        ImGui::TextColored( ImVec4( 0.4f, 1.0f, 0.5f, 1.0f ),
+                            "view fully enclosed in room %u (walked %d) - sun cascades skipped",
+                            ps.EnclosedInSector, ps.EnclosureWalkSectors );
+                    }
                     if ( ps.UnreachableSectors > 0 ) {
                         ImGui::TextColored( ImVec4( 1.0f, 0.7f, 0.2f, 1.0f ),
                             "%d sector(s) unreachable from outdoor - never culled", ps.UnreachableSectors );
