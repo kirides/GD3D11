@@ -47,6 +47,11 @@ namespace MorphBlend {
     void Apply( const std::vector<ChannelState>& channels, const float3* restPositions, int numVert,
         float3* outPositions );
 
+    /** Logs, once per .MMS prototype, how many bytes a GPU fold would have to hold resident for it:
+        all anis' vertPosMatrix plus the per-ani vertex -> slot tables. This is the 32-bit address space
+        question the compute port hangs on, so it is measured before anything is uploaded. */
+    void LogPrototypeBudget( zCMorphMesh* mm );
+
     /** Runs Apply against ZENGIN's own freshly-computed positions and returns the largest per-component
         deviation, or -1.0f if the comparison could not be made. Diagnostic only - this is the check that
         has to pass before the fold is worth porting to a shader. */

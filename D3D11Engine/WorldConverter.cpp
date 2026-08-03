@@ -1601,15 +1601,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             it->BaseIndexLocation = offsets[i++];
         }
 
-        MeshInfo* wmi = new MeshInfo;
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
-
-        // Init and fill them
-        wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
-        meshInfo->FullMesh = wmi;
+        // FullMesh's buffers are gone - see the note in Extract3DSMeshFromVisual2. Nothing ever bound
+        // them; only BaseIndexLocation above is actually consumed.
     }
 
     // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
@@ -1975,6 +1968,8 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
     if ( !morphMesh )
         return;
 
+    MorphBlend::LogPrototypeBudget( visual );
+
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.VerifyMorphBlend ) {
         // Runs both deforms and reports the worst disagreement. Deliberately rate-limited rather than
@@ -2032,7 +2027,11 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         for ( auto const& it : meshInfo->Meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
+                    // Accessor, not the member: an instance that has been out of morph range for a while
+                    // has had its dynamic buffer handed back, and this is the draw that needs it again.
+                    if ( GfxVertexBuffer* vb = mi->GetMeshVertexBuffer() ) {
+                        vb->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
+                    }
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -2122,6 +2121,11 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             // We need to keep original indices so that we can reuse them(we can't optimize them)
             // Use dynamic buffer since we'll reupload it every frame we see this visual
 
+            // Handed back again once this instance stops deforming, and rebuilt from mi->Vertices on the
+            // next draw that needs it - see MeshVisualInfo::ReleaseIdleMorphVertexBuffers. Skipping the
+            // optimizers above is what keeps Vertices a valid description of this buffer.
+            mi->DynamicMorphVertices = true;
+
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
         } else {
@@ -2191,15 +2195,10 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             i++;
         }
 
-        MeshInfo* wmi = new MeshInfo;
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
-
-        // Init and fill them
-        wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
-        meshInfo->FullMesh = wmi;
+        // No wrapped MeshInfo built from wrappedVertices/wrappedIndices any more: MeshVisualInfo::FullMesh
+        // was write-only - nothing ever bound it - so it was two IMMUTABLE buffers per converted visual
+        // (a full duplicate of every submesh vertex plus 32-bit indices) that only cost VRAM and 32-bit
+        // address space. WrapVertexBuffers still runs: BaseIndexLocation above is read by the draw paths.
     }
 
     // Every submesh was empty: don't let the ±FLT_MAX seeds turn MeshSize into an infinity.

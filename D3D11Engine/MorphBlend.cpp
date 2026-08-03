@@ -115,6 +115,67 @@ namespace MorphBlend {
         }
     }
 
+    void LogPrototypeBudget( zCMorphMesh* mm ) {
+        if ( !mm ) {
+            return;
+        }
+        zCMorphMeshProto* proto = mm->GetMorphProto();
+        if ( !proto ) {
+            return;
+        }
+
+        // Once per .MMS, on the game thread (same context as the rest of UpdateMorphMeshVisual), so no
+        // lock. Bounded by the number of distinct morph prototypes the world loads - a handful of head
+        // meshes - which is why this does not need a settings switch.
+        static std::unordered_set<void*> s_seen;
+        if ( !s_seen.insert( proto ).second ) {
+            return;
+        }
+
+        zCProgMeshProto* ref = proto->GetMorphRefMesh();
+        zCArrayAdapt<float3>* refPos = ref ? ref->GetPositionList() : nullptr;
+        const int meshNumVert = refPos ? refPos->NumInArray : 0;
+
+        const int numAnis = proto->GetNumAnis();
+        size_t vertPosBytes = 0;    // what a GPU port would upload: all anis' vertPosMatrix concatenated
+        size_t indexBytes = 0;      // the sparse vertIndexList we would upload alongside it
+        size_t totalFrames = 0;
+        size_t widestAniBytes = 0;
+        for ( int i = 0; i < numAnis; i++ ) {
+            zCMorphMeshAni* ani = proto->GetAni( i );
+            if ( !ani ) {
+                continue;
+            }
+            const int aniNumVert = ani->GetNumVert();
+            const int numFrames = ani->GetNumFrames();
+            if ( aniNumVert <= 0 || numFrames <= 0 ) {
+                continue;
+            }
+            const size_t bytes = static_cast<size_t>(numFrames) * aniNumVert * sizeof( float3 );
+            vertPosBytes += bytes;
+            indexBytes += static_cast<size_t>(aniNumVert) * sizeof( int );
+            totalFrames += numFrames;
+            widestAniBytes = std::max( widestAniBytes, bytes );
+        }
+
+        // The gather-friendly inversion of vertIndexList the compute fold needs: one dense
+        // vertex -> slot table per ani, meshNumVert uints wide.
+        const size_t inverseTableBytes = static_cast<size_t>(numAnis) * meshNumVert * sizeof( uint32_t );
+
+        static size_t s_totalVertPosBytes = 0;
+        static size_t s_totalInverseBytes = 0;
+        s_totalVertPosBytes += vertPosBytes;
+        s_totalInverseBytes += inverseTableBytes;
+
+        LogInfo() << "MorphBlend budget: " << (proto->GetName() ? proto->GetName()->ToChar() : "?")
+            << " " << numAnis << " anis, " << totalFrames << " frames, " << meshNumVert << " mesh verts"
+            << " | vertPosMatrix " << (vertPosBytes / 1024) << " KB (widest ani "
+            << (widestAniBytes / 1024) << " KB), vertIndexList " << (indexBytes / 1024) << " KB"
+            << ", inverse tables " << (inverseTableBytes / 1024) << " KB"
+            << " | running total: vertPosMatrix " << (s_totalVertPosBytes / 1024) << " KB + inverse "
+            << (s_totalInverseBytes / 1024) << " KB over " << s_seen.size() << " prototypes";
+    }
+
     float CompareAgainstEngine( zCMorphMesh* mm ) {
         if ( !mm ) {
             return -1.0f;

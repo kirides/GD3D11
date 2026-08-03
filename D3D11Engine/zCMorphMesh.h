@@ -71,6 +71,26 @@ public:
     float3* GetMorphRefMeshVertPos() {
         return *reinterpret_cast<float3**>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Proto_Offset_MorphRefMeshVertPos ));
     }
+
+    /** The .MMS name this prototype was loaded from, e.g. "HUM_HEAD_PONY.MMS". */
+    const zSTRING* GetName() {
+        return reinterpret_cast<zSTRING*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Proto_Offset_Name ));
+    }
+
+    /** Every ani this .MMS can play - the superset of what a zCMorphMesh instance ever has as an active
+        channel, which is what a GPU port has to upload per prototype. Unlike zCMorphMesh::aniChannels
+        this array is filled at load and never shrinks, but read the count off the third dword anyway:
+        LoadMMB grows it entry by entry, so numAlloc can exceed numInArray. */
+    int GetNumAnis() {
+        uint8_t* arr = reinterpret_cast<uint8_t*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Proto_Offset_AniList ));
+        return *reinterpret_cast<int*>(arr + GothicMemoryLocations::zCMorphMesh::ArraySort_Offset_NumInArray);
+    }
+
+    zCMorphMeshAni* GetAni( int i ) {
+        uint8_t* arr = reinterpret_cast<uint8_t*>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Proto_Offset_AniList ));
+        zCMorphMeshAni** anis = *reinterpret_cast<zCMorphMeshAni***>(arr + GothicMemoryLocations::zCMorphMesh::ArraySort_Offset_Array);
+        return anis ? anis[i] : nullptr;
+    }
 };
 
 class zCMorphMesh {
