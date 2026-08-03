@@ -3557,6 +3557,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isMMS && mvi->RestVisual
                             && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
                             drawVis = mvi->RestVisual;
+                            // Drawing the shared rest mesh, so this instance's own DYNAMIC buffers are
+                            // dead weight. Hand them back once it has been out of morph range long
+                            // enough; the first draw that needs them again rebuilds them.
+                            mvi->ReleaseIdleMorphVertexBuffers( Engine::GAPI->GetFrameNumber() );
                         }
 
                         for ( auto const& itm : drawVis->Meshes ) {
@@ -3789,7 +3793,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             if ( mi->GetMeshVertexBuffer() != lastVB ) {
                 UINT vbOffset = 0;
                 UINT vbStride = sizeof( ExVertexStruct );
-                Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( mi->MeshVertexBuffer.get())->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
+                Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( mi->GetMeshVertexBuffer())->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
                 lastVB = mi->GetMeshVertexBuffer();
             }
 

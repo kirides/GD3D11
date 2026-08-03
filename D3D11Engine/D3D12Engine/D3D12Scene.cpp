@@ -4358,6 +4358,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     if ( isMMS && !morphActive && mvi->RestVisual
                         && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
                         drawVis = mvi->RestVisual;
+                        // Its own DYNAMIC buffers are unused while the rest mesh is what draws — and on
+                        // D3D12 each one is kBackBufferCount persistently-mapped UPLOAD copies, so holding
+                        // them for every head ever walked past is the expensive case. Rebuilt on demand.
+                        mvi->ReleaseIdleMorphVertexBuffers( Engine::GAPI->GetFrameNumber() );
                     }
                     const bool attBatchable = !isMMS || drawVis != mvi;
 

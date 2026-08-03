@@ -568,8 +568,12 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_MorphProto = 0x34;
         static const unsigned int Offset_RefShapeAni = 0x3C;
         // zCMorphMeshProto members (the per-.MMS shared prototype).
+        static const unsigned int Proto_Offset_Name = 0x0C;
         static const unsigned int Proto_Offset_MorphRefMesh = 0x20;
         static const unsigned int Proto_Offset_MorphRefMeshVertPos = 0x24;
+        // zCArraySort<zCMorphMeshAni*> - every ani this .MMS can play, written once at load. Same
+        // ArraySort_Offset_* layout as the channel array below.
+        static const unsigned int Proto_Offset_AniList = 0x28;
         // zCMorphMeshAni members (entries of zCMorphMeshProto::aniList, also shared).
         static const unsigned int Ani_Offset_NumVert = 0x40;
         static const unsigned int Ani_Offset_VertPosMatrix = 0x4C;
