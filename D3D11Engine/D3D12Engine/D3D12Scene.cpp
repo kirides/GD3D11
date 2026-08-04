@@ -2955,6 +2955,14 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 }
 
 
+/** First cascade allowed to take the baked progressive-mesh LOD index buffer. The debug setting wins,
+    -1 (its default) keeps the compile-time gate the LOD buffers were validated against. A value at or
+    above NumShadowCascades simply means no cascade ever qualifies, i.e. shadow LOD off. */
+int D3D12GraphicsEngine::GetFirstLodShadowCascade() {
+    const int setting = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.FirstLodCascade;
+    return setting < 0 ? kFirstLodShadowCascade : setting;
+}
+
 UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
     UINT maxCommands, bool culled, bool cacheIn, int shadowCascade, UINT* outOpaqueCount ) {
     // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
@@ -2982,6 +2990,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         };
     const uint32_t whiteSlot   = m_BlackTexture->GetSrvSlot();
     const uint32_t defaultOrm  = GetDefaultOrmSrvSlot();
+    // Resolved once per built buffer: the cascades run this on worker threads, so keep it a single read.
+    const int firstLodCascade = GetFirstLodShadowCascade();
     // Attribute the triangle stat to the main-view build only (resolveMaps): the shadow cascades build the same
     // geometry and would double-count. Reset here; the color pass adds it to FrameDrawnTriangles once.
     // NOTE: with GPU culling (culled=true) this is a pre-cull UPPER BOUND — the real instance counts only exist
@@ -3102,7 +3112,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 D3D12VertexBuffer* cmdIb = mib;
                 UINT cmdIndexCount = static_cast<UINT>( mi->Indices.size() );
                 if ( shadowCascade != kVobIndicesMainView && !alphaTested ) {
-                    if ( shadowCascade >= kFirstLodShadowCascade && !mi->LodIndices.empty()
+                    if ( shadowCascade >= firstLodCascade && !mi->LodIndices.empty()
                         && mi->GetMeshLodIndexBuffer() ) {
                         if ( D3D12VertexBuffer* lodIb = D3D12VertexBuffer::From( mi->GetMeshLodIndexBuffer() );
                             lodIb->GetResource() ) {

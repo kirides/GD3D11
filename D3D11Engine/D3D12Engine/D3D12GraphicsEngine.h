@@ -789,8 +789,11 @@ private:
     // The LOD gate is shared with D3D11 (WorldConverter.h) rather than picked per backend: an edge
     // collapse MOVES the caster surface, so a cascade whose bias is smaller than that deviation
     // self-shadows the full-detail surface black. See the constant's comment for the failure mode.
+    // DebugSettings.ShadowCascades.FirstLodCascade overrides the constant at runtime (-1 = keep it);
+    // GetFirstLodShadowCascade() resolves the two.
     static constexpr int kVobIndicesMainView = -1;
     static constexpr int kFirstLodShadowCascade = SHADOW_LOD_FIRST_CASCADE;
+    static int GetFirstLodShadowCascade();
     // outOpaqueCount (optional): how many of the returned commands form the leading no-alpha-cutout run. The
     // build always partitions — opaque materials first, alpha-tested ones after — so the depth prepass can
     // submit the prefix through a PS-less PSO. Callers that don't split (the color pass, the shadow cascades)
