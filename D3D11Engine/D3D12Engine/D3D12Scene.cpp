@@ -2119,6 +2119,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// mid-frame would mix culled and unculled state. See D3D12Cull.cpp.
 	m_GpuVobCullActive = EvaluateGpuVobCulling();
 
+	// Snapshotted ONCE: BuildVobDrawCommands and CSCull must agree on it, and the ImGui slider moving
+	// between them would strand a bucket with no command. Needs GPU culling - CSCull produces the split.
+	m_VobLodDistance = ( m_GpuVobCullActive
+		&& Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f )
+		? Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius : 0.0f;
+
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
 	// Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
 	// then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
@@ -2987,11 +2993,20 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     const bool peelBlended = resolveMaps && m_Pipelines.World.VobAlphaBlendPSO != nullptr;
     if ( resolveMaps ) g_FrameVobAlpha.clear();
 
+    // Records are still CPU-writable here and CullVobsGPU has not run, and this is the only place that
+    // knows which sub-meshes actually emitted a far command. Main-view build only.
+    VobCullVisual* cullRecords = ( culled && resolveMaps && m_VobCullVisualsPtr[m_FrameIndex] )
+        ? reinterpret_cast<VobCullVisual*>( m_VobCullVisualsPtr[m_FrameIndex] ) : nullptr;
+
     for ( const FrameVobUpload& up : uploads ) {
         MeshVisualInfo* visual = up.visual;
         if ( !visual ) continue;
         const float minH = visual->BBox.Min.y;
         const float maxH = visual->BBox.Max.y;
+        // Split only if EVERY drawn sub-mesh has a far counterpart; anyDrawn keeps a visual that drew
+        // nothing from being marked splittable.
+        bool visualAllHaveLod = true;
+        bool visualAnyDrawn = false;
 
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
             zCTexture* tex = meshKey.Material->GetAniTexture();
@@ -3025,10 +3040,15 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             const bool blended = peelBlended
                 && ( alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD );
 
-            // The caster PS alpha-clips against this material's diffuse, and both reduced index buffers are
+            // The caster PS alpha-clips against this material's diffuse, and the SHADOW index buffer is
             // position-welded — which merges wedges that share a position but not a UV. Feeding a leaf card
             // the wrong UV would clip away the wrong texels, so alpha-relevant materials keep full indices
             // in every pass. Same condition D3D11's shadow VOB loop gates on.
+            //
+            // The LOD buffer is no longer welded (see OptimizeLodIndices) and so carries correct UVs, but
+            // alpha-tested materials stay excluded from it too: an edge collapse deletes triangles outright,
+            // and on a cutout that means chunks of the silhouette — leaves, grates, ladders — simply
+            // disappearing rather than getting coarser.
             const bool alphaTested = ( tex && tex->HasAlphaChannel() )
                 || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
 
@@ -3059,7 +3079,15 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     continue;
                 }
 
-                if ( count + alphaCmds.size() >= maxCommands ) {
+                // Reserve room for BOTH commands: cutting a split pair in half would drop every far
+                // instance of this visual, since CSCull still buckets them away from the near run.
+                const bool mainViewLod = ( shadowCascade == kVobIndicesMainView ) && culled
+                    && m_VobLodDistance > 0.0f && !alphaTested
+                    && !mi->LodIndices.empty() && mi->GetMeshLodIndexBuffer()
+                    && D3D12VertexBuffer::From( mi->GetMeshLodIndexBuffer() )->GetResource() != nullptr;
+                const size_t cmdsNeeded = mainViewLod ? 2u : 1u;
+
+                if ( count + alphaCmds.size() + cmdsNeeded > maxCommands ) {
                     if ( !m_VobDrawArgsOverflowLogged ) {
                         LogWarn() << "D3D12: VOB draw-command ring overflow (" << maxCommands
                             << " draws/frame); some VOBs dropped this frame.";
@@ -3097,7 +3125,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 // and let CSPatchArgs replace InstanceCount below with the surviving count for this visual.
                 c.InstVBV = culled ? up.culledInstView : up.instView;
                 c.VisualIndex = culled ? up.cullVisualIndex : 0xFFFFFFFFu;
-                c._cmdPad = 0;
+                c.LodBucket = kLodBucketNear;
                 c.IBV     = { cmdIb->GetGpuVirtualAddress(), cmdIb->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
                 c.MatNormalIndex  = normalIdx;
                 c.MatOrmIndex     = ormIdx;
@@ -3116,7 +3144,29 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 else               cmds[count++] = c;
                 if ( resolveMaps )
                     m_VobDrawnTriangles += (cmdIndexCount / 3) * up.numInstances;
+                visualAnyDrawn = true;
+                if ( !mainViewLod ) visualAllHaveLod = false;   // this sub-mesh has no far bucket to draw
+
+                // Far bucket: same sub-mesh, reduced indices, over the run CSCull packed backward from the
+                // end of this visual's range. Counts and StartInstanceLocation are patched by CSPatchArgs -
+                // the split happens on the GPU, so the CPU cannot know either. InstanceCount starts at 0 so
+                // an unpatched command draws nothing rather than every instance a second time.
+                if ( mainViewLod ) {
+                    D3D12VertexBuffer* lodIb = D3D12VertexBuffer::From( mi->GetMeshLodIndexBuffer() );
+                    VobDrawCommand f = c;
+                    f.LodBucket = kLodBucketFar;
+                    f.IBV = { lodIb->GetGpuVirtualAddress(), lodIb->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    f.Draw.IndexCountPerInstance = static_cast<UINT>( mi->LodIndices.size() );
+                    f.Draw.InstanceCount = 0;
+                    cmds[count++] = f;   // not counted in m_VobDrawnTriangles: the near command already
+                }                        // counted every instance, keeping that stat a pre-cull upper bound
             }
+        }
+
+        // Publish for CSCull. Visuals with no record (cull-record overflow) render uncompacted anyway.
+        if ( cullRecords && up.cullVisualIndex != 0xFFFFFFFFu && up.cullVisualIndex < kMaxCullVisuals ) {
+            cullRecords[up.cullVisualIndex].LodSplit =
+                ( visualAnyDrawn && visualAllHaveLod ) ? 1u : 0u;
         }
     }
     return finish();
@@ -3426,7 +3476,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             c.Draw.BaseVertexLocation    = 0;
             c.Draw.StartInstanceLocation = 0;
             c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
-            c._cmdPad     = 0;
+            c.LodBucket   = kLodBucketNear;   // attachments never split; VisualIndex already skips them
             if ( b.alphaTested ) alphaAttachCmds.push_back( c );
             else                 cmds[count++] = c;
         }
@@ -3848,6 +3898,12 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
                 rec.BBoxMax = visual->BBox.Max;
                 rec.InstanceBase = instOffset / kInstStride;
                 rec.InstanceCount = numInstances;
+                rec.LodSplit = 0;   // BuildVobDrawCommands raises this once it knows every sub-mesh has a
+                                    // far command; defaulting on would strand instances nothing draws.
+                // Conservative default: no split until BuildVobDrawCommands confirms every drawn sub-mesh
+                // of this visual emitted a far command. Leaving it 1 here would strand instances behind a
+                // bucket nothing draws.
+                rec.LodSplit = 0;
                 up.cullVisualIndex = m_VobCullVisualCount++;
                 up.culledInstView.BufferLocation = m_VobCulledInstances->GetGPUVirtualAddress() + instOffset;
             } else if ( !m_VobCullVisualOverflowLogged ) {

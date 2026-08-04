@@ -2276,10 +2276,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
             }
         } else {
-            // Reduced caster geometry for the distant shadow cascades, rebuilt from this sub-mesh's own
-            // progressive-mesh data. Built here because it is expressed in the pre-optimization wedge
-            // numbering; OptimizeVertices below carries it through the vertex remap it applies.
-            BuildProgMeshLodIndices( s, mi->LodIndices );
+            // The reduced level is built by OptimizeVertices below (MeshLodBuilder.h), not seeded from
+            // ZENGIN's progressive-mesh data - see there for why that could not be shaded.
 
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],

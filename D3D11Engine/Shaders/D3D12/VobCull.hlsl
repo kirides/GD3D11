@@ -23,6 +23,9 @@ struct VobCullVisual
     uint   InstanceBase;    // first instance index into the instance buffer (ring offset / sizeof(instance))
     float3 BBoxMax;
     uint   InstanceCount;
+    // 0 = keep every instance in the near run. Commands are emitted per sub-mesh, so splitting a visual
+    // whose far bucket has no command strands those instances and they vanish from the main view.
+    uint   LodSplit;
 };
 
 // Mirrors ConstantBufferStructs.h's VobInstanceInfo (144 B) — the per-instance VERTEX stream, read here as a
@@ -50,8 +53,12 @@ cbuffer VobCullCB : register( b0 )
     uint     HiZHeight;
     uint     HiZMipCount;
     uint     EnableOcclusion;   // 0 -> frustum cull only (debug toggle / no Hi-Z available)
-    uint     _cullPad0;
-    uint     _cullPad1;
+    // 0 = no LOD split. Bucketing must be per INSTANCE: Gothic reuses a few hundred visuals map-wide, so a
+    // per-visual decision would let one nearby barrel force full detail on every barrel in the world.
+    float    LodDistance;       // @88
+    uint     _cullPad0;         // @92  explicit: HLSL won't let the float3 straddle 16 B, and the C++ mirror
+    float3   CullCamPosWS;      // @96  must match field-for-field (its static_assert only checks size)
+    uint     _cullPad1;         // @108 -> 112 B == 28 root constants
 };
 
 StructuredBuffer<VobCullVisual>    Visuals       : register( t0 );
@@ -61,9 +68,9 @@ RWStructuredBuffer<uint>           VisibleCounts : register( u1 );
 
 float4x4 BuildWorldMatrix( VobInstanceGpu inst )
 {
-    // float4x4(a,b,c,d) fills ROWS, matching how the vertex stream feeds INSTANCE_WORLD_MATRIX — so
-    // mul( float4(p,1), W ) here is bit-for-bit the transform Vob.hlsl's VSMain applies.
-    return float4x4( inst.World0, inst.World1, inst.World2, inst.World3 );
+    // float4x4(a,b,c,d) fills ROWS, but Vob.hlsl reads the same bytes as a matrix vertex ATTRIBUTE, which
+    // HLSL fills one COLUMN per slot — so the constructor alone yields the transpose of the VS's matrix.
+    return transpose( float4x4( inst.World0, inst.World1, inst.World2, inst.World3 ) );
 }
 
 bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
@@ -152,10 +159,14 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     return !( occluderDepth > closestDepth );
 }
 
-// One thread group per VISUAL: the group owns that visual's whole instance range, so the compaction counter
-// can live in groupshared memory and only the final count needs a buffer write (no global atomics at all).
+// One thread group per VISUAL: the group owns that visual's whole instance range, so the compaction counters
+// can live in groupshared memory and only the final counts need a buffer write (no global atomics at all).
 #define VOBCULL_GROUP_SIZE 64
-groupshared uint gVisibleInGroup;
+// Near packs FORWARD from InstanceBase, far packs BACKWARD from the end. Packing far backward is what keeps
+// this single-pass: head-to-tail would need the near total before placing the first far instance. Every
+// visible instance lands in exactly one run, so near + far <= InstanceCount and they cannot collide.
+groupshared uint gNearInGroup;
+groupshared uint gFarInGroup;
 
 [numthreads(VOBCULL_GROUP_SIZE, 1, 1)]
 void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
@@ -163,7 +174,10 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
     const uint visualIdx = gid.x;   // uniform across the group -> the barriers below are never divergent
 
     if ( gtid == 0 )
-        gVisibleInGroup = 0;
+    {
+        gNearInGroup = 0;
+        gFarInGroup  = 0;
+    }
     GroupMemoryBarrierWithGroupSync();
 
     if ( visualIdx < VisualCount )
@@ -174,19 +188,34 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
             VobInstanceGpu inst = InInstances[v.InstanceBase + i];
             if ( IsInstanceVisible( v, inst ) )
             {
-                // Survivors are packed to the front of the SAME range the CPU uploaded into, so the
-                // per-command InstVBV (base address + size) needs no GPU patching — only InstanceCount does.
-                // Instance ORDER within a visual is irrelevant (opaque, one material per command).
+                // Bbox centre, not the origin: Gothic vob pivots are often off the mesh entirely (a door's
+                // hinge, a banner's mount point).
+                const float3 centreLocal = ( v.BBoxMin + v.BBoxMax ) * 0.5;
+                const float3 centreWorld = mul( float4( centreLocal, 1.0 ), BuildWorldMatrix( inst ) ).xyz;
+                const float  dist  = length( centreWorld - CullCamPosWS );
+                const bool   isFar = ( LodDistance > 0.0 ) && ( v.LodSplit != 0u ) && ( dist > LodDistance );
+
                 uint slot;
-                InterlockedAdd( gVisibleInGroup, 1, slot );
-                OutInstances[v.InstanceBase + slot] = inst;
+                if ( isFar )
+                {
+                    InterlockedAdd( gFarInGroup, 1, slot );
+                    OutInstances[v.InstanceBase + v.InstanceCount - 1 - slot] = inst;
+                }
+                else
+                {
+                    InterlockedAdd( gNearInGroup, 1, slot );
+                    OutInstances[v.InstanceBase + slot] = inst;
+                }
             }
         }
     }
 
     GroupMemoryBarrierWithGroupSync();
     if ( gtid == 0 && visualIdx < VisualCount )
-        VisibleCounts[visualIdx] = gVisibleInGroup;
+    {
+        VisibleCounts[visualIdx * 2u + 0u] = gNearInGroup;   // CSPatchArgs indexes (visualIdx * 2 + bucket)
+        VisibleCounts[visualIdx * 2u + 1u] = gFarInGroup;
+    }
 }
 
 //--------------------------------------------------------------------------------------
@@ -195,13 +224,19 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
 cbuffer VobPatchCB : register( b0 )
 {
     uint PatchCmdCount;
-    uint PatchCmdStride;         // sizeof(VobDrawCommand)
-    uint PatchInstCountOffset;   // byte offset of Draw.InstanceCount within a command
-    uint PatchVisualIdxOffset;   // byte offset of VobDrawCommand::VisualIndex
+    uint PatchCmdStride;          // sizeof(VobDrawCommand)
+    uint PatchInstCountOffset;    // byte offset of Draw.InstanceCount within a command
+    uint PatchVisualIdxOffset;    // byte offset of VobDrawCommand::VisualIndex
+    uint PatchStartInstOffset;    // byte offset of Draw.StartInstanceLocation
+    uint PatchLodBucketOffset;    // byte offset of VobDrawCommand::LodBucket
+    uint _patchPad0;
 };
 
-StructuredBuffer<uint> PatchCounts : register( t0 );
-RWByteAddressBuffer    PatchArgs   : register( u0 );
+StructuredBuffer<uint>          PatchCounts  : register( t0 );
+// Needed only for InstanceCount: the far run is packed against the END of the visual's range, so its start
+// offset is (capacity - farCount) and cannot be derived from the counts alone.
+StructuredBuffer<VobCullVisual> PatchVisuals : register( t1 );
+RWByteAddressBuffer             PatchArgs    : register( u0 );
 
 [numthreads(64, 1, 1)]
 void CSPatchArgs( uint3 DTid : SV_DispatchThreadID )
@@ -217,5 +252,11 @@ void CSPatchArgs( uint3 DTid : SV_DispatchThreadID )
     if ( visualIdx == 0xFFFFFFFF )
         return;
 
-    PatchArgs.Store( base + PatchInstCountOffset, PatchCounts[visualIdx] );
+    const uint bucket = PatchArgs.Load( base + PatchLodBucketOffset );
+    const uint count  = PatchCounts[visualIdx * 2u + bucket];
+    // InstVBV already points at the visual's range base, so this is a plain offset within it.
+    const uint start = ( bucket == 0u ) ? 0u : ( PatchVisuals[visualIdx].InstanceCount - count );
+
+    PatchArgs.Store( base + PatchInstCountOffset, count );
+    PatchArgs.Store( base + PatchStartInstOffset, start );
 }

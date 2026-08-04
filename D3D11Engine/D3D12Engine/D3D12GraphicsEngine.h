@@ -749,8 +749,12 @@ private:
         // for our own compute passes. VisualIndex tells CSPatchArgs which per-visual surviving-instance count
         // to write into Draw.InstanceCount; 0xFFFFFFFF = "leave the CPU's count alone" (not GPU-culled).
         uint32_t VisualIndex;                        // @88
-        uint32_t _cmdPad;                            // @92 keeps the stride 8-aligned for the next command's VBVs
+        // Which of the visual's two compacted instance runs this command draws; CSPatchArgs picks the
+        // matching count + StartInstanceLocation from it. Doubles as the stride's 8-byte alignment pad.
+        uint32_t LodBucket;                          // @92
     };
+    static constexpr uint32_t kLodBucketNear = 0;
+    static constexpr uint32_t kLodBucketFar  = 1;
     // Separate caps: the main view now collects distance-only (360 degrees, GPU-culled) so it needs headroom,
     // while the CSM cascades still CPU-cull against their own frustum and keep the original budget — a shared
     // bump would multiply across 3 cascades x kBackBufferCount rings and cost real 32-bit address space.
@@ -868,6 +872,9 @@ private:
         UINT              InstanceBase;
         DirectX::XMFLOAT3 BBoxMax;
         UINT              InstanceCount;
+        // 1 = every drawn sub-mesh emitted a far command, so CSCull may split by distance. Written by
+        // BuildVobDrawCommands, not here - only the command build knows. See VobCull.hlsl for the failure.
+        UINT              LodSplit;
     };
     static constexpr UINT kMaxCullVisuals = 16384;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferMax];   // persistently-mapped UPLOAD
@@ -875,6 +882,9 @@ private:
     uint8_t* m_VobCullVisualsPtr[kBackBufferMax] = {};
     UINT m_VobCullVisualCount = 0;                  // records written this frame
     bool m_VobCullVisualOverflowLogged = false;
+    // Resolved ONCE per frame: BuildVobDrawCommands and CSCull must see the same value or a bucket is
+    // left with no command to draw it. 0 = off.
+    float m_VobLodDistance = 0.0f;
     // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
     // frame N+1's cull writes — no per-frame-in-flight copies needed (and none of the 32-bit VA cost).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout

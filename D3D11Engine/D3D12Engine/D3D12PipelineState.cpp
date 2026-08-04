@@ -3514,11 +3514,11 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "HiZ.hlsl", "CSReduce", hiZRs,
         Cull.HiZReduceCsBlob.ReleaseAndGetAddressOf(), Cull.HiZReducePSO.ReleaseAndGetAddressOf() ) ) return false;
 
-    // --- VOB cull root sig: b0 24 consts (ViewProj + Hi-Z params), t0/t1 root SRVs, u0/u1 root UAVs ---
+    // --- VOB cull root sig: b0 28 consts (ViewProj + Hi-Z params + LOD bucketing), t0/t1 root SRVs, u0/u1 root UAVs ---
     // The visual records + instance streams are plain structured buffers, so they ride as root descriptors
     // (no heap slots). Only the Hi-Z pyramid is a texture and it comes in bindlessly by heap index.
     D3D12RootLayout& vobCullRs = Layout( "CullVob" );
-    vobCullRs.AddConstants( 0, 24, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 8 uints
+    vobCullRs.AddConstants( 0, 28, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 12
     // Both inputs are CPU-written once per frame by UploadFrameVobInstances / BuildVobDrawCommands,
     // which complete before this dispatch is recorded and are not touched again this frame.
     vobCullRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Visuals
@@ -3532,13 +3532,16 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs,
         Cull.VobCullCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullPSO.ReleaseAndGetAddressOf() ) ) return false;
 
-    // --- Indirect-arg patch root sig: b0 4 consts (count/stride/offsets), t0 counts SRV, u0 raw arg UAV ---
+    // --- Indirect-arg patch root sig: b0 7 consts (count/stride/offsets), t0 counts + t1 visuals SRVs, u0 raw arg UAV ---
     D3D12RootLayout& patchRs = Layout( "CullPatch" );
-    patchRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobPatchCB
+    patchRs.AddConstants( 0, 7, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobPatchCB
     // t0 is the VisibleCounts UAV the cull dispatch just finished writing, read back here behind a
     // barrier: final from this bind onwards (the next write is next frame's cull, a later list).
     patchRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 PatchCounts
-    patchRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 2: u0 PatchArgs (RWByteAddressBuffer)
+    // t1: the same per-visual records CSCull read — the far run's StartInstanceLocation is
+    // (InstanceCount - farCount), so the patch pass needs each visual's capacity.
+    patchRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 PatchVisuals
+    patchRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 3: u0 PatchArgs (RWByteAddressBuffer)
     if ( !patchRs.Build( device ) )
         return false;
     Cull.PatchRootSig = patchRs.RootSig();
