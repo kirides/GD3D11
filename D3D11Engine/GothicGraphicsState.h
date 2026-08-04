@@ -980,6 +980,7 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
         DebugSettings.ShadowCascades.ShadowDepthSlopeBias = 0.0f;
+        DebugSettings.ShadowCascades.FirstLodCascade = -1; // auto
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1304,6 +1305,12 @@ struct GothicRendererSettings {
             float Lambda;
             float Bias;
             float ShadowDepthSlopeBias;
+            // First shadow cascade allowed to draw the baked progressive-mesh LOD index buffer.
+            // -1 = auto (D3D11: last cascade, but never below SHADOW_LOD_FIRST_CASCADE; D3D12:
+            // SHADOW_LOD_FIRST_CASCADE). A value >= NumShadowCascades disables the LOD entirely.
+            // Cascades below SHADOW_LOD_FIRST_CASCADE are biased tighter than the deviation an edge
+            // collapse introduces, so they self-shadow the full-detail surface black - see WorldConverter.h.
+            int FirstLodCascade;
         } ShadowCascades;
         struct {
             bool CullVobs;

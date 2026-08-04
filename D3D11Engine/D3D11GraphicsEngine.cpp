@@ -3958,7 +3958,7 @@ namespace {
     // the shadow is small enough on screen that the baked progressive-mesh LOD is free silhouette. Both
     // reduced buffers are position-welded, so neither may be used where the pixel shader alpha-tests:
     // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
-    constexpr int FIRST_LOD_SHADOW_CASCADE = 2;
+    constexpr int FIRST_LOD_SHADOW_CASCADE = 1;
 
     GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
         if ( !mesh ) {
@@ -6973,7 +6973,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         // use LOD shadows only for last cascade for now, as it looks uuuugly in gothic 1 due to mesh trees becoming large blobs.
         // TODO: Maybe we need more LOD levels for large geometry?
-        const int lodCascadeStart = std::max(renderState.RendererSettings.NumShadowCascades - 1, 2);
+        // DebugSettings.ShadowCascades.FirstLodCascade overrides that: -1 keeps the automatic rule, any other
+        // value is the first cascade allowed to take the LOD buffer (>= NumShadowCascades disables it).
+        const int lastCascade = std::max( renderState.RendererSettings.NumShadowCascades - 1, 0 );
+        const int firstLodCascadeSetting = renderState.RendererSettings.DebugSettings.ShadowCascades.FirstLodCascade;
+        const int lodCascadeStart = firstLodCascadeSetting < 0
+            ? std::max( lastCascade, FIRST_LOD_SHADOW_CASCADE )
+            : firstLodCascadeSetting;
 
         for ( auto const& [staticMeshVisual, meshKey, meshInfo, _] : instancedMeshesToDraw ) {
             if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT && lastWindVisual != staticMeshVisual ) {
@@ -6992,7 +6998,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             // also ignore the fact that something is alpha-tested if its the last cascade
             // will cause some pop-in, but allows us to render much less expensive verticies
-            const bool isAlpha = bindTexture && (params.CascadeIndex != lodCascadeStart);
+            const bool isAlpha = bindTexture && (params.CascadeIndex < lodCascadeStart);
 
             // Bind texture
             if ( bindTexture ) {

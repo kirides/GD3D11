@@ -1857,6 +1857,20 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SliderFloat("Split Bias", &settings.DebugSettings.ShadowCascades.Bias, 0.0f, 10.0f, "%.1f");
                 ImGui::SliderFloat("Depth Slope Bias", &settings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, 0.0f, 8.0f, "%.6f");
                 ImGui::SetItemTooltip("Slope-scaled depth bias for the shadow caster pass. Higher removes shadow acne/stepping on thin geometry; too high detaches contact shadows (peter-panning)");
+
+                int& firstLodCascade = settings.DebugSettings.ShadowCascades.FirstLodCascade;
+                firstLodCascade = std::clamp( firstLodCascade, -1, MAX_CSM_CASCADES );
+                const char* lodFormat = firstLodCascade < 0 ? "Auto"
+                    : (firstLodCascade >= settings.NumShadowCascades ? "%d (off)" : "%d");
+                if ( ImGui::SliderInt( "First LOD cascade", &firstLodCascade, -1, MAX_CSM_CASCADES, lodFormat, ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
+                    firstLodCascade = std::clamp( firstLodCascade, -1, MAX_CSM_CASCADES );
+                }
+                ImGui::SetItemTooltip("First shadow cascade that draws the baked progressive-mesh LOD instead of the\n"
+                                      "full-detail caster geometry. Auto = last cascade on D3D11, cascade %d on D3D12.\n"
+                                      "Lower is cheaper but an edge collapse moves the surface: tight cascades then\n"
+                                      "self-shadow black (facades darkening as the camera tilts up).\n"
+                                      "A value >= the cascade count (%d) disables shadow LOD.",
+                                      SHADOW_LOD_FIRST_CASCADE, settings.NumShadowCascades);
                 ImGui::EndTabItem();
             }
 

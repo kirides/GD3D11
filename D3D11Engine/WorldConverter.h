@@ -36,7 +36,7 @@ constexpr int SHADOW_LOD_MIN_TRIANGLES = 96;
     surface, so a cascade biased tighter than that deviation self-shadows itself black (building facades
     going dark as the camera tilts up) - cascades 0 and 1 are too tight for it.
     NOTE: D3D11's GetShadowAwareIndexBuffer still carries its own FIRST_LOD_SHADOW_CASCADE = 1. */
-constexpr int SHADOW_LOD_FIRST_CASCADE = 2;
+constexpr int SHADOW_LOD_FIRST_CASCADE = 1;
 
 class zCProgMeshProto;
 class zCModel;

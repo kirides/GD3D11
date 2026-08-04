@@ -221,6 +221,27 @@ namespace
         return nDefault;
     }
     
+    // Win32's GetPrivateProfileInt clamps negative values to 0, which kills any "-1 = auto" sentinel.
+    // Parse the raw string ourselves instead.
+    OPT_DBG_NOINLINE int GetPrivateProfileSignedIntA(
+        const LPCSTR lpAppName,
+        const LPCSTR lpKeyName,
+        const int nDefault,
+        const std::string& lpFileName
+    ) {
+        constexpr int int_str_max = 30;
+        TCHAR nInt[int_str_max];
+        if ( auto count = ::GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nInt, int_str_max, lpFileName.c_str() ) ) {
+            int value;
+            auto dataPtr = &nInt[0];
+            auto [_, ec] = std::from_chars( dataPtr, dataPtr + count, value );
+            if ( ec == std::errc{} ) {
+                return value;
+            }
+        }
+        return nDefault;
+    }
+
     template<typename T>
     std::string to_string_locale_independent(const T value) {
         std::array<char, 255> buffer;
@@ -5882,6 +5903,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "SkyOcclusionStrength", to_string_locale_independent( s.SkyOcclusionStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SkyIblNightFloor", to_string_locale_independent( s.SkyIblNightFloor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "FirstLodCascade", to_string_locale_independent( s.DebugSettings.ShadowCascades.FirstLodCascade ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
 
@@ -6041,6 +6063,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SkyOcclusionStrength = GetPrivateProfileFloatA( "Shadows", "SkyOcclusionStrength", ds.SkyOcclusionStrength, ini );
         s.SkyIblNightFloor = GetPrivateProfileFloatA( "Shadows", "SkyIblNightFloor", ds.SkyIblNightFloor, ini );
         s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias = GetPrivateProfileFloatA( "Shadows", "ShadowDepthSlopeBias", ds.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, ini );
+        s.DebugSettings.ShadowCascades.FirstLodCascade = std::clamp( GetPrivateProfileSignedIntA( "Shadows", "FirstLodCascade", ds.DebugSettings.ShadowCascades.FirstLodCascade, ini ), -1, MAX_CSM_CASCADES );
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
         s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
 
