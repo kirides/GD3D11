@@ -805,7 +805,8 @@ struct GothicRendererSettings {
         EnableOcclusionCulling = false;
         EnablePortalCulling = true;
         PortalCullingNearRadius = 1500.0f;
-        EnablePortalShadowSkip = true;
+        EnablePortalShadowSkip = false;
+        EnableHorizonCulling = false;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
@@ -827,6 +828,7 @@ struct GothicRendererSettings {
         GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
         DrawSectionIntersections = true;
+        DrawWorldOccluders = false;
 
         EnableGodRays = true;
 
@@ -1073,8 +1075,12 @@ struct GothicRendererSettings {
         Raise it if interiors pop while standing near a doorway. */
     float PortalCullingNearRadius;
     /** Skip the sun-shadow cascades while the view is fully enclosed by sectors, clearing the slices to
-        "shadowed" instead. Requires EnablePortalCulling; see BspPortalCuller::IsOutdoorVisible. */
+        "shadowed" instead. Requires EnablePortalCulling; see BspPortalCuller::IsOutdoorVisible.
+        Off by default: a false "enclosed" verdict drops every sun shadow, which is very visible. */
     bool EnablePortalShadowSkip;
+    /** Cull world sections, VOBs and MOBs against the ghost-occluder horizon - ZenGin's outdoor
+        "behind the mountain" test. Main camera pass only; see HorizonCuller. */
+    bool EnableHorizonCulling;
     bool SortRenderQueue;
     bool DrawThreaded;
     EPointLightShadowMode EnablePointlightShadows;
@@ -1087,6 +1093,8 @@ struct GothicRendererSettings {
     /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
     int MSAASamples;
     bool DrawSectionIntersections;
+    /** Debug: outline the world's ghost-occluder polys (see WorldOccluders) in the line renderer. */
+    bool DrawWorldOccluders;
 
     int MaxNumFaces;
 

@@ -558,6 +558,7 @@ void BspPortalCuller::Solve( FXMMATRIX worldToClip, const XMFLOAT3& cameraPositi
     LastStats.EnclosedInSector = cameraEnclosedIn;
     LastStats.OutdoorSeenFromSector = SECTOR_OUTDOOR;
     LastStats.EnclosureWalkSectors = 0;
+    LastStats.CameraRoomOpensOutdoor = false;
     OutdoorVisible = ambiguous || cameraEnclosedIn == SECTOR_OUTDOOR
         || ComputeOutdoorVisible( cameraEnclosedIn );
 
@@ -587,6 +588,7 @@ void BspPortalCuller::Solve( FXMMATRIX worldToClip, const XMFLOAT3& cameraPositi
 bool BspPortalCuller::ComputeOutdoorVisible( uint16_t fromSector ) {
     LastStats.OutdoorSeenFromSector = SECTOR_OUTDOOR;
     LastStats.EnclosureWalkSectors = 0;
+    LastStats.CameraRoomOpensOutdoor = false;
     if ( fromSector >= Sectors.size() )
         return true;
 
@@ -603,6 +605,21 @@ bool BspPortalCuller::ComputeOutdoorVisible( uint16_t fromSector ) {
         ScreenBox2D box = ProjectPolygon( SolveWorldToClip, portal.Verts.data(), portal.Verts.size() );
         return !box.IsEmpty() && !box.ClippedTo( aperture ).IsEmpty();
     };
+
+    // A room with any door outside is never enclosed - topology, deliberately not visibility. "On
+    // screen" derives from the camera pose, and the third-person camera orbits into walls, where a
+    // room's own doors go backfacing and the walk wrongly reports "sealed". Costs city interiors
+    // (one step from daylight anyway), keeps mine and cave chambers.
+    if ( !Sectors[fromSector].IncomingOutdoorPortals.empty() ) {
+        LastStats.CameraRoomOpensOutdoor = true;
+        return true;
+    }
+    for ( uint32_t portalIdx : Sectors[fromSector].OutgoingPortals ) {
+        if ( Portals[portalIdx].TargetSector == SECTOR_OUTDOOR ) {
+            LastStats.CameraRoomOpensOutdoor = true;
+            return true;
+        }
+    }
 
     visited[fromSector] = 1;
     apertures[fromSector] = ScreenBox2D::FullViewport();

@@ -133,6 +133,10 @@ public:
         uint16_t EnclosedInSector = SECTOR_OUTDOOR;
         /** Room whose opening to the outdoor ended the walk. Set only when OutdoorVisible is true. */
         uint16_t OutdoorSeenFromSector = SECTOR_OUTDOOR;
+        /** The camera's own room has a doorway outside, so enclosure was rejected on topology without
+            looking at visibility at all. Distinguishes "one step from daylight" from "the walk found a
+            door on screen", which need different fixes if either verdict looks wrong. */
+        bool CameraRoomOpensOutdoor = false;
         /** Rooms the enclosure walk reached before deciding. */
         int EnclosureWalkSectors = 0;
     };
