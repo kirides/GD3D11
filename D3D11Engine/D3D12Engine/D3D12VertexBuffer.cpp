@@ -163,7 +163,10 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     // ring-buffered (kBackBufferCount copies) so a per-frame UpdateBuffer() (morph meshes; also harmlessly
     // applied to the CPU-only D3D7 dynamic-buffer case) can never race an in-flight GPU read of the same
     // buffer from an earlier frame — see the class comment.
-    bool isDynamic = ( usage & U_DYNAMIC ) || ( cpuAccess & CA_WRITE );
+    // A UAV target is GPU-written (the morph fold), so it takes the static DEFAULT-heap path no matter what
+    // usage flags came in: one copy, no CPU mapping, no ring. See the class comment.
+    m_UavCapable = ( bindFlags & B_UNORDERED_ACCESS ) != 0;
+    bool isDynamic = !m_UavCapable && ( ( usage & U_DYNAMIC ) || ( cpuAccess & CA_WRITE ) );
     m_NumCopies = isDynamic ? Engine12()->kBackBufferCount : 1;
     if ( m_NumCopies > kMaxCopies ) m_NumCopies = kMaxCopies;   // defensive clamp; kBackBufferCount is at most kBackBufferMax
 
@@ -176,7 +179,7 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     bd.Format = DXGI_FORMAT_UNKNOWN;
     bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    bd.Flags = D3D12_RESOURCE_FLAG_NONE;
+    bd.Flags = m_UavCapable ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
 
     const std::string debugName = "VB:" + ( fileName.empty() ? std::string( "unnamed" ) : fileName );
 

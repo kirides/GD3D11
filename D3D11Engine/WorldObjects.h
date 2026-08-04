@@ -102,24 +102,13 @@ struct MeshInfo {
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    /** Self-healing: a morph attachment's DYNAMIC vertex buffer is dropped again whenever the instance
-        stops deforming (MeshVisualInfo::ReleaseIdleMorphVertexBuffers), so this recreates it from the
-        retained CPU vertices on the first draw that needs it again. Every draw site must go through
-        this accessor rather than touching MeshVertexBuffer - reading the member directly would see the
-        released null and silently skip the draw. Returns nullptr for a mesh that never had a buffer. */
-    GfxVertexBuffer* GetMeshVertexBuffer() const {
-        return MeshVertexBuffer ? MeshVertexBuffer.get()
-            : ( DynamicMorphVertices ? RecreateDynamicVertexBuffer() : nullptr );
-    }
+    GfxVertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
     GfxVertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
     GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
     GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
     GfxVertexBuffer* GetMeshLodIndexBuffer() const { return MeshLodIndexBuffer.get(); }
 
-    /** Mutable so GetMeshVertexBuffer() can recreate a released morph buffer from a const accessor;
-        RecreateDynamicVertexBuffer serialises that on a mutex, since the D3D12 deferred shadow paths can
-        reach it off the main thread. */
-    mutable std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
     // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
@@ -140,20 +129,6 @@ struct MeshInfo {
     // Offset in wrapped world mesh
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
-
-    /** Set for the per-instance submeshes of a morph (.MMS) visual, whose vertex buffer is DYNAMIC and
-        re-uploaded from the CPU every frame the instance deforms. Those are the only buffers that may be
-        dropped and rebuilt on demand, and the only ones whose CPU-side Vertices must stay around for it. */
-    bool DynamicMorphVertices = false;
-
-    /** Rebuilds MeshVertexBuffer from Vertices. Out of line and cold - only reached after an idle
-        release. */
-    GfxVertexBuffer* RecreateDynamicVertexBuffer() const;
-
-    /** Drops the DYNAMIC vertex buffer of a morph submesh. No-op for anything else: every other buffer
-        here is IMMUTABLE and shared, and its CPU copy is not guaranteed to still describe it (the
-        optimizer reorders Vertices in place). */
-    void ReleaseDynamicVertexBuffer();
 
     /** MeshManager's id for the SOURCE zCSubMesh. NOT a "same buffers" key - a morph attachment and its
         RestVisual, or two .MDS/.ASC node visuals with different baked node transforms, share a meshId
@@ -309,19 +284,6 @@ struct MeshVisualInfo : public BaseVisualInfo {
         SharedRefs (the number of NodeAttachments slots pointing here) hits zero. */
     const void* SharedKey = nullptr;
     uint32_t SharedRefs = 0;
-
-    /** Frames a morph attachment may go without deforming before its per-instance DYNAMIC vertex buffers
-        are handed back. Every .MMS attachment converts one set of them, so without this a walk through a
-        city leaves one set resident per NPC head ever seen - hundreds of small CPU-writable buffers, and
-        on D3D12 kBackBufferCount UPLOAD copies of each. Two seconds of hysteresis is long enough that
-        turning away from an NPC and back does not thrash the allocator. */
-    static constexpr size_t kMorphBufferIdleFrames = 120;
-
-    /** Releases the per-instance morph vertex buffers if this instance has not deformed for
-        kMorphBufferIdleFrames. Call it only where the mesh is drawable WITHOUT them - i.e. where RestVisual
-        is being drawn instead - since the very next draw of our own copy recreates them (see
-        MeshInfo::GetMeshVertexBuffer). Returns true if it released anything. */
-    bool ReleaseIdleMorphVertexBuffers( size_t currentFrame );
 
     /** Shared undeformed conversion of a .MMS, drawn instead of this one whenever the instance isn't
         actively morphing - our copy would still hold the deformation from the last time it was in range.

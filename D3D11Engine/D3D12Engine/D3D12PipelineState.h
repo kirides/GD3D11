@@ -561,6 +561,7 @@ public:
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
+    bool CreateMorphFold();   // GPU morph-mesh fold compute (b0 8 consts, t0-t2 root SRVs, u0 root UAV)
     bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)
     bool CreateWorldTransparency(); // alpha-blended world-mesh surfaces (own root sig; warms the alpha + depth-fill PSOs)
 
@@ -619,6 +620,11 @@ public:
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
     CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)
+    // GPU morph fold (Shaders/D3D12/MorphFold.hlsl). Its availability is what decides how morph submesh
+    // vertex buffers are CREATED (DEFAULT+UAV vs DYNAMIC+CA_WRITE — see MorphGpu::IsActive), so unlike the
+    // other optional pipelines it must be built before any world is converted, and a failure here has to
+    // leave the CPU deform as the path rather than silently drop the morphing.
+    ComputePipeline  MorphFold;
     LinePipeline     Lines;         // debug/editor line lists (Shaders/D3D12/Lines.hlsl)
     WorldTransparencyPipeline WorldTransparency;  // alpha-blended world surfaces (Shaders/D3D12/World.hlsl VSTransparent/PSTransparent)
 

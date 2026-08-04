@@ -3564,6 +3564,48 @@ bool D3D12PipelineState::CreateCull() {
 }
 
 
+bool D3D12PipelineState::CreateMorphFold() {
+    // GPU morph fold (Shaders/D3D12/MorphFold.hlsl + D3D12MorphFold.cpp). Everything rides on root
+    // descriptors: the two per-prototype tables and the per-frame channel records are plain structured
+    // buffers, and the output is the submesh's own vertex buffer as a raw UAV — so no descriptor heap slots
+    // are involved and a dispatch is 4 Set calls.
+    //
+    // On failure MorphGpu::IsActive() stays false and morph attachments keep ZENGIN's CPU deform (which is
+    // also what decides that their vertex buffers are created CPU-writable), so this is non-fatal — but it
+    // has to be attempted BEFORE the first world conversion, which is why Init() calls it with the other
+    // pre-load pipelines rather than lazily.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "MorphFold" );
+    rs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 MorphFoldCB
+    // t0/t1 are the immutable per-prototype tables — uploaded once, never rewritten, so DATA_STATIC is safe.
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Positions
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 Indices
+    // t2 is this frame's channel ring slice: fully written by DispatchMorphFold before the first dispatch is
+    // recorded, and not touched again until the frame's slot comes round again kBackBufferCount frames later.
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 Channels
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );                                       // 4: u0 OutVertices
+    if ( !rs.Build( device ) )
+        return false;
+    MorphFold.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "MorphFold.hlsl", "CSFold", Shadermodel_CS,
+        MorphFold.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { MorphFold.CsBlob.Get(), "MorphFold.hlsl:CSFold", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+    desc.pRootSignature = MorphFold.RootSig.Get();
+    desc.CS = { MorphFold.CsBlob->GetBufferPointer(), MorphFold.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( MorphFold.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (CSFold).";
+        return false;
+    }
+    return true;
+}
+
+
 bool D3D12PipelineState::CreateLines() {
     // Debug/editor line lists (D3D12LineRenderer) — port of D3D11's PS_Lines + VS_Lines / VS_Lines_XYZRHW.
     // Drawn after the tonemap resolve, straight onto the swapchain backbuffer, so the vertex colors land
@@ -3675,6 +3717,9 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     runFatal( "LightCull", &D3D12PipelineState::CreateLightCull );
     runFatal( "Vob", &D3D12PipelineState::CreateVob );
     runOptional( "Cull", &D3D12PipelineState::CreateCull );
+    // Reloadable, but a reload cannot flip MorphGpu::IsActive() (it is frozen for the session — the morph
+    // vertex buffers already exist in one usage or the other), so this only refreshes the shader.
+    runOptional( "MorphFold", &D3D12PipelineState::CreateMorphFold );
     runFatal( "Skeletal", &D3D12PipelineState::CreateSkeletal );
     runFatal( "PointShadow", &D3D12PipelineState::CreatePointShadow );
     runFatal( "Water", &D3D12PipelineState::CreateWater );
