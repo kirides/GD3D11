@@ -83,32 +83,24 @@ runs:
           $zip.Dispose()
         }
 
-    - name: Create final Zip
-      shell: pwsh
-      run: |
-        $relDir = "${{ steps.calc-path.outputs.release-dir }}"
-        7z a -tzip -mx=7 -mmt=on "-xr!*.pdb" "$relDir.zip" "./$relDir/*"
-
-    - name: Create final Zip (debug)
-      shell: pwsh
-      run: |
-        $relDir = "${{ steps.calc-path.outputs.release-dir }}"
-        7z a -tzip -mx=7 -mmt=on "$relDir-debug.zip" "./$relDir/*"        
-
-    - name: Upload release Zip artifact
-      id: artifact-upload-release
-      uses: actions/upload-artifact@v6
-      with:
-        name: ${{ steps.calc-path.outputs.release-dir }}
-        path: "${{ steps.calc-path.outputs.release-dir }}.zip"
-        if-no-files-found: error
-        compression-level: 0
-
-    - name: Upload debug Zip artifact
+    - name: Upload debug artifact (with PDBs)
       id: artifact-upload-debug
       uses: actions/upload-artifact@v6
       with:
         name: ${{ steps.calc-path.outputs.release-dir }}-debug
-        path: "${{ steps.calc-path.outputs.release-dir }}-debug.zip"
+        path: "${{ steps.calc-path.outputs.release-dir }}"
         if-no-files-found: error
-        compression-level: 0
+
+    - name: Remove PDBs for release
+      shell: pwsh
+      run: |
+        $relDir = "${{ steps.calc-path.outputs.release-dir }}"
+        Get-ChildItem -Path $relDir -Filter "*.pdb" -Recurse | Remove-Item -Force
+
+    - name: Upload release artifact (no PDBs)
+      id: artifact-upload-release
+      uses: actions/upload-artifact@v6
+      with:
+        name: ${{ steps.calc-path.outputs.release-dir }}
+        path: "${{ steps.calc-path.outputs.release-dir }}"
+        if-no-files-found: error

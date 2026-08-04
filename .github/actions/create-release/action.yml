@@ -24,6 +24,17 @@ runs:
         artifact-ids: ${{ inputs.artifact-id-release }},${{ inputs.artifact-id-debug }}
         merge-multiple: true
 
+    - name: Create ZIPs for release
+      shell: pwsh
+      run: |
+        $downloadPath = "${{ steps.download-artifact.outputs.download-path }}"
+        Get-ChildItem -Path $downloadPath -Directory | ForEach-Object {
+          $dir = $_.FullName
+          $zipName = "$dir.zip"
+          7z a -tzip -mx=7 -mmt=on "$zipName" "$dir\*"
+          Write-Host "Created $zipName"
+        }
+
     - name: Calculate nightly release info
       if: ${{ inputs.nightly == 'true' }}
       id: nightly-info
