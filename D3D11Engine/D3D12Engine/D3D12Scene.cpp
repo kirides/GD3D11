@@ -199,6 +199,10 @@ namespace {
     // MUST match MASK_WORDS in Shaders/D3D12/include/ForwardPlusTypes.hlsl (MAX_ACTIVE_LIGHTS / 32) — sizes the
     // per-cluster LightGrid.Mask array on the C++ side of CreateLightCullBuffers.
     constexpr UINT kMaskWordsPerCluster = kMaxFrameLights / 32;
+    // Total words per LightGrid entry: the mask array plus the leading WordOccupancy summary word the pixel
+    // shader bit-scans instead of walking all 32 mask words. Keep in lockstep with the HLSL struct — this is a
+    // StructuredBuffer, so a stride mismatch silently misindexes EVERY cluster.
+    constexpr UINT kWordsPerCluster = kMaskWordsPerCluster + 1;
     // Gothic's reversed-Z camera projection has no real far plane (infinite far), so the cluster Z grid needs a
     // chosen practical far distance to log-distribute its slices over. This is a FLOOR, not the actual value
     // used — GetClusterFarZ() below clamps it up to the user's VisualFXDrawRadius setting, which is the CPU-side
@@ -792,8 +796,9 @@ UINT D3D12GraphicsEngine::ResolveDiffuseSlotCacheIn( zCTexture* tex ) {
 
 bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	// Per-resolution CLUSTERED Forward+ grid storage (P2.14; tiled P2.9b-2 predecessor). Recreated on resize
-	// alongside the depth buffer. RW_LightGrid: one MAX_ACTIVE_LIGHTS-bit membership mask (kMaskWordsPerCluster
-	// * 4 B) per (16x16 screen tile x Z slice) cluster — see LightCull.hlsl/PBRLighting.hlsl. There is no
+	// alongside the depth buffer. RW_LightGrid: one MAX_ACTIVE_LIGHTS-bit membership mask plus its WordOccupancy
+	// summary word (kWordsPerCluster * 4 B) per (16x16 screen tile x Z slice) cluster — see
+	// LightCull.hlsl/PBRLighting.hlsl. There is no
 	// separate index-list buffer: the mask itself IS the light list (bit i = light i). DEFAULT-heap UAV buffer
 	// created in UNORDERED_ACCESS; each frame DispatchLightCulling writes it (UAV) then transitions it to
 	// PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back.
@@ -833,7 +838,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 		return true;
 		};
 
-	if ( !makeUavBuffer( static_cast<UINT64>(numClusters) * kMaskWordsPerCluster * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer, m_LightGridBufferAlloc ) )
+	if ( !makeUavBuffer( static_cast<UINT64>(numClusters) * kWordsPerCluster * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer, m_LightGridBufferAlloc ) )
 		return false;
 	m_LightGridInPixelState = false;   // freshly created in UNORDERED_ACCESS (see DispatchLightCulling round-trip)
 	return true;
