@@ -18,7 +18,9 @@ struct TiledPointLight {
 };
 // Clustered Forward+ (P2.14): a MAX_ACTIVE_LIGHTS-bit membership mask, one bit per light in
 // SB_Lights[0..MAX_ACTIVE_LIGHTS). MASK_WORDS * 4 bytes, same layout as ForwardPlusTypes.hlsl's copy.
-struct LightGrid { uint Mask[MASK_WORDS]; };
+// WordOccupancy: bit w set iff Mask[w] != 0, so the pixel shader can skip the empty words instead of walking all
+// MASK_WORDS of them. See the fuller note on ForwardPlusTypes.hlsl's copy — the two MUST stay layout-identical.
+struct LightGrid { uint WordOccupancy; uint Mask[MASK_WORDS]; };
 
 StructuredBuffer<TiledPointLight> SB_Lights   : register(t0);
 RWStructuredBuffer<LightGrid>     RW_LightGrid : register(u0);
@@ -42,6 +44,8 @@ groupshared uint gs_Mask[NUM_Z_SLICES * MASK_WORDS];
 // bit 14..17 = last Z slice. Capacity is MAX_ACTIVE_LIGHTS so an append can never overflow (4 KB).
 groupshared uint gs_Cand[MAX_ACTIVE_LIGHTS];
 groupshared uint gs_CandCount;
+// One WordOccupancy summary per slice of the column, OR-reduced out of gs_Mask between phases 2 and 3.
+groupshared uint gs_Occ[NUM_Z_SLICES];
 
 // Log-distributed slice index for a view-space Z. MUST stay identical to PBRLighting.hlsl's ComputeZSlice tail
 // (that one first inverts the hardware reversed-Z depth to viewZ, then does exactly this) or a pixel reads a
@@ -77,6 +81,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint ti : SV_GroupIndex ) {
     for ( uint c = 0; c < ( NUM_Z_SLICES * MASK_WORDS ) / CULL_GROUP_SIZE; ++c )
         gs_Mask[c * CULL_GROUP_SIZE + ti] = 0;
     if ( ti == 0 ) gs_CandCount = 0;
+    if ( ti < NUM_Z_SLICES ) gs_Occ[ti] = 0;   // 16 slices, group is 64 wide — one lane each, no loop
 
     // --- Tile frustum column, view space. Uniform over the group (depends on groupID only), so every lane
     // computes it redundantly into scalar registers rather than paying a broadcast + barrier for it.
@@ -155,6 +160,18 @@ void CSMain( uint3 groupID : SV_GroupID, uint ti : SV_GroupIndex ) {
 
     GroupMemoryBarrierWithGroupSync();
 
+    // --- Phase 2b: reduce gs_Mask into one WordOccupancy summary per slice ---
+    // MASK_WORDS is 32, so the flat gs_Mask index i splits as (slice = i >> 5, word = i & 31) — the same mapping
+    // phase 3 flushes with. Only non-empty words contribute, so the usual near-empty column costs 8 compares per
+    // lane and issues no atomics at all.
+    [unroll]
+    for ( uint u = 0; u < ( NUM_Z_SLICES * MASK_WORDS ) / CULL_GROUP_SIZE; ++u ) {
+        const uint i = u * CULL_GROUP_SIZE + ti;
+        if ( gs_Mask[i] != 0 ) InterlockedOr( gs_Occ[i >> 5u], 1u << ( i & 31u ) );
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
     // --- Phase 3: flush the whole column ---
     // The tile's NUM_Z_SLICES clusters are contiguous in RW_LightGrid, so gs_Mask maps onto them flat and the
     // 512-word store is fully coalesced across the group.
@@ -164,4 +181,6 @@ void CSMain( uint3 groupID : SV_GroupID, uint ti : SV_GroupIndex ) {
         const uint i = o * CULL_GROUP_SIZE + ti;
         RW_LightGrid[clusterBase + ( i >> 5u )].Mask[i & 31u] = gs_Mask[i];
     }
+    // One summary word per slice — 16 lanes, alongside the mask flush above.
+    if ( ti < NUM_Z_SLICES ) RW_LightGrid[clusterBase + ti].WordOccupancy = gs_Occ[ti];
 }

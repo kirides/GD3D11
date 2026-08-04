@@ -45,8 +45,16 @@ struct GPULight {
 };
 // Clustered Forward+ grid cell: a MAX_ACTIVE_LIGHTS-bit membership mask over the frame's active light list (bit
 // i set = light i is visible in this cluster), NOT an {Offset,Count} index slice — see LightCull.hlsl/
-// PBRLighting.hlsl's AccumTiledPointLights. MASK_WORDS * 4 bytes per cluster.
-struct LightGrid { uint Mask[MASK_WORDS]; };
+// PBRLighting.hlsl's AccumTiledPointLights. (MASK_WORDS + 1) * 4 bytes per cluster.
+//
+// WordOccupancy is a summary of Mask: bit w is set iff Mask[w] != 0. Without it every lit pixel had to load and
+// test all MASK_WORDS (32) words just to discover a cluster is empty, which is the common case — and because
+// BuildFrameLightBuffer sorts the frame's lights NEAREST-FIRST, the set bits bunch into the low words, so words
+// 2..31 are near-always zero and were pure loop overhead. Bit-scanning this one word instead touches only the
+// words that actually carry lights, and keeps the property that made the bitmask preferable to an {Offset,Count}
+// list in the first place: the loop bound is a popcount, so a corrupt grid entry can never spin away.
+// MASK_WORDS is 32, so the summary fits exactly one word — raising MAX_ACTIVE_LIGHTS past 1024 breaks that.
+struct LightGrid { uint WordOccupancy; uint Mask[MASK_WORDS]; };
 
 // ShadowCubeIndex encoding: -1 = unshadowed, else (slot | tier). Bit 30 selects the low-res static cube array
 // over the full-res dynamic one, and keeps the value positive so "ShadowCubeIndex >= 0" still means shadowed.

@@ -555,13 +555,22 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
     uint  slice = ComputeZSlice( svpos.z );
-    LightGrid g = LightGridBuf[tileIndex * NUM_Z_SLICES + slice];
+    // Index the fields directly rather than `LightGrid g = LightGridBuf[c]` — binding the whole struct loads all
+    // MASK_WORDS+1 words eagerly, which is exactly the cost WordOccupancy exists to avoid.
+    const uint cluster = tileIndex * NUM_Z_SLICES + slice;
     float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     float3 maxLit = 0;
-    for ( uint w = 0; w < MASK_WORDS; ++w )
+    // Walk only the mask words WordOccupancy flags as non-empty (see ForwardPlusTypes.hlsl). An empty cluster —
+    // the common case — is now one load instead of 32, and since the light list is sorted nearest-first the set
+    // bits bunch into the low words, so even a lit cluster usually touches 1-2. The loop bound is still a
+    // popcount, so a corrupt entry bounds at MASK_WORDS iterations exactly as the old fixed loop did.
+    uint wm = LightGridBuf[cluster].WordOccupancy;
+    while ( wm != 0 )
     {
-        uint m = g.Mask[w];
+        uint w = firstbitlow( wm );
+        wm &= wm - 1;
+        uint m = LightGridBuf[cluster].Mask[w];
         while ( m != 0 )
         {
             uint bit = firstbitlow( m );
