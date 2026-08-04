@@ -724,6 +724,9 @@ struct GothicRendererSettings {
         OutdoorVobDrawRadius = 30000.0f;
         SkeletalMeshDrawRadius = 6000.0f;
         VisualFXDrawRadius = 10000.0f;
+        // Past readable-silhouette range, but well inside OutdoorVobDrawRadius so it covers most of the
+        // visible VOB population.
+        VobLodDrawRadius = 8000.0f;
 
 #if BUILD_SPACER_NET
         VisualFXDrawRadius = 16000.0f;
@@ -1117,6 +1120,9 @@ struct GothicRendererSettings {
     float SkeletalMeshDrawRadius;
     float OutdoorSmallVobDrawRadius;
     float VisualFXDrawRadius;
+    // Distance past which an instanced VOB draws its reduced index buffer (D3D12 main view; cascades pick
+    // LOD by cascade index). 0 = off. Bucketed per INSTANCE in CSCull - Gothic reuses visuals map-wide.
+    float VobLodDrawRadius;
     float SmallVobSize;
     float WorldShadowRangeScale;
     int NumShadowCascades;

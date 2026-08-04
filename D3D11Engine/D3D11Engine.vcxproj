@@ -1684,6 +1684,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp" />
     <ClCompile Include="include\meshoptimizer\src\overdrawoptimizer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\quantization.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp" />
     <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp" />
