@@ -3557,10 +3557,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isMMS && mvi->RestVisual
                             && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
                             drawVis = mvi->RestVisual;
-                            // Drawing the shared rest mesh, so this instance's own DYNAMIC buffers are
-                            // dead weight. Hand them back once it has been out of morph range long
-                            // enough; the first draw that needs them again rebuilds them.
-                            mvi->ReleaseIdleMorphVertexBuffers( Engine::GAPI->GetFrameNumber() );
                         }
 
                         for ( auto const& itm : drawVis->Meshes ) {

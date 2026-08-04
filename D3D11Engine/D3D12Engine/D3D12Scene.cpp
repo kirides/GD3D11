@@ -2228,6 +2228,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// pre-resolved D3D12 handles and heap-slot ints snapshotted on this thread before it was launched. It is
 	// specifically NOT safe to move any Gothic read INTO a recorder for the same reason.
 	BuildSkeletalDrawCommands();
+	// Morph attachments (NPC heads, bow/crossbow draw meshes): fold this frame's blend shapes on the GPU into
+	// each submesh's own vertex buffer. Has to precede the depth prepass, which is the first pass of the frame
+	// IN SUBMISSION ORDER that draws one — the shadow cascades and point-shadow cubes record into private
+	// lists but are executed later (FinishShadowPasses). No-op when the fold is unavailable or inactive, in
+	// which case UpdateMorphMeshVisual already deformed them on the CPU during collection. See
+	// D3D12MorphFold.cpp / MorphGpu.h.
+	DispatchMorphFold();
     {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
@@ -4358,10 +4365,6 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     if ( isMMS && !morphActive && mvi->RestVisual
                         && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
                         drawVis = mvi->RestVisual;
-                        // Its own DYNAMIC buffers are unused while the rest mesh is what draws — and on
-                        // D3D12 each one is kBackBufferCount persistently-mapped UPLOAD copies, so holding
-                        // them for every head ever walked past is the expensive case. Rebuilt on demand.
-                        mvi->ReleaseIdleMorphVertexBuffers( Engine::GAPI->GetFrameNumber() );
                     }
                     const bool attBatchable = !isMMS || drawVis != mvi;
 

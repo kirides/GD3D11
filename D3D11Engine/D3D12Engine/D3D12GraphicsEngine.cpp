@@ -152,6 +152,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         // instance buffer from m_VobInstanceBufferCapacity) and after CreateVobIndirect.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the GPU VOB-culling resources (falling back to CPU frustum culling).";
     }
+    if ( !m_Pipelines.CreateMorphFold() || !CreateMorphFoldResources() ) {
+        // Non-fatal, but it MUST be attempted here — before the first world/attachment conversion. Whether
+        // the fold is available is what decides how a morph submesh's vertex buffer is created (DEFAULT+UAV
+        // for the GPU fold vs DYNAMIC+CA_WRITE for ZENGIN's CPU deform), and MorphGpu::IsActive() freezes
+        // that answer for the session. Failing here simply leaves the CPU deform as the path.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the GPU morph-fold resources (morph meshes will deform on the CPU).";
+    }
     if ( !CreateLightBuffer() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the point-light buffer.";
         return XR_FAILED;

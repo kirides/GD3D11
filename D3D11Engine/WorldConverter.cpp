@@ -26,6 +26,7 @@
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
 #include "MorphBlend.h"
+#include "MorphGpu.h"
 #include "ThreadPool.h"
 #include "vendor/mikktspace.h"
 #include "VertexPacking.h"
@@ -2100,6 +2101,20 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
 
     MorphBlend::LogPrototypeBudget( visual );
 
+    // GPU fold: everything below - the deform, the per-wedge ExVertexStruct expansion and the full
+    // vertex-buffer re-upload - becomes one Dispatch per submesh that the backend records later this frame.
+    // All that happens here is snapshotting the channel state, which is why AdvanceAnis above still runs (it
+    // is the animation STATE machine, not the deform) and the tex-ani update below is unaffected.
+    //
+    // There is deliberately NO CPU fallback inside this mode: the vertex buffers are GPU-written DEFAULT-heap
+    // UAVs, so nothing here could write them anyway. An instance Register() refuses (the cases are listed in
+    // MorphGpu.cpp - all of them content shapes not seen in shipped .MMS files) keeps the undeformed
+    // conversion pose, which is exactly what every out-of-range morph attachment already draws.
+    if ( MorphGpu::IsActive() ) {
+        MorphGpu::Register( visual, meshInfo );
+        return;
+    }
+
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.VerifyMorphBlend ) {
         // Runs both deforms and reports the worst disagreement. Deliberately rate-limited rather than
@@ -2248,16 +2263,23 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         if ( meshInfo->MorphMeshVisual ) {
-            // We need to keep original indices so that we can reuse them(we can't optimize them)
-            // Use dynamic buffer since we'll reupload it every frame we see this visual
-
-            // Handed back again once this instance stops deforming, and rebuilt from mi->Vertices on the
-            // next draw that needs it - see MeshVisualInfo::ReleaseIdleMorphVertexBuffers. Skipping the
-            // optimizers above is what keeps Vertices a valid description of this buffer.
-            mi->DynamicMorphVertices = true;
-
-            // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+            // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: the wedge numbering has to
+            // survive, because both deform paths address this buffer by WEDGE INDEX (the CPU one rebuilds the
+            // whole stream in wedge order, the GPU fold writes one vertex per wedge). It is also what keeps
+            // mi->Vertices an exact description of the buffer's non-position bytes.
+            if ( MorphGpu::IsActive() ) {
+                // GPU fold: a DEFAULT-heap (VRAM) UAV written by MorphFold.hlsl, never by the CPU. The
+                // initial contents are this conversion's pose, so the mesh is already drawable before its
+                // first fold, and the normal/tangent/UV/color bytes written here are final - the fold only
+                // ever rewrites the leading 12-byte Position of each vertex.
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ),
+                    static_cast<GfxVertexBuffer::EBindFlags>( GfxVertexBuffer::B_VERTEXBUFFER | GfxVertexBuffer::B_UNORDERED_ACCESS ),
+                    GfxVertexBuffer::U_DEFAULT );
+            } else {
+                // CPU deform: re-uploaded whole by UpdateMorphMeshVisual every animation frame this instance
+                // is inside kMorphMeshMaxDistance, so it has to stay CPU-writable.
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+            }
         } else {
             // Reduced caster geometry for the distant shadow cascades, rebuilt from this sub-mesh's own
             // progressive-mesh data. Built here because it is expressed in the pre-optimization wedge
