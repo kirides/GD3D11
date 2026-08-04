@@ -4287,6 +4287,55 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
     }
 }
 
+/** Outlines the world's ghost occluders (WorldOccluders) so their placement can be eyeballed before
+    anything culls against them. Frustum- and distance-limited: a world ships up to ~2500 of them and
+    feeding every one to the line renderer every frame would swamp it. */
+void GothicAPI::DebugDrawOccluders( const Frustum& frustum ) {
+    if ( !LoadedWorldInfo || LoadedWorldInfo->Occluders.IsEmpty() )
+        return;
+
+    const WorldOccluders& occ = LoadedWorldInfo->Occluders;
+    BaseLineRenderer* lines = Engine::GraphicsEngine->GetLineRenderer();
+    if ( !lines )
+        return;
+
+    const XMVECTOR camPos = GetCameraPositionXM();
+    const float maxDist = 20000.0f;   // 200m - beyond that the outlines are unreadable anyway
+    const size_t maxDrawn = 400;      // line-renderer budget; overflow is logged once below
+
+    size_t drawn = 0;
+    size_t skippedForBudget = 0;
+    for ( const WorldOccluders::Entry& e : occ.Entries ) {
+        float distSq;
+        XMStoreFloat( &distSq, XMVector3LengthSq( XMLoadFloat3( &e.Center ) - camPos ) );
+        if ( distSq > (maxDist + e.Radius) * (maxDist + e.Radius) )
+            continue;
+        if ( !frustum.Intersects( zTBBox3D{
+                XMFLOAT3( e.Center.x - e.Radius, e.Center.y - e.Radius, e.Center.z - e.Radius ),
+                XMFLOAT3( e.Center.x + e.Radius, e.Center.y + e.Radius, e.Center.z + e.Radius ) } ) )
+            continue;
+
+        if ( drawn >= maxDrawn ) { skippedForBudget++; continue; }
+
+        // Green near, red far - makes it obvious which ones actually bound the current view.
+        const float t = std::min( 1.0f, std::sqrtf( distSq ) / maxDist );
+        const XMFLOAT4 color( t, 1.0f - t, 0.2f, 1.0f );
+
+        for ( uint32_t v = 0; v < e.NumVerts; v++ ) {
+            const XMFLOAT3& a = occ.Verts[e.VertexOffset + v];
+            const XMFLOAT3& b = occ.Verts[e.VertexOffset + ((v + 1) % e.NumVerts)];
+            lines->AddLine( LineVertex( a, color ), LineVertex( b, color ) );
+        }
+        drawn++;
+    }
+
+    if ( skippedForBudget && !OccluderDebugBudgetLogged ) {
+        LogInfo() << "DrawWorldOccluders: showing " << maxDrawn << " of " << (drawn + skippedForBudget)
+            << " in-view occluders (line budget)";
+        OccluderDebugBudgetLogged = true;
+    }
+}
+
 /** Draws the AABB for the BSP-Tree using the line renderer*/
 void GothicAPI::DebugDrawBSPTree() {
     zCBspTree* tree = LoadedWorldInfo->BspTree;
@@ -4311,6 +4360,8 @@ void GothicAPI::CollectVisibleVobs(
     Frustum frustum = Frustum::AlwaysContainingFrustum();
     bool haveCameraMatrices = false;
     XMMATRIX worldToClip = XMMatrixIdentity();
+    // Kept alongside worldToClip so the horizon cull can measure depth in the SAME camera's space.
+    XMMATRIX cameraView = XMMatrixIdentity();
     if ( auto cam = GetSceneCamera() ) {
         cam->Activate();
 
@@ -4322,6 +4373,7 @@ void GothicAPI::CollectVisibleVobs(
         frustum.BuildPerspective( viewM, projM );
 
         worldToClip = XMMatrixMultiply( viewM, projM );
+        cameraView = viewM;
         haveCameraMatrices = true;
     }
 
@@ -4368,6 +4420,27 @@ void GothicAPI::CollectVisibleVobs(
         oCGame* game = oCGame::GetGame();
         PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
         ctx.portalCuller = &PortalCuller;
+    }
+
+    // Rasterize the ghost-occluder horizon for THIS camera, then hand it to the collect. Main camera
+    // pass only - a shadow cascade has its own frustum and must not test against the player's skyline.
+    Horizon.SetEnabled( RendererState.RendererSettings.EnableHorizonCulling );
+    if ( haveCameraMatrices && LoadedWorldInfo && !LoadedWorldInfo->Occluders.IsEmpty() ) {
+        const INT2 res = Engine::GraphicsEngine->GetResolution();
+        // viewM, NOT GetViewMatrixXM(): worldToClip above is viewM*projM from this zCCamera, and the
+        // horizon compares occluder and box depths in that camera's space. GothicAPI's TransformView is
+        // a different, pass-dependent value - the shadow cascades overwrite it through
+        // SetCameraReplacementPtr - so mixing the two measured depth along two unrelated axes.
+        Horizon.Build( LoadedWorldInfo->Occluders, worldToClip, cameraView, ctx.cameraPosition,
+            frustum, res.x, res.y );
+        if ( Horizon.IsActive() )
+            ctx.horizon = &Horizon;
+    } else {
+        Horizon.Invalidate();
+    }
+
+    if ( RendererState.RendererSettings.DrawWorldOccluders ) {
+        DebugDrawOccluders( frustum );
     }
 
     CollectVisibleVobs( ctx );
@@ -4600,7 +4673,8 @@ bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Fr
 
 void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
     std::vector<WorldMeshSectionInfo*>& sections,
-    bool useSectionRadiusFilter ) const {
+    bool useSectionRadiusFilter,
+    const HorizonCuller* horizon ) const {
     if ( !WorldSectionBVHValid || WorldSectionBVHNodes.empty() ) {
         return;
     }
@@ -4623,6 +4697,19 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
         const WorldSectionBVHNode& node = WorldSectionBVHNodes[nodeIndex];
         if ( !frustum.Intersects( node.Bounds ) ) {
             continue;
+        }
+        // Horizon on the BVH node itself: rejecting an interior node drops its whole subtree of
+        // sections in one test, which is where this pays best.
+        if ( horizon ) {
+            const XMFLOAT3 nodeMin( node.Bounds.Center.x - node.Bounds.Extents.x,
+                                    node.Bounds.Center.y - node.Bounds.Extents.y,
+                                    node.Bounds.Center.z - node.Bounds.Extents.z );
+            const XMFLOAT3 nodeMax( node.Bounds.Center.x + node.Bounds.Extents.x,
+                                    node.Bounds.Center.y + node.Bounds.Extents.y,
+                                    node.Bounds.Center.z + node.Bounds.Extents.z );
+            if ( !horizon->IsBoxVisible( nodeMin, nodeMax ) ) {
+                continue;
+            }
         }
 
         if ( node.IsLeaf() ) {
@@ -4670,7 +4757,8 @@ void GothicAPI::UpdateShouldBlockGameInput( ) {
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
     const Frustum* queryFrustum,
-    bool useSectionRadiusFilter ) {
+    bool useSectionRadiusFilter,
+    const HorizonCuller* horizon ) {
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
@@ -4685,10 +4773,15 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             if ( !queryFrustum->IsValid() ) {
                 return true;
             }
-            return queryFrustum->Intersects( section.BoundingBox );
+            if ( !queryFrustum->Intersects( section.BoundingBox ) ) return false;
+        } else if ( GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT ) {
+            return false;
         }
 
-        return GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) != ZTCAM_CLIPTYPE_OUT;
+        if ( horizon && !horizon->IsBoxVisible( section.BoundingBox.Min, section.BoundingBox.Max ) ) {
+            return false;
+        }
+        return true;
     };
 
     const bool queryFrustumValid = queryFrustum == nullptr || queryFrustum->IsValid();
@@ -4714,7 +4807,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             activeFrustum = &generatedFrustum;
         }
 
-        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter );
+        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter, horizon );
         return;
     }
 
@@ -4914,6 +5007,13 @@ static void CVVH_AddNotDrawnVobToList(
             && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
         }
+        // Horizon: hidden behind an occluder, so nothing below is built at all - no instance upload,
+        // no indirect command, no CacheIn. Kept after the frustum test, which is much cheaper.
+        if ( ctx.horizon ) {
+            const zTBBox3D& hb = it->LastRenderBBox;
+            if ( !ctx.horizon->IsBoxVisible( hb.Min, hb.Max ) )
+                continue;
+        }
         if ( portalLeaf ) {
             const zTBBox3D& bb = it->LastRenderBBox;
             if ( !ctx.portalCuller->IsBoxVisibleInLeafSectors( *portalLeaf, bb.Min, bb.Max ) )
@@ -4951,6 +5051,13 @@ static void CVVH_AddNotDrawnVobToList(
             && cullingEnabled
             && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
+        }
+        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection here saves a whole
+        // draw plus its material binds - the cheapest win of the three lists.
+        if ( ctx.horizon ) {
+            const zTBBox3D bb = it->Vob->GetBBox();
+            if ( !ctx.horizon->IsBoxVisible( bb.Min, bb.Max ) )
+                continue;
         }
 
         ctx.queue->PushSkeletalVob( it );
@@ -5673,6 +5780,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "CompressBackBuffer", to_string_locale_independent( s.CompressBackBuffer ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AnimateStaticVobs", to_string_locale_independent( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", to_string_locale_independent( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DrawWorldOccluders", to_string_locale_independent( s.DrawWorldOccluders ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", to_string_locale_independent( s.SunLightStrength ).c_str(), ini.c_str() );
 #ifdef BUILD_GOTHIC_1_08k
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", to_string_locale_independent( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5688,6 +5796,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnablePortalCulling", to_string_locale_independent( s.EnablePortalCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableHorizonCulling", to_string_locale_independent( s.EnableHorizonCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PausedFpsLimit", to_string_locale_independent( s.PausedFpsLimit ).c_str(), ini.c_str() );
     
@@ -5849,6 +5958,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.CompressBackBuffer = GetPrivateProfileBoolA( "General", "CompressBackBuffer", ds.CompressBackBuffer, ini );
         s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", ds.AnimateStaticVobs, ini );
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
+        s.DrawWorldOccluders = GetPrivateProfileBoolA( "General", "DrawWorldOccluders", ds.DrawWorldOccluders, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
 #ifdef BUILD_GOTHIC_1_08k
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", ds.DrawG1ForestPortals, ini );
@@ -5864,6 +5974,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnablePortalCulling = GetPrivateProfileBoolA( "General", "EnablePortalCulling", ds.EnablePortalCulling, ini );
         s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
+        s.EnableHorizonCulling = GetPrivateProfileBoolA( "General", "EnableHorizonCulling", ds.EnableHorizonCulling, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
         s.PausedFpsLimit = GetPrivateProfileIntA( "General", "PausedFpsLimit", ds.PausedFpsLimit, ini.c_str() );
         // Not optional: an unthrottled paused loop crashes drivers, so the ini can only pick a value

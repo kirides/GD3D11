@@ -5112,7 +5112,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     static std::vector<WorldMeshSectionInfo*> renderList;
     if ( !m_FrameGeometryCache.worldMeshBuilt ) {
-        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true );
+        // Player view: opt into the ghost-occluder horizon cull (shadow/rain collects must not).
+        const HorizonCuller& horizon = Engine::GAPI->GetHorizonCuller();
+        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true,
+            horizon.IsActive() ? &horizon : nullptr );
         m_FrameGeometryCache.worldMeshBuilt = true;
     }
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)

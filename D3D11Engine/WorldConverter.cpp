@@ -781,6 +781,129 @@ static bool IsPortalMaterial( std::string_view matName )
         || matName.starts_with( "PI:" ));
 }
 
+/** One-shot census of the world's occluder polys, logged at the end of ConvertWorldMesh.
+ *
+ *  Answers the two questions that decide how (or whether) to revive ZenGin's horizon culling:
+ *  how many occluders exist at all, and how big they are - a horizon built from a handful of tiny
+ *  polys culls nothing, while a few hundred large ones can cull whole BSP subtrees. Size is measured
+ *  as the world-space AABB diagonal in metres (100 units = 1m). */
+struct OccluderSurvey {
+    int Total = 0;
+    int Occluder = 0;          // flags.occluder - what ScanHorizon actually gates on
+    int GhostOccluder = 0;     // ...of which are occluder-only, never drawn
+    int GhostNotOccluder = 0;  // ghost without the occluder flag: dropped AND useless for the horizon
+    int Portals = 0;           // ghost occluders are portal polys in ZenGin; verify that holds here
+
+    /** Occluder size histogram, bucketed by AABB diagonal: <1m, <5m, <15m, <50m, >=50m. */
+    int SizeBuckets[5] = {};
+    /** Same, restricted to ghost occluders - the set an up-front horizon build could use as-is. */
+    int GhostSizeBuckets[5] = {};
+    float LargestDiagonal = 0.0f;
+
+    static int BucketOf( float metres ) {
+        if ( metres < 1.0f ) return 0;
+        if ( metres < 5.0f ) return 1;
+        if ( metres < 15.0f ) return 2;
+        if ( metres < 50.0f ) return 3;
+        return 4;
+    }
+
+    void Account( zCPolygon* poly ) {
+        if ( !poly ) return;
+        Total++;
+
+        const PolyFlags* flags = poly->GetPolyFlags();
+        const bool isOccluder = flags->Occluder != 0;
+        const bool isGhost = flags->GhostOccluder != 0;
+
+        if ( isGhost && poly->IsPortal() ) Portals++;
+        if ( isGhost && !isOccluder ) GhostNotOccluder++;
+        if ( !isOccluder ) return;
+
+        Occluder++;
+
+        // World-space AABB of the poly -> diagonal, as a stand-in for "how much screen can this cover".
+        const uint8_t numVerts = poly->GetNumPolyVertices();
+        zCVertex** verts = poly->getVertices();
+        if ( numVerts < 3 || !verts ) return;
+
+        float3 bbMin( FLT_MAX, FLT_MAX, FLT_MAX );
+        float3 bbMax( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+        for ( uint8_t v = 0; v < numVerts; v++ ) {
+            if ( !verts[v] ) return;
+            const float3& p = verts[v]->Position;
+            bbMin.x = std::min( bbMin.x, p.x ); bbMax.x = std::max( bbMax.x, p.x );
+            bbMin.y = std::min( bbMin.y, p.y ); bbMax.y = std::max( bbMax.y, p.y );
+            bbMin.z = std::min( bbMin.z, p.z ); bbMax.z = std::max( bbMax.z, p.z );
+        }
+        const float dx = bbMax.x - bbMin.x, dy = bbMax.y - bbMin.y, dz = bbMax.z - bbMin.z;
+        const float metres = std::sqrt( dx * dx + dy * dy + dz * dz ) / 100.0f;
+
+        const int bucket = BucketOf( metres );
+        SizeBuckets[bucket]++;
+        if ( isGhost ) {
+            GhostOccluder++;
+            GhostSizeBuckets[bucket]++;
+        }
+        LargestDiagonal = std::max( LargestDiagonal, metres );
+    }
+
+    // Not named Log(): LogInfo() is a macro expanding to Log(...), which would resolve to the member.
+    void LogSummary() const {
+        LogInfo() << "OccluderSurvey: " << Occluder << " occluder polys of " << Total
+            << " (" << GhostOccluder << " ghost/never-drawn, " << Portals << " of those portals"
+            << (GhostNotOccluder ? ", " + std::to_string( GhostNotOccluder ) + " ghost WITHOUT occluder flag" : "")
+            << "), largest " << LargestDiagonal << "m";
+        if ( Occluder == 0 ) {
+            LogInfo() << "OccluderSurvey: no occluders - horizon culling would do nothing in this world";
+            return;
+        }
+        LogInfo() << "OccluderSurvey: occluder sizes  <1m:" << SizeBuckets[0] << "  <5m:" << SizeBuckets[1]
+            << "  <15m:" << SizeBuckets[2] << "  <50m:" << SizeBuckets[3] << "  >=50m:" << SizeBuckets[4];
+        LogInfo() << "OccluderSurvey: ghost only      <1m:" << GhostSizeBuckets[0] << "  <5m:" << GhostSizeBuckets[1]
+            << "  <15m:" << GhostSizeBuckets[2] << "  <50m:" << GhostSizeBuckets[3] << "  >=50m:" << GhostSizeBuckets[4];
+    }
+};
+
+/** Appends one ghost-occluder poly to the world's occluder set. Degenerate polys are skipped: a
+    zero-area occluder cannot darken a horizon column and would only cost a projection. */
+static void CollectGhostOccluder( WorldOccluders& out, zCPolygon* poly ) {
+    const uint32_t numVerts = poly->GetNumPolyVertices();
+    zCVertex** verts = poly->getVertices();
+    if ( numVerts < 3 || !verts ) return;
+
+    const uint32_t firstVertex = static_cast<uint32_t>( out.Verts.size() );
+
+    float3 bbMin( FLT_MAX, FLT_MAX, FLT_MAX );
+    float3 bbMax( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+    for ( uint32_t v = 0; v < numVerts; v++ ) {
+        if ( !verts[v] ) {
+            out.Verts.resize( firstVertex );   // partial poly - roll back
+            return;
+        }
+        const float3& p = verts[v]->Position;
+        out.Verts.push_back( XMFLOAT3( p.x, p.y, p.z ) );
+        bbMin.x = std::min( bbMin.x, p.x ); bbMax.x = std::max( bbMax.x, p.x );
+        bbMin.y = std::min( bbMin.y, p.y ); bbMax.y = std::max( bbMax.y, p.y );
+        bbMin.z = std::min( bbMin.z, p.z ); bbMax.z = std::max( bbMax.z, p.z );
+    }
+
+    WorldOccluders::Entry entry = {};
+    entry.VertexOffset = firstVertex;
+    entry.NumVerts = numVerts;
+    entry.Center = XMFLOAT3( ( bbMin.x + bbMax.x ) * 0.5f, ( bbMin.y + bbMax.y ) * 0.5f,
+                             ( bbMin.z + bbMax.z ) * 0.5f );
+    const float dx = bbMax.x - bbMin.x, dy = bbMax.y - bbMin.y, dz = bbMax.z - bbMin.z;
+    entry.Radius = std::sqrt( dx * dx + dy * dy + dz * dz ) * 0.5f;
+
+    if ( entry.Radius < 1.0f ) {   // < 2cm across
+        out.Verts.resize( firstVertex );
+        return;
+    }
+
+    out.Entries.push_back( entry );
+}
+
 /** Converts the worldmesh into a more usable format */
 HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPolygons, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh, bool indoorLocation ) {
     ZoneScoped;
@@ -797,11 +920,23 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         return it->second;
     };
 
+    // --- Occlusion-culling survey (see OccluderSurvey) -----------------------------------------
+    // ZenGin's outdoor renderer rasterizes every poly with the Occluder flag into a 1D horizon buffer
+    // (zBsp.cpp ScanHorizon) and rejects bboxes below it. GhostOccluders are the subset that is
+    // occluder-only, never drawn - which is why the loop below throws them away. This counts what the
+    // loaded world actually ships so we can tell whether reviving that is worth it, and whether the
+    // horizon can be built from ghost occluders alone or needs a largest-N cut of all occluders.
+    OccluderSurvey survey = {};
+
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
-        // Check if we even need this polygon
+        survey.Account( poly );
+
+        // Ghost occluders are never drawn - but they ARE the world's authored occlusion geometry, so
+        // keep a copy for the horizon cull before dropping them from the render mesh.
         if ( poly->GetPolyFlags()->GhostOccluder ) {
+            if ( info ) CollectGhostOccluder( info->Occluders, poly );
             continue;
         }
 
@@ -1023,6 +1158,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     LogInfo() << "Worldmesh: " << allMeshes.size() << " meshes, " << totalWorldVertices
         << " vertices (" << (totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)
         << " MB CPU-side), " << totalWorldIndices << " indices";
+
+    survey.LogSummary();
+    if ( info && !info->Occluders.IsEmpty() ) {
+        LogInfo() << "Occluders: kept " << info->Occluders.Entries.size() << " ghost occluders ("
+            << (info->Occluders.Verts.size() * sizeof( XMFLOAT3 )
+                + info->Occluders.Entries.size() * sizeof( WorldOccluders::Entry )) / 1024
+            << " KB)";
+    }
 
     std::vector<ExVertexStruct> wrappedVertices;
     std::vector<unsigned int> wrappedIndices;
