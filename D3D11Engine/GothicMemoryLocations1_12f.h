@@ -299,6 +299,8 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_Lightmap = 0x1C;
 
         static const unsigned int GetLightStatAtPos = 0x005B3950;
+        static const unsigned int CheckRayPolyIntersection = 0x005B40A0;
+        static const unsigned int CheckRayPolyIntersection2Sided = 0x005B4460;
         static const unsigned int AllocVerts = 0x005B59A0;
         static const unsigned int CalcNormal = 0x005B24D0;
 
