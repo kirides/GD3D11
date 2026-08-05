@@ -297,6 +297,10 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_AniChannels = 0x38;
     };
 
+    struct zCPathSearch {
+        static const unsigned int CorrectPosForNearClip = 0x0;
+    };
+
     struct zCCamera {
         static const unsigned int GetTransform = 0x006D5D90;
         static const unsigned int SetTransform = 0x006D5C30;

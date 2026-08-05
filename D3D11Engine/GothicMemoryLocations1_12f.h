@@ -183,6 +183,10 @@ struct GothicMemoryLocations {
         //static const unsigned int BroadcastEnd = 0x0044CB3C;
     };
 
+    struct zCPathSearch {
+        static const unsigned int CorrectPosForNearClip = 0x0;
+    };
+
     struct zCCamera {
         static const unsigned int GetTransform = 0x0054D440;
         static const unsigned int SetTransform = 0x0054D2E0;

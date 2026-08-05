@@ -184,6 +184,8 @@ public:
             if (texSize >= 128) return 0.55f;
             if (texSize >= 64) return 0.15f;
             return 0.10f;
+        } else if ( _stricmp( var, "ZNEARVALUE" ) == 0 ) {
+            return 1.0f; // We do most of the rendering anyways. tell gothic we have a float -32 depth buffer.
         }
         
         return HookedFunctions::OriginalFunctions.original_zCOptionReadReal(thisptr, section, var, def);

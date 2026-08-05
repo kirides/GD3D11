@@ -227,6 +227,11 @@ struct GothicMemoryLocations {
         //static const unsigned int BroadcastEnd = 0x0044CB3C;
     };
 
+    struct zCPathSearch {
+        // Not located in this binary yet - stays vanilla here (see zCPathSearch.h).
+        static const unsigned int CorrectPosForNearClip = 0x0;
+    };
+
     struct zCCamera {
         static const unsigned int GetTransform = 0x00536460;
         static const unsigned int SetTransform = 0x00536300;

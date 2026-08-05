@@ -480,6 +480,12 @@ struct GothicMemoryLocations {
         static const unsigned int GetFOV_f2 = 0x0054A8F0;
     };
 
+    struct zCPathSearch {
+        // zCPathSearch::CorrectPosForNearClip(zVEC3&). Patched to `return 0` - see
+        // zCPathSearch.h. Verified via Ghidra against Gothic2.exe.
+        static const unsigned int CorrectPosForNearClip = 0x004AF880;
+    };
+
     struct zCProgMeshProto {
         static const unsigned int Offset_PositionList = 0x34;
         static const unsigned int Offset_NormalsList = 0x3C;
