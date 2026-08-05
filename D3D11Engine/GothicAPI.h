@@ -99,6 +99,23 @@ enum EBspTreeCollectFlags : unsigned int {
     COLLECT_ALL_NO_MUTATE = COLLECT_ALL_MUTATE & ~COLLECT_MUTATE,
 };
 
+/** Entry of a BSP leaf's static-VOB list.
+ *
+ *  The world position is mirrored into the list element instead of being read back out of the
+ *  VobInfo. CollectLeafVobs' first act on every candidate is a distance reject, and with a bare
+ *  VobInfo* list that reject had to dereference a scattered heap object per candidate - a cache
+ *  miss for the majority that get rejected. Inline, the reject walks one contiguous 16-byte-stride
+ *  array and only survivors ever touch the VobInfo.
+ *
+ *  The mirror cannot go stale: a static vob that moves is pulled out of every leaf list by
+ *  MoveVobFromBspToDynamic (from OnVobMoved) *before* its transform is applied, so a VOB that is
+ *  in a leaf list is by construction a VOB that has not moved since it was put there. */
+struct LeafVobEntry {
+    DirectX::XMFLOAT3 Position;
+    VobInfo* Info;
+};
+static_assert( sizeof( LeafVobEntry ) == 16, "LeafVobEntry must stay 4-per-cache-line" );
+
 struct BspInfo {
     BspInfo() {
         NumStaticLights = 0;
@@ -143,9 +160,9 @@ struct BspInfo {
         return Vobs.empty() && IndoorVobs.empty() && SmallVobs.empty() && Lights.empty() && IndoorLights.empty();
     }
 
-    std::vector<VobInfo*> Vobs;
-    std::vector<VobInfo*> IndoorVobs;
-    std::vector<VobInfo*> SmallVobs;
+    std::vector<LeafVobEntry> Vobs;
+    std::vector<LeafVobEntry> IndoorVobs;
+    std::vector<LeafVobEntry> SmallVobs;
     std::vector<VobLightInfo*> Lights;
     std::vector<VobLightInfo*> IndoorLights;
     std::vector<SkeletalVobInfo*> Mobs;
@@ -675,7 +692,7 @@ public:
     void MoveVobFromBspToDynamic( VobInfo* vob );
     void MoveVobFromBspToDynamic( SkeletalVobInfo* vob );
 
-    std::vector<VobInfo*>::iterator MoveVobFromBspToDynamic( VobInfo* vob, std::vector<VobInfo*>* source );
+    std::vector<LeafVobEntry>::iterator MoveVobFromBspToDynamic( VobInfo* vob, std::vector<LeafVobEntry>* source );
 
     /** Collects vobs using gothics BSP-Tree */
     void CollectVisibleVobs(

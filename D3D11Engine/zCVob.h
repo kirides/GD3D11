@@ -28,6 +28,33 @@ enum EVisualCamAlignType {
     zVISUAL_CAM_ALIGN_FULL = 2
 };
 
+/** ZENGIN's packed zCVob flag word, at zCVob + GothicMemoryLocations::zCVob::Offset_Flags
+ *  (G1 0xE4, G2 0x104). The engine declares these as `unsigned char` bitfields, so MSVC packs
+ *  the first eight into byte 0 and the next four into byte 1 - identical in every supported
+ *  build, which is why one struct serves both games. Everything past bit 11 lives in separate
+ *  allocation units (sleepingMode, visualCamAlign, ...) and is read through its own offset.
+ *
+ *  Read as one 16-bit load so a collection pass that needs several flags pays a single
+ *  dereference into Gothic's heap instead of one per flag. */
+union zTVobFlags {
+    struct {
+        unsigned short ShowVisual : 1;              // bit 0  - MASK_ShowVisual
+        unsigned short DrawBBox3D : 1;              // bit 1
+        unsigned short VisualAlphaEnabled : 1;      // bit 2  - MASK_VisualAlpha (ghost/fading vobs)
+        unsigned short PhysicsEnabled : 1;          // bit 3
+        unsigned short StaticVob : 1;               // bit 4
+        unsigned short IgnoredByTraceRay : 1;       // bit 5
+        unsigned short CollDetectionStatic : 1;     // bit 6
+        unsigned short CollDetectionDynamic : 1;    // bit 7  - MASK_DynColl
+        unsigned short CastDynShadow : 2;           // bits 8-9  (zTDynShadowType)
+        unsigned short LightColorStatDirty : 1;     // bit 10
+        unsigned short LightColorDynDirty : 1;      // bit 11
+        unsigned short _unused : 4;                 // padding of the second allocation unit
+    };
+    unsigned short Packed;
+};
+static_assert( sizeof( zTVobFlags ) == 2, "zTVobFlags must stay a 2-byte mirror of ZENGIN's bitfield" );
+
 class zCBspLeaf;
 class zCVisual;
 class zCWorld;
@@ -295,35 +322,26 @@ public:
     }
 #endif
 
-    unsigned int GetFlags() const {
-        unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
-        return flags;
-    }
-
-    static bool FlagGetShowVisual( const unsigned int flags ) {
-        return (flags & GothicMemoryLocations::zCVob::MASK_ShowVisual) != 0;
-    }
-
-    static bool FlagGetVisualAlpha( const unsigned int flags ) {
-        return (flags & GothicMemoryLocations::zCVob::MASK_VisualAlpha) != 0;
+    /** Reads the whole packed flag word in one go. Prefer this over the single-flag accessors
+        below whenever more than one flag is needed - each of those is its own dereference into
+        Gothic's heap, which is a cache miss the collection loops used to pay repeatedly. */
+    zTVobFlags GetFlags() const {
+        return *reinterpret_cast<zTVobFlags*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
     }
 
     /** Returns whether to show the main visual or not. Only used for the spacer */
     bool GetShowMainVisual() const {
-        unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
-        return (flags & GothicMemoryLocations::zCVob::MASK_ShowVisual);
+        return GetFlags().ShowVisual != 0;
     }
 
     /** Returns whether vob is transparent */
     bool GetVisualAlpha() const {
-        unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
-        return (flags & GothicMemoryLocations::zCVob::MASK_VisualAlpha);
+        return GetFlags().VisualAlphaEnabled != 0;
     }
 
     /** Returns dynamic collision of the vob */
     bool GetDynColl() const {
-        unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
-        return (flags & GothicMemoryLocations::zCVob::MASK_DynColl);
+        return GetFlags().CollDetectionDynamic != 0;
     }
 
     /** Vob transparency */
