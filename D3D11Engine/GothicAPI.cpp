@@ -1123,6 +1123,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     if ( true ) {
 	    s.VisualFXDrawRadius = GetPrivateProfileFloatA( "General", "VisualFXDrawRadius", s.VisualFXDrawRadius, ini );
 	    s.VobLodDrawRadius = GetPrivateProfileFloatA( "General", "VobLodDrawRadius", s.VobLodDrawRadius, ini );
+	    s.VobAlphaPrepassRadius = GetPrivateProfileFloatA( "General", "VobAlphaPrepassRadius", s.VobAlphaPrepassRadius, ini );
 	    s.OutdoorVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorVobDrawRadius", s.OutdoorVobDrawRadius, ini );
         s.OutdoorSmallVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorSmallVobDrawRadius", s.OutdoorSmallVobDrawRadius, ini );
         s.IndoorVobDrawRadius = GetPrivateProfileFloatA( "General", "IndoorVobDrawRadius", s.IndoorVobDrawRadius, ini );
@@ -1192,6 +1193,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "General", "GraphicsPreset", to_string_locale_independent( (int)s.GraphicsPreset ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "VisualFXDrawRadius", to_string_locale_independent( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "VobLodDrawRadius", to_string_locale_independent( s.VobLodDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "VobAlphaPrepassRadius", to_string_locale_independent( s.VobAlphaPrepassRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorVobDrawRadius", to_string_locale_independent( s.OutdoorVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", to_string_locale_independent( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "IndoorVobDrawRadius", to_string_locale_independent( s.IndoorVobDrawRadius ).c_str(), ini.c_str() );

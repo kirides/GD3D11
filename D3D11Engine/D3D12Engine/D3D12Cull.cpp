@@ -204,6 +204,16 @@ ID3D12Resource* D3D12GraphicsEngine::GetVobDrawArgsBuffer() const {
 }
 
 
+ID3D12Resource* D3D12GraphicsEngine::GetVobInstanceBufferForDraws() const {
+    // Which per-instance stream the two main-view VOB passes bind on slot 1. Since the VOB arena removed the
+    // per-command instance VBV, this is a single per-pass choice instead: the compacted buffer CSCull wrote
+    // when culling is on, the raw upload ring otherwise. It has to agree with what BuildVobDrawCommands
+    // assumed, which is the same m_GpuVobCullActive snapshot taken once at the top of the frame.
+    if ( m_GpuVobCullActive && m_VobCulledInstances ) return m_VobCulledInstances.Get();
+    return m_VobInstanceBuffer[m_FrameIndex].Get();
+}
+
+
 void D3D12GraphicsEngine::BuildHiZ() {
     // Called right after DrawDepthPrepass (world mesh only) and before the VOB depth prepass, so the pyramid
     // contains world geometry exclusively — exactly what the VOBs must be tested against.
@@ -278,8 +288,18 @@ void D3D12GraphicsEngine::CullVobsGPU() {
             pre[n++] = TransitionBarrier( m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COPY_DEST );
             m_VobDrawArgsGpuInIndirectState = false;
         }
+        // Cull-record overflow safety net: a visual that didn't fit kMaxCullVisuals keeps VisualIndex
+        // 0xFFFFFFFF, so CSPatchArgs leaves its command alone and it draws its CPU instance count from its
+        // absolute InstanceBase. That used to be fine because the command carried its own InstVBV pointing
+        // back at the uncompacted ring — but with the VOB arena the pass binds ONE instance buffer, and with
+        // culling on that is the compacted one, which CSCull only writes for visuals that DID get a record.
+        // Seed it with the raw ring so the overflowed visuals still find their instances where their
+        // (unpatched) StartInstanceLocation says. Costs a copy of exactly what was uploaded, and only in a
+        // frame that actually overflowed — i.e. essentially never, since the cap is 16384 visuals.
+        const bool seedCulled = m_VobCullVisualOverflowed && m_VobInstanceBufferOffset > 0;
         if ( m_VobCulledInstancesInVertexState ) {
-            pre[n++] = TransitionBarrier( m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            pre[n++] = TransitionBarrier( m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                seedCulled ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
             m_VobCulledInstancesInVertexState = false;
         }
         if ( m_VobVisibleCountsInSrvState ) {
@@ -287,6 +307,15 @@ void D3D12GraphicsEngine::CullVobsGPU() {
             m_VobVisibleCountsInSrvState = false;
         }
         if ( n ) m_CmdList->ResourceBarrier( n, pre );
+
+        if ( seedCulled ) {
+            m_CmdList->CopyBufferRegion( m_VobCulledInstances.Get(), 0, m_VobInstanceBuffer[m_FrameIndex].Get(), 0,
+                m_VobInstanceBufferOffset );
+            // Back to UNORDERED_ACCESS for CSCull, which is about to overwrite the compacted prefixes.
+            D3D12_RESOURCE_BARRIER toUav = TransitionBarrier( m_VobCulledInstances.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            m_CmdList->ResourceBarrier( 1, &toUav );
+        }
     }
 
     if ( m_VobDrawCount == 0 || m_VobCullVisualCount == 0 ) return;
@@ -315,7 +344,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
         float    LodDistance;
         uint32_t Pad0;        // mirrors VobCull.hlsl's explicit float3 alignment pad
         XMFLOAT3 CamPosWS;
-        uint32_t Pad1;
+        float    AlphaPrepassDistance;
     } cb{};
     static_assert( sizeof( VobCullCB ) == 28 * sizeof( uint32_t ), "VobCullCB must match the 28 root constants in CreateCull()" );
     cb.ViewProj = viewProj;
@@ -328,6 +357,9 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     // Must be the SAME value BuildVobDrawCommands used, or a far run ends up with no command to draw it.
     cb.LodDistance = m_VobLodDistance;
     cb.CamPosWS = Engine::GAPI->GetCameraPosition();
+    // Same rule as LodDistance: must be the value BuildVobDrawCommands used, or an alpha-split visual's far
+    // run ends up bucketed by one threshold and drawn by commands built for another.
+    cb.AlphaPrepassDistance = m_VobAlphaPrepassDistance;
 
     m_CmdList->SetPipelineState( m_Pipelines.Cull.VobCullPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );

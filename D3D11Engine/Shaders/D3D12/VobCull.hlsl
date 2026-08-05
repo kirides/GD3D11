@@ -23,10 +23,16 @@ struct VobCullVisual
     uint   InstanceBase;    // first instance index into the instance buffer (ring offset / sizeof(instance))
     float3 BBoxMax;
     uint   InstanceCount;
-    // 0 = keep every instance in the near run. Commands are emitted per sub-mesh, so splitting a visual
-    // whose far bucket has no command strands those instances and they vanish from the main view.
-    uint   LodSplit;
+    // 0 = keep every instance in the near run. 1 = split at LodDistance (far run draws the simplified LOD
+    // indices). 2 = split at AlphaPrepassDistance (both runs draw the same indices; only the DEPTH PREPASS
+    // skips the far one). Commands are emitted per sub-mesh, so splitting a visual whose far bucket has no
+    // command strands those instances and they vanish from the main view — which is why the CPU only raises
+    // this once it has emitted the far commands.
+    uint   SplitMode;
 };
+#define VOB_SPLIT_NONE  0u
+#define VOB_SPLIT_LOD   1u
+#define VOB_SPLIT_ALPHA 2u
 
 // Mirrors ConstantBufferStructs.h's VobInstanceInfo (144 B) — the per-instance VERTEX stream, read here as a
 // structured buffer instead. World/PrevWorld are stored ROW-major and consumed as `mul( float4(p,1), world )`
@@ -58,7 +64,9 @@ cbuffer VobCullCB : register( b0 )
     float    LodDistance;       // @88
     uint     _cullPad0;         // @92  explicit: HLSL won't let the float3 straddle 16 B, and the C++ mirror
     float3   CullCamPosWS;      // @96  must match field-for-field (its static_assert only checks size)
-    uint     _cullPad1;         // @108 -> 112 B == 28 root constants
+    // Threshold for VOB_SPLIT_ALPHA. Scalar, so it fits the tail of CullCamPosWS's 16-byte row and the CB
+    // stays 112 B == 28 root constants.
+    float    AlphaPrepassDistance;  // @108 -> 112 B == 28 root constants
 };
 
 StructuredBuffer<VobCullVisual>    Visuals       : register( t0 );
@@ -193,7 +201,12 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 const float3 centreLocal = ( v.BBoxMin + v.BBoxMax ) * 0.5;
                 const float3 centreWorld = mul( float4( centreLocal, 1.0 ), BuildWorldMatrix( inst ) ).xyz;
                 const float  dist  = length( centreWorld - CullCamPosWS );
-                const bool   isFar = ( LodDistance > 0.0 ) && ( v.LodSplit != 0u ) && ( dist > LodDistance );
+                // Which distance this visual buckets by. The two modes are mutually exclusive per visual —
+                // the CPU never raises VOB_SPLIT_ALPHA on a visual it also LOD-split (see kSplitModeAlpha).
+                const float  splitDist = ( v.SplitMode == VOB_SPLIT_LOD )   ? LodDistance
+                                       : ( v.SplitMode == VOB_SPLIT_ALPHA ) ? AlphaPrepassDistance
+                                                                            : 0.0;
+                const bool   isFar = ( splitDist > 0.0 ) && ( dist > splitDist );
 
                 uint slot;
                 if ( isFar )
@@ -233,8 +246,9 @@ cbuffer VobPatchCB : register( b0 )
 };
 
 StructuredBuffer<uint>          PatchCounts  : register( t0 );
-// Needed only for InstanceCount: the far run is packed against the END of the visual's range, so its start
-// offset is (capacity - farCount) and cannot be derived from the counts alone.
+// Needed for InstanceBase (the visual's block in the shared instance buffer) and InstanceCount (the far run
+// is packed against the END of that block, so its start is InstanceCount - farCount and cannot be derived
+// from the survivor counts alone).
 StructuredBuffer<VobCullVisual> PatchVisuals : register( t1 );
 RWByteAddressBuffer             PatchArgs    : register( u0 );
 
@@ -254,8 +268,11 @@ void CSPatchArgs( uint3 DTid : SV_DispatchThreadID )
 
     const uint bucket = PatchArgs.Load( base + PatchLodBucketOffset );
     const uint count  = PatchCounts[visualIdx * 2u + bucket];
-    // InstVBV already points at the visual's range base, so this is a plain offset within it.
-    const uint start = ( bucket == 0u ) ? 0u : ( PatchVisuals[visualIdx].InstanceCount - count );
+    // ABSOLUTE, not range-relative. With the VOB mega-buffers there is no per-command instance VBV any more
+    // — each pass binds the whole instance buffer once — so StartInstanceLocation has to carry the visual's
+    // block base itself. Near packs forward from the base, far backward from the end of the block.
+    const VobCullVisual v = PatchVisuals[visualIdx];
+    const uint start = v.InstanceBase + ( ( bucket == 0u ) ? 0u : ( v.InstanceCount - count ) );
 
     PatchArgs.Store( base + PatchInstCountOffset, count );
     PatchArgs.Store( base + PatchStartInstOffset, start );

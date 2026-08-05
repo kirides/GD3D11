@@ -1259,7 +1259,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 	// --- Instanced VOBs: one ExecuteIndirect over the command set Phase C built for this cascade ---
 	if ( m_VobDrawCount[c] > 0 && m_CasterVobIndirectPSO && m_E->m_VobIndirectCmdSig
-		&& m_VobDrawArgs[c][frame] ) {
+		&& m_VobDrawArgs[c][frame] && m_E->m_VobArena.Ready() ) {
 		DX_ZONE( cmdList.Get(), "Vobs" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 		// Same alpha-test split as the world casters above — BuildVobDrawCommands partitioned this cascade's
@@ -1269,6 +1269,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );   // b4 frame-global wind baseline
+		// One IA bind for the cascade: the VOB mega-buffers plus the SHADOW instance ring (cascades are
+		// CPU-culled and never GPU-compacted, so this is the raw upload ring, and each command's
+		// StartInstanceLocation is the absolute element index UploadVobs handed it).
+		m_E->BindVobArenaIA( cmdList, m_E->m_ShadowVobInstanceBuffer[frame].Get(),
+			m_E->m_ShadowInstanceSliceCapacity * D3D12GraphicsEngine::kShadowInstanceRingSlots );
 		if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_VobIndirectCmdSig.Get(), m_VobDrawCount[c],
 				m_VobDrawArgs[c][frame].Get(), 0, nullptr, 0 );
