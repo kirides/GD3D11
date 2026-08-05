@@ -18,6 +18,7 @@
 #include "D3D12StateCache.h"
 #include "D3D12PipelineState.h"
 #include "D3D12ShadowMap.h"
+#include "D3D12VobArena.h"
 #include "D3D12PointShadows.h"
 
 struct RenderBucket;
@@ -46,6 +47,9 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // rather than widening the engine's public surface for them.
     friend class D3D12ShadowMap;
     friend class D3D12PointShadows;
+    // Same deal: the VOB mega-buffer arena needs the allocator + the fence-deferred cleanup to swap its
+    // buffers out from under frames that may still be reading them.
+    friend class D3D12VobArena;
 
 public:
     /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
@@ -154,7 +158,11 @@ public:
         submitted value. The caller can then issue a direct-queue transition barrier once the copy has
         completed. */
     bool UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources );
-    bool UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes );
+    bool UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
+        return UploadBufferData( dst, 0, srcData, sizeInBytes );
+    }
+    /** dstOffset variant, for filling one slice of a larger DEFAULT-heap buffer (the VOB arena). */
+    bool UploadBufferData( ID3D12Resource* dst, UINT64 dstOffset, const void* srcData, UINT64 sizeInBytes );
     bool InitCopyQueue();
     UINT64 GetCopyFenceValue() const { return m_CopyFenceValue; }
     void WaitForCopyFence( UINT64 fenceValue );
@@ -733,33 +741,58 @@ private:
     // depth-tested but never depth-writing. Also in D3D12Transparency.cpp.
     void DrawVobAlphaMeshes();
 
-    // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse. Unlike the world mesh (one
-    // shared VB/IB, so a command only carries material indices + DrawIndexed), every VOB visual/mesh has its OWN
-    // vertex/index buffer and its own per-instance stream — so each command ALSO sets the two vertex-buffer views
-    // (packed mesh @slot0, per-instance @slot1) + the index-buffer view before drawing. Diffuse goes bindless
-    // (b6.MatDiffuseIndex root const) so no per-draw descriptor table is needed. Wind min/max height (per-visual)
-    // rides as a 2-const partial write into b4 @ offset 4; the frame-global wind fields (dir/time/playerPos) are
-    // set once before the ExecuteIndirect. Built ONCE per frame (BuildVobDrawCommands) and consumed by BOTH the
-    // depth prepass and the color pass; the CSM cascades build their own per-cascade command set. Arg-member order
-    // MUST match the command signature's pArgumentDescs order below (VBV0, VBV1, IBV, b6 consts, b4 consts, draw).
-    struct VobDrawCommand {                          // 96 bytes; UINT64 members force 8-byte align, 96 % 8 == 0
-        D3D12_VERTEX_BUFFER_VIEW MeshVBV;            // @0  packed ExVertexStruct stream (slot 0)
-        D3D12_VERTEX_BUFFER_VIEW InstVBV;            // @16 per-instance VobInstanceInfo stream (slot 1)
-        D3D12_INDEX_BUFFER_VIEW  IBV;                // @32 R16_UINT sub-mesh indices
-        uint32_t MatNormalIndex;                     // @48 b6.x  (0xFFFFFFFF = no normal map)
-        uint32_t MatOrmIndex;                        // @52 b6.y  (default ORM slot when no _FX)
-        uint32_t MatDiffuseIndex;                    // @56 b6.z  bindless diffuse (alpha clip + albedo)
-        float    WindMinHeight;                      // @60 b4[4] per-visual bbox.min.y
-        float    WindMaxHeight;                      // @64 b4[5] per-visual bbox.max.y
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @68 (20 bytes)
+    // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse + the VOB mega-buffer arena.
+    //
+    // Every static VOB sub-mesh in the world lives in ONE DEFAULT-heap vertex buffer + ONE index buffer
+    // (D3D12VobArena), so a command no longer carries any buffer views at all: the mesh reduces to
+    // BaseVertexLocation/StartIndexLocation inside the shared pair, and the per-instance stream is a single
+    // buffer every visual already offsets into, so StartInstanceLocation covers it. Each pass therefore binds
+    // the IA exactly once and every command is pure state-free payload — which is the point: it is the
+    // presence of VBV/IBV arguments in a command signature that costs, not how many there are, and 560
+    // per-command IA rebinds were the dominant cost of the four VOB passes. See D3D12VobArena.h.
+    //
+    // Diffuse goes bindless (b6.MatDiffuseIndex root const) so no per-draw descriptor table is needed. Wind
+    // min/max height (per-visual) rides as a 2-const partial write into b4 @ offset 4; the frame-global wind
+    // fields (dir/time/playerPos) are set once before the ExecuteIndirect. Built ONCE per frame
+    // (BuildVobDrawCommands) and consumed by BOTH the depth prepass and the color pass; the CSM cascades and
+    // the rain shadowmap build their own command sets over the same arena. Arg-member order MUST match the
+    // command signature's pArgumentDescs order (b6 consts, b4 consts, draw).
+    struct VobDrawCommand {                          // 48 bytes; all members 4-byte, no GPUVA alignment to keep
+        uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
+        uint32_t MatOrmIndex;                        // @4  b6.y  (default ORM slot when no _FX)
+        uint32_t MatDiffuseIndex;                    // @8  b6.z  bindless diffuse (alpha clip + albedo)
+        float    WindMinHeight;                      // @12 b4[4] per-visual bbox.min.y
+        float    WindMaxHeight;                      // @16 b4[5] per-visual bbox.max.y
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @20 (20 bytes) — ends the indirect arguments at @40
         // --- Past the end of the command signature's arguments. ExecuteIndirect reads the args packed from
         // offset 0 and only requires ByteStride to COVER them, so trailing fields are free per-command payload
         // for our own compute passes. VisualIndex tells CSPatchArgs which per-visual surviving-instance count
         // to write into Draw.InstanceCount; 0xFFFFFFFF = "leave the CPU's count alone" (not GPU-culled).
-        uint32_t VisualIndex;                        // @88
+        uint32_t VisualIndex;                        // @40
         // Which of the visual's two compacted instance runs this command draws; CSPatchArgs picks the
-        // matching count + StartInstanceLocation from it. Doubles as the stride's 8-byte alignment pad.
-        uint32_t LodBucket;                          // @92
+        // matching count + StartInstanceLocation from it.
+        uint32_t LodBucket;                          // @44
+    };
+
+    // The pre-arena command shape, kept for the ONE consumer that cannot use the arena: node attachments
+    // (weapons/heads/held items). Their geometry comes from the SharedVisualRegistry rather than the world's
+    // static VOB set, arrives and leaves with NPCs, and amounts to a few dozen commands a frame — nothing the
+    // arena would pay for. They keep their own signature (m_VobBoundIndirectCmdSig) with the two VBVs + IBV
+    // inline, and go through World.RootSig exactly as before. VSMainAttach/VSDepthAttach never read the b4
+    // wind min/max the signature also writes (the instance stream's wind fields carry Fatness/Scaling here),
+    // so those two floats go out as 0.
+    struct VobBoundDrawCommand {                     // 96 bytes; UINT64 members force 8-byte align, 96 % 8 == 0
+        D3D12_VERTEX_BUFFER_VIEW MeshVBV;            // @0  packed ExVertexStruct stream (slot 0)
+        D3D12_VERTEX_BUFFER_VIEW InstVBV;            // @16 per-instance VobInstanceInfo stream (slot 1)
+        D3D12_INDEX_BUFFER_VIEW  IBV;                // @32 R16_UINT sub-mesh indices
+        uint32_t MatNormalIndex;                     // @48 b6.x
+        uint32_t MatOrmIndex;                        // @52 b6.y
+        uint32_t MatDiffuseIndex;                    // @56 b6.z
+        float    WindMinHeight;                      // @60 b4[4]
+        float    WindMaxHeight;                      // @64 b4[5]
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @68 (20 bytes)
+        uint32_t VisualIndex;                        // @88 always 0xFFFFFFFF here — attachments are never GPU-culled
+        uint32_t LodBucket;                          // @92 pad / always kLodBucketNear
     };
     static constexpr uint32_t kLodBucketNear = 0;
     static constexpr uint32_t kLodBucketFar  = 1;
@@ -768,12 +801,51 @@ private:
     // bump would multiply across 3 cascades x kBackBufferCount rings and cost real 32-bit address space.
     static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
     static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobIndirectCmdSig;   // VBVx2 + IBV + b6(3) + b4[4..5](2) + DrawIndexed
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + DrawIndexed
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobBoundIndirectCmdSig;   // + VBVx2 + IBV (node attachments)
+    // Every static VOB sub-mesh in one DEFAULT-heap VB/IB pair — see D3D12VobArena.h. Filled from OnAddVob
+    // (which fires per vob during world load, so the world is resident before the first frame) and flushed
+    // once per frame at the top of UploadFrameVobInstances.
+    D3D12VobArena m_VobArena;
+    // Re-uploads the arena ranges of animated static VOBs (.MMS morph meshes) from their own vertex buffers.
+    // Runs right after DispatchMorphFold, which is what produces this frame's deformed vertices.
+    void RefreshDynamicVobArena();
+    /** The one IA bind every instanced-VOB ExecuteIndirect needs: the mega-buffers on slot 0 / the index
+        stream, and `instances` (the per-instance VobInstanceInfo stream this pass draws from — the raw
+        upload ring for the shadow/rain passes, the GPU-compacted buffer for a culled main view) on slot 1.
+        Returns false when the arena holds nothing, in which case the caller must not submit: its commands
+        would index a buffer that doesn't exist. */
+    bool BindVobArenaIA( D3D12CmdList& cmdList, ID3D12Resource* instances, UINT instanceBytes );
     Microsoft::WRL::ComPtr<ID3D12Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
     UINT m_VobOpaqueDrawCount = 0;                    // alpha-test partition of the above — see m_WorldOpaqueDrawCount
+    // How many of the alpha-tested commands (the run starting at m_VobOpaqueDrawCount) the DEPTH PREPASS
+    // should submit. Equal to the whole alpha run unless the kSplitModeAlpha split is on, in which case the
+    // alpha run is ordered [near][far] and this is the length of the near part. The COLOR pass always draws
+    // all of them.
+    UINT m_VobAlphaNearDrawCount = 0;
+
+public:
+    /** Last frame's VOB submission shape, for the ImGui stats panel. The VOB passes are the frame's
+        dominant GPU cost and the three plausible causes - too many COMMANDS, too many INSTANCES, too many
+        TRIANGLES - are indistinguishable from a Tracy GPU zone alone, so publish all three plus whether the
+        features that would reduce each are actually engaged. */
+    struct VobFrameStats {
+        UINT Commands;        // total ExecuteIndirect commands in the main-view set
+        UINT OpaqueCommands;  // leading no-cutout run
+        UINT AlphaNearCommands;   // of the alpha-tested tail, how many the depth prepass submits
+        UINT CullVisuals;     // VobCullVisual records written (== visuals with instances this frame)
+        UINT Instances;       // total instances uploaded across all visuals (pre-GPU-cull)
+        UINT SplitNone;       // visuals per SplitMode - if these are all in SplitNone, neither the LOD
+        UINT SplitLod;        // nor the alpha slider can possibly be doing anything
+        UINT SplitAlpha;
+        bool GpuCullActive;   // both split features are inert when this is false
+    };
+    const VobFrameStats& GetVobFrameStats() const { return m_VobStats; }
+private:
+    VobFrameStats m_VobStats = {};
     unsigned int m_VobDrawnTriangles = 0;            // triangles in this frame's main-view VOB command set (stats)
     bool m_VobDrawArgsOverflowLogged = false;
     // The shadow-caster variant of this pipeline (VSDepth + PSShadowClipBindless) and the per-cascade arg rings
@@ -806,9 +878,12 @@ private:
     // build always partitions — opaque materials first, alpha-tested ones after — so the depth prepass can
     // submit the prefix through a PS-less PSO. Callers that don't split (the color pass, the shadow cascades)
     // just pass nullptr and draw the whole range. See m_WorldOpaqueDrawCount.
+    // outAlphaNearCount (optional, main-view build only): length of the NEAR part of the alpha-tested run,
+    // for the depth prepass' kSplitModeAlpha trim. Always the whole alpha run when the split is inactive.
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
         UINT maxCommands, bool culled = false, bool cacheIn = true,
-        int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr );
+        int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr,
+        UINT* outAlphaNearCount = nullptr );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
     // Possible because neither Skeletal.RootSig nor the attachment PSOs bind a t0 descriptor table any more,
@@ -883,19 +958,37 @@ private:
         UINT              InstanceBase;
         DirectX::XMFLOAT3 BBoxMax;
         UINT              InstanceCount;
-        // 1 = every drawn sub-mesh emitted a far command, so CSCull may split by distance. Written by
-        // BuildVobDrawCommands, not here - only the command build knows. See VobCull.hlsl for the failure.
-        UINT              LodSplit;
+        // Which distance CSCull buckets this visual's instances by - see kSplitMode* below. Written by
+        // BuildVobDrawCommands, not here: only the command build knows whether the far bucket actually has
+        // commands to draw it, and splitting without them strands those instances (see VobCull.hlsl).
+        UINT              SplitMode;
     };
+    // No split: every surviving instance lands in the near run.
+    static constexpr UINT kSplitModeNone  = 0;
+    // Split at m_VobLodDistance: the far run draws the simplified LOD index buffer. Requires EVERY drawn
+    // sub-mesh of the visual to have emitted a far command.
+    static constexpr UINT kSplitModeLod   = 1;
+    // Split at m_VobAlphaPrepassDistance: both runs draw the SAME (full) indices, but the depth prepass
+    // submits only the near one. For visuals carrying alpha-tested materials, whose cutout pixel shader is
+    // what makes the prepass expensive. Mutually exclusive with kSplitModeLod by construction - a visual
+    // with any alpha-tested sub-mesh can never satisfy the "all sub-meshes have a far command" LOD rule,
+    // because alpha-tested materials are excluded from the LOD buffer.
+    static constexpr UINT kSplitModeAlpha = 2;
     static constexpr UINT kMaxCullVisuals = 16384;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferMax];   // persistently-mapped UPLOAD
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCullVisualsAlloc[kBackBufferMax];
     uint8_t* m_VobCullVisualsPtr[kBackBufferMax] = {};
     UINT m_VobCullVisualCount = 0;                  // records written this frame
     bool m_VobCullVisualOverflowLogged = false;
+    // THIS frame's overflow (the ...Logged flag above is sticky for the session). CullVobsGPU seeds the
+    // compacted instance buffer from the raw ring when it is set — see the note there.
+    bool m_VobCullVisualOverflowed = false;
     // Resolved ONCE per frame: BuildVobDrawCommands and CSCull must see the same value or a bucket is
     // left with no command to draw it. 0 = off.
     float m_VobLodDistance = 0.0f;
+    // Ditto, for the alpha-tested prepass split (kSplitModeAlpha). 0 = off, which is the default: the
+    // useful threshold has to come from a capture, not a guess.
+    float m_VobAlphaPrepassDistance = 0.0f;
     // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
     // frame N+1's cull writes — no per-frame-in-flight copies needed (and none of the 32-bit VA cost).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout
@@ -920,6 +1013,7 @@ private:
     // The buffer both VOB passes ExecuteIndirect from: the GPU-patched DEFAULT copy when culling, else the
     // per-frame CPU-written UPLOAD ring.
     ID3D12Resource* GetVobDrawArgsBuffer() const;
+    ID3D12Resource* GetVobInstanceBufferForDraws() const;
 
     // ---- GPU morph fold (D3D12MorphFold.cpp + MorphGpu.h + Shaders/D3D12/MorphFold.hlsl) ----
     // Morph attachments (NPC heads, bow/crossbow draw meshes) fold their blend shapes in a compute pass that

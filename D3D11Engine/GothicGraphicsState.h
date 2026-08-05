@@ -727,6 +727,8 @@ struct GothicRendererSettings {
         // Past readable-silhouette range, but well inside OutdoorVobDrawRadius so it covers most of the
         // visible VOB population.
         VobLodDrawRadius = 8000.0f;
+        // Off until a capture says otherwise — see the field comment.
+        VobAlphaPrepassRadius = 0.0f;
 
 #if BUILD_SPACER_NET
         VisualFXDrawRadius = 16000.0f;
@@ -1127,6 +1129,13 @@ struct GothicRendererSettings {
     // Distance past which an instanced VOB draws its reduced index buffer (D3D12 main view; cascades pick
     // LOD by cascade index). 0 = off. Bucketed per INSTANCE in CSCull - Gothic reuses visuals map-wide.
     float VobLodDrawRadius;
+    // D3D12 + GPU VOB culling only. Alpha-tested VOB instances further than this from the camera are left
+    // OUT of the depth prepass (they still draw, lit, in the color pass). Cutout materials are what make the
+    // VOB prepass expensive - their clip pixel shader runs over the full silhouette - and a distant one
+    // re-shades in the lit pass anyway, so paying for it twice buys only the tiled light cull's near-plane
+    // bound. Safe because the lit passes use GREATER_EQUAL + full depth write, never EQUAL.
+    // 0 = off, and that is the default deliberately: the useful threshold has to come from a capture.
+    float VobAlphaPrepassRadius;
     float SmallVobSize;
     float WorldShadowRangeScale;
     int NumShadowCascades;
