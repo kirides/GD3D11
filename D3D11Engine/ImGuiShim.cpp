@@ -1477,8 +1477,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
         ImGui::SliderFloat( "VobLodDrawRadius", &settings.VobLodDrawRadius, 0.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SetItemTooltip( "D3D12 only. Distance past which static VOBs switch to their reduced\n"
-            "progressive-mesh LOD. 0 disables it. Requires GPU VOB culling, which\n"
-            "produces the per-instance near/far split this draws from." );
+            "progressive-mesh LOD. 0 disables it. Works with GPU VOB culling either way:\n"
+            "the per-instance near/far split comes from the cull compute shader when that\n"
+            "is on, and from the CPU instance upload when it is off." );
 
         ImGui::SliderFloat( "VobAlphaPrepassRadius", &settings.VobAlphaPrepassRadius, 0.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SetItemTooltip( "D3D12 only. Alpha-tested (cutout) VOB instances further away than this are\n"
