@@ -43,6 +43,8 @@ struct GothicMemoryLocations {
     struct CGameManager {
         static const unsigned int ExitGame = 0x004899E0;
         static const unsigned int RunLoopSysEventCallSite = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeCheck = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeSkip = 0x0;
     };
 
     struct zCOption {

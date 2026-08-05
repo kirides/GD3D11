@@ -110,6 +110,14 @@ struct GothicMemoryLocations {
         // Gothic2.exe). Patched to wrap frame pacing around the whole iteration instead
         // of nesting it inside Render(). See CGameManager.h.
         static const unsigned int RunLoopSysEventCallSite = 0x00425e35;
+
+        // CGameManager::ApplySomeSettings(), "Textur-Detail" block: `CMP ECX,EDI` +
+        // `JZ ApplySettingsTexMaxSizeSkip` (8 bytes), where ECX is
+        // zoptions->ReadInt(VIDEO, "zTexMaxSize", -1) and EDI the size ZENGIN derived from
+        // the texDetailIndex slider. Taking the branch skips zCTexture::RefreshTexMaxSize +
+        // zresMan->PurgeCaches(zCTexture). Verified via Ghidra against Gothic2.exe.
+        static const unsigned int ApplySettingsTexMaxSizeCheck = 0x00428a60;
+        static const unsigned int ApplySettingsTexMaxSizeSkip = 0x00428d03;
     };
 
     struct zCOption {

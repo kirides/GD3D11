@@ -31,6 +31,11 @@ struct GothicMemoryLocations {
         // without BUILD_1_12F - the 1.12f binary hasn't been checked, so this patch is
         // skipped there (see CGameManager.h::Hook()).
         static const unsigned int RunLoopSysEventCallSite = 0x00424f50;
+
+        // Not located in this binary yet - the texture-detail refresh/purge in
+        // CGameManager::ApplySomeSettings() stays vanilla here (see CGameManager.h).
+        static const unsigned int ApplySettingsTexMaxSizeCheck = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeSkip = 0x0;
     };
 
     struct zCParser {
