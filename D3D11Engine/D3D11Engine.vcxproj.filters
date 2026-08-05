@@ -932,6 +932,7 @@
     <ClInclude Include="HorizonCuller.h" />
     <ClInclude Include="MorphBlend.h" />
     <ClInclude Include="SharedVisualRegistry.h" />
+    <ClInclude Include="MorphGpu.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1336,6 +1337,9 @@
     <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
     <ClCompile Include="MorphBlend.cpp" />
     <ClCompile Include="SharedVisualRegistry.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12MorphFold.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
+    <ClCompile Include="MorphGpu.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
