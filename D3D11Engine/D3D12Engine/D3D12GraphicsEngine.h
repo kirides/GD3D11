@@ -110,10 +110,18 @@ public:
         `noTextures` is accepted for interface parity but currently always effectively true. */
     XRESULT DrawWorldMesh( bool noTextures = false ) override;
 
-    /** Fills the sky/background with Gothic's atmosphere (fog) color. Forward-renderer MVP: a color
-        clear at the start of the world pass; distance fog in the geometry shaders fades into the same
-        color so the horizon dissolves seamlessly. No sky dome/scattering yet. */
+    /** Fog-color fill + Gothic's atmosphere solve (RenderSky). Runs at the top of the world pass, before
+        the shadow prepare and the depth prepass, because RenderSkyIBL and the wetness/fog constants read
+        what it computes. Sets m_SkyGeometryPending for DrawSky. */
+    XRESULT PrepareSky();
+
+    /** The sky's actual geometry (atmosphere dome or Gothic's fixed-function RenderSkyPre), submitted AFTER
+        the opaque depth prepass so the far-plane-pinned sky is depth-rejected behind geometry instead of
+        shading 2.6 screens' worth of fragments that get painted over. See the body for the ordering rules. */
     XRESULT DrawSky() override;
+
+    /** Set by PrepareSky: false indoors (zCSkyControler_Indoor draws nothing) or on a closed frame. */
+    bool m_SkyGeometryPending = false;
 
     BaseLineRenderer* GetLineRenderer() override;
 

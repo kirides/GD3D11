@@ -51,6 +51,13 @@ struct RndCullContext {
         horizon is rasterized for the player's view, so a shadow cascade must not test against it. */
     const class HorizonCuller* horizon = nullptr;
 
+    /** Drop static VOBs whose BaseVisualInfo::MeshSize (bounding-box diagonal) is below this, in world
+        units. 0 = keep everything, which is what every main-view pass wants. Set only by the shadow
+        cascades, which derive it from their own world-units-per-texel: a prop that resolves to under a
+        couple of texels in a coarse cascade costs its full vertex + raster work for a smudge. Rejecting
+        it here rather than at draw time also skips its instance upload and indirect command. */
+    float minVobSize = 0.0f;
+
     struct
     {
         float OutdoorVobs;

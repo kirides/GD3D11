@@ -981,6 +981,9 @@ struct GothicRendererSettings {
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
         DebugSettings.ShadowCascades.ShadowDepthSlopeBias = 0.0f;
         DebugSettings.ShadowCascades.FirstLodCascade = -1; // auto
+        // Deliberately conservative: at 2 texels only props that resolve to a smudge get dropped. Raise it
+        // against a capture - this is the one lever left on VOB casters dominating the shadow pass.
+        DebugSettings.ShadowCascades.CasterMinTexels = 2.0f;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1311,6 +1314,13 @@ struct GothicRendererSettings {
             // Cascades below SHADOW_LOD_FIRST_CASCADE are biased tighter than the deviation an edge
             // collapse introduces, so they self-shadow the full-detail surface black - see WorldConverter.h.
             int FirstLodCascade;
+            // Drop a VOB caster from a cascade when its bounding-box diagonal covers fewer than this many
+            // texels OF THAT CASCADE. The far cascades stretch one texel over a lot of world, so props that
+            // resolve to a pixel or two of shadow there still cost their full vertex + raster work; this is
+            // the lever on VOB casters dominating the shadow pass. Scaled per cascade by
+            // D3D12ShadowMap::m_CascadeTexelWorld, so the near cascade (fine texels) drops almost nothing and
+            // only the coarse far ones prune hard. 0 disables it entirely.
+            float CasterMinTexels;
         } ShadowCascades;
         struct {
             bool CullVobs;
