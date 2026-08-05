@@ -183,6 +183,10 @@ struct GothicMemoryLocations {
         //static const unsigned int BroadcastEnd = 0x0044CB3C;
     };
 
+    struct zCPathSearch {
+        static const unsigned int CorrectPosForNearClip = 0x0;
+    };
+
     struct zCCamera {
         static const unsigned int GetTransform = 0x0054D440;
         static const unsigned int SetTransform = 0x0054D2E0;
@@ -295,6 +299,8 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_Lightmap = 0x1C;
 
         static const unsigned int GetLightStatAtPos = 0x005B3950;
+        static const unsigned int CheckRayPolyIntersection = 0x005B40A0;
+        static const unsigned int CheckRayPolyIntersection2Sided = 0x005B4460;
         static const unsigned int AllocVerts = 0x005B59A0;
         static const unsigned int CalcNormal = 0x005B24D0;
 
@@ -453,6 +459,8 @@ struct GothicMemoryLocations {
 
     struct CGameManager {
         static const unsigned int RunLoopSysEventCallSite = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeCheck = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeSkip = 0x0;
     };
 
     struct zCResource {

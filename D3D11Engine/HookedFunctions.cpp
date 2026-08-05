@@ -2,6 +2,8 @@
 #include "HookedFunctions.h"
 
 #include "zCBspTree.h"
+#include "zCPolygon.h"
+#include "zCPathSearch.h"
 #include "zCWorld.h"
 #include "oCGame.h"
 #include "zCMaterial.h"
@@ -54,6 +56,8 @@ void HookedFunctionInfo::InitHooks() {
     zCWorld::Hook();
     zCMaterial::Hook();
     zCBspNode::Hook();
+    zCPolygon::Hook();
+    zCPathSearch::Hook();
     zFILE::Hook();
     zCOption::Hook();
     zCRndD3D::Hook();

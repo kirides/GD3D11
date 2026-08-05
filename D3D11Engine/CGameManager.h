@@ -73,12 +73,51 @@ public:
         // DetourAttachTyped( &original_CGameManagerWrite_Savegame, hooked_Write_Savegame  );
 
         HookRunLoopFramePacing();
+        DisableApplySettingsTexMaxSizeRefresh();
 #elif defined(BUILD_GOTHIC_1_CLASSIC)
         // BUILD_1_12F (the cancelled sequel G1 build) isn't patched here yet: the call-site
         // address hasn't been verified against that binary. D3D11GraphicsEngine falls
         // back to pacing from OnBeginFrame/OnEndFrame in that case.
         HookRunLoopFramePacing();
+        DisableApplySettingsTexMaxSizeRefresh();
 #endif
+    }
+
+    /** Kills the "Textur-Detail" block of CGameManager::ApplySomeSettings().
+
+        Vanilla derives a texture size from the texDetailIndex slider (32/64/128/256/512/16384
+        - nothing in between), compares it against the zTexMaxSize option and, on any mismatch,
+        does zCTexture::RefreshTexMaxSize() + zresMan->PurgeCaches(zCTexture) - throwing away
+        every cached texture. Our zCOption::ReadInt hook forces zTexMaxSize to the renderer's
+        own textureMaxSize, so the two sides can never agree for a size ZENGIN cannot express
+        (1024, 2048, ...) and every menu close purges the whole texture cache. zCOption.h's
+        texDetailIndex ReadReal hack exists only to paper over that.
+
+        Texture quality is ours now (settings window -> GothicAPI::UpdateTextureMaxSize, which
+        refreshes and purges when the size actually changes), so the vanilla path has nothing
+        left to do: we make its "nothing changed" branch unconditional. Patching the `CMP
+        ECX,EDI` / `JZ skip` pair (8 bytes) with `JMP skip` + 3 NOPs jumps straight past the
+        refresh, the purge and the zERR_MESSAGE that follow it.
+
+        Stage two - should ZENGIN's slider ever need to drive texture quality again - is to put
+        a naked trampoline here instead that compares zCTexture's live max size against
+        RendererSettings.textureMaxSize and re-joins at ApplySettingsTexMaxSizeCheck + 8. */
+    static void DisableApplySettingsTexMaxSizeRefresh() {
+        const unsigned int checkAddr = GothicMemoryLocations::CGameManager::ApplySettingsTexMaxSizeCheck;
+        const unsigned int skipAddr = GothicMemoryLocations::CGameManager::ApplySettingsTexMaxSizeSkip;
+        if ( !checkAddr || !skipAddr )
+            return; // Not located in this binary - leave the vanilla behavior alone.
+
+        // CMP ECX,EDI ; JZ rel32 - bail out rather than corrupt code if this isn't the build we mapped.
+        static const unsigned char expected[] = { 0x3B, 0xCF, 0x0F, 0x84 };
+        if ( memcmp( reinterpret_cast<const void*>(checkAddr), expected, sizeof( expected ) ) != 0 ) {
+            LogWarn() << "CGameManager::ApplySomeSettings texture-detail check not found at "
+                << std::hex << checkAddr << " - texture cache will still be purged when closing the menu";
+            return;
+        }
+
+        PatchJMP( checkAddr, skipAddr );
+        PatchAddr( checkAddr + 5, "\x90\x90\x90" );
     }
 
     static void HookRunLoopFramePacing() {

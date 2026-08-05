@@ -31,6 +31,11 @@ struct GothicMemoryLocations {
         // without BUILD_1_12F - the 1.12f binary hasn't been checked, so this patch is
         // skipped there (see CGameManager.h::Hook()).
         static const unsigned int RunLoopSysEventCallSite = 0x00424f50;
+
+        // Not located in this binary yet - the texture-detail refresh/purge in
+        // CGameManager::ApplySomeSettings() stays vanilla here (see CGameManager.h).
+        static const unsigned int ApplySettingsTexMaxSizeCheck = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeSkip = 0x0;
     };
 
     struct zCParser {
@@ -222,6 +227,11 @@ struct GothicMemoryLocations {
         //static const unsigned int BroadcastEnd = 0x0044CB3C;
     };
 
+    struct zCPathSearch {
+        // Not located in this binary yet - stays vanilla here (see zCPathSearch.h).
+        static const unsigned int CorrectPosForNearClip = 0x0;
+    };
+
     struct zCCamera {
         static const unsigned int GetTransform = 0x00536460;
         static const unsigned int SetTransform = 0x00536300;
@@ -352,6 +362,8 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_Lightmap = 0x1C;
 
         static const unsigned int GetLightStatAtPos = 0x00597950;
+        static const unsigned int CheckRayPolyIntersection = 0x00598060;
+        static const unsigned int CheckRayPolyIntersection2Sided = 0x005983F0;
         static const unsigned int AllocVerts = 0x00599840;
         static const unsigned int CalcNormal = 0x00596540;
 

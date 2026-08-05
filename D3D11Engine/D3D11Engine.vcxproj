@@ -1148,6 +1148,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zCOption.h" />
     <ClInclude Include="zCParser.h" />
     <ClInclude Include="zCParticleFX.h" />
+    <ClInclude Include="zCPathSearch.h" />
     <ClInclude Include="zCPolygon.h" />
     <ClInclude Include="zCPolyStrip.h" />
     <ClInclude Include="zCProgMeshProto.h" />

@@ -43,6 +43,8 @@ struct GothicMemoryLocations {
     struct CGameManager {
         static const unsigned int ExitGame = 0x004899E0;
         static const unsigned int RunLoopSysEventCallSite = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeCheck = 0x0;
+        static const unsigned int ApplySettingsTexMaxSizeSkip = 0x0;
     };
 
     struct zCOption {
@@ -293,6 +295,10 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_NumActiveAnis = 0x34;
         static const unsigned int GetVisualName = 0x00709240;
         static const unsigned int Offset_AniChannels = 0x38;
+    };
+
+    struct zCPathSearch {
+        static const unsigned int CorrectPosForNearClip = 0x0;
     };
 
     struct zCCamera {

@@ -52,6 +52,9 @@ typedef int( __fastcall* zCBspBaseCollectPolysInBBox3D )(void*, const zTBBox3D&,
 
 typedef int( __fastcall* zCBspBaseCheckRayAgainstPolys )(void*, const XMFLOAT3&, const XMFLOAT3&, XMFLOAT3&);
 
+/** __fastcall member: this in ECX, rayOrigin in EDX, the rest on the stack */
+typedef int( __fastcall* zCPolygonCheckRayPolyIntersection )(zCPolygon*, const XMFLOAT3&, const XMFLOAT3&, XMFLOAT3&, float&);
+
 typedef int( __thiscall* zFILEOpen )(void*, zSTRING&, bool);
 typedef void( __thiscall* zCRnd_D3D_DrawPoly )(void*, zCPolygon*);
 typedef void( __thiscall* zCRnd_D3D_DrawPolySimple )(void*, zCTexture*, void*, int);
@@ -209,6 +212,11 @@ struct HookedFunctionInfo {
     oCWorldRemoveFromLists original_oCWorldRemoveFromLists = reinterpret_cast<oCWorldRemoveFromLists>(GothicMemoryLocations::oCWorld::RemoveFromLists);
     zCVobEndMovement original_zCVobEndMovement = reinterpret_cast<zCVobEndMovement>(GothicMemoryLocations::zCVob::EndMovement);
     GenericThiscall original_zCBspNodeRender = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCBspTree::Render); // Not usable - only for hooking
+#ifndef BUILD_SPACER
+    // Fully replaced, never called through - only here so Detours has something to attach to
+    zCPolygonCheckRayPolyIntersection original_zCPolygonCheckRayPolyIntersection = reinterpret_cast<zCPolygonCheckRayPolyIntersection>(GothicMemoryLocations::zCPolygon::CheckRayPolyIntersection);
+    zCPolygonCheckRayPolyIntersection original_zCPolygonCheckRayPolyIntersection2Sided = reinterpret_cast<zCPolygonCheckRayPolyIntersection>(GothicMemoryLocations::zCPolygon::CheckRayPolyIntersection2Sided);
+#endif
 #ifdef BUILD_GOTHIC_1_08k
     zCBspBaseCollectPolysInBBox3D original_zCBspBaseCollectPolysInBBox3D = reinterpret_cast<zCBspBaseCollectPolysInBBox3D>(GothicMemoryLocations::zCBspBase::CollectPolysInBBox3D);
     zCBspBaseCheckRayAgainstPolys original_zCBspBaseCheckRayAgainstPolys = reinterpret_cast<zCBspBaseCheckRayAgainstPolys>(GothicMemoryLocations::zCBspBase::CheckRayAgainstPolys);
