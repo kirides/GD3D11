@@ -2513,18 +2513,25 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
 
     // See LoadzCModelData(zCModel*) above for why this runs on a worker thread.
     mi->Ready = false;
-    PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
-        if ( token.stop_requested() ) {
-            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
-            // it would read from may already be gone, so don't touch it.
+    if ( false /* TODO: the zCMesh can become corrupted on the worker thread when same frame load/unload/load */ ) {
+        PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
+            if ( token.stop_requested() ) {
+                // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
+                // it would read from may already be gone, so don't touch it.
+                mi->Ready.store( true );
+                return;
+            }
+            mi->ClearMeshes();
+            WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+            mi->Visual = model;
             mi->Ready.store( true );
-            return;
-        }
+        } );
+    } else {
         mi->ClearMeshes();
         WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
         mi->Visual = model;
         mi->Ready.store( true );
-    } );
+    }
     return mi;
 }
 
