@@ -4891,8 +4891,8 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
 }
 
 static void CVVH_AddNotDrawnVobToList(
+        FXMVECTOR distSq,
         std::vector<VobInfo*>& source,
-        float distSq,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
         BspTreeVobVisitor* visitor,
@@ -4908,13 +4908,13 @@ static void CVVH_AddNotDrawnVobToList(
         // Reject on distance FIRST: LastRenderPosition is already in the VobInfo cache line, while
         // Visit() is an atomic RMW and GetShowVisual() dereferences into Gothic's own heap. Doing
         // those first meant paying them for every candidate, including ones about to be dropped.
-        float vdSq;
-        XMStoreFloat( &vdSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
-        if ( vdSq > distSq ) continue;
+        XMVECTOR vvdSq = XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) );
+        if ( XMVector3Greater( vvdSq, distSq )) continue;
 
         if ( !visitor->Visit( it ) ) continue;
-
-        if ( !it->Vob->GetShowVisual() ) continue;
+        
+        const auto vobFlags = it->Vob->GetFlags();
+        if ( !zCVob::FlagGetShowVisual(vobFlags) ) continue;
 
         // LastRenderBBox rather than Vob->GetBBox(): same value, but it lives in VobInfo instead of
         // Gothic's heap, so the reject path stays off a second allocation entirely.
@@ -4928,8 +4928,8 @@ static void CVVH_AddNotDrawnVobToList(
             if ( !ctx.portalCuller->IsBoxVisibleInLeafSectors( *portalLeaf, bb.Min, bb.Max ) )
                 continue;
         }
-        if ( it->Vob->GetVisualAlpha() ) {
-            ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
+        if ( zCVob::FlagGetVisualAlpha(vobFlags) ) {
+            ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( XMVectorGetX( vvdSq ) ), it->Vob->GetVobTransparency(), nullptr, it } );
             continue;
         }
 
@@ -6710,17 +6710,20 @@ static void CollectLeafVobs(
             // Portal culling: a room the camera cannot see into through any chain of portals has
             // none of its VOBs collected at all. Leafs outside every sector pass through untouched.
             if ( !ctx.portalCuller || ctx.portalCuller->IsLeafVisible( *base ) ) {
-                CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor,
+                const auto distSq = XMVectorReplicate( vobIndoorDistSq );
+                CVVH_AddNotDrawnVobToList( distSq, listA, ctx, clipResult, visitor,
                     ctx.portalCuller ? base : nullptr );
             }
         }
 
         if ( leafDistSq < vobOutdoorSmallDistSq ) {
-            CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDistSq, ctx, clipResult, visitor );
+            const auto distSq = XMVectorReplicate( vobOutdoorSmallDistSq );
+            CVVH_AddNotDrawnVobToList( distSq, listB, ctx, clipResult, visitor );
         }
 
         if ( leafDistSq < vobOutdoorDistSq ) {
-            CVVH_AddNotDrawnVobToList( listC, vobOutdoorDistSq, ctx, clipResult, visitor );
+            const auto distSq = XMVectorReplicate( vobOutdoorDistSq );
+            CVVH_AddNotDrawnVobToList( distSq, listC, ctx, clipResult, visitor );
         }
     }
 

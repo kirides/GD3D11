@@ -295,6 +295,19 @@ public:
     }
 #endif
 
+    unsigned int GetFlags() const {
+        unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
+        return flags;
+    }
+
+    static bool FlagGetShowVisual( const unsigned int flags ) {
+        return (flags & GothicMemoryLocations::zCVob::MASK_ShowVisual) != 0;
+    }
+
+    static bool FlagGetVisualAlpha( const unsigned int flags ) {
+        return (flags & GothicMemoryLocations::zCVob::MASK_VisualAlpha) != 0;
+    }
+
     /** Returns whether to show the main visual or not. Only used for the spacer */
     bool GetShowMainVisual() const {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
