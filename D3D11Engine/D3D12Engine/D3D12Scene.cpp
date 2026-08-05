@@ -2334,7 +2334,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// matching StoreVobPreviousTransforms at the bottom of this function rolls it into history. See D3D12Motion.cpp.
 	UploadMotionConstants();
 
-	DrawSky();
+	// Sky: fog fill + Gothic's atmosphere solve now, geometry later (after the depth prepass, right before the
+	// lit passes) so opaque depth rejects the sky fragments behind geometry. See PrepareSky/DrawSky.
+	PrepareSky();
 	// The other two shadow passes resolve their Gothic-side state here, on the main thread, WITHOUT recording any
 	// draws: the point-light shadow cubes (P2.10 — each selected light's 6 faces into the shared cube array) and
 	// the rain shadowmap (world-mesh + instanced-VOB depth along the rain-velocity direction, so DrawRainParticles'
@@ -2459,6 +2461,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// everything recorded from here on — the lit passes below are the first thing this frame that samples the
 	// cascade map / point-shadow cubes. Also re-establishes the scene-color RT + depth for them.
 	FinishShadowPasses();
+	// Sky geometry, now that the depth prepass has something for it to be rejected against. Placed after
+	// FinishShadowPasses because that is what re-establishes the scene-color RT + depth on the reopened list -
+	// the fixed-function path draws through MyDirect3DDevice7 and inherits whatever OM state is bound.
+	DrawSky();
     {
         DX_ZONE( m_CmdList.Get(), "Lit Geometry Pass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Lit Geometry Pass" );
@@ -2625,10 +2631,15 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 }
 
 
-XRESULT D3D12GraphicsEngine::DrawSky() {
+XRESULT D3D12GraphicsEngine::PrepareSky() {
+	// The half of the sky that is NOT geometry: the fog-color fill and Gothic's atmosphere solve. Kept at the
+	// original DrawSky slot (before the shadow prepare / depth prepass) because several later passes read what
+	// RenderSky() computes — RenderSkyIBL takes its sun direction from it, and the wetness/fog constants are
+	// derived from the same state. Only the sky's DRAWS moved; see DrawSky.
+	m_SkyGeometryPending = false;
 	if ( !m_FrameOpen ) return XR_SUCCESS;
-	DX_ZONE( m_CmdList.Get(), "Draw sky" );
-	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw sky" );
+	DX_ZONE( m_CmdList.Get(), "Prepare sky" );
+	TracyD3D12ZoneCGX( m_CmdList.Get(), "Prepare sky" );
 
 	// Base fallback fill: Gothic's current sky/fog color (see GetSceneFogColorXM — tracks time of day when
 	// AtmosphericScattering is off, matching D3D11's own background-clear formula). Runs first so a gap in
@@ -2650,7 +2661,26 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	// The clear above already turned black via GetSceneFogColorXM; drawing the atmosphere dome or handing
 	// off to the outdoor controller's RenderSkyPre would paint daylight over it. RenderSky() still ran, so
 	// the atmosphere constants other passes read stay current.
-	if ( Engine::GAPI->IsIndoorWorld() ) return XR_SUCCESS;
+	m_SkyGeometryPending = !Engine::GAPI->IsIndoorWorld();
+	return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::DrawSky() {
+	// The sky's GEOMETRY, deliberately submitted AFTER the opaque depth prepass rather than before it.
+	//
+	// The sky is pinned to the reversed-Z far plane (FORCE_MAX_Z / the dome's own depth) and tests
+	// GREATER_EQUAL with depth writes off, so once the prepass has laid down opaque depth every sky fragment
+	// behind geometry fails the test at the depth unit and never reaches the pixel shader. Drawn first — as it
+	// was — the depth buffer still held nothing but the frame's 0.0 clear, so every one of those fragments
+	// shaded and was then painted over: a measured 5.4 M PS invocations at 2.6x overdraw with nothing to
+	// reject against.
+	//
+	// Nothing between the two positions reads scene color (the prepass has its color write mask off, the light
+	// cull / SSAO / IBL read depth-normals and their own targets), so the fill in PrepareSky still lands before
+	// the first real color write, which is the lit geometry pass right after this.
+	if ( !m_FrameOpen || !m_SkyGeometryPending ) return XR_SUCCESS;
+	DX_ZONE( m_CmdList.Get(), "Draw sky" );
+	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw sky" );
 
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
 

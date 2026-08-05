@@ -1871,6 +1871,15 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                                       "self-shadow black (facades darkening as the camera tilts up).\n"
                                       "A value >= the cascade count (%d) disables shadow LOD.",
                                       SHADOW_LOD_FIRST_CASCADE, settings.NumShadowCascades);
+
+                ImGui::SliderFloat( "Caster min texels", &settings.DebugSettings.ShadowCascades.CasterMinTexels,
+                    0.0f, 16.0f, "%.1f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+                ImGui::SetItemTooltip("Drop a VOB caster from a cascade when its bounding-box diagonal covers\n"
+                                      "fewer than this many texels OF THAT CASCADE (D3D12 only). Scaled per\n"
+                                      "cascade by its own world-units-per-texel, so the near cascade drops\n"
+                                      "almost nothing and only the coarse far ones prune hard. Raising this is\n"
+                                      "the main lever on VOB casters dominating the shadow pass; too high and\n"
+                                      "small props visibly stop casting. 0 = off.");
                 ImGui::EndTabItem();
             }
 

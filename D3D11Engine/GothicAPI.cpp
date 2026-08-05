@@ -5013,6 +5013,7 @@ static void CVVH_AddNotDrawnVobToList(
     // (see CollectVisibleVobsWithLeafCache), so the whole branch collapses to a constant here.
     const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
     const HorizonCuller* horizon = ctx.horizon;
+    const float minVobSize = ctx.minVobSize;
 
     for ( const LeafVobEntry& entry : source ) {
         // Reject on distance FIRST, and out of the list element's OWN mirrored position: every
@@ -5024,6 +5025,11 @@ static void CVVH_AddNotDrawnVobToList(
 
         VobInfo* it = entry.Info;
         if ( !visitor->Visit( it ) ) continue;
+
+        // Caster size gate (shadow cascades only; minVobSize is 0 for every main-view pass). Placed right
+        // after Visit rather than before it: MeshSize is leaf-independent like the distance, but reading it
+        // costs two pointer hops, so it is worth paying once per vob per pass instead of once per leaf.
+        if ( minVobSize > 0.0f && it->VisualInfo && it->VisualInfo->MeshSize < minVobSize ) continue;
 
         const zTVobFlags vobFlags = it->Vob->GetFlags();
         if ( !vobFlags.ShowVisual ) continue;
@@ -5892,6 +5898,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "SkyIblNightFloor", to_string_locale_independent( s.SkyIblNightFloor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "FirstLodCascade", to_string_locale_independent( s.DebugSettings.ShadowCascades.FirstLodCascade ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "CasterMinTexels", to_string_locale_independent( s.DebugSettings.ShadowCascades.CasterMinTexels ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
 
@@ -6052,6 +6059,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SkyIblNightFloor = GetPrivateProfileFloatA( "Shadows", "SkyIblNightFloor", ds.SkyIblNightFloor, ini );
         s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias = GetPrivateProfileFloatA( "Shadows", "ShadowDepthSlopeBias", ds.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, ini );
         s.DebugSettings.ShadowCascades.FirstLodCascade = std::clamp( GetPrivateProfileSignedIntA( "Shadows", "FirstLodCascade", ds.DebugSettings.ShadowCascades.FirstLodCascade, ini ), -1, MAX_CSM_CASCADES );
+        s.DebugSettings.ShadowCascades.CasterMinTexels = std::clamp( GetPrivateProfileFloatA( "Shadows", "CasterMinTexels", ds.DebugSettings.ShadowCascades.CasterMinTexels, ini ), 0.0f, 32.0f );
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
         s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
 

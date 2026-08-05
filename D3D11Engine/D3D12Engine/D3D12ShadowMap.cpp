@@ -1121,6 +1121,18 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
     ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
 	ctx.drawDistancesSq.VisualFX = 0.0f;
 
+	// Caster size gate, in world units, derived from THIS cascade's texel footprint (m_CascadeTexelWorld[c],
+	// filled by Prepare above — cascadeSize / m_MapSize). A prop whose bbox diagonal spans fewer than
+	// CasterMinTexels texels can only ever produce a smudge in this slice, but it costs a full instance
+	// upload, an indirect command and its whole vertex + raster load. Scaling by the cascade's own texel size
+	// is what makes one setting safe across all three: the near cascade has fine texels so almost nothing
+	// trips the gate there, while the far one — which sweeps up the entire VOB population — prunes hard.
+	// MeshSize is the bbox DIAGONAL, so this over-estimates the on-screen footprint and keeps more than
+	// strictly necessary.
+	ctx.minVobSize = ( rs.DebugSettings.ShadowCascades.CasterMinTexels > 0.0f && c < kShadowCascades )
+		? m_CascadeTexelWorld[c] * rs.DebugSettings.ShadowCascades.CasterMinTexels
+		: 0.0f;
+
 	ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
 	ctx.drawFlags.DrawMobs = rs.DrawMobs;
 	ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
