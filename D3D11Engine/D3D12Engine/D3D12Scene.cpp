@@ -2292,10 +2292,6 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// which is exactly the configuration that also wants the CPU frustum cull rather than the compute one.
 	m_VobLodDistance = Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f
 		? Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius : 0.0f;
-	// Same one-shot snapshot, same reason, for the alpha-tested prepass split (kSplitModeAlpha).
-	m_VobAlphaPrepassDistance = ( m_GpuVobCullActive
-		&& Engine::GAPI->GetRendererState().RendererSettings.VobAlphaPrepassRadius > 0.0f )
-		? Engine::GAPI->GetRendererState().RendererSettings.VobAlphaPrepassRadius : 0.0f;
 
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
 	// Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
@@ -2394,17 +2390,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// vertex/index binds happen once/frame instead of per-pass, and neither pass issues per-mesh CPU draw calls).
 	if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs && m_VobDrawArgsPtr[m_FrameIndex] ) {
 		m_VobDrawCount = BuildVobDrawCommands( g_FrameVobUploads, m_VobDrawArgsPtr[m_FrameIndex], true,
-			kMaxVobDrawCommands, m_GpuVobCullActive, true, kVobIndicesMainView, &m_VobOpaqueDrawCount,
-			&m_VobAlphaNearDrawCount );
+			kMaxVobDrawCommands, m_GpuVobCullActive, true, kVobIndicesMainView, &m_VobOpaqueDrawCount );
 	} else {
 		m_VobDrawCount = 0;
 		m_VobOpaqueDrawCount = 0;
-		m_VobAlphaNearDrawCount = 0;
 	}
 	// Publish this frame's VOB submission shape for the ImGui stats panel — see VobFrameStats.
 	m_VobStats.Commands = m_VobDrawCount;
 	m_VobStats.OpaqueCommands = m_VobOpaqueDrawCount;
-	m_VobStats.AlphaNearCommands = m_VobAlphaNearDrawCount;
 	m_VobStats.CullVisuals = m_VobCullVisualCount;
 	m_VobStats.GpuCullActive = m_GpuVobCullActive;
 	{
@@ -3304,14 +3297,13 @@ int D3D12GraphicsEngine::GetFirstLodShadowCascade() {
 }
 
 UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
-    UINT maxCommands, bool culled, bool cacheIn, int shadowCascade, UINT* outOpaqueCount, UINT* outAlphaNearCount ) {
+    UINT maxCommands, bool culled, bool cacheIn, int shadowCascade, UINT* outOpaqueCount ) {
     // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
     // indices (diffuse always; normal/ORM only when resolveMaps — the depth/shadow passes just alpha-clip on
     // diffuse), pack the mesh + instance VB views + IB view, the per-visual wind min/max, and DrawIndexedInstanced.
     // Same CacheIn/From resolution the per-draw path did — but done ONCE per built buffer instead of per pass.
     if ( !argPtr ) {
         if ( outOpaqueCount ) *outOpaqueCount = 0;
-        if ( outAlphaNearCount ) *outAlphaNearCount = 0;
         return 0;
     }
     VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( argPtr );
@@ -3319,27 +3311,16 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     // Alpha-test partition staging — see the identical block in BuildWorldDrawCommands for why the tail is
     // staged in normal RAM instead of compacted inside the write-combined UPLOAD ring. thread_local, not
     // static: the shadow cascades call this concurrently on the worker pool (cacheIn=false).
-    //
-    // Two staged runs, not one: the alpha-tested partition is itself ordered [near][far] so the depth prepass
-    // can submit just the near prefix (kSplitModeAlpha). With the split off, alphaFarCmds stays empty and the
-    // layout is byte-identical to what a single list produced.
-    thread_local std::vector<VobDrawCommand> alphaCmds;      // near run (or the whole run when not split)
-    thread_local std::vector<VobDrawCommand> alphaFarCmds;   // far run, drawn by the color pass only
+    thread_local std::vector<VobDrawCommand> alphaCmds;
     alphaCmds.clear();
-    alphaFarCmds.clear();
-    // Appends the staged alpha-tested runs behind the opaque one and reports the partition points. Both exits
+    // Appends the staged alpha-tested run behind the opaque one and reports the partition point. Both exits
     // below (ring overflow and normal completion) go through this, or an overflowing frame would silently
     // drop every alpha-tested draw instead of just the ones past the cap.
     auto finish = [&]() -> UINT {
         if ( outOpaqueCount ) *outOpaqueCount = count;
-        if ( outAlphaNearCount ) *outAlphaNearCount = static_cast<UINT>( alphaCmds.size() );
         if ( !alphaCmds.empty() ) {
             std::memcpy( cmds + count, alphaCmds.data(), alphaCmds.size() * sizeof( VobDrawCommand ) );
             count += static_cast<UINT>( alphaCmds.size() );
-        }
-        if ( !alphaFarCmds.empty() ) {
-            std::memcpy( cmds + count, alphaFarCmds.data(), alphaFarCmds.size() * sizeof( VobDrawCommand ) );
-            count += static_cast<UINT>( alphaFarCmds.size() );
         }
         return count;
         };
@@ -3362,20 +3343,12 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     if ( resolveMaps ) {
         m_VobStats.SplitNone = 0;
         m_VobStats.SplitLod = 0;
-        m_VobStats.SplitAlpha = 0;
     }
 
     // Records are still CPU-writable here and CullVobsGPU has not run, and this is the only place that
     // knows which sub-meshes actually emitted a far command. Main-view build only.
     VobCullVisual* cullRecords = ( culled && resolveMaps && m_VobCullVisualsPtr[m_FrameIndex] )
         ? reinterpret_cast<VobCullVisual*>( m_VobCullVisualsPtr[m_FrameIndex] ) : nullptr;
-
-    // Alpha-tested prepass split (kSplitModeAlpha): main-view, GPU-culled builds only, exactly like the LOD
-    // split it shares the bucket machinery with. Gated on cullRecords as well - without a record to raise
-    // SplitMode on, CSCull would leave every instance in the near run while the far commands sat emitted
-    // and unpatched.
-    const bool alphaSplitEnabled = ( shadowCascade == kVobIndicesMainView ) && culled && resolveMaps
-        && cullRecords != nullptr && m_VobAlphaPrepassDistance > 0.0f;
 
     // CPU-side geometry LOD: the uploads already carry a near/far partition of each visual's instance block
     // (UploadFrameVobInstances), so the far command's instance count and start are known HERE and get baked
@@ -3406,7 +3379,6 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         const float minH = visual->BBox.Min.y;
         const float maxH = visual->BBox.Max.y;
         staged.clear();
-        bool visualHasAlphaTested = false;
 
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
             zCTexture* tex = meshKey.Material->GetAniTexture();
@@ -3541,34 +3513,26 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     s.LodIndexCount = range->LodCount;
                 }
                 staged.push_back( s );
-                visualHasAlphaTested |= alphaTested;
             }
         }
 
         // ---- Flush this visual ----------------------------------------------------------------------
         // Everything below needs the WHOLE visual resolved, which is why it could not happen inline.
-        //
-        // The two split modes are mutually exclusive, and this is where that is enforced rather than
-        // hoped for: an alpha-split visual has its LOD suppressed on every sub-mesh, so a mixed visual's
-        // opaque sub-mesh can never leave a stale far *LOD* command for CSPatchArgs to then populate from
-        // the ALPHA distance.
-        const bool alphaSplit = alphaSplitEnabled && visualHasAlphaTested;
 
         // Split only if EVERY drawn sub-mesh has a far counterpart; a visual that drew nothing is not
         // splittable at all.
         bool visualAllHaveLod = true;
         size_t cmdsNeeded = 0;
         for ( const StagedSubMesh& s : staged ) {
-            const bool lod = s.LodEligible && !alphaSplit;
-            if ( !lod ) visualAllHaveLod = false;
-            cmdsNeeded += ( lod || alphaSplit ) ? 2u : 1u;
+            if ( !s.LodEligible ) visualAllHaveLod = false;
+            cmdsNeeded += s.LodEligible ? 2u : 1u;
         }
 
         // Checked per VISUAL now rather than per sub-mesh: a split pair cut in half would drop every far
         // instance of the visual, since CSCull still buckets them away from the near run. Dropping the
         // whole visual instead of part of one is also the tidier failure.
         if ( !staged.empty()
-            && count + alphaCmds.size() + alphaFarCmds.size() + cmdsNeeded > maxCommands ) {
+            && count + alphaCmds.size() + cmdsNeeded > maxCommands ) {
             if ( !m_VobDrawArgsOverflowLogged ) {
                 LogWarn() << "D3D12: VOB draw-command ring overflow (" << maxCommands
                     << " draws/frame); some VOBs dropped this frame.";
@@ -3596,26 +3560,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             if ( resolveMaps )
                 m_VobDrawnTriangles += ( s.Cmd.Draw.IndexCountPerInstance / 3 ) * up.numInstances;
 
-            // Far bucket. Counts and StartInstanceLocation are patched by CSPatchArgs - the split happens
-            // on the GPU, so the CPU cannot know either. InstanceCount starts at 0 so an unpatched command
-            // draws nothing rather than every instance a second time.
-            if ( alphaSplit ) {
-                // Alpha-prepass split: the far bucket draws the SAME indices as the near one - nothing
-                // about the geometry changes, only WHICH PASS submits it. The near command is drawn by both
-                // the depth prepass and the color pass; this one only by the color pass, which is the whole
-                // point (a distant cutout re-shades in the lit pass anyway, so paying for it a second time
-                // in the prepass buys nothing but the tile near-plane bound).
-                // Emitted for opaque sub-meshes too: CSCull buckets the visual's WHOLE instance range, so
-                // an opaque sub-mesh with only a near command would lose every far instance from BOTH
-                // passes - a tree trunk vanishing past the threshold while its leaves stayed. Opaque far
-                // commands stay in the opaque partition (the prepass draws that run whole); alpha-tested
-                // ones go to the tail the prepass trims.
-                VobDrawCommand f = s.Cmd;
-                f.LodBucket = kLodBucketFar;
-                f.Draw.InstanceCount = 0;
-                if ( s.AlphaTested ) alphaFarCmds.push_back( f );
-                else                 cmds[count++] = f;
-            } else if ( s.LodEligible && ( !cpuLodSplit || cpuSplit ) ) {
+            // Far bucket.
+            if ( s.LodEligible && ( !cpuLodSplit || cpuSplit ) ) {
                 // LOD split: same sub-mesh, reduced indices, over the far run — packed backward from the
                 // end of this visual's range by CSCull on the GPU path, forward-adjacent to the near run by
                 // UploadFrameVobInstances on the CPU one. LOD-eligible implies !AlphaTested, so this always
@@ -3639,22 +3585,17 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
 
         // Publish for CSCull. Visuals with no record (cull-record overflow) render uncompacted anyway.
         if ( cullRecords && up.cullVisualIndex != 0xFFFFFFFFu && up.cullVisualIndex < kMaxCullVisuals ) {
-            const UINT mode = staged.empty()      ? kSplitModeNone
-                            : visualAllHaveLod    ? kSplitModeLod
-                            : alphaSplit          ? kSplitModeAlpha
-                                                  : kSplitModeNone;
+            const UINT mode = ( !staged.empty() && visualAllHaveLod ) ? kSplitModeLod : kSplitModeNone;
             cullRecords[up.cullVisualIndex].SplitMode = mode;
             if ( resolveMaps ) {
-                // Stats only: if these come back as "everything in SplitNone", neither the LOD slider nor
-                // the alpha slider can be having any effect, whatever they are set to.
-                if ( mode == kSplitModeLod )        m_VobStats.SplitLod++;
-                else if ( mode == kSplitModeAlpha ) m_VobStats.SplitAlpha++;
-                else                                m_VobStats.SplitNone++;
+                // Stats only: if these come back as "everything in SplitNone", the LOD slider cannot be
+                // having any effect, whatever it is set to.
+                if ( mode == kSplitModeLod ) m_VobStats.SplitLod++;
+                else                         m_VobStats.SplitNone++;
             }
         } else if ( resolveMaps && cpuLodSplit ) {
             // Same histogram for the CPU path, so the panel does not read as "no split is happening" just
-            // because there are no cull records to hang it off. Only kSplitModeLod is reachable here — the
-            // alpha-prepass split still needs CSCull.
+            // because there are no cull records to hang it off.
             if ( cpuSplit ) m_VobStats.SplitLod++;
             else            m_VobStats.SplitNone++;
         }
@@ -4564,13 +4505,11 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     if ( m_VobOpaqueDrawCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobOpaqueDrawCount, drawArgs, 0, nullptr, 0 );
     }
-    // Alpha-tested run: only its NEAR part (kSplitModeAlpha). Equal to the whole run when the split is off,
-    // so this is the original submit unless the feature is switched on. Safe to draw less: the lit passes are
-    // GREATER_EQUAL with DEPTH_WRITE_MASK_ALL — never EQUAL — so geometry missing from the prepass still
-    // renders correctly, it just writes its own depth and forfeits the overdraw + tile-near-plane benefit.
-    // That trade is exactly the point: a distant cutout re-shades in the lit pass regardless, and its cutout
-    // pixel shader is what makes this pass expensive.
-    const UINT alphaCount = std::min( m_VobAlphaNearDrawCount, m_VobDrawCount - m_VobOpaqueDrawCount );
+    // The alpha-tested run, whole. A distance trim used to live here (only the near part of the run went
+    // into the prepass, on the theory that a distant cutout re-shades in the lit pass anyway). It is gone:
+    // leaving alpha-tested surfaces out of the prepass lets grass and other later geometry draw ON TOP of
+    // them, which is a plainly visible artifact, and it never paid for itself.
+    const UINT alphaCount = m_VobDrawCount - m_VobOpaqueDrawCount;
     if ( alphaCount > 0 ) {
         m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), alphaCount, drawArgs,
