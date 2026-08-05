@@ -2131,10 +2131,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// mid-frame would mix culled and unculled state. See D3D12Cull.cpp.
 	m_GpuVobCullActive = EvaluateGpuVobCulling();
 
-	// Snapshotted ONCE: BuildVobDrawCommands and CSCull must agree on it, and the ImGui slider moving
-	// between them would strand a bucket with no command. Needs GPU culling - CSCull produces the split.
-	m_VobLodDistance = ( m_GpuVobCullActive
-		&& Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f )
+	// Snapshotted ONCE: the instance partition and the command build must agree on it, and the ImGui slider
+	// moving between them would strand a bucket with no command to draw it.
+	//
+	// NOT gated on GPU culling. The near/far bucketing is produced by CSCull when the GPU cull is on and by
+	// UploadFrameVobInstances' own distance partition when it is off — so the geometry LOD is available on
+	// either path. That matters for the machine this feature is actually for: a weak GPU behind a strong CPU,
+	// which is exactly the configuration that also wants the CPU frustum cull rather than the compute one.
+	m_VobLodDistance = Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f
 		? Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius : 0.0f;
 	// Same one-shot snapshot, same reason, for the alpha-tested prepass split (kSplitModeAlpha).
 	m_VobAlphaPrepassDistance = ( m_GpuVobCullActive
@@ -3215,6 +3219,12 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     const bool alphaSplitEnabled = ( shadowCascade == kVobIndicesMainView ) && culled && resolveMaps
         && cullRecords != nullptr && m_VobAlphaPrepassDistance > 0.0f;
 
+    // CPU-side geometry LOD: the uploads already carry a near/far partition of each visual's instance block
+    // (UploadFrameVobInstances), so the far command's instance count and start are known HERE and get baked
+    // straight into the argument buffer — no cull records, no CSPatchArgs, no compute at all. Mutually
+    // exclusive with the GPU path by construction: `culled` picks which of the two produced the buckets.
+    const bool cpuLodSplit = ( shadowCascade == kVobIndicesMainView ) && !culled && m_VobLodDistance > 0.0f;
+
     // Per-visual command staging. The alpha split is a per-VISUAL decision (CSCull buckets a visual's whole
     // instance range one way) but `alphaTested` is only known per sub-mesh, and only AFTER that sub-mesh's
     // material has been through CacheIn - zCTexture::HasAlphaChannel() reads a flag byte that is not
@@ -3323,7 +3333,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 // Whether this sub-mesh can offer a reduced far level to the main view. No longer gated on
                 // the visual's split mode - that is decided at flush time below, and suppressing LOD there
                 // keeps the two modes from ever both applying.
-                const bool lodEligible = ( shadowCascade == kVobIndicesMainView ) && culled
+                const bool lodEligible = ( shadowCascade == kVobIndicesMainView ) && ( culled || cpuLodSplit )
                     && m_VobLodDistance > 0.0f && !alphaTested && range->LodCount > 0;
 
                 // Pick this command's index range. A missing level just falls through to the next-best one,
@@ -3409,11 +3419,22 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             return finish();
         }
 
+        // CPU LOD split, resolved here for the same reason the GPU one is: only now is it known that EVERY
+        // drawn sub-mesh has a far counterpart. If one doesn't, the whole visual falls back to a single
+        // command per sub-mesh covering the WHOLE instance block — which still draws every instance
+        // correctly, because the near and far runs the upload produced are adjacent and contiguous.
+        const bool cpuSplit = cpuLodSplit && visualAllHaveLod && !staged.empty()
+            && up.nearInstances < up.numInstances;
+        const UINT cpuNearCount = cpuSplit ? up.nearInstances : up.numInstances;
+        const UINT cpuFarCount  = cpuSplit ? ( up.numInstances - up.nearInstances ) : 0;
+
         for ( const StagedSubMesh& s : staged ) {
             // Partition by alpha cutout (see m_WorldOpaqueDrawCount): opaque first, alpha-tested appended
             // by finish().
-            if ( s.AlphaTested ) alphaCmds.push_back( s.Cmd );
-            else                 cmds[count++] = s.Cmd;
+            VobDrawCommand n = s.Cmd;
+            if ( cpuLodSplit ) n.Draw.InstanceCount = cpuNearCount;
+            if ( s.AlphaTested ) alphaCmds.push_back( n );
+            else                 cmds[count++] = n;
             if ( resolveMaps )
                 m_VobDrawnTriangles += ( s.Cmd.Draw.IndexCountPerInstance / 3 ) * up.numInstances;
 
@@ -3436,15 +3457,24 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 f.Draw.InstanceCount = 0;
                 if ( s.AlphaTested ) alphaFarCmds.push_back( f );
                 else                 cmds[count++] = f;
-            } else if ( s.LodEligible ) {
-                // LOD split: same sub-mesh, reduced indices, over the run CSCull packed backward from the
-                // end of this visual's range. LOD-eligible implies !AlphaTested, so this always belongs in
-                // the opaque partition.
+            } else if ( s.LodEligible && ( !cpuLodSplit || cpuSplit ) ) {
+                // LOD split: same sub-mesh, reduced indices, over the far run — packed backward from the
+                // end of this visual's range by CSCull on the GPU path, forward-adjacent to the near run by
+                // UploadFrameVobInstances on the CPU one. LOD-eligible implies !AlphaTested, so this always
+                // belongs in the opaque partition.
                 VobDrawCommand f = s.Cmd;
                 f.LodBucket = kLodBucketFar;
                 f.Draw.StartIndexLocation = s.LodStart;
                 f.Draw.IndexCountPerInstance = s.LodIndexCount;
-                f.Draw.InstanceCount = 0;
+                if ( cpuSplit ) {
+                    // Final: nothing patches this command, so both halves of the run are named outright.
+                    f.Draw.InstanceCount = cpuFarCount;
+                    f.Draw.StartInstanceLocation = up.instanceBase + cpuNearCount;
+                } else {
+                    // GPU path: CSPatchArgs fills in both. 0 so an unpatched command draws nothing rather
+                    // than every instance a second time.
+                    f.Draw.InstanceCount = 0;
+                }
                 cmds[count++] = f;   // not counted in m_VobDrawnTriangles: the near command already
             }                        // counted every instance, keeping that stat a pre-cull upper bound
         }
@@ -3463,6 +3493,12 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 else if ( mode == kSplitModeAlpha ) m_VobStats.SplitAlpha++;
                 else                                m_VobStats.SplitNone++;
             }
+        } else if ( resolveMaps && cpuLodSplit ) {
+            // Same histogram for the CPU path, so the panel does not read as "no split is happening" just
+            // because there are no cull records to hang it off. Only kSplitModeLod is reachable here — the
+            // alpha-prepass split still needs CSCull.
+            if ( cpuSplit ) m_VobStats.SplitLod++;
+            else            m_VobStats.SplitNone++;
         }
     }
     return finish();
@@ -4110,6 +4146,7 @@ bool D3D12GraphicsEngine::UploadVobs(
         up.culledInstView = up.instView;
         up.numInstances = numInstances;
         up.instanceBase = instOffset / kInstStride;   // exact: sliceBase and every block are stride multiples
+        up.nearInstances = numInstances;              // shadow casters are never LOD-split by distance-to-camera
         up.cullVisualIndex = 0xFFFFFFFFu;
         uploads.push_back( up );
     }
@@ -4166,6 +4203,16 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
     if ( m_GpuVobCullActive && ( !m_VobCullVisualsPtr[m_FrameIndex] || !m_VobCulledInstances ) )
         m_GpuVobCullActive = false;
 
+    // CPU-side geometry-LOD split. With the GPU cull on, CSCull does the near/far bucketing; with it off
+    // nothing else would, so partition each visual's instance block by distance right here, as we copy it
+    // into the ring. Same decision CSCull makes, same math (see IsInstanceVisible / the note there on why
+    // the bbox CENTRE and not the vob origin), just done on the thread that is already touching every
+    // instance. The cost is one distance per instance on a list the CPU frustum cull has already thinned.
+    const bool cpuLodSplit = !m_GpuVobCullActive && m_VobLodDistance > 0.0f;
+    const float lodDistSq = m_VobLodDistance * m_VobLodDistance;
+    XMFLOAT3 camPos;
+    XMStoreFloat3( &camPos, Engine::GAPI->GetCameraPositionXM() );
+
     m_VobCullVisualCount = 0;
     m_VobCullVisualOverflowed = false;
     VobCullVisual* cullRecords = m_GpuVobCullActive
@@ -4194,7 +4241,36 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         }
 
         const UINT instOffset = m_VobInstanceBufferOffset;
-        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+        UINT nearInstances = numInstances;
+        if ( !cpuLodSplit ) {
+            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+        } else {
+            // Partition in one pass: near packs forward from the start of the block, far backward from its
+            // end. Every instance lands in exactly one run and none are dropped here (the CPU frustum cull
+            // already ran), so the two runs are adjacent and the far one begins at exactly nearInstances —
+            // which is what lets a single StartInstanceLocation address it. Packing far backward reverses
+            // its order; nothing downstream cares (opaque, depth-tested, one draw).
+            VobInstanceInfo* dst = reinterpret_cast<VobInstanceInfo*>( m_VobInstanceBufferPtr[frame] + instOffset );
+            const float cx = ( visual->BBox.Min.x + visual->BBox.Max.x ) * 0.5f;
+            const float cy = ( visual->BBox.Min.y + visual->BBox.Max.y ) * 0.5f;
+            const float cz = ( visual->BBox.Min.z + visual->BBox.Max.z ) * 0.5f;
+            UINT nearCursor = 0;
+            UINT farCursor = numInstances;
+            for ( const VobInstanceInfo& inst : visual->Instances ) {
+                // The instance matrix is uploaded row-major and read COLUMN-major by the shaders, so the
+                // stored XMFLOAT4X4 is the transpose of the matrix HLSL multiplies with. Written out
+                // component-wise rather than through XMMatrixTranspose so it is visibly the same
+                // expression VobCull.hlsl evaluates: mul( float4(centre,1), world ).
+                const XMFLOAT4X4& w = inst.world;
+                const float wx = cx * w.m[0][0] + cy * w.m[0][1] + cz * w.m[0][2] + w.m[0][3] - camPos.x;
+                const float wy = cx * w.m[1][0] + cy * w.m[1][1] + cz * w.m[1][2] + w.m[1][3] - camPos.y;
+                const float wz = cx * w.m[2][0] + cy * w.m[2][1] + cz * w.m[2][2] + w.m[2][3] - camPos.z;
+                // Squared compare — the threshold is a plain distance, so no sqrt is needed.
+                if ( wx * wx + wy * wy + wz * wz > lodDistSq ) dst[--farCursor] = inst;
+                else                                          dst[nearCursor++] = inst;
+            }
+            nearInstances = nearCursor;
+        }
         m_VobInstanceBufferOffset += instBytes;
 
         FrameVobUpload up;
@@ -4203,6 +4279,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         up.culledInstView = up.instView;
         up.numInstances = numInstances;
         up.instanceBase = instOffset / kInstStride;   // exact — the ring offset was just stride-aligned above
+        up.nearInstances = nearInstances;
         up.cullVisualIndex = 0xFFFFFFFFu;
 
         if ( cullRecords ) {

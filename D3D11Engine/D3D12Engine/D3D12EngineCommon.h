@@ -42,6 +42,12 @@ struct FrameVobUpload {
     D3D12_VERTEX_BUFFER_VIEW culledInstView;
     UINT numInstances;
     UINT instanceBase;
+    // Length of the leading NEAR run inside this visual's instance block, for the CPU-side geometry-LOD
+    // split (UploadFrameVobInstances partitions the block by distance while it copies). The far run is the
+    // remainder and is contiguous with it, so it starts at instanceBase + nearInstances. Equal to
+    // numInstances whenever no CPU split applies — including every shadow/rain upload and every GPU-culled
+    // frame, where CSCull does the bucketing instead and CSPatchArgs writes the counts.
+    UINT nearInstances;
     uint32_t cullVisualIndex;
 };
 
