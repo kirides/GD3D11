@@ -821,11 +821,6 @@ private:
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
     UINT m_VobOpaqueDrawCount = 0;                    // alpha-test partition of the above — see m_WorldOpaqueDrawCount
-    // How many of the alpha-tested commands (the run starting at m_VobOpaqueDrawCount) the DEPTH PREPASS
-    // should submit. Equal to the whole alpha run unless the kSplitModeAlpha split is on, in which case the
-    // alpha run is ordered [near][far] and this is the length of the near part. The COLOR pass always draws
-    // all of them.
-    UINT m_VobAlphaNearDrawCount = 0;
 
 public:
     /** Last frame's VOB submission shape, for the ImGui stats panel. The VOB passes are the frame's
@@ -835,13 +830,11 @@ public:
     struct VobFrameStats {
         UINT Commands;        // total ExecuteIndirect commands in the main-view set
         UINT OpaqueCommands;  // leading no-cutout run
-        UINT AlphaNearCommands;   // of the alpha-tested tail, how many the depth prepass submits
         UINT CullVisuals;     // VobCullVisual records written (== visuals with instances this frame)
         UINT Instances;       // total instances uploaded across all visuals (pre-GPU-cull)
-        UINT SplitNone;       // visuals per SplitMode - if these are all in SplitNone, neither the LOD
-        UINT SplitLod;        // nor the alpha slider can possibly be doing anything
-        UINT SplitAlpha;
-        bool GpuCullActive;   // both split features are inert when this is false
+        UINT SplitNone;       // visuals per SplitMode - if these are all in SplitNone, the LOD slider
+        UINT SplitLod;        // cannot be doing anything, whatever it is set to
+        bool GpuCullActive;   // which of the two paths produced the split (compute vs the CPU upload)
     };
     const VobFrameStats& GetVobFrameStats() const { return m_VobStats; }
 private:
@@ -878,12 +871,9 @@ private:
     // build always partitions — opaque materials first, alpha-tested ones after — so the depth prepass can
     // submit the prefix through a PS-less PSO. Callers that don't split (the color pass, the shadow cascades)
     // just pass nullptr and draw the whole range. See m_WorldOpaqueDrawCount.
-    // outAlphaNearCount (optional, main-view build only): length of the NEAR part of the alpha-tested run,
-    // for the depth prepass' kSplitModeAlpha trim. Always the whole alpha run when the split is inactive.
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
         UINT maxCommands, bool culled = false, bool cacheIn = true,
-        int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr,
-        UINT* outAlphaNearCount = nullptr );
+        int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
     // Possible because neither Skeletal.RootSig nor the attachment PSOs bind a t0 descriptor table any more,
@@ -968,12 +958,6 @@ private:
     // Split at m_VobLodDistance: the far run draws the simplified LOD index buffer. Requires EVERY drawn
     // sub-mesh of the visual to have emitted a far command.
     static constexpr UINT kSplitModeLod   = 1;
-    // Split at m_VobAlphaPrepassDistance: both runs draw the SAME (full) indices, but the depth prepass
-    // submits only the near one. For visuals carrying alpha-tested materials, whose cutout pixel shader is
-    // what makes the prepass expensive. Mutually exclusive with kSplitModeLod by construction - a visual
-    // with any alpha-tested sub-mesh can never satisfy the "all sub-meshes have a far command" LOD rule,
-    // because alpha-tested materials are excluded from the LOD buffer.
-    static constexpr UINT kSplitModeAlpha = 2;
     static constexpr UINT kMaxCullVisuals = 16384;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferMax];   // persistently-mapped UPLOAD
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCullVisualsAlloc[kBackBufferMax];
@@ -986,9 +970,6 @@ private:
     // Resolved ONCE per frame: BuildVobDrawCommands and CSCull must see the same value or a bucket is
     // left with no command to draw it. 0 = off.
     float m_VobLodDistance = 0.0f;
-    // Ditto, for the alpha-tested prepass split (kSplitModeAlpha). 0 = off, which is the default: the
-    // useful threshold has to come from a capture, not a guess.
-    float m_VobAlphaPrepassDistance = 0.0f;
     // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
     // frame N+1's cull writes — no per-frame-in-flight copies needed (and none of the 32-bit VA cost).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout

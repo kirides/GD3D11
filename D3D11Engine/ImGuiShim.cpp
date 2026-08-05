@@ -1481,15 +1481,6 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "the per-instance near/far split comes from the cull compute shader when that\n"
             "is on, and from the CPU instance upload when it is off." );
 
-        ImGui::SliderFloat( "VobAlphaPrepassRadius", &settings.VobAlphaPrepassRadius, 0.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
-        ImGui::SetItemTooltip( "D3D12 only. Alpha-tested (cutout) VOB instances further away than this are\n"
-            "left OUT of the depth prepass - they still draw, lit, in the color pass.\n"
-            "Their clip pixel shader over the full silhouette is what makes the VOB\n"
-            "prepass expensive, and a distant one re-shades in the lit pass anyway.\n"
-            "Cost of lowering it: slightly looser tiled-light-cull near planes and more\n"
-            "lit-pass overdraw behind foliage. No effect while TAA/motion vectors are on\n"
-            "(the G-buffer prepass needs every pixel). 0 disables it. Requires GPU VOB culling." );
-
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
@@ -2119,11 +2110,10 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::Text( vs.GpuCullActive ? "on" : "OFF (splits inert)" );
                 addRowUInt( "VOB Commands", vs.Commands );
                 addRowUInt( "VOB Cmd opaque", vs.OpaqueCommands );
-                addRowUInt( "VOB Cmd alphaNear", vs.AlphaNearCommands );
                 addRowUInt( "VOB Instances", vs.Instances );
                 addRowUInt( "VOB Visuals", vs.CullVisuals );
-                addRowLabel( "VOB Splits n/lod/alpha" );
-                ImGui::Text( "%u / %u / %u", vs.SplitNone, vs.SplitLod, vs.SplitAlpha );
+                addRowLabel( "VOB Splits none/lod" );
+                ImGui::Text( "%u / %u", vs.SplitNone, vs.SplitLod );
             }
             addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );

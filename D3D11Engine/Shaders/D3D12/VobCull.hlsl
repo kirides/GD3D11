@@ -24,15 +24,13 @@ struct VobCullVisual
     float3 BBoxMax;
     uint   InstanceCount;
     // 0 = keep every instance in the near run. 1 = split at LodDistance (far run draws the simplified LOD
-    // indices). 2 = split at AlphaPrepassDistance (both runs draw the same indices; only the DEPTH PREPASS
-    // skips the far one). Commands are emitted per sub-mesh, so splitting a visual whose far bucket has no
-    // command strands those instances and they vanish from the main view — which is why the CPU only raises
-    // this once it has emitted the far commands.
+    // indices). Commands are emitted per sub-mesh, so splitting a visual whose far bucket has no command
+    // strands those instances and they vanish from the main view — which is why the CPU only raises this
+    // once it has emitted the far commands.
     uint   SplitMode;
 };
 #define VOB_SPLIT_NONE  0u
 #define VOB_SPLIT_LOD   1u
-#define VOB_SPLIT_ALPHA 2u
 
 // Mirrors ConstantBufferStructs.h's VobInstanceInfo (144 B) — the per-instance VERTEX stream, read here as a
 // structured buffer instead. World/PrevWorld are stored ROW-major and consumed as `mul( float4(p,1), world )`
@@ -64,10 +62,7 @@ cbuffer VobCullCB : register( b0 )
     float    LodDistance;       // @88
     uint     _cullPad0;         // @92  explicit: HLSL won't let the float3 straddle 16 B, and the C++ mirror
     float3   CullCamPosWS;      // @96  must match field-for-field (its static_assert only checks size)
-    // Threshold for VOB_SPLIT_ALPHA. Scalar, so it fits the tail of CullCamPosWS's 16-byte row and the CB
-    // stays 112 B == 28 root constants.
-    float    AlphaPrepassDistance;  // @108 -> 112 B == 28 root constants
-};
+};                              // -> 108 B == 27 root constants
 
 StructuredBuffer<VobCullVisual>    Visuals       : register( t0 );
 StructuredBuffer<VobInstanceGpu>   InInstances   : register( t1 );
@@ -201,11 +196,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 const float3 centreLocal = ( v.BBoxMin + v.BBoxMax ) * 0.5;
                 const float3 centreWorld = mul( float4( centreLocal, 1.0 ), BuildWorldMatrix( inst ) ).xyz;
                 const float  dist  = length( centreWorld - CullCamPosWS );
-                // Which distance this visual buckets by. The two modes are mutually exclusive per visual —
-                // the CPU never raises VOB_SPLIT_ALPHA on a visual it also LOD-split (see kSplitModeAlpha).
-                const float  splitDist = ( v.SplitMode == VOB_SPLIT_LOD )   ? LodDistance
-                                       : ( v.SplitMode == VOB_SPLIT_ALPHA ) ? AlphaPrepassDistance
-                                                                            : 0.0;
+                const float  splitDist = ( v.SplitMode == VOB_SPLIT_LOD ) ? LodDistance : 0.0;
                 const bool   isFar = ( splitDist > 0.0 ) && ( dist > splitDist );
 
                 uint slot;

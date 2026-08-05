@@ -344,9 +344,8 @@ void D3D12GraphicsEngine::CullVobsGPU() {
         float    LodDistance;
         uint32_t Pad0;        // mirrors VobCull.hlsl's explicit float3 alignment pad
         XMFLOAT3 CamPosWS;
-        float    AlphaPrepassDistance;
     } cb{};
-    static_assert( sizeof( VobCullCB ) == 28 * sizeof( uint32_t ), "VobCullCB must match the 28 root constants in CreateCull()" );
+    static_assert( sizeof( VobCullCB ) == 27 * sizeof( uint32_t ), "VobCullCB must match the 27 root constants in CreateCull()" );
     cb.ViewProj = viewProj;
     cb.VisualCount = m_VobCullVisualCount;
     cb.HiZIndex = occlusion ? m_HiZSrvSlot : 0u;
@@ -357,13 +356,10 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     // Must be the SAME value BuildVobDrawCommands used, or a far run ends up with no command to draw it.
     cb.LodDistance = m_VobLodDistance;
     cb.CamPosWS = Engine::GAPI->GetCameraPosition();
-    // Same rule as LodDistance: must be the value BuildVobDrawCommands used, or an alpha-split visual's far
-    // run ends up bucketed by one threshold and drawn by commands built for another.
-    cb.AlphaPrepassDistance = m_VobAlphaPrepassDistance;
 
     m_CmdList->SetPipelineState( m_Pipelines.Cull.VobCullPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
-    m_CmdList->SetComputeRoot32BitConstants( 0, 28, &cb, 0 );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 27, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, m_VobCullVisuals[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootShaderResourceView( 2, m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 3, m_VobCulledInstances->GetGPUVirtualAddress() );
