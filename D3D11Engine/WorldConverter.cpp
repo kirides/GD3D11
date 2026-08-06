@@ -1447,13 +1447,37 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
     meshInfo->Visual = visual;
 }
 
-/** Extracts a skeletal mesh from a zCMeshSoftSkin */
+/** Extracts a skeletal mesh from a zCMeshSoftSkin. Reads the live softskin list, so main thread only
+    - the background path uses the span overload with a snapshot it holds references on. */
 void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVisualInfo* skeletalMeshInfo ) {
+    zCArray<zCMeshSoftSkin*>* list = model->GetMeshSoftSkinList();
+    ExtractSkeletalMeshFromVob( model, std::span<zCMeshSoftSkin* const>( list->Array, list->NumInArray ), skeletalMeshInfo );
+}
+
+void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMeshSoftSkin* const> softSkins, SkeletalMeshVisualInfo* skeletalMeshInfo ) {
     ZoneScoped;
 
     // This type has multiple skinned meshes inside
-    for ( int i = 0; i < model->GetMeshSoftSkinList()->NumInArray; i++ ) {
-        zCMeshSoftSkin* s = model->GetMeshSoftSkinList()->Array[i];
+    for ( size_t skin = 0; skin < softSkins.size(); skin++ ) {
+        zCMeshSoftSkin* s = softSkins[skin];
+
+        // ZENGIN writes the submesh count and the submesh array as two separate fields, and frees the
+        // array on cache-out without zeroing the count first. A softskin caught in that window reports
+        // submeshes it no longer has, and zCProgMeshProto::GetSubmesh is plain pointer arithmetic off
+        // the (now null) base - it hands back nullptr for index 0 and small bogus addresses after that.
+        // Dropping the mesh loses one NPC's geometry for a frame until the reload re-extracts it, which
+        // beats faulting on the worker thread.
+        if ( !s || !s->GetSubmeshes() || !s->GetVertWeightStream() ) {
+            // Deliberately no GetModelName() here: it calls into ZENGIN and allocates a zSTRING, which
+            // this function is not allowed to do from a worker thread.
+            static std::atomic<bool> loggedTornSoftSkin = false;
+            if ( !loggedTornSoftSkin.exchange( true ) ) {
+                LogWarn() << "Skipped a zCMeshSoftSkin with no submesh/weight data (model " << model
+                    << ", skin " << skin << ") - skipping further reports of this";
+            }
+            continue;
+        }
+
         std::vector<ExSkelVertexStruct> posList;
 
         // This stream is built as the following:
@@ -1576,7 +1600,10 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
         }
     }
 
-    skeletalMeshInfo->VisualName = model->GetVisualName();
+    // From the snapshot, not model->GetVisualName(): that re-reads the live softskin list, which is
+    // exactly the thing the caller took a snapshot to stop touching.
+    if ( !softSkins.empty() && softSkins[0] )
+        skeletalMeshInfo->VisualName = softSkins[0]->GetObjectNameView();
 }
 
 /** Extracts a zCProgMeshProto from a zCModel */
@@ -1964,7 +1991,14 @@ namespace {
     /** In-flight ExtractNodeVisualAsync jobs. Registered and pruned on the main thread only; the worker
         job itself never touches this list, so a waiter can hold the mutex while waiting on a job without
         ever deadlocking against it. Never more than a handful of entries (one per attachment currently
-        popping in), so a flat vector beats a map here. */
+        popping in), so a flat vector beats a map here.
+
+        'Visual' is held with a zCObject reference for as long as the job runs. Waiting for the job from
+        OnVisualDeleted is NOT enough on its own: that hook sits on ~zCVisual, the *base* destructor, so
+        by the time it runs ~zCProgMeshProto has already freed the submesh arrays the worker reads out of
+        'pm'. Owning a reference is what keeps refCtr from reaching 0 in the first place, which is the
+        only thing that stops a vob unloading and reloading inside one frame from handing the recycled
+        address straight back out. */
     struct PendingNodeVisual {
         MeshVisualInfo* MeshInfo;
         zCVisual* Visual;
@@ -1976,8 +2010,15 @@ namespace {
     /** Drops entries whose job has run to completion. Caller must hold s_PendingNodeVisualsMutex. */
     void PruneFinishedNodeVisualsLocked() {
         std::erase_if( s_PendingNodeVisuals, []( const PendingNodeVisual& p ) {
-            return !p.Task.future.valid()
-                || p.Task.future.wait_for( std::chrono::seconds( 0 ) ) == std::future_status::ready;
+            if ( p.Task.future.valid()
+                && p.Task.future.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready ) {
+                return false;
+            }
+            // Never released inline: dropping the last reference runs the visual's destructor, which
+            // re-enters OnVisualDeleted -> WaitForPendingNodeVisuals -> s_PendingNodeVisualsMutex,
+            // which we are holding right now. That is a deadlock, not a race.
+            Engine::GAPI->QueueDeferredVisualRelease( p.Visual );
+            return true;
         } );
     }
 }
@@ -2009,8 +2050,14 @@ void WorldConverter::WaitForAllPendingNodeVisuals() {
         if ( pending.Task.future.valid() ) {
             pending.Task.future.wait();
         }
+        Engine::GAPI->QueueDeferredVisualRelease( pending.Visual );
     }
     s_PendingNodeVisuals.clear();
+}
+
+void WorldConverter::PruneFinishedNodeVisuals() {
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    PruneFinishedNodeVisualsLocked();
 }
 
 /** Extracts a node-visual on a worker thread. See the header for the contract. */
@@ -2065,12 +2112,18 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
         ? ResolveMorphRestSource( reinterpret_cast<zCMorphMesh*>(node->NodeVisual) )
         : MorphRestSource{};
 
+    // 'pm' lives inside nodeVisual (for .MMS it is the zCMorphMesh's inner progmesh), so the job is
+    // only allowed to read it for as long as nodeVisual is alive. Own a reference for the duration
+    // instead of hoping nothing frees it - see the PendingNodeVisual comment for why waiting on the
+    // job from OnVisualDeleted cannot cover this. Handed back when the entry is pruned.
     zCVisual* nodeVisual = node->NodeVisual;
+    zCObject_AddRef( nodeVisual );
+
     auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS, restSource]( const std::stop_token& token ) {
         if ( token.stop_requested() ) {
-            // Cancelled before a worker picked it up (world change / shutdown flush) - the visual we
-            // would read from may already be gone. Clear Visual so the next frame notices the mismatch
-            // and re-extracts instead of rendering an empty attachment forever.
+            // Cancelled before a worker picked it up (world change / shutdown flush). Clear Visual so
+            // the next frame notices the mismatch and re-extracts instead of rendering an empty
+            // attachment forever.
             mi->Visual = nullptr;
             mi->Ready.store( true, std::memory_order_release );
             return;
