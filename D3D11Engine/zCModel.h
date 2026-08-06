@@ -178,6 +178,11 @@ public:
 
         return "";
     }
+
+    /** The .MDS/.ASC this prototype was built from (ZENGIN's modelProtoFileName). */
+    const zSTRING& GetModelProtoFileName() const {
+        return *reinterpret_cast<const zSTRING*>(THISPTR_OFFSET( GothicMemoryLocations::zCModelPrototype::Offset_ModelProtoFileName ));
+    }
 };
 
 class zCModel : public zCVisual {
@@ -398,10 +403,19 @@ public:
         //return __GetVisualName().ToChar();
     }
 
-    zSTRING GetModelName() const {
-        zSTRING str;
-        reinterpret_cast<void( __fastcall* )( const zCModel*, int, zSTRING& )>( GothicMemoryLocations::zCModel::GetVisualName )( this, 0, str );
-        return str;
+    /** The .MDS/.ASC file this model was built from.
+     *
+     *  Reimplements ZENGIN's zCModel::GetVisualName (zModel.cpp:3828) rather than calling it: that one
+     *  returns zSTRING *by value*, so every call allocated and freed a string through ZENGIN's
+     *  allocator just to read a name we already have in memory. The view points straight at the
+     *  prototype's own string and stays valid for as long as the prototype does, same as the
+     *  GetVisualName() above. */
+    std::string_view GetModelName() const {
+        zCArray<zCModelPrototype*>* protos = GetModelProtoList();
+        if ( protos->NumInArray <= 0 || !protos->Array[0] )
+            return {};
+
+        return protos->Array[0]->GetModelProtoFileName().ToView();
     }
 
     zCVob* GetHomeVob() const {
