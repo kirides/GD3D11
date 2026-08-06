@@ -51,6 +51,7 @@
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
+#include "AsyncVisualExtractor.h"
 #include "ThreadPool.h"
 #include "zFILE.h"
 #include "zFILE_VDFS.h"
@@ -569,12 +570,12 @@ void GothicAPI::OnWorldUpdate() {
     }
 #endif
 
-    // Retire background extractions that finished on their own and hand the zCVisual references
-    // they held back to ZENGIN. Has to happen at a top-level main-thread point like this one: a
-    // release can run a visual's destructor, which re-enters us via OnVisualDeleted.
-    DrainFinishedSkeletalLoads();
+    // Retire background extractions that finished on their own and hand the references they held back
+    // to ZENGIN. Has to happen at a top-level point like this one: a release can run a visual's
+    // destructor, which re-enters us via OnVisualDeleted.
+    s_AsyncVisualExtractor->DrainFinished();
     WorldConverter::PruneFinishedNodeVisuals();
-    FlushDeferredVisualReleases();
+    s_AsyncVisualExtractor->FlushReleases();
 
     RendererState.RendererInfo.Reset();
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
@@ -911,18 +912,11 @@ void GothicAPI::ResetVobs() {
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
 
-    // clearAndFlush() above already waited for every background LoadzCModelData(...) job to
-    // finish, so it's safe to drop the (now stale) handles without waiting on them again. Their
-    // zCModel references still have to go back, though. Safe to do right here: SkeletalMeshVisuals
-    // and SkeletalMeshNpcs are already empty, so the OnVisualDeleted a release may trigger finds
-    // nothing left to tear down.
-    for ( auto& it : PendingSkeletalLoads ) {
-        QueueDeferredVisualRelease( it.second.Model );
-        for ( zCMeshSoftSkin* s : it.second.SoftSkins )
-            QueueDeferredVisualRelease( s );
-    }
-    PendingSkeletalLoads.clear();
-    FlushDeferredVisualReleases();
+    // clearAndFlush() above already waited for every background extraction to finish, and the infos
+    // they wrote into are gone with the two clears right above, so all that is left is handing their
+    // references back. Safe to release here rather than deferring: the maps are empty, so the
+    // OnVisualDeleted each release may trigger finds nothing left to tear down.
+    s_AsyncVisualExtractor->CancelAll();
 
     // Delete static mesh vobs
     for ( auto const& it : VobMap ) {
@@ -1983,11 +1977,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
-                // Only tear the cache entry down if it actually belongs to *this* model. Holding an
-                // extraction reference (LoadzCModelData) can push a model's destructor past the
-                // point where a reload has already re-bound this name to a newer model - tearing
-                // down here would then delete the live entry out from under it. A null Visual means
-                // the extraction never completed, i.e. the entry is nobody else's either.
+                // Only tear the entry down if it belongs to *this* model. An extraction reference can
+                // hold a model's destructor past the point where a reload has re-bound this name to a
+                // newer one, and tearing down then would delete the live entry out from under it. A
+                // null Visual means the extraction never completed, so the entry is nobody else's.
                 if ( it != SkeletalMeshVisuals.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
@@ -1996,9 +1989,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                         }
                     }
 
-                    // Make sure no background extraction job (GothicAPI::LoadzCModelData) is still
-                    // writing into the info we are about to delete.
-                    WaitForPendingSkeletalLoad( it->second );
+                    // Make sure no background extraction is still writing into the info we delete.
+                    s_AsyncVisualExtractor->WaitForSkeletal( it->second );
 
                     delete SkeletalMeshVisuals[str];
                     SkeletalMeshVisuals.erase( str );
@@ -2009,9 +2001,9 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
             if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
                 oCNPC* npc = static_cast<oCNPC*>(homeVob);
                 auto it = SkeletalMeshNpcs.find( npc );
-                // Same identity check as above, and the armor-change case is exactly what it is
-                // for: the NPC's entry may already have been rebuilt from its new zCModel by the
-                // time this (deferred) destructor gets to run.
+                // Same identity check as above; the armor change is exactly what it is for, since the
+                // NPC's entry may already have been rebuilt from its new zCModel by the time this
+                // (deferred) destructor gets to run.
                 if ( it != SkeletalMeshNpcs.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
@@ -2020,9 +2012,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                         }
                     }
 
-                    // Make sure no background extraction job (GothicAPI::LoadzCModelData) is still
-                    // writing into the info we are about to delete.
-                    WaitForPendingSkeletalLoad( it->second );
+                    // Make sure no background extraction is still writing into the info we delete.
+                    s_AsyncVisualExtractor->WaitForSkeletal( it->second );
 
                     delete SkeletalMeshNpcs[npc];
                     SkeletalMeshNpcs.erase( npc );
@@ -2466,106 +2457,6 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
     }
 }
 
-/** Copies the model's softskin list and takes a reference on every entry, so a background extraction
- *  can walk it without racing the game thread. Holding the zCModel alive is not enough: ZENGIN refills
- *  zCModel::SoftSkinList *in place* (armor changes, mesh-lib swaps) and releases the old meshes as it
- *  goes, and a zCMeshSoftSkin that is being torn down reports its old submesh count with an already
- *  nulled submesh array - which zCProgMeshProto::GetSubmesh turns into a null (or near-null) pointer,
- *  since it is plain arithmetic off that base. */
-static std::vector<zCMeshSoftSkin*> SnapshotSoftSkins( zCModel* model ) {
-    std::vector<zCMeshSoftSkin*> snapshot;
-
-    zCArray<zCMeshSoftSkin*>* list = model->GetMeshSoftSkinList();
-    if ( !list )
-        return snapshot;
-
-    snapshot.reserve( list->NumInArray );
-    for ( int i = 0; i < list->NumInArray; i++ ) {
-        if ( zCMeshSoftSkin* s = list->Array[i] ) {
-            zCObject_AddRef( s );
-            snapshot.push_back( s );
-        }
-    }
-    return snapshot;
-}
-
-/** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any) has
- *  finished, then forgets about it and queues the references it held for release.
- *  Must be called before deleting a SkeletalMeshVisualInfo - the job writes directly into it. */
-void GothicAPI::WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi ) {
-    if ( !mi )
-        return;
-
-    auto it = PendingSkeletalLoads.find( mi );
-    if ( it == PendingSkeletalLoads.end() )
-        return;
-
-    PendingSkeletalLoad load = std::move( it->second );
-    PendingSkeletalLoads.erase( it );
-
-    load.Task.cancel(); // Lets the job bail out immediately if it hasn't started running yet (see below)
-    if ( load.Task.future.valid() )
-        load.Task.future.wait();
-
-    // Deliberately not released here: this is the last reference in the common case, and dropping
-    // it runs ZENGIN's zCModel destructor, which re-enters us through zCVisual::Hooked_Destructor
-    // -> OnVisualDeleted. Every caller is either inside OnVisualDeleted already or is holding 'mi'
-    // - which that re-entry would happily delete. FlushDeferredVisualReleases() does it later.
-    QueueDeferredVisualRelease( load.Model );
-    for ( zCMeshSoftSkin* s : load.SoftSkins )
-        QueueDeferredVisualRelease( s );
-}
-
-/** Extraction jobs that nobody comes back for would keep their zCModel reference (and with it the
- *  model itself) alive forever. Retire the ones that have run to completion. */
-void GothicAPI::DrainFinishedSkeletalLoads() {
-    if ( PendingSkeletalLoads.empty() )
-        return;
-
-    static std::vector<SkeletalMeshVisualInfo*> finished; // Main thread only, keeps its capacity
-    finished.clear();
-
-    for ( auto& it : PendingSkeletalLoads ) {
-        if ( !it.second.Task.future.valid() ||
-            it.second.Task.future.wait_for( std::chrono::seconds( 0 ) ) == std::future_status::ready ) {
-            finished.push_back( it.first );
-        }
-    }
-
-    for ( SkeletalMeshVisualInfo* mi : finished )
-        WaitForPendingSkeletalLoad( mi ); // Already finished, so this doesn't block
-}
-
-/** Queues one extraction reference for release. Callable from anywhere, including from under
- *  WorldConverter's node-visual mutex - all it does is append. */
-void GothicAPI::QueueDeferredVisualRelease( void* object ) {
-    if ( !object )
-        return;
-
-    std::scoped_lock lock( DeferredVisualReleaseMutex );
-    DeferredVisualReleases.push_back( object );
-}
-
-/** Hands the extraction references back to ZENGIN. Must only be called from a top-level main-thread
- *  point: a release can run a visual's destructor, which comes back around into OnVisualDeleted. */
-void GothicAPI::FlushDeferredVisualReleases() {
-    for ( ;; ) {
-        void* object;
-        {
-            // The lock is dropped before the release: the destructor's OnVisualDeleted re-entry can
-            // queue further releases, and this mutex is not recursive. That re-entry is also why the
-            // vector is re-checked every round instead of being iterated.
-            std::scoped_lock lock( DeferredVisualReleaseMutex );
-            if ( DeferredVisualReleases.empty() )
-                return;
-
-            object = DeferredVisualReleases.back();
-            DeferredVisualReleases.pop_back();
-        }
-        zCObject_Release( object );
-    }
-}
-
 /** Loads the data out of a zCModel */
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
     auto visName = model->GetVisualName();
@@ -2580,43 +2471,14 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
         SkeletalMeshVisuals[str] = mi;
     }
 
-    // Retire whatever job was still attached to this info. It may be extracting from an older
-    // zCModel than the one we were just handed, and its reference has to come back either way.
-    WaitForPendingSkeletalLoad( mi );
+    // Retire whatever job was still attached to this info before reading Meshes below: it may be
+    // extracting from an older zCModel, and it writes straight into mi.
+    s_AsyncVisualExtractor->WaitForSkeletal( mi );
 
     if ( !mi->Meshes.empty() )
         return mi; // Already loaded
 
-    // Extraction (CPU vertex/weight unpacking + GPU buffer creation) is the expensive part of a
-    // vob popping into range, so run it on a worker thread instead of stalling the main thread.
-    // Ready gates every draw/update site so nobody touches Meshes/SkeletalMeshes early.
-    mi->Ready = false;
-
-    // ZENGIN can free the model while the job is queued or running: a vob that unloads and reloads
-    // inside one frame drops refCtr to 0, the destructor runs, and the allocator happily hands the
-    // same address back out for the reload. Own a reference for the duration of the job instead of
-    // relying on nobody deleting the model in the meantime - it is handed back once the job is
-    // retired (WaitForPendingSkeletalLoad / DrainFinishedSkeletalLoads).
-    zCObject_AddRef( model );
-
-    PendingSkeletalLoad load;
-    load.Model = model;
-    load.SoftSkins = SnapshotSoftSkins( model );
-
-    const std::span<zCMeshSoftSkin* const> softSkins = load.SoftSkins;
-    load.Task = Engine::WorkerThreadPool->enqueue( [model, softSkins, mi]( const std::stop_token& token ) {
-        if ( token.stop_requested() ) {
-            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad). The model is
-            // still alive - we hold a reference - but the caller no longer wants this extraction.
-            mi->Ready.store( true );
-            return;
-        }
-        WorldConverter::ExtractSkeletalMeshFromVob( model, softSkins, mi );
-        mi->Visual = model;
-        mi->Ready.store( true );
-    } );
-
-    PendingSkeletalLoads[mi] = std::move( load );
+    s_AsyncVisualExtractor->ExtractSkeletal( model, mi );
     return mi;
 }
 
@@ -2629,39 +2491,9 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
         SkeletalMeshNpcs[npc] = mi;
     }
 
-    // Retire the previous job first. For NPCs this is the armor-change case: the old job is very
-    // likely still extracting from the *previous* zCModel, which oCNPC::SetVisual has already
-    // released - only our own reference is keeping it alive.
-    WaitForPendingSkeletalLoad( mi );
-
     // can't cache the meshes and VisualName as it otherwise
     // won't properly fire for changing armors. for whatever reason...
-
-    // See LoadzCModelData(zCModel*) above for why this runs on a worker thread and why we hold
-    // references on the model and its softskins while it does. The softskin snapshot matters most
-    // here: an armor change refills SoftSkinList in place on the game thread.
-    mi->Ready = false;
-    zCObject_AddRef( model );
-
-    PendingSkeletalLoad load;
-    load.Model = model;
-    load.SoftSkins = SnapshotSoftSkins( model );
-
-    const std::span<zCMeshSoftSkin* const> softSkins = load.SoftSkins;
-    load.Task = Engine::WorkerThreadPool->enqueue( [model, softSkins, mi]( const std::stop_token& token ) {
-        if ( token.stop_requested() ) {
-            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad). The model is
-            // still alive - we hold a reference - but the caller no longer wants this extraction.
-            mi->Ready.store( true );
-        } );
-    } else {
-        mi->ClearMeshes();
-        WorldConverter::ExtractSkeletalMeshFromVob( model, softSkins, mi );
-        mi->Visual = model;
-        mi->Ready.store( true );
-    } );
-
-    PendingSkeletalLoads[mi] = std::move( load );
+    s_AsyncVisualExtractor->ExtractSkeletal( model, mi );
     return mi;
 }
 

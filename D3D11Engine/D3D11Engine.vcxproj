@@ -1090,6 +1090,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="MeshManager.h" />
     <ClInclude Include="MorphBlend.h" />
     <ClInclude Include="MorphGpu.h" />
+    <ClInclude Include="AsyncVisualExtractor.h" />
     <ClInclude Include="SharedVisualRegistry.h" />
     <ClInclude Include="MeshModifier.h" />
     <ClInclude Include="oCGame.h" />
@@ -1710,6 +1711,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="MorphBlend.cpp" />
     <ClCompile Include="MorphGpu.cpp" />
+    <ClCompile Include="AsyncVisualExtractor.cpp" />
     <ClCompile Include="SharedVisualRegistry.cpp" />
     <ClCompile Include="MeshModifier.cpp" />
     <ClCompile Include="pch.cpp">
