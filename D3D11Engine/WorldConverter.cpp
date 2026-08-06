@@ -145,18 +145,6 @@ namespace {
         return !outIndices.empty();
     }
 
-    void CreateLodIndexBuffer( MeshInfo* meshInfo ) {
-        if ( !meshInfo || meshInfo->LodIndices.empty() ) {
-            return;
-        }
-
-        Engine::GraphicsEngine->CreateVertexBuffer( meshInfo->MeshLodIndexBuffer );
-        meshInfo->MeshLodIndexBuffer->Init( meshInfo->LodIndices.data(),
-            meshInfo->LodIndices.size() * sizeof( VERTEX_INDEX ),
-            D3D11VertexBuffer::B_INDEXBUFFER,
-            D3D11VertexBuffer::U_IMMUTABLE );
-    }
-
     /** Builds a position-only (float3) companion buffer in the same vertex ordering as the source
         interleaved vertices. Bound for opaque depth/shadow passes; indices remain valid because the
         ordering matches the mesh/shadow index buffers built from the same array. */
@@ -2325,6 +2313,12 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         } else {
             // The reduced level is built by OptimizeVertices below (MeshLodBuilder.h), not seeded from
             // ZENGIN's progressive-mesh data - see there for why that could not be shaded.
+            //
+            // D3D12 ONLY. The D3D12 VOB arena is the sole consumer (main-view far bucket + the far
+            // shadow cascades, both as index ranges inside the mega index buffer); D3D11 has no way to
+            // draw it that does not mean one more per-sub-mesh index buffer, and D3D11 is the backend
+            // that runs closest to the 32-bit VA ceiling. Asking for no LOD here skips the meshopt
+            // simplification pass and leaves LodIndices empty, so nothing downstream allocates.
 
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
@@ -2340,14 +2334,13 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->Vertices.size(),
                 sizeof( ExVertexStruct ),
                 &mi->ShadowIndices,
-                &mi->LodIndices );
+                Engine::IsD3D12Backend ? &mi->LodIndices : nullptr );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         }
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mi );
-        CreateLodIndexBuffer( mi );
 
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );

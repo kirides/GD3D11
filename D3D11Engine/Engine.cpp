@@ -54,12 +54,14 @@ namespace Engine {
         // (Phase 1: first-light — device + swapchain + per-frame clear/present, rest stubbed),
         // otherwise we log + show a one-time notice and fall back to D3D11.
         GraphicsEngine = nullptr;
+        IsD3D12Backend = false;
         bool initialized = false;   // set when the chosen backend's Init() has already run below
         if ( ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
             GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D12;
             GraphicsEngine = new D3D12GraphicsEngine;
             if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
                 initialized = true;
+                IsD3D12Backend = true;
             } else {
                 SAFE_DELETE( GraphicsEngine );
                 
