@@ -390,6 +390,8 @@ struct GothicMemoryLocations {
     };
 
     struct zCModelPrototype {
+        // zSTRING modelProtoFileName. Same offset in G1 and G2, classic and addon.
+        static const unsigned int Offset_ModelProtoFileName = 0x20;
         static const unsigned int Offset_NodeList = 0x74;
     };
 

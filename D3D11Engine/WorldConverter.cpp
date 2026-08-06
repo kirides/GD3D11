@@ -1467,12 +1467,12 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMes
         // 0 and small bogus addresses after it. Dropping the mesh costs one NPC's geometry until the
         // next re-extract; dereferencing it costs the process.
         if ( !s || !s->GetSubmeshes() || !s->GetVertWeightStream() ) {
-            // No GetModelName() here - it calls into ZENGIN and allocates a zSTRING, which this
-            // function must not do from a worker thread.
+            // GetModelName() is a plain read of the prototype's own string - no ZENGIN call and no
+            // allocation - so it is safe to name the model even from a worker thread.
             static std::atomic<bool> loggedTornSoftSkin = false;
             if ( !loggedTornSoftSkin.exchange( true ) ) {
-                LogWarn() << "Skipped a zCMeshSoftSkin with no submesh/weight data (model " << model
-                    << ", skin " << skin << ") - skipping further reports of this";
+                LogWarn() << "Skipped a zCMeshSoftSkin with no submesh/weight data on '"
+                    << model->GetModelName() << "' (skin " << skin << ") - skipping further reports";
             }
             continue;
         }
@@ -1619,8 +1619,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
     model->UpdateAttachedVobs();
     model->UpdateMeshLibTexAniState();
 
-    zSTRING mds = model->GetModelName();
-    const char* visualName = mds.ToChar();
+    const std::string_view visualName = model->GetModelName();
     zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
     for ( int i = 0; i < nodeList->NumInArray; i++ ) {
         zCModelNodeInst* node = nodeList->Array[i];
@@ -1790,8 +1789,6 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
     meshInfo->Visual = model;
     meshInfo->VisualName = visualName;
-
-    mds.Delete();
 }
 
 /** Extracts a zCProgMeshProto from a zCMesh */

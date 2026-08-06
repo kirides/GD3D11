@@ -1973,8 +1973,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 auto visName = zmodel->GetVisualName();
                 std::string str( visName.data(), visName.size() );
                 if ( str.empty() ) { // Happens when the model has no skeletal-mesh
-                    zSTRING mds = zmodel->GetModelName();
-                    str.append( mds.ToView() );
+                    str.append( zmodel->GetModelName() );
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
@@ -2463,8 +2462,7 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
     auto visName = model->GetVisualName();
     std::string str(visName.data(), visName.size());
     if ( str.empty() ) { // Happens when the model has no skeletal-mesh
-        zSTRING mds = model->GetModelName();
-        str.append( mds.ToView() );
+        str.append( model->GetModelName() );
     }
 
     SkeletalMeshVisualInfo* mi = SkeletalMeshVisuals[str];
@@ -2486,13 +2484,6 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
 
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
     zCModel* model = static_cast<zCModel*>(npc->GetVisual());
-
-    auto visName = model->GetVisualName();
-    std::string str( visName.data(), visName.size() );
-    if ( str.empty() ) { // Happens when the model has no skeletal-mesh
-        zSTRING mds = model->GetModelName();
-        str.append( mds.ToView() );
-    }
 
     SkeletalMeshVisualInfo* mi = SkeletalMeshNpcs[npc];
     if ( !mi ) {
@@ -2522,8 +2513,7 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
         auto visName = model->GetVisualName();
         std::string str( visName.data(), visName.size() );
         if ( str.empty() ) { // Happens when the model has no skeletal-mesh
-            zSTRING mds = model->GetModelName();
-            str.append( mds.ToView() );
+            str.append( model->GetModelName() );
         }
 
         auto it = SkeletalMeshVisuals.find( str );
@@ -2597,7 +2587,7 @@ void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
         emitter->SetVisShpModel( originModel );
         zCObject_AddRef( originModel ); // matches CalcPFXMesh's orgModel->AddRef()
 
-        LogInfo() << "Repaired shape-mesh emitter for '" << originModel->GetModelName().ToChar()
+        LogInfo() << "Repaired shape-mesh emitter for '" << originModel->GetModelName()
             << "' - oCVisualFX started before the origin had a visual";
     }
 #endif
@@ -2616,7 +2606,7 @@ void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
             if ( zCModelNodeInst* node = originModel->SearchNode( *nodeName ) ) {
                 visFx->SetOriginNode( node );
                 LogInfo() << "Repaired VisualFX origin node '" << nodeName->ToChar() << "' on '"
-                    << originModel->GetModelName().ToChar() << "'";
+                    << originModel->GetModelName() << "'";
             }
         }
     }
@@ -2739,8 +2729,7 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
     // ticking at all while we cannot serve it. Log once per model so a regression is visible.
     static std::unordered_set<zCModel*> loggedOriginFallback;
     if ( loggedOriginFallback.insert( model ).second ) {
-        zSTRING mds = model->GetModelName();
-        LogWarn() << "GetLowestLODPoly_SkeletalMesh: no skinned mesh data for '" << mds.ToChar()
+        LogWarn() << "GetLowestLODPoly_SkeletalMesh: no skinned mesh data for '" << model->GetModelName()
             << "' - particles from this shape-mesh emitter fall back to the model origin";
     }
 
