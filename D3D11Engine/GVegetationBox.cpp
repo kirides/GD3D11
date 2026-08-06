@@ -157,23 +157,32 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
     BoxMax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
     BoxMin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
 
-    for ( unsigned int i = 0; i < mesh->Vertices.size(); i++ ) {
-        BoxMin.x = BoxMin.x > mesh->Vertices[i].Position.x ? mesh->Vertices[i].Position.x : BoxMin.x;
-        BoxMin.y = BoxMin.y > mesh->Vertices[i].Position.y ? mesh->Vertices[i].Position.y : BoxMin.y;
-        BoxMin.z = BoxMin.z > mesh->Vertices[i].Position.z ? mesh->Vertices[i].Position.z : BoxMin.z;
+    // Editor entry point, and what it gets handed is a world mesh - which keeps only the slim CPU copy.
+    // The Vertices branch stays for any other MeshInfo that ends up selected.
+    const std::vector<WorldVertexCPU>* slim = mesh->GetCpuVertices();
+    const size_t vertexCount = slim ? slim->size() : mesh->Vertices.size();
+    auto position = [&]( size_t idx ) -> const float3& {
+        return slim ? (*slim)[idx].Position : mesh->Vertices[idx].Position;
+    };
 
-        BoxMax.x = BoxMax.x < mesh->Vertices[i].Position.x ? mesh->Vertices[i].Position.x : BoxMax.x;
-        BoxMax.y = BoxMax.y < mesh->Vertices[i].Position.y ? mesh->Vertices[i].Position.y : BoxMax.y;
-        BoxMax.z = BoxMax.z < mesh->Vertices[i].Position.z ? mesh->Vertices[i].Position.z : BoxMax.z;
+    for ( unsigned int i = 0; i < vertexCount; i++ ) {
+        const float3& p = position( i );
+        BoxMin.x = BoxMin.x > p.x ? p.x : BoxMin.x;
+        BoxMin.y = BoxMin.y > p.y ? p.y : BoxMin.y;
+        BoxMin.z = BoxMin.z > p.z ? p.z : BoxMin.z;
+
+        BoxMax.x = BoxMax.x < p.x ? p.x : BoxMax.x;
+        BoxMax.y = BoxMax.y < p.y ? p.y : BoxMax.y;
+        BoxMax.z = BoxMax.z < p.z ? p.z : BoxMax.z;
     }
 
     std::vector<XMFLOAT3> trisInside;
     for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
         XMFLOAT3 tri[3];
 
-        tri[0] = mesh->Vertices[mesh->Indices[i]].Position;
-        tri[1] = mesh->Vertices[mesh->Indices[i + 1]].Position;
-        tri[2] = mesh->Vertices[mesh->Indices[i + 2]].Position;
+        tri[0] = position( mesh->Indices[i] );
+        tri[1] = position( mesh->Indices[i + 1] );
+        tri[2] = position( mesh->Indices[i + 2] );
 
         trisInside.push_back( tri[0] );
         trisInside.push_back( tri[1] );

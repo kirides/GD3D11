@@ -3802,18 +3802,24 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
         for ( auto it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
             float u, v, t;
 
+            // Positions come from the slim CPU copy the world mesh keeps instead of the full vertices.
+            const std::vector<WorldVertexCPU>& verts = it->second->CpuVertices;
+            if ( verts.empty() ) {
+                continue;
+            }
+
             for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( it->second->Vertices[it->second->Indices[i]].Position,
-                    it->second->Vertices[it->second->Indices[i + 1]].Position,
-                    it->second->Vertices[it->second->Indices[i + 2]].Position,
+                if ( Toolbox::IntersectTri( verts[it->second->Indices[i]].Position,
+                    verts[it->second->Indices[i + 1]].Position,
+                    verts[it->second->Indices[i + 2]].Position,
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
 
                         if ( hitTriangle ) {
-                            hitTriangle[0] = it->second->Vertices[it->second->Indices[i]].Position;
-                            hitTriangle[1] = it->second->Vertices[it->second->Indices[i + 1]].Position;
-                            hitTriangle[2] = it->second->Vertices[it->second->Indices[i + 2]].Position;
+                            hitTriangle[0] = verts[it->second->Indices[i]].Position;
+                            hitTriangle[1] = verts[it->second->Indices[i + 1]].Position;
+                            hitTriangle[2] = verts[it->second->Indices[i + 2]].Position;
                         }
 
                         if ( hitMesh ) {
@@ -6577,7 +6583,19 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
+                // The world mesh only keeps WorldVertexCPU now, so rebuild the full vertices this wants.
+                // Per-vertex normals come out zero; zCPolygon::CalcNormal() (which the conversion calls)
+                // still derives the polygon plane from the positions, and that is what the BSP/collision
+                // side of this path uses. G1-classic + custom-world only, and dead in practice - not worth
+                // carrying 12 bytes per world vertex to preserve.
+                std::vector<ExVertexStruct> rebuilt( it->second->CpuVertices.size() );
+                for ( size_t v = 0; v < it->second->CpuVertices.size(); ++v ) {
+                    rebuilt[v].Position = it->second->CpuVertices[v].Position;
+                    rebuilt[v].TexCoord = it->second->CpuVertices[v].TexCoord;
+                    rebuilt[v].TexCoord2 = it->second->CpuVertices[v].TexCoord2;
+                }
+
+                WorldConverter::ConvertExVerticesTozCPolygons( rebuilt, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }

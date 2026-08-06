@@ -402,20 +402,34 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                         m = opaqueMesh;
                     }
 
+                    // The source world mesh only keeps the slim CPU copy (see WorldVertexCPU), so the
+                    // caster vertices are rebuilt from it with Normal/Color/Tangent left zeroed. That is
+                    // lossless HERE: these meshes are only ever drawn by RenderShadowCube, which writes
+                    // depth and alpha-tests on TexCoord - it never reads a shaded attribute.
+                    const std::vector<WorldVertexCPU>& src = it.second->CpuVertices;
+                    if ( src.empty() ) {
+                        continue;
+                    }
+
                     // reserve required size beforehand to avoid multiple reallocations
-                    m->Vertices.reserve( it.second->Vertices.size() );
+                    m->Vertices.reserve( src.size() );
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
-                        XMVECTOR v0 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 0]].Position );
-                        XMVECTOR v1 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 1]].Position );
-                        XMVECTOR v2 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 2]].Position );
+                        XMVECTOR v0 = XMLoadFloat3( &src[it.second->Indices[i + 0]].Position );
+                        XMVECTOR v1 = XMLoadFloat3( &src[it.second->Indices[i + 1]].Position );
+                        XMVECTOR v2 = XMLoadFloat3( &src[it.second->Indices[i + 2]].Position );
 
                         if ( XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v0 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v1 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v2 ) ), vRange2 ) ) {
-                            for ( int v = 0; v < 3; v++ )
-                                m->Vertices.emplace_back( it.second->Vertices[it.second->Indices[i + v]] );
+                            for ( int v = 0; v < 3; v++ ) {
+                                const WorldVertexCPU& sv = src[it.second->Indices[i + v]];
+                                ExVertexStruct& dv = m->Vertices.emplace_back();
+                                dv.Position = sv.Position;
+                                dv.TexCoord = sv.TexCoord;
+                                dv.TexCoord2 = sv.TexCoord2;
+                            }
                         }
                     }
                 }
@@ -715,6 +729,16 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     BuildWrappedPositionBuffer( wmi, wrappedVertices );
 
     *outWrappedMesh = wmi;
+
+    // Same trade as ConvertWorldMesh - the readers below key on CpuVertices, so this dead cached-mesh
+    // path has to leave the sections in the same shape the live one does.
+    for ( auto& itx : *outSections ) {
+        for ( auto& ity : itx.second ) {
+            for ( auto const& it : ity.second.WorldMeshes ) {
+                it.second->ShrinkCpuVertices();
+            }
+        }
+    }
 
     // Calculate the approx midpoint of the world
     avgSections /= static_cast<float>(numSections);
@@ -1197,6 +1221,19 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
     *outWrappedMesh = wmi;
 
+    // Everything that needed the full 60-byte vertices has now run: the per-section buffers are uploaded
+    // and both WrapVertexBuffers passes are done. Trade them for the 28-byte slim copy - see
+    // WorldVertexCPU for the three fields that still have readers.
+    {
+        size_t slimBytes = 0;
+        for ( WorldMeshInfo* mesh : allMeshes ) {
+            mesh->ShrinkCpuVertices();
+            slimBytes += mesh->CpuVertices.size() * sizeof( WorldVertexCPU );
+        }
+        LogInfo() << "Worldmesh: CPU vertex copy shrunk to " << (slimBytes / (1024 * 1024)) << " MB (was "
+            << ((totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)) << " MB)";
+    }
+
     // Calculate the approx midpoint of the world
     avgSections /= (float)numSections;
 
@@ -1244,11 +1281,13 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
             it.first.Material->HasAlphaTest() )
             continue;
 
+        // Slim CPU copy; this path only ever wanted Position anyway.
+        const std::vector<WorldVertexCPU>& src = it.second->CpuVertices;
         for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
             // Push all triangles
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i]].Position );
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 1]].Position );
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 2]].Position );
+            vx.emplace_back( src[it.second->Indices[i]].Position );
+            vx.emplace_back( src[it.second->Indices[i + 1]].Position );
+            vx.emplace_back( src[it.second->Indices[i + 2]].Position );
         }
     }
 
@@ -1341,7 +1380,7 @@ void WorldConverter::SaveSectionsToObjUnindexed( const char* file, const std::ma
     for ( auto const& itx : sections ) {
         for ( auto const& ity : itx.second ) {
             for ( auto const& it : ity.second.WorldMeshes ) {
-                for ( auto const& vtx : it.second->Vertices ) {
+                for ( auto const& vtx : it.second->CpuVertices ) {
                     std::string ln = "v " + std::to_string( vtx.Position.x ) + " " + std::to_string( vtx.Position.y ) + " " + std::to_string( vtx.Position.z ) + "\n";
                     fputs( ln.c_str(), f );
                 }
