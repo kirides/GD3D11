@@ -372,7 +372,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     XMVECTOR xmPosition = XMLoadFloat3( &position );
 
 
-    XMVECTOR vRange2 = XMVectorReplicate( range );
+    XMVECTOR vRange2 = XMVectorReplicate( range * range );
 
     // Generate the meshes
     for ( auto const& itx : Engine::GAPI->GetWorldSections() ) {
