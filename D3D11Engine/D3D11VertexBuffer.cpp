@@ -5,6 +5,7 @@
 #include "Engine.h"
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshLodBuilder.h"
+#include "MeshShadowIndexBuilder.h"
 #include <limits>
 #include <vector>
 #include "D3D11_Helpers.h"
@@ -299,20 +300,11 @@ XRESULT D3D11VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, byte* vertic
     memcpy( remappedVertices.data(), vertices, remappedVertices.size() );
     meshopt_remapVertexBuffer( remappedVertices.data(), vertices, numVertices, stride, remap.data() );
 
+    // Left empty when welding changed nothing - see MeshShadowIndexBuilder.h. Shared with D3D12 rather
+    // than duplicated here, so the drop rule cannot apply to only one backend.
     if ( outShadowIndices ) {
-        std::vector<unsigned int> shadowIndices( numIndices );
-        meshopt_generateShadowIndexBuffer( shadowIndices.data(),
-            remappedIndices.data(),
-            numIndices,
-            remappedVertices.data(),
-            fetchedVertexCount,
-            sizeof( float ) * 3,
-            stride );
-
-        outShadowIndices->resize( numIndices );
-        if ( !ConvertIndicesToVertexIndex( shadowIndices, outShadowIndices->data(), outShadowIndices->size() ) ) {
-            LogError() << "OptimizeVertices: shadow index exceeds VERTEX_INDEX range";
-            outShadowIndices->clear();
+        if ( !MeshShadow::BuildShadowIndices( *outShadowIndices, remappedIndices, remappedVertices,
+            fetchedVertexCount, stride, ConvertIndicesToVertexIndex ) ) {
             return XR_FAILED;
         }
     }
