@@ -3954,24 +3954,24 @@ namespace {
         }
     }
 
-    // Cascade 0 covers everything close to the camera and keeps full-detail casters; from cascade 1 out
-    // the shadow is small enough on screen that the baked progressive-mesh LOD is free silhouette. Both
-    // reduced buffers are position-welded, so neither may be used where the pixel shader alpha-tests:
+    // The position-welded shadow index buffer may not be used where the pixel shader alpha-tests:
     // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
+    //
+    // The cascade parameters are vestigial here: they used to pick MeshInfo::LodIndices for the distant
+    // cascades, but that reduced level is now built for the D3D12 backend only (see WorldObjects.h) - it
+    // would cost D3D11 one extra index buffer per sub-mesh, and D3D11 is the address-space-starved path.
+    // Kept so the call sites, which do know their cascade, need not change if it ever comes back.
     constexpr int FIRST_LOD_SHADOW_CASCADE = 1;
 
     GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
+        UNREFERENCED_PARAMETER( cascadeIndex );
+        UNREFERENCED_PARAMETER( lodCascadeIndex );
         if ( !mesh ) {
             return nullptr;
         }
 
         if ( isAlpha ) {
             return mesh->GetMeshIndexBuffer();
-        }
-
-        if ( cascadeIndex >= lodCascadeIndex
-            && mesh->MeshLodIndexBuffer && !mesh->LodIndices.empty() ) {
-            return mesh->GetMeshLodIndexBuffer();
         }
 
         if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
@@ -3981,15 +3981,14 @@ namespace {
     }
 
     unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
+        UNREFERENCED_PARAMETER( cascadeIndex );
+        UNREFERENCED_PARAMETER( lodCascadeIndex );
         if ( !mesh ) {
             return 0;
         }
 
         if ( isAlpha ) {
-        return mesh->Indices.size();
-    }
-        if ( cascadeIndex >= lodCascadeIndex && !mesh->LodIndices.empty() ) {
-            return static_cast<unsigned int>( mesh->LodIndices.size() );
+            return mesh->Indices.size();
         }
         return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
     }
