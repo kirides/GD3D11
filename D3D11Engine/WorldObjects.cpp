@@ -81,6 +81,23 @@ MeshInfo::~MeshInfo() {
     MeshShadowIndexBuffer.reset();
 }
 
+void WorldMeshInfo::ShrinkCpuVertices() {
+    if ( Vertices.empty() ) {
+        return;
+    }
+
+    CpuVertices.resize( Vertices.size() );
+    for ( size_t i = 0; i < Vertices.size(); ++i ) {
+        CpuVertices[i].Position = Vertices[i].Position;
+        CpuVertices[i].TexCoord = Vertices[i].TexCoord;
+        CpuVertices[i].TexCoord2 = Vertices[i].TexCoord2;
+    }
+
+    // clear() alone keeps the capacity, which is the whole 60-bytes-per-vertex allocation we are here to
+    // give back. Swap with a temporary is the only way to actually release it.
+    std::vector<ExVertexStruct>().swap( Vertices );
+}
+
 SkeletalMeshInfo::~SkeletalMeshInfo() {
     Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Indices.size() * sizeof( VERTEX_INDEX );
     Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Vertices.size() * sizeof( ExSkelVertexStruct );

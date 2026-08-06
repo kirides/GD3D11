@@ -107,6 +107,12 @@ struct MeshInfo {
     GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
     GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
 
+    /** The slim CPU-side copy, for code that is handed a MeshInfo* without knowing whether it is a world
+        mesh (the editor overlays, mostly). Null means "this mesh still has its full Vertices array" -
+        which is every mesh except a shrunk WorldMeshInfo - so callers branch once per mesh and fall back.
+        Indexed by the same Indices as Vertices was. */
+    virtual const std::vector<WorldVertexCPU>* GetCpuVertices() const { return nullptr; }
+
     std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
@@ -152,6 +158,19 @@ struct WorldMeshInfo : public MeshInfo {
 
     // Offset in wrapped world mesh
     unsigned int BaseShadowIndexLocation;
+
+    /** Replaces MeshInfo::Vertices, which is dropped once the GPU buffers and the wrapped mesh have been
+        built. Empty until ShrinkCpuVertices() runs, and on any mesh that never went through it - hence the
+        fallback in GetCpuVertices(). */
+    std::vector<WorldVertexCPU> CpuVertices;
+
+    const std::vector<WorldVertexCPU>* GetCpuVertices() const override {
+        return CpuVertices.empty() ? nullptr : &CpuVertices;
+    }
+
+    /** Builds CpuVertices and frees Vertices (capacity included). Call only after the vertex buffer is
+        uploaded AND the wrapped world mesh has been assembled - WrapVertexBuffers reads Vertices. */
+    void ShrinkCpuVertices();
 };
 
 struct QuadMarkInfo {

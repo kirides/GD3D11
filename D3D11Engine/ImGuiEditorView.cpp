@@ -698,17 +698,31 @@ void ImGuiEditorView::DoSelection() {
 }
 
 void ImGuiEditorView::VisualizeMeshInfo(MeshInfo* m, const XMFLOAT4& color, bool showBounds, const XMFLOAT4X4* world) {
+    // World meshes dropped their full vertices after upload and serve the slim copy instead; everything
+    // else (VOB sub-meshes, BSP node boxes) still has Vertices. Resolved once, not per triangle.
+    const std::vector<WorldVertexCPU>* slim = m->GetCpuVertices();
+    if ((slim ? slim->empty() : m->Vertices.empty())) {
+        return;
+    }
+
+    auto position = [&](VERTEX_INDEX idx) -> const float3& {
+        return slim ? (*slim)[idx].Position : m->Vertices[idx].Position;
+    };
+    auto edgeMark = [&](VERTEX_INDEX idx) -> float {
+        return slim ? (*slim)[idx].TexCoord2.x : m->Vertices[idx].TexCoord2.x;
+    };
+
     for (unsigned int i = 0; i < m->Indices.size(); i += 3) {
         XMFLOAT3 tri[3];
         float edge[3];
 
-        tri[0] = m->Vertices[m->Indices[i]].Position;
-        tri[1] = m->Vertices[m->Indices[i + 1]].Position;
-        tri[2] = m->Vertices[m->Indices[i + 2]].Position;
+        tri[0] = position(m->Indices[i]);
+        tri[1] = position(m->Indices[i + 1]);
+        tri[2] = position(m->Indices[i + 2]);
 
-        edge[0] = m->Vertices[m->Indices[i]].TexCoord2.x;
-        edge[1] = m->Vertices[m->Indices[i + 1]].TexCoord2.x;
-        edge[2] = m->Vertices[m->Indices[i + 2]].TexCoord2.x;
+        edge[0] = edgeMark(m->Indices[i]);
+        edge[1] = edgeMark(m->Indices[i + 1]);
+        edge[2] = edgeMark(m->Indices[i + 2]);
 
         if (world) {
             XMMATRIX XMV_world = XMLoadFloat4x4(world);
@@ -1193,10 +1207,19 @@ void ImGuiEditorView::OnDelete() {
     }
 
     if (Selection.SelectedMesh && Selection.SelectedMaterial && Selection.SelectedMaterial->GetTextureSingle()) {
-        // Find the section of this mesh
-        FXMVECTOR Position0 = XMVectorSet(Selection.SelectedMesh->Vertices[0].Position.x, Selection.SelectedMesh->Vertices[0].Position.y, Selection.SelectedMesh->Vertices[0].Position.z, 0);
-        FXMVECTOR Position1 = XMVectorSet(Selection.SelectedMesh->Vertices[1].Position.x, Selection.SelectedMesh->Vertices[1].Position.y, Selection.SelectedMesh->Vertices[1].Position.z, 0);
-        FXMVECTOR Position2 = XMVectorSet(Selection.SelectedMesh->Vertices[2].Position.x, Selection.SelectedMesh->Vertices[2].Position.y, Selection.SelectedMesh->Vertices[2].Position.z, 0);
+        // Find the section of this mesh. Selected meshes come from TraceWorldMesh, so they are world
+        // meshes serving the slim copy; the Vertices branch covers anything else that gets selected.
+        const std::vector<WorldVertexCPU>* slim = Selection.SelectedMesh->GetCpuVertices();
+        const size_t vertexCount = slim ? slim->size() : Selection.SelectedMesh->Vertices.size();
+        if (vertexCount < 3) {
+            return;
+        }
+        auto vpos = [&](size_t idx) -> const float3& {
+            return slim ? (*slim)[idx].Position : Selection.SelectedMesh->Vertices[idx].Position;
+        };
+        FXMVECTOR Position0 = XMVectorSet(vpos(0).x, vpos(0).y, vpos(0).z, 0);
+        FXMVECTOR Position1 = XMVectorSet(vpos(1).x, vpos(1).y, vpos(1).z, 0);
+        FXMVECTOR Position2 = XMVectorSet(vpos(2).x, vpos(2).y, vpos(2).z, 0);
         XMFLOAT3 avgPos;
         XMStoreFloat3(&avgPos, (Position0 + Position1 + Position2) / 3.0f);
 
