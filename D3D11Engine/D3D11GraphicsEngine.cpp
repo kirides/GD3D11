@@ -4066,10 +4066,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // Clear textures from the last frame
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
-    FrameTransparencyMeshes.clear();
-    FrameTransparencyMeshesPortal.clear();
-    FrameTransparencyMeshesWaterfall.clear();
     m_FrameGeometryCache.Reset();
+
+    // Producers push into this all through the frame (world mesh build, VOB collection); the sorted
+    // transparency pass at the end of the graph drains it.
+    Engine::GAPI->GetTransparencyQueue().BeginFrame();
+    Engine::GAPI->GetTransparencyVobs().clear();
 
     // TODO: TODO: Hack for texture caching!
     zCTextureCacheHack::NumNotCachedTexturesInFrame = 0;
@@ -4169,8 +4171,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             Engine::GAPI->GetVisibleDecalList( decals );
 
             Engine::GAPI->ResetRenderStates();
+
+            // Only the lit (alpha-tested, never blended) decals belong here, before lighting.
+            // Quad marks moved into the sorted transparency pass at the end of the frame.
             DrawDecalList( decals, true );
-            DrawQuadMarks();
         };
     });    
     
@@ -4183,17 +4187,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     ActiveSceneRenderer->AddLightingPasses( graph, *this,
         colorResource, normalsResource, specularResource,
         backBufferHandle, aoMaskResource, m_FrameLights );
-
-    graph.AddPass( RG_PASS_NAME("Draw Frame AlphaMeshes"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        // Setup / Declare
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this](const RenderGraph&)-> void {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Frame AlphaMeshes" );
-            DrawFrameAlphaMeshes();
-            };
-        }
-    );
 
     // Ambient occlusion is now produced before lighting (AddAmbientOcclusionPass) and applied
     // to indirect light inside the lighting shaders — no post-lighting darkening pass here.
@@ -4239,19 +4232,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
     
-    graph.AddPass( RG_PASS_NAME("Draw ghosts"), [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw SkeletalVN"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Ghosts" );
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw SkeletalVN" );
 
-            D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
-            SetRenderingStage( DES_GHOST );
-            Engine::GAPI->DrawTransparencyVobs();
-            SetRenderingStage( oldStage );
+            // Ghosts themselves moved into the sorted transparency pass near the end of the frame
             Engine::GAPI->DrawSkeletalVN();
-            
+
             // for Post-Processing FX we use the full viewport for now
             // TODO: introduce UV-scaling to PostFX
             SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
@@ -4327,29 +4317,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
     
-    if (rendererState.RendererSettings.DrawParticleEffects) {
-        graph.AddPass( RG_PASS_NAME("Draw ParticleFX #2"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( backBufferHandle );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this](const RenderGraph&) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticleFX #2" );
-
-                // Draw unlit decals 
-                // TODO: Only get them once!
-                std::vector<zCVob*> decals;
-                zCCamera::GetCamera()->Activate();
-                // Camera->Activate breaks viewport
-                SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-
-                Engine::GAPI->GetVisibleDecalList( decals );
-
-                // Draw stuff like candle-flames
-                DrawDecalList( decals, false );
-                DrawMQuadMarks();
-            };
-        });
-    }
+    // Unlit decals and the modulate quad marks used to be drawn here, in a second particle-FX pass.
+    // Both are alpha-blended and now go through the sorted transparency pass instead.
     
     if (rendererState.RendererSettings.EnableGodRays &&
         Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
@@ -4459,34 +4428,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
 
-#if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
-
-    graph.AddPass( RG_PASS_NAME("Draw PolyStrips"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw PolyStrips" );
-
-            // Calc weapon/effect trail mesh data
-            Engine::GAPI->CalcPolyStripMeshes();
-            // Calc lightning flashes mesh data
-            Engine::GAPI->CalcFlashMeshes();
-
-            // Re-bind the depth buffer: the preceding particle pass ends on a PfxRenderer blit that leaves
-            // the OM with an RTV and no DSV, so trails and lightning drew through walls.
-            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
-            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
-            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
-                DepthStencilBuffer->GetDepthStencilView().Get() );
-
-            // For some reasons the viewport gets messed up, so set it again
-            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-            DrawPolyStrips();
-        };
-    } );
-
-#endif
-
     // Draw debug lines
     graph.AddPass( RG_PASS_NAME("Draw Debug Lines"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
@@ -4498,57 +4439,30 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     } );
 
-    graph.AddPass( RG_PASS_NAME( "Draw FrameTransparencyMeshes" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+    // Everything alpha-blended in one pass, sorted back to front across all categories: world
+    // transparency meshes (normal / portal / waterfall), instanced alpha VOBs, ghosts, blended
+    // decals, quad marks and poly strips. This slot is where the world transparency meshes already
+    // sat - after water, particles and the fog/god-rays composition - so the refraction-based passes
+    // keep the scene they expect to read.
+    graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this]( const RenderGraph& ) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshes" );
+        pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph ) {
+            // Re-bind the depth buffer: the preceding particle pass ends on a PfxRenderer blit that
+            // leaves the OM with an RTV and no DSV, which used to make trails draw through walls.
+            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
 
-            SetDefaultStates();
+            zCCamera::GetCamera()->Activate();
+            // Camera->Activate breaks the viewport
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
 
-            // Setup renderstates
-            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-            DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
-            };
-    } );
-
-    if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
-        graph.AddPass( RG_PASS_NAME( "Draw ForestPortals" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( backBufferHandle );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this]( const RenderGraph& ) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ForestPortals" );
-
-                SetDefaultStates();
-
-                // Setup renderstates
-                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-                DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
-            };
-        } );
-    }
-
-    graph.AddPass( RG_PASS_NAME( "Draw FrameTransparencyMeshesWaterfall" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this]( const RenderGraph& ) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshesWaterfall" );
-
-            SetDefaultStates();
-
-            // Setup renderstates
-            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-            DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
-            };
+            CollectTransparencyQueue();
+            DrawTransparencyQueue();
+        };
     } );
 
     // Draw debug lines
@@ -4897,11 +4811,30 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain()
 }
 
 /** Draws a list of mesh infos */
-XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
-    const std::vector<std::pair<MeshKey, MeshInfo*>>& list ) {
-    if ( list.empty() ) {
-        return XR_SUCCESS;
+/** Draws a run of alpha-blended world mesh sections in the order the transparency queue produced.
+
+    The three world transparency variants (normal / portal / waterfall) all run through this one
+    body: the pixel shader is picked per material from MaterialInfo::MaterialType inside
+    BindShaderForTexture, so the variant only decides whether the run is drawn at all (portals are
+    gated behind DrawG1ForestPortals) and whether it re-writes depth afterwards. */
+void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentItem> items,
+    EWorldTransparencyVariant variant ) {
+    if ( items.empty() ) {
+        return;
     }
+
+    if ( variant == EWorldTransparencyVariant::Portal &&
+        !Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals ) {
+        return;
+    }
+
+    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::DrawWorldTransparencyRun" );
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    SetDefaultStates();
+    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -4936,8 +4869,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     
     void* lastTex = nullptr;
     void* lastMat = nullptr;
-    MaterialInfo* lastInfo = nullptr;
-    for ( auto const& [meshKey, meshInfo] : list ) {
+    for ( auto const& item : items ) {
+        auto const& [meshKey, meshInfo] = queue.GetWorldMesh( item );
         zCMaterial* const mat = meshKey.Material;
         if ( !mat ) {
             continue;
@@ -5035,12 +4968,6 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
 
             // TODO: Do we even need/use material-info for transparent meshes?
-            /*MaterialInfo* info = meshKey.Info;
-            if (info != lastInfo) {
-                if (!lastInfo || !lastInfo->IsSame(info)) {
-                    lastInfo = info;
-                }
-            }*/
 
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
@@ -5048,25 +4975,229 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
         }
     }
+}
 
-    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = true;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-    Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = false;
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+/** Re-writes the depth of every world transparency mesh of this frame with color writes off.
 
-    UpdateRenderStates();
+    This used to be the tail of DrawMeshInfoListAlphablended and ran once per list; with the queue
+    interleaving the lists it has to happen once, after the whole replay, or a nearer transparency
+    mesh would depth-reject a farther one that is drawn later. Portals are excluded, same as before.
 
-    // Draw again, but only to depthbuffer this time to make them work with
-    // fogging
-    for ( auto const& [meshKey, meshInfo] : list ) {
-        if ( meshKey.Material->GetAniTexture() != nullptr && meshKey.Info->MaterialType != MaterialInfo::MT_Portal ) {
-            // Draw the section-part
-            DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
-                meshInfo->BaseIndexLocation );
+    Note the fog/god-rays justification the original comment gave is stale: both of those passes run
+    earlier in the frame now. This is kept for the depth-consuming post effects that still come
+    after the transparency pass (DoF, TAA). */
+void D3D11GraphicsEngine::DrawWorldTransparencyDepthOnly() {
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    bool anyDrawn = false;
+    for ( auto const& item : queue.GetItems() ) {
+        if ( item.Kind != ETransparentKind::WorldMesh ||
+            static_cast<EWorldTransparencyVariant>(item.SubKind) == EWorldTransparencyVariant::Portal ) {
+            continue;
+        }
+
+        auto const& [meshKey, meshInfo] = queue.GetWorldMesh( item );
+        if ( !meshKey.Material || !meshKey.Material->GetAniTexture() ) {
+            continue;
+        }
+
+        if ( !anyDrawn ) {
+            // Same pipeline as the color pass, just depth-only
+            SetActivePixelShader( PShaderID::PS_Diffuse );
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
+            SetupVS_ExMeshDrawCall();
+            SetupVS_ExConstantBuffer();
+            BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
+
+            Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = true;
+            Engine::GAPI->GetRendererState().DepthState.SetDirty();
+            Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = false;
+            Engine::GAPI->GetRendererState().BlendState.SetDirty();
+            UpdateRenderStates();
+            anyDrawn = true;
+        }
+
+        DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
+            meshInfo->BaseIndexLocation );
+    }
+
+    if ( anyDrawn ) {
+        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
+        Engine::GAPI->GetRendererState().BlendState.SetDirty();
+        UpdateRenderStates();
+    }
+}
+
+/** Draws a run of ghost vobs (invisible-potion / fade-out items and NPCs). */
+void D3D11GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items ) {
+    if ( items.empty() ) return;
+
+    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::DrawGhostRun" );
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+    auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
+
+    D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
+    SetRenderingStage( DES_GHOST );
+
+    Engine::GAPI->BeginTransparencyVobRun();
+    for ( auto const& item : items ) {
+        const uint32_t index = queue.GetGhostIndex( item );
+        if ( index < transparencyVobs.size() ) {
+            Engine::GAPI->DrawTransparencyVob( transparencyVobs[index] );
         }
     }
 
-    return XR_SUCCESS;
+    SetRenderingStage( oldStage );
+}
+
+/** Draws a run of blended decals. The existing list-based path already batches consecutive
+    same-material decals without reordering them, which is exactly what a queue run needs. */
+void D3D11GraphicsEngine::DrawDecalRun( std::span<const TransparentItem> items ) {
+    if ( items.empty() ) return;
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    static std::vector<zCVob*> decalRun; // static to get around reallocations
+    decalRun.clear();
+    decalRun.reserve( items.size() );
+    for ( auto const& item : items ) {
+        decalRun.push_back( queue.GetDecal( item ) );
+    }
+
+    DrawDecalList( decalRun, false );
+}
+
+/** Fills the frame's transparency queue with everything that is not pushed at production time and
+    sorts it. World transparency meshes (DrawWorldMesh) and alpha VOB instances (DrawVOBsInstanced)
+    are already in by the time this runs; ghosts, decals, quad marks and poly strips are gathered
+    here, right before the replay, so no producer has to care about pass ordering. */
+void D3D11GraphicsEngine::CollectTransparencyQueue() {
+    ZoneScopedN( "CollectTransparencyQueue" );
+
+    TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+    auto& renderSettings = Engine::GAPI->GetRendererState().RendererSettings;
+    const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+
+    // Ghosts. TransparencyVobInfo::distance is linear (DrawSkeletalMeshVob wants it that way),
+    // the queue sorts on squared distances.
+    auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
+    for ( size_t i = 0; i < transparencyVobs.size(); ++i ) {
+        const float distance = transparencyVobs[i].distance;
+        queue.AddGhost( distance * distance, static_cast<uint32_t>(i) );
+    }
+
+    if ( renderSettings.DrawParticleEffects ) {
+        // Unlit (blended) decals. The lit/alpha-tested ones are not part of the queue - they are
+        // drawn opaque before lighting and never blend.
+        static std::vector<zCVob*> decals; // static to get around reallocations
+        decals.clear();
+        Engine::GAPI->GetVisibleDecalList( decals );
+        for ( zCVob* decal : decals ) {
+            float distanceSq;
+            XMStoreFloat( &distanceSq, XMVector3LengthSq( decal->GetPositionWorldXM() - camPos ) );
+            queue.AddDecal( distanceSq, decal );
+        }
+
+        // Quad marks (blood, spell ground marks)
+        const float vfxRadiusSq = renderSettings.VisualFXDrawRadius * renderSettings.VisualFXDrawRadius;
+        for ( auto const& it : Engine::GAPI->GetQuadMarks() ) {
+            if ( !it.first->GetConnectedVob() ) continue;
+
+            float distanceSq;
+            XMStoreFloat( &distanceSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it.second.Position ) ) );
+            if ( distanceSq > vfxRadiusSq ) continue;
+
+            queue.AddQuadMark( distanceSq, it.first, &it.second );
+        }
+    }
+
+#if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
+    // Poly strips (weapon/effect trails and the barrier's lightning). The mesh data has to be built
+    // before we can take a depth for it.
+    Engine::GAPI->CalcPolyStripMeshes();
+    Engine::GAPI->CalcFlashMeshes();
+
+    for ( auto const& it : Engine::GAPI->GetPolyStripInfos() ) {
+        const std::vector<ExVertexStruct>& vertices = it.second.vertices;
+        if ( vertices.empty() || !it.second.material || !it.first ) continue;
+
+        // One strip group per texture, so its depth is the centroid of everything in it
+        XMVECTOR center = XMVectorZero();
+        for ( auto const& vertex : vertices ) {
+            center = XMVectorAdd( center, XMLoadFloat3( &vertex.Position ) );
+        }
+        center = XMVectorScale( center, 1.0f / static_cast<float>(vertices.size()) );
+
+        float distanceSq;
+        XMStoreFloat( &distanceSq, XMVector3LengthSq( center - camPos ) );
+        queue.AddPolyStrip( distanceSq, it.first, &it.second );
+    }
+#endif
+
+    // categoryMajor reproduces the old per-category pass order without a second set of emitters
+    queue.Sort( !renderSettings.SortedTransparency );
+}
+
+/** Replays the sorted transparency queue. */
+void D3D11GraphicsEngine::DrawTransparencyQueue() {
+    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::DrawTransparencyQueue" );
+    auto _scopeTransparency = RecordGraphicsEvent( GE_NAME( "DrawTransparencyQueue" ) );
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    // One buffer for every alpha VOB batch of this frame, so it cannot live in a per-run emitter
+    PrepareAlphaMeshWindMetadata();
+    m_AlphaVobDrawsThisFrame = 0;
+
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
+        DepthStencilBuffer->GetDepthStencilView().Get() );
+    SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+
+    const size_t runs = queue.ForEachRun( [&]( ETransparentKind kind, uint8_t subKind,
+        std::span<const TransparentItem> items ) {
+            switch ( kind ) {
+            case ETransparentKind::WorldMesh:
+                DrawWorldTransparencyRun( items, static_cast<EWorldTransparencyVariant>(subKind) );
+                break;
+            case ETransparentKind::AlphaVob:
+                DrawAlphaVobRun( items );
+                break;
+            case ETransparentKind::Ghost:
+                DrawGhostRun( items );
+                break;
+            case ETransparentKind::Decal:
+                DrawDecalRun( items );
+                break;
+            case ETransparentKind::QuadMark:
+                DrawQuadMarkRun( items );
+                break;
+            case ETransparentKind::PolyStrip:
+                DrawPolyStripRun( items );
+                break;
+            default:
+                break;
+            }
+        } );
+
+    // Depth of the world transparency meshes, once, after everything blended has been drawn
+    DrawWorldTransparencyDepthOnly();
+
+    // The alpha VOB visuals could not be reset inside the emitter: the queue can hand out a single
+    // batch's instances in more than one run.
+    for ( auto const& alphaMesh : m_AlphaMeshes ) {
+        if ( alphaMesh.vi ) alphaMesh.vi->StartNewFrame();
+    }
+    m_AlphaMeshes.clear();
+    Engine::GAPI->GetTransparencyVobs().clear();
+
+    // A run count close to the item count means batching collapsed - the thing to watch when this
+    // gets profiled on real hardware.
+    static unsigned int transparencyLogCounter = 0;
+    if ( !queue.Empty() && (transparencyLogCounter++ % 1800) == 0 ) {
+        LogInfo() << "Transparency queue: " << queue.Size() << " items in " << runs
+            << " runs, " << m_AlphaVobDrawsThisFrame << " alpha VOB draws";
+    }
 }
 
 
@@ -5143,18 +5274,14 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         //zCLightmap* Lightmap;
     };
 
-    struct TransparencyWorldMeshEntry {
-        std::pair<MeshKey, MeshInfo*> Mesh;
-        float DistanceSq;
-    };
-
     static std::vector<std::pair<WorldMeshKey, MeshInfo*>> meshList;
     meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
 
-    std::vector<TransparencyWorldMeshEntry> transparencyMeshes;
-    std::vector<TransparencyWorldMeshEntry> portalTransparencyMeshes;
-    std::vector<TransparencyWorldMeshEntry> waterfallTransparencyMeshes;
+    // Alpha-blended world sections go straight into the frame's transparency queue, which sorts them
+    // against every other blended drawable (ghosts, alpha VOBs, decals, ...) instead of just against
+    // each other. Nothing is sorted here anymore.
+    TransparencyQueue& transparencyQueue = Engine::GAPI->GetTransparencyQueue();
 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     GetContext()->DSSetShader( nullptr, nullptr, 0 );
@@ -5184,16 +5311,17 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     }
 
                     const float distanceSq = ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition );
-                    const std::pair<MeshKey, MeshInfo*> transparencyMesh = { worldMesh.first, worldMesh.second };
 
                     if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
                         if ( !isZPrepass ) {
-                            portalTransparencyMeshes.push_back( { transparencyMesh, distanceSq } );
+                            transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Portal,
+                                worldMesh.first, worldMesh.second );
                         }
                         continue;
                     } else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
                         if ( !isZPrepass ) {
-                            waterfallTransparencyMeshes.push_back( { transparencyMesh, distanceSq } );
+                            transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Waterfall,
+                                worldMesh.first, worldMesh.second );
                         }
                         continue;
                     }
@@ -5204,7 +5332,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         // || (worldMesh.first.Material->GetEnvMapEnabled())
                         ) {
                         if ( !isZPrepass ) {
-                            transparencyMeshes.push_back( { transparencyMesh, distanceSq } );
+                            transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Normal,
+                                worldMesh.first, worldMesh.second );
                         }
                         continue;
                     } else {
@@ -5235,39 +5364,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             }
         }
 
-        auto sortAndAppendTransparencyMeshes = []( std::vector<TransparencyWorldMeshEntry>& source,
-            std::vector<std::pair<MeshKey, MeshInfo*>>& destination ) {
-            if ( source.empty() ) {
-                return;
-            }
-
-            std::sort( source.begin(), source.end(),
-                []( const TransparencyWorldMeshEntry& a, const TransparencyWorldMeshEntry& b ) {
-                    if ( a.DistanceSq > b.DistanceSq )
-                        return true;
-                    if ( a.DistanceSq < b.DistanceSq )
-                        return false;
-                    if ( a.Mesh.first.Material != b.Mesh.first.Material )
-                        return a.Mesh.first.Material < b.Mesh.first.Material;
-                    if ( a.Mesh.first.Texture != b.Mesh.first.Texture )
-                        return a.Mesh.first.Texture < b.Mesh.first.Texture;
-                    if ( a.Mesh.first.Info != b.Mesh.first.Info )
-                        return a.Mesh.first.Info < b.Mesh.first.Info;
-
-                    const unsigned int aBaseIndex = a.Mesh.second ? a.Mesh.second->BaseIndexLocation : 0u;
-                    const unsigned int bBaseIndex = b.Mesh.second ? b.Mesh.second->BaseIndexLocation : 0u;
-                    return aBaseIndex < bBaseIndex;
-                } );
-
-            destination.reserve( destination.size() + source.size() );
-            for ( auto& entry : source ) {
-                destination.emplace_back( std::move( entry.Mesh ) );
-            }
-        };
-
-        sortAndAppendTransparencyMeshes( transparencyMeshes, FrameTransparencyMeshes );
-        sortAndAppendTransparencyMeshes( portalTransparencyMeshes, FrameTransparencyMeshesPortal );
-        sortAndAppendTransparencyMeshes( waterfallTransparencyMeshes, FrameTransparencyMeshesWaterfall );
     }
     auto CompareMesh = []( std::pair<WorldMeshKey, MeshInfo*>& a, std::pair<WorldMeshKey, MeshInfo*>& b ) -> bool {
         if ( a.first.AlphaLevel != b.first.AlphaLevel )
@@ -7617,12 +7713,27 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                     if ( isAlphaBlendMesh ) {
                         if ( !isZPrepass ) {
+                            const uint32_t batchIndex = static_cast<uint32_t>(m_AlphaMeshes.size());
+
                             AlphaMeshData alphaMesh;
                             alphaMesh.mk = meshKey;
                             alphaMesh.mi = meshInfo;
                             alphaMesh.vi = cachedVisual->Visual;
                             alphaMesh.StartInstanceNum = cachedVisual->StartInstanceNum;
                             alphaMesh.instances = cachedVisual->Instances;
+
+                            // One queue item per *instance*: a batch's instances are scattered across the
+                            // world, so a single depth for the whole batch would sort nothing. The emitter
+                            // re-merges consecutive items of the same batch back into one instanced draw.
+                            TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+                            const uint32_t batchKey = TransparencyQueue::MakeBatchKey( meshKey.Material );
+                            for ( size_t i = 0; i < alphaMesh.instances.size(); ++i ) {
+                                const XMFLOAT4X4& world = alphaMesh.instances[i].world;
+                                const XMFLOAT3 position( world._14, world._24, world._34 );
+                                queue.AddAlphaVob( TransparencyQueue::DistanceSqFromCamera( position ),
+                                    batchIndex, static_cast<uint32_t>(i), batchKey );
+                            }
+
                             m_AlphaMeshes.push_back( std::move( alphaMesh ) );
                         }
                         continue;
@@ -7830,29 +7941,25 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 }
 
 /** Draws the static VOBs */
-XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
+/** Builds and uploads the per-visual wind metadata for this frame's alpha VOB batches.
+
+    One buffer covers all batches, so this cannot live inside a per-run emitter - the transparency
+    queue can hand out a batch's instances in several runs. It also stamps the metadata index into
+    the instance data, which has to happen before the first alpha VOB draw. */
+void D3D11GraphicsEngine::PrepareAlphaMeshWindMetadata()
 {
+    m_AlphaMeshWindMetadataValid = false;
     if ( m_AlphaMeshes.empty() ) {
-        return XR_SUCCESS;
+        return;
     }
 
-    TracyD3D11ZoneCGX("DrawFrameAlphaMeshes");
-    auto _scopeDrawFrameAlphaMeshes = RecordGraphicsEvent( GE_NAME( "DrawFrameAlphaMeshes" ) );
+    TracyD3D11ZoneCGX("PrepareAlphaMeshWindMetadata");
 
-    // Make sure lighting doesn't mess up our state
-    SetDefaultStates();
-
-    SetActivePixelShader( PShaderID::PS_Simple );
+    // The metadata SRV is bound by name on VS_ExInstancedObj, the shader the alpha VOB run uses.
     SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
-        DepthStencilBuffer->GetDepthStencilView().Get() );
-
     bool useWindMetadata = false;
-    if ( ActiveVS && ActiveVS->GetInputIndex( "WindMetaData" ) != -1 && !m_AlphaMeshes.empty() ) {
+    if ( ActiveVS && ActiveVS->GetInputIndex( "WindMetaData" ) != -1 ) {
         std::unordered_map<MeshVisualInfo*, DWORD> metadataByVisual;
         metadataByVisual.reserve( m_AlphaMeshes.size() );
 
@@ -7900,17 +8007,51 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
 
             if ( WindMetadataBuffer
                 && XR_SUCCESS == WindMetadataBuffer->UpdateBuffer( m_WindMetadataStaging.data(), requiredSize ) ) {
-                ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
                 useWindMetadata = true;
             }
         }
     }
 
+    m_AlphaMeshWindMetadataValid = useWindMetadata;
+}
+
+/** Draws a run of alpha-blended VOB instances the transparency queue handed over.
+
+    Items are per instance, so consecutive items of the same batch with consecutive instance indices
+    are merged back into one instanced draw here - a scattered run degrades to single-instance draws,
+    which is what correct depth order costs. */
+void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> items )
+{
+    if ( items.empty() ) {
+        return;
+    }
+
+    TracyD3D11ZoneCGX("DrawAlphaVobRun");
+    auto _scopeDrawAlphaVobs = RecordGraphicsEvent( GE_NAME( "DrawAlphaVobRun" ) );
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
 
     D3D11VertexBuffer* instancingBuffer = m_FrameGeometryCache.MainVobInstancingBuffer;
     if ( !instancingBuffer ) {
         LogError() << "Missing main vob instancing buffer for alpha mesh rendering.";
-        return XR_FAILED;
+        return;
+    }
+
+    // Make sure lighting doesn't mess up our state
+    SetDefaultStates();
+
+    SetActivePixelShader( PShaderID::PS_Simple );
+    SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
+
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
+        DepthStencilBuffer->GetDepthStencilView().Get() );
+
+    const bool useWindMetadata = m_AlphaMeshWindMetadataValid && ActiveVS && WindMetadataBuffer;
+    if ( useWindMetadata ) {
+        ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
     }
 
     ConstantBufferSlot windBuffer = INVALID_SHADER_CB_SLOT;
@@ -7921,10 +8062,27 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
     }
 
     {
-        TracyD3D11ZoneCGX( "DrawFrameAlphaMeshes::Replay" );
-        auto _scopeAlphaReplay = RecordGraphicsEvent( GE_NAME( "DrawFrameAlphaMeshes::Replay" ) );
-        for ( auto const& alphaMesh : m_AlphaMeshes ) {
+        for ( size_t i = 0; i < items.size(); ) {
+            const TransparentAlphaVob& first = queue.GetAlphaVob( items[i] );
+
+            // Merge the consecutive same-batch instances of this run into one draw
+            size_t end = i + 1;
+            while ( end < items.size() ) {
+                const TransparentAlphaVob& next = queue.GetAlphaVob( items[end] );
+                if ( next.BatchIndex != first.BatchIndex ||
+                    next.InstanceIndex != queue.GetAlphaVob( items[end - 1] ).InstanceIndex + 1 ) {
+                    break;
+                }
+                ++end;
+            }
+            const unsigned int instanceCount = static_cast<unsigned int>(end - i);
+            i = end;
+
+            if ( first.BatchIndex >= m_AlphaMeshes.size() ) continue;
+            const AlphaMeshData& alphaMesh = m_AlphaMeshes[first.BatchIndex];
+
             const MeshKey& mk = alphaMesh.mk;
+            if ( !mk.Material ) continue;
             zCTexture* tx = mk.Material->GetAniTexture();
             if ( !tx ) continue;
 
@@ -7935,7 +8093,6 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             // Bind texture
             MeshInfo* mi = alphaMesh.mi;
             MeshVisualInfo* vi = alphaMesh.vi;
-            auto& instances = alphaMesh.instances;
 
             if ( tx->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                 continue;
@@ -7976,39 +8133,39 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
                 BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
             }
 
-            // Draw batch
+            // Draw the merged instances. StartInstanceLocation is absolute in the frame's shared
+            // instancing buffer, so a sub-range of a batch just shifts the base.
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
-                instances.size(), sizeof( ExVertexStruct ),
-                alphaMesh.StartInstanceNum, 0,
+                instanceCount, sizeof( ExVertexStruct ),
+                alphaMesh.StartInstanceNum + first.InstanceIndex, 0,
                 m_FrameGeometryCache.MainVobInstancingBufferOffset );
 
-            // Reset visual
-            vi->StartNewFrame();
+            m_AlphaVobDrawsThisFrame++;
         }
     }
 
     if ( useWindMetadata ) {
         UnbindWindMetadata();
     }
-
-    m_AlphaMeshes.clear();
-    
-    return XR_SUCCESS;
 }
 
 XRESULT D3D11GraphicsEngine::DrawVOBs( bool noTextures ) {
     return DrawVOBsInstanced();
 }
 
-XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
-    //DrawMeshInfoListAlphablended was mostly used as an example to write everything below
-    const std::map<zCTexture*, PolyStripInfo>& polyStripInfos = Engine::GAPI->GetPolyStripInfos();
+/** Draws a run of poly strips (weapon/spell trails, barrier lightning) in queue order.
 
-    // No need to do a bunch of work for nothing!
-    if ( polyStripInfos.empty() ) {
-        return XR_SUCCESS;
+    Poly strips are accumulated per texture by CalcPolyStripMeshes, so one queue item is one
+    texture's worth of strips, sorted on the centroid of its vertices. */
+void D3D11GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> items ) {
+    if ( items.empty() ) {
+        return;
     }
+
+    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::DrawPolyStripRun" );
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
 
     SetDefaultStates();
 
@@ -8057,13 +8214,14 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     ActiveVS->UpdateBuffer(vsBufMPI, &identityMatrix, sizeof(identityMatrix) );
 
     zCMaterial* lastMat = nullptr;
-    for ( auto it = polyStripInfos.begin(); it != polyStripInfos.end(); it++ ) {
-        zCMaterial* mat = it->second.material;
-        zCTexture* tx = it->first;
+    for ( auto const& item : items ) {
+        const TransparentPolyStrip& strip = queue.GetPolyStrip( item );
+        zCMaterial* mat = strip.Info->material;
+        zCTexture* tx = strip.Texture;
 
-        const std::vector<ExVertexStruct>& vertices = it->second.vertices;
+        const std::vector<ExVertexStruct>& vertices = strip.Info->vertices;
 
-        if ( !vertices.size() ) continue;
+        if ( !mat || !tx || vertices.empty() ) continue;
 
         //Setting world transform matrix/////////////
 
@@ -8126,8 +8284,6 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     }
 
     SetDefaultStates();
-
-    return XR_SUCCESS;
 }
 
 /** Sets up the default rendering state */
@@ -8872,14 +9028,20 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     Context->IASetVertexBuffers( 1, 1, &nullBuf, &nullStride, &nullOffset );
 }
 
-/** Draws quadmarks in a simple way */
-void D3D11GraphicsEngine::DrawQuadMarks() {
-    const auto& quadMarks = Engine::GAPI->GetQuadMarks();
-    if ( quadMarks.empty() ) return;
+/** Draws a run of quad marks (blood, spell ground marks) in queue order.
+
+    This replaces the old DrawQuadMarks/DrawMQuadMarks split: MUL/MUL2 marks used to be deferred
+    into a second pass after the ghosts, which is exactly the kind of category-wide reordering the
+    transparency queue exists to remove. All blend modes are handled per item here. */
+void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> items ) {
+    if ( items.empty() ) return;
+
+    auto _ = RecordGraphicsEvent( GE_NAME( "DrawQuadMarkRun" ) );
+    TracyD3D11ZoneCGX( "DrawQuadMarkRun" );
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
 
     SetActiveVertexShader( VShaderID::VS_Ex );
-    SetActivePixelShader( PShaderID::PS_World );
-
     SetDefaultStates();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -8888,124 +9050,74 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
-    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
-
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    int alphaFunc = zMAT_ALPHA_FUNC_NONE;
+    int lastAlphaFunc = -1;
+    for ( auto const& item : items ) {
+        const TransparentQuadMark& quadMark = queue.GetQuadMark( item );
+        if ( !quadMark.Mark->GetConnectedVob() ) continue;
 
-    auto vfxRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius * Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
-    auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
-    const auto camPos = Engine::GAPI->GetCameraPositionXM();
-    for ( auto const& it : quadMarks ) {
-        if ( !it.first->GetConnectedVob() ) continue;
-
-        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( &it.second.Position ) ), vVfxRadiusSq) ) {
-            continue;
-        }
-
-        zCMesh* mesh = it.first->GetQuadMesh();
+        zCMesh* mesh = quadMark.Mark->GetQuadMesh();
         int numPolys = mesh->GetNumPolygons();
         zCPolygon** polys = mesh->GetPolygons();
-        zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : it.first->GetMaterial());
-        if ( mat ) mat->BindTexture( 0 );
+        zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : quadMark.Mark->GetMaterial());
+        if ( !mat ) continue;
+        mat->BindTexture( 0 );
 
-        if ( alphaFunc != mat->GetAlphaFunc() ) {
-            // Change alpha-func
-            switch ( mat->GetAlphaFunc() ) {
+        const int alphaFunc = mat->GetAlphaFunc();
+        if ( lastAlphaFunc != alphaFunc ) {
+            auto& state = Engine::GAPI->GetRendererState();
+
+            // MUL/MUL2 ran through PS_Simple in the old deferred pass, everything else through PS_World
+            const bool modulate = (alphaFunc == zMAT_ALPHA_FUNC_MUL || alphaFunc == zMAT_ALPHA_FUNC_MUL2);
+            SetActivePixelShader( modulate ? PShaderID::PS_Simple : PShaderID::PS_World );
+            if ( !modulate ) {
+                ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &state.GraphicsState, sizeof( state.GraphicsState ) );
+            }
+
+            switch ( alphaFunc ) {
             case zMAT_ALPHA_FUNC_ADD:
-                Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
+                state.BlendState.SetAdditiveBlending();
                 break;
 
             case zMAT_ALPHA_FUNC_BLEND:
-                Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                state.BlendState.SetAlphaBlending();
                 break;
 
             case zMAT_ALPHA_FUNC_NONE:
             case zMAT_ALPHA_FUNC_TEST:
-                Engine::GAPI->GetRendererState().BlendState.SetDefault();
+                state.BlendState.SetDefault();
                 break;
 
             case zMAT_ALPHA_FUNC_MUL:
-            case zMAT_ALPHA_FUNC_MUL2:
-                MulQuadMarks.emplace_back( it.first, &it.second );
-                continue;
-
-            default:
-                continue;
-            }
-
-            alphaFunc = mat->GetAlphaFunc();
-
-            Engine::GAPI->GetRendererState().BlendState.SetDirty();
-            UpdateRenderStates();
-        }
-
-        Engine::GAPI->SetWorldTransformXM( it.first->GetConnectedVob()->GetWorldMatrixXM() );
-        SetupVS_ExPerInstanceConstantBuffer();
-
-        DrawVertexBuffer( it.second.Mesh.get(), it.second.NumVertices );
-    }
-}
-
-void D3D11GraphicsEngine::DrawMQuadMarks() {
-    if ( MulQuadMarks.empty() ) return;
-
-    auto _ = RecordGraphicsEvent( GE_NAME( "DrawMQuadMarks" ) );
-    TracyD3D11ZoneCGX( "DrawMQuadMarks" );
-    
-    SetActiveVertexShader( VShaderID::VS_Ex );
-    SetActivePixelShader( PShaderID::PS_Simple );
-
-    SetDefaultStates();
-
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    Engine::GAPI->SetViewTransformXM( view );  // Update view transform
-
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    int alphaFunc = 0;
-    for ( auto const& it : MulQuadMarks ) {
-        zCMesh* mesh = it.first->GetQuadMesh();
-        int numPolys = mesh->GetNumPolygons();
-        zCPolygon** polys = mesh->GetPolygons();
-        zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : it.first->GetMaterial());
-        if ( mat ) mat->BindTexture( 0 );
-
-        if ( alphaFunc != mat->GetAlphaFunc() ) {
-            // Change alpha-func
-            switch ( mat->GetAlphaFunc() ) {
-            case zMAT_ALPHA_FUNC_MUL:
-                Engine::GAPI->GetRendererState().BlendState.SetModulateBlending();
+                state.BlendState.SetModulateBlending();
                 break;
 
             case zMAT_ALPHA_FUNC_MUL2:
-                Engine::GAPI->GetRendererState().BlendState.SetModulate2Blending();
+                state.BlendState.SetModulate2Blending();
                 break;
 
             default:
                 continue;
             }
 
-            alphaFunc = mat->GetAlphaFunc();
+            // Opaque quad marks keep writing depth, as they did in the old first pass; every blended
+            // mode must not, or a mark would depth-reject the transparent geometry drawn after it.
+            state.DepthState.DepthWriteEnabled =
+                (alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST);
+            state.DepthState.SetDirty();
 
-            Engine::GAPI->GetRendererState().BlendState.SetDirty();
+            state.BlendState.SetDirty();
             UpdateRenderStates();
+            lastAlphaFunc = alphaFunc;
         }
 
-        Engine::GAPI->SetWorldTransformXM( it.first->GetConnectedVob()->GetWorldMatrixXM() );
+        Engine::GAPI->SetWorldTransformXM( quadMark.Mark->GetConnectedVob()->GetWorldMatrixXM() );
         SetupVS_ExPerInstanceConstantBuffer();
 
-        DrawVertexBuffer( it.second->Mesh.get(), it.second->NumVertices );
+        DrawVertexBuffer( quadMark.Info->Mesh.get(), quadMark.Info->NumVertices );
     }
-    MulQuadMarks.clear();
 }
 
 /** Copies the depth stencil buffer to DepthStencilBufferCopy */

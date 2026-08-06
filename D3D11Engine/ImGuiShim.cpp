@@ -1819,6 +1819,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::DragFloat( "FOVHoriz", &settings.FOVHoriz, 1.0f, 1.0f, 360.0f, "%.0f" );
         ImGui::DragFloat( "FOVVert", &settings.FOVVert, 1.0f, 1.0f, 360.0f, "%.0f" );
         ImGui::Checkbox( "ForceFOV", &settings.ForceFOV );
+        ImGui::Checkbox( "Sorted transparency", &settings.SortedTransparency );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Draw all alpha-blended geometry in one back-to-front pass.\n"
+                "Off: the old fixed per-category pass order (faster to batch, wrong depth order between categories)." );
+        }
 #ifdef BUILD_GOTHIC_1_08k
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
         ImGui::Checkbox( "Highlight interactive focus", &settings.G1HighlightInteractiveFocus );

@@ -771,6 +771,9 @@
     <ClInclude Include="ShaderRegistry.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="TransparencyQueue.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -981,6 +984,9 @@
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="ShaderRegistry.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="TransparencyQueue.cpp">
       <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
