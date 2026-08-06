@@ -12,6 +12,7 @@
 #include "zTypes.h"
 #include "RenderQueue.h"
 #include "ShaderIDs.h"
+#include "TransparencyQueue.h"
 #include "ThreadPool.h"
 #include <shared_mutex>
 
@@ -442,12 +443,21 @@ public:
 
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
 
-    void DrawTransparencyVobs();
+    /** Sets up the shared render state a run of ghost draws needs. The transparency queue can
+        interleave ghosts with other kinds, so this runs once per run, not once per frame. */
+    void BeginTransparencyVobRun();
+
+    /** Draws one ghost vob (z-prepass with a null PS, then the transparency shader). Hard-wired to
+        D3D11GraphicsEngine; D3D12 has its own equivalent. */
+    void DrawTransparencyVob( const TransparencyVobInfo& info );
+
     void DrawSkeletalVN();
 
-    /** Backend-neutral accessor so a non-D3D11 backend can drain TransparencyVobs itself
-        (DrawTransparencyVobs() above is hard-wired to D3D11GraphicsEngine). */
+    /** Backend-neutral accessor: the transparency queue stores indices into this. */
     std::vector<TransparencyVobInfo>& GetTransparencyVobs() { return TransparencyVobs; }
+
+    /** Every alpha-blended drawable of this frame, sorted back to front by the transparency pass. */
+    TransparencyQueue& GetTransparencyQueue() { return TransparencyQueueData; }
 
     /** Draws the inventory */
     void DrawInventory( zCWorld* world, zCCamera& camera );
@@ -1056,6 +1066,9 @@ private:
     std::vector<SkeletalVobInfo*> AnimatedSkeletalVobs;
     std::vector<TransparencyVobInfo> TransparencyVobs;
     std::vector<SkeletalVobInfo*> VNSkeletalVobs;
+
+    /** Collection point for everything drawn alpha-blended this frame */
+    TransparencyQueue TransparencyQueueData;
 
     /** List of Vobs having a zCParticleFX-Visual */
     std::vector<zCVob*> ParticleEffectVobs;

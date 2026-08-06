@@ -713,6 +713,9 @@ struct GothicRendererSettings {
         ShowSkeletalVertexNormals = false;
         EnableDynamicLighting = true;
 
+        SortedTransparency = true;      // draw every alpha-blended thing in one back-to-front pass instead
+                                        // of one fixed pass per category (cobwebs, ghosts, glass, decals, ...)
+
         DrawG1ForestPortals = false;    //enables the textures around forests and some doors to darken them
                                         //these are only applicable to G1, they don't appear to have been used in G2
         G1HighlightInteractiveFocus = true; // G1 only: toggles the interactive focus which brightens up focus vobs/mobs
@@ -1050,6 +1053,7 @@ struct GothicRendererSettings {
     float FogRange;
     int WindQuality;
     bool HeroAffectsObjects;
+    bool SortedTransparency;
     bool DrawG1ForestPortals;
     bool G1HighlightInteractiveFocus;
     bool DrawRainThroughTransformFeedback;

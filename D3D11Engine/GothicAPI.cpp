@@ -66,7 +66,6 @@
 const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
 
 // Draw ghost from back to front of our camera
-auto CompareGhostDistance = []( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
 
 extern float vobAnimation_WindStrength;
 
@@ -1451,7 +1450,6 @@ void GothicAPI::DrawWorldMeshNaive() {
             // Schedule for drawing in later stage if this vob is ghost
             if ( vobInfo->Vob->GetVisualAlpha() ) {
                 TransparencyVobs.emplace_back( dist, vobInfo->Vob->GetVobTransparency(), vobInfo, nullptr );
-                std::ranges::push_heap(TransparencyVobs, CompareGhostDistance );
                 continue;
             }
 
@@ -3245,27 +3243,25 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 }
 
 
-void GothicAPI::DrawTransparencyVobs() {
-    ZoneScopedN( "GothicAPI::DrawTransparencyVobs" );
+void GothicAPI::BeginTransparencyVobRun() {
+    // Setup alpha blending
+    RendererState.RasterizerState.SetDefault();
+    RendererState.RasterizerState.SetDirty();
+    RendererState.BlendState.SetAlphaBlending();
+    RendererState.BlendState.SetDirty();
+    RendererState.DepthState.SetDefault();
+    RendererState.DepthState.SetDirty();
+}
+
+void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
+    ZoneScopedN( "GothicAPI::DrawTransparencyVob" );
     D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
-    if ( !TransparencyVobs.empty() ) {
-        // Setup alpha blending
-        RendererState.RasterizerState.SetDefault();
-        RendererState.RasterizerState.SetDirty();
-        RendererState.BlendState.SetAlphaBlending();
-        RendererState.BlendState.SetDirty();
-        RendererState.DepthState.SetDefault();
-        RendererState.DepthState.SetDirty();
-    }
 
     auto cbPool = g->GetConstantBufferPool();
     auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetInputIndex( "GhostAlphaInfo" );
 
-
     VS_ExConstantBuffer_PerInstance cbPerInstance;
-    while ( !TransparencyVobs.empty() ) {
-        auto const& TransVobInfo = TransparencyVobs.front();
-
+    {
         if ( TransVobInfo.skeletalVob ) {
             // We need to do Z-prepass first
             g->UnbindActivePS();
@@ -3339,9 +3335,6 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
             }
         }
-
-        std::ranges::pop_heap(TransparencyVobs, CompareGhostDistance );
-        TransparencyVobs.pop_back();
     }
 }
 
@@ -4479,13 +4472,12 @@ void GothicAPI::CollectVisibleVobs(
         }
 
         if ( renderQueue.transparent.size() ) {
-            TransparencyVobs.insert( TransparencyVobs.end(), 
-                std::make_move_iterator(renderQueue.transparent.begin()), 
+            TransparencyVobs.insert( TransparencyVobs.end(),
+                std::make_move_iterator(renderQueue.transparent.begin()),
                 std::make_move_iterator(renderQueue.transparent.end()) );
             // ignore dead items in renderQueue.transparent after move-insert
-
-            // sort back to front
-            std::ranges::sort(TransparencyVobs, CompareGhostDistance );
+            // No sort here anymore - the transparency queue orders ghosts against every other
+            // blended drawable, not just against each other.
         }
 
         float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
@@ -5753,6 +5745,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", to_string_locale_independent( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldOccluders", to_string_locale_independent( s.DrawWorldOccluders ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", to_string_locale_independent( s.SunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SortedTransparency", to_string_locale_independent( s.SortedTransparency ? TRUE : FALSE ).c_str(), ini.c_str() );
 #ifdef BUILD_GOTHIC_1_08k
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", to_string_locale_independent( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "G1HighlightInteractiveFocus", to_string_locale_independent( s.G1HighlightInteractiveFocus ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5936,6 +5929,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
         s.DrawWorldOccluders = GetPrivateProfileBoolA( "General", "DrawWorldOccluders", ds.DrawWorldOccluders, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
+        s.SortedTransparency = GetPrivateProfileBoolA( "General", "SortedTransparency", ds.SortedTransparency, ini );
 #ifdef BUILD_GOTHIC_1_08k
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", ds.DrawG1ForestPortals, ini );
         s.G1HighlightInteractiveFocus = GetPrivateProfileBoolA( "General", "G1HighlightInteractiveFocus", ds.G1HighlightInteractiveFocus, ini );

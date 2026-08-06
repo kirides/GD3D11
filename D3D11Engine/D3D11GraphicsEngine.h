@@ -194,9 +194,26 @@ public:
     XRESULT BindActivePixelShader() override;
     XRESULT BindActiveVertexShader() override;
 
-    /** Draws quadmarks in a simple way */
-    void DrawQuadMarks();
-    void DrawMQuadMarks();
+    /** ---------------- Sorted transparency -------------------- */
+
+    /** Fills the frame's transparency queue with the drawables that are not pushed at production
+        time (ghosts, decals, quad marks, poly strips) and sorts the whole queue back to front. */
+    void CollectTransparencyQueue();
+
+    /** Replays the sorted queue: every maximal run of consecutive same-kind items goes to the
+        matching emitter below, so batching survives while the global order stays painter's. */
+    void DrawTransparencyQueue();
+
+    void DrawWorldTransparencyRun( std::span<const TransparentItem> items, EWorldTransparencyVariant variant );
+    void DrawAlphaVobRun( std::span<const TransparentItem> items );
+    void DrawGhostRun( std::span<const TransparentItem> items );
+    void DrawDecalRun( std::span<const TransparentItem> items );
+    void DrawQuadMarkRun( std::span<const TransparentItem> items );
+    void DrawPolyStripRun( std::span<const TransparentItem> items );
+
+    /** Re-writes the depth of the world transparency meshes (color writes off) after the queue has
+        been replayed, so depth-consuming post effects still see them. */
+    void DrawWorldTransparencyDepthOnly();
 
     /** Gets the depthbuffer */
     RenderToDepthStencilBuffer* GetDepthBuffer() const { return DepthStencilBuffer.get(); }
@@ -238,14 +255,8 @@ public:
     /** Draws the world mesh */
     XRESULT DrawWorldMesh( bool noTextures = false ) override;
 
-    /** Draws a list of mesh infos */
-    XRESULT DrawMeshInfoListAlphablended( const std::vector<std::pair<MeshKey, MeshInfo*>>& list );
-
     /** Draws the static VOBs */
     XRESULT DrawVOBs( bool noTextures = false ) override;
-
-    /** Draws PolyStrips (weapon and particle trails) */
-    XRESULT DrawPolyStrips( bool noTextures = false ) override;
 
     /** Draws a VOB (used for inventory) */
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;
@@ -278,7 +289,10 @@ public:
 
     /** Draws the static vobs instanced */
     XRESULT DrawVOBsInstanced();
-    XRESULT DrawFrameAlphaMeshes();
+
+    /** Uploads the per-visual wind metadata for this frame's alpha VOB batches. Runs once before the
+        queue is replayed - the emitter only binds what this produced. */
+    void PrepareAlphaMeshWindMetadata();
 
     /** Set wind props in const buffer */
     void ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff );
@@ -531,23 +545,11 @@ protected:
     /** Shadowing */
     std::vector<VobInfo*> RenderedVobs;
 
-    /** Modulate Quad Marks */
-    std::vector<std::pair<zCQuadMark*, const QuadMarkInfo*>> MulQuadMarks;
-
     /** The current rendering stage */
     D3D11ENGINE_RENDER_STAGE RenderingStage;
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;
-
-    /** List of worldmeshes we have to render using alphablending */
-    std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshes;
-
-    /** List of portal worldmeshes we have to render using alphablending */
-    std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshesPortal;
-
-    /** List of waterfall worldmeshes we have to render using alphablending */
-    std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshesWaterfall;
 
     INT2 m_scaledResolution;
 
@@ -562,6 +564,14 @@ private:
     void UnbindWindMetadata();
 
     std::vector<AlphaMeshData> m_AlphaMeshes;
+
+    /** Set by PrepareAlphaMeshWindMetadata when this frame's wind metadata buffer is usable */
+    bool m_AlphaMeshWindMetadataValid = false;
+
+    /** Instanced draws the alpha VOB emitter needed this frame. Compared against the instance count
+        it shows how much of the batching survived the back-to-front sort. */
+    unsigned int m_AlphaVobDrawsThisFrame = 0;
+
     std::vector<VobLightInfo*> m_FrameLights;
     std::vector<VobWindMetadata> m_WindMetadataStaging;
 
