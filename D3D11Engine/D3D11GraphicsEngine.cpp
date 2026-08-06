@@ -4237,59 +4237,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
     
-    graph.AddPass( RG_PASS_NAME("Draw FrameTransparencyMeshes"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this](const RenderGraph&) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshes" );
-
-            SetDefaultStates();
-
-            // Setup renderstates
-            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-            DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
-        };
-    });
-    
-    if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
-        graph.AddPass( RG_PASS_NAME("Draw ForestPortals"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( backBufferHandle );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this](const RenderGraph&) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ForestPortals" );
-
-                SetDefaultStates();
-
-                // Setup renderstates
-                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-                DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
-            };
-        });
-    }
-    
-    graph.AddPass( RG_PASS_NAME("Draw FrameTransparencyMeshesWaterfall"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this](const RenderGraph&) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshesWaterfall" );
-
-            SetDefaultStates();
-
-            // Setup renderstates
-            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-            DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
-        };
-    });
-    
     graph.AddPass( RG_PASS_NAME("Draw ghosts"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
@@ -4547,6 +4494,59 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             LineRenderer->Flush();
             LineRenderer->FlushScreenSpace();
         };
+    } );
+
+    graph.AddPass( RG_PASS_NAME( "Draw FrameTransparencyMeshes" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this]( const RenderGraph& ) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshes" );
+
+            SetDefaultStates();
+
+            // Setup renderstates
+            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
+            DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
+            };
+    } );
+
+    if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
+        graph.AddPass( RG_PASS_NAME( "Draw ForestPortals" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this]( const RenderGraph& ) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ForestPortals" );
+
+                SetDefaultStates();
+
+                // Setup renderstates
+                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
+                DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
+            };
+        } );
+    }
+
+    graph.AddPass( RG_PASS_NAME( "Draw FrameTransparencyMeshesWaterfall" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this]( const RenderGraph& ) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshesWaterfall" );
+
+            SetDefaultStates();
+
+            // Setup renderstates
+            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
+            DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
+            };
     } );
 
     // Draw debug lines

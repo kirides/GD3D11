@@ -777,7 +777,7 @@
     <ClInclude Include="D3D12Engine\D3D12ShadowMap.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
-<ClInclude Include="D3D12Engine\D3D12VobArena.h">
+    <ClInclude Include="D3D12Engine\D3D12VobArena.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12PointShadows.h">
@@ -937,6 +937,7 @@
     <ClInclude Include="AsyncVisualExtractor.h" />
     <ClInclude Include="SharedVisualRegistry.h" />
     <ClInclude Include="MorphGpu.h" />
+    <ClInclude Include="zCPathSearch.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
