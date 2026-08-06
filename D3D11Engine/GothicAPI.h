@@ -1107,15 +1107,39 @@ private:
      *  missed it (origin had no visual yet). Cheap no-op once the shape is set. */
     void RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx );
 
+    /** A background LoadzCModelData(...) extraction job together with the zCObject references we
+     *  hold on everything it reads. The model reference is what keeps a vob that unloads and reloads
+     *  within the same frame from pulling the model out from under the worker; the softskin snapshot
+     *  is separate because zCModel::SoftSkinList is *refilled in place* on armor changes and mesh-lib
+     *  swaps - a live model is no guarantee that the meshes it pointed at a moment ago still exist. */
+    struct PendingSkeletalLoad {
+        TaskHandle<void> Task;
+        zCModel* Model = nullptr;
+        std::vector<zCMeshSoftSkin*> SoftSkins;
+    };
+
     /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
-     *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
-     *  reads from) is destroyed - see WaitForPendingSkeletalLoad(). */
-    gtl::flat_hash_map<SkeletalMeshVisualInfo*, TaskHandle<void>> PendingSkeletalLoads;
+     *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo is destroyed - see
+     *  WaitForPendingSkeletalLoad(). */
+    gtl::flat_hash_map<SkeletalMeshVisualInfo*, PendingSkeletalLoad> PendingSkeletalLoads;
+
+    /** zCObjects whose extraction reference we still owe ZENGIN. Dropping the last reference runs
+     *  the object's destructor, which re-enters us through zCVisual::Hooked_Destructor, so the
+     *  release can only happen at a top-level main-thread point - FlushDeferredVisualReleases(). */
+    std::vector<void*> DeferredVisualReleases;
+    std::mutex DeferredVisualReleaseMutex;
 
     /** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any)
-     *  has finished, then removes it from PendingSkeletalLoads. Must be called before deleting
-     *  a SkeletalMeshVisualInfo or destroying the zCModel/oCNPC it was built from. */
+     *  has finished, then removes it from PendingSkeletalLoads and queues its zCModel reference
+     *  for release. Must be called before deleting a SkeletalMeshVisualInfo. */
     void WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi );
+
+    /** Retires every extraction job that has already finished, so the zCModel references they
+     *  hold don't outlive the job. Main thread, once per frame. */
+    void DrainFinishedSkeletalLoads();
+
+    /** Hands back the references queued by QueueDeferredVisualRelease(). */
+    void FlushDeferredVisualReleases();
 
     /** Set of all vobs we registered by now */
     gtl::flat_hash_set<zCVob*> RegisteredVobs;
@@ -1126,6 +1150,12 @@ private:
     /** Map of vobs and VobIndfos */
     gtl::flat_hash_map<zCVob*, VobInfo*> VobMap;
 public:
+    /** Queues one zCObject reference to be handed back at the next top-level main-thread point.
+     *  Never release an extraction reference directly: the destructor it may run re-enters
+     *  OnVisualDeleted, which walks (and can delete out of) the very structures the caller is in
+     *  the middle of - and, from WorldConverter's node-visual list, would deadlock on its mutex. */
+    void QueueDeferredVisualRelease( void* object );
+
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
     gtl::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
     // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)

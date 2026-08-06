@@ -81,8 +81,15 @@ public:
     /** Updates a Morph-Mesh visual */
     static void UpdateMorphMeshVisual( void* visual, MeshVisualInfo* meshInfo );
 
-    /** Extracts a skeletal mesh from a zCModel */
+    /** Extracts a skeletal mesh from a zCModel. Reads the model's live softskin list, so this overload
+        is main-thread only. */
     static void ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVisualInfo* skeletalMeshInfo );
+
+    /** Same, but over a caller-supplied snapshot of the softskin list. Background extraction must use
+        this one: the live zCArray is refilled in place on armor changes and mesh-lib swaps, so a worker
+        walking it can read an entry ZENGIN has already released. The caller owns a zCObject reference on
+        every entry for as long as the job runs. */
+    static void ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMeshSoftSkin* const> softSkins, SkeletalMeshVisualInfo* skeletalMeshInfo );
 
     /** Extracts a zCProgMeshProto from a zCModel */
     static void ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo );
@@ -113,6 +120,11 @@ public:
 
     /** Blocks until every in-flight ExtractNodeVisualAsync job has finished. */
     static void WaitForAllPendingNodeVisuals();
+
+    /** Retires jobs that have already finished, handing back the zCVisual references they held.
+        Never blocks. Called once per frame - without it, a job nobody comes back for would keep
+        its visual alive forever. */
+    static void PruneFinishedNodeVisuals();
 
     /** Updates a quadmark info */
     static void UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, const float3& position );
