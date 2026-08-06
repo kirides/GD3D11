@@ -13,11 +13,9 @@ enum XRESULT : int;
 
 class D3D11VertexBuffer : public GfxVertexBuffer {
 public:
-    D3D11VertexBuffer()
-        : SizeInBytes( 0 )
-    {}
+    D3D11VertexBuffer();
 
-    ~D3D11VertexBuffer() override = default;
+    ~D3D11VertexBuffer() override;
 
     /** Creates the vertexbuffer with the given arguments */
     XRESULT Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags = B_VERTEXBUFFER, EUsageFlags usage = EUsageFlags::U_DEFAULT, ECPUAccessFlags cpuAccess = ECPUAccessFlags::CA_NONE, const std::string& fileName = "", unsigned int structuredByteSize = 0 ) override;
