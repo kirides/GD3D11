@@ -320,9 +320,9 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
     /** Submeshes of this visual */
     std::map<zCMaterial*, std::vector<std::unique_ptr<SkeletalMeshInfo>>> SkeletalMeshes;
 
-    /** False while a background LoadzCModelData(...) extraction job (GothicAPI::PendingSkeletalLoads)
-     *  is still filling SkeletalMeshes/Meshes. Draw/update code must skip vobs pointing at a
-     *  not-yet-ready visual instead of touching the (possibly still empty) mesh lists. */
+    /** False while an AsyncVisualExtractor job is still filling SkeletalMeshes/Meshes. Draw/update
+     *  code must skip vobs pointing at a not-yet-ready visual instead of touching the (possibly
+     *  still empty) mesh lists. */
     std::atomic<bool> Ready{true};
 };
 
