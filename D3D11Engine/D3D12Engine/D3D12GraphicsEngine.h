@@ -7,7 +7,9 @@
 #include "../BaseGraphicsEngine.h"
 #include "../Frustum.h"
 #include "../MorphGpu.h"         // MorphGpu::Job / ChannelRecord (the morph-fold queue members below)
+#include "../TransparencyQueue.h" // the frame's sorted alpha-blended draw list
 #include "../WorldConverter.h"   // SHADOW_LOD_FIRST_CASCADE
+#include <span>
 #include "D3D12Device.h"
 #include <memory>
 #include <unordered_map>
@@ -343,9 +345,8 @@ private:
     void DrawDecalList( const std::vector<zCVob*>& decals, bool lighting );
     // Ghost/transparency VOBs (invisible-potion/fade items — GothicAPI::TransparencyVobs, populated every frame
     // by CollectVisibleVobs' GetVisualAlpha() branch). Mirrors D3D11's GothicAPI::DrawTransparencyVobs (unlit
-    // diffuse sample, alpha *= per-vob GhostAlpha) but MUST run regardless of feature support: nothing else
-    // drains this list, so skipping the call would leak one entry per ghost vob per frame forever.
-    void DrawGhostVobs();
+    // diffuse sample, alpha *= per-vob GhostAlpha). Drawn by DrawGhostRun out of the transparency queue; the
+    // list itself is cleared by DrawTransparencyQueue, which runs unconditionally so it can never leak.
     void DrawVegetation();    // GVegetationBox instanced grass cards (own PSO — see D3D12PipelineState::CreateGrass)
     // Grass in the Forward+ DEPTH PREPASS. Runs from the prepass block, after the skeletal draws. Its whole
     // purpose is the AO mask: RenderSSAO builds that from the prepass depth, so without this a grass pixel
@@ -377,14 +378,13 @@ private:
     // zCQuadMark decals (blood splatter, spell ground marks). Split in two exactly like D3D11: the opaque /
     // additive / alpha-blended marks draw with the opaque decals (depth-write on), while MUL/MUL2 marks are
     // deferred to DrawMQuadMarks and drawn with the transparent decals (depth-write off).
-    void DrawQuadMarks();
-    void DrawMQuadMarks();
+    // Both blend classes are handled by DrawQuadMarkRun now: the MUL/MUL2 marks are no longer deferred into
+    // a second pass, they just carry their own pipeline inside the run.
     // Mesh-shaped particle effects (zCParticleFX emitters with visShpType 5, e.g. swarms of solid debris).
     // Called back from GothicAPI::DrawParticlesSimple, i.e. from inside DrawParticleEffects.
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) override;
-    // Weapon/spell trails + lightning flashes (zCPolyStrip). Recomputes the strip/flash meshes first, exactly
-    // like D3D11's "Draw PolyStrips" pass, then draws one dynamic-ring batch per texture.
-    XRESULT DrawPolyStrips( bool noTextures = false ) override;
+    // Weapon/spell trails + lightning flashes (zCPolyStrip) are drawn by DrawPolyStripRun, one dynamic-ring
+    // batch per texture, in transparency-queue order.
     // Bink cutscene YUV quad (zBinkPlayer.cpp) — DrawVertexArray's PS_Video special case. Same pre-transformed
     // vertex ring as the FF/UI path, but binds m_VideoTextures[0..2] through Video.RootSig/PSO instead.
     XRESULT DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride );
@@ -739,16 +739,32 @@ private:
     // MT_Portal (G1 forest portals) and MT_WaterfallFoam are peeled by material TYPE into their own lists
     // and drawn as extra sub-passes with their own pixel shaders — same three-list split D3D11 has.
     static bool IsWorldMeshAlphaBlended( zCMaterial* mat );   // "does this material belong in that list?"
-    void SortWorldTransparencyMeshes();                       // painter's order (far -> near), once per frame
-    void DrawWorldTransparencyMeshes();                       // the pass itself (drains all three lists)
-    void DrawWorldTransparencyList( std::vector<struct WorldTransparencyMesh>& list,
-        D3D12PipelineState::WorldTransparencyPipeline::EKind kind, bool depthFill );   // one sub-pass
+    void DrawWorldTransparencyRun( std::span<const TransparentItem> items,
+        EWorldTransparencyVariant variant );                  // one run out of the transparency queue
+    // Root signature + frame root args + world VB/IB for a world-transparency draw. Re-done per run, since
+    // the queue interleaves these with kinds that bind their own root signature. False = cannot draw.
+    bool BindWorldTransparencyFrameState();
+    void DrawWorldTransparencyDepthOnly();                    // depth re-lay, once, after the whole replay
+
+    // ---- The frame's sorted transparency queue (D3D12Transparency.cpp).
+    //
+    // Every alpha-blended thing used to be its own pass in a fixed sequence, each sorted at best against
+    // itself - so a cobweb always painted before a ghost and a ghost before a glass pane, whatever the actual
+    // depth order was. Collect fills the backend-neutral TransparencyQueue (GothicAPI) from this frame's
+    // per-kind lists, sorts it once back-to-front, and Draw replays it, batching maximal consecutive runs of
+    // the same kind. Same design as D3D11's; the payloads are indices into this backend's own arrays.
+    void CollectTransparencyQueue();
+    void DrawTransparencyQueue();
+    void DrawGhostRun( std::span<const TransparentItem> items );
+    void DrawDecalRun( std::span<const TransparentItem> items );
+    void DrawQuadMarkRun( std::span<const TransparentItem> items );
+    void DrawPolyStripRun( std::span<const TransparentItem> items );
+    void DrawVobAlphaRun( std::span<const TransparentItem> items );
 
     // ---- Blended instanced VOBs (cobwebs, hanging cloth) — port of D3D11's DrawFrameAlphaMeshes.
     // BuildVobDrawCommands peels every VOB material with a BLEND/ADD alpha func out of the opaque
-    // ExecuteIndirect set into g_FrameVobAlpha (D3D12EngineCommon.h); this pass replays them unlit and blended,
-    // depth-tested but never depth-writing. Also in D3D12Transparency.cpp.
-    void DrawVobAlphaMeshes();
+    // ExecuteIndirect set into g_FrameVobAlpha (D3D12EngineCommon.h); DrawVobAlphaRun above replays them unlit
+    // and blended, depth-tested but never depth-writing, in transparency-queue order.
 
     // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse + the VOB mega-buffer arena.
     //
