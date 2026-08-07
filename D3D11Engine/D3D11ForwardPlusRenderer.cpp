@@ -289,6 +289,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             tileCB.ViewportSize = float2( static_cast<float>( res.x ), static_cast<float>( res.y ) );
             tileCB.NumTilesX = ( static_cast<uint32_t>( res.x ) + 15 ) / 16;
             tileCB.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
+            tileCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
+            tileCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z,
+                Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
             engine.BindDynamicCBToPixelShader( 5, engine.AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
              
             // --- Bind CSM shadow map at t3 ---
@@ -305,10 +308,12 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             // --- Bind light SRVs (t8-t11) from tiled deferred ---
             auto* tiledDeferred = shadowMaps->GetTiledDeferred();
             if ( tiledDeferred ) {
+                // t10 was the flat light-index list; the clustered grid carries a bitmask instead, so the
+                // slot is bound null to drop any stale SRV.
                 ID3D11ShaderResourceView* lightSRVs[4] = {
                     tiledDeferred->GetLightBufferSRV(),
                     tiledDeferred->GetLightGridSRV(),
-                    tiledDeferred->GetLightIndexListSRV(),
+                    nullptr,
                     tiledDeferred->IsShadowArrayCreated() ? tiledDeferred->GetShadowCubeArraySRV() : nullptr,
                 };
                 context->PSSetShaderResources( 8, 4, lightSRVs );

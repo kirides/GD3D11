@@ -432,12 +432,18 @@ struct VelocityDebugConstantBuffer {
 // 64 Tiles seemed enough to fix issues in G1 old camp
 #define MAX_LIGHTS_PER_TILE 64
 
+// Matches CS_LightCulling.hlsl's cbuffer. The clustered cull needs no projection matrix and no depth buffer -
+// only the two diagonal terms of the projection and the Z range the slices are log-distributed over.
 struct LightCullingConstantBuffer {
-    XMFLOAT4X4 Proj;
+    float ProjScaleX;
+    float ProjScaleY;
     uint32_t ScreenWidth;
     uint32_t ScreenHeight;
+
     uint32_t TotalLights;
-    uint32_t MaxBufferIndices;
+    uint32_t NumTilesX;
+    float NearZ;
+    float FarZ;
 };
 
 struct TiledShadingConstantBuffer {
@@ -446,7 +452,8 @@ struct TiledShadingConstantBuffer {
     float4 ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     uint32_t LimitLightIntensity;
     uint32_t NumTilesX;
-    float2 Pad1;
+    float ClusterNearZ;   // cluster Z range; must match the CS_LightCulling dispatch
+    float ClusterFarZ;
     XMFLOAT4X4 InvView; // For world-space reconstruction (shadow sampling)
 };
 
@@ -454,6 +461,10 @@ struct ForwardPlusTileConstantBuffer {
     float2 ViewportSize;
     uint32_t NumTilesX;
     uint32_t LimitLightIntensity;
+
+    float ClusterNearZ;   // cluster Z range; must match the CS_LightCulling dispatch
+    float ClusterFarZ;
+    float TilePad[2];
 };
 
 struct PsSimpleFFdata {
