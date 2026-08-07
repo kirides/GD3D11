@@ -671,6 +671,38 @@ bool GothicAPI::IsCameraIndoor() {
     return ogame->_zCSession_camVob->GetGroundPoly()->GetLightmap() != nullptr;
 }
 
+/** Alpha of ZenGin's env-map overlay stage, verbatim from zCRenderManager::BuildShader
+    (zRenderManager.cpp:701-703):
+
+        if (!bInSector) skyFogColor = GetActiveSkyControler()->GetBackgroundColor();
+        else            skyFogColor.SetRGBA(100,100,100,255);
+        colorFactor = zCOLOR(255,255,255,
+            (zBYTE)(255.0f * mat->GetEnvMapStrength() * skyFogColor.GetIntensityFloat() / 255.0f));
+
+    with GetIntensityFloat() = 0.299r + 0.587g + 0.114b over 0..255 (zTypes3D.h:128). So the sheen tracks
+    the sky: bright at noon, dark at night, pinned to 100/255 indoors. The old sun-height lerp in the
+    renderers was a rough stand-in for this, applied to the wrong thing (the base surface's own alpha).
+
+    ZenGin's bInSector is per-polygon (the BSP sector the section sits in). We only have a cheap global
+    answer, so the camera stands in for it; the difference shows only while straddling a portal. */
+float GothicAPI::GetEnvMapStageAlpha( zCMaterial* mat ) {
+    if ( !mat ) return 0.0f;
+
+    float lumaFog = 100.0f * (0.299f + 0.587f + 0.114f);   // the in-sector zCOLOR(100,100,100)
+
+    if ( !IsCameraIndoor() ) {
+        oCGame* ogame = oCGame::GetGame();
+        zCSkyController_Outdoor* sc = ogame && ogame->_zCSession_world
+            ? ogame->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+        if ( sc ) {
+            zColor fog = sc->GetBackgroundColor();
+            lumaFog = 0.299f * fog.bgra.r + 0.587f * fog.bgra.g + 0.114f * fog.bgra.b;
+        }
+    }
+
+    return std::clamp( mat->GetEnvMapStrength() * lumaFog * (1.0f / 255.0f), 0.0f, 1.0f );
+}
+
 /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...) */
 bool GothicAPI::IsIndoorWorld() const {
     if ( !LoadedWorldInfo || !LoadedWorldInfo->BspTree )

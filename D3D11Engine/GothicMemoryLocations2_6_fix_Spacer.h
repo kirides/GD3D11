@@ -118,6 +118,8 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_SkyLayerState1 = 0x124;
         static const unsigned int Offset_OverrideColor = 0x558;
         static const unsigned int Offset_OverrideFlag = 0x564;
+        // zCOLOR resultFogColor — same class layout as the retail 2.6fix build (see Offset_Planets above).
+        static const unsigned int Offset_Color = 0x594;
         //static const unsigned int Interpolate = 0x005E8C20;
         static const unsigned int Offset_InitDone = 0x7C;
         //static const unsigned int Init = 0x005E6A00;

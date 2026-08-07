@@ -198,7 +198,15 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // SunHeight is Gothic's AC_LightPos.y (sun height above the horizon), which the portal/waterfall-foam
 // variants below need for their day/night darkening. It is passed as a scalar root constant rather than
 // pulling in the whole Atmosphere CB the D3D11 shaders include, since that is all either one reads.
-cbuffer TransparencyCB : register(b5) { float4 TextureFactor; float SunHeight; float3 _tpad; };
+// EnvCamPosWS/EnvCubeIndex are read only by PSTransparentEnv (the env-map overlay stage). They live here
+// rather than in a CB of their own because this pass's root signature is private to it, and CamPosWS is
+// otherwise only in FogCB (b1) which this root signature does not carry — referencing that would emit a b1
+// binding the PSO has no root parameter for. EnvCubeIndex == 0xFFFFFFFF means the cube is unavailable.
+cbuffer TransparencyCB : register(b5) {
+    float4 TextureFactor;
+    float SunHeight; float3 EnvCamPosWS;
+    uint EnvCubeIndex; float3 _tpad;
+};
 // World->view, VS only, used ONLY by VSTransparentPortal (see below). World.hlsl declares nothing else at
 // b4 — the shared World.RootSig's b4 (wind) is never read by this file, and an unused declaration emits no
 // binding, so this cannot collide with the opaque world/VOB PSOs.
@@ -231,6 +239,43 @@ float4 PSTransparent( VST_OUT i ) : SV_TARGET
     // The scene target is linear HDR on D3D12, so the sampled sRGB texel has to be linearized like every
     // other albedo read; the alpha rides through untouched for the blend.
     return float4( SrgbToLinear( c.rgb ), c.a );
+}
+
+// --- Env-map overlay stage (ZenGin zRenderManager.cpp:671-712, D3D11: PS_EnvMap.hlsl) ----------------
+// ZenGin does not fold env mapping into the base surface: it appends an EXTRA stage to the same zCShader,
+// drawn immediately after the base pass over the same geometry with rgbGen IDENTITY (the env texture
+// alone, unlit) and alphaGen FACTOR (alpha = env-map strength scaled by the sky fog color's luma, which
+// the CPU computes and passes in TextureFactor.a). That is what gives ice its sheen while the base pass
+// keeps the material's own thickness.
+//
+// Divergence shared with D3D11's PS_EnvMap: ZenGin sphere-maps zFlare1.tga by the CAMERA-space reflection
+// vector, which swims with the camera; we sample the reflect_cube.dds the water pass already loads, by the
+// WORLD-space reflection vector. Needs the world normal, so this gets its own VS.
+struct VSTE_OUT { float4 clip : SV_POSITION; float3 wpos : TEXCOORD0; float3 wnrm : TEXCOORD1; };
+
+VSTE_OUT VSTransparentEnv( VS_IN i )
+{
+    VSTE_OUT o;
+    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    o.wpos = i.pos;                          // world verts are already world-space
+    o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
+    return o;
+}
+
+float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
+{
+    if ( EnvCubeIndex == 0xFFFFFFFF ) discard;
+
+    float3 eye = normalize( i.wpos - EnvCamPosWS );
+    float3 r = normalize( reflect( eye, normalize( i.wnrm ) ) );
+
+    TextureCube envTex = ResourceDescriptorHeap[EnvCubeIndex];
+    float3 env = envTex.Sample( smp, r ).rgb;
+
+    // rgbGen IDENTITY: emitted unlit and unmodulated, only the alpha is driven. The scene target is linear
+    // HDR here, so the sRGB cube texel is linearized like every other albedo read (same rule PSTransparent
+    // follows above).
+    return float4( SrgbToLinear( env ), TextureFactor.a );
 }
 
 // --- MT_WaterfallFoam (D3D11: PS_WaterfallFoam.hlsl) -------------------------------------------------

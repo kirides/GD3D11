@@ -271,8 +271,9 @@ bool D3D12PipelineState::CreateWorldTransparency() {
 
     D3D12RootLayout& rs = Layout( "WorldTransparency" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // 1: b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 pad }
-    rs.AddConstants( 5, 8, D3D12_SHADER_VISIBILITY_PIXEL );
+    // 1: b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 EnvCamPosWS; uint EnvCubeIndex; float3 pad }
+    // The env tail is written only by the env-map overlay draw; the first 5 DWORDs keep their old meaning.
+    rs.AddConstants( 5, 12, D3D12_SHADER_VISIBILITY_PIXEL );
     rs.AddConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
     // 3: b4 TransparencyViewCB { float4x4 View } — portal VS only
     rs.AddConstants( 4, 16, D3D12_SHADER_VISIBILITY_VERTEX );
@@ -306,6 +307,14 @@ bool D3D12PipelineState::CreateWorldTransparency() {
         WorldTransparency.PortalVsBlob.Reset();
         WorldTransparency.PortalPsBlob.Reset();
     }
+    // Env-map overlay stage. Non-fatal in the same way: the caller checks these blobs and simply skips the
+    // overlay, leaving the base blended surface — which is exactly what shipped before the stage existed.
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparentEnv", Shadermodel_VS, WorldTransparency.EnvVsBlob.ReleaseAndGetAddressOf() )
+      || !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparentEnv", Shadermodel_PS, WorldTransparency.EnvPsBlob.ReleaseAndGetAddressOf() ) ) {
+        LogWarn() << "D3D12: the env-map transparency shaders failed to compile — env-mapped surfaces lose their sheen.";
+        WorldTransparency.EnvVsBlob.Reset();
+        WorldTransparency.EnvPsBlob.Reset();
+    }
 
     rs.ValidateShaders( {
         { WorldTransparency.VsBlob.Get(),       "World.hlsl:VSTransparent",       D3D12_SHADER_VISIBILITY_VERTEX },
@@ -313,6 +322,8 @@ bool D3D12PipelineState::CreateWorldTransparency() {
         { WorldTransparency.FoamPsBlob.Get(),   "World.hlsl:PSTransparentFoam",   D3D12_SHADER_VISIBILITY_PIXEL  },
         { WorldTransparency.PortalVsBlob.Get(), "World.hlsl:VSTransparentPortal", D3D12_SHADER_VISIBILITY_VERTEX },
         { WorldTransparency.PortalPsBlob.Get(), "World.hlsl:PSTransparentPortal", D3D12_SHADER_VISIBILITY_PIXEL  },
+        { WorldTransparency.EnvVsBlob.Get(),    "World.hlsl:VSTransparentEnv",    D3D12_SHADER_VISIBILITY_VERTEX },
+        { WorldTransparency.EnvPsBlob.Get(),    "World.hlsl:PSTransparentEnv",    D3D12_SHADER_VISIBILITY_PIXEL  },
     } );
 
     // Warm the two states every transparent world frame needs: plain alpha blending (by far the most common
@@ -353,6 +364,10 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( c
         && WorldTransparency.PortalVsBlob && WorldTransparency.PortalPsBlob ) {
         vs = WorldTransparency.PortalVsBlob.Get();
         ps = WorldTransparency.PortalPsBlob.Get();
+    } else if ( kind == WorldTransparencyPipeline::EKind::Env
+        && WorldTransparency.EnvVsBlob && WorldTransparency.EnvPsBlob ) {
+        vs = WorldTransparency.EnvVsBlob.Get();
+        ps = WorldTransparency.EnvPsBlob.Get();
     }
 
     // Same packed 36-byte world vertex the opaque pass consumes; VSTransparent just doesn't read NORMAL.

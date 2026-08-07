@@ -12,9 +12,9 @@
 // Shape of the pass, mirrored one-to-one from D3D11:
 //   1. per-material: derive the effective alpha func (0 == "material default" -> BLEND when the material
 //      color's alpha is < 255, else stay opaque)
-//   2. compute the FF `textureFactor` tint — the material color when translucent, or the env-map strength
-//      ramped by the sun height for env-mapped materials
+//   2. compute the FF `textureFactor` tint — the material color when translucent
 //   3. draw with the blend mode that alpha func maps to, depth-tested but NOT depth-writing
+//   3b. for an env-mapped material, draw ZenGin's env-map overlay stage straight on top of that draw
 //   4. re-draw the whole list depth-only (color writes off, depth-write on) so the depth-reading post
 //      passes (height fog, god rays) see these surfaces instead of whatever is behind them
 //
@@ -71,28 +71,16 @@ namespace {
         return alphaFunc;
     }
 
-    // D3D11 spec: the `ffdata.textureFactor` block of DrawMeshInfoListAlphablended, verbatim. Env-mapped
-    // materials get a white tint whose ALPHA is the env-map strength ramped by how high the sun stands
-    // (that is what makes ice/glass reflective at noon and near-invisible at night); everything else uses
-    // the material color when it is translucent, and stays untinted otherwise.
+    // D3D11 spec: the `ffdata.textureFactor` block of DrawMeshInfoListAlphablended.
+    //
+    // The base surface's alpha is the material color's alpha, full stop. ZenGin sets the TFACTOR to
+    // zCMaterial::GetColor() (zRenderManager.cpp:609, alphaGen=FACTOR) and the D3D7 poly path
+    // multiplies vertex-light alpha by mat->GetAlpha() == color.alpha (zRndD3D_Render.cpp:1049).
+    // GetEnvMapStrength() is deliberately NOT part of this: env-mapping is an *additional* stage
+    // drawn on top of the base pass (zRenderManager.cpp:671-712), which DrawWorldTransparencyRun
+    // below now renders as EKind::Env. Folding the env strength into the base alpha is what made ice
+    // near-invisible instead of thick.
     float4 ComputeTextureFactor( zCMaterial* mat ) {
-        if ( mat->GetEnvMapEnabled() ) {
-            GSky* sky = Engine::GAPI->GetSky();
-            const float sunHeight = sky ? sky->GetAtmosphereCB().AC_LightPos.y : 0.0f;
-            if ( sunHeight > 0 ) {
-                // sun is up
-                const float maxSunHeight = 1.0f;
-                const float lerpFactor = std::clamp( sunHeight / maxSunHeight, 0.0f, 1.0f );
-
-                const float minIntensity = 0.1f;
-                const float maxIntensity = 0.7f;
-                const float currentIntensity = std::clamp(
-                    mat->GetEnvMapStrength() * std::lerp( minIntensity, maxIntensity, lerpFactor ), 0.0f, 1.0f );
-                return zColor( 255, 255, 255, static_cast<uint8_t>( 255.0f * currentIntensity ) ).ToFloat4();
-            }
-            return zColor( 255, 255, 255,
-                static_cast<uint8_t>( 255.0f * mat->GetEnvMapStrength() * 0.1f ) ).ToFloat4();
-        }
         if ( zColor( mat->GetColor() ).bgra.alpha < 255 ) {
             return zColor( mat->GetColor() ).ToFloat4();
         }
@@ -181,6 +169,15 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     // for the rest of the list. Materials whose effective alpha func is 0 therefore draw opaque + depth-
     // writing when they come first — order-dependent, but faithful. That case is live for portals/foam,
     // which are collected by TYPE and so may well carry alpha func 0.
+    // Env-map overlay stage (see ComputeEnvMapAlpha). Only the Simple variant runs it: PSTransparentPortal
+    // and PSTransparentFoam are their own effects, and ZenGin never env-maps a portal either. Needs both
+    // blobs (GetOrCreateWorldTransparencyPipeline silently degrades a kind with a missing blob to the plain
+    // shader, which here would re-draw the base surface) and the reflection cube the water pass loads.
+    const bool envOverlayAvailable = kind == EKind::Simple
+        && m_Pipelines.WorldTransparency.EnvVsBlob && m_Pipelines.WorldTransparency.EnvPsBlob
+        && m_ReflectionCubeSrvSlot != UINT_MAX;
+    const XMFLOAT3 camPosWS = Engine::GAPI->GetCameraPosition();
+
     GothicBlendStateInfo blend;
     blend.SetDefault();
     bool depthWrite = true;
@@ -236,6 +233,40 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
         m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
             entry.Mesh->BaseIndexLocation, 0, 0 );
         drawnIndices += static_cast<unsigned int>( entry.Mesh->Indices.size() );
+
+        // ZenGin appends the env-map stage to the SAME zCShader and DrawVertexBuffer walks the stages back
+        // to back (zRenderManager.cpp:671 / :1057), so the overlay goes inline here rather than as a second
+        // sweep — that keeps the painter's order of the surrounding blended surfaces intact.
+        if ( envOverlayAvailable && mat->GetEnvMapEnabled() ) {
+            GothicBlendStateInfo envBlend;
+            // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else blends.
+            if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) envBlend.SetAdditiveBlending();
+            else                                         envBlend.SetAlphaBlending();
+
+            ID3D12PipelineState* envPso = m_Pipelines.GetOrCreateWorldTransparencyPipeline(
+                envBlend, false, EKind::Env );
+            if ( envPso ) {
+                m_CmdList->SetPipelineState( envPso );
+
+                // b5 tail: [4] SunHeight is left alone (PSTransparentEnv doesn't read it), [5..7] camera
+                // world position, [8] the bindless cube slot. TextureFactor.a carries the stage alpha.
+                const float envAlpha = Engine::GAPI->GetEnvMapStageAlpha( mat );
+                const float4 envFactor( 1.0f, 1.0f, 1.0f, envAlpha );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, &envFactor, 0 );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 3, &camPosWS, 5 );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &m_ReflectionCubeSrvSlot, 8 );
+
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
+                    entry.Mesh->BaseIndexLocation, 0, 0 );
+                drawnIndices += static_cast<unsigned int>( entry.Mesh->Indices.size() );
+
+                // The overlay replaced the PSO and overwrote b5's TextureFactor, so the next item has to
+                // re-establish both instead of hitting these caches.
+                ID3D12PipelineState* restore = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
+                if ( restore ) m_CmdList->SetPipelineState( restore );
+                lastMat = nullptr;
+            }
+        }
     }
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;

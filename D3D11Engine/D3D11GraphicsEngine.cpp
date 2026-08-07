@@ -27,6 +27,8 @@
 #include "zCTexture.h"
 #include "zCView.h"
 #include "zCVobLight.h"
+#include "zCSkyController_Outdoor.h"   // ComputeEnvMapAlpha: resultFogColor drives the env-map stage
+#include "oCGame.h"
 #include "oCNPC.h"
 #include <DDSTextureLoader.h>
 #include <ScreenGrab.h>
@@ -4864,7 +4866,17 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     // Draw the list
     PsSimpleFFdata ffdata = { };
     ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-    
+
+    // Env-map overlay stage (see ComputeEnvMapAlpha). Only the Simple variant runs it: PS_PortalDiffuse
+    // and PS_WaterfallFoam are their own effects, and ZenGin never env-maps a portal either.
+    // The inverse view is constant for the whole run, so build it once.
+    const bool envMapEnabled = variant == EWorldTransparencyVariant::Normal;
+    PsEnvMapData envData = { };
+    if ( envMapEnabled ) {
+        Engine::GAPI->GetInverseViewMatrixXM( &envData.InvView );
+    }
+    bool envCubeBound = false;
+
     void* lastTex = nullptr;
     void* lastMat = nullptr;
     for ( auto const& item : items ) {
@@ -4942,26 +4954,16 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 lastAlphaFunc = alphaFunc;
             }
 
-            if ( mat->GetEnvMapEnabled()) {
-                if (Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.y > 0) {
-                    // sun is up
-
-                    float sunHeight = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.y;
-                    const float maxSunHeight = 1.0f;
-                    float lerpFactor = std::clamp( sunHeight / maxSunHeight, 0.0f, 1.0f );
-
-                    float minIntensity = 0.1f;
-                    float maxIntensity = 0.7f;
-                    float currentIntensity = std::clamp( meshKey.Material->GetEnvMapStrength() * std::lerp( minIntensity, maxIntensity, lerpFactor ), 0.0f, 1.0f);
-                    ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * currentIntensity) ).ToFloat4();
-                } else {
-                    ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * meshKey.Material->GetEnvMapStrength() * 0.1f) ).ToFloat4();
-                }
-            } else {
-                if ( zColor( meshKey.Material->GetColor() ).bgra.alpha < 255 ) {
-                    ffdata.textureFactor = zColor( meshKey.Material->GetColor() ).ToFloat4();
-                }
-            }
+            // The base surface's alpha is the material color's alpha, full stop. ZenGin sets the
+            // TFACTOR to zCMaterial::GetColor() (zRenderManager.cpp:609, alphaGen=FACTOR) and the
+            // D3D7 poly path multiplies vertex-light alpha by mat->GetAlpha() == color.alpha
+            // (zRndD3D_Render.cpp:1049). GetEnvMapStrength() is deliberately NOT part of this:
+            // env-mapping is an *additional* stage drawn on top of the opaque/blended base pass
+            // (zRenderManager.cpp:701-703), which the PS_EnvMap draw below renders. Folding the env
+            // strength into the base alpha here is what made ice near-invisible instead of thick.
+            ffdata.textureFactor = zColor( meshKey.Material->GetColor() ).bgra.alpha < 255
+                ? zColor( meshKey.Material->GetColor() ).ToFloat4()
+                : float4( 1.0f, 1.0f, 1.0f, 1.0f );
 
             ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
 
@@ -4971,6 +4973,41 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
                 meshInfo->BaseIndexLocation );
 
+            // ZenGin draws the env-map stage immediately after the base stage of the same shader
+            // (zRenderManager.cpp:671 adds it to the same zCShader; DrawVertexBuffer walks the stages
+            // back to back), so it goes inline here rather than as a second sweep of the run — that
+            // keeps the painter's order of the surrounding blended surfaces intact.
+            if ( envMapEnabled && mat->GetEnvMapEnabled() ) {
+                if ( !envCubeBound ) {
+                    GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
+                    envCubeBound = true;
+                }
+
+                SetActivePixelShader( PShaderID::PS_EnvMap );
+                ActivePS->Apply();
+
+                // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else
+                // blends. Depth state is left as the base pass set it (test on, write off).
+                if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) {
+                    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
+                } else {
+                    Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                }
+                Engine::GAPI->GetRendererState().BlendState.SetDirty();
+                UpdateRenderStates();
+
+                envData.Params = float4( Engine::GAPI->GetEnvMapStageAlpha( mat ), 0.0f, 0.0f, 0.0f );
+                ActivePS->UpdateBuffer( "cbEnvMap", &envData, sizeof( envData ) );
+
+                DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
+                    meshInfo->BaseIndexLocation );
+
+                // The overlay clobbered the shader, its texture bindings and the blend state, so the
+                // next item has to re-establish all three instead of hitting these caches.
+                lastTex = nullptr;
+                lastMat = nullptr;
+                lastAlphaFunc = -1;
+            }
         }
     }
 }
