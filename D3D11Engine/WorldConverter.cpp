@@ -2488,13 +2488,23 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     std::set<std::pair<ExVertexStruct, int>, CmpClass> vertices;
     int index = 0;
 
+    // Take the index from the insert result rather than from a separate counter. CmpClass is an
+    // epsilon comparator and therefore not a strict weak ordering, so a preceding find() can miss an
+    // element that insert() then rejects as equivalent - which used to bump the counter without
+    // growing the set and emit an index >= outVertices.size(). Downstream that is not survivable:
+    // meshopt's buildTriangleAdjacency indexes its counts[] array by it with the bounds assert
+    // compiled out (NDEBUG), so the out-of-range index corrupts the heap instead of failing.
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
-        auto it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
-        if ( it != vertices.end() ) outIndices.emplace_back( it->second );
-        else {
-            vertices.insert( std::make_pair( input[i], index ) );
-            outIndices.emplace_back( index++ );
-        }
+        auto [it, inserted] = vertices.insert( std::make_pair( input[i], index ) );
+        outIndices.emplace_back( static_cast<VERTEX_INDEX>(it->second) );
+        if ( inserted ) ++index;
+    }
+
+    // 16-bit indices: the per-point-light collector (WorldMeshCollectPolyRange) merges whole section
+    // neighbourhoods into one MeshInfo, so this ceiling is reachable. Truncating silently produces
+    // both wrong geometry and out-of-range indices, so say so rather than let it reach the GPU.
+    if ( static_cast<size_t>(index) > static_cast<size_t>(std::numeric_limits<VERTEX_INDEX>::max()) + 1 ) {
+        LogError() << "IndexVertices: " << index << " unique vertices exceeds the 16-bit index range - mesh truncated";
     }
 
     // Check for overlaying triangles and throw them out
@@ -2520,26 +2530,22 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     // so you'll have to rearrange them like this:
     outVertices.clear();
     outVertices.resize( vertices.size() );
+    // No range guard needed anymore: every stored index came from an insert that actually happened,
+    // so it is < vertices.size() by construction.
     for ( auto const& it : vertices ) {
-        if ( static_cast<size_t>(it.second) >= vertices.size() ) {
-            continue;
-        }
-
         outVertices[it.second] = it.first;
     }
 }
 
 void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInputVertices, std::vector<ExVertexStruct>& outVertices, std::vector<unsigned int>& outIndices ) {
     std::set<std::pair<ExVertexStruct, int>, CmpClass> vertices;
-    unsigned int index = 0;
+    int index = 0;
 
+    // Same invariant as the VERTEX_INDEX overload above - see the comment there.
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
-        auto it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
-        if ( it != vertices.end() ) outIndices.emplace_back( it->second );
-        else {
-            vertices.insert( std::make_pair( input[i], index ) );
-            outIndices.emplace_back( index++ );
-        }
+        auto [it, inserted] = vertices.insert( std::make_pair( input[i], index ) );
+        outIndices.emplace_back( static_cast<unsigned int>(it->second) );
+        if ( inserted ) ++index;
     }
 
     // Notice that the vertices in the set are not sorted by the index

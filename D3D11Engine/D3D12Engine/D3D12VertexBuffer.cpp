@@ -19,6 +19,17 @@ namespace {
     constexpr float kOverdrawThreshold = 1.05f;
     constexpr int kNormalQuantizationBits = 10;
 
+    /** See D3D11VertexBuffer.cpp: meshoptimizer's bounds asserts are compiled out (NDEBUG), so an
+        out-of-range index corrupts the heap inside the library instead of failing. */
+    bool IndicesWithinRange( const VERTEX_INDEX* indices, size_t count, unsigned int numVertices ) {
+        for ( size_t i = 0; i < count; ++i ) {
+            if ( static_cast<unsigned int>(indices[i]) >= numVertices ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void ConvertIndicesToUInt32( const VERTEX_INDEX* src, size_t count, std::vector<unsigned int>& dst ) {
         dst.resize( count );
         for ( size_t i = 0; i < count; ++i ) {
@@ -284,6 +295,13 @@ XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* ver
         return XR_FAILED;
     }
 
+    if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
+        LogError() << "OptimizeVertices: index out of range (numVertices=" << numVertices << ") - skipping";
+        if ( outShadowIndices ) outShadowIndices->clear();
+        if ( inOutLodIndices ) inOutLodIndices->clear();
+        return XR_FAILED;
+    }
+
     ZoneScoped;
 
     std::vector<unsigned int> indexData;
@@ -339,6 +357,11 @@ XRESULT D3D12VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, uint8_t* vertic
     const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
     if ( numVertices > maxVertexIndex + 1 ) {
         LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
+        return XR_FAILED;
+    }
+
+    if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
+        LogError() << "OptimizeFaces: index out of range (numVertices=" << numVertices << ") - skipping";
         return XR_FAILED;
     }
 
