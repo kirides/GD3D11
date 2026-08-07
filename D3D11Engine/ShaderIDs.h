@@ -43,6 +43,7 @@ enum class PShaderID : size_t {
     PS_LinesSel,
     PS_Simple,
     PS_Simple_FF,
+    PS_EnvMap,
     PS_Rain,
     PS_Rain_Snow,
     PS_Transparency,

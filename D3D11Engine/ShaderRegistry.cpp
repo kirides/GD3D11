@@ -134,6 +134,9 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Simple_FF>( "PS_Simple.hlsl" )
         .with_macros( { { "USE_FFDATA", "1" } } ) );
 
+    // ZenGin's env-map overlay stage, drawn on top of an alpha-blended world surface.
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_EnvMap>( "PS_EnvMap.hlsl" ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Rain>( "PS_Rain.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Rain_Snow>( "PS_Rain.hlsl" )

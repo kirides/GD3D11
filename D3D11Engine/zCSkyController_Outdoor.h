@@ -310,6 +310,24 @@ public:
         );
     }
 
+    /** ZenGin's zCSkyControler_Outdoor::GetBackgroundColorDef() — the `resultFogColor` member
+        (zSky_Outdoor.h:154). This is the sky/fog color the engine feeds the env-map stage:
+        `skyFogColor.GetIntensityFloat()` scales the env-map strength in zCRenderManager::BuildShader
+        (zRenderManager.cpp:703).
+
+        Offset_Color is that member: it lands exactly Offset_ResultFogScale + 0x20 in both games
+        (resultFogScale, heightFogMinY, heightFogMaxY, userFogFar(=Offset_FarZ), resultFogNear,
+        resultFogFar, resultFogSkyNear, resultFogSkyFar, resultFogColor), and the G1 branch of
+        GetOverrideColor() below already reads it as a zColor.
+
+        We deliberately take the *Def* variant, i.e. we ignore m_bOverrideColorFlag /
+        resultFogColorOverride. The override is a script-driven tint whose flag GD3D11 only models
+        properly on G2 (GetOverrideFlag() is hardcoded to 1 on G1), and the plain fog color is the
+        stable input the env sheen wants. */
+    zColor GetBackgroundColor() {
+        return *reinterpret_cast<zColor*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Color ));
+    }
+
     XMFLOAT3 GetOverrideColor() {
 #ifndef BUILD_GOTHIC_1_08k
         return *reinterpret_cast<XMFLOAT3*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_OverrideColor ));

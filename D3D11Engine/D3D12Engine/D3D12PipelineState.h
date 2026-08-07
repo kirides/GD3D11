@@ -467,13 +467,16 @@ public:
             Simple = 0,   // PS_Simple_FF     — blended world surfaces (ice, glass); reads the FF texture factor
             Foam   = 1,   // PS_WaterfallFoam — MT_WaterfallFoam; own day/night tint, ignores the texture factor
             Portal = 2,   // PS_PortalDiffuse — MT_Portal (G1 forest portals); distance fade, needs a VIEW-space VS
+            Env    = 3,   // PS_EnvMap        — ZenGin's env-map overlay stage, drawn ON TOP of a Simple draw
         };
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;         // VSTransparent — Simple + Foam + the depth fill
         Microsoft::WRL::ComPtr<ID3DBlob>            PortalVsBlob;   // VSTransparentPortal (also outputs view-space pos)
+        Microsoft::WRL::ComPtr<ID3DBlob>            EnvVsBlob;      // VSTransparentEnv (outputs world pos + normal)
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;         // PSTransparent
         Microsoft::WRL::ComPtr<ID3DBlob>            FoamPsBlob;     // PSTransparentFoam
         Microsoft::WRL::ComPtr<ID3DBlob>            PortalPsBlob;   // PSTransparentPortal
+        Microsoft::WRL::ComPtr<ID3DBlob>            EnvPsBlob;      // PSTransparentEnv
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthFillPSO;
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey | kind<<29 | depthWrite<<31
     };

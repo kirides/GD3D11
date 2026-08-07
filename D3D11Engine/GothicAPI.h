@@ -646,6 +646,10 @@ public:
     /** Returns wether the camera is indoor or not */
     bool IsCameraIndoor();
 
+    /** Alpha of ZenGin's env-map overlay stage for this material — see zCRenderManager::BuildShader
+        (zRenderManager.cpp:701-703). Backend-neutral because both renderers draw the same stage. */
+    float GetEnvMapStageAlpha( zCMaterial* mat );
+
     /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...).
         This is a per-world property baked into the compiled BSP-tree, not a per-frame camera
         test - ZenGin swaps in a zCSkyControler_Indoor for these worlds, which renders no sky
