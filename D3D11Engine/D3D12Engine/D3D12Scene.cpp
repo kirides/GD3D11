@@ -36,7 +36,7 @@
 
 #include <array>
 #include <future>
-#include <algorithm>   // std::ranges::sort — DrawGhostVobs' back-to-front ordering
+#include <algorithm>
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
@@ -1543,19 +1543,18 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 }
 
 
-void D3D12GraphicsEngine::DrawGhostVobs() {
+void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items ) {
 	// GothicAPI::TransparencyVobs is populated every frame by CollectVisibleVobs' GetVisualAlpha() branch
-	// (invisible-potion/fade-out items) and is otherwise ONLY drained by D3D11's GothicAPI::DrawTransparencyVobs
-	// (hard-wired to D3D11GraphicsEngine — never called on this backend). Without a consumer here the list grows
-	// unbounded, one entry per ghost vob per frame, forever — so this function MUST run every frame regardless
-	// of whether the Ghost PSO exists.
+	// (invisible-potion/fade-out items); the transparency queue holds indices into it and
+	// DrawTransparencyQueue clears it afterwards, unconditionally, so it can never leak.
 	auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
-	if ( transparencyVobs.empty() ) return;
+	if ( items.empty() ) return;
 
 	if ( !m_FrameOpen || ( !m_Pipelines.Ghost.PSO && !m_Pipelines.GhostSkeletal.PSO ) ) {
-		transparencyVobs.clear();   // drop this frame's ghosts rather than leak; drawing is unavailable right now
 		return;
 	}
+
+	const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
 
 	// Reversed-Z ViewProj — identical derivation to DrawVobsInstanced/DrawWorldMesh.
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -1579,19 +1578,12 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 	const auto now = Engine::GAPI->GetFrameNumber();
 	static std::vector<XMFLOAT4X4> ghostBoneCache;
 
-	// D3D11 draws these back-to-front (painter's algorithm) via a min/max-heap drain; the legacy
-	// CollectVisibleVobs path (used by this backend, GothicAPI.cpp's std::ranges::sort(TransparencyVobs,
-	// CompareGhostDistance)) instead leaves the vector plain-sorted NEAREST-first, so iterate it in reverse.
-	//
-	// That sort only covers the STATIC ghosts CollectVisibleVobs pushed; PrepareFrameSkeletals appends the
-	// skeletal ghosts afterwards, leaving an unsorted tail. Re-sort here (nearest-first, matching
-	// GothicAPI's CompareGhostDistance) so the reverse walk below is a correct far-to-near order across both
-	// sources — otherwise overlapping ghosts blend in collection order rather than depth order.
-	std::ranges::sort( transparencyVobs,
-		[]( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) { return a.distance < b.distance; } );
-
-	for ( auto it = transparencyVobs.rbegin(); it != transparencyVobs.rend(); ++it ) {
-		const TransparencyVobInfo& info = *it;
+	// Order comes from the frame's transparency queue, which sorts ghosts against every other blended
+	// drawable rather than only against each other (that is what the old local re-sort did here).
+	for ( const TransparentItem& item : items ) {
+		const uint32_t ghostIndex = queue.GetGhostIndex( item );
+		if ( ghostIndex >= transparencyVobs.size() ) continue;
+		const TransparencyVobInfo& info = transparencyVobs[ghostIndex];
 
 		// Skeletal ghosts (invisible/fading NPCs) — mirrors D3D11's DrawTransparencyVobs skeletalVob branch, minus
 		// its same-mesh Z-prepass (same simplification the non-skeletal ghost path already made). Bone transforms
@@ -1819,7 +1811,6 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 		}
 	}
 
-	transparencyVobs.clear();
 	rs.RendererInfo.FrameDrawnTriangles += drawnTris;
 }
 
@@ -2331,49 +2322,24 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	    DrawVegetation();
     }
 
-	// Blended instanced VOBs (cobwebs, hanging cloth) that BuildVobDrawCommands peeled out of the opaque VOB
-	// command set: unlit and blended over the finished lit scene, depth-tested but not depth-writing. Same slot
-	// D3D11 draws its "Draw Frame AlphaMeshes" pass in — straight after the lit geometry, before the decals
-	// and water. See D3D12Transparency.cpp.
-	DrawVobAlphaMeshes();
-
-	// Decals (blood, arrows, sprites): collect the visible, back-to-front-sorted list once, then draw the
-	// opaque/alpha-test ones here (with the opaque scene, depth-write) and the transparent ones after water
-	// (blended over the finished scene). Mirrors D3D11's two-pass DrawDecalList.
-	static std::vector<zCVob*> decals;
-	decals.clear();
-	Engine::GAPI->GetVisibleDecalList( decals );
+	// Decals (blood, arrows, sprites): the opaque/alpha-test ones draw here, with the opaque scene and
+	// depth-write on. The blended ones are transparency-queue content and are drawn further down.
 	{
+		static std::vector<zCVob*> decals;
+		decals.clear();
+		Engine::GAPI->GetVisibleDecalList( decals );
+
 		DX_ZONE( m_CmdList.Get(), "Draw decals (opaque)" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (opaque)" );
 		DrawDecalList( decals, true );
 	}
 
-	// Quad marks (blood splatter, spell ground marks) — D3D11's "Draw ParticleFX #1" pass calls DrawQuadMarks
-	// immediately after the lit DrawDecalList, same slot. MUL/MUL2 marks are deferred to DrawMQuadMarks below.
-	DrawQuadMarks();
-
-	// Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs + opaque decals).
+	// Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs + opaque decals). Stays out of
+	// the transparency queue - it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 
-	// Alpha-blended world-mesh surfaces (ice, glass, magic barriers) peeled out of the opaque command set by
-	// BuildWorldDrawCommands: blended back-to-front over the finished scene, then re-laid into depth so the
-	// height fog/god rays see them. Same slot D3D11 draws FrameTransparencyMeshes in (right after water,
-	// before the transparent decals). See D3D12Transparency.cpp.
-	DrawWorldTransparencyMeshes();
-
-	{
-		DX_ZONE( m_CmdList.Get(), "Draw decals (transparent)" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (transparent)" );
-		DrawDecalList( decals, false );
-	}
-
-	// The modulate-blended quad marks DrawQuadMarks deferred — D3D11's "Draw ParticleFX #2" pass draws them
-	// right after the unlit decals, for the same reason (MUL/MUL2 must land on the finished scene).
-	DrawMQuadMarks();
-
-	// Particles last: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested
-	// against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
+	// Particles: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested against the
+	// opaque scene but not writing depth. Not queue content yet — same staging as D3D11.
 	{
 		DX_ZONE( m_CmdList.Get(), "Draw particles" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particles" );
@@ -2388,19 +2354,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawRainParticles();
 	}
 
-	// Weapon/spell trails + lightning flashes. D3D11 draws its "Draw PolyStrips" pass right after the
-	// particle pass and before the debug lines; on D3D12 the rain billboards sit in between, which is
-	// immaterial (both are late alpha content that doesn't write depth).
-	DrawPolyStrips();
-
-	// Ghosts (invisible-potion/fade-out items): drawn last of the alpha content, mirrors D3D11's "Draw ghosts"
-	// pass placement (after the transparency waterfall/decals, before post-FX). MUST run every frame even if
-	// EnableBloom/etc. are off — it also drains GothicAPI::TransparencyVobs, which nothing else consumes.
-	{
-		DX_ZONE( m_CmdList.Get(), "Draw ghosts" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw ghosts" );
-		DrawGhostVobs();
-	}
+	// Everything else that blends, in ONE pass sorted strictly back to front: world transparency surfaces
+	// (ice, glass, magic barriers, forest portals, waterfall foam), blended instanced VOBs (cobwebs, hanging
+	// cloth), ghosts, blended decals, quad marks and poly strips. Each of those used to be its own pass in a
+	// fixed sequence, so their depth order against each other was whatever the sequence happened to be — a
+	// cobweb always painted before a ghost and a ghost before a glass pane. Same slot and same design as
+	// D3D11's "Draw Transparency" pass. MUST run every frame: it also drains the per-kind frame lists.
+	CollectTransparencyQueue();
+	DrawTransparencyQueue();
 
 	// Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
 	// Done here (not in DrawVobsInstanced) so it runs even when DrawVOBs is off and that pass early-outs.
@@ -2894,8 +2855,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         ? CoalesceWorldDepthCommands( opaqueCmds, cmds + count, kMaxWorldDrawCommands - count )
         : 0;
 
-    // Painter's order for the peeled alpha-blended surfaces (far -> near), once per frame.
-    SortWorldTransparencyMeshes();
+    // The peeled alpha-blended surfaces are not sorted here anymore: the frame's transparency queue orders
+    // them against every other blended drawable, not just against each other.
 }
 
 
@@ -3169,6 +3130,10 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         const float maxH = visual->BBox.Max.y;
         staged.clear();
 
+        // Depth for this visual's blended sub-meshes, resolved lazily below (only blended materials pay
+        // for it). Distance to the nearest instance - see VobAlphaMesh::DistanceSq.
+        float alphaDistanceSq = -1.0f;
+
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
             zCTexture* tex = meshKey.Material->GetAniTexture();
             uint32_t diffuseIdx = whiteSlot;
@@ -3216,6 +3181,18 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 if ( !mi || mi->Indices.empty() ) continue;
 
                 if ( blended ) {
+                    if ( alphaDistanceSq < 0.0f ) {
+                        const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+                        alphaDistanceSq = FLT_MAX;
+                        for ( const VobInstanceInfo& inst : visual->Instances ) {
+                            const XMFLOAT3 position( inst.world._14, inst.world._24, inst.world._34 );
+                            float d;
+                            XMStoreFloat( &d, XMVector3LengthSq( XMLoadFloat3( &position ) - camPos ) );
+                            alphaDistanceSq = std::min( alphaDistanceSq, d );
+                        }
+                        if ( alphaDistanceSq == FLT_MAX ) alphaDistanceSq = 0.0f;
+                    }
+
                     if ( !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
                     D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
                     D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
@@ -3235,6 +3212,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     a.IndexCount = static_cast<UINT>( mi->Indices.size() );
                     a.NumInstances = up.numInstances;
                     a.Additive = ( alphaFunc == zMAT_ALPHA_FUNC_ADD );
+                    a.DistanceSq = alphaDistanceSq;
                     g_FrameVobAlpha.push_back( a );
                     continue;
                 }
