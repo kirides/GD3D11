@@ -14,6 +14,20 @@ namespace {
     constexpr float kOverdrawThreshold = 1.05f;
     constexpr int kNormalQuantizationBits = 10;
 
+    /** meshoptimizer indexes its per-vertex scratch arrays (buildTriangleAdjacency's counts[], the vertex
+        cache timestamps, the remap table) by the raw index, and its bounds asserts are compiled out here
+        because NDEBUG is defined in every config. An out-of-range index therefore corrupts the heap deep
+        inside the library instead of failing. One linear pass at the entry point turns that into a log
+        line and an unoptimized - but correct - buffer. */
+    bool IndicesWithinRange( const VERTEX_INDEX* indices, size_t count, unsigned int numVertices ) {
+        for ( size_t i = 0; i < count; ++i ) {
+            if ( static_cast<unsigned int>(indices[i]) >= numVertices ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void ConvertIndicesToUInt32( const VERTEX_INDEX* src, size_t count, std::vector<unsigned int>& dst ) {
         dst.resize( count );
         for ( size_t i = 0; i < count; ++i ) {
@@ -285,6 +299,17 @@ XRESULT D3D11VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, byte* vertic
         return XR_FAILED;
     }
 
+    if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
+        LogError() << "OptimizeVertices: index out of range (numVertices=" << numVertices << ") - skipping";
+        if ( outShadowIndices ) {
+            outShadowIndices->clear();
+        }
+        if ( inOutLodIndices ) {
+            inOutLodIndices->clear();
+        }
+        return XR_FAILED;
+    }
+
     ZoneScoped;
 
     std::vector<unsigned int> indexData;
@@ -344,6 +369,11 @@ XRESULT D3D11VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, byte* vertices,
     const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
     if ( numVertices > maxVertexIndex + 1 ) {
         LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
+        return XR_FAILED;
+    }
+
+    if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
+        LogError() << "OptimizeFaces: index out of range (numVertices=" << numVertices << ") - skipping";
         return XR_FAILED;
     }
 
