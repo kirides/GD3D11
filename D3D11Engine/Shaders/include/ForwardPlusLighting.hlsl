@@ -72,6 +72,12 @@ cbuffer FP_TileConstantBuffer : register( b5 )
     float2 FP_ViewportSize;
     uint FP_NumTilesX;
     uint FP_LimitLightIntensity;
+
+    // Cluster Z range; must match what CS_LightCulling was dispatched with, or a pixel reads a different
+    // cluster than the one culled for it.
+    float FP_ClusterNearZ;
+    float FP_ClusterFarZ;
+    float2 FP_TilePad;
 };
 
 // ============================================
@@ -117,15 +123,18 @@ struct TiledPointLight
     int ShadowCubeIndex;
 };
 
+// Clustered Forward+ grid — layout-identical to CS_LightCulling.hlsl's and the C++ LightGrid.
+#define FP_NUM_Z_SLICES 16u
+#define FP_MASK_WORDS 16u
+
 struct LightGrid
 {
-    uint Offset;
-    uint Count;
+    uint WordOccupancy;
+    uint Mask[FP_MASK_WORDS];
 };
 
 StructuredBuffer<TiledPointLight> FP_Lights : register( t8 );
 StructuredBuffer<LightGrid> FP_LightGrid : register( t9 );
-StructuredBuffer<uint> FP_LightIndexList : register( t10 );
 TextureCubeArray FP_ShadowCubeArray : register( t11 );
 // Per-slot overlay holding ONLY this frame's moving (skeletal) casters; min'd with the static cube above.
 // t12/t13 are the shadow and AO masks, so this lands at t14. See PLS_SHADOW_HAS_DYNAMIC in PointLightShadows.h.
@@ -144,7 +153,14 @@ float3 FP_ComputePointLighting(
     uint tileY = (uint)screenPos.y / FP_TILE_SIZE;
     uint tileIndex = tileY * FP_NumTilesX + tileX;
 
-    LightGrid grid = FP_LightGrid[tileIndex];
+    // Log-distributed slice from view Z. MUST match CS_LightCulling's SliceOfViewZ; we already have the
+    // view-space position, so unlike a depth-buffer consumer there is nothing to invert first.
+    float zView = abs( vsPosition.z );
+    float t = log2( max( zView, FP_ClusterNearZ ) / FP_ClusterNearZ )
+        / log2( FP_ClusterFarZ / FP_ClusterNearZ );
+    uint slice = (uint)clamp( floor( t * (float)FP_NUM_Z_SLICES ), 0.0f, (float)( FP_NUM_Z_SLICES - 1 ) );
+    uint cluster = tileIndex * FP_NUM_Z_SLICES + slice;
+
     float3 totalLighting = float3( 0, 0, 0 );
     float3 maxLighting = float3( 0, 0, 0 );
 
@@ -152,39 +168,51 @@ float3 FP_ComputePointLighting(
     float3 V = normalize( -vsPosition );
     float specMod = PLS_ComputeSpecMod( diffuseColor );
     float3 wsNormal = normalize( mul( float4( normal, 0 ), SQ_InvView ).xyz );
-    
-    for ( uint i = 0; i < grid.Count; i++ )
+
+    // Walk only the mask words WordOccupancy flags as non-empty. An empty cluster - the common case - is one
+    // load instead of FP_MASK_WORDS, and the loop bound stays a popcount, so a corrupt entry bounds exactly
+    // as a fixed loop would.
+    uint wm = FP_LightGrid[cluster].WordOccupancy;
+    while ( wm != 0 )
     {
-        uint lightIdx = FP_LightIndexList[grid.Offset + i];
-        TiledPointLight light = FP_Lights[lightIdx];
-
-        float3 lightDir = light.PositionView - vsPosition;
-        float distance = length( lightDir );
-        
-        if ( distance >= light.Range )
-            continue;
-            
-        lightDir /= distance;
-
-        float ndl = max( 0, dot( lightDir, normal ) );
-        
-        // instead of pow(..., 1.2f) we use a fast quadratic-like approach.
-        float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
-
-        float3 H = normalize( lightDir + V );
-        float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
-        float3 lighting = PLS_ComputePointLightLighting( diffuseColor, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
-
-        // Don't fetch shadows if the light contribution is effectively zero.
-        if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
+        uint w = firstbitlow( wm );
+        wm &= wm - 1;
+        uint m = FP_LightGrid[cluster].Mask[w];
+        while ( m != 0 )
         {
-            float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
-            lighting *= shadow;
-        }
+            uint bit = firstbitlow( m );
+            m &= m - 1;   // clear the lowest set bit
+            uint lightIdx = w * 32u + bit;
+            TiledPointLight light = FP_Lights[lightIdx];
 
-        lighting = saturate( lighting );
-        totalLighting += lighting;
-        maxLighting = max( maxLighting, lighting );
+            float3 lightDir = light.PositionView - vsPosition;
+            float distance = length( lightDir );
+
+            if ( distance >= light.Range )
+                continue;
+
+            lightDir /= distance;
+
+            float ndl = max( 0, dot( lightDir, normal ) );
+
+            // instead of pow(..., 1.2f) we use a fast quadratic-like approach.
+            float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
+
+            float3 H = normalize( lightDir + V );
+            float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
+            float3 lighting = PLS_ComputePointLightLighting( diffuseColor, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
+
+            // Don't fetch shadows if the light contribution is effectively zero.
+            if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
+            {
+                float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+                lighting *= shadow;
+            }
+
+            lighting = saturate( lighting );
+            totalLighting += lighting;
+            maxLighting = max( maxLighting, lighting );
+        }
     }
 
     return FP_LimitLightIntensity ? maxLighting : totalLighting;
