@@ -196,12 +196,10 @@ public:
 
     /** ---------------- Sorted transparency -------------------- */
 
-    /** Fills the frame's transparency queue with the drawables that are not pushed at production
-        time (ghosts, decals, quad marks, poly strips) and sorts the whole queue back to front. */
+    /** Adds the late kinds (ghosts, decals, quad marks, poly strips) and sorts back to front. */
     void CollectTransparencyQueue();
 
-    /** Replays the sorted queue: every maximal run of consecutive same-kind items goes to the
-        matching emitter below, so batching survives while the global order stays painter's. */
+    /** Replays the sorted queue, one call per maximal same-kind run. */
     void DrawTransparencyQueue();
 
     void DrawWorldTransparencyRun( std::span<const TransparentItem> items, EWorldTransparencyVariant variant );
@@ -211,8 +209,8 @@ public:
     void DrawQuadMarkRun( std::span<const TransparentItem> items );
     void DrawPolyStripRun( std::span<const TransparentItem> items );
 
-    /** Re-writes the depth of the world transparency meshes (color writes off) after the queue has
-        been replayed, so depth-consuming post effects still see them. */
+    /** Depth re-lay for the world transparency meshes, once, after the replay - the fog/god-ray
+        passes downstream sample it. */
     void DrawWorldTransparencyDepthOnly();
 
     /** Gets the depthbuffer */
@@ -290,8 +288,7 @@ public:
     /** Draws the static vobs instanced */
     XRESULT DrawVOBsInstanced();
 
-    /** Uploads the per-visual wind metadata for this frame's alpha VOB batches. Runs once before the
-        queue is replayed - the emitter only binds what this produced. */
+    /** Per-visual wind metadata for this frame's alpha VOB batches; once, before the replay. */
     void PrepareAlphaMeshWindMetadata();
 
     /** Set wind props in const buffer */
@@ -565,11 +562,9 @@ private:
 
     std::vector<AlphaMeshData> m_AlphaMeshes;
 
-    /** Set by PrepareAlphaMeshWindMetadata when this frame's wind metadata buffer is usable */
     bool m_AlphaMeshWindMetadataValid = false;
 
-    /** Instanced draws the alpha VOB emitter needed this frame. Compared against the instance count
-        it shows how much of the batching survived the back-to-front sort. */
+    /** Instanced draws the alpha VOB emitter needed; vs. the instance count = surviving batching. */
     unsigned int m_AlphaVobDrawsThisFrame = 0;
 
     std::vector<VobLightInfo*> m_FrameLights;

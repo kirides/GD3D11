@@ -443,20 +443,17 @@ public:
 
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
 
-    /** Sets up the shared render state a run of ghost draws needs. The transparency queue can
-        interleave ghosts with other kinds, so this runs once per run, not once per frame. */
+    /** Shared state for a run of ghost draws; per run, since the queue interleaves kinds. */
     void BeginTransparencyVobRun();
 
-    /** Draws one ghost vob (z-prepass with a null PS, then the transparency shader). Hard-wired to
-        D3D11GraphicsEngine; D3D12 has its own equivalent. */
+    /** One ghost vob (z-prepass with a null PS, then the transparency shader). D3D11 only. */
     void DrawTransparencyVob( const TransparencyVobInfo& info );
 
     void DrawSkeletalVN();
 
-    /** Backend-neutral accessor: the transparency queue stores indices into this. */
+    /** The transparency queue stores indices into this. */
     std::vector<TransparencyVobInfo>& GetTransparencyVobs() { return TransparencyVobs; }
 
-    /** Every alpha-blended drawable of this frame, sorted back to front by the transparency pass. */
     TransparencyQueue& GetTransparencyQueue() { return TransparencyQueueData; }
 
     /** Draws the inventory */
@@ -1079,7 +1076,6 @@ private:
     std::vector<TransparencyVobInfo> TransparencyVobs;
     std::vector<SkeletalVobInfo*> VNSkeletalVobs;
 
-    /** Collection point for everything drawn alpha-blended this frame */
     TransparencyQueue TransparencyQueueData;
 
     /** List of Vobs having a zCParticleFX-Visual */

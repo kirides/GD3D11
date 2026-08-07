@@ -713,8 +713,7 @@ struct GothicRendererSettings {
         ShowSkeletalVertexNormals = false;
         EnableDynamicLighting = true;
 
-        SortedTransparency = true;      // draw every alpha-blended thing in one back-to-front pass instead
-                                        // of one fixed pass per category (cobwebs, ghosts, glass, decals, ...)
+        SortedTransparency = true;      // one back-to-front pass instead of one fixed pass per category
 
         DrawG1ForestPortals = false;    //enables the textures around forests and some doors to darken them
                                         //these are only applicable to G1, they don't appear to have been used in G2

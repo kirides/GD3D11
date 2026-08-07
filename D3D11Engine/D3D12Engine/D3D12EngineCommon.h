@@ -190,10 +190,8 @@ struct VobAlphaMesh {
     UINT     IndexCount;
     UINT     NumInstances;
     bool     Additive;                       // zMAT_ALPHA_FUNC_ADD -> additive blend, else plain alpha blending
-    // Depth this batch sorts on in the frame's transparency queue: the distance to its NEAREST instance.
-    // Batch granularity, not per instance as on D3D11 - the instance ring is partitioned near/far while it is
-    // uploaded, so ring slot i is not visual->Instances[i] and a per-instance draw range cannot be addressed
-    // from the CPU list. Nearest-instance keeps the common cases (one web, one cluster) in the right place.
+    // Transparency-queue depth: distance to the NEAREST instance. Batch granularity, not per instance as on
+    // D3D11 - the instance ring is partitioned near/far on upload, so ring slot i is not Instances[i].
     float    DistanceSq;
 };
 extern std::vector<VobAlphaMesh> g_FrameVobAlpha;
