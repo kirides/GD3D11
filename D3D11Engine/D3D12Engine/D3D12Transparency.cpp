@@ -81,10 +81,19 @@ namespace {
     // below now renders as EKind::Env. Folding the env strength into the base alpha is what made ice
     // near-invisible instead of thick.
     float4 ComputeTextureFactor( zCMaterial* mat ) {
-        if ( zColor( mat->GetColor() ).bgra.alpha < 255 ) {
-            return zColor( mat->GetColor() ).ToFloat4();
-        }
-        return float4( 1.0f, 1.0f, 1.0f, 1.0f );
+        // The material color contributes ALPHA ONLY, never RGB — ZenGin's base stage is rgbGen=VERTEX /
+        // alphaGen=FACTOR (zRenderManager.cpp:601-610); the D3D7 poly path folds only mat->GetAlpha()
+        // into the vertex color's alpha and leaves its RGB as the vertex light
+        // (zRndD3D_Render.cpp:1049). The material RGB is for UNTEXTURED polys, which never get here.
+        // Multiplying it in made dark-tinted additive surfaces (the magic barrier, color 4,45,26,155)
+        // scale their texture to near-black and disappear.
+        //
+        // The RGB instead carries the day/night factor: these surfaces are drawn unlit over a static,
+        // baked-daylight vertex color, so without it ice and waterfall foam stay noon-bright at midnight.
+        // Exactly 1.0 while the sun is up, so daylight is unaffected. See GothicAPI::GetSkyDayFactor.
+        const float skyLight = Engine::GAPI->GetSkyDayFactor();
+        return float4( skyLight, skyLight, skyLight,
+            zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
     }
 
     // D3D11 spec: the alpha-func -> blend-state switch in DrawMeshInfoListAlphablended. Returns false for

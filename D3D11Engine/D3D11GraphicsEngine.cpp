@@ -4247,7 +4247,41 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
         };
     });
-    
+
+    // Everything alpha-blended in one pass, sorted back to front across all categories: world
+    // transparency meshes (normal / portal / waterfall), instanced alpha VOBs, ghosts, blended
+    // decals, quad marks and poly strips.
+    //
+    // Frame order is geometry -> alpha -> fog/pfx: this sits after the opaque scene, the sky and
+    // water, but BEFORE the height fog, god rays and the particle passes. That is what gets fog onto
+    // alpha-blended surfaces at all - drawn after the composition (where it used to sit) they were
+    // pasted on top of an already-fogged scene and stayed unfogged at any distance. It is also what
+    // makes DrawWorldTransparencyDepthOnly meaningful: the depth it re-lays is exactly what the fog
+    // and god-ray passes downstream sample, so they fog the glass surface instead of whatever stands
+    // behind it. Particle distortion still copies the finished scene afterwards, so it picks the
+    // transparent surfaces up as well.
+    graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph ) {
+            // Bind the depth buffer explicitly: render-graph passes inherit whatever OM state the
+            // previous one left, and several of the passes that can precede this end on a PfxRenderer
+            // blit with an RTV and no DSV, which would silently kill depth testing here.
+            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+
+            zCCamera::GetCamera()->Activate();
+            // Camera->Activate breaks the viewport
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+
+            CollectTransparencyQueue();
+            DrawTransparencyQueue();
+        };
+    } );
+
     if (rendererState.RendererSettings.DrawFog &&
                 Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
                 zBSP_MODE_OUTDOOR && !compositionActive) {
@@ -4436,32 +4470,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Debug Lines" );
             LineRenderer->Flush();
             LineRenderer->FlushScreenSpace();
-        };
-    } );
-
-    // Everything alpha-blended in one pass, sorted back to front across all categories: world
-    // transparency meshes (normal / portal / waterfall), instanced alpha VOBs, ghosts, blended
-    // decals, quad marks and poly strips. This slot is where the world transparency meshes already
-    // sat - after water, particles and the fog/god-rays composition - so the refraction-based passes
-    // keep the scene they expect to read.
-    graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph ) {
-            // Re-bind the depth buffer: the preceding particle pass ends on a PfxRenderer blit that
-            // leaves the OM with an RTV and no DSV, which used to make trails draw through walls.
-            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
-            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
-            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
-                DepthStencilBuffer->GetDepthStencilView().Get() );
-
-            zCCamera::GetCamera()->Activate();
-            // Camera->Activate breaks the viewport
-            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-
-            CollectTransparencyQueue();
-            DrawTransparencyQueue();
         };
     } );
 
@@ -4870,6 +4878,11 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     // Env-map overlay stage (see ComputeEnvMapAlpha). Only the Simple variant runs it: PS_PortalDiffuse
     // and PS_WaterfallFoam are their own effects, and ZenGin never env-maps a portal either.
     // The inverse view is constant for the whole run, so build it once.
+    // Constant for the whole run - the base stage's stand-in for the time-of-day lighting these
+    // unlit surfaces never receive (see the textureFactor comment below). Exactly 1.0 while the sun
+    // is up, so this cannot dim anything in daylight.
+    const float skyLight = Engine::GAPI->GetSkyDayFactor();
+
     const bool envMapEnabled = variant == EWorldTransparencyVariant::Normal;
     PsEnvMapData envData = { };
     if ( envMapEnabled ) {
@@ -4954,16 +4967,30 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 lastAlphaFunc = alphaFunc;
             }
 
-            // The base surface's alpha is the material color's alpha, full stop. ZenGin sets the
-            // TFACTOR to zCMaterial::GetColor() (zRenderManager.cpp:609, alphaGen=FACTOR) and the
-            // D3D7 poly path multiplies vertex-light alpha by mat->GetAlpha() == color.alpha
-            // (zRndD3D_Render.cpp:1049). GetEnvMapStrength() is deliberately NOT part of this:
-            // env-mapping is an *additional* stage drawn on top of the opaque/blended base pass
-            // (zRenderManager.cpp:701-703), which the PS_EnvMap draw below renders. Folding the env
-            // strength into the base alpha here is what made ice near-invisible instead of thick.
-            ffdata.textureFactor = zColor( meshKey.Material->GetColor() ).bgra.alpha < 255
-                ? zColor( meshKey.Material->GetColor() ).ToFloat4()
-                : float4( 1.0f, 1.0f, 1.0f, 1.0f );
+            // The material color contributes ALPHA ONLY, never RGB. ZenGin's base stage is
+            // rgbGen=VERTEX / alphaGen=FACTOR (zRenderManager.cpp:601-610), and the D3D7 poly path
+            // spells that out: the vertex color's RGB is the vertex light and only its alpha gets
+            // the material factor folded in — `intalpha = lightDyn.GetAlphaByte() * mat->GetAlpha()`,
+            // `a_color = (intalpha<<24) | lightDyn.rgb` (zRndD3D_Render.cpp:1049). The material
+            // color's RGB is used only for UNTEXTURED polys ("Verwende Materialfarbe falls keine
+            // Textur vorhanden"), which cannot reach this loop — we are inside `if (GetAniTexture())`.
+            //
+            // Multiplying the RGB in as well is what made dark-tinted additive surfaces vanish: the
+            // magic barrier's material color is (4,45,26,155), so its texture was being scaled to
+            // 1.6%/17.6%/10% before an additive blend that then multiplies by src alpha too.
+            //
+            // GetEnvMapStrength() is deliberately NOT part of this either: env-mapping is an
+            // *additional* stage drawn on top of the base pass (zRenderManager.cpp:701-703), which
+            // the PS_EnvMap draw below renders. Folding the env strength into the base alpha here is
+            // what made ice near-invisible instead of thick.
+            //
+            // The RGB carries the day/night factor instead of the material color: these surfaces are
+            // drawn UNLIT (D3D11ForwardPlusRenderer::BindShaderForTexture sends every BLEND/ADD material
+            // to the non-lit fallback shaders) over a world-mesh vertex color that is the static, baked
+            // daylight light, so without it ice and waterfall foam stay noon-bright at midnight. See
+            // GothicAPI::GetSkyDayFactor for why this stands in for ZenGin's relit vertex lighting.
+            ffdata.textureFactor = float4( skyLight, skyLight, skyLight,
+                zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
 
             ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
 
@@ -5018,9 +5045,9 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     interleaving the lists it has to happen once, after the whole replay, or a nearer transparency
     mesh would depth-reject a farther one that is drawn later. Portals are excluded, same as before.
 
-    Note the fog/god-rays justification the original comment gave is stale: both of those passes run
-    earlier in the frame now. This is kept for the depth-consuming post effects that still come
-    after the transparency pass (DoF, TAA). */
+    The original justification holds: the height fog and god rays run right after the transparency
+    pass and reconstruct world positions from this depth buffer, so without the re-lay they would fog
+    whatever stands BEHIND the glass instead of the glass itself. DoF and TAA read it too. */
 void D3D11GraphicsEngine::DrawWorldTransparencyDepthOnly() {
     const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
 

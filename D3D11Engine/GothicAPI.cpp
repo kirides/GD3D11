@@ -687,7 +687,15 @@ bool GothicAPI::IsCameraIndoor() {
     answer, so the camera stands in for it; the difference shows only while straddling a portal. */
 float GothicAPI::GetEnvMapStageAlpha( zCMaterial* mat ) {
     if ( !mat ) return 0.0f;
+    return std::clamp( mat->GetEnvMapStrength() * GetSkyLightIntensity(), 0.0f, 1.0f );
+}
 
+/** The `skyFogColor.GetIntensityFloat() / 255` factor of the block above, on its own: how bright the
+    sky FOG is right now, 0..1. Pinned to the in-sector zCOLOR(100,100,100) indoors, exactly as ZenGin
+    does. This is the env-map stage's term and nothing else — note it peaks well below 1.0 even at
+    noon (Gothic's daytime fog color is a hazy blue-grey), so it is NOT a usable brightness multiplier:
+    used as one it darkens surfaces in broad daylight. GetSkyDayFactor below is that. */
+float GothicAPI::GetSkyLightIntensity() {
     float lumaFog = 100.0f * (0.299f + 0.587f + 0.114f);   // the in-sector zCOLOR(100,100,100)
 
     if ( !IsCameraIndoor() ) {
@@ -700,7 +708,34 @@ float GothicAPI::GetEnvMapStageAlpha( zCMaterial* mat ) {
         }
     }
 
-    return std::clamp( mat->GetEnvMapStrength() * lumaFog * (1.0f / 255.0f), 0.0f, 1.0f );
+    return std::clamp( lumaFog * (1.0f / 255.0f), 0.0f, 1.0f );
+}
+
+/** Day/night brightness for surfaces that never receive lighting: 1.0 whenever the sun is properly up,
+    falling to kNightFactor after dusk.
+
+    Alpha-blended world surfaces are drawn unlit — D3D11ForwardPlusRenderer::BindShaderForTexture sends
+    every BLEND/ADD material (and MT_Portal / MT_WaterfallFoam) to the non-lit fallback shaders — over a
+    world-mesh vertex color that is the STATIC light baked into the .zen at full daylight. Nothing in
+    that path darkens them, so ice sheets and waterfall foam sat at noon brightness at midnight.
+
+    ZenGin has no equivalent because it does not need one: its blended base stage is rgbGen=VERTEX and
+    its per-vertex lightDyn already carries the time of day, since ZenGin relights world vertices from
+    the sky. This is our stand-in for that missing term, so the shape is chosen rather than ported:
+    pinned to exactly 1.0 while the sun is up (daylight must look identical to before this existed) and
+    eased down to a floor at night rather than to black — Gothic nights are moonlit, not pitch dark.
+    Both constants are pure look tuning; change them freely. */
+float GothicAPI::GetSkyDayFactor() {
+    constexpr float kNightFactor = 0.35f;   // brightness after dusk
+    constexpr float kDuskSharpness = 4.0f;  // how fast it crosses over around the horizon
+
+    GSky* sky = GetSky();
+    if ( !sky ) return 1.0f;
+
+    // AC_LightPos.y is the sun height, -1 (midnight) .. 1 (noon)
+    const float sunHeight = sky->GetAtmosphereCB().AC_LightPos.y;
+    const float day = std::clamp( sunHeight * kDuskSharpness, 0.0f, 1.0f );
+    return std::lerp( kNightFactor, 1.0f, day );
 }
 
 /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...) */
