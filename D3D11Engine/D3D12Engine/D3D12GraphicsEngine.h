@@ -345,8 +345,8 @@ private:
     void DrawDecalList( const std::vector<zCVob*>& decals, bool lighting );
     // Ghost/transparency VOBs (invisible-potion/fade items — GothicAPI::TransparencyVobs, populated every frame
     // by CollectVisibleVobs' GetVisualAlpha() branch). Mirrors D3D11's GothicAPI::DrawTransparencyVobs (unlit
-    // diffuse sample, alpha *= per-vob GhostAlpha). Drawn by DrawGhostRun out of the transparency queue; the
-    // list itself is cleared by DrawTransparencyQueue, which runs unconditionally so it can never leak.
+    // diffuse sample, alpha *= per-vob GhostAlpha). Drawn by DrawGhostRun; DrawTransparencyQueue clears the
+    // list unconditionally, so it cannot leak.
     void DrawVegetation();    // GVegetationBox instanced grass cards (own PSO — see D3D12PipelineState::CreateGrass)
     // Grass in the Forward+ DEPTH PREPASS. Runs from the prepass block, after the skeletal draws. Its whole
     // purpose is the AO mask: RenderSSAO builds that from the prepass depth, so without this a grass pixel
@@ -378,13 +378,11 @@ private:
     // zCQuadMark decals (blood splatter, spell ground marks). Split in two exactly like D3D11: the opaque /
     // additive / alpha-blended marks draw with the opaque decals (depth-write on), while MUL/MUL2 marks are
     // deferred to DrawMQuadMarks and drawn with the transparent decals (depth-write off).
-    // Both blend classes are handled by DrawQuadMarkRun now: the MUL/MUL2 marks are no longer deferred into
-    // a second pass, they just carry their own pipeline inside the run.
+    // Both blend classes go through DrawQuadMarkRun; MUL/MUL2 is no longer deferred to a second pass.
     // Mesh-shaped particle effects (zCParticleFX emitters with visShpType 5, e.g. swarms of solid debris).
     // Called back from GothicAPI::DrawParticlesSimple, i.e. from inside DrawParticleEffects.
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) override;
-    // Weapon/spell trails + lightning flashes (zCPolyStrip) are drawn by DrawPolyStripRun, one dynamic-ring
-    // batch per texture, in transparency-queue order.
+    // Weapon/spell trails + lightning flashes: DrawPolyStripRun, one dynamic-ring batch per texture.
     // Bink cutscene YUV quad (zBinkPlayer.cpp) — DrawVertexArray's PS_Video special case. Same pre-transformed
     // vertex ring as the FF/UI path, but binds m_VideoTextures[0..2] through Video.RootSig/PSO instead.
     XRESULT DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride );
@@ -741,18 +739,13 @@ private:
     static bool IsWorldMeshAlphaBlended( zCMaterial* mat );   // "does this material belong in that list?"
     void DrawWorldTransparencyRun( std::span<const TransparentItem> items,
         EWorldTransparencyVariant variant );                  // one run out of the transparency queue
-    // Root signature + frame root args + world VB/IB for a world-transparency draw. Re-done per run, since
-    // the queue interleaves these with kinds that bind their own root signature. False = cannot draw.
+    // Per run, since the queue interleaves kinds that bind their own root signature. False = cannot draw.
     bool BindWorldTransparencyFrameState();
     void DrawWorldTransparencyDepthOnly();                    // depth re-lay, once, after the whole replay
 
-    // ---- The frame's sorted transparency queue (D3D12Transparency.cpp).
-    //
-    // Every alpha-blended thing used to be its own pass in a fixed sequence, each sorted at best against
-    // itself - so a cobweb always painted before a ghost and a ghost before a glass pane, whatever the actual
-    // depth order was. Collect fills the backend-neutral TransparencyQueue (GothicAPI) from this frame's
-    // per-kind lists, sorts it once back-to-front, and Draw replays it, batching maximal consecutive runs of
-    // the same kind. Same design as D3D11's; the payloads are indices into this backend's own arrays.
+    // ---- The frame's sorted transparency queue (D3D12Transparency.cpp). Collect fills the backend-neutral
+    // TransparencyQueue from this frame's per-kind lists and sorts it back-to-front; Draw replays it,
+    // batching maximal same-kind runs. Payloads are indices into this backend's own arrays.
     void CollectTransparencyQueue();
     void DrawTransparencyQueue();
     void DrawGhostRun( std::span<const TransparentItem> items );

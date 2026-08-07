@@ -5,9 +5,8 @@
 #include <algorithm>
 
 namespace {
-    /** Order the kinds were drawn in before the queue existed, used by the categoryMajor fallback.
-        Approximate: quad marks used to be split over two passes by blend mode (ADD/BLEND before the
-        alpha VOBs, MUL/MUL2 after the ghosts) - they are one category here. */
+    /** Pre-queue pass order, for the categoryMajor fallback. Approximate: quad marks used to be
+        split over two passes by blend mode; they are one category here. */
     constexpr uint8_t LegacyRank( ETransparentKind kind ) {
         switch ( kind ) {
         case ETransparentKind::AlphaVob:  return 0;

@@ -1695,9 +1695,8 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
 
 void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items ) {
-	// GothicAPI::TransparencyVobs is populated every frame by CollectVisibleVobs' GetVisualAlpha() branch
-	// (invisible-potion/fade-out items); the transparency queue holds indices into it and
-	// DrawTransparencyQueue clears it afterwards, unconditionally, so it can never leak.
+	// TransparencyVobs is filled by CollectVisibleVobs' GetVisualAlpha() branch; the queue holds indices
+	// into it and DrawTransparencyQueue clears it unconditionally, so it cannot leak.
 	auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
 	if ( items.empty() ) return;
 
@@ -1729,8 +1728,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 	const auto now = Engine::GAPI->GetFrameNumber();
 	static std::vector<XMFLOAT4X4> ghostBoneCache;
 
-	// Order comes from the frame's transparency queue, which sorts ghosts against every other blended
-	// drawable rather than only against each other (that is what the old local re-sort did here).
+	// Order comes from the transparency queue, which sorts ghosts against every other blended drawable.
 	for ( const TransparentItem& item : items ) {
 		const uint32_t ghostIndex = queue.GetGhostIndex( item );
 		if ( ghostIndex >= transparencyVobs.size() ) continue;
@@ -2499,8 +2497,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	    DrawVegetation();
     }
 
-	// Decals (blood, arrows, sprites): the opaque/alpha-test ones draw here, with the opaque scene and
-	// depth-write on. The blended ones are transparency-queue content and are drawn further down.
+	// Opaque/alpha-test decals only; the blended ones are transparency-queue content.
 	{
 		static std::vector<zCVob*> decals;
 		decals.clear();
@@ -2511,28 +2508,17 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawDecalList( decals, true );
 	}
 
-	// Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs + opaque decals). Stays out of
-	// the transparency queue - it samples the scene behind it, so it cannot be re-ordered freely.
+	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 
-	// Everything else that blends, in ONE pass sorted strictly back to front: world transparency surfaces
-	// (ice, glass, magic barriers, forest portals, waterfall foam), blended instanced VOBs (cobwebs, hanging
-	// cloth), ghosts, blended decals, quad marks and poly strips. Each of those used to be its own pass in a
-	// fixed sequence, so their depth order against each other was whatever the sequence happened to be — a
-	// cobweb always painted before a ghost and a ghost before a glass pane.
-	//
-	// Frame order is geometry -> alpha -> fog/pfx, same as D3D11's "Draw Transparency" pass: after the opaque
-	// scene, the sky and water, but BEFORE the particles and RenderFogAndGodRays below. Drawn after the fog
-	// (where this used to sit) alpha surfaces were pasted onto an already-fogged scene and never fogged
-	// themselves; here the depth DrawWorldTransparencyDepthOnly re-lays is what the fog samples, so it fogs
-	// the glass rather than what stands behind it.
-	//
-	// MUST run every frame: it also drains the per-kind frame lists.
+	// Everything else that blends, in ONE back-to-front pass: world transparency surfaces, blended instanced
+	// VOBs, ghosts, blended decals, quad marks and poly strips. Frame order is geometry -> alpha -> fog/pfx,
+	// same as D3D11: BEFORE the particles and RenderFogAndGodRays below, or alpha surfaces get pasted onto an
+	// already-fogged scene and never fog themselves. MUST run every frame - it drains the per-kind lists.
 	CollectTransparencyQueue();
 	DrawTransparencyQueue();
 
-	// Particles: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested against the
-	// opaque scene but not writing depth. Not queue content yet — same staging as D3D11.
+	// Billboarded PFX, depth-tested but not depth-writing. Not queue content yet, same as D3D11.
 	{
 		DX_ZONE( m_CmdList.Get(), "Draw particles" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particles" );
@@ -3059,8 +3045,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         ? CoalesceWorldDepthCommands( opaqueCmds, cmds + count, kMaxWorldDrawCommands - count )
         : 0;
 
-    // The peeled alpha-blended surfaces are not sorted here anymore: the frame's transparency queue orders
-    // them against every other blended drawable, not just against each other.
+    // Not sorted here: the transparency queue orders them against every other blended drawable.
 }
 
 
@@ -3348,8 +3333,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         const float maxH = visual->BBox.Max.y;
         staged.clear();
 
-        // Depth for this visual's blended sub-meshes, resolved lazily below (only blended materials pay
-        // for it). Distance to the nearest instance - see VobAlphaMesh::DistanceSq.
+        // Lazily resolved below; only blended materials pay for it. See VobAlphaMesh::DistanceSq.
         float alphaDistanceSq = -1.0f;
 
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {

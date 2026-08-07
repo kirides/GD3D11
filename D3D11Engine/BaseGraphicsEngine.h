@@ -318,8 +318,7 @@ public:
     virtual XRESULT DrawVOBs( bool noTextures = false ) { return XR_SUCCESS; }
 
     /** Draws PolyStrips (weapon and particle trails) */
-    // Poly strips (weapon/spell trails, lightning) are drawn out of the frame's sorted transparency queue
-    // by each backend's DrawPolyStripRun, not through a virtual on this interface.
+    // Poly strips are drawn by each backend's DrawPolyStripRun out of the transparency queue.
 
     /** Draws the sky using the GSky-Object */
     virtual XRESULT DrawSky() { return XR_SUCCESS; }

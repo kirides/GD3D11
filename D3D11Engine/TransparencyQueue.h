@@ -10,21 +10,10 @@ class zCQuadMark;
 class zCTexture;
 struct PolyStripInfo;
 
-/** Backend-neutral collection point for everything that gets drawn alpha-blended.
-
-    Before this existed every category of transparent geometry (world mesh sections, instanced
-    alpha VOBs, ghosts, decals, quad marks, poly strips) had its own render pass in a hard-coded
-    sequence, and each of them sorted - at best - only within itself. A cobweb therefore always
-    painted before a ghost and a ghost always before a glass window, no matter what stood in front
-    of what.
-
-    Producers now push their drawables in here during the frame; the transparency pass sorts the
-    whole set strictly back-to-front once and replays it. Batching survives because the emitters
-    draw maximal *consecutive* runs of the same kind in one go (see ForEachRun) - the same
-    painter's-order rule the decal path has always followed.
-
-    Only the small Items array is sorted; the payload vectors never move. Every vector is cleared
-    (never freed) per frame and reserved once, per the project's no-per-frame-allocation rule. */
+/** Backend-neutral collection point for everything drawn alpha-blended. Producers push during the
+    frame; the transparency pass sorts back-to-front once and replays it, batching maximal
+    consecutive same-kind runs (ForEachRun). Only Items is sorted - payloads never move, and every
+    vector is cleared (never freed) per frame. */
 
 enum class ETransparentKind : uint8_t {
     WorldMesh,      // world mesh section, SubKind = EWorldTransparencyVariant
@@ -36,9 +25,8 @@ enum class ETransparentKind : uint8_t {
     Count
 };
 
-/** World transparency meshes all run through the same draw code - the pixel shader is picked from
-    MaterialInfo::MaterialType - but portals are gated behind a setting and are excluded from the
-    depth-only re-draw, so the variant has to survive the sort. */
+/** One draw path for all three; the variant only gates portals behind DrawG1ForestPortals and
+    excludes them from the depth re-lay. The pixel shader comes from MaterialInfo::MaterialType. */
 enum class EWorldTransparencyVariant : uint8_t {
     Normal,
     Portal,
@@ -58,9 +46,8 @@ struct TransparentWorldMesh {
     MeshInfo* Mesh;
 };
 
-/** Backend-neutral reference into the backend's own alpha-VOB batch array (D3D11: m_AlphaMeshes,
-    D3D12: its equivalent). Instances of one batch are contiguous in the instancing buffer, so
-    consecutive items of the same batch re-merge into a single instanced draw at emit time. */
+/** Index into the backend's own alpha-VOB batch array. A batch's instances are contiguous in the
+    instancing buffer, so consecutive items re-merge into one instanced draw at emit time. */
 struct TransparentAlphaVob {
     uint32_t BatchIndex;
     uint32_t InstanceIndex;
@@ -84,9 +71,8 @@ public:
     void AddWorldMesh( float distanceSq, EWorldTransparencyVariant variant, const MeshKey& key, MeshInfo* mesh );
     void AddAlphaVob( float distanceSq, uint32_t batchIndex, uint32_t instanceIndex, uint32_t batchKey );
 
-    /** For a backend that keeps a kind's data in its own arrays (D3D12 resolves every buffer view and
-        bindless index at build time) the queue only has to carry two indices into those. Read back
-        with GetIndices; the typed getters above do not apply to items added this way. */
+    /** For backends keeping a kind's data in their own arrays (D3D12). Read back with GetIndices;
+        the typed getters do not apply to items added this way. */
     void AddIndexed( float distanceSq, ETransparentKind kind, uint8_t subKind,
         uint32_t index0, uint32_t index1, uint32_t batchKey );
 
@@ -95,17 +81,16 @@ public:
     void AddQuadMark( float distanceSq, zCQuadMark* mark, const QuadMarkInfo* info );
     void AddPolyStrip( float distanceSq, zCTexture* texture, const PolyStripInfo* info );
 
-    /** Back-to-front by distance. With categoryMajor the kinds are kept apart and drawn in the
-        legacy pass order instead - the fallback the SortedTransparency setting selects, which
-        needs no second copy of the emitters. */
+    /** Back-to-front by distance. categoryMajor instead keeps the kinds apart in the legacy pass
+        order - the SortedTransparency=0 fallback, which needs no second copy of the emitters. */
     void Sort( bool categoryMajor );
 
     bool Empty() const { return Items.empty(); }
     size_t Size() const { return Items.size(); }
     std::span<const TransparentItem> GetItems() const { return Items; }
 
-    /** Calls emit(kind, subKind, span) for every maximal run of consecutive same-kind items.
-        Returns the number of runs - a run count approaching Size() means batching collapsed. */
+    /** emit(kind, subKind, span) per maximal same-kind run. Returns the run count; approaching
+        Size() means batching collapsed. */
     template<class F> size_t ForEachRun( F&& emit ) const {
         size_t runs = 0;
         for ( size_t i = 0; i < Items.size(); ) {

@@ -1,24 +1,12 @@
-// D3D12GraphicsEngine — Gothic FX geometry: quad marks and poly strips.
+// D3D12GraphicsEngine — Gothic FX geometry: quad marks, poly strips and mesh-shaped particle effects.
+// CPU-built ExVertexStruct triangle lists with a per-material blend mode, sharing one root signature, one
+// shader (Shaders/D3D12/Fx.hlsl) and one blend-keyed PSO cache (D3D12PipelineState::CreateFx).
 //
-// Ports three D3D11 passes that had no D3D12 counterpart at all (the base-class DrawPolyStrips is a silent
-// `return XR_SUCCESS`, and nothing on D3D12 ever looked at GothicAPI's quad-mark list), so blood splatter,
-// spell ground marks, weapon/spell trails and lightning flashes were simply missing from the frame:
-//   * quad marks — zCQuadMark geometry in every blend mode (D3D11's DrawQuadMarkRun)
-//   * poly strips — zCPolyStrip trails + lightning flashes (D3D11's DrawPolyStripRun)
-//   * D3D11GraphicsEngine::DrawFrameParticleMeshes (:9066) — mesh-shaped particle effects (visShpType 5)
+// Geometry sources differ: quad marks own a per-mark static GfxVertexBuffer (already a D3D12VertexBuffer,
+// bind it directly), poly strips are rebuilt every frame and stream through m_FxVertexBuffer.
 //
-// All three are CPU-built ExVertexStruct triangle lists drawn unlit with a per-material blend mode, so they
-// share one root signature, one shader (Shaders/D3D12/Fx.hlsl) and one blend-keyed PSO cache
-// (D3D12PipelineState::CreateFx / GetOrCreateFxPipeline).
-//
-// Geometry sources differ, and that is the only real difference between the passes:
-//   * quad marks own a per-mark static GfxVertexBuffer, filled by WorldConverter::UpdateQuadMarkInfo when
-//     Gothic creates the mark (so it is already a D3D12VertexBuffer — bind it directly)
-//   * poly-strip meshes are rebuilt on the CPU every frame, so they stream through a per-frame upload ring
-//     (m_FxVertexBuffer). D3D11 instead grows one shared TempPolysVertexBuffer on demand.
-//
-// Quad marks follow D3D11's shader split: the lit world pixel shader (PS_World) for the opaque/add/blend
-// marks and the unlit Fx one (PS_Simple) for MUL/MUL2. Poly strips are always unlit, as in D3D11.
+// Quad marks follow D3D11's shader split - lit PS_World for opaque/add/blend, unlit Fx PS_Simple for
+// MUL/MUL2. Poly strips are always unlit.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12Texture.h"
@@ -114,13 +102,9 @@ bool D3D12GraphicsEngine::CreateFxVertexBuffers() {
 }
 
 
-/** Draws a run of quad marks (blood splatter, spell ground marks) in transparency-queue order.
-
-    Replaces the old DrawQuadMarks/DrawMQuadMarks split. The two blend classes still use different pipelines
-    — the lit World.RootSig one (sRGB->linear albedo, DelightDiffuse, CSM shadows, tiled point lights, SSAO,
-    wetness, sky IBL, what D3D11's PS_World gives them) and the unlit Fx one for MUL/MUL2 (D3D11's PS_Simple)
-    — but a mark no longer gets moved to a later pass just because of its blend mode: the class switches
-    inside the run, in depth order. Each mark draws straight out of its own static VB. */
+/** One run of quad marks. Replaces the old DrawQuadMarks/DrawMQuadMarks split: the two blend classes still
+    use different pipelines (lit World.RootSig vs the unlit Fx one for MUL/MUL2) but a mark is no longer
+    deferred to a later pass for its blend mode - the class switches inside the run, in depth order. */
 void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> items ) {
     if ( items.empty() ) return;
     if ( !m_FrameOpen || !m_Pipelines.World.RootSig || !m_Pipelines.Fx.RootSig || !m_DepthBuffer ) return;
@@ -143,8 +127,7 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    // D3D11's state machine: start from SetDefaultStates() (no blending, depth-write ON), then follow the
-    // CURRENT material's alpha func, but only re-create the PSO when it CHANGES.
+    // Follow the current material's alpha func, but only re-create the PSO when it changes.
     GothicBlendStateInfo blend;
     blend.SetDefault();
     int alphaFunc = -1;
@@ -161,7 +144,7 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         zCMaterial* mat = QuadMarkMaterial( mark );
         if ( !mat ) continue;
 
-        // Modulate marks stay unlit, exactly as D3D11's PS_Simple path did; everything else is lit.
+        // Modulate marks stay unlit (PS_Simple), everything else is lit.
         const int wantLit = ( mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_MUL
             || mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_MUL2 ) ? 0 : 1;
 
@@ -199,8 +182,8 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             }
             alphaFunc = mat->GetAlphaFunc();
 
-            // Opaque marks keep writing depth as they did in D3D11's first pass; every blended mode must not,
-            // or a mark would depth-reject the transparent geometry drawn after it.
+            // Opaque marks keep writing depth; blended ones must not, or they would depth-reject the
+            // transparent geometry drawn after them.
             const bool depthWrite = ( alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST );
             ID3D12PipelineState* next = litClass
                 ? m_Pipelines.GetOrCreateQuadMarkPipeline( blend, depthWrite )
@@ -248,8 +231,7 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
 }
 
 
-/** Draws a run of poly strips (weapon/spell trails, lightning flashes) in transparency-queue order.
-    The strip/flash meshes themselves are rebuilt by CollectTransparencyQueue, before anything is sorted. */
+/** One run of poly strips. CollectTransparencyQueue rebuilds the strip/flash meshes before sorting. */
 void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> items ) {
     if ( items.empty() ) return;
     if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig || !m_FxVertexBuffer[m_FrameIndex] ) return;
