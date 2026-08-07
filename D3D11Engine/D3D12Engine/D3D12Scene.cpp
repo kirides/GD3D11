@@ -2515,6 +2515,22 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the transparency queue - it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 
+	// Everything else that blends, in ONE pass sorted strictly back to front: world transparency surfaces
+	// (ice, glass, magic barriers, forest portals, waterfall foam), blended instanced VOBs (cobwebs, hanging
+	// cloth), ghosts, blended decals, quad marks and poly strips. Each of those used to be its own pass in a
+	// fixed sequence, so their depth order against each other was whatever the sequence happened to be — a
+	// cobweb always painted before a ghost and a ghost before a glass pane.
+	//
+	// Frame order is geometry -> alpha -> fog/pfx, same as D3D11's "Draw Transparency" pass: after the opaque
+	// scene, the sky and water, but BEFORE the particles and RenderFogAndGodRays below. Drawn after the fog
+	// (where this used to sit) alpha surfaces were pasted onto an already-fogged scene and never fogged
+	// themselves; here the depth DrawWorldTransparencyDepthOnly re-lays is what the fog samples, so it fogs
+	// the glass rather than what stands behind it.
+	//
+	// MUST run every frame: it also drains the per-kind frame lists.
+	CollectTransparencyQueue();
+	DrawTransparencyQueue();
+
 	// Particles: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested against the
 	// opaque scene but not writing depth. Not queue content yet — same staging as D3D11.
 	{
@@ -2530,15 +2546,6 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw rain" );
 		DrawRainParticles();
 	}
-
-	// Everything else that blends, in ONE pass sorted strictly back to front: world transparency surfaces
-	// (ice, glass, magic barriers, forest portals, waterfall foam), blended instanced VOBs (cobwebs, hanging
-	// cloth), ghosts, blended decals, quad marks and poly strips. Each of those used to be its own pass in a
-	// fixed sequence, so their depth order against each other was whatever the sequence happened to be — a
-	// cobweb always painted before a ghost and a ghost before a glass pane. Same slot and same design as
-	// D3D11's "Draw Transparency" pass. MUST run every frame: it also drains the per-kind frame lists.
-	CollectTransparencyQueue();
-	DrawTransparencyQueue();
 
 	// Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
 	// Done here (not in DrawVobsInstanced) so it runs even when DrawVOBs is off and that pass early-outs.

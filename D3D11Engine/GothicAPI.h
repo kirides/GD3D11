@@ -650,6 +650,14 @@ public:
         (zRenderManager.cpp:701-703). Backend-neutral because both renderers draw the same stage. */
     float GetEnvMapStageAlpha( zCMaterial* mat );
 
+    /** Sky-fog intensity (0..1) ZenGin's env-map stage scales its sheen by. Peaks well below 1.0
+        even at noon - not a brightness multiplier, see GetSkyDayFactor for that. */
+    float GetSkyLightIntensity();
+
+    /** Day/night brightness (kNightFactor..1.0) for the alpha-blended world surfaces that are drawn
+        unlit over static, baked-daylight vertex colors. Exactly 1.0 while the sun is up. */
+    float GetSkyDayFactor();
+
     /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...).
         This is a per-world property baked into the compiled BSP-tree, not a per-frame camera
         test - ZenGin swaps in a zCSkyControler_Indoor for these worlds, which renders no sky
