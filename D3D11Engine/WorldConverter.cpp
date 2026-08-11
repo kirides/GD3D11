@@ -306,16 +306,12 @@ namespace {
         CreateShadowIndexBuffer( mesh );
     }
 
-    /** Some authored VOB meshes (eg. tree/foliage assets) contain wedges with a
- *  zero-length normal (degenerate source data). Unlike world-section geometry,
- *  VOB normals are copied verbatim from the original mesh data and never
- *  regenerated, so a zero vector survives untouched through the whole
- *  pipeline and shades as pure black. Recompute a geometric fallback from the
- *  surrounding triangles' face normals for just those vertices; anything with
- *  a valid authored normal is left untouched. */
-    // True for zero-length, NaN or infinite normals - anything unsafe to light with.
-    // Written as "not > threshold" (rather than "<= threshold") so NaN, which
-    // compares false against everything, is also caught as bad instead of slipping through.
+    /** Some authored VOB meshes (tree/foliage assets) ship wedges with a zero-length normal. Unlike
+     *  world-section geometry, VOB normals are copied verbatim and never regenerated, so the zero survives
+     *  the whole pipeline and shades pure black. Recompute a fallback from the surrounding face normals for
+     *  just those vertices. */
+    // Written as "not > threshold" rather than "<= threshold" so NaN, which compares false against
+    // everything, is caught as bad instead of slipping through.
     bool IsDegenerateNormal( FXMVECTOR n ) {
         float len2 = XMVectorGetX( XMVector3LengthSq( n ) );
         return !(len2 > 1e-12f) || !(len2 < 1e12f);

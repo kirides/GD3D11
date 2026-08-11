@@ -24,18 +24,13 @@
 // for the process instead of re-resolving it per root signature.
 //
 // ---- Root signature 1.1 -----------------------------------------------------------------------
-// Layouts are serialized as VERSION_1_1 when the driver supports it (falling back to 1_0 otherwise —
-// see Build()). 1.1's whole point is that the declaration can PROMISE the driver that a descriptor or
-// its referenced data won't change between the bind and the end of execution, which is what lets the
-// driver preload the descriptor / the constant data into SGPRs at the Set call instead of re-reading
-// it per shader invocation. Under 1.0 every parameter is implicitly fully volatile and no such
-// promotion is legal.
+// Layouts are serialized as VERSION_1_1 when the driver supports it (falling back to 1_0 — see Build()).
+// 1.1 lets a declaration PROMISE that a descriptor or its data won't change between the bind and the end
+// of execution, so the driver can preload it at the Set call instead of re-reading it per invocation.
 //
-// Those promises are UNCHECKED by the runtime outside the debug layer: breaking one reads stale or
-// garbage data on the GPU. So the flag arguments below all DEFAULT to the fully-volatile values,
-// which are exactly 1.0's semantics — a layout that says nothing behaves precisely as it did before
-// the 1.1 migration. Tightening is opt-in, per parameter, at the declaration site, and the reason it
-// is safe belongs in a comment there. See the Volatile/Static constants right below for the vocabulary.
+// Those promises are UNCHECKED outside the debug layer: breaking one reads garbage on the GPU. So the flag
+// arguments below all DEFAULT to the fully-volatile values, i.e. 1.0 semantics. Tightening is opt-in, per
+// parameter, at the declaration site, and the reason it is safe belongs in a comment there.
 class D3D12RootLayout {
 public:
     // ---- Descriptor-range flag vocabulary -----------------------------------------------------

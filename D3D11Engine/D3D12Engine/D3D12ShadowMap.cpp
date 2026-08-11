@@ -1029,9 +1029,8 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 		UINT drawCount = 0;
 		const uint32_t defaultOrm = m_E->GetDefaultOrmSrvSlot();
 		// Alpha-test partition: no-cutout casters go straight into the ring, the rest are staged and appended
-		// after the loop so RecordCascade can draw the leading run with no pixel shader bound. thread_local —
-		// one CullCascade per cascade runs concurrently on the pool. (Same scheme as BuildWorldDrawCommands;
-		// staged in normal RAM rather than compacted inside the write-combined UPLOAD ring.)
+		// after the loop so RecordCascade can draw the leading run with no pixel shader bound. Same scheme as
+		// BuildWorldDrawCommands. thread_local — one CullCascade per cascade runs concurrently on the pool.
 		thread_local std::vector<D3D12GraphicsEngine::WorldDrawCommand> alphaCmds;
 		alphaCmds.clear();
 		// Opaque commands mirrored into normal RAM for the depth-only draw-call merge below — see
@@ -1065,10 +1064,9 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 		}
 		m_WorldDrawCount[c] = drawCount;
 
-		// Coalesce the opaque prefix for this cascade's PS-less caster run, appended past the per-material
-		// set (see m_WorldDepthMergedFirst). Same wrapped world IB as the main view, so the same merge holds;
-		// the far cascade is where it pays most (it accepts nearly every section, so its opaque casters are
-		// long contiguous index runs). Pool-thread safe: touches only this cascade's ring and counters.
+		// Coalesce the opaque prefix for this cascade's PS-less caster run, appended past the per-material set
+		// (see m_WorldDepthMergedFirst). Same wrapped world IB as the main view, so the same merge holds; it
+		// pays most in the far cascade. Pool-thread safe: touches only this cascade's ring and counters.
 		m_WorldDepthMergedFirst[c] = drawCount;
 		m_WorldDepthMergedCount[c] = ( drawCount < D3D12GraphicsEngine::kMaxWorldDrawCommands )
 			? D3D12GraphicsEngine::CoalesceWorldDepthCommands( opaqueCmds, cmds + drawCount,
@@ -1146,10 +1144,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	// (g_SkelMatSrvs / FrameAttachDraw::srv). No Gothic mutation, no UpdateMeshLibTexAniState, no ring writes.
 	if ( !cmdList || !m_DsvHeap ) return;
 	const UINT c = cascade;
-	// Lazily frozen this frame (see kLazyLastCascadeInterval): its slice keeps the depth it already holds and
-	// must NOT even be cleared. Gated here rather than only at the call sites so that every path reaching this
-	// function — the job, FinishShadowPasses' "recording was off" loop and its "the list failed to close"
-	// fallback — agrees, and none of them re-renders a cascade that was never culled or built this frame.
+	// Lazily frozen this frame (see kLazyLastCascadeInterval): its slice keeps the depth it holds and must NOT
+	// even be cleared. Gated here rather than at the call sites so every path into this function agrees.
 	if ( !m_ShouldUpdateCascade[c] ) return;
 	const UINT frame = m_E->m_FrameIndex;
 
@@ -1266,8 +1262,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 
 		// Per-material PSO choice rather than a partitioned command set: this is a CPU draw loop, not an
-		// ExecuteIndirect, so switching only when the flag actually flips is cheaper than reordering the
-		// records. boundPso tracks which of the two is currently set (nothing assumed bound at the start).
+		// ExecuteIndirect, so switching when the flag flips is cheaper than reordering the records.
 		ID3D12PipelineState* const skelClipPso = m_CasterSkeletalPSO.Get();
 		ID3D12PipelineState* const skelNoAlphaPso = m_CasterSkeletalNoAlphaPSO ? m_CasterSkeletalNoAlphaPSO.Get()
 		                                                                      : skelClipPso;

@@ -6,52 +6,34 @@
 
 // Engine-wide redundant-state filter for the D3D12 backend.
 //
-// WHY THIS EXISTS
-// ---------------
-// Gothic's fixed-function draw stream (the D3D7 wrapper: 2D UI, HUD, sky, every DrawString glyph run)
-// funnels through SubmitUIDraw, which re-issued the FULL bind set per draw — PSO, root signature, 4+36
-// root 32-bit constants, a descriptor table, viewport, scissor, topology and the VB view — even when
-// nothing but the vertex buffer had changed between two consecutive draws. A Gothic menu frame is
-// hundreds of such draws, and this is a 32-bit, CPU-bound process where driver-side root-signature and
-// PSO changes are among the most expensive per-draw calls there are. The 3D passes have the same shape
-// (a per-material loop that re-binds the pass-constant set every iteration).
+// D3D12CmdList wraps ONE ID3D12GraphicsCommandList and drops any state-setting call whose arguments match
+// what that list already carries. Gothic's fixed-function draw stream (SubmitUIDraw: 2D UI, HUD, sky, every
+// glyph run) re-issues the FULL bind set per draw, and the 3D per-material loops have the same shape — on a
+// CPU-bound 32-bit process, root-signature and PSO changes are the most expensive calls there are.
 //
-// D3D12CmdList wraps ONE ID3D12GraphicsCommandList and drops any state-setting call whose arguments
-// match what that list already carries. It is a drop-in replacement for the ComPtr it displaces:
-// `operator->` returns `this`, so every existing `m_CmdList->SetPipelineState(...)` call site keeps
-// compiling and silently becomes cached. That is deliberate — a cache that can be bypassed by an
-// un-migrated call site is a cache that goes stale and renders garbage, so the ONLY way to reach the
-// tracked methods is through the filter. Untracked calls (draws, dispatches, barriers, copies, clears)
-// are plain forwarders; none of them disturb pipeline state on D3D12.
-//
-// If a future call site needs a command-list method that isn't here, it won't compile — add a
-// forwarder (or, if it mutates tracked state, a cached setter). Do NOT reach around via Get().
+// It is a drop-in replacement for the ComPtr it displaces: `operator->` returns `this`, so existing call
+// sites keep compiling and silently become cached. That is deliberate — the only way to reach a tracked
+// method is through the filter, so no call site can bypass the cache and leave it stale. Untracked calls
+// (draws, dispatches, barriers, copies, clears) are plain forwarders. If a call site needs a method that
+// isn't here it won't compile: add a forwarder (or a cached setter), do NOT reach around via Get().
 //
 // CORRECTNESS RULES ENCODED HERE (D3D12 spec)
-// -------------------------------------------
 //   * Reset() drops ALL command-list state -> the whole shadow is cleared.
-//   * Setting a root signature invalidates every root argument of that pipeline type. So a CHANGED
-//     root signature clears that space's root-argument shadow; an unchanged one is skipped outright
-//     and the shadow (correctly) survives.
-//   * Setting a PSO does NOT invalidate root arguments, and a PSO whose embedded root signature
-//     differs from the bound one does NOT implicitly change the bound root signature. PSO and root
-//     signature are therefore tracked independently.
-//   * Changing the bound descriptor heaps makes previously-set descriptor TABLES stale, so a heap
-//     change clears the table entries in both root-argument spaces (root CBV/SRV/UAVs and root
-//     constants are heap-independent and survive).
-//   * Rebinding an identical descriptor table / root descriptor is a true no-op even if the
-//     descriptor or the buffer contents changed in between: with volatile ranges the GPU reads both
-//     at execute time, and with the DATA_STATIC_WHILE_SET_AT_EXECUTE ranges D3D12RootLayout declares,
-//     mutating the data while the binding is set is already a contract violation independent of this
-//     cache. Nothing new is broken by skipping the second Set.
+//   * Setting a root signature invalidates every root argument of that pipeline type, so a CHANGED root
+//     signature clears that space's shadow; an unchanged one is skipped and the shadow survives.
+//   * Setting a PSO does NOT invalidate root arguments, nor implicitly change the bound root signature.
+//     PSO and root signature are therefore tracked independently.
+//   * Changing the bound descriptor heaps makes previously-set descriptor TABLES stale, so a heap change
+//     clears the table entries in both spaces (root descriptors and constants are heap-independent).
+//   * Rebinding an identical table / root descriptor is a true no-op even if the descriptor or the buffer
+//     contents changed in between: volatile ranges are read at execute time, and mutating data behind a
+//     DATA_STATIC_WHILE_SET_AT_EXECUTE range is already a contract violation independent of this cache.
 //
-// ANYTHING THAT RECORDS STATE BEHIND THE WRAPPER'S BACK MUST CALL InvalidateAll(). In this backend
-// that is exactly one thing: imgui_impl_dx12, which sets its own PSO, root signature, heaps, RTs,
-// viewport and topology on the raw pointer (see D3D12GraphicsEngine::Present).
+// ANYTHING THAT RECORDS STATE BEHIND THE WRAPPER'S BACK MUST CALL InvalidateAll(). In this backend that is
+// exactly one thing: imgui_impl_dx12 (see D3D12GraphicsEngine::Present).
 //
-// THREADING: no locking. One wrapper belongs to one command list, and a command list may only ever be
-// recorded by one thread at a time — so the MT shadow-cascade recorders each get their own wrapper
-// (m_ShadowCmdLists) and never touch the main list's. Same rule the D3D12 API itself imposes.
+// THREADING: no locking. One wrapper per command list, and a list may only be recorded by one thread at a
+// time — so the MT shadow-cascade recorders each get their own wrapper (m_ShadowCmdLists).
 class D3D12CmdList {
 public:
     // Root-parameter capacity. The widest layout in the backend uses index 13 (D3D12PipelineState.cpp);
@@ -59,10 +41,8 @@ public:
     // than corrupting the shadow (see the bounds checks in the setters).
     static constexpr UINT kMaxRootParams = 20;
     // Widest root-constant block: GothicGraphicsState = 144 bytes = 36 DWORDs (the FF/UI pipe constants).
-    // 48 leaves headroom and keeps the valid-mask a single uint64_t. Sizing matters a little here: the
-    // constant shadow dominates the object (kMaxRootParams * kMaxRootConstDwords * 4 * 2 pipeline types
-    // ~= 7.7 KB), and one of these exists per shadow-recording slot per frame-in-flight — ~150 KB total,
-    // which is affordable under the 32-bit budget but not worth inflating for no reason.
+    // 48 leaves headroom and keeps the valid-mask a single uint64_t. Don't inflate: the constant shadow
+    // dominates the object (~7.7 KB), and one exists per shadow-recording slot per frame-in-flight.
     static constexpr UINT kMaxRootConstDwords = 48;
     static constexpr UINT kMaxVertexSlots = 4;
     static constexpr UINT kMaxRenderTargets = 8;
@@ -362,19 +342,12 @@ public:
     void ExecuteIndirect( ID3D12CommandSignature* sig, UINT maxCount, ID3D12Resource* argBuffer,
         UINT64 argOffset, ID3D12Resource* countBuffer, UINT64 countOffset ) {
         m_List->ExecuteIndirect( sig, maxCount, argBuffer, argOffset, countBuffer, countOffset );
-        // NOT a passthrough: a command signature can WRITE bindings from the argument stream — vertex
-        // buffer views, the index buffer view, root constants, root CBV/SRV/UAVs (this backend's
-        // signatures use all four; see the D3D12_INDIRECT_ARGUMENT_TYPE_* tables in D3D12Scene.cpp) —
-        // and D3D12 leaves every one of them UNDEFINED once the call returns. Anything the shadow still
-        // claims about them is a lie, and the next pass's "redundant" rebind is the only thing that would
-        // restore it. Getting this wrong is not subtle: the world mesh vanished unless a vegetation pass
-        // happened to rebind different buffers in between.
-        //
-        // Deliberately conservative — the signature could be interrogated for exactly which parameters it
-        // touches, but ExecuteIndirect is issued once per BATCH, not per draw, so a few extra rebinds cost
-        // nothing next to the fragility of keeping that analysis in sync with the signature declarations.
-        // PSO, root signature, descriptor heaps, render targets, viewport, scissor and topology are NOT
-        // writable from an argument stream and stay valid.
+        // NOT a passthrough: a command signature can WRITE bindings from the argument stream — VBVs, the
+        // IBV, root constants and root CBV/SRV/UAVs (this backend uses all four) — and D3D12 leaves every
+        // one of them UNDEFINED once the call returns, so anything the shadow still claims is a lie.
+        // Conservative on purpose: ExecuteIndirect is issued once per batch, so a few extra rebinds are
+        // cheaper than keeping a per-signature analysis in sync. PSO, root signature, descriptor heaps,
+        // render targets, viewport, scissor and topology are not writable this way and stay valid.
         InvalidateIndirectWritableState();
     }
     void ClearRenderTargetView( D3D12_CPU_DESCRIPTOR_HANDLE rtv, const FLOAT color[4], UINT numRects, const D3D12_RECT* rects ) {

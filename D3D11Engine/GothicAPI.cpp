@@ -2569,19 +2569,11 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
     return skeletalMesh;
 }
 
-/** True if this emitter samples its spawn positions off a skeletal shape-mesh we cannot serve yet.
- *  ZENGIN's zCParticleEmitter::GetPosition falls back to (0,0,0) - the model's own origin - when
- *  GetLowestLODNumPolys returns 0, so the whole effect would visibly collapse onto the model's
- *  pivot. Skipping the emitter tick until the data is there is the lesser evil: the effect simply
- *  starts a few frames late instead of starting wrong. */
-/** ZENGIN's oCVisualFX::CalcPFXMesh (oVisFx.cpp:3961) points a zPFX_EMITTER_SHAPE_MESH emitter at
- *  the origin vob's visual exactly once - while the FX's own visual is being created. If the origin
- *  had no visual yet at that instant, none of its shpMesh/shpProgMesh/shpModel branches assign, and
- *  the pointer stays null for the whole life of the effect (oCNpc::StartEffect's follow-up
- *  SetPFXShapeVisual is likewise guarded by `if (GetVisual())`, oNpc.cpp:14437). ZENGIN's
- *  zCParticleEmitter::GetPosition then falls through its MESH case to `return zVEC3(0,0,0)`
- *  (zParticle.cpp:2460) and every particle spawns on the vob's pivot - the "fire beast burns at one
- *  point until re-spawned" bug. Re-run the assignment here once the visual does exist. */
+/** ZENGIN's oCVisualFX::CalcPFXMesh points a zPFX_EMITTER_SHAPE_MESH emitter at the origin vob's visual
+ *  exactly once, while the FX's own visual is being created. If the origin had no visual at that instant the
+ *  pointer stays null for the life of the effect, zCParticleEmitter::GetPosition falls through its MESH case
+ *  to (0,0,0), and every particle spawns on the vob's pivot - the "fire beast burns at one point until
+ *  re-spawned" bug. Re-run the assignment here once the visual does exist. */
 void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
 #ifndef BUILD_SPACER
     oCVisualFX* visFx = source ? source->As<oCVisualFX>() : nullptr;
