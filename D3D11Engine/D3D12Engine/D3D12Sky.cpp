@@ -31,11 +31,6 @@
 #include "../GMesh.h"
 #include "../WorldObjects.h"
 #include "../VertexTypes.h"
-#include "../zCSkyController_Outdoor.h"
-#include "../zCWorld.h"
-#include "../zCMesh.h"
-#include "../zCPolygon.h"
-#include "../zCMaterial.h"
 #include "../zCTexture.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 
@@ -76,118 +71,6 @@ namespace {
         return SkyTextureSlot( surface->GetEngineTexture() );
     }
 
-    // Everything the pixel shader needs to composite the moon, or MoonIndex == kNoSkyTexture to skip it.
-    struct MoonSprite {
-        UINT  SrvSlot = kNoSkyTexture;
-        float CenterPx[2] = { 0.0f, 0.0f };
-        float HalfSizePx[2] = { 0.0f, 0.0f };
-        float Color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    };
-
-    // Port of the planets[1] half of zCSkyControler_Outdoor::RenderPlanets (ZenGin/_dieter/zSky_Outdoor.cpp
-    // :1724). The FF sky draws each planet as a camera-facing 100x100-unit quad (zCMesh::CreateQuadMesh),
-    // screen-projected from the planet's DIRECTION and back-projected onto that ray at view depth
-    // `planet.size` (zCMesh::RenderDecal) — so `size` is a depth, and bigger `size` means a SMALLER moon.
-    // Reproduced here as a screen-space sprite the sky dome's pixel shader composites, which costs no extra
-    // draw at all. Every "moon not visible" branch RenderPlanets takes (below the horizon, behind the camera,
-    // faded to nothing) returns the default, i.e. skip.
-    //
-    // Deliberately moon-only: the scattering dome already renders the sun as the Mie forward-scattering lobe,
-    // so also stamping the FF sun sprite on top would double it.
-    MoonSprite ResolveMoonSprite( const INT2& resolution ) {
-        MoonSprite out;
-
-        auto* worldInfo = Engine::GAPI->GetLoadedWorldInfo();
-        if ( !worldInfo || !worldInfo->MainWorld ) return out;
-        zCSkyController_Outdoor* sc = worldInfo->MainWorld->GetSkyControllerOutdoor();
-        if ( !sc ) return out;
-
-        zCSkyPlanet* moon = sc->GetPlanet( 1 );
-        if ( !moon || !moon->mesh || moon->size <= 0.0f ) return out;
-
-        // Direction: same time remap + rotation the FF sky uses, via this mod's own patched angle math
-        // (GetMoonWorldPosition mirrors GetSunWorldPosition / FixMoonWorldPosition), so the moon stays in
-        // step with the sun and with GSky's SkyTimeScale setting.
-        XMFLOAT3 dirWS = sc->GetMoonWorldPosition( Engine::GAPI->GetSky()->GetAtmoshpereSettings().SkyTimeScale );
-        const float dot = dirWS.y;      // RenderPlanets' `dot`: the planet's height over the horizon
-
-        // RenderPlanets: `if (dot < -0.5) { if (i==1) continue; ... }` — the moon is simply not drawn.
-        if ( dot < -0.5f ) return out;
-
-        // Tint: color0 near the horizon -> color1 high up, both RGBA in 0..255. RenderPlanets' d0/d1 window.
-        constexpr float d1 = 0.2f;
-        constexpr float d0 = -0.3f;
-        XMFLOAT4 res;
-        if ( dot < d0 ) {
-            return out;                 // `else continue;` for the moon
-        } else if ( dot > d1 ) {
-            res = moon->color1;
-        } else {
-            const float t = 1.0f - ( ( d1 - dot ) / ( d1 - d0 ) );
-            res.x = moon->color0.x + t * ( moon->color1.x - moon->color0.x );
-            res.y = moon->color0.y + t * ( moon->color1.y - moon->color0.y );
-            res.z = moon->color0.z + t * ( moon->color1.z - moon->color0.z );
-            res.w = moon->color0.w + t * ( moon->color1.w - moon->color0.w );
-        }
-
-        // Foggy days fade the planets out, and rain hides them entirely. Both verbatim from RenderPlanets.
-        res.w -= ( 1.0f - dot ) * sc->GetResultFogScale() * 255.0f;
-        res.w *= 1.0f - sc->GetRainFXWeight();
-        if ( res.w <= 0.0f ) return out;
-
-        // Texture: whatever frame the material currently holds (GetAniTexture, so a texture-animated moon
-        // varies night to night on its own). Poly 0 carries the material — CreateQuadMesh builds exactly one.
-        zCMesh* mesh = moon->mesh;
-        if ( mesh->GetNumPolygons() <= 0 ) return out;
-        zCPolygon** polys = mesh->GetPolygons();
-        if ( !polys || !polys[0] ) return out;
-        zCMaterial* mat = polys[0]->GetMaterial();
-        if ( !mat ) return out;
-        const UINT slot = ZenTextureSlot( mat->GetAniTexture() );
-        if ( slot == kNoSkyTexture ) return out;
-
-        // Placement. Uses the same transform convention as the god-ray sun projection in D3D12Fog.cpp
-        // (transpose, then XMVector3TransformCoord) — that one is GPU-verified, so don't re-derive it.
-        // The sprite's screen rect is computed by projecting the quad's CENTRE and its two EDGE midpoints
-        // rather than by deriving a focal length from the projection matrix: convention-agnostic, and it
-        // reproduces RenderDecal's geometry (half-extent 50 at view depth `size`) exactly.
-        XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
-        XMMATRIX proj = XMMatrixTranspose( XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) );
-
-        XMVECTOR worldPos = XMLoadFloat3( &dirWS ) * Engine::GAPI->GetSky()->GetAtmosphereCB().AC_OuterRadius;
-        worldPos += Engine::GAPI->GetCameraPositionXM();
-
-        XMFLOAT3 viewPos;
-        XMStoreFloat3( &viewPos, XMVector3TransformCoord( worldPos, view ) );
-        if ( viewPos.z <= 0.0f ) return out;      // RenderPlanets' `if (posCS[VZ] > 0)` guard
-
-        // Put the quad where RenderDecal puts it: on the same view ray, at view depth `size`.
-        const float scale = moon->size / viewPos.z;
-        const XMVECTOR centreView = XMVectorSet( viewPos.x * scale, viewPos.y * scale, moon->size, 1.0f );
-        constexpr float kQuadHalfExtent = 50.0f;   // CreateQuadMesh spans -50..+50 on both axes
-        const XMVECTOR edgeXView = XMVectorAdd( centreView, XMVectorSet( kQuadHalfExtent, 0.0f, 0.0f, 0.0f ) );
-        const XMVECTOR edgeYView = XMVectorAdd( centreView, XMVectorSet( 0.0f, kQuadHalfExtent, 0.0f, 0.0f ) );
-
-        XMFLOAT3 c, ex, ey;
-        XMStoreFloat3( &c,  XMVector3TransformCoord( centreView, proj ) );
-        XMStoreFloat3( &ex, XMVector3TransformCoord( edgeXView, proj ) );
-        XMStoreFloat3( &ey, XMVector3TransformCoord( edgeYView, proj ) );
-
-        const float w = static_cast<float>( resolution.x );
-        const float h = static_cast<float>( resolution.y );
-        out.CenterPx[0] = ( c.x * 0.5f + 0.5f ) * w;
-        out.CenterPx[1] = ( c.y * -0.5f + 0.5f ) * h;
-        out.HalfSizePx[0] = std::abs( ex.x - c.x ) * 0.5f * w;
-        out.HalfSizePx[1] = std::abs( ey.y - c.y ) * 0.5f * h;
-        if ( out.HalfSizePx[0] < 0.5f || out.HalfSizePx[1] < 0.5f ) return out;   // sub-pixel: nothing to draw
-
-        out.SrvSlot = slot;
-        out.Color[0] = res.x / 255.0f;
-        out.Color[1] = res.y / 255.0f;
-        out.Color[2] = res.z / 255.0f;
-        out.Color[3] = std::min( res.w / 255.0f, 1.0f );
-        return out;
-    }
 }
 
 
@@ -293,13 +176,14 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 16, &world, 0 );                     // b2 World
 
     // The moon (planets[1]) — the one thing the fixed-function sky drew that the bare scattering dome does
-    // not. Composited by the dome's own pixel shader, so it costs no additional draw call.
-    const MoonSprite moon = ResolveMoonSprite( m_Resolution );
+    // not. GSky resolves the placement (shared with D3D11's sky, which composites the same sprite); all this
+    // backend adds is the bindless slot. Composited by the dome's own pixel shader, so it costs no extra draw.
+    const MoonSpriteInfo moon = sky->ResolveMoonSprite( m_Resolution );
 
     SkyMaterialConsts matCb = {};
     matCb.CloudIndex = SkyTextureSlot( sky->GetCloudTextureGfx() );
     matCb.NightIndex = SkyTextureSlot( sky->GetNightTextureGfx() );
-    matCb.MoonIndex = moon.SrvSlot;
+    matCb.MoonIndex = ZenTextureSlot( moon.Texture );
     matCb.MoonCenterPx[0] = moon.CenterPx[0];
     matCb.MoonCenterPx[1] = moon.CenterPx[1];
     matCb.MoonHalfSizePx[0] = moon.HalfSizePx[0];
