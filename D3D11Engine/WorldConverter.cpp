@@ -781,12 +781,9 @@ static bool IsPortalMaterial( std::string_view matName )
         || matName.starts_with( "PI:" ));
 }
 
-/** One-shot census of the world's occluder polys, logged at the end of ConvertWorldMesh.
- *
- *  Answers the two questions that decide how (or whether) to revive ZenGin's horizon culling:
- *  how many occluders exist at all, and how big they are - a horizon built from a handful of tiny
- *  polys culls nothing, while a few hundred large ones can cull whole BSP subtrees. Size is measured
- *  as the world-space AABB diagonal in metres (100 units = 1m). */
+/** One-shot census of the world's occluder polys, logged at the end of ConvertWorldMesh: how many
+ *  occluders exist and how big they are, which is what decides whether horizon culling is worth
+ *  anything in a given world. Size is the world-space AABB diagonal in metres (100 units = 1m). */
 struct OccluderSurvey {
     int Total = 0;
     int Occluder = 0;          // flags.occluder - what ScanHorizon actually gates on
@@ -796,7 +793,7 @@ struct OccluderSurvey {
 
     /** Occluder size histogram, bucketed by AABB diagonal: <1m, <5m, <15m, <50m, >=50m. */
     int SizeBuckets[5] = {};
-    /** Same, restricted to ghost occluders - the set an up-front horizon build could use as-is. */
+    /** Same, restricted to ghost occluders. */
     int GhostSizeBuckets[5] = {};
     float LargestDiagonal = 0.0f;
 
@@ -920,12 +917,9 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         return it->second;
     };
 
-    // --- Occlusion-culling survey (see OccluderSurvey) -----------------------------------------
-    // ZenGin's outdoor renderer rasterizes every poly with the Occluder flag into a 1D horizon buffer
-    // (zBsp.cpp ScanHorizon) and rejects bboxes below it. GhostOccluders are the subset that is
-    // occluder-only, never drawn - which is why the loop below throws them away. This counts what the
-    // loaded world actually ships so we can tell whether reviving that is worth it, and whether the
-    // horizon can be built from ghost occluders alone or needs a largest-N cut of all occluders.
+    // Occlusion-culling survey (see OccluderSurvey). ZenGin's outdoor renderer rasterizes every poly with
+    // the Occluder flag into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes below it;
+    // GhostOccluders are the occluder-only subset the loop below throws away.
     OccluderSurvey survey = {};
 
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
@@ -933,8 +927,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
         survey.Account( poly );
 
-        // Ghost occluders are never drawn - but they ARE the world's authored occlusion geometry, so
-        // keep a copy for the horizon cull before dropping them from the render mesh.
+        // Never drawn, but they are the world's authored occlusion geometry: keep a copy for the horizon
+        // cull before dropping them from the render mesh.
         if ( poly->GetPolyFlags()->GhostOccluder ) {
             if ( info ) CollectGhostOccluder( info->Occluders, poly );
             continue;

@@ -4420,10 +4420,9 @@ void GothicAPI::CollectVisibleVobs(
     Horizon.SetEnabled( RendererState.RendererSettings.EnableHorizonCulling );
     if ( haveCameraMatrices && LoadedWorldInfo && !LoadedWorldInfo->Occluders.IsEmpty() ) {
         const INT2 res = Engine::GraphicsEngine->GetResolution();
-        // viewM, NOT GetViewMatrixXM(): worldToClip above is viewM*projM from this zCCamera, and the
-        // horizon compares occluder and box depths in that camera's space. GothicAPI's TransformView is
-        // a different, pass-dependent value - the shadow cascades overwrite it through
-        // SetCameraReplacementPtr - so mixing the two measured depth along two unrelated axes.
+        // viewM, NOT GetViewMatrixXM(): worldToClip is viewM*projM from this zCCamera and the horizon
+        // compares depths in that camera's space, while TransformView is pass-dependent (the shadow
+        // cascades overwrite it through SetCameraReplacementPtr).
         Horizon.Build( LoadedWorldInfo->Occluders, worldToClip, cameraView, ctx.cameraPosition,
             frustum, res.x, res.y );
         if ( Horizon.IsActive() )
@@ -4984,8 +4983,8 @@ static void CVVH_AddNotDrawnVobToList(
         if ( needFrustumTest && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
         }
-        // Horizon: hidden behind an occluder, so nothing below is built at all - no instance upload,
-        // no indirect command, no CacheIn. Kept after the frustum test, which is much cheaper.
+        // Horizon: hidden behind an occluder, so nothing below is built - no instance upload, no indirect
+        // command, no CacheIn. After the frustum test, which is much cheaper.
         if ( horizon ) {
             const zTBBox3D& hb = it->LastRenderBBox;
             if ( !horizon->IsBoxVisible( hb.Min, hb.Max ) )
@@ -5019,9 +5018,8 @@ static void CVVH_AddNotDrawnVobToList(
     const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
 
     for ( auto const& it : source ) {
-        // Distance before Visit(): the test is leaf-independent, so a mob out of range fails it in
-        // every leaf it is registered in and marking it seen changes nothing. Ordering it first keeps
-        // the atomic off the reject path, exactly as in the static-vob overload above.
+        // Distance before Visit(): the test is leaf-independent, so an out-of-range mob fails it in every
+        // leaf and marking it seen changes nothing. Keeps the atomic off the reject path.
         if ( XMVector3Greater( XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq ) ) {
             continue;
         }
@@ -5034,8 +5032,8 @@ static void CVVH_AddNotDrawnVobToList(
         if ( needFrustumTest && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
         }
-        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection here saves a whole
-        // draw plus its material binds - the cheapest win of the three lists.
+        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection saves a whole draw plus
+        // its material binds.
         if ( ctx.horizon ) {
             const zTBBox3D bb = it->Vob->GetBBox();
             if ( !ctx.horizon->IsBoxVisible( bb.Min, bb.Max ) )
@@ -7093,11 +7091,9 @@ static void CollectVisibleVobsWithLeafCache(
         // DirectX cached planes have OUTWARD-facing normals (positive dot = outside frustum),
         // matching FastIntersectAxisAlignedBoxPlane: Outside = (Dist > Radius).
         // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b.
-        //   n-vertex (MINIMUM dot) = blendv(Min, Max, n): n>=0 -> Min, n<0 -> Max. dot > 0 => the
-        //     ENTIRE AABB is on the outer side of this plane, so the leaf is rejected.
-        //   p-vertex (MAXIMUM dot) = blendv(Max, Min, n), i.e. the operands swapped. dot <= 0 for
-        //     ALL six planes => every corner is inside every plane, so the leaf is fully CONTAINED
-        //     and no VOB, MOB or light inside it needs its own frustum test.
+        //   n-vertex (MINIMUM dot) = blendv(Min, Max, n); dot > 0 => whole AABB outside, leaf rejected.
+        //   p-vertex (MAXIMUM dot) = the same with the operands swapped; dot <= 0 for all six planes =>
+        //     the leaf is fully CONTAINED and nothing inside it needs its own frustum test.
         __m256 vOutside = vZero;
         __m256 vNotContained = vZero;
         if ( !skipVobFrustumCull ) {
@@ -7110,10 +7106,8 @@ static void CollectVisibleVobsWithLeafCache(
                                      _mm256_fmadd_ps( pNZ[p], vNZ, pD[p] ) ) );
                 vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vNDot, vZero, _CMP_GT_OQ ) );
 
-                // The p-vertex differs from the n-vertex only in which extent each axis picks, so it
-                // reuses the already-loaded Min/Max registers - 3 blends + 3 FMAs + a compare per
-                // plane per 8 leaves, against one full per-VOB box test saved for every VOB in every
-                // fully-contained leaf.
+                // The p-vertex differs only in which extent each axis picks, so it reuses the already-loaded
+                // Min/Max registers.
                 const __m256 vPX = _mm256_blendv_ps( vMaxX, vMinX, pNX[p] );
                 const __m256 vPY = _mm256_blendv_ps( vMaxY, vMinY, pNY[p] );
                 const __m256 vPZ = _mm256_blendv_ps( vMaxZ, vMinZ, pNZ[p] );
@@ -7164,10 +7158,8 @@ static void CollectVisibleVobsWithLeafCache(
             if ( enableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame )
                 continue;
 
-            // CONTAINS when the leaf box is fully inside all six planes: every VOB, MOB and light in
-            // it then skips its own frustum test in CollectLeafVobs. Conservative in the right
-            // direction - a VOB whose box pokes out of a contained leaf is kept rather than dropped,
-            // and it is registered in the neighbouring leaf it pokes into anyway.
+            // CONTAINS when the leaf box is fully inside all six planes: everything in it then skips its own
+            // frustum test in CollectLeafVobs. A VOB poking out of a contained leaf is kept, not dropped.
             const ContainmentType containment = ( partialMask & (1 << lane) )
                 ? ContainmentType::INTERSECTS
                 : ContainmentType::CONTAINS;

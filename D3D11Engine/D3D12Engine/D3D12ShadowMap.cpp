@@ -792,19 +792,17 @@ void D3D12ShadowMap::Prepare() {
 	// double-darkens the baked interior lighting.
 	const bool sunUp = !Engine::GAPI->IsIndoorWorld() && (lp.y > 0.0f);
 
-	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each
-	// slice to SHADOWED instead of far and cull/build/draw no casters. Safe to read here -
-	// OnStartWorldRendering ran this frame's CollectVisibleVobs (and BspPortalCuller::Solve) before
-	// Prepare(), which is also why D3D12 can skip the culls and D3D11 only the draws.
+	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each slice
+	// to SHADOWED instead of far and cull/build/draw no casters. Safe to read here - CollectVisibleVobs (and
+	// BspPortalCuller::Solve) ran before Prepare().
 	const bool sunFullyOccluded = sunUp && Engine::GAPI->AreSunShadowsFullyOccluded();
 	const bool castersNeeded = sunUp && !sunFullyOccluded;
 
 	m_SunUp = castersNeeded;            // RecordCascade runs on a pool thread; it can re-read neither
 	m_SunOccluded = sunFullyOccluded;   // the sky nor the portal culler
 
-	// The REAL sun state, not castersNeeded: an enclosed view is still daytime and must not take the
-	// sun-down branch, which halves ambient and would darken the interior. The shadowed cascade content
-	// is what removes the per-pixel sun term.
+	// The REAL sun state, not castersNeeded: an enclosed view is still daytime and must not take the sun-down
+	// branch, which halves ambient. The shadowed cascade content is what removes the per-pixel sun term.
 	UploadSamplingConstants( sunUp );
 
 	// --- Phase A (main thread): resolve everything that is shared by ALL cascades ------------------------
@@ -875,9 +873,8 @@ void D3D12ShadowMap::Prepare() {
 		// Nothing casts; each cascade still gets its slice cleared at record time - to far (= unshadowed) with the
 		// sun down, or to near (= fully shadowed) for an enclosed view, see m_SunOccluded / RecordCascade. No cull
 		// jobs are launched, so FinishPrepare has nothing to wait for and skips Phase C outright.
-		// The lazy gate is overridden here: a frozen cascade skips its RecordCascade entirely, so at dusk the
-		// last cascade would keep the daytime depth it was frozen with for up to two more frames and go on
-		// shadowing after the sun set. Clearing is cheap — always do it.
+		// The lazy gate is overridden here: a frozen cascade skips RecordCascade entirely, so at dusk it
+		// would go on shadowing with its daytime depth for two more frames. Clearing is cheap.
 		for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
 		m_CascadeMatricesValid = false;   // the frozen matrices no longer describe any rendered slice
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {

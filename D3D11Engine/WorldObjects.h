@@ -600,16 +600,14 @@ class zCBspTree;
 class zCWorld;
 /** The world's ghost-occluder polys, kept for occlusion culling.
  *
- *  ZenGin rasterizes these into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes that
- *  fall below it - its outdoor "behind the mountain" cull. They are portal polys flagged
- *  ghostOccluder: occluders only, never drawn, which is why ConvertWorldMesh drops them from the
- *  render mesh and collects them here instead.
+ *  ZenGin rasterizes these into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes that fall
+ *  below it - its outdoor "behind the mountain" cull. They are portal polys flagged ghostOccluder:
+ *  occluders only, never drawn, which is why ConvertWorldMesh drops them from the render mesh and collects
+ *  them here instead. G2 NotR ships 945-2544 per world, and the count does not grow with world size, so
+ *  projecting them per frame is bounded work.
  *
- *  Surveyed across G2 NotR: 945-2544 per world, ~all of them over 15m across, and the count does not
- *  grow with world size - so projecting them per frame is bounded work everywhere.
- *
- *  Flat vertex array rather than a vector per poly: one allocation instead of thousands, and the
- *  per-frame projection walks it linearly. */
+ *  Flat vertex array rather than a vector per poly: one allocation instead of thousands, and the per-frame
+ *  projection walks it linearly. */
 struct WorldOccluders {
     struct Entry {
         uint32_t VertexOffset;
