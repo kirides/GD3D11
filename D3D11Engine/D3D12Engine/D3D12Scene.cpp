@@ -2409,6 +2409,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.
 	RenderSharpen();
 
+	// Underwater screen effect (blue-tinted blur + animated UV distortion), only while the camera is below a
+	// water surface. D3D11 adds its "Draw UnderwaterFX" pass in exactly this slot: after the AA/sharpen passes,
+	// on the finished image, and before Gothic's own 2D UI/HUD phase — the HUD must stay sharp and untinted.
+	DrawUnderwaterEffects();
+
 	// Developer view of the motion-vector / normal G-buffer, over the finished image (before Gothic's 2D UI and
 	// the ImGui overlay composite, so both stay readable on top of it). No-op unless one of the shared
 	// DebugSettings.TAA.Display* flags is on. This is currently the ONLY consumer of either target — TAA, FSR3

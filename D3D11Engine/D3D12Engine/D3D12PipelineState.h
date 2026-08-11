@@ -398,6 +398,23 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasPSO;      // SHARPEN_CAS (FidelityFX CAS)
     };
 
+    // Underwater screen effect (only while GothicAPI::IsUnderWater()) — port of
+    // D3D11GraphicsEngine::DrawUnderwaterEffects. Two root sigs because the passes straddle compute and
+    // graphics: the separable quarter-res Gaussian is compute (b0 12 root consts, static linear-clamp s0),
+    // the full-res distorted composite is a fullscreen-triangle graphics pass writing the display target
+    // (b0 4 root consts, static linear-clamp s0 + linear-wrap s1). Both are bindless
+    // (CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED). The quarter-res scratch textures live in the engine.
+    // See Shaders/D3D12/Underwater.hlsl and D3D12Underwater.cpp.
+    struct UnderwaterPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> BlurRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            BlurCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;         // one PSO, run twice (H then V)
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> CompositeRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositeVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositePsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;    // blurred + distortion -> display target
+    };
+
     // Height fog + god rays (plan item #5) — the D3D12 port of D3D11's PostFX composition pass. Two
     // quarter-res compute passes build the god-ray texture (Shaders/D3D12/GodRays.hlsl CSMask/CSZoom, sharing
     // one bindless compute root sig: b0 12 root consts + one static linear-clamp sampler), then a single
@@ -546,6 +563,7 @@ public:
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
     bool CreateSharpen();     // post-tonemap sharpen (bindless root sig + simple/CAS PSOs); LDR copy stays in engine
+    bool CreateUnderwater();  // underwater blur+distort (compute blur root sig + composite root sig); scratch stays in engine
     bool CreateFx();          // MUL quad marks + poly strips (own unlit root sig; warms the default blend PSO)
     // Lit quad marks: World.RootSig + World.hlsl VSQuadMark/PSMain, blend-keyed like the FX cache above.
     ID3D12PipelineState* GetOrCreateQuadMarkPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
@@ -611,6 +629,7 @@ public:
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
     SharpenPipeline  Sharpen;       // post-tonemap sharpening (Shaders/D3D12/Sharpen.hlsl)
+    UnderwaterPipeline Underwater;  // underwater screen effect (Shaders/D3D12/Underwater.hlsl)
     FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;
     GtaoPipeline     Gtao;
