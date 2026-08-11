@@ -2,6 +2,8 @@
 // Generates screen-space motion vectors from depth buffer reprojection
 // Includes velocity dilation to propagate motion to object edges
 
+#include <SkyMotionVectors.h>
+
 cbuffer VelocityConstants : register(b0) {
     float4x4 InvViewProj;      // Current frame's UNJITTERED inverse view-projection
     float4x4 PrevViewProj;     // Previous frame's UNJITTERED view-projection
@@ -9,6 +11,8 @@ cbuffer VelocityConstants : register(b0) {
     float2 PrevJitterOffset;   // Previous jitter in UV space
     float2 Resolution;
     float2 Padding;
+    float4x4 UnjitteredViewProj; // Current frame's UNJITTERED view-projection (sky reprojection)
+    float4 CameraPosition;       // xyz = eye; w unused (sky reprojection)
 };
 
 SamplerState SS_Linear : register(s0);
@@ -58,13 +62,15 @@ float2 ProjectToPreviousFrame(float3 worldPos) {
 
 // Calculate velocity for a single sample point
 float2 CalculateVelocity(float2 texCoord, float depth) {
-    // Skip sky pixels (depth = 0 in reversed-Z means far plane/sky)
-    if (!(depth > 0.0f)) {
-        return float2(0.0, 0.0);
-    }
-
     // Remove current jitter from UV to get the unjittered sample position
     float2 currentUV = texCoord - JitterOffset;
+
+    // Sky (depth = 0 in reversed-Z means far plane): no world position to reproject, only the camera's
+    // ROTATION moves it. Returning zero here - which is what this did - is what makes the sky shimmer when
+    // standing still and smear when turning. See SkyMotionVectors.h.
+    if (!(depth > 0.0f)) {
+        return SkyVelocity(currentUV, InvViewProj, UnjitteredViewProj, PrevViewProj, CameraPosition.xyz);
+    }
 
     // Reconstruct world position at this pixel
     float3 worldPos = ReconstructWorldPosition(currentUV, depth);
@@ -72,8 +78,11 @@ float2 CalculateVelocity(float2 texCoord, float depth) {
     // Project to previous frame (unjittered)
     float2 prevUV = ProjectToPreviousFrame(worldPos);
 
-    // Calculate velocity in unjittered space
-    return currentUV - prevUV;
+    // Calculate velocity in unjittered space. prevUV - currUV: it points at where this pixel WAS, which is
+    // what CS_PFX_TAAResolve documents and what every geometry shader's CalculateVelocity writes into the
+    // main velocity buffer. This path had the subtraction the other way round, so switching TAA to
+    // DepthMotionVectors used to reproject history in the wrong direction.
+    return prevUV - currentUV;
 }
 
 // 3x3 velocity dilation kernel

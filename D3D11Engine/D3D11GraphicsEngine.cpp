@@ -4220,7 +4220,20 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             };
         } );
     }
-    
+
+    // Sky motion vectors. Has to come after Draw Sky (it keys off the finished depth buffer) but before
+    // anything that would rasterize over the sky, and only when the velocity buffer has a consumer at all.
+    if ( IsVelocityBufferInUse() ) {
+        graph.AddPass( RG_PASS_NAME( "Sky Velocity" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Write( velocityBufferHandle );
+
+            pass.m_executeCallback = [this, velocityBufferHandle]( const RenderGraph& graph )->void {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Sky Velocity" );
+                RenderSkyVelocity( graph.GetPhysicalTexture( velocityBufferHandle ) );
+            };
+        } );
+    }
+
     graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
@@ -8379,8 +8392,12 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     XMStoreFloat4x4( &cbi.World, world );
     ActiveVS->UpdateBuffer("Matrices_PerInstances", &cbi, sizeof(cbi));
 
+    // Blending OFF. The dome is opaque (PS_Atmosphere returns alpha 1, so SRC_ALPHA/INV_SRC_ALPHA was already
+    // a no-op for the colour target), but the velocity buffer is bound as RTV1 here and D3D11 applies the same
+    // blend to every target: PS_Atmosphere's SV_TARGET1 is a float2, its alpha is undefined, and the motion
+    // vectors were being blended against that garbage instead of written. The Sky Velocity pass rewrites these
+    // pixels regardless, so this is belt-and-braces - but a signed velocity must never be blended.
     rendererState.BlendState.SetDefault();
-    rendererState.BlendState.BlendEnabled = true;
 
     rendererState.DepthState.SetDefault();
 
@@ -8479,6 +8496,89 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     }
 
     return XR_SUCCESS;
+}
+
+/** True when something downstream actually consumes the main velocity buffer this frame. Mirrors the gate the
+    geometry passes use when deciding whether to bind its RTV at all (D3D11ForwardPlusRenderer /
+    D3D11DeferredRenderer) - if they didn't write it, nothing should be filling holes in it either. */
+bool D3D11GraphicsEngine::IsVelocityBufferInUse() const {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_TAA
+        && settings.AntiAliasingMode != GothicRendererSettings::AA_FSR )
+        return false;
+
+    // MSAA: the lit-geometry pass can't bind a single-sample velocity RTV alongside its MSAA color/depth, so
+    // that path never produces velocity in the first place.
+    if ( MSAADepthStencilBuffer ) return false;
+
+    return VelocityBuffer != nullptr;
+}
+
+/** Rotation-only motion vectors for every pixel still sitting at the reversed-Z far plane - the sky, plus any
+    hole the scene left behind it. See Shaders/SkyMotionVectors.h for why zero is the wrong answer there.
+
+    Run as a full-screen pass right after DrawSky rather than as an extra output of the sky shaders, because the
+    sky reaches the frame through three separate paths - the scattering dome (PS_Atmosphere), PS_AtmosphereOuter
+    when the camera is above the atmosphere, and ZenGin's own fixed-function RenderSkyPre when
+    AtmosphericScattering is off - and only the first ever wrote velocity. None of them writes DEPTH, so one
+    test against the depth buffer covers all three, plus the magic-barrier draws. Same design as the D3D12
+    backend's CameraVelocity.hlsl far-plane branch. */
+void D3D11GraphicsEngine::RenderSkyVelocity( RenderToTextureBuffer* velocityBuffer ) {
+    if ( !velocityBuffer ) return;
+
+    auto vs = GetShaderManager().GetVShader( VShaderID::VS_PFX );
+    auto ps = GetShaderManager().GetPShader( PShaderID::PS_PFX_SkyVelocity );
+    if ( !vs || !ps ) return;
+
+    const auto& context = GetContext();
+    const INT2 res = GetResolution();
+
+    // Save/restore the OM state: render-graph passes inherit it, and DrawWaterSurfaces (the next pass) relies
+    // on whatever is still bound here.
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTVs[2];
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
+    context->OMGetRenderTargets( std::size( oldRTVs ), oldRTVs[0].GetAddressOf(), oldDSV.GetAddressOf() );
+
+    SetDefaultStates();
+    // Blending off is load-bearing, not cosmetic: this writes a signed motion vector, so any blend would mix
+    // it with whatever the geometry pass left in the target.
+    auto& rendererState = Engine::GAPI->GetRendererState();
+    rendererState.BlendState.SetDefault();
+    rendererState.BlendState.SetDirty();
+    rendererState.DepthState.SetDefault();
+    rendererState.DepthState.DepthBufferEnabled = false;
+    rendererState.DepthState.DepthWriteEnabled = false;
+    rendererState.DepthState.SetDirty();
+    UpdateRenderStates();
+
+    VS_ExConstantBuffer_PerFrame frame;
+    PreparePerFrameConstantBuffer( frame );
+
+    SkyVelocityConstantBuffer cb = {};
+    XMStoreFloat4x4( &cb.SkyV_InvUnjitteredViewProj,
+        XMMatrixInverse( nullptr, XMLoadFloat4x4( &frame.UnjitteredViewProj ) ) );
+    cb.SkyV_UnjitteredViewProj = frame.UnjitteredViewProj;
+    cb.SkyV_PrevViewProj = frame.PrevViewProj;
+    const float3 eye = Engine::GAPI->GetCameraPosition();
+    cb.SkyV_CameraPosition = float4( eye.x, eye.y, eye.z, 0.0f );
+    cb.SkyV_Resolution = float2( static_cast<float>(res.x), static_cast<float>(res.y) );
+
+    // Velocity alone, no DSV - the depth buffer has to leave its DSV slot before it can be read as an SRV.
+    context->OMSetRenderTargets( 1, velocityBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+    SetViewport( ViewportInfo( 0, 0, res ) );
+
+    vs->Apply();
+    ps->Apply();
+    ps->UpdateBuffer( "SkyVelocityCB", &cb, sizeof( cb ) );
+
+    ID3D11ShaderResourceView* depthSRV = GetDepthBuffer()->GetShaderResView().Get();
+    context->PSSetShaderResources( 0, 1, &depthSRV );
+
+    PfxRenderer->DrawFullScreenQuad();
+
+    context->PSSetShaderResources( 0, 1, s_nullSRVs );
+    context->OMSetRenderTargets( std::size( oldRTVs ),
+        oldRTVs[0].GetAddressOf(), oldDSV.Get() );
 }
 
 /** Called when a key got pressed */

@@ -1823,6 +1823,12 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <None Include="Shaders\PS_PFX_Velocity.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\PS_PFX_SkyVelocity.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SkyMotionVectors.h">
+      <FileType>Document</FileType>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\PS_PFX_FSR1_EASU.hlsl">

@@ -300,6 +300,12 @@ public:
     /** Draws the sky using the GSky-Object */
     XRESULT DrawSky() override;
 
+    /** Rotation-only motion vectors for every pixel still at the reversed-Z far plane (the sky). */
+    void RenderSkyVelocity( RenderToTextureBuffer* velocityBuffer );
+
+    /** True when something downstream actually consumes the main velocity buffer this frame. */
+    bool IsVelocityBufferInUse() const;
+
     /** Renders the shadowmaps for the sun */
     void XM_CALLCONV RenderShadowmaps( FXMVECTOR cameraPosition, RenderToDepthStencilBuffer* target = nullptr, bool cullFront = true, bool dontCull = false, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite = nullptr, Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = nullptr );
 
