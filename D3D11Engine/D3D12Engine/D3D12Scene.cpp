@@ -3304,18 +3304,12 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         alphaAttachCmds.clear();
 
         // --- Instanced batching (main view only) -------------------------------------------------------
-        // 50 benches / a crowd's worth of identical swords arrive here as 50 one-instance commands, each
-        // rebinding two VBVs + an IBV — a full IA state change for ~200 vertices, which is what makes this
-        // pass draw-bound rather than geometry-bound. Batch them the way D3D11 does (see the
-        // NodeAttachmentDrawItem loop in D3D11GraphicsEngine.cpp): the batch head supplies the VB/IB for
-        // every member, so the key must mean "same buffers" — the MeshInfo POINTER says exactly that, and
-        // works as a key because the SharedVisualRegistry dedupes conversions. Not meshId: it identifies
-        // the source zCSubMesh, which is weaker and aliases distinct geometry (see MeshInfo::meshId).
-        //
-        // Grouped through a hash map rather than a sort: the key is (mesh, material, alphaTested) and
-        // nothing downstream depends on attachment draw ORDER (all opaque, depth-tested). The material is
-        // still part of the key here — folding it into the per-instance data (VobInstanceInfo::GP_Slot) so
-        // the key collapses to the mesh alone is the follow-up step.
+        // A crowd's worth of identical swords otherwise arrives as one one-instance command each, rebinding
+        // two VBVs + an IBV for ~200 vertices. The batch head supplies the VB/IB for every member, so the key
+        // must mean "same buffers": the MeshInfo POINTER, which works as a key because SharedVisualRegistry
+        // dedupes conversions. Not meshId — that identifies the source zCSubMesh and aliases distinct
+        // geometry (see MeshInfo::meshId). Grouped through a hash map, not a sort: nothing downstream depends
+        // on attachment draw order (all opaque, depth-tested).
         struct AttachBatchKey {
             const MeshInfo* mesh; UINT mats[3]; bool alphaTested;
             bool operator==( const AttachBatchKey& o ) const {
@@ -3356,10 +3350,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
             mats[2] = ResolveDiffuseSlotCacheIn( a.tex );
-            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material — but that
-            // costs nothing here: the prepass cutout is `clip(diffuse.a - 0.5)`, which can only ever discard
-            // when the diffuse actually HAS an alpha channel. The material's HasAlphaTest() flag that the
-            // other three builds also test is pure conservatism (a=1 everywhere never clips).
+            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material, which costs
+            // nothing: the prepass cutout is `clip(diffuse.a - 0.5)` and can only discard where the diffuse
+            // actually has an alpha channel.
             const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
 
             // !batchable = an actively morphing .MMS (see FrameAttachDraw::batchable). Its own singleton
@@ -3384,19 +3377,15 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
         }
 
-        // Live batching telemetry — readable in a real city, where a RenderDoc capture can't be taken at all
-        // (its overhead exhausts the 32-bit address space). "in" vs "batches" is the collapse ratio; "unbatch"
-        // is how much of the gap is structural rather than key-splitting: every NPC head is a .MMS morph mesh
-        // and can never batch (see FrameAttachDraw::batchable), so a high value here means no amount of
-        // refining the batch key will help.
+        // "in" vs "batches" is the collapse ratio; "unbatch" is how much of the gap is structural rather than
+        // key-splitting (a morphing .MMS can never batch — see FrameAttachDraw::batchable).
         TracyPlot( "Attach records in", static_cast<int64_t>( g_FrameAttachDraws.size() ) );
         TracyPlot( "Attach batches out", static_cast<int64_t>( usedBatches ) );
         TracyPlot( "Attach unbatchable", static_cast<int64_t>( unbatchable ) );
 
-        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single
-        // InstVBV spans them. This is a SECOND copy of the instance data (the collection-time write the
-        // per-draw cascade/point-shadow consumers still read through instView stays put) — a few KB per
-        // frame out of the VOB instance ring, which is the cheap half of the trade against the draws saved.
+        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single InstVBV
+        // spans them. A second copy of the instance data (the collection-time write the cascade/point-shadow
+        // consumers read through instView stays put), a few KB per frame out of the VOB instance ring.
         for ( size_t bi = 0; bi < usedBatches; ++bi ) {
             const AttachBatch& b = batches[bi];
             if ( b.members.empty() || !b.head ) continue;
@@ -4357,10 +4346,9 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         // own LastAniUpdateFrame guard already limits this to once per animation frame.
                         WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
                     }
-                    // A non-morphing .MMS draws the shared rest mesh instead of its own copy, which still
+                    // A non-morphing .MMS draws the shared rest mesh rather than its own copy, which still
                     // holds the deformation from when it was last inside kMorphMeshMaxDistance. One MeshInfo
-                    // for every head of this type, so they batch — this is what drains "Attach unbatchable".
-                    // Falls back to the morph copy while the rest mesh is still being built on a worker.
+                    // per head type, so they batch. Falls back while the rest mesh is still being built.
                     MeshVisualInfo* drawVis = mvi;
                     if ( isMMS && !morphActive && mvi->RestVisual
                         && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {

@@ -902,17 +902,16 @@ private:
 
     // ---- GPU morph fold (D3D12MorphFold.cpp + MorphGpu.h + Shaders/D3D12/MorphFold.hlsl) ----
     // Morph attachments (NPC heads, bow/crossbow draw meshes) fold their blend shapes in a compute pass that
-    // rewrites the Position of each vertex in the submesh's own (DEFAULT-heap, UAV) vertex buffer, instead of
-    // ZENGIN deforming on the CPU and re-uploading the whole vertex stream every animation frame. The
-    // prototype tables are per .MMS and immutable; the only per-frame upload is the channel records.
+    // rewrites the Position of each vertex in the submesh's own DEFAULT-heap UAV vertex buffer, instead of
+    // ZENGIN deforming on the CPU and re-uploading the stream every animation frame. The prototype tables are
+    // per .MMS and immutable; the only per-frame upload is the channel records.
     static constexpr UINT kMaxMorphChannelRecords = 4096;   // 24 B each -> 96 KB per frame-in-flight
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_MorphChannelBuffer[kBackBufferMax];   // persistently-mapped UPLOAD
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_MorphChannelBufferAlloc[kBackBufferMax];
     uint8_t* m_MorphChannelBufferPtr[kBackBufferMax] = {};
     bool m_MorphChannelOverflowLogged = false;
-    // One entry per MorphGpu::Prototype, uploaded to VRAM on the first frame that folds it and kept for the
-    // session (a handful of head types per world, ~1 MB in total — measured by MorphBlend::LogPrototypeBudget).
-    // Keyed by the opaque Prototype pointer so this header does not have to pull in MorphGpu.h.
+    // One entry per MorphGpu::Prototype, uploaded on the first frame that folds it and kept for the session
+    // (~1 MB in total). Keyed by the opaque Prototype pointer so this header need not include MorphGpu.h.
     struct MorphTableGpu {
         Microsoft::WRL::ComPtr<ID3D12Resource>      Positions;
         Microsoft::WRL::ComPtr<D3D12MA::Allocation> PositionsAlloc;
@@ -921,8 +920,8 @@ private:
     };
     std::unordered_map<const void*, MorphTableGpu> m_MorphTables;
     std::vector<D3D12_RESOURCE_BARRIER> m_MorphBarriers;   // scratch; keeps its capacity across frames
-    // This frame's queue, moved out of MorphGpu by DispatchMorphFold (see MorphGpu::TakeJobs for why it is a
-    // move rather than a borrow). Members rather than locals so they keep their capacity across frames.
+    // This frame's queue, moved out of MorphGpu by DispatchMorphFold (see MorphGpu::TakeJobs). Members rather
+    // than locals so they keep their capacity across frames.
     std::vector<MorphGpu::Job> m_MorphJobs;
     std::vector<MorphGpu::ChannelRecord> m_MorphChannels;
     UINT m_MorphFoldSubmeshCount = 0;   // submeshes folded last frame (diagnostic)

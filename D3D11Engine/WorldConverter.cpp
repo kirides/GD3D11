@@ -2101,15 +2101,13 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
 
     MorphBlend::LogPrototypeBudget( visual );
 
-    // GPU fold: everything below - the deform, the per-wedge ExVertexStruct expansion and the full
-    // vertex-buffer re-upload - becomes one Dispatch per submesh that the backend records later this frame.
-    // All that happens here is snapshotting the channel state, which is why AdvanceAnis above still runs (it
-    // is the animation STATE machine, not the deform) and the tex-ani update below is unaffected.
+    // GPU fold: everything below - the deform, the per-wedge ExVertexStruct expansion and the vertex-buffer
+    // re-upload - becomes one Dispatch per submesh the backend records later this frame. All that happens
+    // here is snapshotting the channel state.
     //
-    // There is deliberately NO CPU fallback inside this mode: the vertex buffers are GPU-written DEFAULT-heap
-    // UAVs, so nothing here could write them anyway. An instance Register() refuses (the cases are listed in
-    // MorphGpu.cpp - all of them content shapes not seen in shipped .MMS files) keeps the undeformed
-    // conversion pose, which is exactly what every out-of-range morph attachment already draws.
+    // No CPU fallback inside this mode: the vertex buffers are GPU-written DEFAULT-heap UAVs, so nothing here
+    // could write them. An instance Register() refuses (see MorphGpu.cpp) keeps the undeformed conversion
+    // pose, which is what every out-of-range morph attachment already draws.
     if ( MorphGpu::IsActive() ) {
         MorphGpu::Register( visual, meshInfo );
         return;
@@ -2263,15 +2261,12 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         if ( meshInfo->MorphMeshVisual ) {
-            // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: the wedge numbering has to
-            // survive, because both deform paths address this buffer by WEDGE INDEX (the CPU one rebuilds the
-            // whole stream in wedge order, the GPU fold writes one vertex per wedge). It is also what keeps
-            // mi->Vertices an exact description of the buffer's non-position bytes.
+            // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: both deform paths address
+            // this buffer by WEDGE INDEX, so the wedge numbering has to survive.
             if ( MorphGpu::IsActive() ) {
-                // GPU fold: a DEFAULT-heap (VRAM) UAV written by MorphFold.hlsl, never by the CPU. The
-                // initial contents are this conversion's pose, so the mesh is already drawable before its
-                // first fold, and the normal/tangent/UV/color bytes written here are final - the fold only
-                // ever rewrites the leading 12-byte Position of each vertex.
+                // GPU fold: a DEFAULT-heap UAV written by MorphFold.hlsl, never by the CPU. Initialized with
+                // this conversion's pose, so it is drawable before its first fold; the fold only ever
+                // rewrites the leading 12-byte Position of each vertex.
                 mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ),
                     static_cast<GfxVertexBuffer::EBindFlags>( GfxVertexBuffer::B_VERTEXBUFFER | GfxVertexBuffer::B_UNORDERED_ACCESS ),
                     GfxVertexBuffer::U_DEFAULT );
@@ -2347,10 +2342,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             i++;
         }
 
-        // No wrapped MeshInfo built from wrappedVertices/wrappedIndices any more: MeshVisualInfo::FullMesh
-        // was write-only - nothing ever bound it - so it was two IMMUTABLE buffers per converted visual
-        // (a full duplicate of every submesh vertex plus 32-bit indices) that only cost VRAM and 32-bit
-        // address space. WrapVertexBuffers still runs: BaseIndexLocation above is read by the draw paths.
+        // MeshVisualInfo::FullMesh is gone: it was write-only, two IMMUTABLE buffers per converted visual
+        // costing only VRAM and address space. WrapVertexBuffers still runs - the draw paths read
+        // BaseIndexLocation above.
     }
 
     // Every submesh was empty: don't let the ±FLT_MAX seeds turn MeshSize into an infinity.

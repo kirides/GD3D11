@@ -3644,9 +3644,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             for ( size_t i = 0; i < instancedDrawItems.size(); ) {
                 // Find the end of this batch (same mesh + texture). Keyed on the MeshInfo POINTER, not
                 // meshId: the draw binds batchMesh's buffers for every member, so the key must mean "same
-                // buffers", and meshId only means "same source zCSubMesh" (see MeshInfo::meshId). The
-                // pointer works as a key because the registry dedupes conversions. Dropping the old
-                // "meshId 0 is unbatchable" gate also removes a spin - it could leave 'i' unadvanced.
+                // buffers", while meshId only means "same source zCSubMesh" (see MeshInfo::meshId). The
+                // pointer works as a key because the registry dedupes conversions.
                 size_t batchStart = i;
                 auto batchMesh = instancedDrawItems[i].mesh;
                 zCTexture* batchTex = instancedDrawItems[i].texture;

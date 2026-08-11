@@ -9,21 +9,15 @@ struct MeshVisualInfo;
 
 /** GPU morph fold: the compute-shader form of MorphBlend's sequential channel fold.
  *
- *  This is the module that took morph attachments off the per-frame CPU path. It replaces, per
- *  deforming instance and per animation frame:
- *      zCMorphMesh::CalcVertexPositions (or MorphBlend::Apply)   -- the fold itself
- *      the per-wedge ExVertexStruct expansion in UpdateMorphMeshVisual
- *      GfxVertexBuffer::UpdateBuffer                             -- a full vertex-buffer re-upload
- *  with one Dispatch per submesh that rewrites only the 12-byte Position of each vertex already in
- *  that submesh's vertex buffer. Everything else in the vertex (normal, tangent, UVs, color) is
- *  wedge data written once at conversion and never touched again, so there is nothing to copy.
+ *  Takes morph attachments off the per-frame CPU path. Per deforming instance and animation frame it
+ *  replaces zCMorphMesh::CalcVertexPositions (or MorphBlend::Apply), the per-wedge ExVertexStruct expansion
+ *  in UpdateMorphMeshVisual and a full GfxVertexBuffer::UpdateBuffer with one Dispatch per submesh that
+ *  rewrites only the 12-byte Position of each vertex already in that submesh's vertex buffer. Everything
+ *  else in the vertex is wedge data written once at conversion, so there is nothing to copy.
  *
- *  Why that also killed the buffer-lifetime machinery: a folded submesh's vertex buffer is a
- *  DEFAULT-heap (VRAM) UAV, created once with the mesh and destroyed with it. It is never CPU-mapped,
- *  so it costs no 32-bit address space, and on D3D12 it is ONE copy rather than kBackBufferCount
- *  persistently-mapped UPLOAD copies (the CPU-write-vs-GPU-read race that forced the ring is gone -
- *  the writer is the GPU, ordered by a barrier). That is what made the release/recreate hysteresis
- *  (MeshVisualInfo::ReleaseIdleMorphVertexBuffers and MeshInfo's self-healing accessor) unnecessary.
+ *  That buffer is then a DEFAULT-heap UAV created and destroyed with the mesh: never CPU-mapped (so no
+ *  32-bit address space), and ONE copy rather than kBackBufferCount, since the CPU-write-vs-GPU-read race
+ *  that forced the ring is gone. That is what made the old release/recreate hysteresis unnecessary.
  *
  *  Data model. Everything the fold reads that is not per-frame is per PROTOTYPE (per .MMS, so per head
  *  TYPE, not per NPC) and immutable, built once on first sight and never freed:
@@ -31,16 +25,14 @@ struct MeshVisualInfo;
  *      Indices    uint[]   : per ani a DENSE vertex -> slot table (the gather-friendly inversion of the
  *                            sparse vertIndexList; 0xFFFFFFFF = this ani does not touch that vertex),
  *                            then per submesh a wedge -> mesh-vertex table
- *  Measured at ~1 MB of Positions plus ~110 KB of Indices across all 26 prototypes of a G2 world
- *  (MorphBlend::LogPrototypeBudget), which is why they are uploaded eagerly rather than streamed.
+ *  ~1 MB total across a G2 world's prototypes (MorphBlend::LogPrototypeBudget), so they are uploaded
+ *  eagerly rather than streamed.
  *
- *  Per frame the only upload is one ChannelRecord per active blend channel per instance - the fold
- *  state MorphBlend::CaptureChannels already snapshots, with the engine's double zSinusEase baked in,
- *  so the shader never evaluates the easing (or ZENGIN's quantised zSinApprox) at all.
+ *  Per frame the only upload is one ChannelRecord per active blend channel per instance, with the engine's
+ *  double zSinusEase already baked in by MorphBlend::CaptureChannels.
  *
- *  Threading: Register() can be reached from the shadow-cascade / point-shadow collection running on
- *  the worker pool, so it takes a lock. It only READS Gothic state (the prototype arrays are written
- *  once at load; the channel list is the same read UpdateMorphMeshVisual already did on that thread). */
+ *  Threading: Register() can be reached from the shadow-cascade / point-shadow collection on the worker
+ *  pool, so it takes a lock. It only READS Gothic state. */
 namespace MorphGpu {
 
     /** One active blend channel, resolved to buffer offsets. MUST match MorphFold.hlsl's ChannelRecord. */
@@ -106,17 +98,15 @@ namespace MorphGpu {
 
     /** Hands the queued work to the backend's dispatch and empties the queue, in one locked step.
      *
-     *  A MOVE rather than a peek, for two reasons. Register() can run on the worker pool, so a borrowed
-     *  reference could be reallocated under the dispatch mid-walk; and Job::ChannelFirst indexes the channel
-     *  array, so the two containers may only ever be emptied together - clearing the channels while a Job
-     *  survived would repoint it at some other instance's channels.
+     *  A MOVE rather than a peek: Register() can run on the worker pool, so a borrowed reference could be
+     *  reallocated under the dispatch mid-walk, and Job::ChannelFirst indexes the channel array, so the two
+     *  containers may only ever be emptied together.
      *
-     *  A Job registered AFTER this returns is therefore not lost and not misindexed: it lands in the now-empty
-     *  queue and folds at the NEXT frame's dispatch. The ghost-VOB pass collects its attachments that late (and
-     *  a shadow-only instance can too), so those instances run one frame behind on facial animation.
+     *  A Job registered AFTER this returns lands in the now-empty queue and folds at the next frame's
+     *  dispatch — the ghost-VOB pass collects its attachments that late, so those instances run one frame
+     *  behind on facial animation.
      *
-     *  The caller should reuse the same two vectors every frame; they come back with their capacity intact, so
-     *  this settles into zero per-frame allocations. */
+     *  Reuse the same two vectors every frame; they come back with their capacity intact. */
     void TakeJobs( std::vector<Job>& outJobs, std::vector<ChannelRecord>& outChannels );
 
     /** Total bytes of prototype tables built so far, for the diagnostic log. */

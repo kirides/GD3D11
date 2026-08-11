@@ -3552,14 +3552,11 @@ bool D3D12PipelineState::CreateCull() {
 
 bool D3D12PipelineState::CreateMorphFold() {
     // GPU morph fold (Shaders/D3D12/MorphFold.hlsl + D3D12MorphFold.cpp). Everything rides on root
-    // descriptors: the two per-prototype tables and the per-frame channel records are plain structured
-    // buffers, and the output is the submesh's own vertex buffer as a raw UAV — so no descriptor heap slots
-    // are involved and a dispatch is 4 Set calls.
+    // descriptors — no descriptor heap slots involved, so a dispatch is 4 Set calls.
     //
-    // On failure MorphGpu::IsActive() stays false and morph attachments keep ZENGIN's CPU deform (which is
-    // also what decides that their vertex buffers are created CPU-writable), so this is non-fatal — but it
-    // has to be attempted BEFORE the first world conversion, which is why Init() calls it with the other
-    // pre-load pipelines rather than lazily.
+    // On failure MorphGpu::IsActive() stays false and morph attachments keep ZENGIN's CPU deform, so this is
+    // non-fatal — but it must be attempted BEFORE the first world conversion (that is what decides whether
+    // the morph vertex buffers are created CPU-writable), hence Init() calling it with the pre-load pipelines.
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
@@ -3569,7 +3566,7 @@ bool D3D12PipelineState::CreateMorphFold() {
     rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Positions
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 Indices
     // t2 is this frame's channel ring slice: fully written by DispatchMorphFold before the first dispatch is
-    // recorded, and not touched again until the frame's slot comes round again kBackBufferCount frames later.
+    // recorded, and not touched again until this slot comes round kBackBufferCount frames later.
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 Channels
     rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );                                       // 4: u0 OutVertices
     if ( !rs.Build( device ) )
