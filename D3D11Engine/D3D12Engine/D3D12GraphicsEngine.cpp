@@ -270,6 +270,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         // unsharpened. Note this one IS on by default (RendererSettings.SharpeningMode == SHARPEN_CAS).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sharpen pipeline (the image will not be sharpened).";
     }
+    if ( !m_Pipelines.CreateUnderwater() ) {
+        // Non-fatal: DrawUnderwaterEffects() guards on the PSOs, so a failure here just leaves the frame
+        // untinted and undistorted while swimming — everything else renders as before.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the underwater pipeline (no underwater screen effect).";
+    }
     if ( !m_Pipelines.CreateAO() ) {
         // Non-fatal: SSAO is an opt-in visual enhancement (RendererSettings.AoMode, defaults to a real AO mode
         // but nothing else depends on it unconditionally). RenderSSAO() guards on the PSOs existing and just
@@ -1624,6 +1629,10 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     // previously-failed creation retry at the new, possibly smaller, size.
     m_DoFCreateAttempted = false;
     if ( m_DoFResourcesReady ) CreateDoFResources( size );
+    // Underwater blur pair: lazily built the first time the player submerges, for the same VA reason as DoF —
+    // so only re-sized here if it is already up. Clearing the attempted flag lets a previous failure retry.
+    m_UnderwaterCreateAttempted = false;
+    if ( m_UnderwaterResourcesReady ) CreateUnderwaterResources( size );
     CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
     ReleaseWaterCopyResources();     // lazily rebuilt at the new size by the next frame that renders water
@@ -2549,6 +2558,10 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     // idle at this point (WaitForGpuIdle above), which is what makes releasing the old ones safe.
     m_DoFCreateAttempted = false;
     if ( m_DoFResourcesReady ) CreateDoFResources( size );
+    // Underwater blur pair: lazily built the first time the player submerges, for the same VA reason as DoF —
+    // so only re-sized here if it is already up. Clearing the attempted flag lets a previous failure retry.
+    m_UnderwaterCreateAttempted = false;
+    if ( m_UnderwaterResourcesReady ) CreateUnderwaterResources( size );
     CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site
     CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
     ReleaseWaterCopyResources();     // GPU is idle here; the next water frame rebuilds them at the new size
