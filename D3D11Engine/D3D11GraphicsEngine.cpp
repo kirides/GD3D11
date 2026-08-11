@@ -28,6 +28,7 @@
 #include "zCView.h"
 #include "zCVobLight.h"
 #include "zCSkyController_Outdoor.h"   // ComputeEnvMapAlpha: resultFogColor drives the env-map stage
+#include "D3D7/MyDirectDrawSurface7.h" // DrawSky: zCTexture -> engine texture for the moon sprite
 #include "oCGame.h"
 #include "oCNPC.h"
 #include <DDSTextureLoader.h>
@@ -8405,7 +8406,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     PreparePerFrameConstantBuffer(cb);
     ActivePS->UpdateBuffer(0, &cb, sizeof(cb));
 
-    ID3D11ShaderResourceView* srvs[2]{};
+    ID3D11ShaderResourceView* srvs[3]{};
     // Apply sky texture
     D3D11Texture* cloudsTex = Engine::GAPI->GetSky()->GetCloudTexture();
     if ( cloudsTex ) {
@@ -8416,7 +8417,30 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     if ( nightTex ) {
         srvs[1] = GetSrvFromGfx(nightTex);
     }
+
+    // The moon (planets[1]) - the one thing the fixed-function sky drew that the bare scattering dome does
+    // not, so without it the atmospheric-scattering nights have no moon at all. GSky resolves the screen-space
+    // placement (shared with the D3D12 sky dome); PS_Atmosphere composites it, so it costs no extra draw call.
+    // Pixels, so they must be in the space SV_POSITION lives in - the scaled (render) resolution, not the
+    // backbuffer one.
+    MoonCB moonCb = {};
+    if ( MoonSpriteInfo moon = sky->ResolveMoonSprite( GetResolution() ); moon.Texture ) {
+        if ( MyDirectDrawSurface7* surface = moon.Texture->GetSurface() ) {
+            if ( ID3D11ShaderResourceView* moonSrv = GetSrvFromGfx( surface->GetEngineTexture() ) ) {
+                srvs[2] = moonSrv;
+                moonCb.Moon_CenterPx = XMFLOAT2( moon.CenterPx[0], moon.CenterPx[1] );
+                moonCb.Moon_HalfSizePx = XMFLOAT2( moon.HalfSizePx[0], moon.HalfSizePx[1] );
+                moonCb.Moon_Color = XMFLOAT4( moon.Color[0], moon.Color[1], moon.Color[2], moon.Color[3] );
+            }
+        }
+    }
+    // Moon_Color.a stays 0 when the moon isn't visible, which is what the shader branches on - so an unbound
+    // t2 is never sampled.
+    ActivePS->UpdateBuffer( "MoonCB", &moonCb, sizeof( moonCb ) );
+
     GetContext()->PSSetShaderResources( 0, std::size( srvs ), srvs);
+    // s1 is CLAMP for the moon sprite; the cloud/star layers keep the wrapping sampler at s0.
+    GetContext()->PSSetSamplers( 1, 1, ClampSamplerState.GetAddressOf() );
 
     if ( sky->GetSkyDome() ) sky->GetSkyDome()->DrawMesh();
 

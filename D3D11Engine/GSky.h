@@ -24,6 +24,16 @@ enum ESkyTexture {
     ST_OldWorld
 };
 
+/** Screen-space placement of the moon sprite (planets[1]), as the fixed-function sky would have drawn it.
+    Backend-neutral: the caller resolves Texture to its own SRV/descriptor. Texture == nullptr means the moon
+    is not visible this frame and nothing should be composited. See GSky::ResolveMoonSprite. */
+struct MoonSpriteInfo {
+    zCTexture* Texture = nullptr;
+    float CenterPx[2] = { 0.0f, 0.0f };
+    float HalfSizePx[2] = { 0.0f, 0.0f };
+    float Color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+};
+
 class zCTexture;
 class zCSkyLayer;
 class zCSkyState;
@@ -84,6 +94,11 @@ public:
 
     /** Returns the current sun color */
     float3 GetSunColor();
+
+    /** Where the moon should be composited this frame, in pixels of a `resolution`-sized backbuffer.
+        Port of the planets[1] half of zCSkyControler_Outdoor::RenderPlanets - see GSky.cpp. Used by both
+        backends' atmospheric-scattering sky, which draws no planets of its own. */
+    MoonSpriteInfo ResolveMoonSprite( const INT2& resolution );
 
 protected:
     /** Loads the sky textures */

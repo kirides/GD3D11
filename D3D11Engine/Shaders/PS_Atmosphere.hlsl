@@ -13,13 +13,30 @@ cbuffer cbPerFrame : register( b0 )
 	matrix Frame_UnjitteredViewProj;
 };
 
+// The moon (planets[1]), composited as a screen-space sprite instead of drawn as geometry, because that is
+// exactly what the fixed-function sky does: zCSkyControler_Outdoor::RenderPlanets projects the planet
+// DIRECTION to a screen point and zCMesh::RenderDecal back-projects a camera-facing 100x100 quad onto that ray
+// at view depth `planet.size`. The scattering sky replaces RenderSkyPre wholesale, so without this the nights
+// have no moon at all. CPU side: GSky::ResolveMoonSprite (shared with the D3D12 sky dome).
+cbuffer MoonCB : register( b2 )
+{
+	// Both in PIXELS, so the pixel shader can use SV_POSITION.xy directly.
+	float2 Moon_CenterPx;
+	float2 Moon_HalfSizePx;
+
+	// rgb = RenderPlanets' color0->color1 tint by moon height, a = its accumulated fade (horizon, fog, rain).
+	// a == 0 means "not visible this frame" and no moon texture is bound.
+	float4 Moon_Color;
+};
+
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
 //--------------------------------------------------------------------------------------
 SamplerState SS_Linear : register( s0 );
-SamplerState SS_samMirror : register( s1 );
+SamplerState SS_Clamp : register( s1 );		// the moon sprite must not tile at its edges
 Texture2D	TX_Texture0 : register( t0 );
 Texture2D	TX_Texture1 : register( t1 );
+Texture2D	TX_Moon : register( t2 );
 
 
 //--------------------------------------------------------------------------------------
@@ -82,6 +99,25 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	
 	// Apply stars
 	atmoColor += night * 0.4f;
+
+	// Apply the moon, over the stars and ADDITIVELY (zRND_ALPHA_FUNC_ADD, as RenderPlanets draws it), tinted
+	// by the height-interpolated planet colour. Whatever frame the moon material currently holds is what got
+	// bound - the material's texture animation is how Gothic varies the moon from night to night, so there is
+	// deliberately no phase logic here.
+	if ( Moon_Color.a > 0.0f )
+	{
+		// Pixel -> sprite UV. The sprite is axis-aligned in screen space (RenderDecal resets the camera
+		// rotation, making the quad parallel to the screen plane), so this is a plain rect map.
+		float2 moonUV = ( Input.vPosition.xy - Moon_CenterPx ) / Moon_HalfSizePx * 0.5f + 0.5f;
+		if ( all( moonUV == saturate( moonUV ) ) )
+		{
+			float4 m = TX_Moon.Sample( SS_Clamp, moonUV );
+
+			// Premultiplied additive: texel * its own alpha * the planet tint * the accumulated fade. Matches
+			// ADD blending of a vertex-colour-modulated sprite without needing a second draw or blend state.
+			atmoColor += m.rgb * m.a * Moon_Color.rgb * Moon_Color.a;
+		}
+	}
 
 
 	// The sky world matrix uses XMMatrixTranspose(scale * translation), which strips the

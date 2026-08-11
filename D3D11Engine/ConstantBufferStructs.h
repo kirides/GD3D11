@@ -477,5 +477,14 @@ struct PsEnvMapData {
     float4 Params;          // x = stage alpha (EnvMapStrength * luma(fogColor)), yzw unused
 };
 
+/** MoonCB of PS_Atmosphere.hlsl - the moon sprite the atmospheric-scattering sky composites in place of
+    zCSkyControler_Outdoor::RenderPlanets. Filled from GSky::ResolveMoonSprite; Moon_Color.w == 0 means the
+    moon is not visible this frame and the shader skips it. */
+struct MoonCB {
+    XMFLOAT2 Moon_CenterPx;     // sprite centre, in pixels of the scaled render target
+    XMFLOAT2 Moon_HalfSizePx;   // sprite half-extents, same space
+    XMFLOAT4 Moon_Color;        // rgb = planet tint by height, a = accumulated fade (horizon, fog, rain)
+};
+
 #pragma pack (pop)
 
