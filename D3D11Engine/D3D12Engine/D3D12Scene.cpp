@@ -1544,8 +1544,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
 
 void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items ) {
-	// TransparencyVobs is filled by CollectVisibleVobs' GetVisualAlpha() branch; the queue holds indices
-	// into it and DrawTransparencyQueue clears it unconditionally, so it cannot leak.
+	// Filled by CollectVisibleVobs' GetVisualAlpha() branch; the queue holds indices into it.
 	auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
 	if ( items.empty() ) return;
 
@@ -2335,9 +2334,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	DrawWaterSurfaces();
 
 	// Everything else that blends, in ONE back-to-front pass: world transparency surfaces, blended instanced
-	// VOBs, ghosts, blended decals, quad marks and poly strips. Frame order is geometry -> alpha -> fog/pfx,
-	// same as D3D11: BEFORE the particles and RenderFogAndGodRays below, or alpha surfaces get pasted onto an
-	// already-fogged scene and never fog themselves. MUST run every frame - it drains the per-kind lists.
+	// VOBs, ghosts, blended decals, quad marks and poly strips. Before the particles and RenderFogAndGodRays,
+	// or alpha surfaces get pasted onto an already-fogged scene and never fog themselves. Must run every frame
+	// - it drains the per-kind lists.
 	CollectTransparencyQueue();
 	DrawTransparencyQueue();
 

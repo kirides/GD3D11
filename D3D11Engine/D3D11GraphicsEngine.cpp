@@ -4245,10 +4245,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
 
-    // Everything alpha-blended in one back-to-front pass. Frame order is geometry -> alpha -> fog/pfx:
-    // after the opaque scene, sky and water, but BEFORE the fog, god rays and particles - drawn after
-    // those (where it used to sit) alpha surfaces were pasted onto an already-fogged scene and never
-    // fogged themselves.
+    // Everything alpha-blended in one back-to-front pass: after the opaque scene, sky and water, but BEFORE
+    // the fog, god rays and particles - drawn after those, alpha surfaces get pasted onto an already-fogged
+    // scene and never fog themselves.
     graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
@@ -4944,11 +4943,9 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 lastAlphaFunc = alphaFunc;
             }
 
-            // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX /
-            // alphaGen=FACTOR (zRenderManager.cpp:601-610, zRndD3D_Render.cpp:1049); its RGB is for
-            // untextured polys, which cannot reach this loop. Multiplying the RGB in made dark-tinted
-            // additive surfaces (magic barrier, 4,45,26,155) vanish. Env strength is a separate stage
-            // below, not part of the base alpha.
+            // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX / alphaGen=FACTOR
+            // (zRenderManager.cpp:601-610), and its RGB is for untextured polys, which cannot reach this
+            // loop. Multiplying the RGB in made dark-tinted additive surfaces (the magic barrier) vanish.
             ffdata.textureFactor = float4( skyLight, skyLight, skyLight,
                 zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
 
@@ -4961,9 +4958,8 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 meshInfo->BaseIndexLocation );
 
             // ZenGin draws the env-map stage immediately after the base stage of the same shader
-            // (zRenderManager.cpp:671 adds it to the same zCShader; DrawVertexBuffer walks the stages
-            // back to back), so it goes inline here rather than as a second sweep of the run — that
-            // keeps the painter's order of the surrounding blended surfaces intact.
+            // (zRenderManager.cpp:671), so it goes inline here rather than as a second sweep of the run,
+            // which keeps the painter's order of the surrounding blended surfaces intact.
             if ( envMapEnabled && mat->GetEnvMapEnabled() ) {
                 if ( !envCubeBound ) {
                     GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );

@@ -53,9 +53,8 @@ namespace {
     }
 
     // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX / alphaGen=FACTOR
-    // (zRenderManager.cpp:601-610, zRndD3D_Render.cpp:1049); its RGB is for untextured polys, which never
-    // get here. Multiplying the RGB in made dark-tinted additive surfaces (magic barrier, 4,45,26,155)
-    // vanish. Env strength is the separate EKind::Env stage, not part of the base alpha.
+    // (zRenderManager.cpp:601-610), and its RGB is for untextured polys, which never get here. Multiplying
+    // the RGB in made dark-tinted additive surfaces (the magic barrier) vanish.
     float4 ComputeTextureFactor( zCMaterial* mat ) {
         // RGB carries the day/night factor: unlit surfaces over a baked-daylight vertex color would
         // otherwise stay noon-bright at midnight. 1.0 in daylight. See GothicAPI::GetSkyDayFactor.
@@ -138,10 +137,10 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     // for the rest of the list. Materials whose effective alpha func is 0 therefore draw opaque + depth-
     // writing when they come first — order-dependent, but faithful. That case is live for portals/foam,
     // which are collected by TYPE and so may well carry alpha func 0.
-    // Env-map overlay stage (see ComputeEnvMapAlpha). Only the Simple variant runs it: PSTransparentPortal
-    // and PSTransparentFoam are their own effects, and ZenGin never env-maps a portal either. Needs both
-    // blobs (GetOrCreateWorldTransparencyPipeline silently degrades a kind with a missing blob to the plain
-    // shader, which here would re-draw the base surface) and the reflection cube the water pass loads.
+    // Env-map overlay stage (see ComputeEnvMapAlpha). Simple variant only — portals and foam are their own
+    // effects, and ZenGin never env-maps a portal. Both blobs are required because
+    // GetOrCreateWorldTransparencyPipeline degrades a missing blob to the plain shader, which here would
+    // re-draw the base surface.
     const bool envOverlayAvailable = kind == EKind::Simple
         && m_Pipelines.WorldTransparency.EnvVsBlob && m_Pipelines.WorldTransparency.EnvPsBlob
         && m_ReflectionCubeSrvSlot != UINT_MAX;
@@ -203,9 +202,8 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             entry.Mesh->BaseIndexLocation, 0, 0 );
         drawnIndices += static_cast<unsigned int>( entry.Mesh->Indices.size() );
 
-        // ZenGin appends the env-map stage to the SAME zCShader and DrawVertexBuffer walks the stages back
-        // to back (zRenderManager.cpp:671 / :1057), so the overlay goes inline here rather than as a second
-        // sweep — that keeps the painter's order of the surrounding blended surfaces intact.
+        // ZenGin appends the env-map stage to the SAME zCShader (zRenderManager.cpp:671), so the overlay
+        // goes inline here rather than as a second sweep, keeping the painter's order intact.
         if ( envOverlayAvailable && mat->GetEnvMapEnabled() ) {
             GothicBlendStateInfo envBlend;
             // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else blends.
@@ -324,16 +322,14 @@ bool D3D12GraphicsEngine::BindWorldTransparencyFrameState() {
 
 
 void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> items ) {
-    // Port of D3D11GraphicsEngine::DrawFrameAlphaMeshes (D3D11GraphicsEngine.cpp:7741) for the instanced-VOB
-    // path: the cobwebs, hanging cloth and magic sheets whose material carries a BLEND/ADD alpha func.
+    // Port of D3D11GraphicsEngine::DrawFrameAlphaMeshes for the instanced-VOB path: cobwebs, hanging cloth and
+    // magic sheets whose material carries a BLEND/ADD alpha func.
     //
-    // Why they need their own pass: the opaque VOB set is one ExecuteIndirect through a single PSO that alpha-
-    // CLIPS at 0.5, writes depth and returns alpha 1 — so a spider web's soft, half-transparent texel became a
-    // fully opaque white one. D3D11 peels exactly these two alpha funcs out of its instanced pass and re-draws
-    // them here: blended, unlit (PS_Simple), depth-tested but NOT depth-writing. BuildVobDrawCommands does the
-    // peeling (they are consequently absent from the VOB depth prepass too, which is what a blended surface
-    // wants) and resolves every buffer view / bindless index, so this is a short CPU draw loop — same shape as
-    // D3D11's, and the entry count is a handful per frame.
+    // They need their own pass because the opaque VOB set is one ExecuteIndirect through a PSO that alpha-
+    // CLIPS at 0.5, writes depth and returns alpha 1 — which turns a spider web's half-transparent texel into
+    // an opaque white one. Drawn here blended, unlit and depth-tested but NOT depth-writing.
+    // BuildVobDrawCommands does the peeling (so they miss the VOB depth prepass too, as a blended surface
+    // wants) and resolves every buffer view, leaving this a short CPU draw loop.
     //
     // Ordered by the frame's transparency queue now, at batch granularity (see VobAlphaMesh::DistanceSq for
     // why this backend cannot go per instance the way D3D11 does).
