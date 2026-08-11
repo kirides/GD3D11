@@ -1354,8 +1354,9 @@ private:
         XMFLOAT4X4 PrevViewProj;
         XMFLOAT4X4 UnjitteredViewProj;
         XMFLOAT4X4 InvUnjitteredViewProj;
+        XMFLOAT4 CameraPosition;   // xyz = eye, w unused; only FillCameraVelocity's sky branch reads it
     };
-    static_assert( sizeof( MotionCBData ) == 192, "MotionCBData must match Shaders/D3D12/include/MotionVectors.hlsl" );
+    static_assert( sizeof( MotionCBData ) == 208, "MotionCBData must match Shaders/D3D12/include/MotionVectors.hlsl" );
 
     bool CreateMotionResources( INT2 size );  // (re)builds the velocity/normal targets + their RTV/SRV/UAV views
     bool CreateMotionConstantBuffers();       // one-time: the kBackBufferCount persistently-mapped MotionCB slabs

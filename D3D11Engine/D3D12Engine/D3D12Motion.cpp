@@ -210,6 +210,10 @@ void D3D12GraphicsEngine::UploadMotionConstants() {
     XMVECTOR det;
     XMStoreFloat4x4( &cb.InvUnjitteredViewProj, XMMatrixInverse( &det, viewProj ) );
 
+    // Eye position, so the fill pass can turn a reconstructed far-plane point into a view RAY (MvSkyVelocity).
+    const float3 eye = Engine::GAPI->GetCameraPosition();
+    cb.CameraPosition = XMFLOAT4( eye.x, eye.y, eye.z, 0.0f );
+
     memcpy( m_MotionCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
 }
 

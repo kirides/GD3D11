@@ -100,6 +100,7 @@ enum class PShaderID : size_t {
     PS_PFX_DoF_Composite,
     PS_PFX_TAA,
     PS_PFX_Velocity,
+    PS_PFX_SkyVelocity,
     PS_PFX_CAS,
     PS_PFX_FSR1_EASU,
     PS_PFX_FSR1_RCAS,

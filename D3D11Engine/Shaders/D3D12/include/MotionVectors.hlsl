@@ -35,6 +35,9 @@ cbuffer MotionCB : register( MOTIONCB_REGISTER )
     // world position. The prepass vertex shaders never reference it (a VS already has the world position in
     // hand), and an unreferenced cbuffer member costs them nothing.
     float4x4 InvUnjitteredViewProj;
+    // xyz = this frame's camera position; w unused. Also fill-pass-only — it is what turns a reconstructed
+    // far-plane point into the view RAY that MvSkyVelocity reprojects.
+    float4 CameraPosition;
 };
 
 // Clip -> UV. NDC y is up, UV y is down, hence the flip. Matches D3D11 CalculateVelocity's inline form.
@@ -51,6 +54,45 @@ float2 CalculateVelocity( float4 currClipPos, float4 prevClipPos )
     if ( currClipPos.w <= 0.0 || prevClipPos.w <= 0.0 )
         return float2( 0, 0 );
     return MvClipToUV( prevClipPos ) - MvClipToUV( currClipPos );
+}
+
+// Screen-space motion vector for a pixel sitting at the reversed-Z FAR PLANE — i.e. the sky, and any hole the
+// scene left behind it.
+//
+// Such a pixel has no world position to reproject: the scattering dome is centred on the camera and travels
+// with it, so it behaves exactly like geometry at infinity. Camera TRANSLATION produces no parallax on it,
+// only the frame-to-frame ROTATION moves it across the screen. Writing zero (which is what both backends used
+// to do) claims the sky is nailed to the pixel grid, so a TAA/FSR resolve keeps re-reading history in place:
+// the sky shimmers when the camera is still and smears as soon as you turn.
+//
+// The fix is to reproject the pixel's view RAY as a DIRECTION (w = 0, which drops the matrices' translation
+// column) instead of as a point. The ray is recovered by unprojecting the far plane and subtracting the eye;
+// BOTH clip positions are then built from that same ray, so whatever error the reconstruction carries cancels
+// in the difference and the result is exactly the rotation delta.
+//
+// Sign convention is the file-wide one: prevUV - currUV, i.e. it points at where this pixel WAS.
+float2 MvSkyVelocity( float2 uv, float4x4 invUnjitteredViewProj, float4x4 unjitteredViewProj,
+                      float4x4 prevViewProj, float3 cameraPos )
+{
+    float2 ndc = float2( uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0 );
+
+    // z = 0 is the far plane under reversed-Z.
+    float4 farH = mul( float4( ndc, 0.0, 1.0 ), invUnjitteredViewProj );
+
+    // A finite far plane gives a real point to subtract the eye from. An INFINITE reversed-Z projection maps
+    // z = 0 to w = 0, and then the unprojected homogeneous vector already IS the direction — dividing by that
+    // zero is what would produce NaNs, so branch instead.
+    float3 dir = ( abs( farH.w ) > 1e-6 ) ? ( farH.xyz / farH.w - cameraPos ) : farH.xyz;
+
+    float4 currClip = mul( float4( dir, 0.0 ), unjitteredViewProj );
+    float4 prevClip = mul( float4( dir, 0.0 ), prevViewProj );
+
+    // w <= 0 means the ray points behind one of the two eye planes — it wasn't on screen last frame, so there
+    // is no history to point at. Same guard CalculateVelocity uses.
+    if ( currClip.w <= 0.0 || prevClip.w <= 0.0 )
+        return float2( 0, 0 );
+
+    return MvClipToUV( prevClip ) - MvClipToUV( currClip );
 }
 
 // Octahedral normal encode — the exact inverse of World.hlsl's DecodeOctNormal (and of Shaders/VertexPacking.h's

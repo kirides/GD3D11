@@ -46,19 +46,20 @@ void CSMain( uint3 tid : SV_DispatchThreadID )
     Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
     float depth = depthTex[tid.xy].r;
 
-    // Reversed-Z: 0 is the far plane. A pixel at exactly 0 is sky/cleared — it has no world position to
-    // reproject, and a "correct" sky velocity would be the camera's ROTATION only. Writing zero there is the
-    // safe choice for a TAA resolve (it reads history in place) and matches D3D11's CalculateVelocity, which
-    // early-outs to float2(0,0) on !(depth > 0).
-    if ( !( depth > 0.0 ) )
-    {
-        velocity[tid.xy] = float2( 0, 0 );
-        return;
-    }
-
     // Pixel centre -> UV -> NDC. The +0.5 matters: sampling the corner biases every velocity by half a texel,
     // which reads as a constant global drift once TAA accumulates it.
     float2 uv  = ( float2( tid.xy ) + 0.5 ) / float2( TargetWidth, TargetHeight );
+
+    // Reversed-Z: 0 is the far plane, so a pixel at exactly 0 is the sky (or a hole behind it). It has no
+    // world position to reproject as a point — see MvSkyVelocity for why that has to become a rotation-only
+    // reprojection of the view ray rather than the zero this used to write.
+    if ( !( depth > 0.0 ) )
+    {
+        velocity[tid.xy] = MvSkyVelocity( uv, InvUnjitteredViewProj, UnjitteredViewProj,
+                                          PrevViewProj, CameraPosition.xyz );
+        return;
+    }
+
     float2 ndc = float2( uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0 );
 
     float4 world = mul( float4( ndc, depth, 1.0 ), InvUnjitteredViewProj );

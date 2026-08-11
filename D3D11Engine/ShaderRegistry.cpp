@@ -391,6 +391,9 @@ void ShaderRegistry::Build() {
     // Velocity Buffer Shader
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Velocity>( "PS_PFX_Velocity.hlsl" ) );
 
+    // Rotation-only motion vectors for the sky (every pixel left at the reversed-Z far plane)
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_SkyVelocity>( "PS_PFX_SkyVelocity.hlsl" ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_CAS>( "PS_PFX_CAS.hlsl" ));
 
 
