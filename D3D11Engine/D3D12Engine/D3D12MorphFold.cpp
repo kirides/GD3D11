@@ -1,21 +1,14 @@
 // D3D12GraphicsEngine — GPU morph fold.
 //
-// The D3D12 half of MorphGpu (see MorphGpu.h for the data model and why this exists). Morph attachments —
-// NPC heads and the bow/crossbow draw meshes — used to be deformed by ZENGIN on the CPU and re-uploaded
-// whole, once per animation frame per instance, into a per-instance DYNAMIC vertex buffer. Here the fold is
-// one Dispatch per submesh that rewrites only the 12-byte Position of the vertices already in that
-// submesh's own buffer, which is now a DEFAULT-heap UAV instead:
+// The D3D12 half of MorphGpu (see MorphGpu.h for the data model and why this exists). Instead of ZENGIN
+// deforming on the CPU and re-uploading a whole DYNAMIC vertex buffer per animation frame per instance, the
+// fold is one Dispatch per submesh that rewrites only the 12-byte Position of the vertices already in that
+// submesh's buffer, which is now a DEFAULT-heap UAV: no CPU mapping (so no 32-bit address space) and ONE
+// copy rather than kBackBufferCount, since the writer is the GPU on the same in-order direct queue.
 //
-//   * no CPU mapping at all, so it costs no 32-bit address space (the constraint that had forced the old
-//     release-after-120-idle-frames hysteresis on those buffers), and
-//   * ONE copy rather than kBackBufferCount — the CPU-write-vs-GPU-read race the dynamic ring exists for
-//     cannot happen when the writer is the GPU on the same in-order direct queue.
-//
-// Ordering. The dispatches go on the main command list right before the depth prepass, which is the first
-// pass of the frame (in SUBMISSION order, not recording order) that draws a morph attachment: the shadow
-// cascades and point-shadow cubes record into private lists but are executed later, in FinishShadowPasses.
-// Across frames the single direct queue orders frame N-1's draws before frame N's fold, which is what makes
-// the single copy safe.
+// Ordering. The dispatches go on the main command list right before the depth prepass, the first pass of the
+// frame in SUBMISSION order that draws a morph attachment (the shadow lists are recorded earlier but
+// executed later). Across frames the single direct queue orders frame N-1's draws before frame N's fold.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "../Engine.h"
@@ -150,11 +143,10 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
 
     m_MorphBarriers.clear();
     bool uploadedTables = false;
-    // Walked BACKWARDS so the duplicate filter below keeps the NEWEST registration of a mesh. The queue can
-    // hold two for one submesh: a pass that collects after this dispatch (DrawGhostVobs' attachment loop is
-    // the one that does) leaves its job queued for the next frame, where that frame's own registration joins
-    // it. Reverse order costs nothing else - the dispatches are independent, and a whole instance's submeshes
-    // are still consecutive, so the per-prototype root-SRV rebind is still skipped.
+    // Walked BACKWARDS so the duplicate filter below keeps the NEWEST registration of a mesh: a pass that
+    // collects after this dispatch (DrawGhostVobs' attachment loop) leaves its job queued for the next frame,
+    // where that frame's own registration joins it. Costs nothing else — the dispatches are independent and
+    // an instance's submeshes are still consecutive, so the per-prototype root-SRV rebind is still skipped.
     for ( size_t ji = jobs.size(); ji-- > 0; ) {
         const MorphGpu::Job& job = jobs[ji];
         if ( !job.Mesh || !job.Proto || job.OutVertexCount == 0 ) continue;
@@ -272,9 +264,7 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
     m_CmdList->ResourceBarrier( static_cast<UINT>( m_MorphBarriers.size() ), m_MorphBarriers.data() );
 
     m_MorphFoldSubmeshCount = static_cast<UINT>( resolved.size() );
-    // Replaces the old "Morph buffers: N resident" churn diagnostic - with the fold there is no churn left to
-    // report, so what is worth watching instead is how much work a crowded frame actually folds and how much
-    // table memory the world's head types add up to.
+    // How much a crowded frame actually folds, and how much table memory the world's head types add up to.
     {
         static size_t s_lastReportFrame = 0;
         const size_t now = Engine::GAPI->GetFrameNumber();

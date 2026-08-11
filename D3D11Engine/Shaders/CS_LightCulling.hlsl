@@ -1,10 +1,9 @@
 // Clustered Forward+ light culling — the D3D11 port of Shaders/D3D12/LightCull.hlsl.
 //
-// Replaces the old per-tile cull, which derived each tile's Z bounds from the DEPTH BUFFER. That made the
-// light list a function of the opaque surface in every tile, so it could not serve anything that is not the
-// opaque surface: blended geometry standing in front of it had already had its lights culled away. A cluster
-// grid is built from the view frustum alone (NearZ..FarZ, log-distributed), so it needs no depth input and one
-// grid serves every consumer.
+// Replaces the old per-tile cull, which derived each tile's Z bounds from the DEPTH BUFFER and so could only
+// serve the opaque surface — blended geometry in front of it had already had its lights culled away. A
+// cluster grid is built from the view frustum alone (NearZ..FarZ, log-distributed), so one grid serves
+// every consumer and no depth input is needed.
 //
 // Divergences from the D3D12 original, both forced by FXC / SM5.0:
 //   * no wave intrinsics (SM6.0+), so there is no wave-compacted candidate list. Each thread ORs its light's

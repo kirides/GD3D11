@@ -8,13 +8,10 @@
 #define TILE_SIZE 16u
 // Clustered Forward+ (P2.14): a global cap on SIMULTANEOUSLY-SHADED point lights, not a per-tile cap. The
 // frame's light buffer (kMaxFrameLights in D3D12Scene.cpp, sorted nearest-to-camera) feeds only its first
-// MAX_ACTIVE_LIGHTS entries into the cluster bitmask — the mask has exactly this many bits and bit i IS light i,
-// so the constant is load-bearing on BOTH sides, not just a cap. Lights beyond this rank in the sorted buffer
-// simply never light anything (same "farthest dropped first" policy the old per-tile prefix-sum cap used, just
-// applied once globally instead of independently per tile).
-// Must match kMaxFrameLights in D3D12Scene.cpp (raising one without the other either wastes capacity or
-// silently drops lights past the smaller of the two). LightCull.hlsl additionally packs a light index into 10
-// bits of its candidate list, so raising this past 1024 needs that packing widened too.
+// MAX_ACTIVE_LIGHTS entries into the cluster bitmask — bit i IS light i, so this is load-bearing on both
+// sides, not just a cap; lights past this rank in the sorted buffer never light anything. Must match
+// kMaxFrameLights in D3D12Scene.cpp. LightCull.hlsl also packs a light index into 10 bits of its candidate
+// list, so raising this past 1024 needs that packing widened too.
 // Raised from 64 (P2.14's initial cap clipped visibly in ambient-heavy scenes — Gothic can have 400+
 // simultaneously visible point lights once static "atmospheric" fill lights are counted) to 1024 = 32 * 32-bit
 // words. Each cluster's mask is MASK_WORDS * 4 bytes: at 1080p (~8160 16x16 tiles * NUM_Z_SLICES=16 slices =
@@ -47,13 +44,10 @@ struct GPULight {
 // i set = light i is visible in this cluster), NOT an {Offset,Count} index slice — see LightCull.hlsl/
 // PBRLighting.hlsl's AccumTiledPointLights. (MASK_WORDS + 1) * 4 bytes per cluster.
 //
-// WordOccupancy is a summary of Mask: bit w is set iff Mask[w] != 0. Without it every lit pixel had to load and
-// test all MASK_WORDS (32) words just to discover a cluster is empty, which is the common case — and because
-// BuildFrameLightBuffer sorts the frame's lights NEAREST-FIRST, the set bits bunch into the low words, so words
-// 2..31 are near-always zero and were pure loop overhead. Bit-scanning this one word instead touches only the
-// words that actually carry lights, and keeps the property that made the bitmask preferable to an {Offset,Count}
-// list in the first place: the loop bound is a popcount, so a corrupt grid entry can never spin away.
-// MASK_WORDS is 32, so the summary fits exactly one word — raising MAX_ACTIVE_LIGHTS past 1024 breaks that.
+// WordOccupancy is a summary of Mask: bit w is set iff Mask[w] != 0, so a lit pixel bit-scans one word instead
+// of testing all MASK_WORDS to discover an empty cluster (the common case — BuildFrameLightBuffer sorts
+// nearest-first, so the set bits bunch into the low words). The loop bound stays a popcount, so a corrupt grid
+// entry cannot spin away. MASK_WORDS is 32, so the summary fits exactly one word.
 struct LightGrid { uint WordOccupancy; uint Mask[MASK_WORDS]; };
 
 // ShadowCubeIndex encoding: -1 = unshadowed, else (slot | tier). Bit 30 selects the low-res static cube array

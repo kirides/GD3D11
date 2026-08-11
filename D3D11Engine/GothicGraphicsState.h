@@ -1318,11 +1318,10 @@ struct GothicRendererSettings {
             // collapse introduces, so they self-shadow the full-detail surface black - see WorldConverter.h.
             int FirstLodCascade;
             // Drop a VOB caster from a cascade when its bounding-box diagonal covers fewer than this many
-            // texels OF THAT CASCADE. The far cascades stretch one texel over a lot of world, so props that
-            // resolve to a pixel or two of shadow there still cost their full vertex + raster work; this is
-            // the lever on VOB casters dominating the shadow pass. Scaled per cascade by
-            // D3D12ShadowMap::m_CascadeTexelWorld, so the near cascade (fine texels) drops almost nothing and
-            // only the coarse far ones prune hard. 0 disables it entirely.
+            // texels OF THAT CASCADE. Scaled per cascade by D3D12ShadowMap::m_CascadeTexelWorld, so the near
+            // cascade (fine texels) drops almost nothing and only the coarse far ones prune hard, where a
+            // prop resolves to a pixel or two of shadow but still costs its full vertex + raster work.
+            // 0 disables it entirely.
             float CasterMinTexels;
         } ShadowCascades;
         struct {

@@ -127,11 +127,10 @@ struct MeshInfo {
     // indices onto surviving vertices, it never adds any), used by the main view's far bucket and by the
     // far shadow cascades. Built by MeshLodBuilder.h during visual extraction.
     //
-    // D3D12 ONLY - left empty under D3D11, on purpose. It gets no standalone index buffer: the D3D12 VOB
-    // arena copies it into the shared mega index buffer and draws it as a range, so it costs no extra
-    // allocation there, whereas D3D11 could only bind it as one more per-sub-mesh buffer and D3D11 is the
-    // backend already closest to the 32-bit address-space ceiling. Also empty for morph sub-meshes, which
-    // skip OptimizeVertices entirely.
+    // D3D12 ONLY - left empty under D3D11 on purpose. It gets no standalone index buffer: the VOB arena
+    // copies it into the shared mega index buffer and draws it as a range, whereas D3D11 could only bind it
+    // as one more per-sub-mesh buffer, and D3D11 is the backend closest to the 32-bit address-space ceiling.
+    // Also empty for morph sub-meshes, which skip OptimizeVertices entirely.
     std::vector<VERTEX_INDEX> LodIndices;
 
     // Offset in wrapped world mesh
@@ -622,16 +621,14 @@ class zCBspTree;
 class zCWorld;
 /** The world's ghost-occluder polys, kept for occlusion culling.
  *
- *  ZenGin rasterizes these into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes that
- *  fall below it - its outdoor "behind the mountain" cull. They are portal polys flagged
- *  ghostOccluder: occluders only, never drawn, which is why ConvertWorldMesh drops them from the
- *  render mesh and collects them here instead.
+ *  ZenGin rasterizes these into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes that fall
+ *  below it - its outdoor "behind the mountain" cull. They are portal polys flagged ghostOccluder:
+ *  occluders only, never drawn, which is why ConvertWorldMesh drops them from the render mesh and collects
+ *  them here instead. G2 NotR ships 945-2544 per world, and the count does not grow with world size, so
+ *  projecting them per frame is bounded work.
  *
- *  Surveyed across G2 NotR: 945-2544 per world, ~all of them over 15m across, and the count does not
- *  grow with world size - so projecting them per frame is bounded work everywhere.
- *
- *  Flat vertex array rather than a vector per poly: one allocation instead of thousands, and the
- *  per-frame projection walks it linearly. */
+ *  Flat vertex array rather than a vector per poly: one allocation instead of thousands, and the per-frame
+ *  projection walks it linearly. */
 struct WorldOccluders {
     struct Entry {
         uint32_t VertexOffset;

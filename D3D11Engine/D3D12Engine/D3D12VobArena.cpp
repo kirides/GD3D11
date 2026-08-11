@@ -9,9 +9,8 @@ const UINT D3D12VobArena::kVertexStride = static_cast<UINT>( sizeof( ExVertexStr
 
 namespace {
     // Headroom on every (re)allocation. A world's static VOB geometry is fully registered before the first
-    // frame (OnAddVob fires per vob during load), so the initial size is already exact — the slack is for
-    // what gets added afterwards: dropped weapons, items thrown out of the inventory, spawned mobs. Growth
-    // is correct but costs a full re-upload, so buy enough headroom to make it rare rather than cheap.
+    // frame, so the initial size is exact and the slack is only for what gets added afterwards (dropped
+    // weapons, spawned mobs). Growth is correct but costs a full re-upload, so make it rare.
     constexpr float kGrowthHeadroom = 1.25f;
     // ...but never below this, so a world that starts nearly empty doesn't reallocate on every single item.
     constexpr UINT kMinSpareVertices = 64 * 1024;
@@ -52,10 +51,9 @@ void D3D12VobArena::QueueVisual( MeshVisualInfo* visual ) {
     // added, and until then it simply isn't drawn by the arena path.
     if ( !visual || !visual->Ready.load( std::memory_order_acquire ) ) return;
 
-    // Animated static VOBs (.MMS): their vertices are rewritten every frame, either by ZENGIN's CPU deform
-    // into a DYNAMIC upload buffer or by the GPU morph fold into a DEFAULT UAV. The arena copy is then only
-    // the conversion pose and has to be refreshed per frame — see DynamicMeshes(). Only the VISUAL knows
-    // this; the MeshInfo looks static from here.
+    // Animated static VOBs (.MMS): their vertices are rewritten every frame, so the arena copy is only the
+    // conversion pose and has to be refreshed per frame — see DynamicMeshes(). Only the VISUAL knows this;
+    // the MeshInfo looks static from here.
     const bool dynamic = visual->MorphMeshVisual != nullptr;
 
     std::lock_guard<std::mutex> lock( m_PendingMutex );
@@ -63,9 +61,8 @@ void D3D12VobArena::QueueVisual( MeshVisualInfo* visual ) {
         for ( MeshInfo* mi : meshList ) {
             if ( !mi || mi->Vertices.empty() || mi->Indices.empty() ) continue;
             if ( m_Ranges.find( mi ) != m_Ranges.end() ) continue;
-            // O(n) over the pending list, but it only ever holds what one frame's worth of newly added
-            // vobs contributed (a handful) — during world load it holds the whole world exactly once,
-            // and the Ranges check above is what keeps THAT from being quadratic across repeat vobs.
+            // O(n) over the pending list, which only holds one frame's newly added vobs — the Ranges check
+            // above is what keeps world load (where it holds everything once) from going quadratic.
             const auto same = [mi]( const PendingMesh& p ) { return p.Mesh == mi; };
             if ( std::find_if( m_Pending.begin(), m_Pending.end(), same ) != m_Pending.end() ) continue;
             m_Pending.push_back( { mi, dynamic } );
@@ -211,9 +208,8 @@ bool D3D12VobArena::Flush( D3D12GraphicsEngine* engine ) {
         m_IndexCapacity = std::max( static_cast<UINT>( m_IndexCursor * kGrowthHeadroom ),
             m_IndexCursor + kMinSpareIndices );
         if ( !Reallocate( engine ) ) {
-            // Roll the whole batch back rather than leave half-registered ranges pointing into a buffer
-            // that doesn't exist: every reserved sub-mesh loses its range and the VOB path draws nothing
-            // this frame (Ready() is false), which is a blank pass, not corruption.
+            // Roll the whole batch back rather than leave half-registered ranges pointing into a buffer that
+            // doesn't exist: Ready() goes false and the VOB path draws nothing this frame.
             LogWarn() << "D3D12: VOB arena allocation failed ("
                 << ( static_cast<UINT64>( m_VertexCapacity ) * kVertexStride / ( 1024 * 1024 ) ) << " MB verts + "
                 << ( static_cast<UINT64>( m_IndexCapacity ) * kIndexStride / ( 1024 * 1024 ) ) << " MB indices). "
@@ -234,10 +230,9 @@ bool D3D12VobArena::Flush( D3D12GraphicsEngine* engine ) {
         auto it = m_Ranges.find( mi );
         if ( it != m_Ranges.end() ) UploadMesh( engine, mi, it->second );
     }
-    // UploadBufferData only RECORDS into the shared copy-queue batch; it is the flush that submits it and
-    // issues the direct queue's Wait on the copy fence. Without this, THIS frame's VOB passes (recorded a
-    // few calls from now, submitted at the end of the frame) could read vertices that have not landed yet.
-    // Same reason DispatchMorphFold flushes after uploading its prototype tables.
+    // UploadBufferData only RECORDS into the shared copy-queue batch; the flush is what submits it and issues
+    // the direct queue's Wait on the copy fence. Without it this frame's VOB passes could read vertices that
+    // have not landed yet. Same reason DispatchMorphFold flushes after uploading its prototype tables.
     if ( !reserved.empty() ) engine->FlushTextureUploads();
     return true;
 }

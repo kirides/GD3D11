@@ -53,31 +53,20 @@ using Microsoft::WRL::ComPtr;
 // (DrawVobsInstanced) and the point-shadow static-VOB gather all draw from these — no second upload.
 std::vector<FrameVobUpload> g_FrameVobUploads;
 std::vector<VobInfo*> g_FrameVobs;
-// Per-vob snapshot of the diffuse SRV HEAP SLOT for each entry of visual->SkeletalMeshes, in that map's
-// (stable, unmutated-within-a-frame) iteration order. Taken by PrepareFrameSkeletals on the main thread
-// immediately after that vob's UpdateMeshLibTexAniState(), which is the only moment the shared per-MODEL texture
-// slots actually describe this instance. Grown monotonically and reused: only the live prefix
-// [0, g_SkelMatSrvCount) is valid each frame and the inner vectors keep their capacity, so this settles into
-// zero per-frame allocations. Indexed (never pointed into) by FrameSkelDraw::matSrvIndex so a rehash of
-// g_SkelUploadCache or a growth of this container can't dangle a record.
-// Deque rather than vector so that growing it cannot invalidate the element pointers the concurrent CSM
-// cascade recorders are holding — see the declaration in D3D12EngineCommon.h.
+// Per-vob snapshot of the diffuse SRV heap slot for each entry of visual->SkeletalMeshes. Taken by
+// PrepareFrameSkeletals right after that vob's UpdateMeshLibTexAniState(), the only moment the shared
+// per-MODEL texture slots describe this instance. Grown monotonically and reused: only [0, g_SkelMatSrvCount)
+// is live each frame. Indexed, never pointed into, by FrameSkelDraw::matSrvIndex, so neither a rehash of
+// g_SkelUploadCache nor a growth here can dangle a record. Deque so growth cannot invalidate the element
+// pointers the concurrent CSM cascade recorders hold.
 std::deque<std::vector<SkelMatSlot>> g_SkelMatSrvs;
 size_t g_SkelMatSrvCount = 0;
 
 namespace {
-    // Swapchain / final-output format. R10G10B10A2 (10-bit) instead of R8: the tonemapped output has much
-    // finer gradients (kills banding in sky/fog/soft shadows) at the same 32bpp. Also the format the 2D UI +
-    // ImGui + the tonemap resolve write to. Flip-model swapchains support R10G10B10A2_UNORM natively.
-    // HDR scene-color format: the 3D world/VOB/skeletal/water/decal/particle passes accumulate lighting here in
-    // linear-ish FLOAT (values may exceed 1.0 — bright sun + additive point lights no longer clip to white), then
-    // a fullscreen tonemap resolves it into the swapchain. R16F 4-channel = 64bpp intermediate (recreated on resize).
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
-    // Per-SLOT size of the separate shadow-caster instance ring (see m_ShadowVobInstanceBuffer). One slot per
-    // cascade plus one for the rain map, so the whole buffer is this x kShadowInstanceRingSlots per frame index.
-    // Deliberately smaller per slot than the main ring: a cascade collects one pass's casters, not the whole
-    // frame's geometry. Overflow is logged per slot (never silently truncated) — if that warning shows up in
-    // practice this is the number to raise, at 2 x kShadowInstanceRingSlots bytes of 32-bit VA per increment.
+    // Per-SLOT size of the shadow-caster instance ring (m_ShadowVobInstanceBuffer): one slot per cascade plus
+    // one for the rain map. Smaller than the main ring — a cascade collects one pass's casters, not the whole
+    // frame's geometry. Overflow is logged per slot rather than silently truncated.
     constexpr UINT kShadowInstanceSliceBytes = 2 * 1024 * 1024; // ~14k instances @144B, per cascade per frame
     constexpr UINT kParticleInstanceBufferBytes = 8 * 1024 * 1024; // per-frame particle instance ring (~150k @56B)
     constexpr UINT kDecalInstanceBufferBytes = 4 * 1024 * 1024; // per-frame decal instance ring (~52k decals @80B)
@@ -97,53 +86,10 @@ namespace {
 
 
 
-    // Inline HLSL for the 2D UI path. VS mirrors VS_TransformedEx (screen-space xyzrhw -> clip space,
-    // rhw packed in Normal.x). PS emulates the fixed-function texture-stage pipeline (mirrors
-    // Shaders/FixedFunctionPipeline.h): FF_Stages[0/1] color ops + args + diffuse-alpha test, driven by
-    // the FFPipelineConstantBuffer (b1) which receives Gothic's GraphicsState each draw. Per-draw BLEND
-    // modes (opaque/alpha/additive/modulate/...) are handled by selecting a matching PSO, not here.
-    // Limitation: only texture0 is bound, so a 2nd stage samples texture0 (menus use 1 stage -> exact;
-    // the world's 2-texture lightmap path is a Phase-2 concern).
-
-    // Phase-2 world shader (textured). The wrapped world mesh is the packed 36-byte ExVertexStructGPU;
-    // we bind Position (float3 @0), TexCoord0 (float2 @20) and Color (R8G8B8A8 @32), ignoring the packed
-    // normal/tangent/uv2 for now. World-mesh verts are already in world space, so the transform is just
-    // ViewProj (identity world) — matches D3D11 VS_ExPacked: mul(float4(pos,1), ViewProj), reversed-Z.
-    // PS samples the diffuse texture, modulates by the baked vertex color (Gothic packs a DWORD read as
-    // R8G8B8A8 -> .bgr recovers RGB), and does a fixed alpha-test cutout (foliage/fences). No G-buffer /
-    // no deferred lighting yet: the baked vertex color stands in for lighting.
-
-    // Phase-2 instanced VOB shader. Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24);
-    // slot 1 = per-instance data (world matrix as 4 rows + instance color) from VobInstanceInfo.
-
-    // Forward+ opaque DEPTH PREPASS shader (P2.9b-1). Lays down the opaque world-mesh depth before the
-    // lit color passes so the later tiled light-culling compute (P2.9b-2) has a per-pixel depth to tighten
-    // each tile's frustum. Writes DEPTH ONLY — the PSO sets the color write mask to 0, so the float4 the PS
-    // returns is discarded (it exists solely to run the alpha-test clip). The clip cutoff matches the opaque
-    // world PS's clip( t.a - 0.5 ) exactly, so cutout foliage/fence gaps do NOT write depth (otherwise the
-    // main pass would see background occluded through the gaps). Reuses m_Pipelines.World.RootSig: only b0 (ViewProj)
-    // and t0/s0 are referenced — fog/light params are NOT bound (no light loop here, so no hang risk).
-
-    // CLUSTERED Forward+ light-culling COMPUTE shader (P2.14; tiled P2.9b-2 predecessor). One thread group per
-    // (16x16 screen tile x Z slice) cluster; each group builds its cluster's view-space AABB analytically (a
-    // log-distributed Z slice over CullCB's NearZ/FarZ — no depth-buffer read at all, unlike the old per-tile
-    // scheme which bounded each tile's far-Z from the prepass depth) and tests up to MAX_ACTIVE_LIGHTS lights
-    // against it, one per thread. A pass sets that light's bit in a 64-bit groupshared mask (InterlockedOr),
-    // written out as the cluster's LightGrid.Mask — no index list, no global atomic counter, and no per-tile
-    // light cap: the cap is now a single global one (the frame's nearest MAX_ACTIVE_LIGHTS, see
-    // ForwardPlusTypes.hlsl), so it can never differ between clusters or flicker frame-to-frame the way the
-    // old per-tile InterlockedAdd race used to. See LightCull.hlsl's CSMain for the full rationale.
-    // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
-    // D3D11 CullLights uses, so this shader's view space matches. SM6.6: no ternary (use min()/select()).
-
-    // Water: the surfaces peeled out of the opaque world pass live in g_FrameWaterSurfaces (declared in
-    // D3D12EngineCommon.h, defined in D3D12Water.cpp, which owns the whole pass).
-
     // Per-frame visible-vob/light/mob collection, hoisted out of DrawVobsInstanced so ALL geometry passes
-    // (world, VOBs, skeletal) light against the same set. CollectVisibleVobs has side effects (fills each
-    // visual's Instances list) and must run EXACTLY ONCE per frame. Single-threaded within OnStartWorldRendering.
-    // g_FrameVobs sits at file scope above this namespace — StoreVobPreviousTransforms (D3D12Motion.cpp) walks
-    // it at frame end to snapshot each drawn vob's transform for next frame's motion vectors.
+    // light against the same set. CollectVisibleVobs fills each visual's Instances list, so it must run
+    // EXACTLY ONCE per frame. g_FrameVobs sits at file scope above this namespace — StoreVobPreviousTransforms
+    // walks it at frame end to snapshot each drawn vob's transform for next frame's motion vectors.
     std::vector<VobLightInfo*>    g_FrameLights;
     std::vector<SkeletalVobInfo*> g_FrameMobs;
 
@@ -175,45 +121,22 @@ namespace {
     };
     gtl::flat_hash_map<SkeletalVobInfo*, SkelUploadCache> g_SkelUploadCache;
 
-    // Per-vob snapshot of the diffuse descriptor handle for each entry of visual->SkeletalMeshes, in that map's
-    // (stable, unmutated-within-a-frame) iteration order. Taken by PrepareFrameSkeletals on the main thread
-    // immediately after that vob's UpdateMeshLibTexAniState(), which is the only moment the shared per-MODEL
-    // texture slots actually describe this instance. Grown monotonically and reused: only the live prefix
-    // [0, g_SkelMatSrvCount) is valid each frame and the inner vectors keep their capacity, so this settles into
-    // zero per-frame allocations. Indexed (never pointed into) by FrameSkelDraw so a rehash of g_SkelUploadCache
-    // or a growth of this vector can't dangle a record.
-    // Definitions sit at file scope above this namespace (the CSM cascade recorder reads them).
-
-
-    // Forward+ MVP light buffer (P2.9a): the whole visible-light list is rebuilt from offset 0 each frame,
-    // so the ring is just kBackBufferCount snapshots (no per-draw offset). MUST match MAX_ACTIVE_LIGHTS in
-    // Shaders/D3D12/include/ForwardPlusTypes.hlsl (raising one without the other either wastes cluster-mask
-    // capacity or silently drops lights past the smaller of the two — see that header's comment). Raised from
-    // the original 400 (D3D11 MAX_TILED_LIGHTS parity) to 1024 after in-game testing showed ambient-heavy scenes
-    // (static "atmospheric" fill lights stacking with dynamic torches/spells) regularly exceeding 400 visible
-    // point lights and clipping.
+    // Forward+ light buffer: the visible-light list is rebuilt from offset 0 each frame, so the ring is just
+    // kBackBufferCount snapshots. MUST match MAX_ACTIVE_LIGHTS in ForwardPlusTypes.hlsl. 1024 rather than
+    // D3D11's 400, which ambient-heavy scenes were clipping against.
     constexpr UINT kMaxFrameLights = 1024;
 
-    // Clustered Forward+ (P2.14). MUST match NUM_Z_SLICES in Shaders/D3D12/include/ForwardPlusTypes.hlsl.
+    // MUST match NUM_Z_SLICES / MASK_WORDS in Shaders/D3D12/include/ForwardPlusTypes.hlsl.
     constexpr UINT kNumZSlices = 16;
-    // MUST match MASK_WORDS in Shaders/D3D12/include/ForwardPlusTypes.hlsl (MAX_ACTIVE_LIGHTS / 32) — sizes the
-    // per-cluster LightGrid.Mask array on the C++ side of CreateLightCullBuffers.
     constexpr UINT kMaskWordsPerCluster = kMaxFrameLights / 32;
-    // Total words per LightGrid entry: the mask array plus the leading WordOccupancy summary word the pixel
-    // shader bit-scans instead of walking all 32 mask words. Keep in lockstep with the HLSL struct — this is a
-    // StructuredBuffer, so a stride mismatch silently misindexes EVERY cluster.
+    // Mask array plus the leading WordOccupancy summary word. Must match the HLSL LightGrid struct — this is a
+    // StructuredBuffer, so a stride mismatch misindexes every cluster.
     constexpr UINT kWordsPerCluster = kMaskWordsPerCluster + 1;
-    // Gothic's reversed-Z camera projection has no real far plane (infinite far), so the cluster Z grid needs a
-    // chosen practical far distance to log-distribute its slices over. This is a FLOOR, not the actual value
-    // used — GetClusterFarZ() below clamps it up to the user's VisualFXDrawRadius setting, which is the CPU-side
-    // distance point lights are even collected out to (up to 50000 in the ImGui slider). A fixed 4096 here used
-    // to hard-clip any light farther than that from the camera: BOTH the cull compute's cluster AABBs (Z capped
-    // at FarZ) and the lit pixel shaders' ComputeZSlice clamp to [NearZ,FarZ], so a light beyond FarZ could never
-    // intersect any cluster no matter how far the user's draw-distance setting said to collect it from — it just
-    // silently stopped lighting anything, which read as point lights vanishing at a short, seemingly arbitrary
-    // range regardless of VisualFXDrawRadius. Tying FarZ to that setting (with this constant only as a floor for
-    // very small settings) fixes that without costing extra memory: buffer size depends on tile/slice/mask
-    // counts, not on FarZ, which only changes how far apart the log-distributed Z slices land.
+    // Gothic's projection has no real far plane, so the cluster Z grid needs a practical far distance to
+    // log-distribute its slices over. A FLOOR only: GetClusterFarZ() raises it to VisualFXDrawRadius, the
+    // range lights are collected out to. A fixed value here hard-clips lights past it — the cull's cluster
+    // AABBs and the shaders' ComputeZSlice both clamp to [NearZ,FarZ], so such a light intersects no cluster
+    // and silently stops lighting anything. FarZ costs no memory; it only spaces the slices.
     constexpr float kClusterMinFarZ = 4096.0f;
     float GetClusterFarZ() {
         return std::max( kClusterMinFarZ, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
@@ -243,25 +166,10 @@ namespace {
     static_assert( offsetof( SkeletalInstanceCB, ModelColor ) == 64 && offsetof( SkeletalInstanceCB, Fatness ) == 80,
         "PointShadow.hlsl's SkelInstanceCB is a byte-compatible prefix of this struct — the motion tail must stay APPENDED" );
 
-    // Phase-2 skeletal (animated) mesh shader — NPCs, monsters, animated MOBs. Matrix-palette skinning:
-    // each vertex stores its position baked into up to 4 influencing bones' local spaces (half4 each),
-    // plus per-influence bone index + weight, so skinnedPos = sum_i weight_i * mul(pos_i, Bones[idx_i]).
-    // Mirrors VS_ExSkeletal.hlsl's ApplySkinningCurrent core (minus motion vectors / view-space normal /
-    // prev-frame bones). b0 = ViewProj (root consts), b1 = per-instance (world + color + fatness), b2 =
-    // bone-matrix palette (<=96). Default column-major packing: matrices are uploaded as row-major
-    // XMFLOAT4X4 and read the same way the D3D11 skeletal VS does, so mul() is byte-for-byte identical.
-
-    // Phase-2 particle (PFX) shader — instanced camera-facing billboards. One instance per live particle
-    // (ParticleInstanceInfo, 56B, all PER_INSTANCE); the VS expands a 4-vertex triangle strip from
-    // SV_VertexID, doing all billboard orientation itself (mirrors VS_ParticlePoint.hlsl). `type` encodes
-    // the alignment: >=10 => quad-poly (half size); the low digit selects camera / y-locked / plane /
-    // velocity-aligned. DIFFUSE is a full float4 here (unlike the packed DWORD paths) so no swizzle. b0 =
-    // ViewProj (root consts, default column-major packing, same as the world shader); b1 = camera world pos.
-
-    // Per-decal instance data (per-instance vertex stream, slot 1). World = world*offset*scale (view NOT
-    // baked in — unlike D3D11, the D3D12 decal VS applies the standard ViewProj, so the CPU only needs the
-    // model matrix). Color.a = the material's ghost alpha ((GetColor()>>24)/255); Color.r is the
-    // shade-lit flag (0 for the unlit ADD/MUL/MUL2 modes — see Decal.hlsl's PSMainBlend); .gb unused. 80 bytes.
+    // Per-decal instance data (per-instance vertex stream, slot 1). World = world*offset*scale; unlike D3D11
+    // the D3D12 decal VS applies the standard ViewProj, so the CPU only needs the model matrix. Color.a is
+    // the material's ghost alpha, Color.r the shade-lit flag (0 for the unlit ADD/MUL/MUL2 modes — see
+    // Decal.hlsl's PSMainBlend), .gb unused.
     struct DecalInstanceInfo {
         DirectX::XMFLOAT4X4 World;
         DirectX::XMFLOAT4   Color;
@@ -272,34 +180,19 @@ namespace {
     struct DecalQuadVertex { float px, py, pz; float u, v; };
     static_assert( sizeof( DecalQuadVertex ) == 20, "DecalQuadVertex must be tightly packed (stride 20)" );
 
-    // Decal shader. The quad is expanded by the per-instance world matrix (built on the CPU from the vob's
-    // world matrix + DecalOffset/DecalSize + camera-alignment, exactly like D3D11's DrawDecalList), then
-    // transformed by the standard ViewProj. Two pixel shaders: PSMainLit (opaque/alpha-test cutout — blood,
-    // arrows) and PSMainBlend (texture * material alpha; the PSO blend state does add/alpha/modulate).
-
-    // Round a ring offset up so the next allocation starts on a 256-byte boundary (D3D12 requires root
-    // CBV addresses to be 256-byte aligned).
+    // D3D12 requires root CBV addresses to be 256-byte aligned.
     UINT AlignCB( UINT offset ) { return ( offset + 255u ) & ~255u; }
 
-    // FogConstants now lives in D3D12EngineCommon.h — the split-out passes bind the same b1.
-
     // The color to clear/fill the sky and per-pixel distance-fog with, mirroring D3D11's background-clear
-    // formula (D3D11GraphicsEngine::OnStartWorldRendering, ~line 4180): GetFogColor() (== FogColorMod, a
-    // fixed user-configurable tint, weather-override aware) is only correct while AtmosphericScattering is
-    // on — that's the color the real scattering shader takes as its base input. With scattering OFF (the FF
-    // sky path), D3D11 instead uses GraphicsState.FF_FogColor, which GSky.cpp refreshes every frame from
-    // Gothic's own zCSkyController_Outdoor::GetMasterState()->FogColor — i.e. it actually tracks time of day/
-    // weather. D3D12 previously called GetFogColor() unconditionally here, so with scattering disabled the
-    // sky/fog stayed pinned to the static FogColorMod tint (default a light lavender-blue) regardless of time
-    // of day — the sky never darkened at night, matching the reported "always looks like fog color" bug.
+    // formula. FogColorMod is a fixed user tint and is only the right base while AtmosphericScattering is on;
+    // with it off the FF sky path must use GraphicsState.FF_FogColor, which GSky.cpp refreshes each frame
+    // from Gothic's sky controller and which is therefore the only one that tracks time of day.
     DirectX::XMVECTOR GetSceneFogColorXM() {
         const auto& rs = Engine::GAPI->GetRendererState();
 
-        // Indoor levels (mines, dungeons, ...) have no sky and no fog - ZenGin runs them with a
-        // zCSkyControler_Indoor and oCGame::EnvironmentInit never sets up the outdoor fog/farclip
-        // there. Both consumers of this color want black in that case: the sky fill (there is no sky
-        // to fade into) and the per-pixel distance fog in the lit shaders (which would otherwise wash
-        // the far end of a mine shaft in daylight).
+        // Indoor levels have no sky and no fog - ZenGin runs them with a zCSkyControler_Indoor and never sets
+        // up the outdoor fog/farclip. Both consumers want black: the sky fill has no sky to fade into, and
+        // the lit shaders' distance fog would otherwise wash the far end of a mine shaft in daylight.
         if ( Engine::GAPI->IsIndoorWorld() ) {
             return DirectX::XMVectorZero();
         }
@@ -338,20 +231,14 @@ namespace {
         return color;
     }
 
-    // Builds this frame's fog constants from Gothic's sky state. FogColor = GetSceneFogColorXM() (0..1,
-    // weather / sky-override / AtmosphericScattering-mode correct — the same color used to clear the sky);
-    // FogNear/FogFar = GraphicsState.FF_FogNear/FF_FogFar, the same values D3D11's ComputeFog() uses (set
-    // once per frame in GSky.cpp from sky->GetMasterState()->FogDist, with Gothic's hardcoded 0.3 near
-    // factor) — NOT GetFarZ(), which is an unrelated atmospheric-perspective far plane the height-fog PFX
-    // uses for its density falloff and is typically much smaller than FogDist, which was making the fog
-    // ramp in far too aggressively.
-    // Mirror of D3D12GraphicsEngine::m_HeightFogActive, refreshed from it once per frame at the top of
-    // OnStartWorldRendering — MakeFogConstants is a free function and can't reach the member. When the
-    // post-pass height fog runs (RenderFogAndGodRays), this cheap linear fog must NOT also be applied or the
-    // scene ends up fogged twice; D3D11's lit shaders never apply distance fog, the composition pass is the
-    // only fog there is.
+    // Mirror of D3D12GraphicsEngine::m_HeightFogActive (MakeFogConstants is a free function and can't reach
+    // the member), refreshed once per frame. When the post-pass height fog runs the cheap linear fog below
+    // must NOT also be applied, or the scene is fogged twice.
     bool g_HeightFogActive = false;
 
+    // FogNear/FogFar come from GraphicsState.FF_FogNear/FF_FogFar, the values D3D11's ComputeFog() uses —
+    // NOT GetFarZ(), an unrelated atmospheric-perspective far plane that is typically far smaller and made
+    // the fog ramp in much too aggressively.
     FogConstants MakeFogConstants() {
         FogConstants fog = {};
         DirectX::XMFLOAT3 fc;
@@ -360,8 +247,7 @@ namespace {
 
         if ( g_HeightFogActive ) {
             // Push the ramp past any reachable view distance instead of adding a shader permutation: the PS
-            // lerp weight saturate((d - near)/(far - near)) is then 0 everywhere, i.e. no fog, and the height
-            // fog composition owns the look. (Never near == far — that would divide by zero.)
+            // lerp weight is then 0 everywhere. Never near == far — that would divide by zero.
             fog.FogNear = 1.0e9f;
             fog.FogFar = 2.0e9f;
             DirectX::XMFLOAT3 camPos;
@@ -410,12 +296,9 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     }
     vi->VisualIndex = it->second;
 
-    // Register this visual's sub-meshes with the VOB mega-buffers. This hook fires per vob during world
-    // load, so by the first rendered frame the whole world's static geometry is queued — which is exactly
-    // the "build it once at load, with no culling" property the arena needs to be able to serve every pass
-    // (including the shadow cascades, which see casters the main view never does). Everything added later
-    // (a dropped weapon, an item thrown out of the inventory) arrives through the same call and lands in the
-    // arena's headroom. Queueing is cheap and idempotent; the upload happens at the next frame's flush.
+    // Register this visual's sub-meshes with the VOB mega-buffers. Fires per vob during world load, so the
+    // whole world's static geometry is queued before the first frame; vobs added later land in the arena's
+    // headroom. Queueing is cheap and idempotent, the upload happens at the next frame's flush.
     m_VobArena.QueueVisual( static_cast<MeshVisualInfo*>( vi->VisualInfo ) );
 
     // A VOB added after a nearby point light already cached its static-aside shadow cube would otherwise cast no
@@ -451,9 +334,8 @@ void D3D12GraphicsEngine::OnLoadWorld()
         v.Reset();
     }
     m_RainShadowVobs.Reset();
-    // The VOB mega-buffers describe the world being left: every MeshInfo they index is about to be freed,
-    // so the ranges have to go before the new world's OnAddVob calls start refilling them. The buffers
-    // themselves are kept and refilled from offset 0 — see D3D12VobArena::Reset.
+    // Every MeshInfo the arena indexes is about to be freed, so the ranges have to go before the new world's
+    // OnAddVob calls refill them. The buffers themselves are kept — see D3D12VobArena::Reset.
     m_VobArena.Reset();
     // AO needs no reset here — it runs entirely off THIS frame's depth prepass, so the first frame of the new
     // world already produces a correct mask.
@@ -578,7 +460,7 @@ D3D12CmdList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
 	D3D12CmdList&           cl    = m_ShadowCmdLists[slot][m_FrameIndex];
 	if ( !alloc || !cl ) return nullptr;
 	if ( FAILED( alloc->Reset() ) ) return nullptr;
-	// Goes through the wrapper, so this slot's state shadow is dropped with the list state it describes.
+	// Through the wrapper, so this slot's state shadow is dropped with the list state it describes.
 	if ( FAILED( cl.Reset( alloc, nullptr ) ) ) return nullptr;
 	ResetCpuContextTracker();   // per-thread breadcrumb ring — see D3D12EngineCommon.h
 	return &cl;
@@ -602,18 +484,14 @@ void D3D12GraphicsEngine::PrepareShadowPasses() {
 
 
 void D3D12GraphicsEngine::BeginShadowRecording() {
-	// Step 2. The three shadow passes write resources that NOTHING between here and the lit geometry passes
-	// reads, so their command recording has no business sitting on the main thread's critical path: fan it out
-	// and return immediately. The caller then records the depth prepass, the GPU VOB cull, the tiled light cull
-	// and SSAO into m_CmdList while the pool records shadows into its own lists.
+	// Step 2. Nothing between here and the lit geometry passes reads what the three shadow passes write, so
+	// their recording is fanned out and this returns immediately; the caller records the depth prepass, the
+	// GPU VOB cull, the light cull and SSAO into m_CmdList while the pool records shadows into its own lists.
 	//
 	// Queue ordering: the finished lists must land AHEAD of the lit geometry passes (the first readers of the
 	// cascade map / point cubes). So close+submit m_CmdList here and reopen it on the SAME frame allocator;
-	// FinishShadowPasses then executes the shadow lists while the reopened list is still open and unsubmitted,
-	// which gives the GPU [part A][part B1][cascades][point cubes][rain map][part B2] even though the CPU
-	// recorded B1 first. (B1 — the depth prepass through sky IBL — is submitted by a second
-	// SubmitRecordedCommandsAndReopen right before FinishShadowPasses, purely so the GPU can start on it
-	// instead of idling until Present; it reads nothing the shadow passes write.)
+	// FinishShadowPasses then executes the shadow lists while the reopened list is still open, giving the GPU
+	// [part A][part B1][cascades][point cubes][rain map][part B2] even though the CPU recorded B1 first.
 	m_ShadowRecordingPending = false;
 	m_ShadowThreadedRecord = false;
 	// ONLY the point/rain slots. The cascade slots belong to the per-cascade jobs launched way back in
@@ -682,23 +560,18 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 	// Step 3, run immediately before the lit geometry pass — which samples the cascade array and the point-light
 	// cubes, so this is the last possible moment. Three things happen here, in order:
 	//   1. Join the per-cascade cull -> build -> record chains (D3D12ShadowMap::WaitCascadeJobs) and the
-	//      point/rain recorders launched in BeginShadowRecording. This USED to be where the cascades were first
-	//      recorded, because a main-thread-only Phase C sat between their cull and their draws; that step is
-	//      gone (its Gothic-mutating half moved into Prepare, its per-cascade half into BuildCascade), so the
-	//      chains have been running since Prepare and this join should find them already finished.
+	//      point/rain recorders launched in BeginShadowRecording. They have been running since Prepare, so
+	//      this join should find them finished.
 	//   2. Emit inline anything that could not record into its own list.
-	//   3. Execute every finished list. The caller submitted part B1 (prepass, culls, SSAO, sky IBL) just before
-	//      calling us and reopened m_CmdList, so what is OPEN and unsubmitted here is part B2 — the lit passes
-	//      onwards. GPU order: [part A][part B1][shadows][part B2].
+	//   3. Execute every finished list. The caller already submitted part B1 (prepass, culls, SSAO, sky IBL)
+	//      and reopened m_CmdList, so GPU order ends up [part A][part B1][shadows][part B2].
 	// Anything that failed to record is re-issued inline rather than dropped: skipping a pass would desync its
 	// cross-frame resource-state tracking (D3D12PointShadows' per-slot cube states, m_RainShadowInReadState).
 	if ( !m_FrameOpen ) return;
 
 	// --- 1. join the per-cascade cull -> build -> record chains ---
-	// These were launched all the way back in D3D12ShadowMap::Prepare and have had DrawSky, the point/rain
-	// prepares, the indirect-arg builds and the whole prepass/cull/SSAO recording block to run in — so unlike
-	// the old split (where recording could not start until the main thread got here) this should return without
-	// blocking. It cannot move any later regardless: the lit geometry pass below samples the cascade array.
+	// Launched in D3D12ShadowMap::Prepare, so they should already be finished. This cannot move any later
+	// regardless: the lit geometry pass below samples the cascade array.
 	m_ShadowMap.WaitCascadeJobs();
 
 	// --- 2a. cascades that could NOT record inside their job (threading off, sun down, or the per-slot command
@@ -734,9 +607,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		// cascade inline and re-issuing here would draw each of them twice.
 		if ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() ) {
 			for ( UINT c = 0; c < kShadowCascades; ++c ) {
-				// A lazily-frozen cascade launched no job, so its slot is legitimately unrecorded — that is not a
-				// failure and must not be re-issued inline (RecordCascade would no-op anyway, but it would light
-				// up the "failed to record" warning below every third frame).
+				// A lazily-frozen cascade launched no job, so its unrecorded slot is not a failure.
 				if ( !m_ShadowMap.ShouldUpdateCascade( c ) ) continue;
 				if ( !m_ShadowListRecorded[c] ) { m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() ); anyFailed = true; }
 			}
@@ -809,8 +680,7 @@ UINT D3D12GraphicsEngine::ResolveDiffuseSlotCacheIn( zCTexture* tex ) {
 bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	// Per-resolution CLUSTERED Forward+ grid storage (P2.14; tiled P2.9b-2 predecessor). Recreated on resize
 	// alongside the depth buffer. RW_LightGrid: one MAX_ACTIVE_LIGHTS-bit membership mask plus its WordOccupancy
-	// summary word (kWordsPerCluster * 4 B) per (16x16 screen tile x Z slice) cluster — see
-	// LightCull.hlsl/PBRLighting.hlsl. There is no
+	// summary word (kWordsPerCluster * 4 B) per (16x16 screen tile x Z slice) cluster. There is no
 	// separate index-list buffer: the mask itself IS the light list (bit i = light i). DEFAULT-heap UAV buffer
 	// created in UNORDERED_ACCESS; each frame DispatchLightCulling writes it (UAV) then transitions it to
 	// PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back.
@@ -907,19 +777,15 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 
 
 // ---- Static point-light clustering ------------------------------------------------------------------------
-// Gothic lights a room or cave with 10-30 co-located STATIC "atmospheric" lights whose only job is to raise the
-// ambient level. Giving each one a shadow cube is impossible (there aren't that many cubes) and giving none of
-// them a cube means the whole set bleeds through the walls. Since they are all in the same room, ONE cube placed
-// between them occludes them all about equally well — so static lights are bucketed by a coarse world-space grid
-// and every member of a bucket shares its cube. Each light still shades from its OWN position/colour/range; only
-// the cube lookup (GPULight::ShadowOrigin/ShadowRange) is redirected to the cluster.
+// Gothic lights a room with 10-30 co-located static "atmospheric" lights. There are not enough shadow cubes to
+// give each one its own, and giving none a cube lets the whole set bleed through walls — but since they share a
+// room, ONE cube between them occludes them all about equally. So static lights are bucketed by a coarse
+// world-space grid and share their bucket's cube; each still shades from its own position/colour/range, only
+// the cube lookup (GPULight::ShadowOrigin/ShadowRange) is redirected.
 //
-// EVERYTHING about a cluster is derived from the CELL and only ever grows, never shrinks. That is deliberate and
-// load-bearing: the cluster is the identity that owns a cube slot, and the point-shadow static cache re-renders a
-// slot whenever its origin or range changes. Deriving either from the currently VISIBLE members would make both
-// churn every time the camera turned (members enter and leave the frustum constantly), re-rendering the static
-// cube every frame and defeating the cache entirely. Grow-only means a cluster settles within a few frames of
-// first being seen and then never invalidates again.
+// A cluster is derived from its CELL and only ever grows. That is load-bearing: the point-shadow static cache
+// re-renders a slot whenever its origin or range changes, so deriving either from the currently VISIBLE members
+// would invalidate the cube every time the camera turned.
 namespace {
 	// One visible point light on its way into the GPU light buffer. Built and distance-sorted by
 	// BuildFrameLightBuffer, then clustered here; it stays parallel to the filled GPULight array so the
@@ -1072,29 +938,19 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// so the view space this fills matches what the cull shader's frustum is built in.
 	const XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
 
-	// ================= Static-light policy ==========================================================
-	// A point light that wins no shadow cube is shaded UNSHADOWED: it lights straight through walls and fights
-	// the tiled cull with contributions that should have been occluded. Forward+ makes MANY lights cheap, but it
-	// says nothing about visibility — cubes do, and they are the scarce resource. Gothic makes this acute by
-	// lighting a room or cave with 10-30 co-located STATIC "atmospheric" lights that exist only to raise the
-	// ambient level. Four mechanisms, in the order they apply:
+	// Static-light policy. A point light with no shadow cube shades UNSHADOWED and lights through walls, and
+	// cubes are the scarce resource. Four mechanisms, in the order they apply:
+	//   1. DisableStaticPointlights — drop static lights outright; under HDR they stack into an over-bright
+	//      interior.
+	//   2. CLUSTERING (above) — one cube per grid cell instead of one per light.
+	//   3. The LOW-RES TIER — static/clustered cubes come from the 32^2 pool, never the 128^2 one, so they
+	//      cannot starve a dynamic torch. Static visibility is static, so they are cached forever.
+	//   4. RANGE CLAMPING (below) — a static light that still gets no cube keeps its slot but has its shading
+	//      range cut, so it lights its alcove instead of reaching through a wall. An absent light is a visible
+	//      hole; a range-limited one is not.
 	//
-	//   1. DisableStaticPointlights — drop every static light outright. Under HDR output those fill lights stack
-	//      into a badly over-bright interior, and some players simply want them gone.
-	//   2. CLUSTERING — static lights are grouped by a world-space grid cell and share ONE cube per cell, so a
-	//      30-torch room costs one cube instead of 30 (or instead of bleeding). Each light still shades with its
-	//      own position/colour/range; only the cube lookup (ShadowOrigin/ShadowRange) is the cluster's.
-	//   3. The LOW-RES TIER — every static/clustered cube comes from the 32^2 pool, never the 128^2 one, so
-	//      static lights can never starve a dynamic torch of a full-res cube. Static visibility is static, so
-	//      those cubes are rendered once and cached forever; they exist to stop room-to-room bleed, not to
-	//      resolve detail. See D3D12PointShadows' kStaticCubeSize block.
-	//   4. RANGE CLAMPING (after selection, below) — a static light that still ends up without a cube keeps its
-	//      slot in the buffer but has its shading range cut, so it lights its own alcove instead of reaching
-	//      through a wall. Clamping beats deleting it: an absent light is a visible hole, a range-limited one
-	//      is not.
-	//
-	// Sorting by distance also fixes the overflow case: the buffer now keeps the NEAREST m_LightBufferCapacity
-	// lights rather than whatever BSP order CollectVisibleVobs happened to emit first.
+	// Sorting by distance also fixes the overflow case: the buffer keeps the NEAREST lights rather than
+	// whatever BSP order CollectVisibleVobs emitted first.
 	const GothicRendererSettings& lightSettings = Engine::GAPI->GetRendererState().RendererSettings;
 	const bool dropStaticLights = lightSettings.DisableStaticPointlights;
 	const bool pointShadowsOn = lightSettings.EnablePointlightShadows != GothicRendererSettings::PLS_DISABLED;
@@ -1203,16 +1059,9 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 
 
 void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT gridParam ) {
-	// Bind the CLUSTERED Forward+ point-light root params: srvParam = the light StructuredBuffer as a root SRV
-	// (t1), countParam = LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex,
-	// PointShadowDynIndex, ProjA, ProjB, NearZ, FarZ }, gridParam = the per-cluster 64-bit mask root SRV (t2)
-	// produced by DispatchLightCulling. EVERY draw whose bound PSO reads the tiled light loop MUST call this
-	// after setting its root signature, or the loop bound (Count) and grid are UNDEFINED root values and can
-	// run billions of iterations → GPU timeout/removal. Root args are cleared on every SetGraphicsRootSignature.
-	// The param indices differ per root sig: m_Pipelines.World.RootSig uses (3,4,5) — the default — for the
-	// world mesh / instanced VOBs / node attachments; m_Pipelines.Skeletal.RootSig uses (4,5,6);
-	// m_Pipelines.Grass.RootSig uses (5,6,7). (Param 6/7/8, formerly the light-index-list SRV, is now dead —
-	// see the root-sig comments in D3D12PipelineState.cpp.)
+	// EVERY draw whose PSO reads the light loop MUST call this after setting its root signature — root args are
+	// cleared by SetGraphicsRootSignature, and an undefined loop bound runs billions of iterations into a GPU
+	// timeout. Param indices differ per root sig: World (3,4,5), Skeletal (4,5,6), Grass (5,6,7).
 	m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
@@ -1695,8 +1544,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
 
 void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items ) {
-	// TransparencyVobs is filled by CollectVisibleVobs' GetVisualAlpha() branch; the queue holds indices
-	// into it and DrawTransparencyQueue clears it unconditionally, so it cannot leak.
+	// Filled by CollectVisibleVobs' GetVisualAlpha() branch; the queue holds indices into it.
 	auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
 	if ( items.empty() ) return;
 
@@ -1823,18 +1671,14 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 			}
 			}   // end base skinned mesh
 
-			// --- Node attachments (HEADS, weapons, held items, lamps). An NPC's head is a .MMS node attachment,
-			// not part of the soft-skin body, so without this a ghost NPC renders headless and unarmed.
+			// --- Node attachments (heads, weapons, held items, lamps). An NPC's head is a .MMS node
+			// attachment, not part of the soft-skin body, so without this a ghost NPC renders headless.
 			//
-			// Drawn through the NON-skeletal m_Pipelines.Ghost, which fits exactly: attachments are RIGID
-			// ExVertexStruct meshes (POSITION@0 + TEXCOORD@24 — its input layout) whose world matrix is
-			// modelWorld * boneMatrix[node], and that pipeline takes World as a b1 root constant. So no new PSO,
-			// no new shader and no VOB instance-ring traffic — unlike the lit path (DrawSkeletalColor), which
-			// must use the instanced VobAttach PSO because it batches. Ghosts are a handful of objects; a root
-			// constant per attachment is cheaper than a ring allocation.
-			//
-			// Fatness/Scaling (the VobAttach PSO's morph inflate) are deliberately NOT applied: Preview.hlsl's
-			// VSMain has no such input, and D3D11's ghost path goes through DrawSkeletalMeshVob the same way.
+			// Drawn through the NON-skeletal m_Pipelines.Ghost: attachments are rigid ExVertexStruct meshes
+			// matching its input layout, and it takes World as a b1 root constant, so no new PSO and no
+			// instance-ring traffic. Ghosts are a handful of objects, so a root constant per attachment beats
+			// the ring allocation the batching lit path needs. Fatness/Scaling are deliberately not applied —
+			// Preview.hlsl's VSMain has no such input, and D3D11's ghost path behaves the same.
 			if ( m_Pipelines.Ghost.PSO && m_Pipelines.Ghost.RootSig ) {
 				zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
 				const int nodeCount = nodeList
@@ -1994,11 +1838,10 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	// Grass into the Forward+ depth prepass — see the header comment on kVegetationPrepassRange for why, and for
 	// why the range is capped independently of the lit pass's OutdoorSmallVobDrawRadius.
 	//
-	// Deliberately a near-clone of DrawVegetation's cull + bind + draw loop rather than a shared helper: the two
-	// differ in the PSO, the cull radius, the root arguments they bind (this one touches neither lights, shadows,
-	// the ground texture nor the AO mask) and, in the G-buffer case, the extra MotionCB — which is most of what
-	// that loop is. What they MUST share is the vertex-position math, and that lives in the shader
-	// (GrassWorldPos) plus MakeGrassConstants, both of which they do share.
+	// Deliberately a near-clone of DrawVegetation's loop rather than a shared helper: they differ in the PSO,
+	// the cull radius, the root arguments bound and the G-buffer MotionCB, which is most of that loop. What
+	// they must share is the vertex-position math, and that lives in the shader (GrassWorldPos) plus
+	// MakeGrassConstants.
 	if ( !m_FrameOpen || !m_Pipelines.Grass.RootSig || !m_DepthBuffer ) return;
 
 	// The prepass is all-or-nothing about its render targets (see MotionGBufferActive): whichever variant the
@@ -2265,20 +2108,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_HeightFogActive = EvaluateHeightFogActive();
 	g_HeightFogActive = m_HeightFogActive;
 
-	// Decide ONCE, before anything collects, whether this frame's static VOBs are culled on the GPU. Every stage
-	// downstream has to agree: the CollectVisibleVobs call below switches to distance-only, UploadFrameVobInstances
-	// emits the per-visual cull records, BuildVobDrawCommands points each command's instance stream at the
-	// compacted buffer, and both VOB passes ExecuteIndirect from the patched arg buffer. Re-evaluating any of that
-	// mid-frame would mix culled and unculled state. See D3D12Cull.cpp.
+	// Decide ONCE, before anything collects, whether this frame's static VOBs are culled on the GPU: every
+	// stage downstream has to agree, and re-evaluating mid-frame would mix culled and unculled state.
+	// See D3D12Cull.cpp.
 	m_GpuVobCullActive = EvaluateGpuVobCulling();
 
-	// Snapshotted ONCE: the instance partition and the command build must agree on it, and the ImGui slider
-	// moving between them would strand a bucket with no command to draw it.
-	//
-	// NOT gated on GPU culling. The near/far bucketing is produced by CSCull when the GPU cull is on and by
-	// UploadFrameVobInstances' own distance partition when it is off — so the geometry LOD is available on
-	// either path. That matters for the machine this feature is actually for: a weak GPU behind a strong CPU,
-	// which is exactly the configuration that also wants the CPU frustum cull rather than the compute one.
+	// Snapshotted ONCE: the instance partition and the command build must agree on it, or a bucket ends up with
+	// no command to draw it. Not gated on GPU culling — the near/far bucketing comes from CSCull when it is on
+	// and from UploadFrameVobInstances' own distance partition when it is off.
 	m_VobLodDistance = Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f
 		? Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius : 0.0f;
 
@@ -2339,8 +2176,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// matching StoreVobPreviousTransforms at the bottom of this function rolls it into history. See D3D12Motion.cpp.
 	UploadMotionConstants();
 
-	// Sky: fog fill + Gothic's atmosphere solve now, geometry later (after the depth prepass, right before the
-	// lit passes) so opaque depth rejects the sky fragments behind geometry. See PrepareSky/DrawSky.
+	// Sky: fog fill + Gothic's atmosphere solve now, geometry later (after the depth prepass) so opaque depth
+	// rejects the sky fragments behind geometry. See PrepareSky/DrawSky.
 	PrepareSky();
 	// The other two shadow passes resolve their Gothic-side state here, on the main thread, WITHOUT recording any
 	// draws: the point-light shadow cubes (P2.10 — each selected light's 6 faces into the shared cube array) and
@@ -2384,7 +2221,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		m_VobDrawCount = 0;
 		m_VobOpaqueDrawCount = 0;
 	}
-	// Publish this frame's VOB submission shape for the ImGui stats panel — see VobFrameStats.
+	// VOB submission shape for the ImGui stats panel.
 	m_VobStats.Commands = m_VobDrawCount;
 	m_VobStats.OpaqueCommands = m_VobOpaqueDrawCount;
 	m_VobStats.CullVisuals = m_VobCullVisualCount;
@@ -2394,25 +2231,19 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		for ( const FrameVobUpload& u : g_FrameVobUploads ) inst += u.numInstances;
 		m_VobStats.Instances = inst;
 	}
-	// Build the skeletal + node-attachment ExecuteIndirect command sets ONCE (T9) from g_FrameSkelDraws/
-	// g_FrameAttachDraws, resolving each material's full bindless index set — the depth prepass ignores the
-	// extra two, so both skeletal passes submit over these same two buffers.
-	// This is the last Gothic-touching skeletal work of the frame (UpdateMeshLibTexAniState mutates the model's
-	// SHARED texani slots, zCTexture::CacheIn touches the resource manager), and it now runs WHILE the shadow
-	// recorders are already going. That is safe because none of them touch Gothic: every recorder replays
-	// pre-resolved D3D12 handles and heap-slot ints snapshotted on this thread before it was launched. It is
-	// specifically NOT safe to move any Gothic read INTO a recorder for the same reason.
+	// Build the skeletal + node-attachment command sets ONCE, resolving each material's full bindless index
+	// set; the depth prepass ignores the extra two, so both skeletal passes submit over the same buffers.
+	// This is the frame's last Gothic-touching skeletal work and runs WHILE the shadow recorders are going,
+	// which is safe only because no recorder touches Gothic — they replay handles snapshotted on this thread.
+	// Moving a Gothic read INTO a recorder would break that.
 	BuildSkeletalDrawCommands();
 	// Morph attachments (NPC heads, bow/crossbow draw meshes): fold this frame's blend shapes on the GPU into
-	// each submesh's own vertex buffer. Has to precede the depth prepass, which is the first pass of the frame
-	// IN SUBMISSION ORDER that draws one — the shadow cascades and point-shadow cubes record into private
-	// lists but are executed later (FinishShadowPasses). No-op when the fold is unavailable or inactive, in
-	// which case UpdateMorphMeshVisual already deformed them on the CPU during collection. See
-	// D3D12MorphFold.cpp / MorphGpu.h.
+	// each submesh's vertex buffer. Must precede the depth prepass, the first pass in SUBMISSION order that
+	// draws one. No-op when the fold is inactive; UpdateMorphMeshVisual then deformed them on the CPU.
+	// See D3D12MorphFold.cpp / MorphGpu.h.
 	DispatchMorphFold();
-	// ...and mirror the deformed vertices of any ANIMATED STATIC vob into its VOB-arena range. Must follow
-	// the fold (that is what produced them) and precede the depth prepass (the first pass on this list that
-	// draws out of the arena). No-op unless the world actually has .MMS static vobs in it.
+	// ...and mirror the deformed vertices of any animated static vob into its VOB-arena range. Between the fold
+	// (which produced them) and the depth prepass (the first pass here that draws out of the arena).
 	RefreshDynamicVobArena();
     {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass" );
@@ -2458,31 +2289,22 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// sky; the shaders fall back to the old flat ambient whenever the indices are the 0xFFFFFFFF sentinel.
 	RenderSkyIBL();
 
-	// Submit part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) NOW instead of letting
-	// it ride along to Present. Without this the GPU sat idle from the shadow lists all the way to the end of the
-	// frame: everything above was recorded long ago but stayed in an open, unsubmitted list while the main thread
-	// went on recording the lit passes, transparency, particles and post-FX. Costs one extra ExecuteCommandLists
-	// (plus the RT/heap rebind Reset drops) and buys the GPU that whole span.
-	//
-	// The reorder this introduces is [A][B1][shadows][B2] rather than [A][shadows][B1+B2]: none of the passes in
-	// B1 read anything a shadow pass writes (the tile cull and SSAO consume only the prepass depth/normals, and
-	// the IBL compute is self-contained on its own cubes), so their new position ahead of the shadow lists is
-	// safe. What still must NOT move is FinishShadowPasses' TransitionToReadState and the lit passes below —
-	// both are recorded into the reopened list and therefore stay behind the shadow lists.
+	// Submit part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) now instead of
+	// letting it ride along to Present, which left the GPU idle from the shadow lists to the end of the frame.
+	// Ordering is [A][B1][shadows][B2]: nothing in B1 reads what a shadow pass writes, while FinishShadowPasses'
+	// TransitionToReadState and the lit passes are recorded into the reopened list and stay behind the shadows.
 	if ( m_FrameOpen ) {
 		SubmitRecordedCommandsAndReopen();
-		// The reopen Resets m_CmdList, dropping its render targets/viewport (FinishShadowPasses re-establishes
-		// them again at its tail, but a cascade re-issued inline records before that point).
+		// The reopen Resets m_CmdList, dropping its render targets/viewport, and a cascade re-issued inline
+		// records before FinishShadowPasses re-establishes them.
 		BindSceneColorTarget();
 	}
 
-	// Join the shadow recorders and slot their lists into the queue between the block submitted just above and
-	// everything recorded from here on — the lit passes below are the first thing this frame that samples the
-	// cascade map / point-shadow cubes. Also re-establishes the scene-color RT + depth for them.
+	// Join the shadow recorders and slot their lists in between — the lit passes below are the first thing this
+	// frame that samples the cascade map / point-shadow cubes. Also re-establishes the scene-color RT + depth.
 	FinishShadowPasses();
-	// Sky geometry, now that the depth prepass has something for it to be rejected against. Placed after
-	// FinishShadowPasses because that is what re-establishes the scene-color RT + depth on the reopened list -
-	// the fixed-function path draws through MyDirect3DDevice7 and inherits whatever OM state is bound.
+	// Sky geometry, now that the depth prepass has something for it to be rejected against. After
+	// FinishShadowPasses because the fixed-function path inherits whatever OM state that re-established.
 	DrawSky();
     {
         DX_ZONE( m_CmdList.Get(), "Lit Geometry Pass" );
@@ -2512,9 +2334,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	DrawWaterSurfaces();
 
 	// Everything else that blends, in ONE back-to-front pass: world transparency surfaces, blended instanced
-	// VOBs, ghosts, blended decals, quad marks and poly strips. Frame order is geometry -> alpha -> fog/pfx,
-	// same as D3D11: BEFORE the particles and RenderFogAndGodRays below, or alpha surfaces get pasted onto an
-	// already-fogged scene and never fog themselves. MUST run every frame - it drains the per-kind lists.
+	// VOBs, ghosts, blended decals, quad marks and poly strips. Before the particles and RenderFogAndGodRays,
+	// or alpha surfaces get pasted onto an already-fogged scene and never fog themselves. Must run every frame
+	// - it drains the per-kind lists.
 	CollectTransparencyQueue();
 	DrawTransparencyQueue();
 
@@ -2616,10 +2438,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 
 XRESULT D3D12GraphicsEngine::PrepareSky() {
-	// The half of the sky that is NOT geometry: the fog-color fill and Gothic's atmosphere solve. Kept at the
-	// original DrawSky slot (before the shadow prepare / depth prepass) because several later passes read what
-	// RenderSky() computes — RenderSkyIBL takes its sun direction from it, and the wetness/fog constants are
-	// derived from the same state. Only the sky's DRAWS moved; see DrawSky.
+	// The half of the sky that is NOT geometry: the fog-color fill and Gothic's atmosphere solve. Stays at the
+	// original DrawSky slot because later passes read what RenderSky() computes (RenderSkyIBL's sun direction,
+	// the wetness/fog constants). Only the sky's draws moved; see DrawSky.
 	m_SkyGeometryPending = false;
 	if ( !m_FrameOpen ) return XR_SUCCESS;
 	DX_ZONE( m_CmdList.Get(), "Prepare sky" );
@@ -2650,36 +2471,23 @@ XRESULT D3D12GraphicsEngine::PrepareSky() {
 }
 
 XRESULT D3D12GraphicsEngine::DrawSky() {
-	// The sky's GEOMETRY, deliberately submitted AFTER the opaque depth prepass rather than before it.
-	//
-	// The sky is pinned to the reversed-Z far plane (FORCE_MAX_Z / the dome's own depth) and tests
-	// GREATER_EQUAL with depth writes off, so once the prepass has laid down opaque depth every sky fragment
-	// behind geometry fails the test at the depth unit and never reaches the pixel shader. Drawn first — as it
-	// was — the depth buffer still held nothing but the frame's 0.0 clear, so every one of those fragments
-	// shaded and was then painted over: a measured 5.4 M PS invocations at 2.6x overdraw with nothing to
-	// reject against.
-	//
-	// Nothing between the two positions reads scene color (the prepass has its color write mask off, the light
-	// cull / SSAO / IBL read depth-normals and their own targets), so the fill in PrepareSky still lands before
-	// the first real color write, which is the lit geometry pass right after this.
+	// The sky's GEOMETRY, submitted AFTER the opaque depth prepass. The sky is pinned to the reversed-Z far
+	// plane and tests GREATER_EQUAL with depth writes off, so with opaque depth already down every sky fragment
+	// behind geometry is rejected before shading (drawn first it cost 5.4M PS invocations at 2.6x overdraw).
+	// Nothing between the two positions reads scene color, so PrepareSky's fill still lands first.
 	if ( !m_FrameOpen || !m_SkyGeometryPending ) return XR_SUCCESS;
 	DX_ZONE( m_CmdList.Get(), "Draw sky" );
 	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw sky" );
 
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
-	// Procedural atmospheric-scattering sky dome (D3D12Sky.cpp) — ONE indexed draw instead of the ~5-15
-	// fixed-function draws RenderSkyPre() issues below, each of which pays a full state resolve + FF constant
-	// buffer update + vertex-buffer refill on its way back through MyDirect3DDevice7::DrawPrimitive. Gated on
-	// the SAME user setting D3D11's DrawSky uses, so both backends respond identically to it, and on the pass
-	// having actually drawn — if the PSO failed to compile or the dome mesh isn't loaded yet, it returns false
-	// having submitted nothing and we fall through to the fixed-function sky rather than show an empty sky.
+	// Procedural atmospheric-scattering sky dome (D3D12Sky.cpp) — one indexed draw instead of the ~5-15
+	// fixed-function draws RenderSkyPre() issues below, each paying a full state resolve on its way back
+	// through MyDirect3DDevice7. Returns false having submitted nothing if the PSO or the dome mesh isn't
+	// there, so we fall through to the fixed-function sky rather than show an empty one.
 	//
-	// (History, so this isn't "fixed" back: an earlier attempt just `return`ed here when AtmosphericScattering
-	// was true, leaving only the flat FogColorMod fill above as the entire sky. That fill has no time-of-day
-	// term, which is what produced the "sky is shining light-blue at night" bug. The dome below does vary with
-	// time of day — it is driven by the same AC_* constants D3D11's sky is — so that failure mode is gone, but
-	// the fallback is kept for exactly the case where the dome cannot draw.)
+	// Do NOT replace the fallback with a plain `return`: the fill above has no time-of-day term, so the sky
+	// would shine light-blue at night whenever the dome cannot draw.
 	if ( rs.RendererSettings.AtmosphericScattering && DrawAtmosphereSkyDome() ) {
 		// The magic barrier (dome + lightning) is drawn by a derived sky controller's RenderSkyPre override -
 		// vanilla oCWorld installs an oCSkyControler_Barrier in every world of both games. Called through the
@@ -2827,11 +2635,10 @@ namespace {
 
 UINT D3D12GraphicsEngine::CoalesceWorldDepthCommands(
     std::vector<WorldDrawCommand>& opaque, WorldDrawCommand* out, UINT outCapacity ) {
-    // Draw-call merge for the depth-only world submits. Every command here indexes the SAME wrapped world
-    // VB/IB, so two commands whose index ranges touch are one DrawIndexed over the union. Strictly
-    // conservative: only EXACTLY adjacent ranges merge, so not one extra index is ever rasterized — bridging
-    // a gap would re-lay depth for geometry the color pass peeled out (water, portals, alpha-blended) or
-    // frustum-culled, and punch holes in the scene.
+    // Draw-call merge for the depth-only world submits. Every command indexes the SAME wrapped world VB/IB,
+    // so two commands with adjacent index ranges become one DrawIndexed. Only EXACTLY adjacent ranges merge:
+    // bridging a gap would re-lay depth for geometry the color pass peeled out (water, portals, blended) or
+    // frustum-culled, punching holes in the scene.
     if ( opaque.empty() || !out || outCapacity == 0 ) return 0;
 
     std::sort( opaque.begin(), opaque.end(),
@@ -2839,10 +2646,8 @@ UINT D3D12GraphicsEngine::CoalesceWorldDepthCommands(
             return a.Draw.StartIndexLocation < b.Draw.StartIndexLocation;
         } );
 
-    // The surviving command keeps the FIRST constituent's b6 material constants. Nothing on a depth-only PSO
-    // reads them (the opaque run binds no pixel shader at all), but they stay a valid bindless slot rather
-    // than a stale ring value, so a future prepass shader that does read b6 degrades to "wrong texture on a
-    // merged run" instead of sampling a freed descriptor.
+    // The surviving command keeps the first constituent's b6 material constants. Nothing on a depth-only PSO
+    // reads them, but they stay a valid bindless slot rather than a stale ring value.
     UINT n = 0;
     WorldDrawCommand run = opaque[0];
     for ( size_t i = 1; i < opaque.size(); ++i ) {
@@ -2893,16 +2698,14 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     UINT count = 0;
 
     // Alpha-test partition (see m_WorldOpaqueDrawCount): opaque materials go straight into the arg ring, the
-    // alpha-tested minority is staged here and appended after the loop. Staged rather than written straight
-    // into the ring's tail because the ring is UPLOAD (write-combined) memory — compacting the two runs by
-    // reading it back would be far slower than one forward copy out of normal RAM. static: main thread only,
-    // capacity retained across frames (same idiom as `sections` above; no per-frame allocation).
+    // alpha-tested minority is staged here and appended after the loop. Staged in normal RAM because the ring
+    // is UPLOAD (write-combined) and compacting it in place would mean reading it back. static: main thread
+    // only, capacity retained across frames.
     static std::vector<WorldDrawCommand> alphaCmds;
     alphaCmds.clear();
 
-    // Every opaque command as written, mirrored into normal RAM so CoalesceWorldDepthCommands can sort and
-    // scan it — the ring itself is UPLOAD (write-combined), where a read-back would cost far more than the
-    // copy. static for the same reason alphaCmds is: no per-frame allocation.
+    // Mirror of every opaque command in normal RAM, so CoalesceWorldDepthCommands can sort and scan it without
+    // reading back the write-combined ring. static for the same reason alphaCmds is.
     static std::vector<WorldDrawCommand> opaqueCmds;
     opaqueCmds.clear();
 
@@ -3007,9 +2810,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 normalStrength = kWetDistortionNormalStrength;
             }
 
-            // Does this material actually need the depth prepass' alpha cutout? Same predicate D3D11 uses to
-            // decide between PS_DiffuseAlphaTestShadows and no pixel shader at all in its Z-prepass / shadow
-            // batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
+            // Same predicate D3D11 uses to pick between PS_DiffuseAlphaTestShadows and no pixel shader at all
+            // in its Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
             const bool alphaTested = ( tex && tex->HasAlphaChannel() )
                 || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
 
@@ -3039,7 +2841,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     // Coalesced opaque run for the depth prepass, appended PAST the color pass' set so that set is unchanged
     // (see m_WorldDepthMergedFirst). Degrades to 0 — and the prepass to the per-material prefix — if the
-    // ring's tail can't hold it, so the overflow guard above needs no extra headroom.
+    // ring's tail can't hold it.
     m_WorldDepthMergedFirst = count;
     m_WorldDepthMergedCount = ( count < kMaxWorldDrawCommands )
         ? CoalesceWorldDepthCommands( opaqueCmds, cmds + count, kMaxWorldDrawCommands - count )
@@ -3052,22 +2854,19 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 bool D3D12GraphicsEngine::CreateVobIndirect() {
     // Command signatures + per-frame UPLOAD arg rings for the GPU-driven instanced VOBs (P2.12).
     //
-    // TWO signatures now. The instanced-VOB one carries NO buffer views at all: every static VOB sub-mesh
-    // lives in the shared vertex/index mega-buffers (D3D12VobArena) and every instance in the one instance
-    // buffer the pass binds, so a command is just material consts + wind consts + DrawIndexed, exactly like
-    // the world mesh's. That is the whole point of the arena — it is the PRESENCE of VBV/IBV arguments that
-    // makes a command an IA state change, and 560 of those per pass was the dominant VOB cost.
+    // Two signatures. The instanced-VOB one carries NO buffer views: every static VOB sub-mesh lives in the
+    // shared mega-buffers (D3D12VobArena) and every instance in the one instance buffer the pass binds, so a
+    // command is just material consts + wind consts + DrawIndexed. That is the point of the arena — VBV/IBV
+    // arguments are what make a command an IA state change, and 560 of those per pass dominated the VOB cost.
     //
-    // The second ("bound") signature is the old six-argument shape, kept for node attachments, whose
-    // geometry comes and goes with NPCs and is a few dozen commands a frame. Arg order MUST match each
-    // struct's member layout. Both rings stay UPLOAD/GENERIC_READ (which includes INDIRECT_ARGUMENT),
-    // rebuilt each frame — no DEFAULT-heap copy.
+    // The second ("bound") signature is the old six-argument shape, kept for node attachments, whose geometry
+    // comes and goes with NPCs. Arg order MUST match each struct's member layout. Both rings stay
+    // UPLOAD/GENERIC_READ (which includes INDIRECT_ARGUMENT) and are rebuilt each frame.
     ID3D12Device* device = m_Device.GetDevice();
     if ( !device || !m_Pipelines.World.RootSig ) return false;
 
-    // The GPU reads each command as tightly-packed native argument structs in pArgumentDescs order. The
-    // trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments: ByteStride only has to cover them,
-    // so those bytes are ours (VobCull.hlsl's CSPatchArgs reads both out of the buffer it patches).
+    // The trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments the GPU reads; ByteStride only has
+    // to cover them, so they are ours (VobCull.hlsl's CSPatchArgs reads both out of the buffer it patches).
     static_assert( sizeof( VobDrawCommand ) == 48, "VobDrawCommand must match the command signature arg layout (48 B stride)" );
     static_assert( offsetof( VobDrawCommand, MatNormalIndex ) == 0, "b6 consts lead the VOB command" );
     static_assert( offsetof( VobDrawCommand, Draw ) == 20, "VobDrawCommand draw args must be last of the indirect arguments" );
@@ -3156,14 +2955,9 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
 void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     // Animated static VOBs (.MMS) are the one kind of VOB geometry that is not immutable: their vertices are
-    // rewritten every frame, either by ZENGIN's CPU deform into the MeshInfo's own DYNAMIC upload buffer
-    // (UpdateMorphMeshVisual, during UploadFrameVobInstances) or by the GPU morph fold into its DEFAULT UAV
-    // (DispatchMorphFold, immediately before this). The arena copy uploaded at registration is only the
-    // conversion pose, so mirror the live buffer into the arena range here — a handful of small
-    // CopyBufferRegions, and only for morph visuals that exist at all.
-    //
-    // Placed right after DispatchMorphFold on purpose: that is what produces THIS frame's folded vertices,
-    // and everything that draws VOBs out of the arena (the depth prepass onwards on this list) comes after.
+    // rewritten every frame, by ZENGIN's CPU deform into the MeshInfo's DYNAMIC upload buffer
+    // (UpdateMorphMeshVisual) or by the GPU morph fold into its DEFAULT UAV (DispatchMorphFold). The arena
+    // copy uploaded at registration is only the conversion pose, so mirror the live buffer into it here.
     const std::vector<MeshInfo*>& dynamic = m_VobArena.DynamicMeshes();
     if ( dynamic.empty() || !m_FrameOpen || !m_VobArena.Ready() ) return;
 
@@ -3179,9 +2973,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
         if ( !range || !mi->GetMeshVertexBuffer() ) continue;
         D3D12VertexBuffer* src = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
         if ( !src->GetResource() ) continue;
-        // The fold's output is a DEFAULT UAV it left in VERTEX_AND_CONSTANT_BUFFER (or COMMON before its
-        // first fold); as a copy source it has to be COPY_SOURCE. The CPU-deform buffer is an UPLOAD
-        // resource permanently in GENERIC_READ, which already includes COPY_SOURCE — nothing to do.
+        // The fold's DEFAULT UAV output needs a transition to COPY_SOURCE. The CPU-deform buffer is UPLOAD,
+        // permanently in GENERIC_READ, which already includes COPY_SOURCE.
         if ( src->IsUavCapable() ) {
             const D3D12_RESOURCE_STATES from = ( src->GetUavState() == D3D12VertexBuffer::EUavState::Vertex )
                 ? D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER : D3D12_RESOURCE_STATE_COMMON;
@@ -3196,9 +2989,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 
     for ( auto const& [mi, src] : copies ) {
         const D3D12VobArena::Range* range = m_VobArena.Find( mi );
-        // The source buffer holds exactly this sub-mesh's vertices in the same wedge order the arena copy
-        // was uploaded in (a morph sub-mesh deliberately skips OptimizeVertices for precisely that reason),
-        // so this is a straight range overwrite. min() guards a buffer that is somehow shorter.
+        // Same wedge order the arena copy was uploaded in (a morph sub-mesh deliberately skips
+        // OptimizeVertices), so this is a straight range overwrite. min() guards a shorter buffer.
         const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(),
             static_cast<UINT64>( mi->Vertices.size() ) * D3D12VobArena::VertexStride() );
         m_CmdList->CopyBufferRegion( m_VobArena.GetVertexBuffer(),
@@ -3206,9 +2998,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
             src->GetResource(), 0, bytes );
     }
 
-    // Hand the fold buffers back to the state DispatchMorphFold expects to find them in next frame, and the
-    // arena back to the IA. The arena is a BUFFER, so it promoted out of COMMON into COPY_DEST implicitly
-    // and needs an explicit barrier out again before the prepass reads it as a vertex/index stream.
+    // Hand the fold buffers back to the state DispatchMorphFold expects next frame, and the arena back to the
+    // IA — it promoted into COPY_DEST implicitly and needs an explicit barrier out before the prepass reads it.
     barriers.clear();
     for ( auto const& [mi, src] : copies ) {
         if ( !src->IsUavCapable() ) continue;
@@ -3225,9 +3016,9 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, ID3D12Resource* instances, UINT instanceBytes ) {
     if ( !m_VobArena.Ready() || !instances || instanceBytes == 0 ) return false;
 
-    // The whole buffer is bound, every time — a VOB command addresses its sub-mesh through
-    // BaseVertexLocation/StartIndexLocation and its instances through StartInstanceLocation, so there is
-    // nothing per-draw left in the IA state. That is exactly what makes this one bind instead of ~560.
+    // The whole buffer is bound once: a VOB command addresses its sub-mesh through
+    // BaseVertexLocation/StartIndexLocation and its instances through StartInstanceLocation, so nothing
+    // per-draw is left in the IA state. That is what replaces ~560 binds with this one.
     const D3D12_VERTEX_BUFFER_VIEW views[2] = {
         { m_VobArena.GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetVertexBytes(),
           D3D12VobArena::VertexStride() },
@@ -3298,24 +3089,21 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         m_VobStats.SplitLod = 0;
     }
 
-    // Records are still CPU-writable here and CullVobsGPU has not run, and this is the only place that
-    // knows which sub-meshes actually emitted a far command. Main-view build only.
+    // Records are still CPU-writable (CullVobsGPU has not run) and this is the only place that knows which
+    // sub-meshes actually emitted a far command. Main-view build only.
     VobCullVisual* cullRecords = ( culled && resolveMaps && m_VobCullVisualsPtr[m_FrameIndex] )
         ? reinterpret_cast<VobCullVisual*>( m_VobCullVisualsPtr[m_FrameIndex] ) : nullptr;
 
     // CPU-side geometry LOD: the uploads already carry a near/far partition of each visual's instance block
-    // (UploadFrameVobInstances), so the far command's instance count and start are known HERE and get baked
-    // straight into the argument buffer — no cull records, no CSPatchArgs, no compute at all. Mutually
-    // exclusive with the GPU path by construction: `culled` picks which of the two produced the buckets.
+    // (UploadFrameVobInstances), so the far command's instance count and start get baked straight into the
+    // argument buffer — no cull records, no CSPatchArgs. `culled` picks which path produced the buckets.
     const bool cpuLodSplit = ( shadowCascade == kVobIndicesMainView ) && !culled && m_VobLodDistance > 0.0f;
 
-    // Per-visual command staging. The alpha split is a per-VISUAL decision (CSCull buckets a visual's whole
-    // instance range one way) but `alphaTested` is only known per sub-mesh, and only AFTER that sub-mesh's
-    // material has been through CacheIn - zCTexture::HasAlphaChannel() reads a flag byte that is not
-    // populated until the texture is actually resident, so asking ahead of the material loop would answer
-    // "no alpha" for every visual the frame it first comes into view. So: build each visual's near commands
-    // into this scratch list, then decide and flush once every sub-mesh has been resolved. One pass, one
-    // authoritative answer, and no second copy of the alpha-tested test to drift out of sync.
+    // Per-visual command staging. The split is a per-VISUAL decision (CSCull buckets a visual's whole instance
+    // range one way) but `alphaTested` is only known per sub-mesh, and only AFTER its material has been
+    // through CacheIn — zCTexture::HasAlphaChannel() reads a flag byte that is unpopulated until the texture
+    // is resident, so asking earlier answers "no alpha" the frame a visual first comes into view. So stage
+    // each visual's near commands and flush once every sub-mesh is resolved.
     // thread_local for the same reason alphaCmds is: the cascades build concurrently on the pool.
     struct StagedSubMesh {
         VobDrawCommand Cmd;
@@ -3373,10 +3161,9 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // the wrong UV would clip away the wrong texels, so alpha-relevant materials keep full indices
             // in every pass. Same condition D3D11's shadow VOB loop gates on.
             //
-            // The LOD buffer is no longer welded (see OptimizeLodIndices) and so carries correct UVs, but
-            // alpha-tested materials stay excluded from it too: an edge collapse deletes triangles outright,
-            // and on a cutout that means chunks of the silhouette — leaves, grates, ladders — simply
-            // disappearing rather than getting coarser.
+            // The LOD buffer is no longer welded (see OptimizeLodIndices) so its UVs are correct, but
+            // alpha-tested materials stay excluded from it too: an edge collapse deletes triangles, and on a
+            // cutout that means chunks of the silhouette disappearing rather than getting coarser.
             const bool alphaTested = ( tex && tex->HasAlphaChannel() )
                 || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
 
@@ -3420,24 +3207,19 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     continue;
                 }
 
-                // Where this sub-mesh lives in the VOB mega-buffers. Missing means it was never registered
-                // (a visual that appeared this frame is queued but not yet flushed) or its upload failed;
-                // either way it simply isn't drawn this frame and reappears on the next one. Everything
-                // below indexes the SAME vertex range - the shadow and LOD index levels are alternative
-                // index lists over the identical vertices, which is what lets one BaseVertexLocation serve
-                // all three.
+                // Where this sub-mesh lives in the VOB mega-buffers. Missing (not yet flushed, or a failed
+                // upload) simply means it isn't drawn this frame. The shadow and LOD index levels are
+                // alternative index lists over the SAME vertices, so one BaseVertexLocation serves all three.
                 const D3D12VobArena::Range* range = m_VobArena.Find( mi );
                 if ( !range || range->IndexCount == 0 ) continue;
 
-                // Whether this sub-mesh can offer a reduced far level to the main view. No longer gated on
-                // the visual's split mode - that is decided at flush time below, and suppressing LOD there
-                // keeps the two modes from ever both applying.
+                // Whether this sub-mesh can offer a reduced far level to the main view. The visual's split
+                // mode is decided at flush time below, which is also what keeps both modes from applying.
                 const bool lodEligible = ( shadowCascade == kVobIndicesMainView ) && ( culled || cpuLodSplit )
                     && m_VobLodDistance > 0.0f && !alphaTested && range->LodCount > 0;
 
-                // Pick this command's index range. A missing level just falls through to the next-best one,
-                // so a mesh that ships no LOD data still gets the welded shadow indices, and one that has
-                // neither still draws — the only cost of an absent level is that nothing is saved.
+                // Pick this command's index range. A missing level falls through to the next-best one, so a
+                // mesh with no LOD data still gets the welded shadow indices, and one with neither still draws.
                 UINT cmdIndexStart = range->IndexStart;
                 UINT cmdIndexCount = range->IndexCount;
                 if ( shadowCascade != kVobIndicesMainView && !alphaTested ) {
@@ -3451,9 +3233,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 }
 
                 VobDrawCommand c{};
-                // GPU-culled: draw from the compacted buffer CSCull writes (same layout, different
-                // resource - the pass binds one or the other) and let CSPatchArgs replace InstanceCount and
-                // StartInstanceLocation below with the surviving run for this visual.
+                // GPU-culled: draw from the compacted buffer CSCull writes, and let CSPatchArgs replace
+                // InstanceCount and StartInstanceLocation with the surviving run for this visual.
                 c.VisualIndex = culled ? up.cullVisualIndex : 0xFFFFFFFFu;
                 c.LodBucket = kLodBucketNear;
                 c.MatNormalIndex  = normalIdx;
@@ -3465,14 +3246,11 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 c.Draw.InstanceCount         = up.numInstances;
                 c.Draw.StartIndexLocation    = cmdIndexStart;
                 c.Draw.BaseVertexLocation    = static_cast<INT>( range->BaseVertex );
-                // Absolute, not range-relative: there is no per-command instance VBV any more, so the
-                // command has to name its visual's block inside the one buffer the pass binds. For culled
-                // commands CSPatchArgs overwrites this with InstanceBase + the run's offset; the value here
-                // is what an UNpatched command (cull off, or cull-record overflow) draws.
+                // Absolute, not range-relative: there is no per-command instance VBV any more, so the command
+                // names its visual's block inside the one buffer the pass binds. CSPatchArgs overwrites this
+                // for culled commands; the value here is what an unpatched one draws.
                 c.Draw.StartInstanceLocation = up.instanceBase;
-                // Staged, not emitted: the visual's split mode is not known until every sub-mesh has been
-                // resolved (see the `staged` declaration for why the alpha-tested answer cannot be had any
-                // earlier than this).
+                // Staged, not emitted: the visual's split mode isn't known until every sub-mesh is resolved.
                 StagedSubMesh s{};
                 s.Cmd = c;
                 s.AlphaTested = alphaTested;
@@ -3485,8 +3263,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             }
         }
 
-        // ---- Flush this visual ----------------------------------------------------------------------
-        // Everything below needs the WHOLE visual resolved, which is why it could not happen inline.
+        // ---- Flush this visual (needs the WHOLE visual resolved) -------------------------------------
 
         // Split only if EVERY drawn sub-mesh has a far counterpart; a visual that drew nothing is not
         // splittable at all.
@@ -3497,9 +3274,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             cmdsNeeded += s.LodEligible ? 2u : 1u;
         }
 
-        // Checked per VISUAL now rather than per sub-mesh: a split pair cut in half would drop every far
-        // instance of the visual, since CSCull still buckets them away from the near run. Dropping the
-        // whole visual instead of part of one is also the tidier failure.
+        // Checked per VISUAL, not per sub-mesh: a split pair cut in half would drop every far instance of the
+        // visual, since CSCull still buckets them away from the near run.
         if ( !staged.empty()
             && count + alphaCmds.size() + cmdsNeeded > maxCommands ) {
             if ( !m_VobDrawArgsOverflowLogged ) {
@@ -3510,10 +3286,9 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             return finish();
         }
 
-        // CPU LOD split, resolved here for the same reason the GPU one is: only now is it known that EVERY
-        // drawn sub-mesh has a far counterpart. If one doesn't, the whole visual falls back to a single
-        // command per sub-mesh covering the WHOLE instance block — which still draws every instance
-        // correctly, because the near and far runs the upload produced are adjacent and contiguous.
+        // CPU LOD split. If a sub-mesh has no far counterpart the whole visual falls back to one command per
+        // sub-mesh over the WHOLE instance block, which still draws correctly because the near and far runs
+        // the upload produced are adjacent and contiguous.
         const bool cpuSplit = cpuLodSplit && visualAllHaveLod && !staged.empty()
             && up.nearInstances < up.numInstances;
         const UINT cpuNearCount = cpuSplit ? up.nearInstances : up.numInstances;
@@ -3531,10 +3306,9 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
 
             // Far bucket.
             if ( s.LodEligible && ( !cpuLodSplit || cpuSplit ) ) {
-                // LOD split: same sub-mesh, reduced indices, over the far run — packed backward from the
-                // end of this visual's range by CSCull on the GPU path, forward-adjacent to the near run by
-                // UploadFrameVobInstances on the CPU one. LOD-eligible implies !AlphaTested, so this always
-                // belongs in the opaque partition.
+                // Same sub-mesh, reduced indices, over the far run — packed backward from the end of this
+                // visual's range by CSCull on the GPU path, forward-adjacent to the near run on the CPU one.
+                // LOD-eligible implies !AlphaTested, so this always belongs in the opaque partition.
                 VobDrawCommand f = s.Cmd;
                 f.LodBucket = kLodBucketFar;
                 f.Draw.StartIndexLocation = s.LodStart;
@@ -3557,14 +3331,11 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             const UINT mode = ( !staged.empty() && visualAllHaveLod ) ? kSplitModeLod : kSplitModeNone;
             cullRecords[up.cullVisualIndex].SplitMode = mode;
             if ( resolveMaps ) {
-                // Stats only: if these come back as "everything in SplitNone", the LOD slider cannot be
-                // having any effect, whatever it is set to.
                 if ( mode == kSplitModeLod ) m_VobStats.SplitLod++;
                 else                         m_VobStats.SplitNone++;
             }
         } else if ( resolveMaps && cpuLodSplit ) {
-            // Same histogram for the CPU path, so the panel does not read as "no split is happening" just
-            // because there are no cull records to hang it off.
+            // Same histogram for the CPU path, which has no cull records to hang it off.
             if ( cpuSplit ) m_VobStats.SplitLod++;
             else            m_VobStats.SplitNone++;
         }
@@ -3651,16 +3422,13 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
 
 
 void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
-    // T9: fold the whole per-mesh CPU draw path of BOTH skeletal passes into one build. Per base-mesh record:
-    // run the instance's texani update ONCE (it mutates the model's SHARED texture slots, so it has to happen
-    // while we read that instance's materials — see [[skeletal-texani-shared-slots]]), resolve the material's
-    // bindless normal/ORM/diffuse indices, and emit one command per sub-mesh carrying the two root CBVs, the
-    // skinned VB, the IB and DrawIndexed. Node attachments do the same into a VobBoundDrawCommand buffer.
+    // Folds the per-mesh CPU draw path of BOTH skeletal passes into one build. Per base-mesh record: run the
+    // instance's texani update ONCE (it mutates the model's SHARED texture slots, so it must happen while we
+    // read that instance's materials), resolve the bindless normal/ORM/diffuse indices, and emit one command
+    // per sub-mesh. Node attachments do the same into a VobBoundDrawCommand buffer.
     //
-    // Runs on the main thread from OnStartWorldRendering BEFORE BeginShadowRecording — every Gothic-touching
-    // call here (UpdateMeshLibTexAniState, zCTexture::CacheIn) must be finished before the cascade recorders
-    // start reading Gothic state on pool threads. That is also why the passes themselves are now pure GPU
-    // submits: they used to do this work after the fan-out.
+    // Main thread, before BeginShadowRecording: every Gothic-touching call here must finish before the
+    // cascade recorders start reading Gothic state on pool threads.
     m_SkeletalDrawCount = 0;
     m_AttachDrawCount = 0;
     m_SkeletalOpaqueDrawCount = 0;
@@ -3756,18 +3524,12 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         alphaAttachCmds.clear();
 
         // --- Instanced batching (main view only) -------------------------------------------------------
-        // 50 benches / a crowd's worth of identical swords arrive here as 50 one-instance commands, each
-        // rebinding two VBVs + an IBV — a full IA state change for ~200 vertices, which is what makes this
-        // pass draw-bound rather than geometry-bound. Batch them the way D3D11 does (see the
-        // NodeAttachmentDrawItem loop in D3D11GraphicsEngine.cpp): the batch head supplies the VB/IB for
-        // every member, so the key must mean "same buffers" — the MeshInfo POINTER says exactly that, and
-        // works as a key because the SharedVisualRegistry dedupes conversions. Not meshId: it identifies
-        // the source zCSubMesh, which is weaker and aliases distinct geometry (see MeshInfo::meshId).
-        //
-        // Grouped through a hash map rather than a sort: the key is (mesh, material, alphaTested) and
-        // nothing downstream depends on attachment draw ORDER (all opaque, depth-tested). The material is
-        // still part of the key here — folding it into the per-instance data (VobInstanceInfo::GP_Slot) so
-        // the key collapses to the mesh alone is the follow-up step.
+        // A crowd's worth of identical swords otherwise arrives as one one-instance command each, rebinding
+        // two VBVs + an IBV for ~200 vertices. The batch head supplies the VB/IB for every member, so the key
+        // must mean "same buffers": the MeshInfo POINTER, which works as a key because SharedVisualRegistry
+        // dedupes conversions. Not meshId — that identifies the source zCSubMesh and aliases distinct
+        // geometry (see MeshInfo::meshId). Grouped through a hash map, not a sort: nothing downstream depends
+        // on attachment draw order (all opaque, depth-tested).
         struct AttachBatchKey {
             const MeshInfo* mesh; UINT mats[3]; bool alphaTested;
             bool operator==( const AttachBatchKey& o ) const {
@@ -3808,10 +3570,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
             mats[2] = ResolveDiffuseSlotCacheIn( a.tex );
-            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material — but that
-            // costs nothing here: the prepass cutout is `clip(diffuse.a - 0.5)`, which can only ever discard
-            // when the diffuse actually HAS an alpha channel. The material's HasAlphaTest() flag that the
-            // other three builds also test is pure conservatism (a=1 everywhere never clips).
+            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material, which costs
+            // nothing: the prepass cutout is `clip(diffuse.a - 0.5)` and can only discard where the diffuse
+            // actually has an alpha channel.
             const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
 
             // !batchable = an actively morphing .MMS (see FrameAttachDraw::batchable). Its own singleton
@@ -3836,19 +3597,15 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
         }
 
-        // Live batching telemetry — readable in a real city, where a RenderDoc capture can't be taken at all
-        // (its overhead exhausts the 32-bit address space). "in" vs "batches" is the collapse ratio; "unbatch"
-        // is how much of the gap is structural rather than key-splitting: every NPC head is a .MMS morph mesh
-        // and can never batch (see FrameAttachDraw::batchable), so a high value here means no amount of
-        // refining the batch key will help.
+        // "in" vs "batches" is the collapse ratio; "unbatch" is how much of the gap is structural rather than
+        // key-splitting (a morphing .MMS can never batch — see FrameAttachDraw::batchable).
         TracyPlot( "Attach records in", static_cast<int64_t>( g_FrameAttachDraws.size() ) );
         TracyPlot( "Attach batches out", static_cast<int64_t>( usedBatches ) );
         TracyPlot( "Attach unbatchable", static_cast<int64_t>( unbatchable ) );
 
-        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single
-        // InstVBV spans them. This is a SECOND copy of the instance data (the collection-time write the
-        // per-draw cascade/point-shadow consumers still read through instView stays put) — a few KB per
-        // frame out of the VOB instance ring, which is the cheap half of the trade against the draws saved.
+        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single InstVBV
+        // spans them. A second copy of the instance data (the collection-time write the cascade/point-shadow
+        // consumers read through instView stays put), a few KB per frame out of the VOB instance ring.
         for ( size_t bi = 0; bi < usedBatches; ++bi ) {
             const AttachBatch& b = batches[bi];
             if ( b.members.empty() || !b.head ) continue;
@@ -3904,16 +3661,8 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 
 
 void D3D12GraphicsEngine::DrawDepthPrepass() {
-    // Forward+ opaque depth prepass (P2.9b-1). Lays down the opaque WORLD-MESH depth before the lit color
-    // passes, so the tiled light-culling compute (P2.9b-2) can read a populated depth buffer to tighten each
-    // tile's frustum. Writes depth only (color write mask 0). Runs after DrawSky (color cleared, depth still
-    // at the OnBeginFrame clear of 0.0) and before DrawWorldMesh. The main opaque passes keep GREATER_EQUAL +
-    // depth-write, so they re-pass on equal depth and rewrite the same value — the frame is visually identical.
-    //
-    // Scope: WORLD MESH ONLY this increment. Instanced VOBs + skeletal NPCs still get their depth from their
-    // own (unchanged) color passes; they'll be added to the prepass alongside the cull consumer (P2.9b-2),
-    // where the VOB instance-ring offset sharing gets designed together with the tile grid. Water is skipped
-    // (transparent — it never writes depth, same as the opaque pass peels it out).
+    // Forward+ opaque WORLD-MESH depth prepass, before the lit color passes. Writes depth only (color write
+    // mask 0). Water is skipped: it is transparent and never writes depth, same as in the opaque pass.
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
@@ -3944,9 +3693,9 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    // Split the submit whenever the no-alpha PSO exists and the G-buffer is off (with the G-buffer on there is
-    // a pixel shader either way, so the split buys nothing). BuildWorldDrawCommands ordered the command set
-    // opaque-prefix / alpha-tested-suffix precisely for this. See World.DepthPrepassNoAlphaPSO.
+    // Split the submit when the no-alpha PSO exists and the G-buffer is off (with it on there is a pixel
+    // shader either way). BuildWorldDrawCommands ordered the command set opaque-prefix / alpha-tested-suffix
+    // for this. See World.DepthPrepassNoAlphaPSO.
     const bool splitAlpha = !gbuf && m_Pipelines.World.DepthPrepassNoAlphaPSO != nullptr;
 
     m_CmdList->SetPipelineState( gbuf ? m_Pipelines.World.DepthPrepassGBufPSO.Get()
@@ -3977,9 +3726,9 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
             m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
         return;
     }
-    // Opaque prefix, no pixel shader bound at all (set above) — this is the run that gets double-rate Z.
-    // Prefer the coalesced mirror of that prefix (see m_WorldDepthMergedFirst): identical index coverage,
-    // far fewer commands, and with no PS bound the per-material constants it drops are dead anyway.
+    // Opaque prefix, no pixel shader bound — the run that gets double-rate Z. Prefer the coalesced mirror of
+    // it (m_WorldDepthMergedFirst): identical index coverage, far fewer commands, and the per-material
+    // constants it drops are dead with no PS bound.
     if ( m_WorldDepthMergedCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDepthMergedCount,
             m_WorldDrawArgs[m_FrameIndex].Get(),
@@ -4002,9 +3751,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // CLUSTERED Forward+ light cull (P2.14; tiled P2.9b-2 predecessor). One thread group per 16x16 screen tile
     // writes that tile's whole column of kNumZSlices light-membership masks into m_LightGridBuffer — see
     // Shaders/D3D12/LightCull.hlsl. Cluster Z bounds are analytic (log-distributed over CullCB's NearZ/FarZ),
-    // so unlike the old per-tile scheme this pass never touches the depth buffer: no prepass ordering
-    // dependency, no depth-SRV round-trip. Verify in RenderDoc: m_LightGridBuffer's Mask should be non-zero for
-    // clusters torches/spells occupy, zero elsewhere.
+    // so this pass never touches the depth buffer: no prepass ordering dependency, no depth-SRV round-trip.
     if ( !m_FrameOpen || !m_Pipelines.LightCull.PSO || !m_Pipelines.LightCull.RootSig || !m_LightGridBuffer )
         return;
     if ( !m_LightBuffer[m_FrameIndex] || m_NumTilesX == 0 || m_NumTilesY == 0 )
@@ -4049,9 +3796,8 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LightGridBuffer->GetGPUVirtualAddress() );
-    // One group per SCREEN TILE — the shader bins all kNumZSlices clusters of the tile column itself (the 16
-    // clusters share their XY bounds, so culling once per column and Z-binning the survivors is ~16x less work
-    // than the old group-per-cluster dispatch). Do NOT re-add the Z dimension without changing LightCull.hlsl.
+    // One group per SCREEN TILE — the shader bins the whole column of clusters itself, since they share their
+    // XY bounds. Do NOT re-add the Z dimension without changing LightCull.hlsl.
     m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
 
     D3D12_RESOURCE_BARRIER post = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
@@ -4196,8 +3942,8 @@ bool D3D12GraphicsEngine::UploadVobs(
     // partitioning — a cascade's upload runs on its own worker thread and must not touch a shared cursor.
     //
     // Rounded up to a whole instance: with the VOB arena a command addresses its instances by ELEMENT index
-    // (StartInstanceLocation) into the one buffer the pass binds, not by a per-command VBV, so every block
-    // must start at an exact multiple of the stride. The slice size is a round byte count and is not one.
+    // (StartInstanceLocation), so every block must start at an exact multiple of the stride — and the slice
+    // size is a round byte count, not a round instance count.
     constexpr UINT kInstStride = static_cast<UINT>( sizeof( VobInstanceInfo ) );
     const UINT sliceBase = ( ( ringSlot * m_ShadowInstanceSliceCapacity + kInstStride - 1 ) / kInstStride ) * kInstStride;
     const UINT sliceCapacity = m_ShadowInstanceSliceCapacity - ( sliceBase - ringSlot * m_ShadowInstanceSliceCapacity );
@@ -4271,33 +4017,27 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
     // Only visible visuals are touched, since the loop below already skips visuals with no instances.
     const bool animateStaticVobs = rs.RendererSettings.AnimateStaticVobs;
 
-    // Upload whatever OnAddVob queued into the VOB mega-buffers (D3D12VobArena). This is the one point per
-    // frame that touches the arena's GPU resources, and it deliberately sits here: the main thread, an open
-    // frame, before BuildVobDrawCommands reads any range and before m_ShadowMap.Prepare() fans the cascade
-    // command builds out to the worker pool. That ordering is what makes D3D12VobArena::Find() lock-free.
-    // A failed flush leaves ranges missing and those sub-meshes simply don't draw (it logs once).
+    // Upload whatever OnAddVob queued into the VOB mega-buffers (D3D12VobArena). The one point per frame that
+    // touches the arena's GPU resources, and it must stay here — main thread, open frame, before
+    // BuildVobDrawCommands reads any range and before m_ShadowMap.Prepare() fans the cascade builds out to the
+    // pool. That is what makes D3D12VobArena::Find() lock-free. A failed flush just leaves ranges missing.
     m_VobArena.Flush( this );
 
     const UINT frame = m_FrameIndex;
 
     // GPU culling (D3D12Cull.cpp): emit one VobCullVisual per visual alongside the instance memcpy — the local
-    // bbox all its instances share plus where they landed in the ring. CSCull reads both the input and the
-    // compacted output as StructuredBuffer<VobInstanceInfo>, so the record carries an ELEMENT index; the loop
-    // below keeps the ring offset a whole multiple of the stride so byte offset / stride is exact. (Today it
-    // trivially is — this is the first thing to allocate after OnBeginFrame reset the ring, and every block is
-    // numInstances * sizeof(VobInstanceInfo) — but the ring is shared with the skeletal node-attachment
-    // uploads, so aligning explicitly keeps a future reordering from silently mis-indexing every instance.)
+    // bbox its instances share plus where they landed in the ring. CSCull reads input and output as
+    // StructuredBuffer<VobInstanceInfo>, so the record carries an ELEMENT index; the loop below keeps the ring
+    // offset a whole multiple of the stride, since the ring is shared with the node-attachment uploads.
     //
-    // This is also the LAST point at which GPU culling can still be switched off: BuildVobDrawCommands (next)
-    // stamps commands that reference the compacted buffer, and from then on the cull MUST run.
+    // Also the LAST point at which GPU culling can be switched off: BuildVobDrawCommands stamps commands that
+    // reference the compacted buffer, and from then on the cull MUST run.
     if ( m_GpuVobCullActive && ( !m_VobCullVisualsPtr[m_FrameIndex] || !m_VobCulledInstances ) )
         m_GpuVobCullActive = false;
 
-    // CPU-side geometry-LOD split. With the GPU cull on, CSCull does the near/far bucketing; with it off
-    // nothing else would, so partition each visual's instance block by distance right here, as we copy it
-    // into the ring. Same decision CSCull makes, same math (see IsInstanceVisible / the note there on why
-    // the bbox CENTRE and not the vob origin), just done on the thread that is already touching every
-    // instance. The cost is one distance per instance on a list the CPU frustum cull has already thinned.
+    // CPU-side geometry-LOD split, for when the GPU cull (which would otherwise do the near/far bucketing in
+    // CSCull) is off: partition each visual's instance block by distance as we copy it into the ring. Same
+    // decision and math CSCull makes (see IsInstanceVisible, including why it uses the bbox CENTRE).
     const bool cpuLodSplit = !m_GpuVobCullActive && m_VobLodDistance > 0.0f;
     const float lodDistSq = m_VobLodDistance * m_VobLodDistance;
     XMFLOAT3 camPos;
@@ -4335,11 +4075,10 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         if ( !cpuLodSplit ) {
             memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
         } else {
-            // Partition in one pass: near packs forward from the start of the block, far backward from its
-            // end. Every instance lands in exactly one run and none are dropped here (the CPU frustum cull
-            // already ran), so the two runs are adjacent and the far one begins at exactly nearInstances —
-            // which is what lets a single StartInstanceLocation address it. Packing far backward reverses
-            // its order; nothing downstream cares (opaque, depth-tested, one draw).
+            // One pass: near packs forward from the start of the block, far backward from its end. Nothing is
+            // dropped here (the CPU frustum cull already ran), so the two runs are adjacent and the far one
+            // begins at exactly nearInstances — which is what lets a single StartInstanceLocation address it.
+            // Packing far backward reverses its order; nothing downstream cares.
             VobInstanceInfo* dst = reinterpret_cast<VobInstanceInfo*>( m_VobInstanceBufferPtr[frame] + instOffset );
             const float cx = ( visual->BBox.Min.x + visual->BBox.Max.x ) * 0.5f;
             const float cy = ( visual->BBox.Min.y + visual->BBox.Max.y ) * 0.5f;
@@ -4348,14 +4087,12 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
             UINT farCursor = numInstances;
             for ( const VobInstanceInfo& inst : visual->Instances ) {
                 // The instance matrix is uploaded row-major and read COLUMN-major by the shaders, so the
-                // stored XMFLOAT4X4 is the transpose of the matrix HLSL multiplies with. Written out
-                // component-wise rather than through XMMatrixTranspose so it is visibly the same
-                // expression VobCull.hlsl evaluates: mul( float4(centre,1), world ).
+                // stored XMFLOAT4X4 is the transpose of what HLSL multiplies with. Written component-wise so
+                // this is visibly the same expression VobCull.hlsl evaluates: mul( float4(centre,1), world ).
                 const XMFLOAT4X4& w = inst.world;
                 const float wx = cx * w.m[0][0] + cy * w.m[0][1] + cz * w.m[0][2] + w.m[0][3] - camPos.x;
                 const float wy = cx * w.m[1][0] + cy * w.m[1][1] + cz * w.m[1][2] + w.m[1][3] - camPos.y;
                 const float wz = cx * w.m[2][0] + cy * w.m[2][1] + cz * w.m[2][2] + w.m[2][3] - camPos.z;
-                // Squared compare — the threshold is a plain distance, so no sqrt is needed.
                 if ( wx * wx + wy * wy + wz * wz > lodDistSq ) dst[--farCursor] = inst;
                 else                                          dst[nearCursor++] = inst;
             }
@@ -4379,16 +4116,15 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
                 rec.BBoxMax = visual->BBox.Max;
                 rec.InstanceBase = instOffset / kInstStride;
                 rec.InstanceCount = numInstances;
-                // Conservative default: no split until BuildVobDrawCommands confirms the far bucket actually
-                // has commands to draw it. Defaulting to either split mode here would strand instances
-                // behind a bucket nothing draws.
+                // No split until BuildVobDrawCommands confirms the far bucket has commands to draw it;
+                // anything else would strand instances behind a bucket nothing draws.
                 rec.SplitMode = kSplitModeNone;
                 up.cullVisualIndex = m_VobCullVisualCount++;
                 up.culledInstView.BufferLocation = m_VobCulledInstances->GetGPUVirtualAddress() + instOffset;
             } else {
-                // Graceful: the remaining visuals keep the CPU's instance count and their absolute
-                // instanceBase, so they render uncompacted (i.e. unculled) instead of vanishing — which is
-                // why CullVobsGPU has to seed the compacted buffer from the raw ring when this happens.
+                // The remaining visuals keep the CPU's instance count and absolute instanceBase, so they
+                // render unculled instead of vanishing — which is why CullVobsGPU seeds the compacted buffer
+                // from the raw ring when this happens.
                 m_VobCullVisualOverflowed = true;
                 if ( !m_VobCullVisualOverflowLogged ) {
                     LogWarn() << "D3D12: VOB cull-record overflow (" << kMaxCullVisuals
@@ -4461,23 +4197,18 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // drawArgs (GetVobDrawArgsBuffer): the GPU-culled DEFAULT copy (instance counts patched by CullVobsGPU) when
     // culling is active, else the CPU-written UPLOAD ring.
     if ( !splitAlpha ) {
-        // Motion-G-buffer prepass: everything draws, including the far alpha-tested run. Omitting it here
-        // would leave distant cutout pixels with no motion vector and no normal, which TAA reads as ghosting
-        // and XeGTAO as a wrong normal — a visual regression, not just a coverage loss. The trim below is
-        // therefore deliberately confined to the plain depth-only path.
+        // Motion-G-buffer prepass: everything draws, including the far alpha-tested run — omitting it leaves
+        // distant cutout pixels with no motion vector and no normal (TAA ghosting, wrong XeGTAO normals).
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
         return;
     }
-    // drawArgs may be the GPU-culled DEFAULT copy — but CSPatchArgs only rewrites each command's
-    // InstanceCount in place (keyed on the VisualIndex embedded in the command itself), so the opaque/
-    // alpha-tested partition the CPU build laid out survives the cull byte-for-byte. See D3D12Cull.cpp.
+    // drawArgs may be the GPU-culled DEFAULT copy, but CSPatchArgs only rewrites InstanceCount in place, so
+    // the opaque/alpha-tested partition the CPU build laid out survives the cull. See D3D12Cull.cpp.
     if ( m_VobOpaqueDrawCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobOpaqueDrawCount, drawArgs, 0, nullptr, 0 );
     }
-    // The alpha-tested run, whole. A distance trim used to live here (only the near part of the run went
-    // into the prepass, on the theory that a distant cutout re-shades in the lit pass anyway). It is gone:
-    // leaving alpha-tested surfaces out of the prepass lets grass and other later geometry draw ON TOP of
-    // them, which is a plainly visible artifact, and it never paid for itself.
+    // The alpha-tested run, whole — no distance trim. Leaving alpha-tested surfaces out of the prepass lets
+    // grass and other later geometry draw on top of them.
     const UINT alphaCount = m_VobDrawCount - m_VobOpaqueDrawCount;
     if ( alphaCount > 0 ) {
         m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
@@ -4561,18 +4292,12 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
 void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade,
     const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts ) {
-    // P2.9b-4b (pre-cull) + shadow-cascade/point-shadow parity: run each candidate skeletal vob's once-per-frame
-    // animation update, upload its instance + bone CBs (base meshes) and its node attachments' VOB-instance data
-    // into the per-frame rings ONCE (cached in g_SkelUploadCache — the pose data is view-independent), and
-    // RECORD the (possibly cached) GPU addresses into the caller's destination list: g_FrameSkelDraws/
-    // g_FrameAttachDraws for the main view (shadowCascade < 0, default), D3D12ShadowMap::SkelDraws[c]/
-    // AttachDraws[c] for CSM cascade c (shadowCascade >= 0), or D3D12PointShadows::SkelScratch/
-    // AttachScratch for a point light (shadowCascade == -2) — mirrors D3D11's
-    // Shadows::DrawSkeletalMeshes, which culls the FULL registered skeletal-vob list against the shadow's OWN
-    // frustum/sphere rather than reusing the player's view-frustum-culled list (a caster invisible to the
-    // player can still cast a visible shadow). NO draws here — DrawSkeletalDepthPrepass/DrawSkeletalColor read
-    // g_FrameSkelDraws/g_FrameAttachDraws; D3D12ShadowMap::RecordCascade reads its own SkelDraws[c]/
-    // AttachDraws[c]; D3D12PointShadows::Prepare reads its SkelScratch/AttachScratch.
+    // Run each candidate skeletal vob's once-per-frame animation update, upload its instance + bone CBs and
+    // its attachments' VOB-instance data ONCE (cached in g_SkelUploadCache — the pose is view-independent),
+    // and record the resulting GPU addresses into the caller's list: the main view's g_FrameSkelDraws/
+    // g_FrameAttachDraws, a cascade's SkelDraws[c]/AttachDraws[c] (shadowCascade >= 0), or the point-shadow
+    // scratch lists (-2). No draws here. Like D3D11's Shadows::DrawSkeletalMeshes, each shadow caller culls
+    // the FULL registered vob list against its OWN frustum/sphere rather than the player's.
     if ( !m_FrameOpen || !m_SkeletalCBBuffer[m_FrameIndex] || !m_SkeletalCBBufferPtr[m_FrameIndex] )
         return;
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -4609,17 +4334,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
         if ( !vi->Vob->GetShowVisual() ) continue;
 
-        // Ghost vobs (invisible-potion NPCs, fading spawns, spirits) never join the regular skinned draw on
-        // either backend. What happens to them instead depends on the caller:
-        //   - shadow callers (collectGhosts == false): dropped outright. D3D11 skips them the same way in
-        //     Shadows::DrawSkeletalMeshes (D3D11GraphicsEngine.cpp:5909/6275/7004) — ghosts cast no shadows.
-        //   - the main view (collectGhosts == true): rerouted into GothicAPI::TransparencyVobs below, so
-        //     DrawGhostVobs draws them unlit+blended later in the frame. Handled after the cull/extract work
-        //     rather than here, because the ghost pass needs a culled vob with its geometry actually built.
-        // NOTE the deliberately different conditions: D3D11's shadow skips test
-        // `GetVisualAlpha() && GetVobTransparency() < 0.7f`, but its main-view reroute
-        // (GothicAPI::DrawWorldMeshNaive:1394) tests `GetVisualAlpha()` ALONE. A ghost at transparency >= 0.7
-        // therefore draws as a ghost AND casts a normal shadow. Faithful, not an oversight.
+        // Ghost vobs (invisible-potion NPCs, fading spawns, spirits) never join the regular skinned draw:
+        //   - shadow callers (collectGhosts == false): dropped outright — ghosts cast no shadows, as D3D11.
+        //   - the main view: rerouted into GothicAPI::TransparencyVobs below, so DrawGhostVobs draws them
+        //     unlit+blended later. Done after the cull/extract work, since the ghost pass needs a culled vob
+        //     with its geometry actually built.
+        // The two conditions differ deliberately, matching D3D11: its shadow skip tests transparency < 0.7,
+        // its main-view reroute tests GetVisualAlpha() alone, so a ghost at >= 0.7 both draws and casts.
         const bool isGhost = vi->Vob->GetVisualAlpha();
         if ( isGhost && !collectGhosts && vi->Vob->GetVobTransparency() < 0.7f ) continue;
 
@@ -4654,16 +4375,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         if ( visual->SkeletalMeshes.empty() && model->GetMeshSoftSkinList()->NumInArray > 0 )
             WorldConverter::ExtractSkeletalMeshFromVob( model, visual );
 
-        // Main-view ghost reroute (see the isGhost note above). This is the D3D12 equivalent of the branch
-        // GothicAPI::DrawWorldMeshNaive (:1394) takes on D3D11 — that function is the D3D11 collection path and
-        // is never called on this backend, so nothing else has ever pushed a SKELETAL entry into
-        // TransparencyVobs here. Static ghost VOBs already arrive via CVVH_AddNotDrawnVobToList
-        // (GothicAPI.cpp:4698/6771, the `normalVob` branch), which is why DrawGhostVobs' skeletal half existed
-        // but was unreachable: ghost NPCs simply rendered as nothing.
+        // Main-view ghost reroute (see the isGhost note above), the D3D12 equivalent of the branch
+        // GothicAPI::DrawWorldMeshNaive takes on D3D11 — that path never runs on this backend, so nothing
+        // else pushes a SKELETAL entry into TransparencyVobs. Static ghost VOBs already arrive via
+        // CVVH_AddNotDrawnVobToList.
         //
-        // Placed AFTER the distance/frustum cull and the lazy ExtractSkeletalMeshFromVob above (D3D11 pushes
-        // slightly earlier, before the mesh work) so the ghost pass receives a culled vob whose geometry is
-        // actually built — DrawGhostVobs skips entries with an empty SkeletalMeshes list.
+        // After the cull and the lazy ExtractSkeletalMeshFromVob above, so the ghost pass receives a vob whose
+        // geometry is built — DrawGhostVobs skips entries with an empty SkeletalMeshes list.
         if ( isGhost ) {
             if ( collectGhosts ) {
                 // Gothic lerps its animations only when this is set and below ~2000. The regular path below
@@ -4882,15 +4600,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     // to right now, so skip this attachment entirely for this frame rather than race them.
                     if ( !mvi->Ready.load( std::memory_order_acquire ) || !mvi->Visual ) continue;
                     const bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
-                    // MMS attachments only MORPH within kMorphMeshMaxDistance of the camera — beyond that they
-                    // render as their undeformed rest mesh. This mirrors D3D11 exactly: GothicAPI::
-                    // DrawWorldMeshNaive splits the skeletal vobs into a `drawAsMorphMesh` list (dist < 1000, has
-                    // an MMS attachment) drawn with distance=500 and a `drawRegular` list drawn with FLT_MAX, and
-                    // DrawSkeletalMeshVobs' morph branch is gated on `isMMS && distance < 1000` — so far-away MMS
-                    // attachments fall through to its plain instanced attachment path, which carries no
-                    // Fatness/Scaling at all. Morphing is CPU-side (Gothic's own zCMorphMesh::AdvanceAnis +
-                    // CalcVertexPositions, then a full vertex-buffer re-upload per animation frame), so this gate
-                    // is a real per-frame CPU/bandwidth saving on crowds, not just a visual nicety.
+                    // MMS attachments only MORPH within kMorphMeshMaxDistance; beyond it they render as their
+                    // undeformed rest mesh and carry no Fatness/Scaling, mirroring D3D11's `isMMS &&
+                    // distance < 1000` morph branch. A real CPU/bandwidth saving on crowds, not just a
+                    // visual nicety, whenever the deform still runs on the CPU.
                     const bool morphActive = isMMS && inMorphMeshRange;
                     // Fatness/Scaling inflate-along-normal (mirrors D3D11's VS_ExConstantBuffer_PerInstanceNode,
                     // VS_ExNode.hlsl: localPos = (pos + Fatness*normal) * Scaling). Only actively-morphing MMS
@@ -4916,10 +4629,9 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         // own LastAniUpdateFrame guard already limits this to once per animation frame.
                         WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
                     }
-                    // A non-morphing .MMS draws the shared rest mesh instead of its own copy, which still
+                    // A non-morphing .MMS draws the shared rest mesh rather than its own copy, which still
                     // holds the deformation from when it was last inside kMorphMeshMaxDistance. One MeshInfo
-                    // for every head of this type, so they batch — this is what drains "Attach unbatchable".
-                    // Falls back to the morph copy while the rest mesh is still being built on a worker.
+                    // per head type, so they batch. Falls back while the rest mesh is still being built.
                     MeshVisualInfo* drawVis = mvi;
                     if ( isMMS && !morphActive && mvi->RestVisual
                         && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {

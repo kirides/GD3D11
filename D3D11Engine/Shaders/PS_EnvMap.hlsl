@@ -2,17 +2,13 @@
 // Env-map overlay stage — the port of ZenGin's zCRenderManager::BuildShader env stage
 // (zRenderManager.cpp:671-712).
 //
-// In ZenGin env mapping is NOT a property of the base surface: it is an extra shader stage drawn
-// straight after the base pass over the same geometry, with rgbGen IDENTITY (COLOROP = SELECTARG1,
-// i.e. the env texture alone, unlit) and alphaGen FACTOR (alpha = TFACTOR.a = env-map strength
-// scaled by the sky fog color's luma). That is what gives ice/glass its sheen while the base pass
-// keeps the material's own thickness.
+// In ZenGin env mapping is NOT a property of the base surface: it is an extra shader stage drawn straight
+// after the base pass over the same geometry, with rgbGen IDENTITY (the env texture alone, unlit) and
+// alphaGen FACTOR (alpha = env-map strength scaled by the sky fog color's luma).
 //
-// Deliberate divergence: ZenGin uses a 2D sphere map (zFlare1.tga) addressed by the CAMERA-space
-// reflection vector (TCI_CAMERASPACEREFLECTIONVECTOR + the 0.5-scale/0.5-bias texture matrix), which
-// makes the reflection swim with the camera. GD3D11 already ships and loads reflect_cube.dds and uses
-// it for exactly this purpose in PS_Water/PS_DS_AtmosphericScattering, so we sample that cube with
-// the WORLD-space reflection vector instead: same stage, same alpha, stable reflection.
+// Deliberate divergence: ZenGin uses a 2D sphere map (zFlare1.tga) addressed by the CAMERA-space reflection
+// vector, which makes the reflection swim with the camera. We sample the already-loaded reflect_cube.dds
+// with the WORLD-space reflection vector instead: same stage, same alpha, stable reflection.
 //--------------------------------------------------------------------------------------
 
 SamplerState SS_Linear : register( s0 );

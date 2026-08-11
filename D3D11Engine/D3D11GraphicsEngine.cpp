@@ -3646,9 +3646,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             for ( size_t i = 0; i < instancedDrawItems.size(); ) {
                 // Find the end of this batch (same mesh + texture). Keyed on the MeshInfo POINTER, not
                 // meshId: the draw binds batchMesh's buffers for every member, so the key must mean "same
-                // buffers", and meshId only means "same source zCSubMesh" (see MeshInfo::meshId). The
-                // pointer works as a key because the registry dedupes conversions. Dropping the old
-                // "meshId 0 is unbatchable" gate also removes a spin - it could leave 'i' unadvanced.
+                // buffers", while meshId only means "same source zCSubMesh" (see MeshInfo::meshId). The
+                // pointer works as a key because the registry dedupes conversions.
                 size_t batchStart = i;
                 auto batchMesh = instancedDrawItems[i].mesh;
                 zCTexture* batchTex = instancedDrawItems[i].texture;
@@ -3959,10 +3958,9 @@ namespace {
     // The position-welded shadow index buffer may not be used where the pixel shader alpha-tests:
     // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
     //
-    // The cascade parameters are vestigial here: they used to pick MeshInfo::LodIndices for the distant
-    // cascades, but that reduced level is now built for the D3D12 backend only (see WorldObjects.h) - it
-    // would cost D3D11 one extra index buffer per sub-mesh, and D3D11 is the address-space-starved path.
-    // Kept so the call sites, which do know their cascade, need not change if it ever comes back.
+    // The cascade parameters are vestigial: they used to pick MeshInfo::LodIndices for the distant cascades,
+    // but that reduced level is built for D3D12 only (see WorldObjects.h). Kept so the call sites need not
+    // change if it comes back.
     constexpr int FIRST_LOD_SHADOW_CASCADE = 1;
 
     GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {
@@ -4247,10 +4245,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
 
-    // Everything alpha-blended in one back-to-front pass. Frame order is geometry -> alpha -> fog/pfx:
-    // after the opaque scene, sky and water, but BEFORE the fog, god rays and particles - drawn after
-    // those (where it used to sit) alpha surfaces were pasted onto an already-fogged scene and never
-    // fogged themselves.
+    // Everything alpha-blended in one back-to-front pass: after the opaque scene, sky and water, but BEFORE
+    // the fog, god rays and particles - drawn after those, alpha surfaces get pasted onto an already-fogged
+    // scene and never fog themselves.
     graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
@@ -4946,11 +4943,9 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 lastAlphaFunc = alphaFunc;
             }
 
-            // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX /
-            // alphaGen=FACTOR (zRenderManager.cpp:601-610, zRndD3D_Render.cpp:1049); its RGB is for
-            // untextured polys, which cannot reach this loop. Multiplying the RGB in made dark-tinted
-            // additive surfaces (magic barrier, 4,45,26,155) vanish. Env strength is a separate stage
-            // below, not part of the base alpha.
+            // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX / alphaGen=FACTOR
+            // (zRenderManager.cpp:601-610), and its RGB is for untextured polys, which cannot reach this
+            // loop. Multiplying the RGB in made dark-tinted additive surfaces (the magic barrier) vanish.
             ffdata.textureFactor = float4( skyLight, skyLight, skyLight,
                 zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
 
@@ -4963,9 +4958,8 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 meshInfo->BaseIndexLocation );
 
             // ZenGin draws the env-map stage immediately after the base stage of the same shader
-            // (zRenderManager.cpp:671 adds it to the same zCShader; DrawVertexBuffer walks the stages
-            // back to back), so it goes inline here rather than as a second sweep of the run — that
-            // keeps the painter's order of the surrounding blended surfaces intact.
+            // (zRenderManager.cpp:671), so it goes inline here rather than as a second sweep of the run,
+            // which keeps the painter's order of the surrounding blended surfaces intact.
             if ( envMapEnabled && mat->GetEnvMapEnabled() ) {
                 if ( !envCubeBound ) {
                     GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );

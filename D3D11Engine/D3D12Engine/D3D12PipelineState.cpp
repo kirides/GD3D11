@@ -97,11 +97,9 @@ bool D3D12PipelineState::CreateWorld() {
     // a 64-bit mask in LightGrid itself, so t3 is no longer declared by any shader and this slot is now
     // PERMANENTLY UNBOUND — left in place (rather than renumbering every later param + BindFrameLights
     // call site) since nothing ever reads register(t3) any more. Same pattern as the WindCB param below.
-    // RootDataStatic on t1/t2: both are read per-pixel by the light loop, so letting the driver hoist
-    // the buffer load out of the shader is worth the promise. It holds — BuildFrameLightBuffer fills
-    // m_LightBuffer[frameIndex] at the top of OnStartWorldRendering and DispatchLightCulling writes the
-    // cluster grid, BOTH before any pass binds this root signature, and neither is touched again for the
-    // rest of the frame. The next frame writes a different frame-index slice behind the frame fence.
+    // RootDataStatic on t1/t2: BuildFrameLightBuffer and DispatchLightCulling both write at the top of
+    // OnStartWorldRendering, before any pass binds this root signature, and neither is touched again this
+    // frame. Lets the driver hoist the per-pixel buffer load out of the light loop.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
     // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex, PointShadowDynIndex,
     //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
@@ -114,16 +112,13 @@ bool D3D12PipelineState::CreateWorld() {
     // SRV heap. Both are read only by the lit world PS (PSMain); the depth-prepass/caster PSOs sharing
     // this root sig don't reference them, so those draws simply leave the slots unbound.
     // 9 = t5 point-light shadow cube array SRV (P2.10d), sampled by the tiled point-light loop.
-    // RootDataStatic on b3: every writer of the shared shadow CB — D3D12ShadowMap::Prepare,
-    // UploadWetnessConstants, UploadAoReprojConstants and RenderSkyIBL — runs earlier in
-    // OnStartWorldRendering than FinishShadowPasses, and every SetGraphicsRootConstantBufferView(7,...)
-    // site sits after it. Nothing writes the CB once a pass has bound it.
+    // RootDataStatic on b3: every writer of the shared shadow CB (D3D12ShadowMap::Prepare,
+    // UploadWetnessConstants, UploadAoReprojConstants, RenderSkyIBL) runs before FinishShadowPasses, and
+    // every bind site sits after it.
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: b3 shadow CB (cascade view-projs + sun + strength)
-    // RangeStatic on t4/t5: both SRV slots are engine-owned, allocated once by D3D12ShadowMap /
-    // D3D12PointShadows and only ever rewritten from their Create* paths, which run behind a
-    // WaitForGpuIdle — so no in-flight list can be referencing the old descriptor. The maps themselves
-    // are rendered by the shadow command lists, which FinishShadowPasses executes AHEAD of the main
-    // list, so their contents are already final by the time this list sets the table.
+    // RangeStatic on t4/t5: engine-owned slots, only rewritten from Create* paths that run behind a
+    // WaitForGpuIdle, and their contents are final because FinishShadowPasses executes the shadow lists
+    // ahead of this one.
     rs.AddTable( D3D12RootLayout::SRVRange( 4, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
     rs.AddTable( D3D12RootLayout::SRVRange( 5, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t5 point-shadow cube array
 
@@ -236,18 +231,14 @@ bool D3D12PipelineState::CreateWorld() {
 
     // Reversed-Z: test depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
     //
-    // Depth write is OFF. The Forward+ depth prepass already laid down this exact geometry's depth, so every
-    // write here would only restore the value that is already in the buffer. Dropping it (a) removes a
-    // full-resolution depth write per opaque pixel, (b) leaves the depth surface clean for the many passes
-    // that read it later (AO, GPU cull, fog, DoF, TAA) instead of dirtying it again, and (c) lets an
-    // alpha-clipping lit shader take the plain early-Z path rather than Re-Z, since with no write there is
-    // nothing for a `discard` to invalidate.
+    // Depth write is OFF: the Forward+ depth prepass already laid down this geometry's depth, so a write here
+    // only restores the value already in the buffer. It also lets an alpha-clipping lit shader take plain
+    // early-Z rather than Re-Z, since a `discard` has nothing left to invalidate.
     //
-    // GREATER_EQUAL is kept rather than tightened to EQUAL on purpose. The prepass and this pass run DIFFERENT
-    // vertex shaders (DepthPrepass.hlsl:VSWorld vs World.hlsl:VSMain), and HLSL guarantees no cross-shader
-    // invariance for SV_Position — one ULP of difference under EQUAL makes the whole surface vanish, while
-    // under GREATER_EQUAL it still draws. The set of fragments that pass is identical to before this change;
-    // only the redundant write is gone. Same reasoning at the VOB/attachment/skeletal color PSOs.
+    // The test stays GREATER_EQUAL rather than EQUAL: the prepass runs a DIFFERENT vertex shader
+    // (DepthPrepass.hlsl:VSWorld vs World.hlsl:VSMain) and HLSL guarantees no cross-shader SV_Position
+    // invariance, so one ULP under EQUAL makes a whole surface vanish. Same at the VOB/attachment/skeletal
+    // color PSOs.
     //
     // Does NOT apply to vegetation: DrawVegetationDepthPrepass is range-limited (kVegetationPrepassRange), so
     // distant grass has no prepass depth and must keep writing its own or it stops occluding other grass.
@@ -976,10 +967,9 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         return false;
     }
 
-    // ...and the same thing with NO pixel shader, for the materials that don't need the cutout (the large
-    // majority of the world). PSClip can `discard`, which forces the whole draw onto the late-Z path; with no
-    // PS bound at all the rasterizer runs depth-only at double rate. See DepthPrepassNoAlphaPSO's declaration.
-    // Non-fatal: DrawDepthPrepass falls back to submitting everything through the clipping PSO if this is null.
+    // ...and the same with NO pixel shader, for the majority of materials that don't need the cutout. PSClip
+    // can `discard`, forcing the draw onto the late-Z path; with no PS the rasterizer runs depth-only at
+    // double rate. Non-fatal: DrawDepthPrepass falls back to the clipping PSO for everything.
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
         noAlpha.PS = {};
@@ -1228,10 +1218,9 @@ bool D3D12PipelineState::CreateVob() {
     pso.RasterizerState.DepthClipEnable = TRUE;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.DepthStencilState.DepthEnable = TRUE;
-    // Depth write OFF — DrawVobDepthPrepass already wrote this geometry's depth. See the long note at the
-    // world color PSO (CreateWorld) for why, and for why the test stays GREATER_EQUAL instead of EQUAL.
-    // Inherited by VobAttachPSO and VobIndirectPSO below, which draw the same prepassed geometry; the two
-    // alpha-BLENDED VOB PSOs after them set the mask themselves (they were never in the prepass at all).
+    // Depth write OFF — DrawVobDepthPrepass already wrote this geometry's depth; see the note at the world
+    // color PSO (CreateWorld). Inherited by VobAttachPSO/VobIndirectPSO below, which draw the same prepassed
+    // geometry; the alpha-BLENDED VOB PSOs after them set the mask themselves.
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
     pso.DepthStencilState.StencilEnable = FALSE;
@@ -1726,10 +1715,8 @@ bool D3D12PipelineState::CreateSkeletal() {
     // CreateGhostSkeletal.
     D3D12RootLayout& rs = Layout( "Skeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // RootDataStatic on b1/b2: both point into the per-frame skeletal ring, whose cursor
-    // (m_SkeletalCBBufferOffset) only ever ADVANCES within a frame — PrepareFrameSkeletals writes each
-    // entry once and hands out its address; a later PrepareFrameSkeletals call (shadow casters) appends
-    // at a fresh offset and never rewrites an address already handed out.
+    // RootDataStatic on b1/b2: both point into the per-frame skeletal ring, whose cursor only ADVANCES within
+    // a frame — PrepareFrameSkeletals writes each entry once and never rewrites a handed-out address.
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 per-instance
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bone palette
     // 3: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
@@ -1848,9 +1835,8 @@ bool D3D12PipelineState::CreateSkeletal() {
     pso.VS = { Skeletal.DepthPrepassVsBlob->GetBufferPointer(), Skeletal.DepthPrepassVsBlob->GetBufferSize() };
     pso.PS = { Skeletal.DepthPrepassPsBlob->GetBufferPointer(), Skeletal.DepthPrepassPsBlob->GetBufferSize() };
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
-    // ...and depth write back ON. The color PSO above deliberately leaves it OFF (it re-passes over depth this
-    // pass lays down); inheriting that here would make the prepass write nothing at all. Every PSO built from
-    // `pso` from here down is a prepass/G-buffer variant and wants the write.
+    // ...and depth write back ON: the color PSO above leaves it OFF, and inheriting that would make the
+    // prepass write nothing. Every PSO built from `pso` from here down is a prepass/G-buffer variant.
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
@@ -3584,14 +3570,11 @@ bool D3D12PipelineState::CreateCull() {
 
 bool D3D12PipelineState::CreateMorphFold() {
     // GPU morph fold (Shaders/D3D12/MorphFold.hlsl + D3D12MorphFold.cpp). Everything rides on root
-    // descriptors: the two per-prototype tables and the per-frame channel records are plain structured
-    // buffers, and the output is the submesh's own vertex buffer as a raw UAV — so no descriptor heap slots
-    // are involved and a dispatch is 4 Set calls.
+    // descriptors — no descriptor heap slots involved, so a dispatch is 4 Set calls.
     //
-    // On failure MorphGpu::IsActive() stays false and morph attachments keep ZENGIN's CPU deform (which is
-    // also what decides that their vertex buffers are created CPU-writable), so this is non-fatal — but it
-    // has to be attempted BEFORE the first world conversion, which is why Init() calls it with the other
-    // pre-load pipelines rather than lazily.
+    // On failure MorphGpu::IsActive() stays false and morph attachments keep ZENGIN's CPU deform, so this is
+    // non-fatal — but it must be attempted BEFORE the first world conversion (that is what decides whether
+    // the morph vertex buffers are created CPU-writable), hence Init() calling it with the pre-load pipelines.
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
@@ -3601,7 +3584,7 @@ bool D3D12PipelineState::CreateMorphFold() {
     rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Positions
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 Indices
     // t2 is this frame's channel ring slice: fully written by DispatchMorphFold before the first dispatch is
-    // recorded, and not touched again until the frame's slot comes round again kBackBufferCount frames later.
+    // recorded, and not touched again until this slot comes round kBackBufferCount frames later.
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 Channels
     rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );                                       // 4: u0 OutVertices
     if ( !rs.Build( device ) )

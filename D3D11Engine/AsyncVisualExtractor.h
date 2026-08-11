@@ -10,13 +10,11 @@ struct SkeletalMeshVisualInfo;
 /** Converts ZENGIN visuals into our own mesh/buffer objects on worker threads, and owns the ZENGIN
  *  references that makes safe.
  *
- *  The references are the whole point, because the obvious alternative does not work: a job cannot be
- *  waited on before the data it reads is freed. Our only notification that a visual is dying -
- *  GothicAPI::OnVisualDeleted - hangs off zCVisual's destructor, the *base* destructor, which runs
- *  last, so by the time it fires ~zCModel and ~zCProgMeshProto have already released everything the
- *  worker is reading. Holding a zCObject_AddRef for the life of the job stops refCtr reaching 0 at all,
- *  and with it stops a vob unloading and reloading within one frame from handing the recycled address
- *  back out as a different object.
+ *  The references are the whole point: a job cannot be waited on before the data it reads is freed. Our
+ *  only notification that a visual is dying - GothicAPI::OnVisualDeleted - hangs off zCVisual's *base*
+ *  destructor, which runs last, so by then ~zCModel and ~zCProgMeshProto have already released everything
+ *  the worker is reading. Holding a zCObject_AddRef for the life of the job stops refCtr reaching 0 at all,
+ *  and stops a vob that unloads and reloads within one frame from handing the recycled address back out.
  *
  *  Releasing them is always deferred, never done where a job is retired - see QueueRelease(). */
 class AsyncVisualExtractor {

@@ -956,10 +956,9 @@ void GothicAPI::ResetVobs() {
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
 
-    // clearAndFlush() above already waited for every background extraction to finish, and the infos
-    // they wrote into are gone with the two clears right above, so all that is left is handing their
-    // references back. Safe to release here rather than deferring: the maps are empty, so the
-    // OnVisualDeleted each release may trigger finds nothing left to tear down.
+    // Only the held references are left to hand back — clearAndFlush() above waited for every background
+    // extraction and the infos they wrote into are gone. Safe inline rather than deferred: the maps are
+    // empty, so the OnVisualDeleted a release may trigger finds nothing to tear down.
     s_AsyncVisualExtractor->CancelAll();
 
     // Delete static mesh vobs
@@ -2020,10 +2019,9 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
-                // Only tear the entry down if it belongs to *this* model. An extraction reference can
-                // hold a model's destructor past the point where a reload has re-bound this name to a
-                // newer one, and tearing down then would delete the live entry out from under it. A
-                // null Visual means the extraction never completed, so the entry is nobody else's.
+                // Only tear the entry down if it belongs to *this* model: an extraction reference can hold a
+                // model's destructor past a reload that re-bound this name to a newer one. A null Visual
+                // means the extraction never completed, so the entry is nobody else's.
                 if ( it != SkeletalMeshVisuals.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
@@ -2583,19 +2581,11 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
     return skeletalMesh;
 }
 
-/** True if this emitter samples its spawn positions off a skeletal shape-mesh we cannot serve yet.
- *  ZENGIN's zCParticleEmitter::GetPosition falls back to (0,0,0) - the model's own origin - when
- *  GetLowestLODNumPolys returns 0, so the whole effect would visibly collapse onto the model's
- *  pivot. Skipping the emitter tick until the data is there is the lesser evil: the effect simply
- *  starts a few frames late instead of starting wrong. */
-/** ZENGIN's oCVisualFX::CalcPFXMesh (oVisFx.cpp:3961) points a zPFX_EMITTER_SHAPE_MESH emitter at
- *  the origin vob's visual exactly once - while the FX's own visual is being created. If the origin
- *  had no visual yet at that instant, none of its shpMesh/shpProgMesh/shpModel branches assign, and
- *  the pointer stays null for the whole life of the effect (oCNpc::StartEffect's follow-up
- *  SetPFXShapeVisual is likewise guarded by `if (GetVisual())`, oNpc.cpp:14437). ZENGIN's
- *  zCParticleEmitter::GetPosition then falls through its MESH case to `return zVEC3(0,0,0)`
- *  (zParticle.cpp:2460) and every particle spawns on the vob's pivot - the "fire beast burns at one
- *  point until re-spawned" bug. Re-run the assignment here once the visual does exist. */
+/** ZENGIN's oCVisualFX::CalcPFXMesh points a zPFX_EMITTER_SHAPE_MESH emitter at the origin vob's visual
+ *  exactly once, while the FX's own visual is being created. If the origin had no visual at that instant the
+ *  pointer stays null for the life of the effect, zCParticleEmitter::GetPosition falls through its MESH case
+ *  to (0,0,0), and every particle spawns on the vob's pivot - the "fire beast burns at one point until
+ *  re-spawned" bug. Re-run the assignment here once the visual does exist. */
 void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
 #ifndef BUILD_SPACER
     oCVisualFX* visFx = source ? source->As<oCVisualFX>() : nullptr;
@@ -4448,10 +4438,9 @@ void GothicAPI::CollectVisibleVobs(
     Horizon.SetEnabled( RendererState.RendererSettings.EnableHorizonCulling );
     if ( haveCameraMatrices && LoadedWorldInfo && !LoadedWorldInfo->Occluders.IsEmpty() ) {
         const INT2 res = Engine::GraphicsEngine->GetResolution();
-        // viewM, NOT GetViewMatrixXM(): worldToClip above is viewM*projM from this zCCamera, and the
-        // horizon compares occluder and box depths in that camera's space. GothicAPI's TransformView is
-        // a different, pass-dependent value - the shadow cascades overwrite it through
-        // SetCameraReplacementPtr - so mixing the two measured depth along two unrelated axes.
+        // viewM, NOT GetViewMatrixXM(): worldToClip is viewM*projM from this zCCamera and the horizon
+        // compares depths in that camera's space, while TransformView is pass-dependent (the shadow
+        // cascades overwrite it through SetCameraReplacementPtr).
         Horizon.Build( LoadedWorldInfo->Occluders, worldToClip, cameraView, ctx.cameraPosition,
             frustum, res.x, res.y );
         if ( Horizon.IsActive() )
@@ -4994,19 +4983,18 @@ static void CVVH_AddNotDrawnVobToList(
     const float minVobSize = ctx.minVobSize;
 
     for ( const LeafVobEntry& entry : source ) {
-        // Reject on distance FIRST, and out of the list element's OWN mirrored position: every
-        // later step - Visit()'s atomic word, GetFlags()' hop into Gothic's heap, LastRenderBBox -
-        // is a dereference of a scattered VobInfo, and the majority of candidates never survive to
-        // need one. This loop therefore walks nothing but the contiguous 16-byte entries.
+        // Reject on distance FIRST, out of the list element's OWN mirrored position: every later step
+        // dereferences a scattered VobInfo, and most candidates never survive to need one. The reject path
+        // therefore touches nothing but the contiguous 16-byte entries.
         XMVECTOR vvdSq = XMVector3LengthSq( camPos - XMLoadFloat3( &entry.Position ) );
         if ( XMVector3Greater( vvdSq, distSq )) continue;
 
         VobInfo* it = entry.Info;
         if ( !visitor->Visit( it ) ) continue;
 
-        // Caster size gate (shadow cascades only; minVobSize is 0 for every main-view pass). Placed right
-        // after Visit rather than before it: MeshSize is leaf-independent like the distance, but reading it
-        // costs two pointer hops, so it is worth paying once per vob per pass instead of once per leaf.
+        // Caster size gate (shadow cascades only; minVobSize is 0 for every main-view pass). After Visit,
+        // not before: MeshSize is leaf-independent but costs two pointer hops, so pay it once per vob per
+        // pass rather than once per leaf.
         if ( minVobSize > 0.0f && it->VisualInfo && it->VisualInfo->MeshSize < minVobSize ) continue;
 
         const zTVobFlags vobFlags = it->Vob->GetFlags();
@@ -5017,8 +5005,8 @@ static void CVVH_AddNotDrawnVobToList(
         if ( needFrustumTest && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
         }
-        // Horizon: hidden behind an occluder, so nothing below is built at all - no instance upload,
-        // no indirect command, no CacheIn. Kept after the frustum test, which is much cheaper.
+        // Horizon: hidden behind an occluder, so nothing below is built - no instance upload, no indirect
+        // command, no CacheIn. After the frustum test, which is much cheaper.
         if ( horizon ) {
             const zTBBox3D& hb = it->LastRenderBBox;
             if ( !horizon->IsBoxVisible( hb.Min, hb.Max ) )
@@ -5052,9 +5040,8 @@ static void CVVH_AddNotDrawnVobToList(
     const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
 
     for ( auto const& it : source ) {
-        // Distance before Visit(): the test is leaf-independent, so a mob out of range fails it in
-        // every leaf it is registered in and marking it seen changes nothing. Ordering it first keeps
-        // the atomic off the reject path, exactly as in the static-vob overload above.
+        // Distance before Visit(): the test is leaf-independent, so an out-of-range mob fails it in every
+        // leaf and marking it seen changes nothing. Keeps the atomic off the reject path.
         if ( XMVector3Greater( XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq ) ) {
             continue;
         }
@@ -5067,8 +5054,8 @@ static void CVVH_AddNotDrawnVobToList(
         if ( needFrustumTest && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
         }
-        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection here saves a whole
-        // draw plus its material binds - the cheapest win of the three lists.
+        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection saves a whole draw plus
+        // its material binds.
         if ( ctx.horizon ) {
             const zTBBox3D bb = it->Vob->GetBBox();
             if ( !ctx.horizon->IsBoxVisible( bb.Min, bb.Max ) )
@@ -6633,10 +6620,8 @@ void GothicAPI::CreatezCPolygonsForSections() {
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
                 // The world mesh only keeps WorldVertexCPU now, so rebuild the full vertices this wants.
-                // Per-vertex normals come out zero; zCPolygon::CalcNormal() (which the conversion calls)
-                // still derives the polygon plane from the positions, and that is what the BSP/collision
-                // side of this path uses. G1-classic + custom-world only, and dead in practice - not worth
-                // carrying 12 bytes per world vertex to preserve.
+                // Per-vertex normals come out zero; zCPolygon::CalcNormal() still derives the polygon plane
+                // from the positions, which is what the BSP/collision side of this path uses.
                 std::vector<ExVertexStruct> rebuilt( it->second->CpuVertices.size() );
                 for ( size_t v = 0; v < it->second->CpuVertices.size(); ++v ) {
                     rebuilt[v].Position = it->second->CpuVertices[v].Position;
@@ -7148,11 +7133,9 @@ static void CollectVisibleVobsWithLeafCache(
         // DirectX cached planes have OUTWARD-facing normals (positive dot = outside frustum),
         // matching FastIntersectAxisAlignedBoxPlane: Outside = (Dist > Radius).
         // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b.
-        //   n-vertex (MINIMUM dot) = blendv(Min, Max, n): n>=0 -> Min, n<0 -> Max. dot > 0 => the
-        //     ENTIRE AABB is on the outer side of this plane, so the leaf is rejected.
-        //   p-vertex (MAXIMUM dot) = blendv(Max, Min, n), i.e. the operands swapped. dot <= 0 for
-        //     ALL six planes => every corner is inside every plane, so the leaf is fully CONTAINED
-        //     and no VOB, MOB or light inside it needs its own frustum test.
+        //   n-vertex (MINIMUM dot) = blendv(Min, Max, n); dot > 0 => whole AABB outside, leaf rejected.
+        //   p-vertex (MAXIMUM dot) = the same with the operands swapped; dot <= 0 for all six planes =>
+        //     the leaf is fully CONTAINED and nothing inside it needs its own frustum test.
         __m256 vOutside = vZero;
         __m256 vNotContained = vZero;
         if ( !skipVobFrustumCull ) {
@@ -7165,10 +7148,8 @@ static void CollectVisibleVobsWithLeafCache(
                                      _mm256_fmadd_ps( pNZ[p], vNZ, pD[p] ) ) );
                 vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vNDot, vZero, _CMP_GT_OQ ) );
 
-                // The p-vertex differs from the n-vertex only in which extent each axis picks, so it
-                // reuses the already-loaded Min/Max registers - 3 blends + 3 FMAs + a compare per
-                // plane per 8 leaves, against one full per-VOB box test saved for every VOB in every
-                // fully-contained leaf.
+                // The p-vertex differs only in which extent each axis picks, so it reuses the already-loaded
+                // Min/Max registers.
                 const __m256 vPX = _mm256_blendv_ps( vMaxX, vMinX, pNX[p] );
                 const __m256 vPY = _mm256_blendv_ps( vMaxY, vMinY, pNY[p] );
                 const __m256 vPZ = _mm256_blendv_ps( vMaxZ, vMinZ, pNZ[p] );
@@ -7219,10 +7200,8 @@ static void CollectVisibleVobsWithLeafCache(
             if ( enableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame )
                 continue;
 
-            // CONTAINS when the leaf box is fully inside all six planes: every VOB, MOB and light in
-            // it then skips its own frustum test in CollectLeafVobs. Conservative in the right
-            // direction - a VOB whose box pokes out of a contained leaf is kept rather than dropped,
-            // and it is registered in the neighbouring leaf it pokes into anyway.
+            // CONTAINS when the leaf box is fully inside all six planes: everything in it then skips its own
+            // frustum test in CollectLeafVobs. A VOB poking out of a contained leaf is kept, not dropped.
             const ContainmentType containment = ( partialMask & (1 << lane) )
                 ? ContainmentType::INTERSECTS
                 : ContainmentType::CONTAINS;

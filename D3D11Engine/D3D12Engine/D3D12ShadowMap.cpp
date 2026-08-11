@@ -792,19 +792,17 @@ void D3D12ShadowMap::Prepare() {
 	// double-darkens the baked interior lighting.
 	const bool sunUp = !Engine::GAPI->IsIndoorWorld() && (lp.y > 0.0f);
 
-	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each
-	// slice to SHADOWED instead of far and cull/build/draw no casters. Safe to read here -
-	// OnStartWorldRendering ran this frame's CollectVisibleVobs (and BspPortalCuller::Solve) before
-	// Prepare(), which is also why D3D12 can skip the culls and D3D11 only the draws.
+	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each slice
+	// to SHADOWED instead of far and cull/build/draw no casters. Safe to read here - CollectVisibleVobs (and
+	// BspPortalCuller::Solve) ran before Prepare().
 	const bool sunFullyOccluded = sunUp && Engine::GAPI->AreSunShadowsFullyOccluded();
 	const bool castersNeeded = sunUp && !sunFullyOccluded;
 
 	m_SunUp = castersNeeded;            // RecordCascade runs on a pool thread; it can re-read neither
 	m_SunOccluded = sunFullyOccluded;   // the sky nor the portal culler
 
-	// The REAL sun state, not castersNeeded: an enclosed view is still daytime and must not take the
-	// sun-down branch, which halves ambient and would darken the interior. The shadowed cascade content
-	// is what removes the per-pixel sun term.
+	// The REAL sun state, not castersNeeded: an enclosed view is still daytime and must not take the sun-down
+	// branch, which halves ambient. The shadowed cascade content is what removes the per-pixel sun term.
 	UploadSamplingConstants( sunUp );
 
 	// --- Phase A (main thread): resolve everything that is shared by ALL cascades ------------------------
@@ -875,9 +873,8 @@ void D3D12ShadowMap::Prepare() {
 		// Nothing casts; each cascade still gets its slice cleared at record time - to far (= unshadowed) with the
 		// sun down, or to near (= fully shadowed) for an enclosed view, see m_SunOccluded / RecordCascade. No cull
 		// jobs are launched, so FinishPrepare has nothing to wait for and skips Phase C outright.
-		// The lazy gate is overridden here: a frozen cascade skips its RecordCascade entirely, so at dusk the
-		// last cascade would keep the daytime depth it was frozen with for up to two more frames and go on
-		// shadowing after the sun set. Clearing is cheap — always do it.
+		// The lazy gate is overridden here: a frozen cascade skips RecordCascade entirely, so at dusk it
+		// would go on shadowing with its daytime depth for two more frames. Clearing is cheap.
 		for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
 		m_CascadeMatricesValid = false;   // the frozen matrices no longer describe any rendered slice
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
@@ -1042,9 +1039,8 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 		UINT drawCount = 0;
 		const uint32_t defaultOrm = m_E->GetDefaultOrmSrvSlot();
 		// Alpha-test partition: no-cutout casters go straight into the ring, the rest are staged and appended
-		// after the loop so RecordCascade can draw the leading run with no pixel shader bound. thread_local —
-		// one CullCascade per cascade runs concurrently on the pool. (Same scheme as BuildWorldDrawCommands;
-		// staged in normal RAM rather than compacted inside the write-combined UPLOAD ring.)
+		// after the loop so RecordCascade can draw the leading run with no pixel shader bound. Same scheme as
+		// BuildWorldDrawCommands. thread_local — one CullCascade per cascade runs concurrently on the pool.
 		thread_local std::vector<D3D12GraphicsEngine::WorldDrawCommand> alphaCmds;
 		alphaCmds.clear();
 		// Opaque commands mirrored into normal RAM for the depth-only draw-call merge below — see
@@ -1078,10 +1074,9 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 		}
 		m_WorldDrawCount[c] = drawCount;
 
-		// Coalesce the opaque prefix for this cascade's PS-less caster run, appended past the per-material
-		// set (see m_WorldDepthMergedFirst). Same wrapped world IB as the main view, so the same merge holds;
-		// the far cascade is where it pays most (it accepts nearly every section, so its opaque casters are
-		// long contiguous index runs). Pool-thread safe: touches only this cascade's ring and counters.
+		// Coalesce the opaque prefix for this cascade's PS-less caster run, appended past the per-material set
+		// (see m_WorldDepthMergedFirst). Same wrapped world IB as the main view, so the same merge holds; it
+		// pays most in the far cascade. Pool-thread safe: touches only this cascade's ring and counters.
 		m_WorldDepthMergedFirst[c] = drawCount;
 		m_WorldDepthMergedCount[c] = ( drawCount < D3D12GraphicsEngine::kMaxWorldDrawCommands )
 			? D3D12GraphicsEngine::CoalesceWorldDepthCommands( opaqueCmds, cmds + drawCount,
@@ -1121,14 +1116,11 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
     ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
 	ctx.drawDistancesSq.VisualFX = 0.0f;
 
-	// Caster size gate, in world units, derived from THIS cascade's texel footprint (m_CascadeTexelWorld[c],
-	// filled by Prepare above — cascadeSize / m_MapSize). A prop whose bbox diagonal spans fewer than
-	// CasterMinTexels texels can only ever produce a smudge in this slice, but it costs a full instance
-	// upload, an indirect command and its whole vertex + raster load. Scaling by the cascade's own texel size
-	// is what makes one setting safe across all three: the near cascade has fine texels so almost nothing
-	// trips the gate there, while the far one — which sweeps up the entire VOB population — prunes hard.
-	// MeshSize is the bbox DIAGONAL, so this over-estimates the on-screen footprint and keeps more than
-	// strictly necessary.
+	// Caster size gate, in world units, derived from THIS cascade's texel footprint (m_CascadeTexelWorld[c]).
+	// A prop spanning fewer than CasterMinTexels texels can only produce a smudge in this slice but costs a
+	// full instance upload, an indirect command and its raster load. Scaling by the cascade's own texel size
+	// is what makes one setting safe across all three. MeshSize is the bbox DIAGONAL, so this over-estimates
+	// the footprint and keeps more than strictly necessary.
 	ctx.minVobSize = ( rs.DebugSettings.ShadowCascades.CasterMinTexels > 0.0f && c < kShadowCascades )
 		? m_CascadeTexelWorld[c] * rs.DebugSettings.ShadowCascades.CasterMinTexels
 		: 0.0f;
@@ -1171,10 +1163,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	// (g_SkelMatSrvs / FrameAttachDraw::srv). No Gothic mutation, no UpdateMeshLibTexAniState, no ring writes.
 	if ( !cmdList || !m_DsvHeap ) return;
 	const UINT c = cascade;
-	// Lazily frozen this frame (see kLazyLastCascadeInterval): its slice keeps the depth it already holds and
-	// must NOT even be cleared. Gated here rather than only at the call sites so that every path reaching this
-	// function — the job, FinishShadowPasses' "recording was off" loop and its "the list failed to close"
-	// fallback — agrees, and none of them re-renders a cascade that was never culled or built this frame.
+	// Lazily frozen this frame (see kLazyLastCascadeInterval): its slice keeps the depth it holds and must NOT
+	// even be cleared. Gated here rather than at the call sites so every path into this function agrees.
 	if ( !m_ShouldUpdateCascade[c] ) return;
 	const UINT frame = m_E->m_FrameIndex;
 
@@ -1298,8 +1288,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 
 		// Per-material PSO choice rather than a partitioned command set: this is a CPU draw loop, not an
-		// ExecuteIndirect, so switching only when the flag actually flips is cheaper than reordering the
-		// records. boundPso tracks which of the two is currently set (nothing assumed bound at the start).
+		// ExecuteIndirect, so switching when the flag flips is cheaper than reordering the records.
 		ID3D12PipelineState* const skelClipPso = m_CasterSkeletalPSO.Get();
 		ID3D12PipelineState* const skelNoAlphaPso = m_CasterSkeletalNoAlphaPSO ? m_CasterSkeletalNoAlphaPSO.Get()
 		                                                                      : skelClipPso;

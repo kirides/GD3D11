@@ -56,24 +56,16 @@ uint SliceOfViewZ( float zView, float invLogRatio ) {
 }
 
 // One thread group per 16x16 SCREEN TILE — dispatch is (NumTilesX, NumTilesY, 1), and the group produces all
-// NUM_Z_SLICES clusters of that tile column itself.
-//
-// The predecessor dispatched one group per (tile x slice) with numthreads(MAX_ACTIVE_LIGHTS,1,1) — thread ti
-// tested light ti against that one cluster's AABB. At 1080p that is 130560 groups * 1024 threads = ~134M
-// threads to test a few dozen lights, i.e. the pass was ~entirely launch overhead and idle lanes. This version
-// costs (tiles * 64) threads instead — 16x fewer groups, 16x narrower — by exploiting the fact that the 16
-// clusters of a tile column share their XY bounds:
+// NUM_Z_SLICES clusters of that tile column itself, exploiting the fact that they share their XY bounds:
 //
 //   Phase 1  test each light ONCE against the tile's infinite frustum column (4 side planes) and, for the
 //            survivors, derive the slice span [s0,s1] its sphere covers analytically from its Z extent.
 //            Wave-compacted into gs_Cand — one LDS atomic per wave, not one per surviving light.
-//   Phase 2  OR each candidate's bit into only the slices it actually spans. A torch touches 1-3 slices, so
-//            this replaces 16 full sphere/AABB tests per light with a handful of LDS ORs.
-//   Phase 3  flush all 512 mask words with the full group, coalesced (the old code had thread 0 write 32
-//            words serially while 1023 lanes waited).
+//   Phase 2  OR each candidate's bit into only the slices it actually spans. A torch touches 1-3 slices.
+//   Phase 3  flush all 512 mask words with the full group, coalesced.
 //
-// Culling quality is equivalent-to-tighter: the old per-slice test used the AXIS-ALIGNED bound of the frustum
-// slab, which is a superset of the frustum column this now tests against, and the Z interval is exact.
+// Culling quality is equivalent-to-tighter than a per-cluster AABB test: the frustum column is a subset of the
+// axis-aligned slab bound, and the Z interval is exact.
 [numthreads( CULL_GROUP_SIZE, 1, 1 )]
 void CSMain( uint3 groupID : SV_GroupID, uint ti : SV_GroupIndex ) {
     // Clear the output mask + the candidate counter. 512 words / 64 threads = 8 each.

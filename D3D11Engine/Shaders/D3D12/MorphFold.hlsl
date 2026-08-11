@@ -1,11 +1,9 @@
 // GPU morph fold (D3D12MorphFold.cpp / MorphGpu.h) — the compute form of zCMorphMesh::CalcVertPositions.
 //
 // One thread per output VERTEX of one morph submesh. Each thread folds that vertex's blend channels and
-// rewrites ONLY the 12-byte Position of the vertex already sitting in the submesh's vertex buffer; the
-// normal/tangent/UV/color bytes beside it are per-wedge data written once at conversion, so nothing else
-// is read or copied. That is what lets this pass leave the vertex buffer bindable exactly as it was —
-// no new input layouts, no changes to the four attachment PSOs, and the CSM/point-shadow passes fold for
-// free because they draw the same buffer.
+// rewrites ONLY the 12-byte Position in place; the normal/tangent/UV/color bytes beside it are per-wedge data
+// written once at conversion. The buffer therefore stays bindable exactly as it was — no new input layouts,
+// no PSO changes, and the CSM/point-shadow passes fold for free because they draw the same buffer.
 //
 // The blend is a SEQUENTIAL FOLD, not a weighted sum:
 //     acc = Weight1M * acc + sample * Weight     (per channel, IN CHANNEL ORDER)

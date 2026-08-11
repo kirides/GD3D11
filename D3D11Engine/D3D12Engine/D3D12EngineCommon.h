@@ -73,10 +73,9 @@ struct FrameSkelDraw {
 // alphaTested = can the depth/caster PS' `clip(diffuse.a - 0.5)` ever discard for this attachment? Resolved on
 // the main thread with srvSlot (a pool-thread recorder must not read Gothic texture state), and used by every
 // depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
-// inst = the per-instance data this attachment already uploaded at collection time (the same bytes instView
-// points at). Carried by value so the main-view batcher (BuildSkeletalDrawCommands) can re-emit runs of
-// instances CONTIGUOUSLY without reading back the write-combined UPLOAD ring — see the node-attachment
-// batching there. The per-draw consumers (CSM cascades, point shadows) ignore it and keep using instView.
+// inst = the per-instance data this attachment uploaded at collection time (the bytes instView points at),
+// by value so the main-view batcher can re-emit runs of instances CONTIGUOUSLY without reading back the
+// write-combined UPLOAD ring. The per-draw consumers (CSM cascades, point shadows) keep using instView.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;

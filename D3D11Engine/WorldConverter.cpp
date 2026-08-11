@@ -298,16 +298,12 @@ namespace {
         CreateShadowIndexBuffer( mesh );
     }
 
-    /** Some authored VOB meshes (eg. tree/foliage assets) contain wedges with a
- *  zero-length normal (degenerate source data). Unlike world-section geometry,
- *  VOB normals are copied verbatim from the original mesh data and never
- *  regenerated, so a zero vector survives untouched through the whole
- *  pipeline and shades as pure black. Recompute a geometric fallback from the
- *  surrounding triangles' face normals for just those vertices; anything with
- *  a valid authored normal is left untouched. */
-    // True for zero-length, NaN or infinite normals - anything unsafe to light with.
-    // Written as "not > threshold" (rather than "<= threshold") so NaN, which
-    // compares false against everything, is also caught as bad instead of slipping through.
+    /** Some authored VOB meshes (tree/foliage assets) ship wedges with a zero-length normal. Unlike
+     *  world-section geometry, VOB normals are copied verbatim and never regenerated, so the zero survives
+     *  the whole pipeline and shades pure black. Recompute a fallback from the surrounding face normals for
+     *  just those vertices. */
+    // Written as "not > threshold" rather than "<= threshold" so NaN, which compares false against
+    // everything, is caught as bad instead of slipping through.
     bool IsDegenerateNormal( FXMVECTOR n ) {
         float len2 = XMVectorGetX( XMVector3LengthSq( n ) );
         return !(len2 > 1e-12f) || !(len2 < 1e12f);
@@ -406,10 +402,9 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                         m = opaqueMesh;
                     }
 
-                    // The source world mesh only keeps the slim CPU copy (see WorldVertexCPU), so the
-                    // caster vertices are rebuilt from it with Normal/Color/Tangent left zeroed. That is
-                    // lossless HERE: these meshes are only ever drawn by RenderShadowCube, which writes
-                    // depth and alpha-tests on TexCoord - it never reads a shaded attribute.
+                    // The source world mesh only keeps the slim CPU copy (see WorldVertexCPU), so the caster
+                    // vertices are rebuilt with Normal/Color/Tangent zeroed. Lossless here: these meshes are
+                    // only drawn by RenderShadowCube, which writes depth and alpha-tests on TexCoord.
                     const std::vector<WorldVertexCPU>& src = it.second->CpuVertices;
                     if ( src.empty() ) {
                         continue;
@@ -801,12 +796,9 @@ static bool IsPortalMaterial( std::string_view matName )
         || matName.starts_with( "PI:" ));
 }
 
-/** One-shot census of the world's occluder polys, logged at the end of ConvertWorldMesh.
- *
- *  Answers the two questions that decide how (or whether) to revive ZenGin's horizon culling:
- *  how many occluders exist at all, and how big they are - a horizon built from a handful of tiny
- *  polys culls nothing, while a few hundred large ones can cull whole BSP subtrees. Size is measured
- *  as the world-space AABB diagonal in metres (100 units = 1m). */
+/** One-shot census of the world's occluder polys, logged at the end of ConvertWorldMesh: how many
+ *  occluders exist and how big they are, which is what decides whether horizon culling is worth
+ *  anything in a given world. Size is the world-space AABB diagonal in metres (100 units = 1m). */
 struct OccluderSurvey {
     int Total = 0;
     int Occluder = 0;          // flags.occluder - what ScanHorizon actually gates on
@@ -816,7 +808,7 @@ struct OccluderSurvey {
 
     /** Occluder size histogram, bucketed by AABB diagonal: <1m, <5m, <15m, <50m, >=50m. */
     int SizeBuckets[5] = {};
-    /** Same, restricted to ghost occluders - the set an up-front horizon build could use as-is. */
+    /** Same, restricted to ghost occluders. */
     int GhostSizeBuckets[5] = {};
     float LargestDiagonal = 0.0f;
 
@@ -940,12 +932,9 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         return it->second;
     };
 
-    // --- Occlusion-culling survey (see OccluderSurvey) -----------------------------------------
-    // ZenGin's outdoor renderer rasterizes every poly with the Occluder flag into a 1D horizon buffer
-    // (zBsp.cpp ScanHorizon) and rejects bboxes below it. GhostOccluders are the subset that is
-    // occluder-only, never drawn - which is why the loop below throws them away. This counts what the
-    // loaded world actually ships so we can tell whether reviving that is worth it, and whether the
-    // horizon can be built from ghost occluders alone or needs a largest-N cut of all occluders.
+    // Occlusion-culling survey (see OccluderSurvey). ZenGin's outdoor renderer rasterizes every poly with
+    // the Occluder flag into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes below it;
+    // GhostOccluders are the occluder-only subset the loop below throws away.
     OccluderSurvey survey = {};
 
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
@@ -953,8 +942,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
         survey.Account( poly );
 
-        // Ghost occluders are never drawn - but they ARE the world's authored occlusion geometry, so
-        // keep a copy for the horizon cull before dropping them from the render mesh.
+        // Never drawn, but they are the world's authored occlusion geometry: keep a copy for the horizon
+        // cull before dropping them from the render mesh.
         if ( poly->GetPolyFlags()->GhostOccluder ) {
             if ( info ) CollectGhostOccluder( info->Occluders, poly );
             continue;
@@ -1231,9 +1220,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
     *outWrappedMesh = wmi;
 
-    // Everything that needed the full 60-byte vertices has now run: the per-section buffers are uploaded
-    // and both WrapVertexBuffers passes are done. Trade them for the 28-byte slim copy - see
-    // WorldVertexCPU for the three fields that still have readers.
+    // Everything that needed the full 60-byte vertices has run (section buffers uploaded, both
+    // WrapVertexBuffers passes done); trade them for the 28-byte slim copy. See WorldVertexCPU.
     {
         size_t slimBytes = 0;
         for ( WorldMeshInfo* mesh : allMeshes ) {
@@ -1489,13 +1477,12 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMes
     for ( size_t skin = 0; skin < softSkins.size(); skin++ ) {
         zCMeshSoftSkin* s = softSkins[skin];
 
-        // A softskin being torn down still reports its old submesh count while its submesh array is
-        // already null, and GetSubmesh is plain arithmetic off that base - it returns nullptr for index
-        // 0 and small bogus addresses after it. Dropping the mesh costs one NPC's geometry until the
-        // next re-extract; dereferencing it costs the process.
+        // A softskin being torn down still reports its old submesh count while its submesh array is already
+        // null, and GetSubmesh is plain arithmetic off that base, so it hands out bogus addresses. Dropping
+        // the mesh costs one NPC's geometry until the next re-extract; dereferencing it costs the process.
         if ( !s || !s->GetSubmeshes() || !s->GetVertWeightStream() ) {
-            // GetModelName() is a plain read of the prototype's own string - no ZENGIN call and no
-            // allocation - so it is safe to name the model even from a worker thread.
+            // GetModelName() is a plain read of the prototype's own string - no ZENGIN call, no allocation -
+            // so it is safe from a worker thread.
             static std::atomic<bool> loggedTornSoftSkin = false;
             if ( !loggedTornSoftSkin.exchange( true ) ) {
                 LogWarn() << "Skipped a zCMeshSoftSkin with no submesh/weight data on '"
@@ -2185,15 +2172,13 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
 
     MorphBlend::LogPrototypeBudget( visual );
 
-    // GPU fold: everything below - the deform, the per-wedge ExVertexStruct expansion and the full
-    // vertex-buffer re-upload - becomes one Dispatch per submesh that the backend records later this frame.
-    // All that happens here is snapshotting the channel state, which is why AdvanceAnis above still runs (it
-    // is the animation STATE machine, not the deform) and the tex-ani update below is unaffected.
+    // GPU fold: everything below - the deform, the per-wedge ExVertexStruct expansion and the vertex-buffer
+    // re-upload - becomes one Dispatch per submesh the backend records later this frame. All that happens
+    // here is snapshotting the channel state.
     //
-    // There is deliberately NO CPU fallback inside this mode: the vertex buffers are GPU-written DEFAULT-heap
-    // UAVs, so nothing here could write them anyway. An instance Register() refuses (the cases are listed in
-    // MorphGpu.cpp - all of them content shapes not seen in shipped .MMS files) keeps the undeformed
-    // conversion pose, which is exactly what every out-of-range morph attachment already draws.
+    // No CPU fallback inside this mode: the vertex buffers are GPU-written DEFAULT-heap UAVs, so nothing here
+    // could write them. An instance Register() refuses (see MorphGpu.cpp) keeps the undeformed conversion
+    // pose, which is what every out-of-range morph attachment already draws.
     if ( MorphGpu::IsActive() ) {
         MorphGpu::Register( visual, meshInfo );
         return;
@@ -2347,15 +2332,12 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         if ( meshInfo->MorphMeshVisual ) {
-            // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: the wedge numbering has to
-            // survive, because both deform paths address this buffer by WEDGE INDEX (the CPU one rebuilds the
-            // whole stream in wedge order, the GPU fold writes one vertex per wedge). It is also what keeps
-            // mi->Vertices an exact description of the buffer's non-position bytes.
+            // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: both deform paths address
+            // this buffer by WEDGE INDEX, so the wedge numbering has to survive.
             if ( MorphGpu::IsActive() ) {
-                // GPU fold: a DEFAULT-heap (VRAM) UAV written by MorphFold.hlsl, never by the CPU. The
-                // initial contents are this conversion's pose, so the mesh is already drawable before its
-                // first fold, and the normal/tangent/UV/color bytes written here are final - the fold only
-                // ever rewrites the leading 12-byte Position of each vertex.
+                // GPU fold: a DEFAULT-heap UAV written by MorphFold.hlsl, never by the CPU. Initialized with
+                // this conversion's pose, so it is drawable before its first fold; the fold only ever
+                // rewrites the leading 12-byte Position of each vertex.
                 mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ),
                     static_cast<GfxVertexBuffer::EBindFlags>( GfxVertexBuffer::B_VERTEXBUFFER | GfxVertexBuffer::B_UNORDERED_ACCESS ),
                     GfxVertexBuffer::U_DEFAULT );
@@ -2365,13 +2347,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
             }
         } else {
-            // The reduced level is built by OptimizeVertices below (MeshLodBuilder.h), not seeded from
-            // ZENGIN's progressive-mesh data - see there for why that could not be shaded.
-            //
-            // D3D12 ONLY. The D3D12 VOB arena is the sole consumer (main-view far bucket + the far
-            // shadow cascades, both as index ranges inside the mega index buffer); D3D11 has no way to
-            // draw it that does not mean one more per-sub-mesh index buffer, and D3D11 is the backend
-            // that runs closest to the 32-bit VA ceiling. Asking for no LOD here skips the meshopt
+            // The reduced level is built by OptimizeVertices below (MeshLodBuilder.h). D3D12 ONLY: the VOB
+            // arena is its sole consumer, and on D3D11 it would mean one more per-sub-mesh index buffer on
+            // the backend closest to the 32-bit VA ceiling. Asking for no LOD skips the meshopt
             // simplification pass and leaves LodIndices empty, so nothing downstream allocates.
 
             // Optimize faces
@@ -2434,10 +2412,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             i++;
         }
 
-        // No wrapped MeshInfo built from wrappedVertices/wrappedIndices any more: MeshVisualInfo::FullMesh
-        // was write-only - nothing ever bound it - so it was two IMMUTABLE buffers per converted visual
-        // (a full duplicate of every submesh vertex plus 32-bit indices) that only cost VRAM and 32-bit
-        // address space. WrapVertexBuffers still runs: BaseIndexLocation above is read by the draw paths.
+        // MeshVisualInfo::FullMesh is gone: it was write-only, two IMMUTABLE buffers per converted visual
+        // costing only VRAM and address space. WrapVertexBuffers still runs - the draw paths read
+        // BaseIndexLocation above.
     }
 
     // Every submesh was empty: don't let the ±FLT_MAX seeds turn MeshSize into an infinity.
@@ -2488,12 +2465,10 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     std::set<std::pair<ExVertexStruct, int>, CmpClass> vertices;
     int index = 0;
 
-    // Take the index from the insert result rather than from a separate counter. CmpClass is an
-    // epsilon comparator and therefore not a strict weak ordering, so a preceding find() can miss an
-    // element that insert() then rejects as equivalent - which used to bump the counter without
-    // growing the set and emit an index >= outVertices.size(). Downstream that is not survivable:
-    // meshopt's buildTriangleAdjacency indexes its counts[] array by it with the bounds assert
-    // compiled out (NDEBUG), so the out-of-range index corrupts the heap instead of failing.
+    // Take the index from the insert result, not a separate counter: CmpClass is an epsilon comparator and
+    // therefore not a strict weak ordering, so a find() can miss an element insert() then rejects as
+    // equivalent, emitting an index >= outVertices.size(). meshopt's buildTriangleAdjacency indexes its
+    // counts[] by it with the bounds assert compiled out, so that corrupts the heap rather than failing.
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
         auto [it, inserted] = vertices.insert( std::make_pair( input[i], index ) );
         outIndices.emplace_back( static_cast<VERTEX_INDEX>(it->second) );
@@ -2501,8 +2476,7 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     }
 
     // 16-bit indices: the per-point-light collector (WorldMeshCollectPolyRange) merges whole section
-    // neighbourhoods into one MeshInfo, so this ceiling is reachable. Truncating silently produces
-    // both wrong geometry and out-of-range indices, so say so rather than let it reach the GPU.
+    // neighbourhoods into one MeshInfo, so this ceiling is reachable.
     if ( static_cast<size_t>(index) > static_cast<size_t>(std::numeric_limits<VERTEX_INDEX>::max()) + 1 ) {
         LogError() << "IndexVertices: " << index << " unique vertices exceeds the 16-bit index range - mesh truncated";
     }
