@@ -3956,10 +3956,9 @@ namespace {
     // The position-welded shadow index buffer may not be used where the pixel shader alpha-tests:
     // welding merges wedges that share a position but not a UV. cascadeIndex -1 = not a cascade render.
     //
-    // The cascade parameters are vestigial here: they used to pick MeshInfo::LodIndices for the distant
-    // cascades, but that reduced level is now built for the D3D12 backend only (see WorldObjects.h) - it
-    // would cost D3D11 one extra index buffer per sub-mesh, and D3D11 is the address-space-starved path.
-    // Kept so the call sites, which do know their cascade, need not change if it ever comes back.
+    // The cascade parameters are vestigial: they used to pick MeshInfo::LodIndices for the distant cascades,
+    // but that reduced level is built for D3D12 only (see WorldObjects.h). Kept so the call sites need not
+    // change if it comes back.
     constexpr int FIRST_LOD_SHADOW_CASCADE = 1;
 
     GfxVertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha, int cascadeIndex = -1, int lodCascadeIndex = FIRST_LOD_SHADOW_CASCADE ) {

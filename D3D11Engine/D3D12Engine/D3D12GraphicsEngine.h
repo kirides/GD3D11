@@ -743,20 +743,17 @@ private:
 
     // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse + the VOB mega-buffer arena.
     //
-    // Every static VOB sub-mesh in the world lives in ONE DEFAULT-heap vertex buffer + ONE index buffer
-    // (D3D12VobArena), so a command no longer carries any buffer views at all: the mesh reduces to
-    // BaseVertexLocation/StartIndexLocation inside the shared pair, and the per-instance stream is a single
-    // buffer every visual already offsets into, so StartInstanceLocation covers it. Each pass therefore binds
-    // the IA exactly once and every command is pure state-free payload — which is the point: it is the
-    // presence of VBV/IBV arguments in a command signature that costs, not how many there are, and 560
-    // per-command IA rebinds were the dominant cost of the four VOB passes. See D3D12VobArena.h.
+    // Every static VOB sub-mesh lives in ONE DEFAULT-heap vertex buffer + ONE index buffer (D3D12VobArena),
+    // so a command carries no buffer views at all: the mesh is BaseVertexLocation/StartIndexLocation inside
+    // the shared pair and StartInstanceLocation covers the single instance buffer. Each pass therefore binds
+    // the IA once — the presence of VBV/IBV arguments is what makes a command an IA state change, and 560 of
+    // those per pass was the dominant VOB cost. See D3D12VobArena.h.
     //
-    // Diffuse goes bindless (b6.MatDiffuseIndex root const) so no per-draw descriptor table is needed. Wind
-    // min/max height (per-visual) rides as a 2-const partial write into b4 @ offset 4; the frame-global wind
-    // fields (dir/time/playerPos) are set once before the ExecuteIndirect. Built ONCE per frame
-    // (BuildVobDrawCommands) and consumed by BOTH the depth prepass and the color pass; the CSM cascades and
-    // the rain shadowmap build their own command sets over the same arena. Arg-member order MUST match the
-    // command signature's pArgumentDescs order (b6 consts, b4 consts, draw).
+    // Diffuse goes bindless (b6.MatDiffuseIndex root const). Wind min/max height (per-visual) rides as a
+    // 2-const partial write into b4 @ offset 4; the frame-global wind fields are set once before the
+    // ExecuteIndirect. Built ONCE per frame and consumed by both the depth prepass and the color pass; the
+    // CSM cascades and rain shadowmap build their own sets over the same arena. Arg-member order MUST match
+    // the command signature's pArgumentDescs order (b6 consts, b4 consts, draw).
     struct VobDrawCommand {                          // 48 bytes; all members 4-byte, no GPUVA alignment to keep
         uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
         uint32_t MatOrmIndex;                        // @4  b6.y  (default ORM slot when no _FX)
@@ -774,13 +771,11 @@ private:
         uint32_t LodBucket;                          // @44
     };
 
-    // The pre-arena command shape, kept for the ONE consumer that cannot use the arena: node attachments
-    // (weapons/heads/held items). Their geometry comes from the SharedVisualRegistry rather than the world's
-    // static VOB set, arrives and leaves with NPCs, and amounts to a few dozen commands a frame — nothing the
-    // arena would pay for. They keep their own signature (m_VobBoundIndirectCmdSig) with the two VBVs + IBV
-    // inline, and go through World.RootSig exactly as before. VSMainAttach/VSDepthAttach never read the b4
-    // wind min/max the signature also writes (the instance stream's wind fields carry Fatness/Scaling here),
-    // so those two floats go out as 0.
+    // The pre-arena command shape, kept for the one consumer that cannot use the arena: node attachments
+    // (weapons/heads/held items), whose geometry comes from the SharedVisualRegistry and arrives and leaves
+    // with NPCs. They keep their own signature (m_VobBoundIndirectCmdSig) with the two VBVs + IBV inline.
+    // VSMainAttach/VSDepthAttach never read the b4 wind min/max (the instance stream's wind fields carry
+    // Fatness/Scaling here), so those two floats go out as 0.
     struct VobBoundDrawCommand {                     // 96 bytes; UINT64 members force 8-byte align, 96 % 8 == 0
         D3D12_VERTEX_BUFFER_VIEW MeshVBV;            // @0  packed ExVertexStruct stream (slot 0)
         D3D12_VERTEX_BUFFER_VIEW InstVBV;            // @16 per-instance VobInstanceInfo stream (slot 1)
@@ -844,26 +839,22 @@ private:
     // The shadow-caster variant of this pipeline (VSDepth + PSShadowClipBindless) and the per-cascade arg rings
     // it submits from live in D3D12ShadowMap; this signature is shared by both.
     bool CreateVobIndirect();                         // command signature + per-frame arg rings + shadow-caster PSO (once, at init)
-    // Fill an arg buffer from the given VOB uploads; returns command count. resolveMaps=false leaves normal/orm at
-    // defaults (depth/shadow passes only alpha-clip on diffuse), true resolves the full PBR material set (color pass).
-    // culled=true points each command's instance stream at the GPU-compacted output buffer and stamps
-    // VisualIndex so CSPatchArgs can overwrite the instance count (main view only — the cascades CPU-cull).
-    // cacheIn=false resolves each material's diffuse with zCTexture::GetCacheState instead of CacheIn, making
-    // the build a pure read so it can run on a cascade's worker thread (CacheIn mutates Gothic's resource
-    // manager). A texture that has not been pulled in yet simply alpha-clips against black for that frame —
-    // a caster silhouette, not a visible surface, so the inaccuracy never reaches the screen as a wrong pixel.
-    // shadowCascade picks which of a sub-mesh's index buffers each command draws, mirroring D3D11's
-    // GetShadowAwareIndexBuffer: kVobIndicesMainView keeps the full render indices (the lit and prepass
-    // draws need per-wedge normals/UVs), a cascade index >= 0 takes the position-welded shadow indices,
-    // and >= kFirstLodShadowCascade takes the baked progressive-mesh LOD on top of that. Both reduced
-    // buffers merge wedges that share a position but not a UV, so a material the caster alpha-clips
-    // always keeps its render indices regardless of pass.
+    // Fill an arg buffer from the given VOB uploads; returns command count.
+    //   resolveMaps  false leaves normal/orm at defaults (depth/shadow passes only alpha-clip on diffuse).
+    //   culled       points each command's instance stream at the GPU-compacted buffer and stamps
+    //                VisualIndex so CSPatchArgs can overwrite the instance count (main view only).
+    //   cacheIn      false resolves diffuse with GetCacheState instead of CacheIn, making the build a pure
+    //                read so it can run on a cascade's worker thread. A texture not yet pulled in alpha-clips
+    //                against black for one frame, which on a caster silhouette never reaches the screen.
+    //   shadowCascade  which of a sub-mesh's index buffers to draw, mirroring D3D11's
+    //                GetShadowAwareIndexBuffer: main view = full render indices, cascade >= 0 = position-
+    //                welded shadow indices, >= kFirstLodShadowCascade = the baked progressive-mesh LOD.
+    //                Both reduced buffers merge wedges sharing a position but not a UV, so an alpha-clipped
+    //                material always keeps its render indices.
     //
-    // The LOD gate is shared with D3D11 (WorldConverter.h) rather than picked per backend: an edge
-    // collapse MOVES the caster surface, so a cascade whose bias is smaller than that deviation
-    // self-shadows the full-detail surface black. See the constant's comment for the failure mode.
-    // DebugSettings.ShadowCascades.FirstLodCascade overrides the constant at runtime (-1 = keep it);
-    // GetFirstLodShadowCascade() resolves the two.
+    // The LOD gate is shared with D3D11 (WorldConverter.h): an edge collapse MOVES the caster surface, so a
+    // cascade biased tighter than that deviation self-shadows the full-detail surface black.
+    // DebugSettings.ShadowCascades.FirstLodCascade overrides it at runtime; GetFirstLodShadowCascade() wins.
     static constexpr int kVobIndicesMainView = -1;
     static constexpr int kFirstLodShadowCascade = SHADOW_LOD_FIRST_CASCADE;
     static int GetFirstLodShadowCascade();

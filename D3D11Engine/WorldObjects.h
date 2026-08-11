@@ -127,11 +127,10 @@ struct MeshInfo {
     // indices onto surviving vertices, it never adds any), used by the main view's far bucket and by the
     // far shadow cascades. Built by MeshLodBuilder.h during visual extraction.
     //
-    // D3D12 ONLY - left empty under D3D11, on purpose. It gets no standalone index buffer: the D3D12 VOB
-    // arena copies it into the shared mega index buffer and draws it as a range, so it costs no extra
-    // allocation there, whereas D3D11 could only bind it as one more per-sub-mesh buffer and D3D11 is the
-    // backend already closest to the 32-bit address-space ceiling. Also empty for morph sub-meshes, which
-    // skip OptimizeVertices entirely.
+    // D3D12 ONLY - left empty under D3D11 on purpose. It gets no standalone index buffer: the VOB arena
+    // copies it into the shared mega index buffer and draws it as a range, whereas D3D11 could only bind it
+    // as one more per-sub-mesh buffer, and D3D11 is the backend closest to the 32-bit address-space ceiling.
+    // Also empty for morph sub-meshes, which skip OptimizeVertices entirely.
     std::vector<VERTEX_INDEX> LodIndices;
 
     // Offset in wrapped world mesh

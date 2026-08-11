@@ -42,9 +42,9 @@ namespace MeshLod {
 
     inline void ReportStats() {
         const uint32_t total = g_Built + g_SkipSmall + g_SkipStride + g_SkipNoReduction;
-        // First sub-mesh, then every 500. A plain "every N" gate prints nothing at all when a world has
-        // fewer than N sub-meshes, which makes silence ambiguous between "nothing ran" and "nothing to
-        // report" - the exact thing this counter exists to distinguish. EVERY exit path must call this.
+        // First sub-mesh, then every 500: a plain "every N" gate prints nothing at all in a world with
+        // fewer than N sub-meshes, which is the ambiguity this counter exists to remove. EVERY exit path
+        // must call this.
         if ( total != 1 && ( total == 0 || total % 500 != 0 ) ) return;
         const uint64_t in = g_TrisIn, out = g_TrisOut;
         LogInfo() << "VOB LOD: " << g_Built.load() << " built / " << total << " submeshes"

@@ -912,10 +912,9 @@ void GothicAPI::ResetVobs() {
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
 
-    // clearAndFlush() above already waited for every background extraction to finish, and the infos
-    // they wrote into are gone with the two clears right above, so all that is left is handing their
-    // references back. Safe to release here rather than deferring: the maps are empty, so the
-    // OnVisualDeleted each release may trigger finds nothing left to tear down.
+    // Only the held references are left to hand back — clearAndFlush() above waited for every background
+    // extraction and the infos they wrote into are gone. Safe inline rather than deferred: the maps are
+    // empty, so the OnVisualDeleted a release may trigger finds nothing to tear down.
     s_AsyncVisualExtractor->CancelAll();
 
     // Delete static mesh vobs
@@ -1977,10 +1976,9 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
-                // Only tear the entry down if it belongs to *this* model. An extraction reference can
-                // hold a model's destructor past the point where a reload has re-bound this name to a
-                // newer one, and tearing down then would delete the live entry out from under it. A
-                // null Visual means the extraction never completed, so the entry is nobody else's.
+                // Only tear the entry down if it belongs to *this* model: an extraction reference can hold a
+                // model's destructor past a reload that re-bound this name to a newer one. A null Visual
+                // means the extraction never completed, so the entry is nobody else's.
                 if ( it != SkeletalMeshVisuals.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
@@ -4948,19 +4946,18 @@ static void CVVH_AddNotDrawnVobToList(
     const float minVobSize = ctx.minVobSize;
 
     for ( const LeafVobEntry& entry : source ) {
-        // Reject on distance FIRST, and out of the list element's OWN mirrored position: every
-        // later step - Visit()'s atomic word, GetFlags()' hop into Gothic's heap, LastRenderBBox -
-        // is a dereference of a scattered VobInfo, and the majority of candidates never survive to
-        // need one. This loop therefore walks nothing but the contiguous 16-byte entries.
+        // Reject on distance FIRST, out of the list element's OWN mirrored position: every later step
+        // dereferences a scattered VobInfo, and most candidates never survive to need one. The reject path
+        // therefore touches nothing but the contiguous 16-byte entries.
         XMVECTOR vvdSq = XMVector3LengthSq( camPos - XMLoadFloat3( &entry.Position ) );
         if ( XMVector3Greater( vvdSq, distSq )) continue;
 
         VobInfo* it = entry.Info;
         if ( !visitor->Visit( it ) ) continue;
 
-        // Caster size gate (shadow cascades only; minVobSize is 0 for every main-view pass). Placed right
-        // after Visit rather than before it: MeshSize is leaf-independent like the distance, but reading it
-        // costs two pointer hops, so it is worth paying once per vob per pass instead of once per leaf.
+        // Caster size gate (shadow cascades only; minVobSize is 0 for every main-view pass). After Visit,
+        // not before: MeshSize is leaf-independent but costs two pointer hops, so pay it once per vob per
+        // pass rather than once per leaf.
         if ( minVobSize > 0.0f && it->VisualInfo && it->VisualInfo->MeshSize < minVobSize ) continue;
 
         const zTVobFlags vobFlags = it->Vob->GetFlags();
@@ -6584,10 +6581,8 @@ void GothicAPI::CreatezCPolygonsForSections() {
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
                 // The world mesh only keeps WorldVertexCPU now, so rebuild the full vertices this wants.
-                // Per-vertex normals come out zero; zCPolygon::CalcNormal() (which the conversion calls)
-                // still derives the polygon plane from the positions, and that is what the BSP/collision
-                // side of this path uses. G1-classic + custom-world only, and dead in practice - not worth
-                // carrying 12 bytes per world vertex to preserve.
+                // Per-vertex normals come out zero; zCPolygon::CalcNormal() still derives the polygon plane
+                // from the positions, which is what the BSP/collision side of this path uses.
                 std::vector<ExVertexStruct> rebuilt( it->second->CpuVertices.size() );
                 for ( size_t v = 0; v < it->second->CpuVertices.size(); ++v ) {
                     rebuilt[v].Position = it->second->CpuVertices[v].Position;
