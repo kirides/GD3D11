@@ -356,6 +356,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         // spell ground marks and weapon/spell trails simply don't draw — the same as before they were ported.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the FX pipeline (quad marks and poly strips will not render).";
     }
+    D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
@@ -2909,6 +2910,7 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
         LogWarn() << "D3D12: shader reload finished with degraded passes (" << names
                    << ") - those effects are disabled/simplified until fixed and reloaded again.";
     }
+    D3D12ShaderBackend::LogAndResetCacheStats( "reload" );
     LogInfo() << "D3D12: shaders reloaded.";
 }
 
