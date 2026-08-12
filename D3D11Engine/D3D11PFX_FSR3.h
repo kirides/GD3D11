@@ -1,8 +1,8 @@
 #pragma once
 #include "pch.h"
 
-#include <FidelityFX/host/ffx_interface.h>
-#include <FidelityFX/host/ffx_fsr3upscaler.h>
+#include <FidelityFX/api/internal/ffx_interface.h>
+#include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
 // Forward declarations
 class D3D11PfxRenderer;

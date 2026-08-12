@@ -20,56 +20,144 @@
 // RenderFsr3Upscale can never both run. They deliberately SHARE the jitter (AdvanceJitter, the FSR3 phase
 // sequence) and the motion-vector G-buffer — sharing the sequence is what makes this a drop-in.
 //
-// SHIPPING REQUIREMENT: ffx_backend_dx12_x86.dll must sit beside the mod (blobs/libs/), next to the
-// ffx_fsr3*_x86.dll pair D3D11 already needs. The .lib vendored here is an IMPORT library, so a missing DLL
-// is a load-time failure for the whole process, not a graceful FSR3 fallback.
+// SHIPPING REQUIREMENT: ffx_fsr3upscaler_dx12_x86.dll must sit beside the mod (blobs/libs/), next to the
+// DX11 one. Unlike before, it is resolved lazily through Fsr3Dx12Api rather than imported, so its absence
+// disables FSR 3 on D3D12 and nothing else. Previously the .lib vendored here was an IMPORT library, which
+// made a missing DLL a load-time failure for the whole process rather than a graceful FSR3 fallback - and
+// on a 32-bit address space it also meant mapping ~7 MB of shader blobs into every session, including the
+// D3D11 ones that never touch it.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zCCamera.h"
 
-#include <FidelityFX/host/backends/dx12/ffx_dx12.h>
-#include <FidelityFX/host/ffx_fsr3upscaler.h>
+#include <FidelityFX/backend/dx12/ffx_dx12.h>
+#include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
-#pragma comment( lib, "ffx_backend_dx12_x86.lib" )
-#pragma comment( lib, "ffx_fsr3_x86.lib" )
-#pragma comment( lib, "ffx_fsr3upscaler_x86.lib" )
+// No #pragma comment(lib): every entry point below is resolved at runtime, see Fsr3Dx12Api.
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
 namespace {
 
+    // Lazily-resolved FFX DX12 entry points.
+    //
+    // Resolving these by name keeps FSR 3 entirely opt-in: nothing is mapped until the D3D12
+    // backend actually asks for an upscaler, and a missing or stale DLL degrades to "FSR 3
+    // unavailable" instead of failing process load the way an import library would. That matters
+    // twice over here - the mod is 32-bit, and this DLL carries every FSR3 shader permutation.
+    //
+    // (The DLL itself imports only dxgi.dll; upstream's backend reaches D3D12 through COM vtables
+    // and a GetProcAddress for D3D12SerializeRootSignature, so importing it would not have dragged
+    // in d3d12.dll. The reason to load it lazily is graceful degradation and address space, not the
+    // D3D11-only floor.)
+    //
+    // decltype(&f) on the header declarations keeps the pointer types in lockstep with the SDK
+    // without repeating a signature. It is an unevaluated operand, so it emits no reference to
+    // the symbol and needs no import library.
+    struct Fsr3Dx12Api {
+        decltype( &ffxGetScratchMemorySizeDX12 )                 GetScratchMemorySize = nullptr;
+        decltype( &ffxGetDeviceDX12 )                            GetDevice = nullptr;
+        decltype( &ffxGetCommandListDX12 )                       GetCommandList = nullptr;
+        decltype( &ffxGetResourceDX12 )                          GetResource = nullptr;
+        decltype( &ffxGetResourceDescriptionDX12 )               GetResourceDescription = nullptr;
+        decltype( &ffxGetInterfaceDX12 )                         GetInterface = nullptr;
+        decltype( &ffxFsr3UpscalerContextCreate )                ContextCreate = nullptr;
+        decltype( &ffxFsr3UpscalerContextDispatch )              ContextDispatch = nullptr;
+        decltype( &ffxFsr3UpscalerContextDestroy )               ContextDestroy = nullptr;
+        decltype( &ffxFsr3UpscalerGetSharedResourceDescriptions ) GetSharedResourceDescriptions = nullptr;
+        decltype( &ffxFsr3UpscalerGetJitterPhaseCount )          GetJitterPhaseCount = nullptr;
+        decltype( &ffxFsr3UpscalerGetJitterOffset )              GetJitterOffset = nullptr;
+
+        /** Resolves every entry point on first call. Idempotent, and sticky on failure so a
+            missing DLL is reported once rather than retried every frame. */
+        bool Load() {
+            if ( Loaded ) return Ok;
+            Loaded = true;
+
+            Module = LoadLibraryA( "ffx_fsr3upscaler_dx12_x86.dll" );
+            if ( !Module ) {
+                LogWarn() << "D3D12: ffx_fsr3upscaler_dx12_x86.dll not found; FSR 3 unavailable.";
+                return false;
+            }
+
+            bool all = true;
+            auto get = [&]( auto& fn, const char* name ) {
+                fn = reinterpret_cast<std::remove_reference_t<decltype( fn )>>(
+                    GetProcAddress( Module, name ) );
+                if ( !fn ) {
+                    LogWarn() << "D3D12: ffx_fsr3upscaler_dx12_x86.dll is missing " << name
+                        << "; FSR 3 unavailable.";
+                    all = false;
+                }
+            };
+
+            get( GetScratchMemorySize, "ffxGetScratchMemorySizeDX12" );
+            get( GetDevice, "ffxGetDeviceDX12" );
+            get( GetCommandList, "ffxGetCommandListDX12" );
+            get( GetResource, "ffxGetResourceDX12" );
+            get( GetResourceDescription, "ffxGetResourceDescriptionDX12" );
+            get( GetInterface, "ffxGetInterfaceDX12" );
+            get( ContextCreate, "ffxFsr3UpscalerContextCreate" );
+            get( ContextDispatch, "ffxFsr3UpscalerContextDispatch" );
+            get( ContextDestroy, "ffxFsr3UpscalerContextDestroy" );
+            get( GetSharedResourceDescriptions, "ffxFsr3UpscalerGetSharedResourceDescriptions" );
+            get( GetJitterPhaseCount, "ffxFsr3UpscalerGetJitterPhaseCount" );
+            get( GetJitterOffset, "ffxFsr3UpscalerGetJitterOffset" );
+
+            if ( !all ) {
+                FreeLibrary( Module );
+                Module = nullptr;
+                return false;
+            }
+
+            Ok = true;
+            return true;
+        }
+
+    private:
+        HMODULE Module = nullptr;
+        bool    Loaded = false;   // resolution attempted
+        bool    Ok = false;       // resolution succeeded
+    };
+
+    Fsr3Dx12Api g_Ffx;
+
     // Names for the three shared resources, in m_Fsr3Shared order.
     constexpr const wchar_t* kSharedNames[3] = {
         L"Fsr3DilatedDepth", L"Fsr3DilatedMotionVectors", L"Fsr3ReconstructedPrevNearestDepth"
     };
 
-    // ffxGetResourceDX12 takes a NON-const wchar_t* for the debug name (the DX11 entry point takes a const
-    // one), and the shared-resource descriptions hand out const pointers. Casting here keeps that in one
-    // place; the backend only ever copies the string into FfxResource::name, and only in debug builds.
-    FfxResource AsFfxResource( ID3D12Resource* res, const wchar_t* name, FfxResourceStates state ) {
-        if ( !res ) return FfxResource{};
-        return ffxGetResourceDX12( res, GetFfxResourceDescriptionDX12( res ),
-            const_cast<wchar_t*>( name ), state );
+    // Since SDK 2.3.0 ffxGetResourceDX12 takes a const wchar_t* debug name, so the const_cast the
+    // shared-resource descriptions used to need is gone.
+    //
+    // Both calls pass every argument explicitly: these go through function pointers, and a pointer
+    // type carries no default arguments. FFX_API_RESOURCE_USAGE_READ_ONLY is what the header
+    // defaults ffxGetResourceDescriptionDX12's second parameter to.
+    FfxApiResource AsFfxResource( ID3D12Resource* res, const wchar_t* name, FfxApiResourceState state ) {
+        if ( !res ) return FfxApiResource{};
+        const FfxApiResourceDescription desc =
+            g_Ffx.GetResourceDescription( res, FFX_API_RESOURCE_USAGE_READ_ONLY );
+        return g_Ffx.GetResource( res, desc, name, static_cast<uint32_t>( state ) );
     }
 
     /** DXGI format for one of the shared resources FFX asks us to allocate. Covers exactly what
         ffxFsr3UpscalerGetSharedResourceDescriptions returns as of FSR 3.1 — the same three formats
         D3D11PFX_FSR3 hardcodes. Anything else means the SDK changed and is reported rather than
         silently mis-allocated. */
-    DXGI_FORMAT DxgiFromFfxSurfaceFormat( FfxSurfaceFormat fmt ) {
+    DXGI_FORMAT DxgiFromFfxSurfaceFormat( uint32_t fmt ) {
         switch ( fmt ) {
-        case FFX_SURFACE_FORMAT_R32_FLOAT:    return DXGI_FORMAT_R32_FLOAT;      // dilatedDepth
-        case FFX_SURFACE_FORMAT_R16G16_FLOAT: return DXGI_FORMAT_R16G16_FLOAT;   // dilatedMotionVectors
-        case FFX_SURFACE_FORMAT_R32_UINT:     return DXGI_FORMAT_R32_UINT;       // reconstructedPrevNearestDepth
+        case FFX_API_SURFACE_FORMAT_R32_FLOAT:    return DXGI_FORMAT_R32_FLOAT;      // dilatedDepth
+        case FFX_API_SURFACE_FORMAT_R16G16_FLOAT: return DXGI_FORMAT_R16G16_FLOAT;   // dilatedMotionVectors
+        case FFX_API_SURFACE_FORMAT_R32_UINT:     return DXGI_FORMAT_R32_UINT;       // reconstructedPrevNearestDepth
         default:                              return DXGI_FORMAT_UNKNOWN;
         }
     }
 
 #ifdef DEBUG_D3D11
-    void Fsr3Log( FfxMsgType type, const wchar_t* message ) {
+    void Fsr3Log( FfxApiMsgType type, const wchar_t* message ) {
         LogWarn() << "D3D12 FSR3 (" << static_cast<int>( type ) << "): " << message;
     }
 #endif
@@ -182,10 +270,13 @@ bool D3D12GraphicsEngine::CreateFsr3Output( INT2 size ) {
 bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize ) {
     DestroyFsr3Context();
 
+    // First point where FSR 3 is actually wanted, so this is where the DLL gets loaded.
+    if ( !g_Ffx.Load() ) return false;
+
     ID3D12Device* device = m_Device.GetDevice();
     if ( !device ) return false;
 
-    const size_t scratchSize = ffxGetScratchMemorySizeDX12( FFX_FSR3UPSCALER_CONTEXT_COUNT );
+    const size_t scratchSize = g_Ffx.GetScratchMemorySize( FFX_FSR3UPSCALER_CONTEXT_COUNT );
     // MUST be zeroed, not malloc'd: ffxGetInterfaceDX12 reinterprets the scratch as its BackendContext_DX12
     // and tests `!backendContext->refCount` BEFORE memset-ing it, failing on a non-zero read. With malloc,
     // whether the interface comes up at all depends on heap garbage. (D3D11PFX_FSR3::Init has the same bug.)
@@ -213,7 +304,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     desc.maxUpscaleSize.width = static_cast<uint32_t>( upscaleSize.x );
     desc.maxUpscaleSize.height = static_cast<uint32_t>( upscaleSize.y );
 
-    if ( ffxGetInterfaceDX12( &desc.backendInterface, ffxGetDeviceDX12( device ), m_Fsr3Scratch, scratchSize,
+    if ( g_Ffx.GetInterface( &desc.backendInterface, g_Ffx.GetDevice( device ), m_Fsr3Scratch, scratchSize,
         FFX_FSR3UPSCALER_CONTEXT_COUNT ) != FFX_OK ) {
         LogWarn() << "D3D12: ffxGetInterfaceDX12 failed; FSR 3 unavailable.";
         free( m_Fsr3Scratch );
@@ -222,7 +313,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     }
 
     m_Fsr3Context = new FfxFsr3UpscalerContext{};
-    const FfxErrorCode err = ffxFsr3UpscalerContextCreate( m_Fsr3Context, &desc );
+    const FfxErrorCode err = g_Ffx.ContextCreate( m_Fsr3Context, &desc );
     if ( err != FFX_OK ) {
         // FFX_ERROR_BACKEND_API_ERROR (0x8000000d) here means a D3D12 call inside the FFX backend failed and
         // FFX discarded the HRESULT; it can only come from CreatePipelineDX12. Requires instrumenting the SDK
@@ -250,7 +341,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     the context itself rather than being hardcoded (D3D11PFX_FSR3 hardcodes them), so an SDK bump that
     changes one shows up as a log line instead of a silently wrong allocation.
 
-    RESTING STATE = kFsr3SharedRestState, and every frame declares them as FFX_RESOURCE_STATE_COMPUTE_READ.
+    RESTING STATE = kFsr3SharedRestState, and every frame declares them as FFX_API_RESOURCE_STATE_COMPUTE_READ.
     That is not arbitrary: within one dispatch FFX writes each of them in the reconstruct-and-dilate pass and
     READS them in the later depth-clip/accumulate passes, so COMPUTE_READ is also where FFX leaves them — the
     declaration stays truthful across frames without us ever touching them. If the debug layer reports a
@@ -261,7 +352,7 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
     if ( !device || !m_Allocator || !m_Fsr3Context ) return false;
 
     FfxFsr3UpscalerSharedResourceDescriptions shared = {};
-    if ( ffxFsr3UpscalerGetSharedResourceDescriptions( m_Fsr3Context, &shared ) != FFX_OK ) {
+    if ( g_Ffx.GetSharedResourceDescriptions( m_Fsr3Context, &shared ) != FFX_OK ) {
         LogWarn() << "D3D12: ffxFsr3UpscalerGetSharedResourceDescriptions failed; FSR 3 unavailable.";
         return false;
     }
@@ -274,7 +365,7 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
     for ( UINT i = 0; i < 3; ++i ) {
-        const FfxResourceDescription& src = descs[i]->resourceDescription;
+        const FfxApiResourceDescription& src = descs[i]->resourceDescription;
         const DXGI_FORMAT fmt = DxgiFromFfxSurfaceFormat( src.format );
         if ( fmt == DXGI_FORMAT_UNKNOWN ) {
             LogWarn() << "D3D12: FSR3 asked for shared resource " << i << " in unmapped surface format "
@@ -311,7 +402,7 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
     pending-cleanup queue. Every caller either sits behind WaitForGpuIdle() or is the destructor. */
 void D3D12GraphicsEngine::DestroyFsr3Context() {
     if ( m_Fsr3Context ) {
-        ffxFsr3UpscalerContextDestroy( m_Fsr3Context );
+        g_Ffx.ContextDestroy( m_Fsr3Context );
         delete m_Fsr3Context;
         m_Fsr3Context = nullptr;
     }
@@ -360,7 +451,7 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     // --- states in -------------------------------------------------------------------------------------
     // Depth leaves DEPTH_WRITE, so the DSV must be unbound first (same dance RenderBloom / RenderTAA do).
     // Everything FFX reads goes to NON_PIXEL_SHADER_RESOURCE exactly (not the combined read state the
-    // velocity buffer normally rests in): FFX_RESOURCE_STATE_COMPUTE_READ maps to that single state, and a
+    // velocity buffer normally rests in): FFX_API_RESOURCE_STATE_COMPUTE_READ maps to that single state, and a
     // barrier FFX issues with a wider before-state than the resource actually carries is a debug-layer error.
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
     {
@@ -386,15 +477,15 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
 
     // --- dispatch description --------------------------------------------------------------------------
     FfxFsr3UpscalerDispatchDescription dd = {};
-    dd.commandList = ffxGetCommandListDX12( m_CmdList.Get() );
+    dd.commandList = g_Ffx.GetCommandList( m_CmdList.Get() );
 
-    dd.color = AsFfxResource( m_SceneColor.Get(), L"Fsr3InputColor", FFX_RESOURCE_STATE_COMPUTE_READ );
-    dd.depth = AsFfxResource( m_DepthBuffer.Get(), L"Fsr3InputDepth", FFX_RESOURCE_STATE_COMPUTE_READ );
-    dd.motionVectors = AsFfxResource( m_VelocityBuffer.Get(), L"Fsr3InputVelocity", FFX_RESOURCE_STATE_COMPUTE_READ );
-    dd.output = AsFfxResource( m_Fsr3Output.Get(), L"Fsr3Output", FFX_RESOURCE_STATE_UNORDERED_ACCESS );
-    FfxResource* sharedSlots[3] = { &dd.dilatedDepth, &dd.dilatedMotionVectors, &dd.reconstructedPrevNearestDepth };
+    dd.color = AsFfxResource( m_SceneColor.Get(), L"Fsr3InputColor", FFX_API_RESOURCE_STATE_COMPUTE_READ );
+    dd.depth = AsFfxResource( m_DepthBuffer.Get(), L"Fsr3InputDepth", FFX_API_RESOURCE_STATE_COMPUTE_READ );
+    dd.motionVectors = AsFfxResource( m_VelocityBuffer.Get(), L"Fsr3InputVelocity", FFX_API_RESOURCE_STATE_COMPUTE_READ );
+    dd.output = AsFfxResource( m_Fsr3Output.Get(), L"Fsr3Output", FFX_API_RESOURCE_STATE_UNORDERED_ACCESS );
+    FfxApiResource* sharedSlots[3] = { &dd.dilatedDepth, &dd.dilatedMotionVectors, &dd.reconstructedPrevNearestDepth };
     for ( UINT i = 0; i < 3; ++i ) {
-        *sharedSlots[i] = AsFfxResource( m_Fsr3Shared[i].Get(), kSharedNames[i], FFX_RESOURCE_STATE_COMPUTE_READ );
+        *sharedSlots[i] = AsFfxResource( m_Fsr3Shared[i].Get(), kSharedNames[i], FFX_API_RESOURCE_STATE_COMPUTE_READ );
     }
     // exposure / reactive / transparencyAndComposition stay zeroed — all three are optional. AUTO_EXPOSURE
     // covers the first. The other two would need per-pixel authoring this backend has no producer for:
@@ -435,7 +526,7 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     dd.cameraNear = FLT_MAX;
     dd.cameraFar = std::max( cam ? cam->GetNearPlane() : 0.01f, 0.075f );   // FFX validation wants >= 0.075
 
-    const FfxErrorCode err = ffxFsr3UpscalerContextDispatch( m_Fsr3Context, &dd );
+    const FfxErrorCode err = g_Ffx.ContextDispatch( m_Fsr3Context, &dd );
 
     // --- state cache + heaps ---------------------------------------------------------------------------
     // The FFX backend records on the RAW list: its own PSOs, root signatures, descriptor heaps and tables.

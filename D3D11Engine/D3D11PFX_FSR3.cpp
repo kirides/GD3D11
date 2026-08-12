@@ -5,34 +5,13 @@
 #include "D3D11PfxRenderer.h"
 #include "D3D11GraphicsEngine.h"
 #include "Engine.h"
-#include <FidelityFX/host/backends/dx11/ffx_dx11.h>
-#include <FidelityFX/host/ffx_fsr3upscaler.h>
+#include <FidelityFX/backend/dx11/ffx_dx11.h>
+#include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
-#pragma comment(lib, "ffx_backend_dx11_x86.lib")
-#pragma comment(lib, "ffx_fsr3_x86.lib")
-#pragma comment(lib, "ffx_fsr3upscaler_x86.lib")
-
-namespace {
-    // register a DX11 resource to the backend
-    FfxResource ffxGetResourceDX11_Fsr31_( ID3D11Resource* dx11Resource,
-        FfxResourceDescription                     ffxResDescription,
-        wchar_t const* ffxResName,
-        FfxResourceStates                          state = FFX_RESOURCE_STATE_COMPUTE_READ /*=FFX_RESOURCE_STATE_COMPUTE_READ*/ )
-    {
-        FfxResource resource = {};
-        resource.resource = reinterpret_cast<void*>(const_cast<ID3D11Resource*>(dx11Resource));
-        resource.state = state;
-        resource.description = ffxResDescription;
-
-    #ifdef DEBUG_D3D11
-        if ( ffxResName ) {
-            wcscpy_s( resource.name, ffxResName );
-        }
-    #endif
-
-        return resource;
-    }
-}
+// Since FFX SDK 2.3.0 the FSR3 Upscaler component lives inside each backend library, so
+// there is one DLL per backend instead of the old backend+component split. Only the DX11
+// one is imported here; the DX12 side is loaded on demand (see D3D12Fsr3.cpp).
+#pragma comment(lib, "ffx_fsr3upscaler_dx11_x86.lib")
 
 D3D11PFX_FSR3::D3D11PFX_FSR3( D3D11PfxRenderer* renderer )
     : Renderer( renderer )
@@ -47,7 +26,7 @@ D3D11PFX_FSR3::~D3D11PFX_FSR3() {
     Destroy();
 }
 
-static void Ffx_log( FfxMsgType type,
+static void Ffx_log( FfxApiMsgType type,
     const wchar_t* message ) {
     LogError() << "FFX3 Error (" << type << "): " << message;
 }
@@ -148,11 +127,11 @@ namespace {
         return resource;
     }
 
-    FfxResource GetAsFfxResource( ID3D11Resource* res, const wchar_t* name ) {
-        return ffxGetResourceDX11_Fsr31_( res, GetFfxResourceDescriptionDX11( res ), name );
+    FfxApiResource GetAsFfxResource( ID3D11Resource* res, const wchar_t* name ) {
+        return ffxGetResourceDX11_Fsr31( res, GetFfxResourceDescriptionDX11( res ), name );
     }
 
-    FfxResource GetAsFfxResource( ID3D11View* d3d11View, const wchar_t* name ) {
+    FfxApiResource GetAsFfxResource( ID3D11View* d3d11View, const wchar_t* name ) {
         ID3D11Resource* res = GetResourceFromView( d3d11View );
         return GetAsFfxResource( res, name );
     }

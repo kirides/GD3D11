@@ -14,8 +14,10 @@
 // open — but stores and outputs LINEAR HDR. So nothing downstream needs to know TAA ran; the pass reads the
 // scene colour and writes the scene colour back.
 //
-// JITTER. Uses the FSR3 phase sequence (ffxFsr3GetJitterPhaseCount/Offset), which is already linked because
-// D3D11PFX_TAA::AdvanceJitter uses it. Sharing the sequence is deliberate: the planned FSR3 upscaler expects
+// JITTER. Uses the FSR3 phase sequence (ffxFsr3UpscalerGetJitterPhaseCount/Offset), which is already linked
+// because D3D11PFX_TAA::AdvanceJitter uses it. Note these two come from the DX11 upscaler DLL, not the DX12
+// one: they are backend-agnostic Halton maths exported by both, and TAA must jitter even when FSR 3 is
+// unavailable - so it deliberately does NOT go through D3D12Fsr3.cpp's lazily-loaded Fsr3Dx12Api. Sharing the sequence is deliberate: the planned FSR3 upscaler expects
 // exactly this jitter, so it becomes a drop-in rather than a competing jitter regime. The offset goes into
 // TransformProj._13/_23, which every geometry pass picks up through GothicAPI::GetProjectionMatrix, while
 // MotionCB::UnjitteredViewProj deliberately stays clean so motion vectors do not encode the jitter as motion.
@@ -24,7 +26,7 @@
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zCCamera.h"
-#include <FidelityFX/host/ffx_fsr3.h>
+#include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
@@ -185,13 +187,13 @@ void D3D12GraphicsEngine::AdvanceJitter() {
     // samples of a DISPLAY pixel — FSR scales the base 8-sample Halton run by (display/render)^2.
     const int32_t renderWidth = m_Resolution.x;
     const int32_t displayWidth = m_BackbufferResolution.x;
-    const int32_t phaseCount = ffxFsr3GetJitterPhaseCount( renderWidth, displayWidth );
+    const int32_t phaseCount = ffxFsr3UpscalerGetJitterPhaseCount( renderWidth, displayWidth );
 
     float jitterX = 0.0f;
     float jitterY = 0.0f;
     if ( phaseCount > 0 ) {
         m_TaaJitterIndex = ( m_TaaJitterIndex + 1 ) % phaseCount;
-        ffxFsr3GetJitterOffset( &jitterX, &jitterY, m_TaaJitterIndex, phaseCount );
+        ffxFsr3UpscalerGetJitterOffset( &jitterX, &jitterY, m_TaaJitterIndex, phaseCount );
     } else {
         m_TaaJitterIndex = 0;
     }
