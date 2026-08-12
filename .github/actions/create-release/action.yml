@@ -36,7 +36,7 @@ runs:
           Get-ChildItem -Path $dir
 
           $zipName = "$dir.zip"
-          7z a -tzip -mx=7 -mmt=on "$zipName" "$dir\*"
+          7z a -tzip -mx=7 -mmt=on "$zipName" "$dir/*"
           Write-Host "Created $zipName"
         }
 
