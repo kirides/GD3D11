@@ -9186,6 +9186,8 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             // MUL/MUL2 are unlit (PS_Simple), everything else lit (PS_World)
             const bool modulate = (alphaFunc == zMAT_ALPHA_FUNC_MUL || alphaFunc == zMAT_ALPHA_FUNC_MUL2);
             SetActivePixelShader( modulate ? PShaderID::PS_Simple : PShaderID::PS_World );
+            BindActivePixelShader();
+
             if ( !modulate ) {
                 ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &state.GraphicsState, sizeof( state.GraphicsState ) );
             }
