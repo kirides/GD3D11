@@ -194,9 +194,24 @@ public:
     XRESULT BindActivePixelShader() override;
     XRESULT BindActiveVertexShader() override;
 
-    /** Draws quadmarks in a simple way */
-    void DrawQuadMarks();
-    void DrawMQuadMarks();
+    /** ---------------- Sorted transparency -------------------- */
+
+    /** Adds the late kinds (ghosts, decals, quad marks, poly strips) and sorts back to front. */
+    void CollectTransparencyQueue();
+
+    /** Replays the sorted queue, one call per maximal same-kind run. */
+    void DrawTransparencyQueue();
+
+    void DrawWorldTransparencyRun( std::span<const TransparentItem> items, EWorldTransparencyVariant variant );
+    void DrawAlphaVobRun( std::span<const TransparentItem> items );
+    void DrawGhostRun( std::span<const TransparentItem> items );
+    void DrawDecalRun( std::span<const TransparentItem> items );
+    void DrawQuadMarkRun( std::span<const TransparentItem> items );
+    void DrawPolyStripRun( std::span<const TransparentItem> items );
+
+    /** Depth re-lay for the world transparency meshes, once, after the replay - the fog/god-ray
+        passes downstream sample it. */
+    void DrawWorldTransparencyDepthOnly();
 
     /** Gets the depthbuffer */
     RenderToDepthStencilBuffer* GetDepthBuffer() const { return DepthStencilBuffer.get(); }
@@ -238,14 +253,8 @@ public:
     /** Draws the world mesh */
     XRESULT DrawWorldMesh( bool noTextures = false ) override;
 
-    /** Draws a list of mesh infos */
-    XRESULT DrawMeshInfoListAlphablended( const std::vector<std::pair<MeshKey, MeshInfo*>>& list );
-
     /** Draws the static VOBs */
     XRESULT DrawVOBs( bool noTextures = false ) override;
-
-    /** Draws PolyStrips (weapon and particle trails) */
-    XRESULT DrawPolyStrips( bool noTextures = false ) override;
 
     /** Draws a VOB (used for inventory) */
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;
@@ -278,7 +287,9 @@ public:
 
     /** Draws the static vobs instanced */
     XRESULT DrawVOBsInstanced();
-    XRESULT DrawFrameAlphaMeshes();
+
+    /** Per-visual wind metadata for this frame's alpha VOB batches; once, before the replay. */
+    void PrepareAlphaMeshWindMetadata();
 
     /** Set wind props in const buffer */
     void ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff );
@@ -531,23 +542,11 @@ protected:
     /** Shadowing */
     std::vector<VobInfo*> RenderedVobs;
 
-    /** Modulate Quad Marks */
-    std::vector<std::pair<zCQuadMark*, const QuadMarkInfo*>> MulQuadMarks;
-
     /** The current rendering stage */
     D3D11ENGINE_RENDER_STAGE RenderingStage;
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;
-
-    /** List of worldmeshes we have to render using alphablending */
-    std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshes;
-
-    /** List of portal worldmeshes we have to render using alphablending */
-    std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshesPortal;
-
-    /** List of waterfall worldmeshes we have to render using alphablending */
-    std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshesWaterfall;
 
     INT2 m_scaledResolution;
 
@@ -562,6 +561,12 @@ private:
     void UnbindWindMetadata();
 
     std::vector<AlphaMeshData> m_AlphaMeshes;
+
+    bool m_AlphaMeshWindMetadataValid = false;
+
+    /** Instanced draws the alpha VOB emitter needed; vs. the instance count = surviving batching. */
+    unsigned int m_AlphaVobDrawsThisFrame = 0;
+
     std::vector<VobLightInfo*> m_FrameLights;
     std::vector<VobWindMetadata> m_WindMetadataStaging;
 

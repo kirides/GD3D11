@@ -1,33 +1,15 @@
-// D3D12GraphicsEngine — alpha-blended world-mesh surfaces (ice, glass, magic barriers, water-fall style
-// overlays). This is the port of D3D11GraphicsEngine::DrawMeshInfoListAlphablended
-// (D3D11GraphicsEngine.cpp:4840) plus the peel-out half of its DrawWorldMesh mesh-list build
-// (D3D11GraphicsEngine.cpp:5138).
+// D3D12GraphicsEngine — the frame's sorted transparency queue and the alpha-blended world-mesh surfaces
+// (ice, glass, magic barriers, waterfall foam). Port of D3D11's DrawWorldTransparencyRun + the queue.
 //
-// Why the surfaces need their own pass at all: they were previously swept into D3D12's opaque world
-// ExecuteIndirect command set, which renders every material fully opaque with a fixed alpha-test cutout —
-// so Gothic's ice slabs read as solid rock. D3D11 instead peels any material whose alpha func is a real
-// blend mode out of the opaque set entirely, sorts it back-to-front, and draws it after the opaque scene
-// (and after water) with the material's own blend mode and depth-write off.
+// Three lists feed the WorldMesh kind, selected by the item's SubKind:
+//   * g_FrameWorldTransparency       — real blend alpha func (ice, glass)      -> PS_Simple_FF
+//   * g_FrameWorldTransparencyPortal — MT_Portal, gated on DrawG1ForestPortals -> PS_PortalDiffuse
+//   * g_FrameWorldTransparencyFoam   — MT_WaterfallFoam                        -> PS_WaterfallFoam
+// The latter two are collected by material TYPE regardless of alpha func, which is what keeps
+// ResolveAlphaFunc's "0 -> derive from the material color's alpha" fixup live.
 //
-// Shape of the pass, mirrored one-to-one from D3D11:
-//   1. per-material: derive the effective alpha func (0 == "material default" -> BLEND when the material
-//      color's alpha is < 255, else stay opaque)
-//   2. compute the FF `textureFactor` tint — the material color when translucent, or the env-map strength
-//      ramped by the sun height for env-mapped materials
-//   3. draw with the blend mode that alpha func maps to, depth-tested but NOT depth-writing
-//   4. re-draw the whole list depth-only (color writes off, depth-write on) so the depth-reading post
-//      passes (height fog, god rays) see these surfaces instead of whatever is behind them
-//
-// Deliberate divergences from D3D11, both documented at their site: the vertex color is swizzled .bgra
-// (D3D11's PS_Simple reads the BGRA DWORD unswizzled, i.e. with R/B transposed), and the sampled texel is
-// linearized because D3D12's scene target is linear HDR.
-//
-// Three lists run through this one body, exactly as D3D11 makes three DrawMeshInfoListAlphablended calls:
-//   * g_FrameWorldTransparency       — materials with a real blend alpha func (ice, glass)  -> PS_Simple_FF
-//   * g_FrameWorldTransparencyPortal — MT_Portal, gated on DrawG1ForestPortals              -> PS_PortalDiffuse
-//   * g_FrameWorldTransparencyFoam   — MT_WaterfallFoam                                     -> PS_WaterfallFoam
-// The latter two are collected by material TYPE regardless of their alpha func, which is what makes
-// DrawMeshInfoListAlphablended's `alphaFunc == 0 -> derive from the material color's alpha` fixup live.
+// Deliberate divergences from D3D11, documented at their site: the vertex color is swizzled .bgra and the
+// sampled texel is linearized (D3D12's scene target is linear HDR).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12Texture.h"
@@ -39,6 +21,8 @@
 #include "../WorldObjects.h"
 #include "../zCMaterial.h"
 #include "../zCTexture.h"
+#include "../zCVob.h"          // CollectTransparencyQueue: decal world positions
+#include "../zCQuadMark.h"     // CollectTransparencyQueue: quad-mark connected vob
 #include "../D3D7/MyDirectDrawSurface7.h"
 
 #include <algorithm>
@@ -53,12 +37,11 @@ std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyPortal;
 std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyFoam;
 
 // Declared in D3D12EngineCommon.h; filled by BuildVobDrawCommands (D3D12Scene.cpp), drained by
-// DrawVobAlphaMeshes at the bottom of this file.
+// DrawVobAlphaRun below.
 std::vector<VobAlphaMesh> g_FrameVobAlpha;
 
 namespace {
-    // D3D11 spec: DrawMeshInfoListAlphablended's `alphaFunc == 0` fixup. zMAT_ALPHA_FUNC_MAT_DEFAULT (0)
-    // means "whatever the material color says": translucent color -> blend, opaque color -> leave it alone.
+    // alphaFunc 0 (MAT_DEFAULT) means "whatever the material color says": translucent -> blend.
     int ResolveAlphaFunc( zCMaterial* mat ) {
         int alphaFunc = mat->GetAlphaFunc();
         if ( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
@@ -69,37 +52,18 @@ namespace {
         return alphaFunc;
     }
 
-    // D3D11 spec: the `ffdata.textureFactor` block of DrawMeshInfoListAlphablended, verbatim. Env-mapped
-    // materials get a white tint whose ALPHA is the env-map strength ramped by how high the sun stands
-    // (that is what makes ice/glass reflective at noon and near-invisible at night); everything else uses
-    // the material color when it is translucent, and stays untinted otherwise.
+    // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX / alphaGen=FACTOR
+    // (zRenderManager.cpp:601-610), and its RGB is for untextured polys, which never get here. Multiplying
+    // the RGB in made dark-tinted additive surfaces (the magic barrier) vanish.
     float4 ComputeTextureFactor( zCMaterial* mat ) {
-        if ( mat->GetEnvMapEnabled() ) {
-            GSky* sky = Engine::GAPI->GetSky();
-            const float sunHeight = sky ? sky->GetAtmosphereCB().AC_LightPos.y : 0.0f;
-            if ( sunHeight > 0 ) {
-                // sun is up
-                const float maxSunHeight = 1.0f;
-                const float lerpFactor = std::clamp( sunHeight / maxSunHeight, 0.0f, 1.0f );
-
-                const float minIntensity = 0.1f;
-                const float maxIntensity = 0.7f;
-                const float currentIntensity = std::clamp(
-                    mat->GetEnvMapStrength() * std::lerp( minIntensity, maxIntensity, lerpFactor ), 0.0f, 1.0f );
-                return zColor( 255, 255, 255, static_cast<uint8_t>( 255.0f * currentIntensity ) ).ToFloat4();
-            }
-            return zColor( 255, 255, 255,
-                static_cast<uint8_t>( 255.0f * mat->GetEnvMapStrength() * 0.1f ) ).ToFloat4();
-        }
-        if ( zColor( mat->GetColor() ).bgra.alpha < 255 ) {
-            return zColor( mat->GetColor() ).ToFloat4();
-        }
-        return float4( 1.0f, 1.0f, 1.0f, 1.0f );
+        // RGB carries the day/night factor: unlit surfaces over a baked-daylight vertex color would
+        // otherwise stay noon-bright at midnight. 1.0 in daylight. See GothicAPI::GetSkyDayFactor.
+        const float skyLight = Engine::GAPI->GetSkyDayFactor();
+        return float4( skyLight, skyLight, skyLight,
+            zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
     }
 
-    // D3D11 spec: the alpha-func -> blend-state switch in DrawMeshInfoListAlphablended. Returns false for
-    // the `default:` arm, which in D3D11 leaves the previously-set blend state alone (it only turns
-    // depth-write off) — the caller reproduces that by keeping its current blend state.
+    // False on the `default:` arm, where D3D11 leaves the current blend state alone.
     bool BlendStateForAlphaFunc( int alphaFunc, GothicBlendStateInfo& blend ) {
         switch ( alphaFunc ) {
         case zMAT_ALPHA_FUNC_BLEND:
@@ -120,52 +84,52 @@ namespace {
         }
     }
 
-    // D3D11 spec: sortAndAppendTransparencyMeshes. Painter's order — farthest first — with a stable
-    // material/index tiebreak so same-distance surfaces don't shuffle between frames (which would flicker,
-    // since these are blended).
-    void SortTransparencyList( std::vector<WorldTransparencyMesh>& list ) {
-        if ( list.empty() ) return;
-        std::sort( list.begin(), list.end(),
-            []( const WorldTransparencyMesh& a, const WorldTransparencyMesh& b ) {
-                if ( a.DistanceSq > b.DistanceSq ) return true;
-                if ( a.DistanceSq < b.DistanceSq ) return false;
-                if ( a.Material != b.Material ) return a.Material < b.Material;
-                const unsigned int aBase = a.Mesh ? a.Mesh->BaseIndexLocation : 0u;
-                const unsigned int bBase = b.Mesh ? b.Mesh->BaseIndexLocation : 0u;
-                return aBase < bBase;
-            } );
+    // The three lists the queue's WorldMesh SubKind selects between.
+    std::vector<WorldTransparencyMesh>& WorldTransparencyListFor( EWorldTransparencyVariant variant ) {
+        switch ( variant ) {
+        case EWorldTransparencyVariant::Portal:    return g_FrameWorldTransparencyPortal;
+        case EWorldTransparencyVariant::Waterfall: return g_FrameWorldTransparencyFoam;
+        default:                                   return g_FrameWorldTransparency;
+        }
     }
 }
 
 
 bool D3D12GraphicsEngine::IsWorldMeshAlphaBlended( zCMaterial* mat ) {
-    // D3D11 spec: the "Check for alphablending" test in DrawWorldMesh's BuildMeshList — any real blend mode
-    // (BLEND/ADD/SUB/MUL/MUL2/BLEND_TEST) is peeled out of the opaque set. zMAT_ALPHA_FUNC_TEST is a cutout,
-    // not a blend, and stays opaque; so does zMAT_ALPHA_FUNC_MAT_DEFAULT (0), because the material color's
-    // alpha only becomes a blend factor for the material types D3D11 collects by MaterialType (portals,
-    // waterfall foam) — which have their own branches in BuildWorldDrawCommands.
+    // Any real blend mode is peeled out of the opaque set. TEST is a cutout, not a blend; MAT_DEFAULT (0)
+    // only blends for the types collected by MaterialType (portals, foam), which have their own branches.
     if ( !mat ) return false;
     const int alphaFunc = mat->GetAlphaFunc();
     return alphaFunc > zMAT_ALPHA_FUNC_NONE && alphaFunc != zMAT_ALPHA_FUNC_TEST;
 }
 
 
-void D3D12GraphicsEngine::SortWorldTransparencyMeshes() {
-    // Each list is sorted independently and drawn as its own sub-pass, exactly as D3D11 does.
-    SortTransparencyList( g_FrameWorldTransparency );
-    SortTransparencyList( g_FrameWorldTransparencyPortal );
-    SortTransparencyList( g_FrameWorldTransparencyFoam );
-}
-
-
-void D3D12GraphicsEngine::DrawWorldTransparencyList( std::vector<WorldTransparencyMesh>& list,
-    D3D12PipelineState::WorldTransparencyPipeline::EKind kind, bool depthFill ) {
-    // One list == one D3D11 DrawMeshInfoListAlphablended call. The caller has already bound the root
-    // signature, the frame-constant root args (b0 ViewProj, b4 view, b5's sun height) and the shared world
-    // VB/IB — only per-material state and the PSO change in here.
-    if ( list.empty() ) return;
-
+/** One run of alpha-blended world mesh sections. The three lists are just the payload store now; SubKind
+    picks between them and runs interleave with every other blended kind. */
+void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentItem> items,
+    EWorldTransparencyVariant variant ) {
     using EKind = D3D12PipelineState::WorldTransparencyPipeline::EKind;
+
+    if ( items.empty() ) return;
+    if ( !m_FrameOpen || !m_Pipelines.WorldTransparency.RootSig || !m_DepthBuffer ) return;
+
+    const EKind kind =
+        variant == EWorldTransparencyVariant::Portal    ? EKind::Portal :
+        variant == EWorldTransparencyVariant::Waterfall ? EKind::Foam   : EKind::Simple;
+
+    if ( variant == EWorldTransparencyVariant::Portal ) {
+        // Gated the same way D3D11 gates its forest portals; the blob check keeps a failed shader compile
+        // from dropping into the wrong pixel shader.
+        if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals
+            || !m_Pipelines.WorldTransparency.PortalVsBlob || !m_Pipelines.WorldTransparency.PortalPsBlob ) {
+            return;
+        }
+    }
+
+    if ( !BindWorldTransparencyFrameState() ) return;
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+    const std::vector<WorldTransparencyMesh>& list = WorldTransparencyListFor( variant );
     const bool readsTextureFactor = ( kind == EKind::Simple );   // PS_PortalDiffuse/PS_WaterfallFoam ignore it
 
     // D3D11's state machine, reproduced exactly: each list starts from SetDefaultStates() (no blending,
@@ -173,6 +137,15 @@ void D3D12GraphicsEngine::DrawWorldTransparencyList( std::vector<WorldTransparen
     // for the rest of the list. Materials whose effective alpha func is 0 therefore draw opaque + depth-
     // writing when they come first — order-dependent, but faithful. That case is live for portals/foam,
     // which are collected by TYPE and so may well carry alpha func 0.
+    // Env-map overlay stage (see ComputeEnvMapAlpha). Simple variant only — portals and foam are their own
+    // effects, and ZenGin never env-maps a portal. Both blobs are required because
+    // GetOrCreateWorldTransparencyPipeline degrades a missing blob to the plain shader, which here would
+    // re-draw the base surface.
+    const bool envOverlayAvailable = kind == EKind::Simple
+        && m_Pipelines.WorldTransparency.EnvVsBlob && m_Pipelines.WorldTransparency.EnvPsBlob
+        && m_ReflectionCubeSrvSlot != UINT_MAX;
+    const XMFLOAT3 camPosWS = Engine::GAPI->GetCameraPosition();
+
     GothicBlendStateInfo blend;
     blend.SetDefault();
     bool depthWrite = true;
@@ -184,7 +157,11 @@ void D3D12GraphicsEngine::DrawWorldTransparencyList( std::vector<WorldTransparen
 
     unsigned int drawnIndices = 0;
     zCMaterial* lastMat = nullptr;
-    for ( const WorldTransparencyMesh& entry : list ) {
+    for ( const TransparentItem& item : items ) {
+        const uint32_t entryIndex = queue.GetIndices( item ).BatchIndex;
+        if ( entryIndex >= list.size() ) continue;
+        const WorldTransparencyMesh& entry = list[entryIndex];
+
         zCMaterial* mat = entry.Material;
         if ( !mat || !entry.Mesh || entry.Mesh->Indices.empty() ) continue;
 
@@ -224,31 +201,38 @@ void D3D12GraphicsEngine::DrawWorldTransparencyList( std::vector<WorldTransparen
         m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
             entry.Mesh->BaseIndexLocation, 0, 0 );
         drawnIndices += static_cast<unsigned int>( entry.Mesh->Indices.size() );
-    }
 
-    // Second loop: depth only. D3D11 does exactly this ("Draw again, but only to depthbuffer this time to
-    // make them work with fogging") — without it the height-fog / god-ray passes reconstruct world
-    // positions from whatever lies BEHIND the glass. Same VB/IB and the same VS blob, so the depth written
-    // here is bit-identical to what the blended loop tested against.
-    // Skipped for MT_Portal (depthFill == false): D3D11's loop filters those out explicitly
-    // (Info->MaterialType != MT_Portal) — a forest portal is a fade-in curtain you see the forest THROUGH,
-    // so it must not push the fog depth up to its own surface. Its VS is a different blob anyway, so its
-    // depth would not be bit-identical to the color pass either.
-    if ( depthFill && m_Pipelines.WorldTransparency.DepthFillPSO ) {
-        m_CmdList->SetPipelineState( m_Pipelines.WorldTransparency.DepthFillPSO.Get() );
-        // The depth-fill PSO reuses PSTransparent (color writes masked off) rather than a null PS, so the
-        // shader still runs its bindless ResourceDescriptorHeap[MatDiffuseIndex] fetch even though the
-        // result is discarded. Stamp a known-good slot: the loop below is less strict than the color loop
-        // (it accepts materials whose texture failed to cache in), so b6 could otherwise still hold
-        // uninitialized root constants if the color loop drew nothing at all — an out-of-range descriptor
-        // index, i.e. a GPU fault, not just a wrong pixel.
-        const uint32_t safeMat6[4] = { 0xFFFFFFFFu, 0u, m_BlackTexture->GetSrvSlot(), 0u };
-        m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, safeMat6, 0 );
-        for ( const WorldTransparencyMesh& entry : list ) {
-            if ( !entry.Material || !entry.Mesh || entry.Mesh->Indices.empty() ) continue;
-            if ( !entry.Material->GetAniTexture() ) continue;
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
-                entry.Mesh->BaseIndexLocation, 0, 0 );
+        // ZenGin appends the env-map stage to the SAME zCShader (zRenderManager.cpp:671), so the overlay
+        // goes inline here rather than as a second sweep, keeping the painter's order intact.
+        if ( envOverlayAvailable && mat->GetEnvMapEnabled() ) {
+            GothicBlendStateInfo envBlend;
+            // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else blends.
+            if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) envBlend.SetAdditiveBlending();
+            else                                         envBlend.SetAlphaBlending();
+
+            ID3D12PipelineState* envPso = m_Pipelines.GetOrCreateWorldTransparencyPipeline(
+                envBlend, false, EKind::Env );
+            if ( envPso ) {
+                m_CmdList->SetPipelineState( envPso );
+
+                // b5 tail: [4] SunHeight is left alone (PSTransparentEnv doesn't read it), [5..7] camera
+                // world position, [8] the bindless cube slot. TextureFactor.a carries the stage alpha.
+                const float envAlpha = Engine::GAPI->GetEnvMapStageAlpha( mat );
+                const float4 envFactor( 1.0f, 1.0f, 1.0f, envAlpha );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, &envFactor, 0 );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 3, &camPosWS, 5 );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &m_ReflectionCubeSrvSlot, 8 );
+
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
+                    entry.Mesh->BaseIndexLocation, 0, 0 );
+                drawnIndices += static_cast<unsigned int>( entry.Mesh->Indices.size() );
+
+                // The overlay replaced the PSO and overwrote b5's TextureFactor, so the next item has to
+                // re-establish both instead of hitting these caches.
+                ID3D12PipelineState* restore = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
+                if ( restore ) m_CmdList->SetPipelineState( restore );
+                lastMat = nullptr;
+            }
         }
     }
 
@@ -256,34 +240,46 @@ void D3D12GraphicsEngine::DrawWorldTransparencyList( std::vector<WorldTransparen
 }
 
 
-void D3D12GraphicsEngine::DrawWorldTransparencyMeshes() {
-    using EKind = D3D12PipelineState::WorldTransparencyPipeline::EKind;
+/** Depth of this frame's world transparency surfaces, color writes off. ONCE after the whole replay, or a
+    nearer surface would depth-reject a farther one drawn later. The fog/god-ray passes reconstruct world
+    positions from this. MT_Portal stays out - a fade-in curtain must not push fog depth to itself. */
+void D3D12GraphicsEngine::DrawWorldTransparencyDepthOnly() {
+    if ( !m_FrameOpen || !m_Pipelines.WorldTransparency.DepthFillPSO || !m_DepthBuffer ) return;
+    if ( g_FrameWorldTransparency.empty() && g_FrameWorldTransparencyFoam.empty() ) return;
+    if ( !BindWorldTransparencyFrameState() ) return;
 
-    auto clearLists = []() {
-        g_FrameWorldTransparency.clear();
-        g_FrameWorldTransparencyPortal.clear();
-        g_FrameWorldTransparencyFoam.clear();
-    };
+    DX_ZONE( m_CmdList.Get(), "World transparency (depth re-lay)" );
 
-    // Portals are gated the same way D3D11 gates its "Draw ForestPortals" pass; the blob check keeps a
-    // failed shader compile from dropping into the wrong pixel shader.
-    const bool drawPortals = Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals
-        && m_Pipelines.WorldTransparency.PortalVsBlob && m_Pipelines.WorldTransparency.PortalPsBlob;
+    m_CmdList->SetPipelineState( m_Pipelines.WorldTransparency.DepthFillPSO.Get() );
+    // The depth-fill PSO reuses PSTransparent (color writes masked off) rather than a null PS, so the
+    // shader still runs its bindless ResourceDescriptorHeap[MatDiffuseIndex] fetch even though the
+    // result is discarded. Stamp a known-good slot: the loop below is less strict than the color loop
+    // (it accepts materials whose texture failed to cache in), so b6 could otherwise still hold
+    // uninitialized root constants if the color loop drew nothing at all — an out-of-range descriptor
+    // index, i.e. a GPU fault, not just a wrong pixel.
+    const uint32_t safeMat6[4] = { 0xFFFFFFFFu, 0u, m_BlackTexture->GetSrvSlot(), 0u };
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, safeMat6, 0 );
 
-    if ( g_FrameWorldTransparency.empty() && g_FrameWorldTransparencyFoam.empty()
-        && ( !drawPortals || g_FrameWorldTransparencyPortal.empty() ) ) {
-        clearLists();
-        return;
+    for ( const std::vector<WorldTransparencyMesh>* list :
+        { &g_FrameWorldTransparency, &g_FrameWorldTransparencyFoam } ) {
+        for ( const WorldTransparencyMesh& entry : *list ) {
+            if ( !entry.Material || !entry.Mesh || entry.Mesh->Indices.empty() ) continue;
+            if ( !entry.Material->GetAniTexture() ) continue;
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( entry.Mesh->Indices.size() ), 1,
+                entry.Mesh->BaseIndexLocation, 0, 0 );
+        }
     }
-    if ( !m_FrameOpen || !m_Pipelines.WorldTransparency.RootSig || !m_DepthBuffer ) { clearLists(); return; }
+}
 
+
+/** Root signature, b0/b3/b5, viewport and the shared world VB/IB. Re-done per run, since the queue
+    interleaves kinds that bind their own root signature. False = cannot draw. */
+bool D3D12GraphicsEngine::BindWorldTransparencyFrameState() {
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
-    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { clearLists(); return; }
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) return false;
     D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
     D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
-    if ( !vb->GetResource() || !ib->GetResource() ) { clearLists(); return; }
-
-    DX_ZONE( m_CmdList.Get(), "DrawWorldTransparencyMeshes" );
+    if ( !vb->GetResource() || !ib->GetResource() ) return false;
 
     // ViewProj — identical derivation to DrawWorldMesh/DrawWaterSurfaces (world verts are world-space).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -321,47 +317,30 @@ void D3D12GraphicsEngine::DrawWorldTransparencyMeshes() {
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->IASetIndexBuffer( &ibv );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-    // Sub-pass order is D3D11's render-graph order: blended surfaces, then the forest portals, then the
-    // waterfall foam.
-    {
-        DX_ZONE( m_CmdList.Get(), "World transparency (blended)" );
-        DrawWorldTransparencyList( g_FrameWorldTransparency, EKind::Simple, true );
-    }
-    if ( drawPortals ) {
-        DX_ZONE( m_CmdList.Get(), "World transparency (forest portals)" );
-        DrawWorldTransparencyList( g_FrameWorldTransparencyPortal, EKind::Portal, false );
-    }
-    {
-        DX_ZONE( m_CmdList.Get(), "World transparency (waterfall foam)" );
-        DrawWorldTransparencyList( g_FrameWorldTransparencyFoam, EKind::Foam, true );
-    }
-
-    clearLists();
+    return true;
 }
 
 
-void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
-    // Port of D3D11GraphicsEngine::DrawFrameAlphaMeshes (D3D11GraphicsEngine.cpp:7741) for the instanced-VOB
-    // path: the cobwebs, hanging cloth and magic sheets whose material carries a BLEND/ADD alpha func.
+void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> items ) {
+    // Port of D3D11GraphicsEngine::DrawFrameAlphaMeshes for the instanced-VOB path: cobwebs, hanging cloth and
+    // magic sheets whose material carries a BLEND/ADD alpha func.
     //
-    // Why they need their own pass: the opaque VOB set is one ExecuteIndirect through a single PSO that alpha-
-    // CLIPS at 0.5, writes depth and returns alpha 1 — so a spider web's soft, half-transparent texel became a
-    // fully opaque white one. D3D11 peels exactly these two alpha funcs out of its instanced pass and re-draws
-    // them here: blended, unlit (PS_Simple), depth-tested but NOT depth-writing. BuildVobDrawCommands does the
-    // peeling (they are consequently absent from the VOB depth prepass too, which is what a blended surface
-    // wants) and resolves every buffer view / bindless index, so this is a short CPU draw loop — same shape as
-    // D3D11's, and the entry count is a handful per frame.
+    // They need their own pass because the opaque VOB set is one ExecuteIndirect through a PSO that alpha-
+    // CLIPS at 0.5, writes depth and returns alpha 1 — which turns a spider web's half-transparent texel into
+    // an opaque white one. Drawn here blended, unlit and depth-tested but NOT depth-writing.
+    // BuildVobDrawCommands does the peeling (so they miss the VOB depth prepass too, as a blended surface
+    // wants) and resolves every buffer view, leaving this a short CPU draw loop.
     //
-    // Not sorted, exactly like D3D11's m_AlphaMeshes: the list comes out in visual/material order. Sorting it
-    // back-to-front is the obvious follow-up if inter-web overlap ever reads wrong.
-    if ( g_FrameVobAlpha.empty() ) return;
+    // Ordered by the frame's transparency queue now, at batch granularity (see VobAlphaMesh::DistanceSq for
+    // why this backend cannot go per instance the way D3D11 does).
+    if ( items.empty() ) return;
     if ( !m_FrameOpen || !m_Pipelines.World.RootSig || !m_Pipelines.World.VobAlphaBlendPSO || !m_DepthBuffer ) {
-        g_FrameVobAlpha.clear();
         return;
     }
 
-    DX_ZONE( m_CmdList.Get(), "DrawVobAlphaMeshes" );
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    DX_ZONE( m_CmdList.Get(), "DrawVobAlphaRun" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw Vobs (blended)" );
 
     // ViewProj — identical derivation to DrawVobsInstanced, so a peeled mesh lands on exactly the pixels it
@@ -404,7 +383,10 @@ void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
 
     ID3D12PipelineState* current = nullptr;
     unsigned int drawnTriangles = 0;
-    for ( const VobAlphaMesh& e : g_FrameVobAlpha ) {
+    for ( const TransparentItem& item : items ) {
+        const uint32_t entryIndex = queue.GetIndices( item ).BatchIndex;
+        if ( entryIndex >= g_FrameVobAlpha.size() ) continue;
+        const VobAlphaMesh& e = g_FrameVobAlpha[entryIndex];
         if ( e.NumInstances == 0 || e.IndexCount == 0 ) continue;
 
         ID3D12PipelineState* want = e.Additive ? addPso : blendPso;
@@ -425,7 +407,155 @@ void D3D12GraphicsEngine::DrawVobAlphaMeshes() {
     }
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnTriangles;
-    g_FrameVobAlpha.clear();
 }
 
 
+
+/** Fills the queue from this backend's per-kind lists and sorts it. World meshes and alpha VOB batches were
+    collected during the command build; the rest is gathered here. Payloads are plain indices. */
+void D3D12GraphicsEngine::CollectTransparencyQueue() {
+    TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+    queue.BeginFrame();
+
+    auto& renderSettings = Engine::GAPI->GetRendererState().RendererSettings;
+    const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+
+    // One item per entry of each of the three lists
+    const std::pair<const std::vector<WorldTransparencyMesh>*, EWorldTransparencyVariant> worldLists[] = {
+        { &g_FrameWorldTransparency,       EWorldTransparencyVariant::Normal },
+        { &g_FrameWorldTransparencyPortal, EWorldTransparencyVariant::Portal },
+        { &g_FrameWorldTransparencyFoam,   EWorldTransparencyVariant::Waterfall },
+    };
+    for ( auto const& [list, variant] : worldLists ) {
+        for ( size_t i = 0; i < list->size(); ++i ) {
+            const WorldTransparencyMesh& entry = ( *list )[i];
+            queue.AddIndexed( entry.DistanceSq, ETransparentKind::WorldMesh, static_cast<uint8_t>( variant ),
+                static_cast<uint32_t>( i ), 0, TransparencyQueue::MakeBatchKey( entry.Material ) );
+        }
+    }
+
+    // One item per batch (see VobAlphaMesh::DistanceSq)
+    for ( size_t i = 0; i < g_FrameVobAlpha.size(); ++i ) {
+        queue.AddIndexed( g_FrameVobAlpha[i].DistanceSq, ETransparentKind::AlphaVob, 0,
+            static_cast<uint32_t>( i ), 0, g_FrameVobAlpha[i].MatIndices[2] );
+    }
+
+    // TransparencyVobInfo::distance is linear; the queue sorts on squared distances.
+    auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
+    for ( size_t i = 0; i < transparencyVobs.size(); ++i ) {
+        const float distance = transparencyVobs[i].distance;
+        queue.AddGhost( distance * distance, static_cast<uint32_t>( i ) );
+    }
+
+    if ( renderSettings.DrawParticleEffects ) {
+        // Blended decals only; the opaque/alpha-test ones drew with the opaque scene.
+        static std::vector<zCVob*> decals;   // static to get around reallocations
+        decals.clear();
+        Engine::GAPI->GetVisibleDecalList( decals );
+        for ( zCVob* decal : decals ) {
+            float distanceSq;
+            XMStoreFloat( &distanceSq, XMVector3LengthSq( decal->GetPositionWorldXM() - camPos ) );
+            queue.AddDecal( distanceSq, decal );
+        }
+
+        const float vfxRadiusSq = renderSettings.VisualFXDrawRadius * renderSettings.VisualFXDrawRadius;
+        for ( auto const& it : Engine::GAPI->GetQuadMarks() ) {
+            if ( !it.first->GetConnectedVob() ) continue;
+
+            float distanceSq;
+            XMStoreFloat( &distanceSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it.second.Position ) ) );
+            if ( distanceSq > vfxRadiusSq ) continue;
+
+            queue.AddQuadMark( distanceSq, it.first, &it.second );
+        }
+    }
+
+#if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
+    // Mesh data has to exist before we can take a depth for it.
+    Engine::GAPI->CalcPolyStripMeshes();   // weapon/effect trails
+    Engine::GAPI->CalcFlashMeshes();       // lightning flashes
+
+    for ( auto const& it : Engine::GAPI->GetPolyStripInfos() ) {
+        const std::vector<ExVertexStruct>& vertices = it.second.vertices;
+        if ( vertices.empty() || !it.second.material || !it.first ) continue;
+
+        // One group per texture -> centroid depth
+        XMVECTOR center = XMVectorZero();
+        for ( auto const& vertex : vertices ) {
+            center = XMVectorAdd( center, XMLoadFloat3( &vertex.Position ) );
+        }
+        center = XMVectorScale( center, 1.0f / static_cast<float>( vertices.size() ) );
+
+        float distanceSq;
+        XMStoreFloat( &distanceSq, XMVector3LengthSq( center - camPos ) );
+        queue.AddPolyStrip( distanceSq, it.first, &it.second );
+    }
+#endif
+
+    // categoryMajor reproduces the old per-category pass order without a second set of emitters
+    queue.Sort( !renderSettings.SortedTransparency );
+}
+
+
+/** Replays the sorted queue, one call per maximal same-kind run. */
+void D3D12GraphicsEngine::DrawTransparencyQueue() {
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    if ( m_FrameOpen && !queue.Empty() ) {
+        DX_ZONE( m_CmdList.Get(), "DrawTransparencyQueue" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw transparency (sorted)" );
+
+        queue.ForEachRun( [&]( ETransparentKind kind, uint8_t subKind,
+            std::span<const TransparentItem> items ) {
+                switch ( kind ) {
+                case ETransparentKind::WorldMesh:
+                    DrawWorldTransparencyRun( items, static_cast<EWorldTransparencyVariant>( subKind ) );
+                    break;
+                case ETransparentKind::AlphaVob:
+                    DrawVobAlphaRun( items );
+                    break;
+                case ETransparentKind::Ghost:
+                    DrawGhostRun( items );
+                    break;
+                case ETransparentKind::Decal:
+                    DrawDecalRun( items );
+                    break;
+                case ETransparentKind::QuadMark:
+                    DrawQuadMarkRun( items );
+                    break;
+                case ETransparentKind::PolyStrip:
+                    DrawPolyStripRun( items );
+                    break;
+                default:
+                    break;
+                }
+            } );
+
+        // Depth of the world transparency surfaces, once, after everything blended has been drawn
+        DrawWorldTransparencyDepthOnly();
+    }
+
+    // Unconditional: single-frame lists nothing else drains, so an early-out must still empty them.
+    g_FrameWorldTransparency.clear();
+    g_FrameWorldTransparencyPortal.clear();
+    g_FrameWorldTransparencyFoam.clear();
+    g_FrameVobAlpha.clear();
+    Engine::GAPI->GetTransparencyVobs().clear();
+}
+
+
+/** One run of blended decals; DrawDecalList already batches same-material runs without reordering. */
+void D3D12GraphicsEngine::DrawDecalRun( std::span<const TransparentItem> items ) {
+    if ( items.empty() ) return;
+
+    const TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
+
+    static std::vector<zCVob*> decalRun;   // static to get around reallocations
+    decalRun.clear();
+    decalRun.reserve( items.size() );
+    for ( const TransparentItem& item : items ) {
+        decalRun.push_back( queue.GetDecal( item ) );
+    }
+
+    DrawDecalList( decalRun, false );
+}

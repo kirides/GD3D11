@@ -159,7 +159,7 @@ extern size_t g_SkelMatSrvCount;
 extern std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
 
 // Alpha-blended world-mesh surfaces (ice, glass, magic barriers) peeled out of the opaque world pass by
-// BuildWorldDrawCommands (D3D12Scene.cpp) and drawn back-to-front by DrawWorldTransparencyMeshes
+// BuildWorldDrawCommands (D3D12Scene.cpp) and drawn back-to-front by DrawWorldTransparencyRun
 // (D3D12Transparency.cpp), which also owns the definition. Mirrors D3D11's FrameTransparencyMeshes.
 // Same single-threaded per-frame lifetime as g_FrameWaterSurfaces above.
 class zCMaterial;
@@ -175,7 +175,7 @@ extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyPortal;   // M
 extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyFoam;     // MT_WaterfallFoam
 
 // Blended instanced VOBs (cobwebs, hanging cloth, magic sheets) peeled out of the opaque VOB ExecuteIndirect
-// set by BuildVobDrawCommands (D3D12Scene.cpp) and replayed by DrawVobAlphaMeshes (D3D12Transparency.cpp,
+// set by BuildVobDrawCommands (D3D12Scene.cpp) and replayed by DrawVobAlphaRun (D3D12Transparency.cpp,
 // which owns the definition). Mirrors D3D11's m_AlphaMeshes / DrawFrameAlphaMeshes. Everything is resolved at
 // build time so the pass itself only switches PSO + a handful of root constants per entry; the buffer views
 // point into this frame's instance ring, so the list is strictly single-frame (same lifetime as
@@ -190,6 +190,9 @@ struct VobAlphaMesh {
     UINT     IndexCount;
     UINT     NumInstances;
     bool     Additive;                       // zMAT_ALPHA_FUNC_ADD -> additive blend, else plain alpha blending
+    // Transparency-queue depth: distance to the NEAREST instance. Batch granularity, not per instance as on
+    // D3D11 - the instance ring is partitioned near/far on upload, so ring slot i is not Instances[i].
+    float    DistanceSq;
 };
 extern std::vector<VobAlphaMesh> g_FrameVobAlpha;
 

@@ -66,7 +66,6 @@
 const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
 
 // Draw ghost from back to front of our camera
-auto CompareGhostDistance = []( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
 
 extern float vobAnimation_WindStrength;
 
@@ -670,6 +669,51 @@ bool GothicAPI::IsCameraIndoor() {
         return false;
 
     return ogame->_zCSession_camVob->GetGroundPoly()->GetLightmap() != nullptr;
+}
+
+/** Alpha of ZenGin's env-map overlay stage: envMapStrength * skyFogIntensity
+    (zRenderManager.cpp:701-703). ZenGin's bInSector is per-polygon; the camera stands in for it, which
+    differs only while straddling a portal. */
+float GothicAPI::GetEnvMapStageAlpha( zCMaterial* mat ) {
+    if ( !mat ) return 0.0f;
+    return std::clamp( mat->GetEnvMapStrength() * GetSkyLightIntensity(), 0.0f, 1.0f );
+}
+
+/** Sky-fog intensity 0..1 (0.299r+0.587g+0.114b, zTypes3D.h:128), pinned to zCOLOR(100,100,100)
+    indoors as ZenGin does. Peaks well below 1.0 even at noon, so it is NOT a brightness multiplier -
+    used as one it darkens surfaces in broad daylight. GetSkyDayFactor is that. */
+float GothicAPI::GetSkyLightIntensity() {
+    float lumaFog = 100.0f * (0.299f + 0.587f + 0.114f);   // the in-sector zCOLOR(100,100,100)
+
+    if ( !IsCameraIndoor() ) {
+        oCGame* ogame = oCGame::GetGame();
+        zCSkyController_Outdoor* sc = ogame && ogame->_zCSession_world
+            ? ogame->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+        if ( sc ) {
+            zColor fog = sc->GetBackgroundColor();
+            lumaFog = 0.299f * fog.bgra.r + 0.587f * fog.bgra.g + 0.114f * fog.bgra.b;
+        }
+    }
+
+    return std::clamp( lumaFog * (1.0f / 255.0f), 0.0f, 1.0f );
+}
+
+/** Day/night brightness for the alpha-blended world surfaces that never receive lighting
+    (D3D11ForwardPlusRenderer::BindShaderForTexture routes every BLEND/ADD material to the unlit
+    fallbacks) over a vertex color baked at full daylight - without it ice and foam stay noon-bright at
+    midnight. ZenGin needs no equivalent: its lightDyn already carries the time of day. CHOSEN, not
+    ported - exactly 1.0 while the sun is up so daylight is unchanged. Both constants are look tuning. */
+float GothicAPI::GetSkyDayFactor() {
+    constexpr float kNightFactor = 0.35f;   // brightness after dusk
+    constexpr float kDuskSharpness = 4.0f;  // how fast it crosses over around the horizon
+
+    GSky* sky = GetSky();
+    if ( !sky ) return 1.0f;
+
+    // AC_LightPos.y is the sun height, -1 (midnight) .. 1 (noon)
+    const float sunHeight = sky->GetAtmosphereCB().AC_LightPos.y;
+    const float day = std::clamp( sunHeight * kDuskSharpness, 0.0f, 1.0f );
+    return std::lerp( kNightFactor, 1.0f, day );
 }
 
 /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...) */
@@ -1451,7 +1495,6 @@ void GothicAPI::DrawWorldMeshNaive() {
             // Schedule for drawing in later stage if this vob is ghost
             if ( vobInfo->Vob->GetVisualAlpha() ) {
                 TransparencyVobs.emplace_back( dist, vobInfo->Vob->GetVobTransparency(), vobInfo, nullptr );
-                std::ranges::push_heap(TransparencyVobs, CompareGhostDistance );
                 continue;
             }
 
@@ -3245,27 +3288,25 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 }
 
 
-void GothicAPI::DrawTransparencyVobs() {
-    ZoneScopedN( "GothicAPI::DrawTransparencyVobs" );
+void GothicAPI::BeginTransparencyVobRun() {
+    // Setup alpha blending
+    RendererState.RasterizerState.SetDefault();
+    RendererState.RasterizerState.SetDirty();
+    RendererState.BlendState.SetAlphaBlending();
+    RendererState.BlendState.SetDirty();
+    RendererState.DepthState.SetDefault();
+    RendererState.DepthState.SetDirty();
+}
+
+void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
+    ZoneScopedN( "GothicAPI::DrawTransparencyVob" );
     D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
-    if ( !TransparencyVobs.empty() ) {
-        // Setup alpha blending
-        RendererState.RasterizerState.SetDefault();
-        RendererState.RasterizerState.SetDirty();
-        RendererState.BlendState.SetAlphaBlending();
-        RendererState.BlendState.SetDirty();
-        RendererState.DepthState.SetDefault();
-        RendererState.DepthState.SetDirty();
-    }
 
     auto cbPool = g->GetConstantBufferPool();
     auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetInputIndex( "GhostAlphaInfo" );
 
-
     VS_ExConstantBuffer_PerInstance cbPerInstance;
-    while ( !TransparencyVobs.empty() ) {
-        auto const& TransVobInfo = TransparencyVobs.front();
-
+    {
         if ( TransVobInfo.skeletalVob ) {
             // We need to do Z-prepass first
             g->UnbindActivePS();
@@ -3339,9 +3380,6 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
             }
         }
-
-        std::ranges::pop_heap(TransparencyVobs, CompareGhostDistance );
-        TransparencyVobs.pop_back();
     }
 }
 
@@ -4479,13 +4517,12 @@ void GothicAPI::CollectVisibleVobs(
         }
 
         if ( renderQueue.transparent.size() ) {
-            TransparencyVobs.insert( TransparencyVobs.end(), 
-                std::make_move_iterator(renderQueue.transparent.begin()), 
+            TransparencyVobs.insert( TransparencyVobs.end(),
+                std::make_move_iterator(renderQueue.transparent.begin()),
                 std::make_move_iterator(renderQueue.transparent.end()) );
             // ignore dead items in renderQueue.transparent after move-insert
-
-            // sort back to front
-            std::ranges::sort(TransparencyVobs, CompareGhostDistance );
+            // No sort here anymore - the transparency queue orders ghosts against every other
+            // blended drawable, not just against each other.
         }
 
         float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
@@ -5753,6 +5790,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", to_string_locale_independent( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldOccluders", to_string_locale_independent( s.DrawWorldOccluders ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", to_string_locale_independent( s.SunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SortedTransparency", to_string_locale_independent( s.SortedTransparency ? TRUE : FALSE ).c_str(), ini.c_str() );
 #ifdef BUILD_GOTHIC_1_08k
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", to_string_locale_independent( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "G1HighlightInteractiveFocus", to_string_locale_independent( s.G1HighlightInteractiveFocus ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5936,6 +5974,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
         s.DrawWorldOccluders = GetPrivateProfileBoolA( "General", "DrawWorldOccluders", ds.DrawWorldOccluders, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
+        s.SortedTransparency = GetPrivateProfileBoolA( "General", "SortedTransparency", ds.SortedTransparency, ini );
 #ifdef BUILD_GOTHIC_1_08k
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", ds.DrawG1ForestPortals, ini );
         s.G1HighlightInteractiveFocus = GetPrivateProfileBoolA( "General", "G1HighlightInteractiveFocus", ds.G1HighlightInteractiveFocus, ini );

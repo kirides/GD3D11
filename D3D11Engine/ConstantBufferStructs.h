@@ -460,5 +460,11 @@ struct PsSimpleFFdata {
     float4 textureFactor;
 };
 
+/** cbEnvMap of PS_EnvMap.hlsl — the env-map overlay stage (ZenGin zRenderManager.cpp:671-712). */
+struct PsEnvMapData {
+    XMFLOAT4X4 InvView;     // view -> world, takes the reflection vector into cube space
+    float4 Params;          // x = stage alpha (EnvMapStrength * luma(fogColor)), yzw unused
+};
+
 #pragma pack (pop)
 

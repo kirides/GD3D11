@@ -12,6 +12,7 @@
 #include "zTypes.h"
 #include "RenderQueue.h"
 #include "ShaderIDs.h"
+#include "TransparencyQueue.h"
 #include "ThreadPool.h"
 #include <shared_mutex>
 
@@ -442,12 +443,18 @@ public:
 
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
 
-    void DrawTransparencyVobs();
+    /** Shared state for a run of ghost draws; per run, since the queue interleaves kinds. */
+    void BeginTransparencyVobRun();
+
+    /** One ghost vob (z-prepass with a null PS, then the transparency shader). D3D11 only. */
+    void DrawTransparencyVob( const TransparencyVobInfo& info );
+
     void DrawSkeletalVN();
 
-    /** Backend-neutral accessor so a non-D3D11 backend can drain TransparencyVobs itself
-        (DrawTransparencyVobs() above is hard-wired to D3D11GraphicsEngine). */
+    /** The transparency queue stores indices into this. */
     std::vector<TransparencyVobInfo>& GetTransparencyVobs() { return TransparencyVobs; }
+
+    TransparencyQueue& GetTransparencyQueue() { return TransparencyQueueData; }
 
     /** Draws the inventory */
     void DrawInventory( zCWorld* world, zCCamera& camera );
@@ -635,6 +642,18 @@ public:
 
     /** Returns wether the camera is indoor or not */
     bool IsCameraIndoor();
+
+    /** Alpha of ZenGin's env-map overlay stage for this material — see zCRenderManager::BuildShader
+        (zRenderManager.cpp:701-703). Backend-neutral because both renderers draw the same stage. */
+    float GetEnvMapStageAlpha( zCMaterial* mat );
+
+    /** Sky-fog intensity (0..1) ZenGin's env-map stage scales its sheen by. Peaks well below 1.0
+        even at noon - not a brightness multiplier, see GetSkyDayFactor for that. */
+    float GetSkyLightIntensity();
+
+    /** Day/night brightness (kNightFactor..1.0) for the alpha-blended world surfaces that are drawn
+        unlit over static, baked-daylight vertex colors. Exactly 1.0 while the sun is up. */
+    float GetSkyDayFactor();
 
     /** Returns whether the loaded world itself is an indoor level (mines, dungeons, ...).
         This is a per-world property baked into the compiled BSP-tree, not a per-frame camera
@@ -1056,6 +1075,8 @@ private:
     std::vector<SkeletalVobInfo*> AnimatedSkeletalVobs;
     std::vector<TransparencyVobInfo> TransparencyVobs;
     std::vector<SkeletalVobInfo*> VNSkeletalVobs;
+
+    TransparencyQueue TransparencyQueueData;
 
     /** List of Vobs having a zCParticleFX-Visual */
     std::vector<zCVob*> ParticleEffectVobs;
