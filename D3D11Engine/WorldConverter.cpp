@@ -1447,8 +1447,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
     model->UpdateAttachedVobs();
     model->UpdateMeshLibTexAniState();
 
-    zSTRING mds = model->GetModelName();
-    const char* visualName = mds.ToChar();
+    const std::string_view visualName = model->GetModelName();
     zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
     for ( int i = 0; i < nodeList->NumInArray; i++ ) {
         zCModelNodeInst* node = nodeList->Array[i];
@@ -1625,8 +1624,6 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
     meshInfo->Visual = model;
     meshInfo->VisualName = visualName;
-
-    mds.Delete();
 }
 
 /** Extracts a zCProgMeshProto from a zCMesh */

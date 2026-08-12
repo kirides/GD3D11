@@ -109,6 +109,18 @@ namespace {
     }
 }
 
+D3D11VertexBuffer::D3D11VertexBuffer()
+    : SizeInBytes( 0 )
+{
+}
+
+D3D11VertexBuffer::~D3D11VertexBuffer()
+{
+    if ( auto buf = GetVertexBuffer().Get() ) {
+        TracyFreeN( buf, "VertexBuffer" );
+    }
+}
+
 /** Creates the vertexbuffer with the given arguments */
 XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags, EUsageFlags usage, ECPUAccessFlags cpuAccess, const std::string& fileName, unsigned int structuredByteSize ) {
     HRESULT hr;
@@ -173,11 +185,16 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     InitData.SysMemPitch = 0;
     InitData.SysMemSlicePitch = 0;
 
+    if ( VertexBuffer.Get() ) {
+        TracyFree( VertexBuffer.Get() );
+    }
+
     LE( engine->GetDevice()->CreateBuffer( &bufferDesc, &InitData, VertexBuffer.ReleaseAndGetAddressOf() ) );
     if ( !VertexBuffer.Get() ) {
         delete[] data;
         return XR_SUCCESS;
     }
+    TracyAllocN( VertexBuffer.Get(), SizeInBytes, "VertexBuffer" );
 
     // Check for structured buffer again to create the SRV
     if ( (EBindFlags & EBindFlags::B_SHADER_RESOURCE) != 0 && structuredByteSize > 0 ) {

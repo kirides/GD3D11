@@ -404,6 +404,8 @@ void ImGuiEditorView::RenderVobSettingsDialog() {
             ImGui::Text("%s: %s", "Wave Mode", builder.c_str());
             ImGui::Text("%s: %f", "Wave Speed", mat->GetWaveSpeed());
             ImGui::Text("%s: %f", "Wave Max Amplitude", mat->GetWaveMaxAmplitude());
+            const auto col = zColor( mat->GetColor() );
+            ImGui::Text("%s: r(%d), g(%d), b(%d), a(%d)", "Color", col.bgra.r, col.bgra.g, col.bgra.b, col.bgra.alpha );
             ImGui::SeparatorText("Flags");
             const auto& flags = mat->GetFlags();
             ImGui::Text("%s: %d", "smooth", flags.smooth);
