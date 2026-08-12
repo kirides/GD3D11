@@ -28,8 +28,13 @@ runs:
       shell: pwsh
       run: |
         $downloadPath = "${{ steps.download-artifact.outputs.download-path }}"
+        Write-Host "Listing $downloadPath"
+        Get-ChildItem -Path $downloadPath
         Get-ChildItem -Path $downloadPath -Directory | ForEach-Object {
           $dir = $_.FullName
+          Write-Host "Listing $dir"
+          Get-ChildItem -Path $dir
+
           $zipName = "$dir.zip"
           7z a -tzip -mx=7 -mmt=on "$zipName" "$dir\*"
           Write-Host "Created $zipName"
