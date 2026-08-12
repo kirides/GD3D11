@@ -1428,6 +1428,8 @@
     <None Include="Shaders\PS_DS_PointLightDynShadow.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
+    <None Include="Shaders\PS_PFX_SkyVelocity.hlsl" />
+    <None Include="Shaders\SkyMotionVectors.h" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="include\gtl\debug_vis\gtl.natvis">
