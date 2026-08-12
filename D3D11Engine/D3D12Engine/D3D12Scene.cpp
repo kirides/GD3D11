@@ -344,6 +344,9 @@ void D3D12GraphicsEngine::OnLoadWorld()
     // depth-confidence test would reject essentially every pixel while doing it.
     m_TaaHistoryValid = false;
     m_TaaPrevDepthValid = false;
+    // Same argument for FSR 3, whose history lives inside the FFX context where we cannot drop it directly —
+    // the reset flag on the next dispatch is how FSR is told to discard it.
+    m_Fsr3Reset = true;
     // Motion vectors: the previous camera belongs to the old world too, so the first frame here must report
     // zero motion rather than reproject through a camera that no longer means anything.
     m_MotionHistoryValid = false;
@@ -380,8 +383,12 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     // screen pixels this inventory slot's viewport happens to cover — comparing against those stale values
     // would randomly reject preview pixels and let the resolved 3D scene bleed through. Clear the depth back
     // to reversed-Z far (0.0), scoped to just this viewport's rect, before drawing.
+    // Not necessarily the scene DSV — below 100% render scale it is smaller than the display target this
+    // draws into, so GetPreviewDsv hands back a native-sized one. {0} = none usable; skip rather than draw
+    // depth-less (see above).
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = GetPreviewDsv();
+    if ( !dsv.ptr ) return;
 
     D3D12_VIEWPORT vp = m_CurrentViewport;
     D3D12_RECT     sc = m_CurrentScissor;
@@ -2089,6 +2096,15 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
 }
 
 
+namespace {
+	// Used to notify the zEngine that we changed the viewport (same helper D3D11GraphicsEngine keeps).
+	void UpdateZEngineViewport() {
+		if ( auto game = oCGame::GetGame(); game && game->_zCSession_camera ) {
+			((zCCamera*)game->_zCSession_camera)->UpdateViewport();
+		}
+	}
+}
+
 XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// m_PresentPending prevents inventory-world from rendering the whole game scenery for every inventory tile.
@@ -2100,6 +2116,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     
     Engine::GAPI->GetRendererState().RendererInfo.RenderStage = RenderStage::STAGE_DRAW_WORLD;
     Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE);
+
+    // Render-res viewport for the 3D phase, on both sides: SubmitUIDraw rasterizes into m_CurrentViewport and
+    // normalizes the FF sky's pre-transformed XYZRHW verts by its size, so Gothic must transform them at the
+    // same resolution or the sky is wrong below a 100% render scale. Stage first - the UpdateViewport hook
+    // only hands the camera GetResolution() during a 3D stage.
+    SetViewport( ViewportInfo( 0, 0, m_Resolution.x, m_Resolution.y ) );
+    UpdateZEngineViewport();
 
 	// Decide ONCE, before anything draws, whether this frame's post-pass height fog runs (RenderFogAndGodRays,
 	// near the bottom of this function). Every lit geometry pass reads the result via MakeFogConstants to
@@ -2379,6 +2402,17 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise.
 	RenderFogAndGodRays();
 
+	// Debug/editor lines, INSIDE the scene rather than over the finished LDR image (D3D11's slot): drawing
+	// them at native size afterwards would need a native-res copy of the scene depth for the world-space list
+	// to test against. They end up as soft as the rest of the scene when downscaling — fine for a diagnostic
+	// overlay. Both calls also CLEAR their cache, which is what keeps the line lists from growing.
+	{
+		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
+		m_LineRenderer->Flush();
+		m_LineRenderer->FlushScreenSpace();
+	}
+
 	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
 	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
 	// Temporal AA, on the finished LINEAR HDR scene: after the fog/god-ray composition (those are part of the
@@ -2395,6 +2429,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	RenderBloom();
 	RenderLuminanceAdapt();
+
+	// FSR 3 temporal upscale (AA_FSR + the FSR 3 upscaler; mutually exclusive with RenderTAA above). Deliberately
+	// AFTER bloom/luminance and immediately before the tonemap resolve, i.e. on the linear HDR scene rather than
+	// on the finished LDR image D3D11 upscales — see D3D12Fsr3.cpp for the reasoning. It writes a DISPLAY-res
+	// target, which ResolveSceneToBackBuffer then samples in place of the render-res scene colour, so the
+	// resolve's implicit bilinear upscale becomes a 1:1 blit. No-op (and the resolve keeps upscaling) otherwise.
+	RenderFsr3Upscale();
 
 	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
 	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
@@ -2420,20 +2461,16 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// and XeGTAO are still to come — and therefore the only way to verify this whole feature on the GPU.
 	RenderMotionDebugOverlay();
 
-	// Debug/editor lines last, on the finished LDR image — same slot as D3D11's "Draw Debug Lines" render-graph
-	// pass (after post-FX, before Gothic's 2D UI composites on top). Both calls also CLEAR their cache, so this
-	// is what keeps the line lists from growing unbounded across frames.
-	{
-		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
-		m_LineRenderer->Flush();
-		m_LineRenderer->FlushScreenSpace();
-	}
+	// (Debug/editor lines used to be flushed here; see the call site above RenderTAA.)
 
 	// Do any remaining dx12 stuff BEFORE setting PresentPending
 
 	m_PresentPending = true;
     Engine::GAPI->GetRendererState().RendererInfo.RenderStage = RenderStage::STAGE_DRAW_UNKNOWN;
+
+    // ...and back to native size for the 2D/UI phase, which draws onto the already-upscaled display target.
+    SetViewport( ViewportInfo( 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y ) );
+    UpdateZEngineViewport();
 
 	// After this point, we hand over to Gothics UI rendering (inventory item previews render via
 	// DrawVobSingle, called straight from Gothic's own zCWorld::Render hook during this phase).

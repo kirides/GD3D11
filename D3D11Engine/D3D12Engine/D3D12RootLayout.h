@@ -97,8 +97,16 @@ public:
 
     void AddStaticSampler( const D3D12_STATIC_SAMPLER_DESC& sampler );
 
+    /** Mip LOD bias baked into every SamplerAniso built after this call (the material sampler, i.e. this
+        backend's DefaultSamplerState — see D3D11GraphicsEngine::CreateAndBindDefaultSampler). Static
+        samplers live in the serialized root signature blob, so this has no live effect: D3D12GraphicsEngine
+        rebuilds every root signature and PSO to apply it. */
+    static void  SetAnisoMipLodBias( float bias );
+    static float GetAnisoMipLodBias();
+
     // Static-sampler factories for the shapes this backend actually uses. All set MaxLOD to
-    // FLOAT32_MAX and leave MinLOD/MipLODBias at zero, matching what the hand-written descs did.
+    // FLOAT32_MAX and leave MinLOD at zero, matching what the hand-written descs did; only the
+    // anisotropic one carries a MipLODBias (see SetAnisoMipLodBias).
     static D3D12_STATIC_SAMPLER_DESC SamplerAniso( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
         UINT maxAnisotropy = 16, D3D12_TEXTURE_ADDRESS_MODE address = D3D12_TEXTURE_ADDRESS_MODE_WRAP );
     static D3D12_STATIC_SAMPLER_DESC SamplerLinear( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,

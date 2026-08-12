@@ -195,8 +195,10 @@ public:
         them through the validated 2D/UI path (VS_TransformedEx + FF-stage PS + alpha blend). */
     void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
 
+    /** Render resolution; same split D3D11 has between m_scaledResolution and Resolution. */
     INT2 GetResolution() override { return m_Resolution; }
-    INT2 GetBackbufferResolution() override { return m_Resolution; }
+    /** Native swapchain/window size. */
+    INT2 GetBackbufferResolution() override { return m_BackbufferResolution; }
 
     /** Allocates a persistent slot in the shader-visible SRV heap. Returns UINT_MAX if exhausted.
         Used by D3D12Texture to create its SRV once at load time. */
@@ -246,6 +248,14 @@ private:
     bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
     void BindSceneColorTarget();      // transition HDR RT -> RENDER_TARGET (if needed) + bind it (+ depth) as the world-pass RTV
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
+
+    // --- Render-resolution scaling (RendererSettings.ResolutionScalePercent) ---------------------------------
+    static INT2 ComputeRenderResolution( INT2 backbufferSize );        // backbuffer * ResolutionScalePercent
+    static float ComputeMipLodBias( INT2 renderSize, INT2 displaySize );
+    bool RebakeMipLodBias( float newBias );                            // false = old pipelines kept
+    bool CreateRenderResolutionTargets( INT2 renderSize );             // fatal only for depth/scene color
+    void CreateDisplayResolutionTargets( INT2 displaySize );           // post-tonemap targets, all non-fatal
+    void ApplyPendingResolutionScale();
 
     // --- Real HDR display output (ST.2084 scanout) ---------------------------------------------------------
     // Decided once at Init from RendererSettings.HDR_Monitor + what DXGI reports about the adapter's outputs;
@@ -583,7 +593,16 @@ public:
     void FlushTextureUploads();
 private:
 
+    // RENDER (internal) resolution: everything the 3D scene draws into, up to the tonemap resolve.
     INT2  m_Resolution = {};
+    // NATIVE swapchain/window size: swapchain, HDR display target, every post-tonemap pass, 2D UI, ImGui.
+    INT2  m_BackbufferResolution = {};
+    // Last ResolutionScalePercent the render targets were built for (D3D11's s_oldResolutionScalePercent).
+    int   m_AppliedResolutionScalePercent = 100;
+    int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)
+    int   m_ResolutionScaleStableFrames = 0;
+    static constexpr int kResolutionScaleDebounceFrames = 6;
+    float m_AppliedMipLodBias = 0.0f;   // see D3D12RootLayout::SetAnisoMipLodBias
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
     // NEXT OnBeginFrame — never mid-frame — so the resize always runs while the command list is
@@ -669,11 +688,20 @@ private:
     D3D12_RECT     m_CurrentScissor = {};
 
     // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;         // single DSV
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;         // slot 0 = scene depth, slot 1 = preview depth
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DepthBufferAlloc; // backing D3D12MA allocation (recreated on resize)
     UINT m_DsvDescriptorSize = 0;
     UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
+
+    // Native-resolution depth for the inventory-item preview (DrawVobSingle), which draws onto the display
+    // target after the resolve — a bound DSV must match its RTV's size. D3D11's m_SwapchainDepthStencilBuffer.
+    // Built lazily and only while the render scale is != 100%.
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_PreviewDepthBuffer;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PreviewDepthAlloc;
+    INT2 m_PreviewDepthSize = {};
+    bool m_PreviewDepthFailed = false;   // creation failed once — don't retry every preview draw
+    D3D12_CPU_DESCRIPTOR_HANDLE GetPreviewDsv();   // {0} = none usable, caller skips the draw
 
     // World root sig + lit world-mesh PSO/blobs now live in m_Pipelines.World (RootSig/PSO/VsBlob/PsBlob).
     // That RootSig is the shared anchor bound by the VOB/skeletal/shadow-caster/point-shadow draws too.
@@ -1337,6 +1365,11 @@ private:
     UINT m_NormalSrvSlot = UINT_MAX;      // SRV for the debug overlay + future XeGTAO
     bool m_MotionResourcesReady = false;  // false disables the whole feature (prepass falls back to depth-only)
     bool m_VelocityInPixelState = false;  // mirrors m_SceneColorInPixelState: tracks RT vs shader-read rest state
+    // The combined shader-read state m_VelocityBuffer rests in once FillCameraVelocity has run — the debug
+    // overlay reads it from a pixel shader, TAA and FSR3 from compute. Named because FSR3 has to narrow it to
+    // the plain NON_PIXEL state for the duration of its dispatch and put it back (see D3D12Fsr3.cpp).
+    static constexpr D3D12_RESOURCE_STATES kVelocityReadState =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
     // Camera history. m_PrevViewProjUnjittered is the matrix that rasterized the PREVIOUS frame, captured at the
     // end of each OnStartWorldRendering; m_MotionHistoryValid is false on the first frame of a world and right
@@ -1424,6 +1457,50 @@ private:
     void AdvanceJitter();                  // per-frame jitter into TransformProj._13/_23 (no-op when TAA is off)
     void RenderTAA();                      // the resolve dispatch + copy back over the scene colour
     bool IsTaaEnabled() const;             // AntiAliasingMode == AA_TAA and everything it needs exists
+
+    // ---- FSR 3 temporal upscaler (D3D12Fsr3.cpp) ------------------------------------------------------------
+    // AMD FidelityFX Super Resolution 3, the AA_FSR alternative to the TAA resolve above. Mutually exclusive
+    // with it (one AntiAliasingMode), and deliberately sharing its jitter sequence and its motion-vector
+    // G-buffer. Unlike D3D11 (which upscales the finished LDR backbuffer) this runs on the LINEAR HDR scene
+    // colour, immediately before the tonemap resolve — see the file header for why, and for the shipping
+    // requirement on ffx_backend_dx12_x86.dll.
+    //
+    // m_Fsr3Output is display-resolution and kSceneColorFormat, so the tonemap resolve can sample it in place
+    // of m_SceneColor with no second PSO; that swap (GetTonemapSourceSrvSlot) is what turns the resolve's
+    // implicit bilinear upscale into a 1:1 blit whenever FSR3 actually ran.
+    struct FfxFsr3UpscalerContext* m_Fsr3Context = nullptr;   // heap-allocated: the FFX header stays out of here
+    void* m_Fsr3Scratch = nullptr;                            // backend scratch; must outlive the context
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_Fsr3Output;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Fsr3OutputAlloc;
+    UINT m_Fsr3OutputSrvSlot = UINT_MAX;
+    bool m_Fsr3OutputReady = false;
+    bool m_Fsr3OutputInUavState = false;   // UNORDERED_ACCESS (FSR writes) vs PIXEL_SHADER_RESOURCE (rest)
+    // The three resources FfxFsr3UpscalerDispatchDescription makes the application own, in the order
+    // { dilatedDepth, dilatedMotionVectors, reconstructedPrevNearestDepth }. Sized/formatted from
+    // ffxFsr3UpscalerGetSharedResourceDescriptions. We never touch their contents; the rest state below is
+    // both where they are created and what every dispatch declares (see CreateFsr3SharedResources).
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_Fsr3Shared[3];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Fsr3SharedAlloc[3];
+    static constexpr D3D12_RESOURCE_STATES kFsr3SharedRestState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    bool m_Fsr3SharedReady = false;
+    // True until a dispatch succeeds after a discontinuity (world load, resize, fresh context/output): tells
+    // FSR to throw away its temporal history instead of smearing the previous world across the new one.
+    bool m_Fsr3Reset = true;
+    // Did THIS frame's dispatch succeed? Drives GetTonemapSourceSrvSlot and the sharpen pass's early-out, so
+    // a failed dispatch degrades to the plain bilinear resolve instead of showing a stale/garbage frame.
+    bool m_Fsr3RanThisFrame = false;
+    bool m_Fsr3InitFailed = false;             // don't retry context creation every frame; cleared by ReleaseFsr3
+    bool m_Fsr3DispatchFailureLogged = false;  // one log line per session, not one per frame
+
+    void EnsureFsr3Ready();                                       // lazy build, from AdvanceJitter
+    bool CreateFsr3Output( INT2 size );                           // display-res HDR UAV target + its SRV
+    bool CreateFsr3Context( INT2 renderSize, INT2 upscaleSize );   // FFX interface + context + shared resources
+    bool CreateFsr3SharedResources();                             // the three application-owned FFX resources
+    void DestroyFsr3Context();                                    // requires an idle GPU (FFX frees immediately)
+    void ReleaseFsr3();                                           // context + shared + output; from the resize paths
+    void RenderFsr3Upscale();                                     // the dispatch (no-op unless IsFsr3Enabled)
+    bool IsFsr3Enabled() const;                                   // AA_FSR + FSR3 upscaler + everything exists
+    UINT GetTonemapSourceSrvSlot() const;                         // m_Fsr3Output when it ran, else m_SceneColor
 
     // ---- Depth of field (D3D12DoF.cpp) ----------------------------------------------------------------------
     // Compute port of D3D11PFX_DepthOfField::RenderCS (Shaders/D3D12/DoF.hlsl). Three passes on the LINEAR HDR

@@ -27,7 +27,7 @@ runs:
         "download-dir=downloaded-artifacts" >> $env:GITHUB_OUTPUT
 
     - name: Download build artifacts
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@v8
       with:
         path: ${{ steps.calc-path.outputs.download-dir }}
         merge-multiple: true
@@ -85,7 +85,7 @@ runs:
 
     - name: Upload debug artifact (with PDBs)
       id: artifact-upload-debug
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.calc-path.outputs.release-dir }}-debug
         path: "${{ steps.calc-path.outputs.release-dir }}"
@@ -99,7 +99,7 @@ runs:
 
     - name: Upload release artifact (no PDBs)
       id: artifact-upload-release
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ steps.calc-path.outputs.release-dir }}
         path: "${{ steps.calc-path.outputs.release-dir }}"

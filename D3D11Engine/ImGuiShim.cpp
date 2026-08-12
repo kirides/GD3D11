@@ -693,6 +693,11 @@ void ImGuiShim::RenderSettingsWindowModern() {
                 ImGui::EndCombo();
             }
 
+            // D3D12 has the FSR 3 temporal upscaler (D3D12Fsr3.cpp) but no FSR 1 spatial one. Ask the ENGINE,
+            // not settings.GraphicsAPI — that one is the requested API, which a failed init falls back from
+            // without a restart.
+            const bool noFsr1 = Engine::IsD3D12Backend;
+
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
             if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
@@ -730,8 +735,17 @@ void ImGuiShim::RenderSettingsWindowModern() {
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalersNoFsr1 = {
+                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
+                { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
+            };
+            if ( ImComboBox( "##Upscaler", noFsr1 ? upscalersNoFsr1 : upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
+            }
+            if ( noFsr1 ) {
+                ImGui::SetItemTooltip( "FSR 1 needs the Direct3D 11 backend." );
+                // A stored FSR 1 choice must survive a switch back to D3D11, so it is NOT written back here —
+                // it simply behaves as "Simple" (D3D12 has no FSR 1 pass) while the combo shows nothing selected.
             }
             ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
             {
@@ -1096,6 +1110,9 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
+            // See RenderSettingsWindowModern: D3D12 has FSR 3 but no FSR 1.
+            const bool noFsr1 = Engine::IsD3D12Backend;
+
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
             if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
@@ -1132,8 +1149,15 @@ void ImGuiShim::RenderSettingsWindow()
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalersNoFsr1 = {
+                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
+                { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
+            };
+            if ( ImComboBox( "##Upscaler", noFsr1 ? upscalersNoFsr1 : upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
+            }
+            if ( noFsr1 ) {
+                ImGui::SetItemTooltip( "FSR 1 needs the Direct3D 11 backend." );
             }
             ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
             {

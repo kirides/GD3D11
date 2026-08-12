@@ -143,20 +143,14 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     const D3D12_GPU_VIRTUAL_ADDRESS gpuVA = m_LineVertexBuffer[frame]->GetGPUVirtualAddress() + m_LineVertexBufferOffset;
     m_LineVertexBufferOffset += bytes;
 
-    // Render target: the tonemapped swapchain backbuffer, which ResolveSceneToBackBuffer/RenderSMAA left
-    // bound WITHOUT a depth view. World-space lines depth-test against the finished scene depth, so bind
-    // the DSV for them (m_DepthBuffer is back in DEPTH_WRITE by this point in the frame — every pass that
-    // borrows it restores that state) and restore the color-only binding afterwards, since the 2D/UI PSOs
-    // that draw next are built with DSVFormat UNKNOWN.
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
-    const bool useDepth = !screenSpace && m_DepthBuffer && m_DsvHeap;
-    if ( useDepth ) {
-        D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-        m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
-    } else {
-        m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+    // The HDR scene colour, NOT the display target: drawn inside the scene so the tonemap resolve's
+    // up/downscale carries them (see the call site in OnStartWorldRendering). BindSceneColorTarget also binds
+    // the equally-sized scene depth, which the world-space lines test against. The screen-space list is a 2D
+    // overlay whose PSO is DSVFormat UNKNOWN, so it takes the colour-only binding.
+    BindSceneColorTarget();
+    if ( screenSpace ) {
+        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
     }
-    m_ColorTargetIsHDR = false;
 
     m_CmdList->SetPipelineState( pso );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Lines.RootSig.Get() );
@@ -168,10 +162,10 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     Engine::GAPI->ResetWorldTransform();
     const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
     // By VALUE, with the TAA jitter stripped. AdvanceJitter wrote the sub-pixel offset straight into
-    // TransformProj._13/_23 and nothing clears it for the rest of the frame — but this pass runs AFTER the
-    // resolve, on the tonemapped backbuffer, so there is nothing left to resolve the jitter away. Leaving it
-    // in makes every world-space debug line wobble a sub-pixel per frame along the FSR3 phase sequence, which
-    // on a one-pixel line reads as full-amplitude flicker (very visible with the ImGui editor's gizmos).
+    // TransformProj._13/_23 and nothing clears it for the rest of the frame. RenderTAA runs one pass later but
+    // reprojects through the velocity buffer, and nothing writes velocity for a debug line — so the jitter
+    // would never be resolved away, and a one-pixel line wobbling along the FSR3 phase sequence reads as
+    // full-amplitude flicker (very visible with the ImGui editor's gizmos).
     XMFLOAT4X4 projM = Engine::GAPI->GetProjectionMatrix();
     projM._13 = 0.0f;
     projM._23 = 0.0f;
@@ -179,17 +173,21 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 
-    // Full-screen viewport: the line pass runs after the scene resolve, when Gothic's tracked D3D7 viewport
-    // is irrelevant (and can be degenerate — same hazard the 2D/UI path guards against).
+    // Full-screen RENDER-resolution viewport, to match the scene-colour target. Gothic's tracked D3D7
+    // viewport is irrelevant here and can be degenerate (same hazard the 2D/UI path guards against).
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
 
     // b1 viewport pos/size for the screen-space (xyzrhw) transform — mirrors D3D11's BindViewportInformation
     // (pixels divided by GothicUIScale), which the screen-space line VS consumes exactly like the UI path.
+    // NOT the rasterizer viewport above: this is the coordinate space the hooked DrawLine/DrawLineZ emit
+    // vertices in — Gothic's virtual screen, which OnBeginFrame sets to the NATIVE size. The VS turns those
+    // pixels into NDC, which the render-res viewport then maps onto the smaller target.
     const float uiScale = std::max<float>( 0.001f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );
     const float vpConsts[8] = {
-        vp.TopLeftX / uiScale, vp.TopLeftY / uiScale,
-        vp.Width / uiScale,    vp.Height / uiScale,
+        0.0f, 0.0f,
+        static_cast<float>( m_BackbufferResolution.x ) / uiScale,
+        static_cast<float>( m_BackbufferResolution.y ) / uiScale,
         0.0f, 0.0f, 0.0f, 0.0f };
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, vpConsts, 0 );
 
@@ -201,6 +199,5 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
     m_CmdList->DrawInstanced( static_cast<UINT>( lines.size() ), 1, 0, 0 );
 
-    if ( useDepth )
-        m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );   // restore the color-only binding for the 2D UI
+    // No binding to restore: every pass after this one (TAA, DoF, bloom, the resolve) sets its own targets.
 }

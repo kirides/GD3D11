@@ -119,7 +119,7 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     // safe: nothing is destroyed here, so there is no in-flight resource to fence against.
     if ( !m_UnderwaterResourcesReady ) {
         if ( m_UnderwaterCreateAttempted ) return;
-        if ( !CreateUnderwaterResources( m_Resolution ) ) {
+        if ( !CreateUnderwaterResources( m_BackbufferResolution ) ) {
             LogWarn() << "D3D12: the camera is under water but the underwater blur textures could not be "
                          "created — the underwater effect is disabled.";
             return;
@@ -127,8 +127,8 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     }
     // Resolution changed without the resources following (the resize path only rebuilds them if they already
     // exist, so this is a belt-and-braces check rather than an expected state).
-    if ( m_UnderwaterBlurSize.x != std::max( 1, m_Resolution.x / 4 )
-        || m_UnderwaterBlurSize.y != std::max( 1, m_Resolution.y / 4 ) )
+    if ( m_UnderwaterBlurSize.x != std::max( 1, m_BackbufferResolution.x / 4 )
+        || m_UnderwaterBlurSize.y != std::max( 1, m_BackbufferResolution.y / 4 ) )
         return;
 
     // distortion2.dds drives both UV offsets. If it failed to load, fall back to the 1x1 white texture: that
@@ -235,8 +235,8 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     comp.DistortionIndex = distortion->GetSrvSlot();
     comp.Time = Engine::GAPI->GetTimeSeconds();   // D3D11's RI_Time
 
-    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-    const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

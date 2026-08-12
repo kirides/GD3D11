@@ -140,10 +140,17 @@ void D3D12RootLayout::AddStaticSampler( const D3D12_STATIC_SAMPLER_DESC& sampler
     m_StaticSamplers.push_back( sampler );
 }
 
+// See SetAnisoMipLodBias: only takes effect on the next Build().
+static float g_AnisoMipLodBias = 0.0f;
+
+void D3D12RootLayout::SetAnisoMipLodBias( float bias ) { g_AnisoMipLodBias = bias; }
+float D3D12RootLayout::GetAnisoMipLodBias() { return g_AnisoMipLodBias; }
+
 D3D12_STATIC_SAMPLER_DESC D3D12RootLayout::SamplerAniso( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
     UINT maxAnisotropy, D3D12_TEXTURE_ADDRESS_MODE address ) {
     D3D12_STATIC_SAMPLER_DESC s = MakeSampler( shaderRegister, vis, D3D12_FILTER_ANISOTROPIC, address );
     s.MaxAnisotropy = maxAnisotropy;
+    s.MipLODBias = g_AnisoMipLodBias;
     return s;
 }
 

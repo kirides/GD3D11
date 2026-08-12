@@ -219,7 +219,7 @@ void D3D12GraphicsEngine::UploadMotionConstants() {
 
 bool D3D12GraphicsEngine::MotionGBufferNeeded() const {
     // Does ANYTHING downstream read the velocity or normal target this frame?
-    //   velocity -> RenderTAA (the only consumer; D3D12Taa.cpp) and the debug overlay
+    //   velocity -> RenderTAA (D3D12Taa.cpp), RenderFsr3Upscale (D3D12Fsr3.cpp) and the debug overlay
     //   normals  -> XeGTAO (D3D12GTAO.cpp; it has a depth-derived fallback and is happy without them)
     // Neither is on in a stock config (AntiAliasingMode defaults to AA_SMAA, AoMode to AO_HBAO), and writing
     // two extra full-screen render targets across every opaque prepass draw for nobody is the single most
@@ -229,7 +229,11 @@ bool D3D12GraphicsEngine::MotionGBufferNeeded() const {
     // the MRT binding, both clears, the G-buffer PSO variants AND FillCameraVelocity together — which also
     // keeps the velocity/normal barrier state machine paired (BeginMotionGBuffer flips them to RENDER_TARGET,
     // FillCameraVelocity flips them back; running one without the other transitions from the wrong state).
+    // Both temporal resolvers are answered by the time this is first asked: AdvanceJitter runs at the top of
+    // OnStartWorldRendering (and builds the FSR3 context there), so IsFsr3Enabled() cannot flip mid-frame and
+    // leave the barrier state machine unpaired.
     if ( IsTaaEnabled() ) return true;
+    if ( IsFsr3Enabled() ) return true;   // FSR3 reprojects through the same velocity target TAA does
     if ( IsGtaoEnabled() ) return true;   // wants the real normals over its depth-derived fallback
     const auto& taa = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.TAA;
     return taa.DisplayVelocity || taa.DisplayNormals;
@@ -410,8 +414,8 @@ void D3D12GraphicsEngine::RenderMotionDebugOverlay() {
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
     m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
 

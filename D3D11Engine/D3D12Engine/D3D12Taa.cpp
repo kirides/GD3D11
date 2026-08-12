@@ -160,9 +160,15 @@ bool D3D12GraphicsEngine::IsTaaEnabled() const {
     Called at the very top of OnStartWorldRendering, BEFORE UploadMotionConstants — which then has to read the
     projection back out with _13/_23 zeroed, so its UnjitteredViewProj stays clean.
 
-    Direct counterpart of D3D11PFX_TAA::AdvanceJitter, including the clip-space conversion factor of 2. */
+    Direct counterpart of D3D11PFX_TAA::AdvanceJitter, including the clip-space conversion factor of 2.
+
+    Shared with the FSR 3 upscaler: FSR expects exactly this phase sequence, and RenderFsr3Upscale hands
+    m_TaaJitterPixels straight to FfxFsr3UpscalerDispatchDescription::jitterOffset. EnsureFsr3Ready runs first
+    so IsFsr3Enabled() answers the same here as it does later in the frame — the jitter and its resolver must
+    never disagree, in either direction. */
 void D3D12GraphicsEngine::AdvanceJitter() {
-    const bool wantJitter = IsTaaEnabled();
+    EnsureFsr3Ready();
+    const bool wantJitter = IsTaaEnabled() || IsFsr3Enabled();
     if ( !wantJitter ) {
         // Leave the projection alone. Gothic resets it every frame anyway, but being explicit means a frame in
         // which TAA is switched off mid-session cannot inherit the previous frame's offset.
@@ -175,8 +181,10 @@ void D3D12GraphicsEngine::AdvanceJitter() {
         return;
     }
 
+    // The resolve itself runs at the render resolution, but the phase count has to cover the sub-pixel
+    // samples of a DISPLAY pixel — FSR scales the base 8-sample Halton run by (display/render)^2.
     const int32_t renderWidth = m_Resolution.x;
-    const int32_t displayWidth = m_Resolution.x;   // no upscaling yet — FSR3 is the next step
+    const int32_t displayWidth = m_BackbufferResolution.x;
     const int32_t phaseCount = ffxFsr3GetJitterPhaseCount( renderWidth, displayWidth );
 
     float jitterX = 0.0f;

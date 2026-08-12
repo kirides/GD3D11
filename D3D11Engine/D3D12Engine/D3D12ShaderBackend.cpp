@@ -2,12 +2,15 @@
 #include "D3D12ShaderBackend.h"
 #include <dxcapi.h>
 #include <d3d12shader.h>
+#include <d3dcompiler.h>   // D3DCreateBlob, for handing a cached DXIL blob back as an ID3DBlob
 #include <wrl/client.h>
 #include <fstream>
 #include <iterator>
 #include <vector>
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include "../Logger.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
@@ -79,12 +82,193 @@ namespace {
         return str;
     }
 
+    // ---- On-disk DXIL cache ---------------------------------------------------------------------------
+    // Every launch and every ReloadAll recompiles ~60 entry points, so each successful compile is persisted.
+    // The key covers the top-level source, entry point, target, macros, the args revision below and the DXC
+    // version. #includes can't be in the key (they aren't known until DXC asks for them), so the include
+    // handler records each resolved file + its hash into the entry and a lookup re-hashes them; that is
+    // transitive for free. A newly ADDED #include changes the source text, hence the key, on its own.
+    //
+    // Editing a shader orphans its old entries rather than replacing them. Deleting the shadercache
+    // directory is always safe and is how you reclaim that space or force a full recompile.
+    using ShaderDeps = std::vector<std::pair<std::string, uint64_t>>;
+
+    // Bump when the DXC argument list in CompileSource changes in a way that alters codegen (a new -D, an
+    // optimization level, -enable-16bit-types...). Entries written by an older revision then simply miss.
+    constexpr uint32_t kDxilCacheArgsRevision = 1;
+    constexpr uint32_t kDxilCacheFormatVersion = 1;
+    const char* kDxilCacheDirRel = "\\system\\GD3D11\\shadercache\\D3D12\\";
+
+    // Tally for LogAndResetCacheStats. Compilation is single-threaded, so plain ints are enough.
+    int g_CacheHits = 0;
+    int g_CacheMisses = 0;
+
+    // FNV-1a 64. These only have to notice a file the user edited; a collision costs a stale shader.
+    constexpr uint64_t kFnvOffset = 1469598103934665603ull;
+    constexpr uint64_t kFnvPrime = 1099511628211ull;
+
+    uint64_t HashBytes( const void* data, size_t size, uint64_t seed = kFnvOffset ) {
+        const unsigned char* p = static_cast<const unsigned char*>( data );
+        uint64_t h = seed;
+        for ( size_t i = 0; i < size; ++i ) { h ^= p[i]; h *= kFnvPrime; }
+        return h;
+    }
+    uint64_t HashString( const char* str, uint64_t seed = kFnvOffset ) {
+        return str ? HashBytes( str, strlen( str ), seed ) : HashBytes( "", 0, seed );
+    }
+
+    /** DXC's own version, so upgrading dxcompiler.dll invalidates everything it produced. Queried once;
+        0 when DXC is unavailable. */
+    uint64_t DxcVersionHash() {
+        static uint64_t s_hash = [] () -> uint64_t {
+            PFN_DXC_CREATE_INSTANCE create = ResolveDxcCreateInstance();
+            if ( !create ) return 0;
+            ComPtr<IDxcCompiler3> compiler;
+            if ( FAILED( create( kClsidDxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ) return 0;
+            ComPtr<IDxcVersionInfo> version;
+            if ( FAILED( compiler.As( &version ) ) ) return 0;
+            UINT32 major = 0, minor = 0;
+            version->GetVersion( &major, &minor );
+            uint64_t h = HashBytes( &major, sizeof( major ) );
+            h = HashBytes( &minor, sizeof( minor ), h );
+            // Two builds of the same 1.x.y differ in codegen often enough to fold in the commit too.
+            ComPtr<IDxcVersionInfo2> version2;
+            if ( SUCCEEDED( version.As( &version2 ) ) ) {
+                UINT32 commitCount = 0; char* commitHash = nullptr;
+                if ( SUCCEEDED( version2->GetCommitInfo( &commitCount, &commitHash ) ) ) {
+                    h = HashBytes( &commitCount, sizeof( commitCount ), h );
+                    if ( commitHash ) { h = HashString( commitHash, h ); CoTaskMemFree( commitHash ); }
+                }
+            }
+            return h ? h : 1;   // never 0 on success — 0 is the "unavailable" sentinel
+        }( );
+        return s_hash;
+    }
+
+    uint64_t ComputeCacheKey( const std::string& fileName, const std::string& source, const char* entryPoint,
+        const char* target, const D3D_SHADER_MACRO* defines ) {
+        uint64_t h = HashString( fileName.c_str() );
+        h = HashBytes( source.data(), source.size(), h );
+        h = HashString( entryPoint, h );
+        h = HashString( target, h );
+        if ( defines ) {
+            for ( const D3D_SHADER_MACRO* m = defines; m->Name != nullptr; ++m ) {
+                h = HashString( m->Name, h );
+                h = HashString( m->Definition ? m->Definition : "", h );
+            }
+        }
+        const uint32_t argsRev = kDxilCacheArgsRevision;
+        h = HashBytes( &argsRev, sizeof( argsRev ), h );
+#ifdef DEBUG_D3D11
+        h = HashString( "dbg", h );   // the debug build compiles -Od -Zi; never share those blobs with release
+#else
+        h = HashString( "rel", h );
+#endif
+        const uint64_t dxc = DxcVersionHash();
+        return HashBytes( &dxc, sizeof( dxc ), h );
+    }
+
+    /** Absolute path of the cache file for `key`. Empty when the directory can't be made (read-only
+        install) — the caller then skips the cache entirely. */
+    std::string CacheFilePath( uint64_t key, bool createDir ) {
+        const std::string dir = Engine::GAPI->GetStartDirectory() + kDxilCacheDirRel;
+        if ( createDir ) {
+            // One level at a time; CreateDirectory has no "create parents" flag and both may be missing.
+            const std::string parent = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shadercache";
+            CreateDirectoryA( parent.c_str(), nullptr );
+            if ( !CreateDirectoryA( dir.c_str(), nullptr ) && GetLastError() != ERROR_ALREADY_EXISTS )
+                return "";
+        }
+        char name[32] = {};
+        sprintf_s( name, "%016llx.dxil", static_cast<unsigned long long>( key ) );
+        return dir + name;
+    }
+
+    template<typename T> bool ReadPod( std::ifstream& in, T& out ) {
+        return static_cast<bool>( in.read( reinterpret_cast<char*>( &out ), sizeof( T ) ) );
+    }
+    template<typename T> void WritePod( std::ofstream& out, const T& value ) {
+        out.write( reinterpret_cast<const char*>( &value ), sizeof( T ) );
+    }
+
+    /** Reads the entry, re-hashes every recorded #include and, if they all still match, hands back the
+        stored DXIL. Any inconsistency (including a truncated/corrupt file) is just a miss. */
+    bool TryLoadCachedBlob( uint64_t key, ID3DBlob** ppCode ) {
+        const std::string path = CacheFilePath( key, false );
+        if ( path.empty() ) return false;
+        std::ifstream in( path, std::ios::binary );
+        if ( !in ) return false;
+
+        char magic[4] = {};
+        uint32_t version = 0;
+        uint64_t storedKey = 0;
+        uint32_t depCount = 0;
+        if ( !in.read( magic, 4 ) || memcmp( magic, "GDXC", 4 ) != 0 ) return false;
+        if ( !ReadPod( in, version ) || version != kDxilCacheFormatVersion ) return false;
+        if ( !ReadPod( in, storedKey ) || storedKey != key ) return false;
+        if ( !ReadPod( in, depCount ) || depCount > 256 ) return false;
+
+        for ( uint32_t i = 0; i < depCount; ++i ) {
+            uint32_t nameLen = 0;
+            uint64_t storedHash = 0;
+            if ( !ReadPod( in, nameLen ) || nameLen == 0 || nameLen > 512 ) return false;
+            std::string name( nameLen, '\0' );
+            if ( !in.read( name.data(), nameLen ) ) return false;
+            if ( !ReadPod( in, storedHash ) ) return false;
+
+            std::string depSource;
+            if ( !D3D12ShaderBackend::LoadShaderSource( name, depSource ) ) return false;   // include vanished
+            if ( HashBytes( depSource.data(), depSource.size() ) != storedHash ) return false;   // include edited
+        }
+
+        uint32_t blobSize = 0;
+        if ( !ReadPod( in, blobSize ) || blobSize == 0 || blobSize > ( 64u << 20 ) ) return false;
+
+        ComPtr<ID3DBlob> blob;
+        if ( FAILED( D3DCreateBlob( blobSize, blob.GetAddressOf() ) ) ) return false;
+        if ( !in.read( static_cast<char*>( blob->GetBufferPointer() ), blobSize ) ) return false;
+        *ppCode = blob.Detach();
+        return true;
+    }
+
+    /** Best-effort store (a missing cache only costs time). Writes to a temp file and renames, so a crash
+        mid-write can't leave a torn entry that later reads as valid. */
+    void StoreCachedBlob( uint64_t key, const ShaderDeps& deps, ID3DBlob* code ) {
+        if ( !code || code->GetBufferSize() == 0 || deps.size() > 256 ) return;
+        const std::string path = CacheFilePath( key, true );
+        if ( path.empty() ) return;
+        const std::string tmp = path + ".tmp";
+
+        {
+            std::ofstream out( tmp, std::ios::binary | std::ios::trunc );
+            if ( !out ) return;
+            out.write( "GDXC", 4 );
+            WritePod( out, kDxilCacheFormatVersion );
+            WritePod( out, key );
+            WritePod( out, static_cast<uint32_t>( deps.size() ) );
+            for ( const auto& [name, hash] : deps ) {
+                WritePod( out, static_cast<uint32_t>( name.size() ) );
+                out.write( name.data(), static_cast<std::streamsize>( name.size() ) );
+                WritePod( out, hash );
+            }
+            WritePod( out, static_cast<uint32_t>( code->GetBufferSize() ) );
+            out.write( static_cast<const char*>( code->GetBufferPointer() ),
+                static_cast<std::streamsize>( code->GetBufferSize() ) );
+            if ( !out ) { out.close(); DeleteFileA( tmp.c_str() ); return; }
+        }
+        if ( !MoveFileExA( tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING ) )
+            DeleteFileA( tmp.c_str() );
+    }
+
     // Resolves #include directives inside D3D12 HLSL sources through the same VDFS+physical-fallback
     // lookup as the top-level shader file (D3D12ShaderBackend::LoadShaderSource), so shared includes like
     // Shaders/D3D12/include/PBRLighting.hlsl are found whether shaders are loose files or VDFS-packed.
+    // Also records what it resolved (name + content hash) for the DXIL cache entry.
     class ShaderIncludeHandler : public IDxcIncludeHandler {
     public:
         explicit ShaderIncludeHandler( IDxcUtils* utils ) : m_Utils( utils ) {}
+
+        const ShaderDeps& Dependencies() const { return m_Deps; }
 
         HRESULT STDMETHODCALLTYPE LoadSource( LPCWSTR pFilename, IDxcBlob** ppIncludeSource ) override {
             std::string filename = FromWideString( pFilename );
@@ -94,6 +278,12 @@ namespace {
             std::string source;
             if ( !D3D12ShaderBackend::LoadShaderSource( filename, source ) ) {
                 return 0x80070002L; // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) — signals "not found" to DXC
+            }
+            // DXC re-asks for the same header once per #include site; record it only once.
+            const uint64_t hash = HashBytes( source.data(), source.size() );
+            if ( std::none_of( m_Deps.begin(), m_Deps.end(),
+                [&]( const auto& d ) { return d.first == filename; } ) ) {
+                m_Deps.emplace_back( filename, hash );
             }
             ComPtr<IDxcBlobEncoding> blob;
             HRESULT hr = m_Utils->CreateBlob( source.data(), static_cast<UINT32>( source.size() ), DXC_CP_ACP, blob.GetAddressOf() );
@@ -121,9 +311,11 @@ namespace {
     private:
         ComPtr<IDxcUtils> m_Utils;
         std::atomic<LONG> m_RefCount{ 1 };
+        ShaderDeps m_Deps;   // every #include this compile resolved, for the DXIL cache entry
     };
 
     // Runtime DXC compilation of an in-memory HLSL source block into a DXIL ID3DBlob (SM6+).
+    // On success `outDeps` (when given) receives every #include the compile resolved, for the DXIL cache.
     bool CompileSource(
         LPCVOID pSrcData,
         SIZE_T SrcDataSize,
@@ -131,7 +323,8 @@ namespace {
         const D3D_SHADER_MACRO* pDefines,
         LPCSTR pEntrypoint,
         LPCSTR pTarget,
-        ID3DBlob** ppCode )
+        ID3DBlob** ppCode,
+        ShaderDeps* outDeps = nullptr )
     {
         // 1. Resolve dxcompiler.dll/dxil.dll dynamically and initialize the DXC compiler instances
         PFN_DXC_CREATE_INSTANCE dxcCreateInstance = ResolveDxcCreateInstance();
@@ -241,6 +434,7 @@ namespace {
                 0,
                 static_cast<UINT32>(shaderCodeBlob->GetBufferSize()),
                 reinterpret_cast<IDxcBlob**>(ppCode) ) ) ) {
+                if ( outDeps ) *outDeps = handler.Dependencies();
                 return true;
             }
         }
@@ -323,5 +517,27 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     AppendGlobalMacros( macros );
     macros.push_back( { nullptr, nullptr } );
 
-    return CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode );
+    // On-disk DXIL cache — see the notes above ShaderDeps.
+    const uint64_t cacheKey = ComputeCacheKey( fileName, source, entryPoint, target, macros.data() );
+    if ( TryLoadCachedBlob( cacheKey, ppCode ) ) {
+        ++g_CacheHits;
+        return true;
+    }
+    ++g_CacheMisses;
+
+    ShaderDeps deps;
+    if ( !CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode, &deps ) )
+        return false;
+
+    StoreCachedBlob( cacheKey, deps, *ppCode );
+    return true;
+}
+
+void D3D12ShaderBackend::LogAndResetCacheStats( const char* context ) {
+    if ( g_CacheHits == 0 && g_CacheMisses == 0 ) return;
+    LogInfo() << "D3D12 shader cache (" << ( context ? context : "" ) << "): " << g_CacheHits
+        << " reused from disk, " << g_CacheMisses << " compiled."
+        << ( g_CacheHits == 0 ? " (first run for these shaders, or dxcompiler.dll changed)" : "" );
+    g_CacheHits = 0;
+    g_CacheMisses = 0;
 }

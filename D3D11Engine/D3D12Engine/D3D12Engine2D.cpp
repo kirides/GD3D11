@@ -247,8 +247,8 @@ XRESULT D3D12GraphicsEngine::SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, 
 	D3D12_VIEWPORT vp = m_CurrentViewport;
 	D3D12_RECT     sc = m_CurrentScissor;
 	if ( vp.Width < 2.0f || vp.Height < 2.0f ) {
-		vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-		sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+		vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+		sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	}
 
 	// Viewport transform constants (pixels / GothicUIScale), mirroring D3D11 BindViewportInformation.
@@ -318,8 +318,8 @@ XRESULT D3D12GraphicsEngine::DrawVideoVertexArray( ExVertexStruct* vertices, uns
 	D3D12_VIEWPORT vp = m_CurrentViewport;
 	D3D12_RECT     sc = m_CurrentScissor;
 	if ( vp.Width < 2.0f || vp.Height < 2.0f ) {
-		vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-		sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+		vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+		sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	}
 
 	const float scale = std::max<float>( 0.001f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );

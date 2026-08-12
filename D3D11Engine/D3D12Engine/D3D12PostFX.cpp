@@ -626,8 +626,8 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	}
 
 	// Common state for all three fullscreen-triangle passes.
-	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -639,7 +639,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 		float RTMetrics[4];
 		UINT ColorIdx, EdgesIdx, BlendIdx, AreaIdx, SearchIdx;
 	} consts = {
-		{ 1.0f / m_Resolution.x, 1.0f / m_Resolution.y, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ) },
+		{ 1.0f / m_BackbufferResolution.x, 1.0f / m_BackbufferResolution.y, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ) },
 		m_LdrCopySrvSlot, m_SmaaEdgesSrvSlot, m_SmaaBlendSrvSlot,
 		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
 	};
@@ -693,8 +693,11 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	// so the HUD is never sharpened. Two modes, both shipped by D3D11 and driven by the same shared settings:
 	//   SHARPEN_SIMPLE — unsharp mask (D3D11PfxRenderer::RenderSimpleSharpen)
 	//   SHARPEN_CAS    — AMD FidelityFX CAS (D3D11PFX_CAS::Apply); the DEFAULT mode on both backends
-	// D3D11 skips this entirely while an FSR upscaler is active (FSR does its own RCAS sharpening); D3D12 has
-	// no upscaler yet, so there is nothing to skip for.
+	// Skipped entirely when FSR 3 upscaled this frame — its final RCAS pass already sharpened, off the SAME
+	// SharpenFactor, and doing both would double-sharpen. D3D11's pass has the identical guard (its
+	// `!isUpscaling` condition). A FAILED FSR dispatch leaves m_Fsr3RanThisFrame false, so the frame that fell
+	// back to a bilinear resolve still gets sharpened here.
+	if ( m_Fsr3RanThisFrame ) return;
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	if ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_NONE || settings.SharpenFactor <= 0.0f ) return;
 	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady || !m_Pipelines.Sharpen.RootSig ) return;
@@ -736,16 +739,16 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	} consts = {};
 	ffxCasSetup( consts.CasConst0, consts.CasConst1,
 		std::clamp( settings.SharpenFactor, 0.0f, 1.0f ),
-		static_cast<FfxFloat32>( m_Resolution.x ), static_cast<FfxFloat32>( m_Resolution.y ),
-		static_cast<FfxFloat32>( m_Resolution.x ), static_cast<FfxFloat32>( m_Resolution.y ) );
+		static_cast<FfxFloat32>( m_BackbufferResolution.x ), static_cast<FfxFloat32>( m_BackbufferResolution.y ),
+		static_cast<FfxFloat32>( m_BackbufferResolution.x ), static_cast<FfxFloat32>( m_BackbufferResolution.y ) );
 	consts.SrcIndex = m_LdrCopySrvSlot;
 	consts.SharpenStrength = settings.SharpenFactor;
-	consts.TextureSize[0] = static_cast<float>( m_Resolution.x );
-	consts.TextureSize[1] = static_cast<float>( m_Resolution.y );
+	consts.TextureSize[0] = static_cast<float>( m_BackbufferResolution.x );
+	consts.TextureSize[1] = static_cast<float>( m_BackbufferResolution.y );
 	static_assert( sizeof( SharpenConsts ) == 12 * sizeof( UINT ), "SharpenCB must match the 12 root constants in CreateSharpen" );
 
-	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

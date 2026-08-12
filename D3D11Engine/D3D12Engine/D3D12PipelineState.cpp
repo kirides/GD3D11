@@ -3693,8 +3693,8 @@ bool D3D12PipelineState::CreateMorphFold() {
 
 bool D3D12PipelineState::CreateLines() {
     // Debug/editor line lists (D3D12LineRenderer) — port of D3D11's PS_Lines + VS_Lines / VS_Lines_XYZRHW.
-    // Drawn after the tonemap resolve, straight onto the swapchain backbuffer, so the vertex colors land
-    // in the final LDR image unmodified (no HDR scene target, no tonemap, no fog).
+    // Drawn INTO the HDR scene colour, before the TAA resolve (see DrawLines), so the PS sRGB-decodes the
+    // vertex colour — the tonemap re-encodes on the way out.
     ID3D12Device* device = m_Device->GetDevice();
 
     // b0 ViewProj (world-space VS) + b1 viewport pos/size (screen-space VS). One root signature for both
@@ -3734,7 +3734,7 @@ bool D3D12PipelineState::CreateLines() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = DisplayFormat;   // drawn onto the tonemapped display target, not the HDR scene target
+    pso.RTVFormats[0] = kSceneColorFormat;   // drawn into the HDR scene target, before the tonemap resolve
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -3755,7 +3755,7 @@ bool D3D12PipelineState::CreateLines() {
     rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     // Depth-tested against the finished scene depth (reversed-Z), but never written: the lines are a debug
-    // overlay composited after the scene resolve, and nothing samples depth afterwards this frame.
+    // overlay drawn once every real geometry pass is done, and nothing re-reads depth for occlusion after.
     pso.DepthStencilState.DepthEnable = TRUE;
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
