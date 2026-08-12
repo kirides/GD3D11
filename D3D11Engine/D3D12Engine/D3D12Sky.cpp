@@ -248,7 +248,7 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
 
     // Own marker inside DrawSky's — this is the pass whose cost is being compared against the
     // fixed-function sky it replaces, so it needs to be separable in a capture.
-    DX_ZONE( m_CmdList, "Sky dome (scattering)" );
+    DX_ZONE( m_CmdList.Get(), "Sky dome (scattering)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Sky dome (scattering)" );
 
     const AtmosphereConstantBuffer& atmo = sky->GetAtmosphereCB();

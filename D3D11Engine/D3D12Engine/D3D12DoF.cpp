@@ -150,7 +150,7 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
         : m_Pipelines.DoF.BlurPSO.Get();
     if ( !blurPso ) return;
 
-    DX_ZONE( m_CmdList, "Depth of Field" );
+    DX_ZONE( m_CmdList.Get(), "Depth of Field" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth of Field" );
 
     const UINT prevIdx = m_DoFFocusIndex;

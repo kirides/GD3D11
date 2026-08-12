@@ -188,7 +188,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
         || !m_Pipelines.AO.BlurPSO || !m_Pipelines.AO.BlurRootSig )
         return;
 
-    DX_ZONE( m_CmdList, "SSAO" );
+    DX_ZONE( m_CmdList.Get(), "SSAO" );
 
     const auto& sao = settings.SaoSettings;
     // This frame's projection — the same one the prepass depth below was rasterized with. Its _13/_23 carry the

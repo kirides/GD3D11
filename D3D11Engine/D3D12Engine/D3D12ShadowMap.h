@@ -31,6 +31,7 @@
 
 #include "../Frustum.h"
 #include "D3D12EngineCommon.h"
+#include "D3D12StateCache.h"
 #include "InstancingUtils.h"   // RenderView — the per-cascade visible-VOB collection target
 
 class D3D12GraphicsEngine;
@@ -88,7 +89,7 @@ public:
     void Prepare();
     void CullCascade( UINT cascade );
     void BuildCascade( UINT cascade );
-    void RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmdList, bool sunUp );
+    void RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool sunUp );
     // The single join point for the concurrent per-cascade jobs (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
     void WaitCascadeJobs();
     // True when this frame's cascades recorded into their OWN command lists inside their jobs. False whenever
@@ -97,10 +98,14 @@ public:
     bool RecordedInJob() const { return m_RecordedInJob; }
     // Hand the cascade array to PIXEL_SHADER_RESOURCE for the lit-pass sampling (reverted at the top of the
     // next Prepare()). Issued on the main command list, after every cascade list has been executed.
-    void TransitionToReadState( ID3D12GraphicsCommandList* cmdList );
+    void TransitionToReadState( D3D12CmdList& cmdList );
 
     bool IsPassReady() const { return m_PassReady; }
     bool IsSunUp() const { return m_SunUp; }
+    // False for a cascade that is being re-used from an earlier frame this frame (lazy update, see
+    // m_ShouldUpdateCascade). Such a cascade is neither culled, built nor recorded — its slice keeps the depth
+    // it already holds and its matrices stay frozen so the lit pass keeps sampling it correctly.
+    bool ShouldUpdateCascade( UINT cascade ) const { return m_ShouldUpdateCascade[cascade]; }
     // World-space direction TOWARD the sun (this frame, temporally smoothed). Read by the sky-IBL pass.
     const DirectX::XMFLOAT3& GetSunDirWS() const { return m_SunDirWS; }
     const Frustum* CascadeFrusta() const { return m_CascadeFrustum; }
@@ -109,6 +114,10 @@ public:
     // through the engine's shared VOB command signature, so the two passes are byte-compatible.
     ID3D12PipelineState* GetWorldCasterPSO() const { return m_CasterWorldPSO.Get(); }
     ID3D12PipelineState* GetVobIndirectCasterPSO() const { return m_CasterVobIndirectPSO.Get(); }
+    // ...and their no-pixel-shader twins, for the leading opaque run of a partitioned caster command set.
+    // Null when PSO creation failed, in which case the caller submits everything through the clipping PSO.
+    ID3D12PipelineState* GetWorldCasterNoAlphaPSO() const { return m_CasterWorldNoAlphaPSO.Get(); }
+    ID3D12PipelineState* GetVobIndirectCasterNoAlphaPSO() const { return m_CasterVobIndirectNoAlphaPSO.Get(); }
 
     // ---- Per-cascade caster records, filled by the engine's shared collectors ----
     // The skeletal/attachment records are written by D3D12GraphicsEngine::PrepareFrameSkeletals (multi-cascade
@@ -150,6 +159,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterVobAttachPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterSkeletalPSO;
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterSkeletalPsBlob;
+    // NO-PIXEL-SHADER caster twins (`PS = {}`) of the four above. A caster whose diffuse has no alpha channel
+    // cannot be clipped by PSShadowClip's `clip(a - 0.5)` — binding a PS that merely *might* discard costs the
+    // whole draw the hardware's double-rate depth-only path, over three cascades plus the rain map plus the
+    // point-shadow cubes. Every caster list is partitioned opaque-first so each pass can submit the leading
+    // run through these and only the tail through the clipping PSOs. Mirror of the main-view
+    // World.DepthPrepassNoAlphaPSO family; likewise optional (null => no split, everything clips as before).
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterWorldNoAlphaPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterVobIndirectNoAlphaPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterVobAttachNoAlphaPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterSkeletalNoAlphaPSO;
     // CULL_NONE (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_CasterGrassPSO;
     Microsoft::WRL::ComPtr<ID3DBlob>            m_CasterGrassVsBlob;   // VSDepth (Vegetation.hlsl)
@@ -172,11 +191,33 @@ private:
     uint8_t*                  m_WorldDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kShadowCascades][kBackBufferMax] = {};
     UINT                      m_WorldDrawCount[kShadowCascades] = {};
+    // Alpha-test partition point: [0, opaque) needs no cutout, [opaque, total) does. See m_CasterWorldNoAlphaPSO.
+    UINT                      m_WorldOpaqueDrawCount[kShadowCascades] = {};
+    // Coalesced mirror of that opaque prefix, appended past m_WorldDrawCount in the same ring — see
+    // D3D12GraphicsEngine::m_WorldDepthMergedFirst. Nothing else reads a cascade's ring, but keeping the
+    // per-material prefix intact keeps the two build sites identical and leaves the fallback available.
+    // 0 = not built (no tail room); RecordCascade then submits the per-material prefix instead.
+    UINT                      m_WorldDepthMergedFirst[kShadowCascades] = {};
+    UINT                      m_WorldDepthMergedCount[kShadowCascades] = {};
     // Per-cascade instanced-VOB arg rings — the VOB analogue of the above (engine sig m_VobIndirectCmdSig).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
+    UINT     m_VobOpaqueDrawCount[kShadowCascades] = {};   // alpha-test partition — see m_WorldOpaqueDrawCount
+
+    // Lazy cascade update (parity with D3D11ShadowMap's RendererSettings.DebugSettings.ShadowCascades.
+    // LazyCascadeUpdate): the LAST cascade covers the whole world and is by far the most expensive to cull and
+    // record, while also being the one where a two-frame-old shadow is least visible (it starts thousands of
+    // units out, at a couple of texels per caster). So it only refreshes every kLazyLastCascadeInterval-th
+    // frame; on the other frames its matrices, its frustum and its depth slice are all left exactly as they
+    // were, and the whole cull -> build -> record chain for it is skipped. Only valid because each cascade owns
+    // its own array slice and clears it itself in RecordCascade — skipping the record simply preserves the
+    // contents (this is why D3D11 has to disable the same optimization on its atlas path, which clears wholesale).
+    static constexpr size_t kLazyLastCascadeInterval = 3;
+    size_t m_LazyFrameCounter = 0;
+    bool m_ShouldUpdateCascade[kShadowCascades] = {};   // resolved in ComputeCascadeMatrices, read everywhere else
+    bool m_CascadeMatricesValid = false;                // first frame (and after a Resize) nothing may be frozen
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read
     bool m_RecordedInJob = false;    // this frame's jobs also RECORDED (not just culled/built) — see RecordedInJob()

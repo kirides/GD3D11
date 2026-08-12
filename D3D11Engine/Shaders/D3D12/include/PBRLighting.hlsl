@@ -76,11 +76,20 @@ float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPo
     float3 bt = cross( L, t );
     float  r  = ( 0.006 + 0.010 * saturate( zView / f ) ) * coarse;
     static const float2 kDisk[4] = { float2( 0.7, 0.7 ), float2( -0.7, 0.7 ), float2( 0.7, -0.7 ), float2( -0.7, -0.7 ) };
+
+    // The low-res static tier is deliberately blurry (see the header note): a 4x-coarse cube is there to stop
+    // room-to-room bleed, not to resolve edges, and its disk radius `r` is already scaled 4x to match. Four
+    // taps on it mostly re-average the same kStaticCubeSize^2 texel neighbourhood, so it takes a 2-tap
+    // diagonal (kDisk[0]/kDisk[3], opposite corners — the widest pair) for half the texture ops. The full-res
+    // tier keeps all four, and with it the optional dynamic-overlay min, where the resolution is actually
+    // there to be filtered.
+    const int  taps   = lowRes ? 2 : 4;
+    const int  stride = lowRes ? 3 : 1;
     float sh = 0.0;
-    [unroll]
-    for ( int s = 0; s < 4; ++s )
+    [loop]
+    for ( int s = 0; s < taps; ++s )
     {
-        float3 o = normalize( L + ( kDisk[s].x * t + kDisk[s].y * bt ) * r );
+        float3 o = normalize( L + ( kDisk[s * stride].x * t + kDisk[s * stride].y * bt ) * r );
         if ( lowRes )
         {
             TextureCubeArray lowCubes = ResourceDescriptorHeap[PointShadowLowIndex];
@@ -97,7 +106,7 @@ float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPo
             sh += s;
         }
     }
-    return sh * 0.25;
+    return sh / (float)taps;
 }
 
 // PCF footprint, expressed as a WORLD radius rather than a texel count. The kernel used to step
@@ -125,6 +134,25 @@ float SampleCascadePCF( int c, float2 uv, float depth )
     float cascadeWorld = max( CascadeTexelWorld[c] * ShadowMapSize, 1e-4 );
     float pcfStep = clamp( kPcfWorldRadius / ( 2.0 * cascadeWorld ),
                            kPcfMinTexels * texel, kPcfMaxTexels * texel );
+
+    // Uniformity pre-test before committing to the full 5x5. Sample the kernel's centre and its four
+    // corners; when all five agree the footprint is entirely lit or entirely occluded, the remaining 20
+    // taps cannot return anything else, so bail with that value. Open sun and deep shade are the large
+    // majority of shaded pixels, so the common case becomes 5 taps instead of 25 and only transition
+    // pixels pay 30. shadowCmp is a COMPARISON_MIN_MAG_LINEAR sampler, so a tap that straddles a shadow
+    // edge comes back fractional and fails both tests — the predicate errs towards the full kernel.
+    //
+    // The pre-taps sit at the kernel's full extent, so fooling it needs an occluder that fits entirely
+    // between a corner and the centre, i.e. sub-2-texel detail. Dense sub-texel casters (grass — see the
+    // kPcfWorldRadius note above) are the one case that can read "solid" for a footprint the full kernel
+    // would have averaged to a partial value; that is the first thing to check if far-cascade vegetation
+    // shadows go back to looking like a flat black mask.
+    const float2 kPre[5] = { float2( 0, 0 ), float2( -2, -2 ), float2( 2, -2 ), float2( -2, 2 ), float2( 2, 2 ) };
+    float pre = 0.0;
+    [unroll] for ( int p = 0; p < 5; ++p )
+        pre += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + kPre[p] * pcfStep, c ), depth );
+    if ( pre == 0.0 ) return 0.0;
+    if ( pre == 5.0 ) return 1.0;
 
     float sh = 0.0;
     [unroll] for ( int y = -2; y <= 2; ++y )
@@ -527,13 +555,22 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
     uint  slice = ComputeZSlice( svpos.z );
-    LightGrid g = LightGridBuf[tileIndex * NUM_Z_SLICES + slice];
+    // Index the fields directly rather than `LightGrid g = LightGridBuf[c]` — binding the whole struct loads all
+    // MASK_WORDS+1 words eagerly, which is exactly the cost WordOccupancy exists to avoid.
+    const uint cluster = tileIndex * NUM_Z_SLICES + slice;
     float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     float3 maxLit = 0;
-    for ( uint w = 0; w < MASK_WORDS; ++w )
+    // Walk only the mask words WordOccupancy flags as non-empty (see ForwardPlusTypes.hlsl). An empty cluster —
+    // the common case — is now one load instead of 32, and since the light list is sorted nearest-first the set
+    // bits bunch into the low words, so even a lit cluster usually touches 1-2. The loop bound is still a
+    // popcount, so a corrupt entry bounds at MASK_WORDS iterations exactly as the old fixed loop did.
+    uint wm = LightGridBuf[cluster].WordOccupancy;
+    while ( wm != 0 )
     {
-        uint m = g.Mask[w];
+        uint w = firstbitlow( wm );
+        wm &= wm - 1;
+        uint m = LightGridBuf[cluster].Mask[w];
         while ( m != 0 )
         {
             uint bit = firstbitlow( m );

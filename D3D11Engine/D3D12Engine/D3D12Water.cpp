@@ -355,7 +355,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
         return;
 
-    DX_ZONE( m_CmdList, "DrawWaterSurfaces" );
+    DX_ZONE( m_CmdList.Get(), "DrawWaterSurfaces" );
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { g_FrameWaterSurfaces.clear(); return; }
@@ -381,7 +381,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // ---------------------------------------------------------------------------------------------------
     const bool copiesReady = EnsureWaterCopyResources() && m_WaterCBMapped[m_FrameIndex];
     if ( copiesReady ) {
-        DX_ZONE( m_CmdList, "Water scene+depth copy" );
+        DX_ZONE( m_CmdList.Get(), "Water scene+depth copy" );
         // Both sources must leave their bound states, so drop the render targets first.
         m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
@@ -490,7 +490,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // the fog visibly breaks at the ocean without this pass. Same VB/IB/root constants; only the PSO differs
     // (color writes masked, depth-write on).
     if ( m_Pipelines.Water.DepthPrepassPSO ) {
-        DX_ZONE( m_CmdList, "Water Z-Prepass" );
+        DX_ZONE( m_CmdList.Get(), "Water Z-Prepass" );
         m_CmdList->SetPipelineState( m_Pipelines.Water.DepthPrepassPSO.Get() );
         for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
             for ( MeshInfo* mesh : meshes ) {

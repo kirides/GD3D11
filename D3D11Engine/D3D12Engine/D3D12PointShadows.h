@@ -33,6 +33,7 @@
 #include <DirectXMath.h>
 
 #include "D3D12EngineCommon.h"
+#include "D3D12StateCache.h"
 
 class D3D12GraphicsEngine;
 class zCVobLight;
@@ -110,7 +111,7 @@ public:
     void SelectShadowedLights( GPULight* lights, UINT count, const std::vector<LightShadowKey>& keys );
 
     void Prepare();
-    void Record( ID3D12GraphicsCommandList* cmdList );
+    void Record( D3D12CmdList& cmdList );
 
     // Commits the static-cube cache stamps Prepare() resolved this frame. MUST be called only once the pass is
     // known to have been recorded AND submitted (end of FinishShadowPasses) — never from Prepare().

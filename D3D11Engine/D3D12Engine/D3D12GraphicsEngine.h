@@ -14,6 +14,7 @@
 
 #include "D3D12Texture.h"
 #include "D3D12ShaderBackend.h"
+#include "D3D12StateCache.h"
 #include "D3D12PipelineState.h"
 #include "D3D12ShadowMap.h"
 #include "D3D12PointShadows.h"
@@ -53,7 +54,7 @@ public:
     /** Actual configured frame-in-flight count (<= kBackBufferMax). Set once in the constructor from
         RendererSettings.LowLatency, before D3D12ShadowMap::Attach/D3D12PointShadows::Attach copy it -
         never changes afterwards (switching it requires a restart, like D3D11's swapchain waitable flag). */
-    UINT kBackBufferCount = 2;
+    UINT kBackBufferCount = 3;
 
     D3D12GraphicsEngine();
     ~D3D12GraphicsEngine() override;
@@ -281,20 +282,14 @@ private:
     // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
     // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
-    // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull). cullFrustum (if given)
-    // rejects vobs whose bbox misses it — used by the shadow cascades to cull against the CASCADE frustum
-    // instead of the player's view frustum (a caster invisible to the player can still cast a visible shadow).
-    // sphereCenter/sphereRange (if given, sphereCenter != nullptr) instead cull by distance from that point —
-    // used by point-light shadows to cull against the LIGHT's sphere instead of the player's camera radius;
-    // cullFrustum and sphereCenter are mutually exclusive per call (cascades pass a frustum, point lights pass
-    // a sphere). shadowCascade >= 0 routes the (filtered) records into that cascade's own list, -2 routes into
-    // the point-shadow scratch list (g_PointShadowSkelDraws/g_PointShadowAttachDraws), else the main-view
-    // g_FrameSkelDraws/g_FrameAttachDraws; the per-vob CB/attachment ring upload itself is still cached once per
-    // frame (see g_SkelUploadCache) regardless of how many cull passes touch that vob.
-    // Beyond this camera distance an .MMS node attachment (facial morph head, bow/crossbow draw mesh) stops
-    // morphing and renders as its undeformed rest mesh — the literal D3D11 threshold (GothicAPI.cpp's
-    // `dist < 1000` split into drawAsMorphMesh/drawRegular, plus DrawSkeletalMeshVobs' `distance < 1000`
-    // morph branch). Morphing costs a CPU vertex re-upload per animation frame, so this bounds crowd cost.
+    // Once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull).
+    // cullFrustum / sphereCenter+sphereRange are mutually exclusive: the cascades cull against the CASCADE
+    // frustum (a caster invisible to the player can still cast a visible shadow), point lights against the
+    // LIGHT's sphere. shadowCascade >= 0 routes the records into that cascade's list, -2 into the
+    // point-shadow scratch lists, else the main-view ones. The per-vob upload itself stays cached once per
+    // frame (g_SkelUploadCache) however many cull passes touch the vob.
+    // Beyond this camera distance an .MMS node attachment stops morphing and renders as its undeformed rest
+    // mesh. Same threshold D3D11 uses (GothicAPI.cpp's `dist < 1000`).
     static constexpr float kMorphMeshMaxDistance = 1000.0f;
     // cascadeCount > 1 (only valid with shadowCascade >= 0) switches to the MULTI-cascade mode: cullFrustum is
     // read as an ARRAY of cascadeCount frusta (i.e. D3D12ShadowMap::CascadeFrusta()) and each prepared vob is appended to
@@ -456,7 +451,10 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferMax];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferMax];
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CmdList;
+    // The frame's direct command list, behind the engine-wide redundant-state filter (D3D12StateCache.h).
+    // Reads exactly like the ComPtr it replaces (`m_CmdList->Foo()`, `.Get()`, `if (!m_CmdList)`), but every
+    // PSO / root-signature / root-argument / IA / RS / OM bind now goes through the shadow first.
+    D3D12CmdList m_CmdList;
 
     Microsoft::WRL::ComPtr<ID3D12Fence> m_Fence;
     UINT64 m_FenceValues[kBackBufferMax] = {};
@@ -686,10 +684,27 @@ private:
     uint8_t* m_WorldDrawArgsPtr[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferMax] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
+    // Alpha-test partition. BuildWorldDrawCommands orders the command set so [0, m_WorldOpaqueDrawCount)
+    // needs NO alpha cutout and the rest does. Only the depth prepass cares: it submits the prefix through a
+    // PS-less PSO (double-rate Z) and the suffix through the clipping one. The color pass draws the whole
+    // range — opaque geometry is order-independent, so the reordering is invisible to it.
+    UINT m_WorldOpaqueDrawCount = 0;
+    // Coalesced mirror of the opaque prefix, appended PAST m_WorldDrawCount so the color pass' view of the
+    // ring is untouched. The wrapped world index buffer is packed section-major, so a visible section's
+    // opaque materials form one contiguous index run, and with no pixel shader bound their per-material b6
+    // constants are dead — so those N commands become one DrawIndexed. Only the depth-only submits may use
+    // it. 0 = not built this frame (no ring tail room), callers fall back to the per-material prefix.
+    UINT m_WorldDepthMergedFirst = 0;
+    UINT m_WorldDepthMergedCount = 0;
     unsigned int m_WorldDrawnIndices = 0;            // total indices in this frame's command set (triangle counter)
     bool m_WorldDrawArgsOverflowLogged = false;
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
+    // Merges the opaque world commands in `opaque` (sorted in place) into the fewest DrawIndexed commands
+    // covering the EXACT same index ranges, written to `out`. Shared by BuildWorldDrawCommands and
+    // D3D12ShadowMap::CullCascade. Returns the merged count, or 0 if `out` could not hold the result.
+    static UINT CoalesceWorldDepthCommands( std::vector<WorldDrawCommand>& opaque,
+        WorldDrawCommand* out, UINT outCapacity );
 
     // ---- Alpha-blended world-mesh surfaces (D3D12Transparency.cpp) — port of D3D11's
     // DrawMeshInfoListAlphablended. BuildWorldDrawCommands peels these out of the opaque command set into
@@ -745,6 +760,7 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
+    UINT m_VobOpaqueDrawCount = 0;                    // alpha-test partition of the above — see m_WorldOpaqueDrawCount
     unsigned int m_VobDrawnTriangles = 0;            // triangles in this frame's main-view VOB command set (stats)
     bool m_VobDrawArgsOverflowLogged = false;
     // The shadow-caster variant of this pipeline (VSDepth + PSShadowClipBindless) and the per-cascade arg rings
@@ -770,25 +786,24 @@ private:
     // self-shadows the full-detail surface black. See the constant's comment for the failure mode.
     static constexpr int kVobIndicesMainView = -1;
     static constexpr int kFirstLodShadowCascade = SHADOW_LOD_FIRST_CASCADE;
+    // outOpaqueCount (optional): how many of the returned commands form the leading no-alpha-cutout run. The
+    // build always partitions — opaque materials first, alpha-tested ones after — so the depth prepass can
+    // submit the prefix through a PS-less PSO. Callers that don't split (the color pass, the shadow cascades)
+    // just pass nullptr and draw the whole range. See m_WorldOpaqueDrawCount.
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
         UINT maxCommands, bool culled = false, bool cacheIn = true,
-        int shadowCascade = kVobIndicesMainView );
+        int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
-    // The prerequisite was the bindless-skeletal / bindless-attachment work: neither Skeletal.RootSig nor the
-    // attachment PSOs bind a t0 descriptor table any more, and ExecuteIndirect can set root constants and root
-    // DESCRIPTORS but never a descriptor table. With that gone, both skeletal passes collapse the same way the
-    // world/VOB ones did (P2.11/P2.12): the per-mesh CPU work (UpdateMeshLibTexAniState, CacheIn, the b6
-    // material push, IASetVertexBuffers/IASetIndexBuffer, DrawIndexedInstanced) happens ONCE per frame in
-    // BuildSkeletalDrawCommands, and the depth prepass + the lit color pass each become one submit over the
-    // very same argument buffer (the prepass' clip-only PS simply ignores the normal/ORM constants).
+    // Possible because neither Skeletal.RootSig nor the attachment PSOs bind a t0 descriptor table any more,
+    // and ExecuteIndirect can set root constants and root DESCRIPTORS but never a table. The per-mesh CPU
+    // work happens ONCE per frame in BuildSkeletalDrawCommands, and the depth prepass and the lit pass each
+    // become one submit over the same argument buffer.
     //
-    // Base meshes need their own signature because each command also has to rebind the per-vob root CBVs (b1
-    // instance, b2 bone palette — root descriptors, so legal indirect arguments) that the shared skinning VS
-    // reads. Node attachments do NOT: they already draw through World.RootSig with exactly the VBVx2 + IBV +
-    // b6 shape m_VobIndirectCmdSig describes, so they reuse that signature and VobDrawCommand verbatim (their
-    // VSMainAttach/VSDepthAttach never read the b4 wind min/max the signature also writes — the instance
-    // stream's wind fields are reinterpreted as Fatness/Scaling instead — so those two floats go out as 0).
+    // Base meshes need their own signature because each command also rebinds the per-vob root CBVs (b1
+    // instance, b2 bone palette) the shared skinning VS reads. Node attachments do not — they already draw
+    // through World.RootSig with exactly the shape m_VobIndirectCmdSig describes, so they reuse it and
+    // VobDrawCommand verbatim.
     struct SkeletalDrawCommand {                     // 80 bytes; UINT64 members force 8-byte align, 80 % 8 == 0
         D3D12_GPU_VIRTUAL_ADDRESS InstCB;            // @0  root param 1 -> b1 InstanceCB (world/color/fatness)
         D3D12_GPU_VIRTUAL_ADDRESS BoneCB;            // @8  root param 2 -> b2 BonesCB (bone palette)
@@ -809,10 +824,12 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
+    UINT m_SkeletalOpaqueDrawCount = 0;              // alpha-test partition — see m_WorldOpaqueDrawCount
     Microsoft::WRL::ComPtr<ID3D12Resource> m_AttachDrawArgs[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AttachDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_AttachDrawArgsPtr[kBackBufferMax] = {};
     UINT m_AttachDrawCount = 0;                      // VobDrawCommands built this frame (prepass + color share them)
+    UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
@@ -906,12 +923,15 @@ private:
     static constexpr UINT kRainShadowListIndex  = kShadowCascades + 1;
     static constexpr UINT kShadowRecordSlots    = kShadowCascades + 2;
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferMax];
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_ShadowCmdLists[kShadowRecordSlots][kBackBufferMax];
+    // Each slot owns its OWN state cache: a D3D12CmdList shadow is per-list and unsynchronized, and these
+    // lists are recorded concurrently on pool threads while the main thread records m_CmdList.
+    D3D12CmdList m_ShadowCmdLists[kShadowRecordSlots][kBackBufferMax];
     bool m_ShadowCmdListsReady = false;
     bool CreateShadowRecordCommandLists();
     // Closes + submits whatever is currently recorded in m_CmdList and immediately reopens it on the SAME
     // frame allocator (no allocator Reset, no GPU wait) so a batch of independently-recorded lists can be
-    // slotted into the queue at this exact point in the frame. Used by BeginShadowRecording.
+    // slotted into the queue at this exact point in the frame — or simply so the GPU can start on what is
+    // already recorded instead of idling until Present.
     void SubmitRecordedCommandsAndReopen();
 
     // ---- The deferred shadow driver, called from OnStartWorldRendering (see D3D12Scene.cpp for the rationale).
@@ -923,8 +943,8 @@ private:
     //   BeginShadowRecording — submit m_CmdList "part A", fan the pure-D3D12 recording out to the pool and
     //                          RETURN IMMEDIATELY. The main thread then records the depth prepass, the GPU VOB
     //                          cull, the light cull and SSAO into the reopened m_CmdList while the pool works.
-    //   FinishShadowPasses   — join, execute the finished lists (they land in the queue ahead of the still-open
-    //                          part B), re-record any slot that failed, then the post-barriers + RT rebind.
+    //   FinishShadowPasses   — join, execute the finished lists (they land ahead of the still-open part B2,
+    //                          the lit passes), re-record any failed slot, then post-barriers + RT rebind.
     // NOTE the CSM cascades do NOT go through this driver: each cascade is one self-contained job (cull ->
     // build -> record -> close) launched by D3D12ShadowMap::Prepare, far earlier in the frame. Only the join
     // is shared, in FinishShadowPasses. See the phase table in D3D12ShadowMap.h.
@@ -933,7 +953,7 @@ private:
     void FinishShadowPasses();
     // Resets one (slot x frame-in-flight) allocator/list pair and hands back the open list, or nullptr on
     // failure. Public to the recording lambdas only in the sense that they are defined inside member functions.
-    ID3D12GraphicsCommandList* BeginShadowList( UINT slot );
+    D3D12CmdList* BeginShadowList( UINT slot );
     bool m_ShadowListRecorded[kShadowRecordSlots] = {};   // per slot: recorded AND closed successfully this frame
     bool m_ShadowThreadedRecord = false;   // this frame's BeginShadowRecording took the pooled-recording path
     bool m_RainShadowPassReady = false;   // PrepareRainShadowmap produced a valid camera + caster set this frame
@@ -1081,31 +1101,18 @@ private:
     // 63 of its 64 DWORDs, so two more root constants would not fit there.
     UINT m_ActiveAOMaskSrvSlot = UINT_MAX;
     bool m_AOResourcesReady = false;
-    // m_AOMask rests in UNORDERED_ACCESS between RenderSSAO runs (its creation state) except right after a
-    // successful run, which leaves it PIXEL_SHADER_RESOURCE for the lit passes' bindless read — tracks that so
-    // the NEXT run knows whether it must flip it back to UNORDERED_ACCESS before the main pass writes it (mirrors
-    // m_SceneColorInPixelState/m_LightGridInPixelState). Toggling AO off skips RenderSSAO entirely, so without
-    // this the resource would still show PIXEL_SHADER_RESOURCE if AO is re-enabled a frame later.
+    // m_AOMask rests in UNORDERED_ACCESS between RenderSSAO runs, except right after a successful one, which
+    // leaves it PIXEL_SHADER_RESOURCE for the lit passes. Toggling AO off skips RenderSSAO entirely, so the
+    // flag is what tells the next run whether to flip it back.
     bool m_AOMaskInPixelState = false;
     // --- The AO depth source ---------------------------------------------------------------------------------
-    // THIS frame's m_DepthBuffer, read straight after the Forward+ depth prepass and before any lit pass. The
-    // mask is therefore in this frame's screen space and the lit shaders read it at their own pixel — no
-    // reprojection, no lag (see Shaders/D3D12/include/ScreenSpaceAO.hlsl).
-    //
-    // This used to be a full-frame COPY of the PREVIOUS frame's completed depth (m_PrevDepth + CopyDepthForAO),
-    // because the prepass omitted grass — a grass pixel would then sample the AO of the terrain behind it, and
-    // the blades cast no AO of their own. Folding vegetation into the prepass (DrawVegetationDepthPrepass) fixed
-    // the cause, so the snapshot, its depth-sized allocation, the per-frame CopyResource and the per-pixel
-    // reprojection in five pixel shaders are all gone. Water/decals/particles still write depth after the
-    // prepass and are still not occluders; that was true of the whole scheme's near field anyway.
-    //
-    // Cost: RenderSSAO now has to round-trip m_DepthBuffer DEPTH_WRITE <-> NON_PIXEL_SHADER_RESOURCE and
-    // therefore serialises against the prepass, exactly like BuildHiZ does a few calls earlier.
+    // THIS frame's m_DepthBuffer, read after the Forward+ depth prepass and before any lit pass, so the mask is
+    // in this frame's screen space and needs no reprojection. In exchange RenderSSAO round-trips the depth
+    // buffer DEPTH_WRITE <-> NON_PIXEL_SHADER_RESOURCE and serialises against the prepass, as BuildHiZ does.
     //
     // 80 bytes of the shared shadow CB, between the wetness block and the sky-IBL tail. Only the leading float2
-    // is live (1/screen-size, so the lit shaders can turn SV_Position into a mask UV); the rest is the hole the
-    // reprojection constants used to occupy, kept because the offsets of everything after it are baked into
-    // five HLSL cbuffer layouts.
+    // is live (1/screen-size, to turn SV_Position into a mask UV); the rest is the hole the old reprojection
+    // constants left, kept because five HLSL cbuffer layouts bake in the offsets after it.
     static constexpr UINT kAoReprojCbOffset = 352;
     static constexpr UINT kAoReprojCbReservedBytes = 80;
     struct AoScreenCBData { float InvResX; float InvResY; float _pad[2]; };
@@ -1219,6 +1226,7 @@ private:
     // the tail of CreateSkeletal), so a partial success is genuinely reachable — hence one gate, tested by
     // BeginMotionGBuffer and by each of the three prepass draws.
     bool MotionGBufferActive() const;
+    bool MotionGBufferNeeded() const;   // does any pass actually read velocity/normals this frame? see the impl
 
     // ---- Temporal anti-aliasing (D3D12Taa.cpp) --------------------------------------------------------------
     // Port of Intel's Graphics Optimized TAA (MIT; Shaders/D3D12/TAAResolve.hlsl carries the attribution). The
@@ -1551,6 +1559,7 @@ private:
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainVobDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_RainVobDrawArgsPtr[kBackBufferMax] = {};
     UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
+    UINT     m_RainVobOpaqueDrawCount = 0;   // alpha-test partition — see m_WorldOpaqueDrawCount
     // Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
     // main-view / per-cascade views, since the bucket index IS the visual index.
     RenderView m_RainShadowVobs;
@@ -1562,7 +1571,7 @@ private:
     // list it is handed.
     void PrepareRainShadowmap();
     void CollectRainShadowVobs();   // the VOB half of PrepareRainShadowmap (cull -> instance upload -> arg build)
-    void RecordRainShadowmap( ID3D12GraphicsCommandList* cmdList );
+    void RecordRainShadowmap( D3D12CmdList& cmdList );
 
     // Scene wetness ("wet ground"): the port of D3D11's deferred ApplySceneWettness into the Forward+ lit
     // pixel shaders (Shaders/D3D12/include/Wetness.hlsl). All of its inputs ride in the TAIL of the shared

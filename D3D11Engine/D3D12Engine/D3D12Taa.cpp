@@ -217,7 +217,7 @@ void D3D12GraphicsEngine::RenderTAA() {
     const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
     if ( !motionCb ) return;
 
-    DX_ZONE( m_CmdList, "TAA resolve" );
+    DX_ZONE( m_CmdList.Get(), "TAA resolve" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "TAA resolve" );
 
     const UINT writeIdx = m_TaaHistoryIndex;

@@ -183,7 +183,7 @@ void D3D12GraphicsEngine::AdvanceRain() {
     }
     if ( !m_RainBuffersReady ) return;
 
-    DX_ZONE( m_CmdList, "AdvanceRain" );
+    DX_ZONE( m_CmdList.Get(), "AdvanceRain" );
 
     // Establish the invariant DrawRainParticles relies on — by the time AdvanceRain returns (buffers
     // ready), m_RainBufferDynamic is always in UNORDERED_ACCESS, whether or not the CS actually dispatched
@@ -247,7 +247,7 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     const UINT texArraySlot = isSnow ? m_SnowTextureArraySrvSlot : m_RainTextureArraySrvSlot;
     if ( texArraySlot == UINT_MAX ) return;
 
-    DX_ZONE( m_CmdList, "DrawRainParticles" );
+    DX_ZONE( m_CmdList.Get(), "DrawRainParticles" );
 
     // Flip the dynamic buffer UAV -> NON_PIXEL_SHADER_RESOURCE for the VS's root-SRV read (AdvanceRain
     // guarantees it's in UNORDERED_ACCESS by the time it returns, whether or not it actually dispatched).
@@ -475,6 +475,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     dsv.Format = DXGI_FORMAT_D32_FLOAT;
     dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     device->CreateDepthStencilView( m_RainShadowMap.Get(), &dsv, m_RainShadowDsv );
+    m_CmdList.InvalidateRenderTargets();   // descriptor rewritten in place — see D3D12StateCache.h
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
     srv.Format = DXGI_FORMAT_R32_FLOAT;
@@ -523,6 +524,7 @@ namespace {
         UINT indexCount = 0;
         UINT startIndex = 0;
         UINT NormalIdx = 0xFFFFFFFFu, OrmIdx = 0, DiffuseIdx = 0;   // b6 MaterialCB (PSShadowClip reads Diffuse)
+        bool alphaTested = true;   // false => drawn by the no-pixel-shader caster PSO (see m_CasterWorldNoAlphaPSO)
     };
     std::vector<RainShadowDraw> g_RainShadowDraws;
     D3D12VertexBuffer* g_RainShadowVb = nullptr;
@@ -604,7 +606,7 @@ void D3D12GraphicsEngine::CollectRainShadowVobs() {
     // the wetness map is one coarse projection over the whole scene rather than a distance band, so there
     // is no near/far split here that would justify dropping caster detail.
     m_RainVobDrawCount = BuildVobDrawCommands( rainUploads, m_RainVobDrawArgsPtr[frame], false,
-        kMaxRainVobDrawCommands, false, true, 0 );
+        kMaxRainVobDrawCommands, false, true, 0, &m_RainVobOpaqueDrawCount );
 }
 
 
@@ -738,7 +740,8 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
             }
 
             uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
-            if ( zCTexture* tex = meshKey.Material->GetAniTexture() ) {
+            zCTexture* tex = meshKey.Material->GetAniTexture();
+            if ( tex ) {
                 if ( tex->GetCacheState() == zRES_CACHED_IN ) {
                     if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
                         if ( GfxTexture* gfx = s->GetEngineTexture() ) {
@@ -755,13 +758,15 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
             d.NormalIdx = 0xFFFFFFFFu;
             d.OrmIdx = GetDefaultOrmSrvSlot();
             d.DiffuseIdx = diffuseIdx;
+            // Resolved here (main thread) so RecordRainShadowmap can pick the PSO without touching Gothic.
+            d.alphaTested = ( tex && tex->HasAlphaChannel() ) || meshKey.Material->HasAlphaTest();
             g_RainShadowDraws.push_back( d );
         }
     }
 }
 
 
-void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdList ) {
+void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     // The pure-D3D12 half: no Gothic access, so it is safe on a pool thread.
     if ( !cmdList || !m_RainShadowPassReady ) return;
 
@@ -771,8 +776,8 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
         cmdList->SetDescriptorHeaps( 1, heaps );
     }
 
-    DX_ZONE( cmdList, "RainShadowmap" );
-    TracyD3D12ZoneCGX( cmdList, "RainShadowmap" );
+    DX_ZONE( cmdList.Get(), "RainShadowmap" );
+    TracyD3D12ZoneCGX( cmdList.Get(), "RainShadowmap" );
 
     // Return the map to DEPTH_WRITE if last frame's readers left it in ALL_SHADER_RESOURCE.
     if ( m_RainShadowInReadState ) {
@@ -791,7 +796,13 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
         cmdList->RSSetScissorRects( 1, &sc );
         cmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-        cmdList->SetPipelineState( m_ShadowMap.GetWorldCasterPSO() );
+        // Per-draw PSO choice (this is a CPU draw loop, not an ExecuteIndirect): the casters whose diffuse has
+        // no alpha channel can't be clipped, so they run with no pixel shader bound. See m_CasterWorldNoAlphaPSO.
+        ID3D12PipelineState* const clipPso = m_ShadowMap.GetWorldCasterPSO();
+        ID3D12PipelineState* const noAlphaPso = m_ShadowMap.GetWorldCasterNoAlphaPSO()
+            ? m_ShadowMap.GetWorldCasterNoAlphaPSO() : clipPso;
+        ID3D12PipelineState* boundPso = nullptr;
+
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
 
@@ -801,6 +812,11 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
         cmdList->IASetIndexBuffer( &ibv );
 
         for ( const RainShadowDraw& d : g_RainShadowDraws ) {
+            ID3D12PipelineState* wantPso = d.alphaTested ? clipPso : noAlphaPso;
+            if ( wantPso != boundPso ) {
+                cmdList->SetPipelineState( wantPso );
+                boundPso = wantPso;
+            }
             cmdList->SetGraphicsRoot32BitConstants( 10, 3, &d.NormalIdx, 0 );
             cmdList->DrawIndexedInstanced( d.indexCount, 1, d.startIndex, 0, 0 );
         }
@@ -811,8 +827,8 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
     // world had no casters), so re-establish them here rather than depending on that branch having run.
     if ( m_RainVobDrawCount > 0 && m_ShadowMap.GetVobIndirectCasterPSO() && m_VobIndirectCmdSig
         && m_RainVobDrawArgs[m_FrameIndex] ) {
-        DX_ZONE( cmdList, "Vobs" );
-        TracyD3D12ZoneCGX( cmdList, "Vobs" );
+        DX_ZONE( cmdList.Get(), "Vobs" );
+        TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 
         const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kRainShadowMapSize), static_cast<float>(kRainShadowMapSize), 0.0f, 1.0f };
         const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kRainShadowMapSize), static_cast<LONG>(kRainShadowMapSize) };
@@ -820,12 +836,28 @@ void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdLis
         cmdList->RSSetScissorRects( 1, &sc );
         cmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-        cmdList->SetPipelineState( m_ShadowMap.GetVobIndirectCasterPSO() );
+        // BuildVobDrawCommands partitioned this command set opaque-first (m_RainVobOpaqueDrawCount), so the
+        // leading run draws with no pixel shader — same split the CSM cascades do.
+        ID3D12PipelineState* const vobNoAlphaPso = m_ShadowMap.GetVobIndirectCasterNoAlphaPSO();
+        cmdList->SetPipelineState( vobNoAlphaPso ? vobNoAlphaPso : m_ShadowMap.GetVobIndirectCasterPSO() );
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
         cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );   // b4 frame-global wind baseline
-        cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_RainVobDrawCount,
-            m_RainVobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        if ( !vobNoAlphaPso ) {
+            cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_RainVobDrawCount,
+                m_RainVobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+        } else {
+            if ( m_RainVobOpaqueDrawCount > 0 ) {
+                cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_RainVobOpaqueDrawCount,
+                    m_RainVobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
+            }
+            if ( m_RainVobDrawCount > m_RainVobOpaqueDrawCount ) {
+                cmdList->SetPipelineState( m_ShadowMap.GetVobIndirectCasterPSO() );
+                cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(),
+                    m_RainVobDrawCount - m_RainVobOpaqueDrawCount, m_RainVobDrawArgs[m_FrameIndex].Get(),
+                    static_cast<UINT64>( m_RainVobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
+            }
+        }
     }
 
     // Unbind before the transition: a DSV that is still the command list's "current" render target when its

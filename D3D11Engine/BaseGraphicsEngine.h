@@ -154,6 +154,7 @@ public:
         installed, falling back to OnBeginFrame otherwise (see g_MainLoopFramePacingInstalled). */
     void WaitForFrameLatencyWaitable() {
         if ( HANDLE waitable = GetFrameLatencyWaitableObject() ) {
+            ZoneScoped;
             WaitForSingleObjectEx( waitable, 1000, TRUE );
         }
     }

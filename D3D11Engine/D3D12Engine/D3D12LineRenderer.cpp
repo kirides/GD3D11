@@ -126,7 +126,7 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     ID3D12PipelineState* pso = screenSpace ? m_Pipelines.Lines.ScreenPSO.Get() : m_Pipelines.Lines.WorldPSO.Get();
     if ( !pso ) return;
 
-    DX_ZONE( m_CmdList, "Draw debug lines" );
+    DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
 
     const UINT frame = m_FrameIndex;
     const UINT bytes = static_cast<UINT>( lines.size() * sizeof( LineVertex ) );

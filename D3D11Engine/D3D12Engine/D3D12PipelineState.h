@@ -83,6 +83,22 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VobIndirectPsBlob;         // PSMainBindless
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobIndirectPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobIndirectPsBlob; // PSDepthClipBindless
+        // NO-PIXEL-SHADER prepass variants. Byte-identical to the three *DepthPrepass* PSOs above except
+        // `PS = {}` — no alpha clip, and therefore no pixel shader at all. A bound PS that can `discard`
+        // forces late-Z for the whole draw, which costs the depth-only prepass the double-rate Z path the
+        // hardware would otherwise give it (this is what D3D11's Forward+ prepass gets for free by calling
+        // PSSetShader(nullptr) — see D3D11ForwardPlusRenderer.cpp).
+        //
+        // Only materials that actually need the cutout (diffuse HasAlphaChannel() or Material->HasAlphaTest())
+        // need the clipping PSOs. The Build*DrawCommands functions partition each frame's indirect command
+        // buffer so the opaque materials form a prefix and the alpha-tested ones a suffix; the prepass then
+        // issues two ExecuteIndirects, this PSO over the prefix and the clipping one over the suffix.
+        //
+        // Not built for the *GBuf variants: when the motion/normal G-buffer is on there IS a pixel shader by
+        // definition (it exports velocity + normals), so the split buys nothing there.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassNoAlphaPSO;           // world mesh
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobNoAlphaPSO;        // instanced VOBs
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobAttachNoAlphaPSO;  // node attachments
         // G-buffer prepass variants (motion vectors + octahedral normals — see D3D12Motion.cpp). Identical depth
         // state to the three PSOs above, but two real render targets (kVelocityFormat, kGBufferNormalFormat)
         // instead of the masked-off scene-color RTV, and the *GBuf shader entry points which additionally read
@@ -168,6 +184,8 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPSO;    // depth-only skinned (color write mask 0)
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVsBlob;  // also reused by the CSM skeletal shadow caster
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;
+        // No-pixel-shader variant of the above — see World.DepthPrepassNoAlphaPSO for why and how it is selected.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassNoAlphaPSO;
         // G-buffer prepass variant (motion vectors + normals). Skinned twice — current pose and the previous
         // pose out of the same b2 palette — so a swung limb gets true per-vertex velocity. Optional: null falls
         // back to DepthPrepassPSO above.
@@ -189,6 +207,13 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterWorldPSO;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterVobPSO;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterSkeletalPSO;
+        // No-pixel-shader twins (`PS = {}`) of the three above, for casters whose diffuse has no alpha channel
+        // and therefore cannot be cut out by PSCubeClip. Six faces per caster makes this the shadow pass with
+        // the most to gain from the hardware's depth-only fast path. Null => the recorder keeps clipping
+        // everything. See D3D12ShadowMap::m_CasterWorldNoAlphaPSO for the full rationale.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterWorldNoAlphaPSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterVobNoAlphaPSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterSkeletalNoAlphaPSO;
     };
 
     // Bink video playback (zBinkPlayer): own root sig (b0 viewport consts, t0-t2 YUV planes SRV table, static
