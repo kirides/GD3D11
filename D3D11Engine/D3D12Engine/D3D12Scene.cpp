@@ -344,6 +344,9 @@ void D3D12GraphicsEngine::OnLoadWorld()
     // depth-confidence test would reject essentially every pixel while doing it.
     m_TaaHistoryValid = false;
     m_TaaPrevDepthValid = false;
+    // Same argument for FSR 3, whose history lives inside the FFX context where we cannot drop it directly —
+    // the reset flag on the next dispatch is how FSR is told to discard it.
+    m_Fsr3Reset = true;
     // Motion vectors: the previous camera belongs to the old world too, so the first frame here must report
     // zero motion rather than reproject through a camera that no longer means anything.
     m_MotionHistoryValid = false;
@@ -2426,6 +2429,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	RenderBloom();
 	RenderLuminanceAdapt();
+
+	// FSR 3 temporal upscale (AA_FSR + the FSR 3 upscaler; mutually exclusive with RenderTAA above). Deliberately
+	// AFTER bloom/luminance and immediately before the tonemap resolve, i.e. on the linear HDR scene rather than
+	// on the finished LDR image D3D11 upscales — see D3D12Fsr3.cpp for the reasoning. It writes a DISPLAY-res
+	// target, which ResolveSceneToBackBuffer then samples in place of the render-res scene colour, so the
+	// resolve's implicit bilinear upscale becomes a 1:1 blit. No-op (and the resolve keeps upscaling) otherwise.
+	RenderFsr3Upscale();
 
 	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
 	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.

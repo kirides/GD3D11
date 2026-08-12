@@ -67,6 +67,9 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
             if ( pending.Job ) pending.Job();
         }
     }
+    // After the idle+drain above: the FFX context releases its internal D3D12 resources synchronously, so it
+    // must not outlive in-flight work — and must go before the device does.
+    ReleaseFsr3();
     if ( m_FenceEvent ) CloseHandle( m_FenceEvent );
     if ( m_UploadEvent ) CloseHandle( m_UploadEvent );
     if ( m_FrameLatencyWaitableObject ) CloseHandle( m_FrameLatencyWaitableObject );
@@ -1283,13 +1286,14 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 
 	// NATIVE viewport over the render-res scene texture: the fullscreen triangle's uv spans [0,1] of
 	// m_SceneColor and s0 is a bilinear clamp sampler, so this draw IS the render-scale up/downscale.
+	// When FSR 3 ran it already produced a display-res image (GetTonemapSourceSrvSlot) and this becomes 1:1.
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_BackbufferResolution.x), static_cast<float>(m_BackbufferResolution.y), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
-	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
 	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive );
 	// Count MUST match the AddConstants( 0, ... ) in D3D12PipelineState::CreateTonemap.
 	static_assert( kTonemapRootConstantCount == 12, "Tonemap root constant count changed - update CreateTonemap" );
@@ -1689,6 +1693,10 @@ bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
     resolve, which is where the up/downscale happens. Only depth + scene color are fatal; the rest follow
     the same non-fatal contract they have on the resize path (their passes guard on the resource existing). */
 bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
+    // The FFX context is built for one specific (render, display) size pair and its internal resources are
+    // freed immediately by ffxFsr3UpscalerContextDestroy — so it has to go here, on a path whose callers have
+    // already idled the GPU, rather than lazily from the frame. EnsureFsr3Ready rebuilds it next frame.
+    ReleaseFsr3();
     if ( !CreateDepthBuffer( renderSize ) ) return false;
     if ( !CreateSceneColorTarget( renderSize ) ) return false;
     CreateBloomResources( renderSize );
@@ -1716,6 +1724,7 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
 /** Everything sized to the NATIVE backbuffer — the post-tonemap passes. All non-fatal (each guards on its
     own resources); the underwater pair is lazily built, so it is only re-sized here if it is already up. */
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
+    ReleaseFsr3();                          // display size is half of the pair the FFX context is built for
     CreateLdrCopyResource( displaySize );   // shared LDR scratch for SMAA/sharpen; both no-op without it
     CreateSmaaResources( displaySize );     // SMAA is opt-in (AntiAliasingMode == AA_SMAA)
     m_UnderwaterCreateAttempted = false;
@@ -2583,7 +2592,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     // and a savegame thumbnail wants the plain SDR image regardless — hence hdrOutput=false below too.
     m_CmdList->SetPipelineState( m_Pipelines.TonemapCapturePSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
-    m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+    // Same source the on-screen resolve used: m_Fsr3Output when FSR 3 upscaled this frame, else m_SceneColor.
+    m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
     const TonemapRootConstants captureConsts = MakeTonemapConstants( false );
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &captureConsts, 0 );
     m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );

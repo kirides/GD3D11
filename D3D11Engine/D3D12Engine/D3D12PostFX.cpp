@@ -693,8 +693,11 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	// so the HUD is never sharpened. Two modes, both shipped by D3D11 and driven by the same shared settings:
 	//   SHARPEN_SIMPLE — unsharp mask (D3D11PfxRenderer::RenderSimpleSharpen)
 	//   SHARPEN_CAS    — AMD FidelityFX CAS (D3D11PFX_CAS::Apply); the DEFAULT mode on both backends
-	// D3D11 skips this entirely while an FSR upscaler is active (FSR does its own RCAS sharpening); D3D12 has
-	// no upscaler yet, so there is nothing to skip for.
+	// Skipped entirely when FSR 3 upscaled this frame — its final RCAS pass already sharpened, off the SAME
+	// SharpenFactor, and doing both would double-sharpen. D3D11's pass has the identical guard (its
+	// `!isUpscaling` condition). A FAILED FSR dispatch leaves m_Fsr3RanThisFrame false, so the frame that fell
+	// back to a bilinear resolve still gets sharpened here.
+	if ( m_Fsr3RanThisFrame ) return;
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	if ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_NONE || settings.SharpenFactor <= 0.0f ) return;
 	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady || !m_Pipelines.Sharpen.RootSig ) return;
