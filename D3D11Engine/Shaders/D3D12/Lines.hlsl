@@ -52,5 +52,10 @@ VS_OUT VSScreen( VS_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    return i.color;
+    // The target is the LINEAR HDR scene colour (the lines draw before the tonemap resolve, so the render
+    // scale carries them), but LineVertex colours are authored in gamma/sRGB space — they are the same
+    // zCOLOR values D3D11 writes straight into its LDR backbuffer. Decode them the way the lit passes decode
+    // albedo, so the tonemap's LinearToSrgb on the way out returns roughly the colour that was asked for.
+    // Alpha is a blend weight, not a colour, and stays linear.
+    return float4( pow( max( i.color.rgb, 0.0 ), 2.2 ), i.color.a );
 }

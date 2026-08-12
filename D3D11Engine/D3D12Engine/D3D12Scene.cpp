@@ -2384,6 +2384,19 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise.
 	RenderFogAndGodRays();
 
+	// Debug/editor lines, INSIDE the scene (HDR scene colour + scene depth) rather than over the finished LDR
+	// image. That is what lets the render-scale up/downscale in the tonemap resolve carry them: drawing them
+	// afterwards at native size would need a native-resolution copy of the scene depth for the world-space list
+	// to depth-test against. The cost is that they are as soft as the rest of the scene when downscaling, and
+	// that they go through TAA and the tonemap like scene content — acceptable for a diagnostic overlay.
+	// Both calls also CLEAR their cache, so this is what keeps the line lists from growing across frames.
+	{
+		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
+		m_LineRenderer->Flush();
+		m_LineRenderer->FlushScreenSpace();
+	}
+
 	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
 	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
 	// Temporal AA, on the finished LINEAR HDR scene: after the fog/god-ray composition (those are part of the
@@ -2425,15 +2438,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// and XeGTAO are still to come — and therefore the only way to verify this whole feature on the GPU.
 	RenderMotionDebugOverlay();
 
-	// Debug/editor lines last, on the finished LDR image — same slot as D3D11's "Draw Debug Lines" render-graph
-	// pass (after post-FX, before Gothic's 2D UI composites on top). Both calls also CLEAR their cache, so this
-	// is what keeps the line lists from growing unbounded across frames.
-	{
-		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
-		m_LineRenderer->Flush();
-		m_LineRenderer->FlushScreenSpace();
-	}
+	// (Debug/editor lines used to be flushed here, on the finished LDR image — D3D11's slot. They moved up
+	// ahead of RenderTAA so the render scale carries them; see the call site above RenderTAA.)
 
 	// Do any remaining dx12 stuff BEFORE setting PresentPending
 

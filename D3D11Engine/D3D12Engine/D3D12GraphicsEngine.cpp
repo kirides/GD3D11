@@ -35,6 +35,11 @@ D3D12GraphicsEngine::D3D12GraphicsEngine() {
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+    // Bake the material sampler's mip bias BEFORE Init() builds any root signature — a static sampler is
+    // serialized into the root signature blob, so getting it right here is what makes the normal "scale is
+    // already set in the ini at launch" path cost nothing. A later change goes through RebakeMipLodBias.
+    m_AppliedMipLodBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
+    D3D12RootLayout::SetAnisoMipLodBias( m_AppliedMipLodBias );
     // Same LowLatency toggle D3D11 uses for its swapchain waitable object. kBackBufferCount is always
     // N+1 - 1 slot for the frame currently in flight plus N queued behind it - so normally N=2 queued
     // (3 slots) and LowLatency trims that to N=1 queued (2 slots, matching D3D11's non-low-latency
@@ -1633,14 +1638,9 @@ static bool CheckTearingSupport() {
     D3D11GraphicsEngine::RecreateBuffers, down to the 25..200 clamp being written BACK into the setting so a
     forced ini value or a stale ImGui state can't leave the two backends disagreeing about what is legal.
 
-    Two D3D11 behaviours are deliberately NOT mirrored here:
-      - RendererSettings.Upscaler (FSR 1 / FSR 3) is ignored — the vendored FidelityFX SDK ships only
-        ffx_backend_dx11_x86.lib, so there is no DX12 backend to drive them. The tonemap resolve's bilinear
-        fullscreen triangle is the whole upscaler on this backend (ImGuiShim hides the other options).
-      - D3D11's CreateAndBindDefaultSampler applies a log2(render/native) mip LOD bias to keep textures sharp
-        when downscaling. D3D12's samplers are STATIC samplers baked into the root signatures, so matching it
-        would mean rebuilding every root signature and PSO on a scale change; downscaled output is therefore
-        a little softer than D3D11's until the samplers move into a descriptor heap. */
+    RendererSettings.Upscaler (FSR 1 / FSR 3) is deliberately ignored — the vendored FidelityFX SDK ships only
+    ffx_backend_dx11_x86.lib, so there is no DX12 backend to drive them. The tonemap resolve's bilinear
+    fullscreen triangle is the whole upscaler on this backend (ImGuiShim hides the other options). */
 INT2 D3D12GraphicsEngine::ComputeRenderResolution( INT2 backbufferSize ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.ResolutionScalePercent == 100 ) return backbufferSize;
@@ -1651,6 +1651,51 @@ INT2 D3D12GraphicsEngine::ComputeRenderResolution( INT2 backbufferSize ) {
         std::max( 1, static_cast<int>( static_cast<float>( backbufferSize.x ) * scale ) ),
         std::max( 1, static_cast<int>( static_cast<float>( backbufferSize.y ) * scale ) )
     };
+}
+
+
+/** Mip LOD bias for the material sampler, straight out of D3D11GraphicsEngine::CreateAndBindDefaultSampler:
+    log2(render/display), clamped at 0. Without it a downscaled frame picks mips for the SMALLER render
+    target and then gets stretched back up, so every texture reads a full mip level blurrier than it should —
+    which is what makes naive upscaling look unusable. The clamp is what protects supersampling: at >100% the
+    ratio is positive and biasing UP would throw away the extra samples we just paid for. */
+float D3D12GraphicsEngine::ComputeMipLodBias( INT2 renderSize, INT2 displaySize ) {
+    if ( renderSize.x <= 0 || displaySize.x <= 0 ) return 0.0f;
+    const float ratio = static_cast<float>( renderSize.x ) / static_cast<float>( displaySize.x );
+    return std::min( 0.0f, std::log2( ratio ) );
+}
+
+
+/** Re-bakes `newBias` into every root signature's anisotropic static sampler. Static samplers are serialized
+    INTO the root signature blob and a PSO binds its root signature at creation, so there is no cheaper way to
+    change one than rebuilding both — which is exactly what the shader hot-reload path already does, backup,
+    rollback and all. Callers must have idled the GPU first (every PSO about to be released may still be
+    referenced by in-flight work); ApplyPendingResolutionScale, the only caller, does.
+
+    The reload recompiles every shader with DXC, so this is measured in seconds, not milliseconds. That is why
+    ApplyPendingResolutionScale debounces the ImGui slider and why this is skipped when the bias barely moved. */
+bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
+    const float previousBias = m_AppliedMipLodBias;
+    D3D12RootLayout::SetAnisoMipLodBias( newBias );
+
+    D3D12PipelineState backup = m_Pipelines;   // cheap AddRef pass — see ApplyPendingShaderReload
+    std::vector<std::string> failedFatal, failedOptional;
+    if ( !m_Pipelines.ReloadAll( m_HdrOutputActive, failedFatal, failedOptional ) ) {
+        m_Pipelines = backup;
+        D3D12RootLayout::SetAnisoMipLodBias( previousBias );
+        std::string names;
+        for ( const auto& n : failedFatal ) { if ( !names.empty() ) names += ", "; names += n; }
+        LogWarn() << "D3D12: could not re-bake the texture mip bias (" << names
+            << " failed to rebuild) — keeping the previous pipelines. Textures will look blurrier than they should.";
+        return false;
+    }
+    if ( !failedOptional.empty() ) {
+        std::string names;
+        for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
+        LogWarn() << "D3D12: mip-bias rebuild finished with degraded passes (" << names << ").";
+    }
+    m_AppliedMipLodBias = newBias;
+    return true;
 }
 
 
@@ -2693,7 +2738,22 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
     if ( !m_SwapChainReady ) return;
     const int requested = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
-    if ( requested == m_AppliedResolutionScalePercent ) return;
+    if ( requested == m_AppliedResolutionScalePercent ) {
+        m_PendingResolutionScalePercent = 0;   // slider came back to where we already are
+        m_ResolutionScaleStableFrames = 0;
+        return;
+    }
+    // Debounce: only act once the requested value has held still for a few frames. The ImGui slider reports a
+    // new percentage on every frame of a drag, and each apply below idles the GPU and rebuilds every
+    // render-resolution target (plus, when the mip bias moves, every root signature and shader).
+    if ( requested != m_PendingResolutionScalePercent ) {
+        m_PendingResolutionScalePercent = requested;
+        m_ResolutionScaleStableFrames = 0;
+        return;
+    }
+    if ( ++m_ResolutionScaleStableFrames < kResolutionScaleDebounceFrames ) return;
+    m_ResolutionScaleStableFrames = 0;
+    m_PendingResolutionScalePercent = 0;
 
     const INT2 newRenderRes = ComputeRenderResolution( m_BackbufferResolution );
     if ( newRenderRes.x == m_Resolution.x && newRenderRes.y == m_Resolution.y ) {
@@ -2713,9 +2773,22 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
             << "x" << m_Resolution.y << " (render scale " << requested << "%).";
         return;
     }
+
+    // Re-bake the material sampler's mip bias. Skipped when it barely moved (a 1% slider step is ~0.014 of a
+    // mip and not worth a full pipeline rebuild) — the epsilon is what keeps neighbouring slider values from
+    // each costing a shader recompile. Failure is non-fatal: the frame keeps its old, working pipelines and
+    // just samples a little blurrier than ideal.
+    const float newBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
+    if ( std::abs( newBias - m_AppliedMipLodBias ) > 0.02f ) {
+        Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Applying render scale..." );
+        RebakeMipLodBias( newBias );
+    }
+
+    m_AppliedResolutionScalePercent = requested;   // set by CreateRenderResolutionTargets too; explicit here
     LogInfo() << "D3D12 render scale " << requested << "% -> rendering at "
         << m_Resolution.x << "x" << m_Resolution.y
-        << " (display " << m_BackbufferResolution.x << "x" << m_BackbufferResolution.y << ").";
+        << " (display " << m_BackbufferResolution.x << "x" << m_BackbufferResolution.y
+        << "), texture mip bias " << m_AppliedMipLodBias << ".";
 }
 
 

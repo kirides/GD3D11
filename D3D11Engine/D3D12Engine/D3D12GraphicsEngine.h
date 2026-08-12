@@ -256,6 +256,14 @@ private:
         25..200 range D3D11GraphicsEngine::RecreateBuffers uses (and clamps the setting itself back to,
         so an out-of-range ini/ImGui value can't survive), with a 1-pixel floor on each axis. */
     static INT2 ComputeRenderResolution( INT2 backbufferSize );
+    /** Mip LOD bias for the material sampler at the given render/display sizes: log2(render/display),
+        clamped at 0 so supersampling (>100%) never *raises* it. Identical formula to
+        D3D11GraphicsEngine::CreateAndBindDefaultSampler. */
+    static float ComputeMipLodBias( INT2 renderSize, INT2 displaySize );
+    /** Re-bakes the material sampler's mip bias into every root signature. Returns false and leaves the
+        old, working pipelines in place if the rebuild failed. Expensive (every root signature is
+        re-serialized and every shader recompiled), so only called when the bias actually moved. */
+    bool RebakeMipLodBias( float newBias );
     /** (Re)builds everything sized to the RENDER resolution: depth, scene color, AO/GTAO, motion,
         TAA, bloom, HiZ, fog, the lazily-built DoF pair and the dynamic-exposure partial-sum buffer.
         Water copies are released so the next water frame rebuilds them. Fatal only for depth/scene
@@ -615,6 +623,17 @@ private:
     // Last ResolutionScalePercent the render targets were built for, so OnBeginFrame can notice an ImGui
     // change and rebuild them (mirrors D3D11GraphicsEngine::OnBeginFrame's s_oldResolutionScalePercent).
     int   m_AppliedResolutionScalePercent = 100;
+    // Debounce for the above. Applying a render-scale change is expensive here (GPU idle + every
+    // render-resolution target rebuilt, and a mip-bias change on top of that re-serializes every root
+    // signature and recompiles every shader), while the ImGui slider reports a new value on EVERY frame it
+    // is dragged. So wait for the requested value to hold still for a few frames before acting on it. D3D11
+    // gets away without this because its RecreateBuffers is comparatively cheap.
+    int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)
+    int   m_ResolutionScaleStableFrames = 0;
+    static constexpr int kResolutionScaleDebounceFrames = 6;
+    // Mip LOD bias currently baked into the root signatures' anisotropic static sampler. See
+    // D3D12RootLayout::SetAnisoMipLodBias and ComputeMipLodBias.
+    float m_AppliedMipLodBias = 0.0f;
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
     // NEXT OnBeginFrame — never mid-frame — so the resize always runs while the command list is
