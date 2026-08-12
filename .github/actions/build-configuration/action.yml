@@ -15,7 +15,7 @@ runs:
   using: composite
   steps:
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v2
+      uses: microsoft/setup-msbuild@v3
 
     - name: Restore NuGet packages
       working-directory: ${{ env.GITHUB_WORKSPACE }}
@@ -52,7 +52,7 @@ runs:
         "artifact-base-path=$outputDir$outputName" >> $env:GITHUB_OUTPUT
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.configuration }}
         path: |

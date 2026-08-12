@@ -19,10 +19,10 @@ runs:
   steps:
     - name: Download build artifacts
       id: download-artifact
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@v8
       with:
         artifact-ids: ${{ inputs.artifact-id-release }},${{ inputs.artifact-id-debug }}
-        merge-multiple: true
+        path: downloaded-artifacts
 
     - name: Create ZIPs for release
       shell: pwsh
@@ -47,7 +47,7 @@ runs:
 
     - name: Create nightly release
       if: ${{ inputs.nightly == 'true' }}
-      uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
+      uses: ncipollo/release-action@v1.21.0
       with:
         allowUpdates: true
         artifactErrorsFailBuild: true
@@ -61,7 +61,7 @@ runs:
 
     - name: Create regular release
       if: ${{ inputs.nightly != 'true' }}
-      uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
+      uses: ncipollo/release-action@v1.21.0
       with:
         allowUpdates: true
         artifactErrorsFailBuild: true
