@@ -410,8 +410,8 @@ void D3D12GraphicsEngine::RenderMotionDebugOverlay() {
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
     m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
 

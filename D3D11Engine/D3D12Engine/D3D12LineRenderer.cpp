@@ -148,8 +148,13 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     // the DSV for them (m_DepthBuffer is back in DEPTH_WRITE by this point in the frame — every pass that
     // borrows it restores that state) and restore the color-only binding afterwards, since the 2D/UI PSOs
     // that draw next are built with DSVFormat UNKNOWN.
+    // The scene depth is at the RENDER resolution while this RTV is the native display target, so it can only
+    // be bound alongside it at a 100% render scale (D3D12 requires the DSV's dimensions to match the RTV's).
+    // With scaling on, world-space debug lines simply draw un-occluded — a diagnostic overlay is not worth a
+    // dedicated full-res depth copy.
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
-    const bool useDepth = !screenSpace && m_DepthBuffer && m_DsvHeap;
+    const bool useDepth = !screenSpace && m_DepthBuffer && m_DsvHeap
+        && m_Resolution.x == m_BackbufferResolution.x && m_Resolution.y == m_BackbufferResolution.y;
     if ( useDepth ) {
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
@@ -181,8 +186,8 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
 
     // Full-screen viewport: the line pass runs after the scene resolve, when Gothic's tracked D3D7 viewport
     // is irrelevant (and can be degenerate — same hazard the 2D/UI path guards against).
-    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-    const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 
     // b1 viewport pos/size for the screen-space (xyzrhw) transform — mirrors D3D11's BindViewportInformation
     // (pixels divided by GothicUIScale), which the screen-space line VS consumes exactly like the UI path.

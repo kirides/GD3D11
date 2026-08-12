@@ -626,8 +626,8 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	}
 
 	// Common state for all three fullscreen-triangle passes.
-	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -639,7 +639,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 		float RTMetrics[4];
 		UINT ColorIdx, EdgesIdx, BlendIdx, AreaIdx, SearchIdx;
 	} consts = {
-		{ 1.0f / m_Resolution.x, 1.0f / m_Resolution.y, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ) },
+		{ 1.0f / m_BackbufferResolution.x, 1.0f / m_BackbufferResolution.y, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ) },
 		m_LdrCopySrvSlot, m_SmaaEdgesSrvSlot, m_SmaaBlendSrvSlot,
 		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
 	};
@@ -736,16 +736,16 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	} consts = {};
 	ffxCasSetup( consts.CasConst0, consts.CasConst1,
 		std::clamp( settings.SharpenFactor, 0.0f, 1.0f ),
-		static_cast<FfxFloat32>( m_Resolution.x ), static_cast<FfxFloat32>( m_Resolution.y ),
-		static_cast<FfxFloat32>( m_Resolution.x ), static_cast<FfxFloat32>( m_Resolution.y ) );
+		static_cast<FfxFloat32>( m_BackbufferResolution.x ), static_cast<FfxFloat32>( m_BackbufferResolution.y ),
+		static_cast<FfxFloat32>( m_BackbufferResolution.x ), static_cast<FfxFloat32>( m_BackbufferResolution.y ) );
 	consts.SrcIndex = m_LdrCopySrvSlot;
 	consts.SharpenStrength = settings.SharpenFactor;
-	consts.TextureSize[0] = static_cast<float>( m_Resolution.x );
-	consts.TextureSize[1] = static_cast<float>( m_Resolution.y );
+	consts.TextureSize[0] = static_cast<float>( m_BackbufferResolution.x );
+	consts.TextureSize[1] = static_cast<float>( m_BackbufferResolution.y );
 	static_assert( sizeof( SharpenConsts ) == 12 * sizeof( UINT ), "SharpenCB must match the 12 root constants in CreateSharpen" );
 
-	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

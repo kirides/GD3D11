@@ -380,8 +380,13 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     // screen pixels this inventory slot's viewport happens to cover — comparing against those stale values
     // would randomly reject preview pixels and let the resolved 3D scene bleed through. Clear the depth back
     // to reversed-Z far (0.0), scoped to just this viewport's rect, before drawing.
+    // Not necessarily the scene DSV: at a render scale != 100% the scene depth is smaller than the display
+    // target this draws into, and D3D12 requires the bound DSV's dimensions to match the RTV's — GetPreviewDsv
+    // hands back a backbuffer-sized one in that case. {0} means neither is usable; skip rather than draw
+    // depth-less (the comment above is why: it looks very bad).
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = GetPreviewDsv();
+    if ( !dsv.ptr ) return;
 
     D3D12_VIEWPORT vp = m_CurrentViewport;
     D3D12_RECT     sc = m_CurrentScissor;

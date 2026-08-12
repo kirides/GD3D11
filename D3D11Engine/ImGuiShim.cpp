@@ -693,8 +693,14 @@ void ImGuiShim::RenderSettingsWindowModern() {
                 ImGui::EndCombo();
             }
 
+            // The D3D12 backend does simple bilinear up/downscaling only: FSR 1 and FSR 3 are implemented
+            // against the DX11 FidelityFX backend (ffx_backend_dx11_x86.lib), and no DX12 backend library is
+            // vendored. Ask the ENGINE, not settings.GraphicsAPI — the latter is the requested API, which a
+            // failed D3D12 init falls back from without a restart.
+            const bool simpleUpscaleOnly = Engine::IsD3D12Backend;
+
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
-            if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
+            if ( !simpleUpscaleOnly && settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
                 // Display "levels" as typical for FSR
                 static std::vector<std::pair<const char*, int>> fsrLevels = {
@@ -730,7 +736,18 @@ void ImGuiShim::RenderSettingsWindowModern() {
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalersSimpleOnly = {
+                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
+            };
+            // Show only "Simple" on D3D12, but DON'T write the setting back — the stored choice must survive
+            // for when the player switches back to D3D11.
+            if ( simpleUpscaleOnly ) {
+                GothicRendererSettings::E_Upscaler shown = GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT;
+                if ( ImComboBox( "##Upscaler", upscalersSimpleOnly, &shown ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip( "FSR 1 / FSR 3 need the Direct3D 11 backend (FidelityFX ships no DX12 backend here)." );
+            } else if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
             }
             ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
@@ -1096,8 +1113,11 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
+            // See RenderSettingsWindowModern: D3D12 only has simple bilinear up/downscaling.
+            const bool simpleUpscaleOnly = Engine::IsD3D12Backend;
+
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
-            if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
+            if ( !simpleUpscaleOnly && settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
                 // Display "levels" as typical for FSR
                 static std::vector<std::pair<const char*, int>> fsrLevels = {
@@ -1132,7 +1152,16 @@ void ImGuiShim::RenderSettingsWindow()
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalersSimpleOnly = {
+                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
+            };
+            if ( simpleUpscaleOnly ) {
+                GothicRendererSettings::E_Upscaler shown = GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT;
+                if ( ImComboBox( "##Upscaler", upscalersSimpleOnly, &shown ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip( "FSR 1 / FSR 3 need the Direct3D 11 backend (FidelityFX ships no DX12 backend here)." );
+            } else if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
             }
             ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
