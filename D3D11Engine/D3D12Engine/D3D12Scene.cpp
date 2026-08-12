@@ -2094,6 +2094,15 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
 }
 
 
+namespace {
+	// Used to notify the zEngine that we changed the viewport (same helper D3D11GraphicsEngine keeps).
+	void UpdateZEngineViewport() {
+		if ( auto game = oCGame::GetGame(); game && game->_zCSession_camera ) {
+			((zCCamera*)game->_zCSession_camera)->UpdateViewport();
+		}
+	}
+}
+
 XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// m_PresentPending prevents inventory-world from rendering the whole game scenery for every inventory tile.
@@ -2105,6 +2114,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     
     Engine::GAPI->GetRendererState().RendererInfo.RenderStage = RenderStage::STAGE_DRAW_WORLD;
     Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE);
+
+    // Render-res viewport for the 3D phase, on both sides: SubmitUIDraw rasterizes into m_CurrentViewport and
+    // normalizes the FF sky's pre-transformed XYZRHW verts by its size, so Gothic must transform them at the
+    // same resolution or the sky is wrong below a 100% render scale. Stage first - the UpdateViewport hook
+    // only hands the camera GetResolution() during a 3D stage.
+    SetViewport( ViewportInfo( 0, 0, m_Resolution.x, m_Resolution.y ) );
+    UpdateZEngineViewport();
 
 	// Decide ONCE, before anything draws, whether this frame's post-pass height fog runs (RenderFogAndGodRays,
 	// near the bottom of this function). Every lit geometry pass reads the result via MakeFogConstants to
@@ -2445,6 +2461,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	m_PresentPending = true;
     Engine::GAPI->GetRendererState().RendererInfo.RenderStage = RenderStage::STAGE_DRAW_UNKNOWN;
+
+    // ...and back to native size for the 2D/UI phase, which draws onto the already-upscaled display target.
+    SetViewport( ViewportInfo( 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y ) );
+    UpdateZEngineViewport();
 
 	// After this point, we hand over to Gothics UI rendering (inventory item previews render via
 	// DrawVobSingle, called straight from Gothic's own zCWorld::Render hook during this phase).
