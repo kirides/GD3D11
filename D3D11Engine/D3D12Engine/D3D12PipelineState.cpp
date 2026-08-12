@@ -3693,9 +3693,8 @@ bool D3D12PipelineState::CreateMorphFold() {
 
 bool D3D12PipelineState::CreateLines() {
     // Debug/editor line lists (D3D12LineRenderer) — port of D3D11's PS_Lines + VS_Lines / VS_Lines_XYZRHW.
-    // Drawn INTO the HDR scene colour, just before the TAA resolve, so the render-scale up/downscale in the
-    // tonemap resolve carries the lines along with the rest of the scene (see DrawLines for why). The PS
-    // therefore sRGB-decodes the vertex colour, since the tonemap re-encodes on the way out.
+    // Drawn INTO the HDR scene colour, before the TAA resolve (see DrawLines), so the PS sRGB-decodes the
+    // vertex colour — the tonemap re-encodes on the way out.
     ID3D12Device* device = m_Device->GetDevice();
 
     // b0 ViewProj (world-space VS) + b1 viewport pos/size (screen-space VS). One root signature for both

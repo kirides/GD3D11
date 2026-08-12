@@ -97,12 +97,10 @@ public:
 
     void AddStaticSampler( const D3D12_STATIC_SAMPLER_DESC& sampler );
 
-    /** Mip LOD bias baked into every SamplerAniso built after this call — the material/diffuse sampler,
-        this backend's DefaultSamplerState. Set from the render scale (negative when downscaling, so
-        textures stay sharp instead of being mip-selected for the smaller render target, exactly like
-        D3D11GraphicsEngine::CreateAndBindDefaultSampler). Static samplers are serialized INTO the root
-        signature blob, so a change only reaches the GPU once every root signature and PSO is rebuilt —
-        D3D12GraphicsEngine drives that; do not call this expecting a live effect. */
+    /** Mip LOD bias baked into every SamplerAniso built after this call (the material sampler, i.e. this
+        backend's DefaultSamplerState — see D3D11GraphicsEngine::CreateAndBindDefaultSampler). Static
+        samplers live in the serialized root signature blob, so this has no live effect: D3D12GraphicsEngine
+        rebuilds every root signature and PSO to apply it. */
     static void  SetAnisoMipLodBias( float bias );
     static float GetAnisoMipLodBias();
 

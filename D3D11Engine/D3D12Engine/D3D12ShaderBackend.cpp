@@ -83,23 +83,14 @@ namespace {
     }
 
     // ---- On-disk DXIL cache ---------------------------------------------------------------------------
-    // Runtime DXC compilation is the price of D3D11-style "edit .hlsl, reload" iteration, but it is a heavy
-    // price: every launch, and every ReloadAll (which is also how a render-scale change re-bakes the sampler
-    // mip bias), recompiles ~60 entry points from scratch. So each successful compile is persisted, keyed on
-    // everything that can change its output, and re-used until one of those inputs actually moves.
+    // Every launch and every ReloadAll recompiles ~60 entry points, so each successful compile is persisted.
+    // The key covers the top-level source, entry point, target, macros, the args revision below and the DXC
+    // version. #includes can't be in the key (they aren't known until DXC asks for them), so the include
+    // handler records each resolved file + its hash into the entry and a lookup re-hashes them; that is
+    // transitive for free. A newly ADDED #include changes the source text, hence the key, on its own.
     //
-    // The key covers the top-level source text, entry point, target profile, the full macro list, the
-    // argument revision below and the DXC version. It CANNOT cover #include'd sources — they are not known
-    // until DXC asks for them — so those are handled the other way round: the include handler records every
-    // file it resolved plus that file's hash, the entry stores that list, and a lookup re-hashes each one and
-    // misses if any differs. Editing an include therefore invalidates exactly the shaders that use it. This
-    // is transitive for free: when a header includes another header, DXC asks the handler for that one too,
-    // so it lands in the same list. An include that is newly ADDED to a source needs no special handling —
-    // the source text itself is in the key, so the edit already produced a different key.
-    //
-    // One entry per key means editing a shader orphans its previous entries rather than replacing them.
-    // They are small and harmless; deleting the shadercache directory is the (only, and always safe) way to
-    // reclaim the space or to force a full recompile.
+    // Editing a shader orphans its old entries rather than replacing them. Deleting the shadercache
+    // directory is always safe and is how you reclaim that space or force a full recompile.
     using ShaderDeps = std::vector<std::pair<std::string, uint64_t>>;
 
     // Bump when the DXC argument list in CompileSource changes in a way that alters codegen (a new -D, an
@@ -108,13 +99,11 @@ namespace {
     constexpr uint32_t kDxilCacheFormatVersion = 1;
     const char* kDxilCacheDirRel = "\\system\\GD3D11\\shadercache\\D3D12\\";
 
-    // Hit/miss tally for the summary line (see D3D12ShaderBackend::LogAndResetCacheStats). Compilation is
-    // single-threaded (Init and ReloadAll both run on the main thread), so plain ints are enough.
+    // Tally for LogAndResetCacheStats. Compilation is single-threaded, so plain ints are enough.
     int g_CacheHits = 0;
     int g_CacheMisses = 0;
 
-    // FNV-1a 64. Not cryptographic and not meant to be: these hashes only have to notice a file the user
-    // edited, and a collision costs a stale shader that a reload fixes, not a security property.
+    // FNV-1a 64. These only have to notice a file the user edited; a collision costs a stale shader.
     constexpr uint64_t kFnvOffset = 1469598103934665603ull;
     constexpr uint64_t kFnvPrime = 1099511628211ull;
 
@@ -128,9 +117,8 @@ namespace {
         return str ? HashBytes( str, strlen( str ), seed ) : HashBytes( "", 0, seed );
     }
 
-    /** DXC's own version, so upgrading dxcompiler.dll invalidates everything it produced. Queried once —
-        creating a compiler instance per shader just to read this would defeat the point of the cache.
-        Returns 0 when DXC is unavailable (in which case nothing can be compiled anyway). */
+    /** DXC's own version, so upgrading dxcompiler.dll invalidates everything it produced. Queried once;
+        0 when DXC is unavailable. */
     uint64_t DxcVersionHash() {
         static uint64_t s_hash = [] () -> uint64_t {
             PFN_DXC_CREATE_INSTANCE create = ResolveDxcCreateInstance();
@@ -143,8 +131,7 @@ namespace {
             version->GetVersion( &major, &minor );
             uint64_t h = HashBytes( &major, sizeof( major ) );
             h = HashBytes( &minor, sizeof( minor ), h );
-            // IDxcVersionInfo2 additionally exposes the exact commit — two builds of the same 1.x.y differ
-            // in codegen often enough that this is worth folding in when the interface is available.
+            // Two builds of the same 1.x.y differ in codegen often enough to fold in the commit too.
             ComPtr<IDxcVersionInfo2> version2;
             if ( SUCCEEDED( version.As( &version2 ) ) ) {
                 UINT32 commitCount = 0; char* commitHash = nullptr;
@@ -181,8 +168,8 @@ namespace {
         return HashBytes( &dxc, sizeof( dxc ), h );
     }
 
-    /** Absolute path of the cache file for `key`. Empty if the directory doesn't exist and can't be made
-        (read-only install, no permissions) — the caller then just skips the cache entirely. */
+    /** Absolute path of the cache file for `key`. Empty when the directory can't be made (read-only
+        install) — the caller then skips the cache entirely. */
     std::string CacheFilePath( uint64_t key, bool createDir ) {
         const std::string dir = Engine::GAPI->GetStartDirectory() + kDxilCacheDirRel;
         if ( createDir ) {
@@ -204,9 +191,8 @@ namespace {
         out.write( reinterpret_cast<const char*>( &value ), sizeof( T ) );
     }
 
-    /** Cache hit path: reads the entry, re-hashes every recorded #include and, if they all still match,
-        hands back the stored DXIL as an ID3DBlob. Any inconsistency is treated as a plain miss — a
-        corrupt/truncated file must never be worse than not having a cache. */
+    /** Reads the entry, re-hashes every recorded #include and, if they all still match, hands back the
+        stored DXIL. Any inconsistency (including a truncated/corrupt file) is just a miss. */
     bool TryLoadCachedBlob( uint64_t key, ID3DBlob** ppCode ) {
         const std::string path = CacheFilePath( key, false );
         if ( path.empty() ) return false;
@@ -245,8 +231,8 @@ namespace {
         return true;
     }
 
-    /** Best-effort store. Every failure here is silent-ish: a missing cache only costs time. Writes to a
-        temp file and renames, so a crash mid-write can't leave a torn entry that later reads as valid. */
+    /** Best-effort store (a missing cache only costs time). Writes to a temp file and renames, so a crash
+        mid-write can't leave a torn entry that later reads as valid. */
     void StoreCachedBlob( uint64_t key, const ShaderDeps& deps, ID3DBlob* code ) {
         if ( !code || code->GetBufferSize() == 0 || deps.size() > 256 ) return;
         const std::string path = CacheFilePath( key, true );
@@ -277,8 +263,7 @@ namespace {
     // Resolves #include directives inside D3D12 HLSL sources through the same VDFS+physical-fallback
     // lookup as the top-level shader file (D3D12ShaderBackend::LoadShaderSource), so shared includes like
     // Shaders/D3D12/include/PBRLighting.hlsl are found whether shaders are loose files or VDFS-packed.
-    // Also records what it resolved (name + content hash) so the DXIL cache entry can be invalidated when
-    // an include changes — see the cache notes above.
+    // Also records what it resolved (name + content hash) for the DXIL cache entry.
     class ShaderIncludeHandler : public IDxcIncludeHandler {
     public:
         explicit ShaderIncludeHandler( IDxcUtils* utils ) : m_Utils( utils ) {}
@@ -294,8 +279,7 @@ namespace {
             if ( !D3D12ShaderBackend::LoadShaderSource( filename, source ) ) {
                 return 0x80070002L; // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) — signals "not found" to DXC
             }
-            // DXC re-asks for the same header once per #include site; record it only once so the entry
-            // doesn't grow with duplicates (and so the 256-dep cap counts real files).
+            // DXC re-asks for the same header once per #include site; record it only once.
             const uint64_t hash = HashBytes( source.data(), source.size() );
             if ( std::none_of( m_Deps.begin(), m_Deps.end(),
                 [&]( const auto& d ) { return d.first == filename; } ) ) {
@@ -533,10 +517,7 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     AppendGlobalMacros( macros );
     macros.push_back( { nullptr, nullptr } );
 
-    // On-disk DXIL cache (see the notes above ShaderDeps). The key covers this file's text, the entry point,
-    // the target and every macro; the entry additionally carries the hash of each #include the original
-    // compile pulled in, and TryLoadCachedBlob re-checks those. So editing any shader — top-level or shared
-    // header — still recompiles exactly what it should, which is what keeps hot-reload honest.
+    // On-disk DXIL cache — see the notes above ShaderDeps.
     const uint64_t cacheKey = ComputeCacheKey( fileName, source, entryPoint, target, macros.data() );
     if ( TryLoadCachedBlob( cacheKey, ppCode ) ) {
         ++g_CacheHits;

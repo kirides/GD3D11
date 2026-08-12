@@ -35,9 +35,8 @@ D3D12GraphicsEngine::D3D12GraphicsEngine() {
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
-    // Bake the material sampler's mip bias BEFORE Init() builds any root signature — a static sampler is
-    // serialized into the root signature blob, so getting it right here is what makes the normal "scale is
-    // already set in the ini at launch" path cost nothing. A later change goes through RebakeMipLodBias.
+    // Static samplers are serialized into the root signature blob, so the bias has to be right before Init()
+    // builds any of them. A later change goes through RebakeMipLodBias.
     m_AppliedMipLodBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
     D3D12RootLayout::SetAnisoMipLodBias( m_AppliedMipLodBias );
     // Same LowLatency toggle D3D11 uses for its swapchain waitable object. kBackBufferCount is always
@@ -1088,9 +1087,8 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	// depth buffer's size (called from both init and the resize path). GPU is idle at both call sites.
 	if ( !CreateLightCullBuffers( size ) ) return false;
 
-	// A render-scale change invalidates the preview depth's premise (it only exists to cover a size
-	// mismatch). Drop it here — the next DrawVobSingle rebuilds it if it is still needed. Every caller of
-	// CreateDepthBuffer has already idled the GPU, so releasing it is safe.
+	// Drop the preview depth (it only exists to cover a size mismatch); the next DrawVobSingle rebuilds it
+	// if still needed. Every caller has idled the GPU.
 	m_PreviewDepthBuffer.Reset();
 	m_PreviewDepthAlloc.Reset();
 	m_PreviewDepthSize = {};
@@ -1101,8 +1099,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 
 /** See m_PreviewDepthBuffer. At 100% render scale this is just the scene DSV; otherwise it lazily builds a
     backbuffer-sized depth buffer into DSV heap slot 1 so the preview's RTV and DSV dimensions agree.
-    Creating a resource mid-frame is safe here: nothing is destroyed, so there is no in-flight resource to
-    fence against (same reasoning as the lazy underwater/DoF allocations). */
+    Lazy mid-frame creation is safe for the same reason as the underwater/DoF ones: nothing is destroyed. */
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetPreviewDsv() {
 	const D3D12_CPU_DESCRIPTOR_HANDLE none = {};
 	if ( !m_DsvHeap ) return none;
@@ -1284,9 +1281,8 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );   // no depth for the fullscreen resolve
 	m_ColorTargetIsHDR = false;
 
-	// NATIVE viewport over the render-resolution scene texture: the fullscreen triangle's uv spans [0,1] of
-	// m_SceneColor regardless of its size, and s0 is a bilinear clamp sampler (D3D12RootLayout::SamplerLinear),
-	// so this draw IS the render-scale up/downscale. At 100% it degenerates to a 1:1 copy.
+	// NATIVE viewport over the render-res scene texture: the fullscreen triangle's uv spans [0,1] of
+	// m_SceneColor and s0 is a bilinear clamp sampler, so this draw IS the render-scale up/downscale.
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_BackbufferResolution.x), static_cast<float>(m_BackbufferResolution.y), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -1498,7 +1494,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
 	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
 
-	// Display->swapchain, both native: this runs after the tonemap resolve already upscaled the scene.
+	// Display->swapchain, both native (the tonemap resolve already upscaled).
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -1635,13 +1631,9 @@ static bool CheckTearingSupport() {
 }
 
 
-/** Render (internal) resolution = backbuffer size * RendererSettings.ResolutionScalePercent. Mirrors
-    D3D11GraphicsEngine::RecreateBuffers, down to the 25..200 clamp being written BACK into the setting so a
-    forced ini value or a stale ImGui state can't leave the two backends disagreeing about what is legal.
-
-    RendererSettings.Upscaler (FSR 1 / FSR 3) is deliberately ignored — the vendored FidelityFX SDK ships only
-    ffx_backend_dx11_x86.lib, so there is no DX12 backend to drive them. The tonemap resolve's bilinear
-    fullscreen triangle is the whole upscaler on this backend (ImGuiShim hides the other options). */
+/** Render resolution = backbuffer * ResolutionScalePercent, clamp included — see
+    D3D11GraphicsEngine::RecreateBuffers. RendererSettings.Upscaler (FSR 1/3) is ignored: the vendored
+    FidelityFX SDK ships only ffx_backend_dx11_x86.lib, so the tonemap resolve is the only upscaler here. */
 INT2 D3D12GraphicsEngine::ComputeRenderResolution( INT2 backbufferSize ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.ResolutionScalePercent == 100 ) return backbufferSize;
@@ -1656,10 +1648,7 @@ INT2 D3D12GraphicsEngine::ComputeRenderResolution( INT2 backbufferSize ) {
 
 
 /** Mip LOD bias for the material sampler, straight out of D3D11GraphicsEngine::CreateAndBindDefaultSampler:
-    log2(render/display), clamped at 0. Without it a downscaled frame picks mips for the SMALLER render
-    target and then gets stretched back up, so every texture reads a full mip level blurrier than it should —
-    which is what makes naive upscaling look unusable. The clamp is what protects supersampling: at >100% the
-    ratio is positive and biasing UP would throw away the extra samples we just paid for. */
+    log2(render/display), clamped at 0 so supersampling doesn't bias UP and throw away its extra samples. */
 float D3D12GraphicsEngine::ComputeMipLodBias( INT2 renderSize, INT2 displaySize ) {
     if ( renderSize.x <= 0 || displaySize.x <= 0 ) return 0.0f;
     const float ratio = static_cast<float>( renderSize.x ) / static_cast<float>( displaySize.x );
@@ -1667,14 +1656,10 @@ float D3D12GraphicsEngine::ComputeMipLodBias( INT2 renderSize, INT2 displaySize 
 }
 
 
-/** Re-bakes `newBias` into every root signature's anisotropic static sampler. Static samplers are serialized
-    INTO the root signature blob and a PSO binds its root signature at creation, so there is no cheaper way to
-    change one than rebuilding both — which is exactly what the shader hot-reload path already does, backup,
-    rollback and all. Callers must have idled the GPU first (every PSO about to be released may still be
-    referenced by in-flight work); ApplyPendingResolutionScale, the only caller, does.
-
-    The reload recompiles every shader with DXC, so this is measured in seconds, not milliseconds. That is why
-    ApplyPendingResolutionScale debounces the ImGui slider and why this is skipped when the bias barely moved. */
+/** Re-bakes `newBias` into every root signature's static aniso sampler. A static sampler lives in the root
+    signature blob and a PSO binds its root signature at creation, so this is a full rebuild through the
+    shader hot-reload path (backup + rollback included) — seconds, not milliseconds, hence the debounce in
+    ApplyPendingResolutionScale. The caller must have idled the GPU. */
 bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
     const float previousBias = m_AppliedMipLodBias;
     D3D12RootLayout::SetAnisoMipLodBias( newBias );
@@ -1709,23 +1694,18 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     CreateBloomResources( renderSize );
     CreateAOResources( renderSize );
     CreateGtaoResources( renderSize );   // must follow CreateAOResources: XeGTAO writes ITS m_AOMask
-    // Motion-vector + normal G-buffer (D3D12Motion.cpp). On failure m_MotionResourcesReady stays false, the
-    // depth prepass falls back to its plain depth-only PSOs and the frame is unchanged.
-    CreateMotionResources( renderSize );
-    // TAA history + its private previous-depth snapshot. Also resets the accumulated history, which any
-    // resolution change (window resize OR a render-scale change) invalidates outright.
-    CreateTaaResources( renderSize );
-    // Depth-of-field textures are built lazily on first use (~20 MB of VA, DoF off by default), so only track
-    // the new size here if they already exist. Clearing the attempted flag lets a previous failure retry.
+    CreateMotionResources( renderSize ); // motion-vector + normal G-buffer; prepass falls back to depth-only
+    CreateTaaResources( renderSize );    // also drops the history, which any resolution change invalidates
+    // DoF textures are built lazily (~20 MB of VA, off by default), so only re-size them if they exist.
+    // Clearing the attempted flag lets a previous failure retry.
     m_DoFCreateAttempted = false;
     if ( m_DoFResourcesReady ) CreateDoFResources( renderSize );
     CreateHiZResources( renderSize );    // without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( renderSize );    // height fog/god rays are opt-in; RenderFogAndGodRays no-ops without them
     ReleaseWaterCopyResources();         // rebuilt at the new size by the next frame that renders water
     if ( !CreateLumPartialBuffer( renderSize ) ) {
-        // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
-        // update if missing — m_LumAdaptedBuffer (created once in Init) keeps its last valid value, so Tonemap
-        // is never left reading an unwritten buffer.
+        // Non-fatal: RenderLuminanceAdapt() guards on this and skips the update, leaving m_LumAdaptedBuffer
+        // at its last valid value.
         LogWarn() << "D3D12GraphicsEngine: failed to create the dynamic-exposure partial-sum buffer.";
     }
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
@@ -1792,9 +1772,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 
     if ( !CreateFrameResources() ) return false;
     if ( !AcquireBackBufferRTVs() ) return false;
-    // Depth + HDR scene RT (RTV heap now exists with the extra slot) and everything else the 3D scene renders
-    // into, at the RENDER resolution — not `size`, which is the native swapchain/display size below.
-    if ( !CreateRenderResolutionTargets( m_Resolution ) ) return false;
+    if ( !CreateRenderResolutionTargets( m_Resolution ) ) return false;   // NOT `size` — see below
     ApplySwapChainColorSpace();      // HDR10 colour space + mastering metadata (no-op unless HDR output is active)
     if ( !CreateHdrDisplayTarget( size ) ) {
         // The FP16 composite target is where every display-space PSO renders once HDR is active, so losing it
@@ -1804,8 +1782,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         LogWarn() << "D3D12GraphicsEngine::CreateSwapChain: failed to create the HDR display target.";
         return false;
     }
-    // The post-tonemap passes, at the native display size (see CreateDisplayResolutionTargets).
-    CreateDisplayResolutionTargets( size );
+    CreateDisplayResolutionTargets( size );   // post-tonemap passes, native size
 
     m_SwapChainReady = true;
 
@@ -1902,8 +1879,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         OnResize( m_NewResolution );
     }
 
-    // Same spot, same reasoning, for a render-scale change (ImGui slider / ini). Only rebuilds the
-    // render-resolution targets — the swapchain and every post-tonemap resource are unaffected.
+    // Same spot, same reasoning, for a render-scale change (ImGui slider / ini).
     ApplyPendingResolutionScale();
 
     // Same spot, same reasoning, for a pending shader hot-reload request (ReloadShaders only records it —
@@ -1960,10 +1936,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     // Bind the display + depth target for the frame. The 3D world pass (OnStartWorldRendering) uses
     // the depth buffer; the 2D/UI PSO has depth disabled, so it draws over the result regardless.
-    // The depth buffer is at the RENDER resolution and the display target at the native one, so they can
-    // only be bound together at a 100% render scale — D3D12 requires a bound DSV to match its RTV's
-    // dimensions. The clear below is unaffected (it addresses the view directly), and BindSceneColorTarget
-    // pairs the depth with the equally-sized scene-color RT before anything 3D draws.
+    // A bound DSV must match its RTV's dimensions, so render-res depth + native display target can only be
+    // bound together at 100%. The clear below addresses the view directly and is unaffected.
     const bool haveDepth = m_DepthBuffer && m_DsvHeap;
     const bool bindDepth = haveDepth
         && m_Resolution.x == m_BackbufferResolution.x && m_Resolution.y == m_BackbufferResolution.y;
@@ -2005,8 +1979,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !Engine::GAPI->IsGamePaused() )
         UpdateWindAnimation( m_WindBuffer );   // advances windDir/globalTime; DrawVobsInstanced fills min/maxHeight/playerPos
     m_CurrentTexture = nullptr;
-    // NATIVE size: this is the default viewport for the 2D/UI path, which draws onto the display target after
-    // the tonemap resolve has already upscaled the scene. Every 3D pass sets its own render-res viewport.
+    // NATIVE size: default viewport for the 2D/UI path, which draws onto the already-upscaled display
+    // target. Every 3D pass sets its own render-res viewport.
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 
@@ -2485,9 +2459,8 @@ void D3D12GraphicsEngine::RestoreFrameRenderTarget() {
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 
-    // This runs mid-frame, after the tonemap resolve, so the RTV is the NATIVE-sized display target. The scene
-    // depth only matches it at a 100% render scale — otherwise leave depth unbound (the 2D/UI PSOs that draw
-    // next are built with DSVFormat UNKNOWN anyway, and DrawVobSingle binds its own matching DSV).
+    // Post-resolve, so the RTV is native-sized and the render-res scene depth only matches at 100%. The 2D/UI
+    // PSOs are DSVFormat UNKNOWN anyway, and DrawVobSingle binds its own matching DSV.
     const bool haveDepth = m_DepthBuffer && m_DsvHeap
         && m_Resolution.x == m_BackbufferResolution.x && m_Resolution.y == m_BackbufferResolution.y;
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
@@ -2531,8 +2504,7 @@ static void UnpackR10G10B10A2ToBGRA8( uint32_t packed, byte* dstBGRA ) {
 void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {
     *data = nullptr;
     pixelsize = 4;
-    // Native size for a full screenshot: the re-tonemap below is a fullscreen triangle over m_SceneColor, so
-    // it up/downscales out of the render resolution for free, exactly like ResolveSceneToBackBuffer does.
+    // Native: the re-tonemap below upscales out of m_SceneColor for free, like ResolveSceneToBackBuffer.
     buffersize = thumbnail ? INT2( 256, 256 ) : m_BackbufferResolution;
 
     if ( !m_CmdList || !m_SwapChainReady || !m_SceneColor || !m_Pipelines.TonemapCapturePSO || !m_Pipelines.Tonemap.RootSig ) {
@@ -2719,9 +2691,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     m_Resolution = ComputeRenderResolution( size );
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
     if ( !AcquireBackBufferRTVs() ) return false;
-    // GPU is idle (WaitForGpuIdle above), so recreating the scene targets is safe. Depth + scene color are
-    // fatal, the rest non-fatal — see CreateRenderResolutionTargets.
-    if ( !CreateRenderResolutionTargets( m_Resolution ) ) return false;
+    if ( !CreateRenderResolutionTargets( m_Resolution ) ) return false;   // GPU idled above
     // ResizeBuffers drops the colour space along with the buffers, and the window may have been dragged to a
     // different (possibly non-HDR) monitor — re-apply and refresh the metadata before rebuilding the target.
     ApplySwapChainColorSpace();
@@ -2731,11 +2701,9 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 }
 
 
-/** Picks up an ImGui/ini change to ResolutionScalePercent. Called from the top of OnBeginFrame, the one spot
-    in the frame where the previous command list is already Closed+Executed+Presented — same reasoning (and
-    same slot) as the pending-resize and pending-shader-reload handling next to it. The swapchain, the HDR
-    display target and every post-tonemap resource are untouched: only what renders BEFORE the tonemap
-    resolve changes size. Mirrors D3D11GraphicsEngine::OnBeginFrame's `RecreateBuffers()` branch. */
+/** Picks up an ImGui/ini change to ResolutionScalePercent, from the top of OnBeginFrame — same slot and
+    reasoning as the pending-resize/shader-reload handling next to it. Only the render-resolution targets
+    change size. Mirrors D3D11GraphicsEngine::OnBeginFrame's `RecreateBuffers()` branch. */
 void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
     if ( !m_SwapChainReady ) return;
     const int requested = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
@@ -2744,9 +2712,8 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
         m_ResolutionScaleStableFrames = 0;
         return;
     }
-    // Debounce: only act once the requested value has held still for a few frames. The ImGui slider reports a
-    // new percentage on every frame of a drag, and each apply below idles the GPU and rebuilds every
-    // render-resolution target (plus, when the mip bias moves, every root signature and shader).
+    // Debounce: the ImGui slider reports a new percentage every frame of a drag, and each apply below idles
+    // the GPU and rebuilds every render-resolution target (and possibly every shader).
     if ( requested != m_PendingResolutionScalePercent ) {
         m_PendingResolutionScalePercent = requested;
         m_ResolutionScaleStableFrames = 0;
@@ -2758,34 +2725,28 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
 
     const INT2 newRenderRes = ComputeRenderResolution( m_BackbufferResolution );
     if ( newRenderRes.x == m_Resolution.x && newRenderRes.y == m_Resolution.y ) {
-        // Percentage moved but rounded to the same pixel count (e.g. 100 -> 101 on a small window). Nothing
-        // to rebuild; just record it so we don't re-test every frame.
-        m_AppliedResolutionScalePercent = requested;
+        m_AppliedResolutionScalePercent = requested;   // rounded to the same pixel count; nothing to rebuild
         return;
     }
 
     WaitForGpuIdle();   // the targets below are still referenced by up to kBackBufferCount in-flight frames
     m_Resolution = newRenderRes;
     if ( !CreateRenderResolutionTargets( m_Resolution ) ) {
-        // Depth or scene color failed at the new size. The frame path's null checks (haveDepth, m_SceneColor)
-        // keep it from drawing into a mismatched target; leave the setting recorded so we don't thrash trying
-        // again every frame, and let the user pick another value.
+        // The frame path's null checks keep it from drawing into a mismatched target.
         LogWarn() << "D3D12GraphicsEngine: failed to rebuild the render targets at " << m_Resolution.x
             << "x" << m_Resolution.y << " (render scale " << requested << "%).";
         return;
     }
 
-    // Re-bake the material sampler's mip bias. Skipped when it barely moved (a 1% slider step is ~0.014 of a
-    // mip and not worth a full pipeline rebuild) — the epsilon is what keeps neighbouring slider values from
-    // each costing a shader recompile. Failure is non-fatal: the frame keeps its old, working pipelines and
-    // just samples a little blurrier than ideal.
+    // Skipped when the bias barely moved — a 1% slider step is ~0.014 of a mip, not worth a pipeline rebuild.
+    // Failure is non-fatal: the old pipelines stay, just sampling a little blurrier than ideal.
     const float newBias = ComputeMipLodBias( m_Resolution, m_BackbufferResolution );
     if ( std::abs( newBias - m_AppliedMipLodBias ) > 0.02f ) {
         Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Applying render scale..." );
         RebakeMipLodBias( newBias );
     }
 
-    m_AppliedResolutionScalePercent = requested;   // set by CreateRenderResolutionTargets too; explicit here
+    m_AppliedResolutionScalePercent = requested;
     LogInfo() << "D3D12 render scale " << requested << "% -> rendering at "
         << m_Resolution.x << "x" << m_Resolution.y
         << " (display " << m_BackbufferResolution.x << "x" << m_BackbufferResolution.y

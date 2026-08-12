@@ -175,11 +175,8 @@ void D3D12GraphicsEngine::AdvanceJitter() {
         return;
     }
 
-    // The TAA resolve itself runs entirely at the RENDER resolution — the up/downscale happens later, in the
-    // tonemap resolve. But the phase count is what decides how many sub-pixel samples the sequence needs to
-    // cover, and at a render scale below 100% each render pixel covers more than one display pixel, so feed
-    // FSR the real ratio (it scales the base 8-sample Halton run by (display/render)^2). At 100% this is
-    // exactly the old renderWidth == displayWidth call.
+    // The resolve itself runs at the render resolution, but the phase count has to cover the sub-pixel
+    // samples of a DISPLAY pixel — FSR scales the base 8-sample Halton run by (display/render)^2.
     const int32_t renderWidth = m_Resolution.x;
     const int32_t displayWidth = m_BackbufferResolution.x;
     const int32_t phaseCount = ffxFsr3GetJitterPhaseCount( renderWidth, displayWidth );

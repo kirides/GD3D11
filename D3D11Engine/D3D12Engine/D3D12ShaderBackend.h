@@ -14,17 +14,14 @@ public:
     // Compile one entrypoint from Shaders\D3D12\<fileName> to a DXIL ID3DBlob.
     // Returns false (and logs) if the file cannot be found or fails to compile.
     //
-    // Successful results are persisted to system\GD3D11\shadercache\D3D12\ and re-used on later runs, so a
-    // launch (or a ReloadAll) only pays DXC for what actually changed. The cache entry records the hash of
-    // the top-level source AND of every file it #include'd, transitively, so editing a shared header
-    // invalidates exactly the shaders that pull it in — hot-reload behaves as if the cache weren't there.
+    // Results are cached in system\GD3D11\shadercache\D3D12\ and re-used on later runs. The entry hashes the
+    // source AND every file it transitively #include'd, so editing a shared header invalidates exactly the
+    // shaders that pull it in.
     bool CompileFromFile( const std::string& fileName, const char* entryPoint,
                           const char* target, ID3DBlob** ppCode,
                           const D3D_SHADER_MACRO* defines = nullptr );
 
-    // Logs one "N reused from disk, M compiled" line for the compiles since the last call, then zeroes the
-    // tally. Called after Init and after a shader reload — the quickest way to tell whether the cache is
-    // actually working (and, if M is unexpectedly large, that something is invalidating it every run).
+    // Logs one "N reused from disk, M compiled" line for the compiles since the last call, then zeroes it.
     static void LogAndResetCacheStats( const char* context );
 
     // Reads raw HLSL text for a shader file: zFILE_VDFS first, physical fallback second.

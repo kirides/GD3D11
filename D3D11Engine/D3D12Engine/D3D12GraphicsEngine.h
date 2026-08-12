@@ -195,11 +195,9 @@ public:
         them through the validated 2D/UI path (VS_TransformedEx + FF-stage PS + alpha blend). */
     void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
 
-    /** Resolution the 3D scene is rendered at (RendererSettings.ResolutionScalePercent applied to the
-        backbuffer size). Same split D3D11 has between m_scaledResolution and Resolution — everything up
-        to and including the tonemap resolve runs at this size; the resolve itself is the up/downscale. */
+    /** Render resolution; same split D3D11 has between m_scaledResolution and Resolution. */
     INT2 GetResolution() override { return m_Resolution; }
-    /** Native swapchain/window size — the 2D UI, ImGui and every post-tonemap pass run at this size. */
+    /** Native swapchain/window size. */
     INT2 GetBackbufferResolution() override { return m_BackbufferResolution; }
 
     /** Allocates a persistent slot in the shader-visible SRV heap. Returns UINT_MAX if exhausted.
@@ -252,28 +250,11 @@ private:
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene onto the display target, then rebind it for the 2D UI
 
     // --- Render-resolution scaling (RendererSettings.ResolutionScalePercent) ---------------------------------
-    /** Applies the user's render-scale percentage to a native backbuffer size. Clamped to the same
-        25..200 range D3D11GraphicsEngine::RecreateBuffers uses (and clamps the setting itself back to,
-        so an out-of-range ini/ImGui value can't survive), with a 1-pixel floor on each axis. */
-    static INT2 ComputeRenderResolution( INT2 backbufferSize );
-    /** Mip LOD bias for the material sampler at the given render/display sizes: log2(render/display),
-        clamped at 0 so supersampling (>100%) never *raises* it. Identical formula to
-        D3D11GraphicsEngine::CreateAndBindDefaultSampler. */
+    static INT2 ComputeRenderResolution( INT2 backbufferSize );        // backbuffer * ResolutionScalePercent
     static float ComputeMipLodBias( INT2 renderSize, INT2 displaySize );
-    /** Re-bakes the material sampler's mip bias into every root signature. Returns false and leaves the
-        old, working pipelines in place if the rebuild failed. Expensive (every root signature is
-        re-serialized and every shader recompiled), so only called when the bias actually moved. */
-    bool RebakeMipLodBias( float newBias );
-    /** (Re)builds everything sized to the RENDER resolution: depth, scene color, AO/GTAO, motion,
-        TAA, bloom, HiZ, fog, the lazily-built DoF pair and the dynamic-exposure partial-sum buffer.
-        Water copies are released so the next water frame rebuilds them. Fatal only for depth/scene
-        color — everything else is non-fatal in the same way it is on a resize. */
-    bool CreateRenderResolutionTargets( INT2 renderSize );
-    /** (Re)builds everything sized to the NATIVE backbuffer: the LDR scratch copy and the SMAA
-        intermediates, plus the underwater blur pair if it is already up (all post-tonemap passes). */
-    void CreateDisplayResolutionTargets( INT2 displaySize );
-    /** Picks up an ImGui/ini change to ResolutionScalePercent at the top of a frame (GPU idle, command
-        list closed) and rebuilds just the render-resolution targets. No-op when nothing changed. */
+    bool RebakeMipLodBias( float newBias );                            // false = old pipelines kept
+    bool CreateRenderResolutionTargets( INT2 renderSize );             // fatal only for depth/scene color
+    void CreateDisplayResolutionTargets( INT2 displaySize );           // post-tonemap targets, all non-fatal
     void ApplyPendingResolutionScale();
 
     // --- Real HDR display output (ST.2084 scanout) ---------------------------------------------------------
@@ -612,28 +593,16 @@ public:
     void FlushTextureUploads();
 private:
 
-    // RENDER (internal) resolution — the backbuffer size with RendererSettings.ResolutionScalePercent
-    // applied. Every 3D pass, its render targets (depth, scene color, AO, motion, TAA, bloom, DoF, fog,
-    // HiZ, water copies) and their viewports use this. Equal to m_BackbufferResolution at 100%.
+    // RENDER (internal) resolution: everything the 3D scene draws into, up to the tonemap resolve.
     INT2  m_Resolution = {};
-    // NATIVE swapchain/window size. The swapchain backbuffers, the HDR display target, the LDR scratch
-    // copy + SMAA/sharpen/underwater (all post-tonemap), Gothic's 2D UI and ImGui use this. The tonemap
-    // resolve draws a fullscreen triangle from m_Resolution into this, which IS the up/downscale.
+    // NATIVE swapchain/window size: swapchain, HDR display target, every post-tonemap pass, 2D UI, ImGui.
     INT2  m_BackbufferResolution = {};
-    // Last ResolutionScalePercent the render targets were built for, so OnBeginFrame can notice an ImGui
-    // change and rebuild them (mirrors D3D11GraphicsEngine::OnBeginFrame's s_oldResolutionScalePercent).
+    // Last ResolutionScalePercent the render targets were built for (D3D11's s_oldResolutionScalePercent).
     int   m_AppliedResolutionScalePercent = 100;
-    // Debounce for the above. Applying a render-scale change is expensive here (GPU idle + every
-    // render-resolution target rebuilt, and a mip-bias change on top of that re-serializes every root
-    // signature and recompiles every shader), while the ImGui slider reports a new value on EVERY frame it
-    // is dragged. So wait for the requested value to hold still for a few frames before acting on it. D3D11
-    // gets away without this because its RecreateBuffers is comparatively cheap.
     int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)
     int   m_ResolutionScaleStableFrames = 0;
     static constexpr int kResolutionScaleDebounceFrames = 6;
-    // Mip LOD bias currently baked into the root signatures' anisotropic static sampler. See
-    // D3D12RootLayout::SetAnisoMipLodBias and ComputeMipLodBias.
-    float m_AppliedMipLodBias = 0.0f;
+    float m_AppliedMipLodBias = 0.0f;   // see D3D12RootLayout::SetAnisoMipLodBias
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
     // NEXT OnBeginFrame — never mid-frame — so the resize always runs while the command list is
@@ -725,18 +694,14 @@ private:
     UINT m_DsvDescriptorSize = 0;
     UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
 
-    // Native-resolution depth used ONLY by the inventory-item preview (DrawVobSingle), which draws onto the
-    // display target during Gothic's UI phase — after the tonemap resolve upscaled the scene, so its RTV is
-    // at backbuffer size while m_DepthBuffer is at render size, and D3D12 requires a bound DSV to match its
-    // RTV's dimensions. Built lazily and only while the render scale is != 100%; at 100% the scene depth is
-    // already the right size and is used directly. Mirrors D3D11's dedicated m_SwapchainDepthStencilBuffer.
+    // Native-resolution depth for the inventory-item preview (DrawVobSingle), which draws onto the display
+    // target after the resolve — a bound DSV must match its RTV's size. D3D11's m_SwapchainDepthStencilBuffer.
+    // Built lazily and only while the render scale is != 100%.
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_PreviewDepthBuffer;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PreviewDepthAlloc;
     INT2 m_PreviewDepthSize = {};
     bool m_PreviewDepthFailed = false;   // creation failed once — don't retry every preview draw
-    /** DSV DrawVobSingle should bind, or {0} when none is usable (the caller then skips the draw rather
-        than binding a mismatched view). See m_PreviewDepthBuffer. */
-    D3D12_CPU_DESCRIPTOR_HANDLE GetPreviewDsv();
+    D3D12_CPU_DESCRIPTOR_HANDLE GetPreviewDsv();   // {0} = none usable, caller skips the draw
 
     // World root sig + lit world-mesh PSO/blobs now live in m_Pipelines.World (RootSig/PSO/VsBlob/PsBlob).
     // That RootSig is the shared anchor bound by the VOB/skeletal/shadow-caster/point-shadow draws too.

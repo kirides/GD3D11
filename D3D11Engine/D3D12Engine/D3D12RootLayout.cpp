@@ -140,10 +140,7 @@ void D3D12RootLayout::AddStaticSampler( const D3D12_STATIC_SAMPLER_DESC& sampler
     m_StaticSamplers.push_back( sampler );
 }
 
-// Mip LOD bias baked into every SamplerAniso built from here — the material/diffuse sampler, i.e. this
-// backend's equivalent of D3D11's DefaultSamplerState. Static samplers live inside the serialized root
-// signature blob, so changing this only takes effect on the next Build(); D3D12GraphicsEngine sets it before
-// Init() bakes the pipelines and re-runs the whole pipeline reload when the render scale changes it.
+// See SetAnisoMipLodBias: only takes effect on the next Build().
 static float g_AnisoMipLodBias = 0.0f;
 
 void D3D12RootLayout::SetAnisoMipLodBias( float bias ) { g_AnisoMipLodBias = bias; }

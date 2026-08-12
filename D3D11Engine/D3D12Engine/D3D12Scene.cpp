@@ -380,10 +380,9 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     // screen pixels this inventory slot's viewport happens to cover — comparing against those stale values
     // would randomly reject preview pixels and let the resolved 3D scene bleed through. Clear the depth back
     // to reversed-Z far (0.0), scoped to just this viewport's rect, before drawing.
-    // Not necessarily the scene DSV: at a render scale != 100% the scene depth is smaller than the display
-    // target this draws into, and D3D12 requires the bound DSV's dimensions to match the RTV's — GetPreviewDsv
-    // hands back a backbuffer-sized one in that case. {0} means neither is usable; skip rather than draw
-    // depth-less (the comment above is why: it looks very bad).
+    // Not necessarily the scene DSV — below 100% render scale it is smaller than the display target this
+    // draws into, so GetPreviewDsv hands back a native-sized one. {0} = none usable; skip rather than draw
+    // depth-less (see above).
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = GetPreviewDsv();
     if ( !dsv.ptr ) return;
@@ -2400,12 +2399,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise.
 	RenderFogAndGodRays();
 
-	// Debug/editor lines, INSIDE the scene (HDR scene colour + scene depth) rather than over the finished LDR
-	// image. That is what lets the render-scale up/downscale in the tonemap resolve carry them: drawing them
-	// afterwards at native size would need a native-resolution copy of the scene depth for the world-space list
-	// to depth-test against. The cost is that they are as soft as the rest of the scene when downscaling, and
-	// that they go through TAA and the tonemap like scene content — acceptable for a diagnostic overlay.
-	// Both calls also CLEAR their cache, so this is what keeps the line lists from growing across frames.
+	// Debug/editor lines, INSIDE the scene rather than over the finished LDR image (D3D11's slot): drawing
+	// them at native size afterwards would need a native-res copy of the scene depth for the world-space list
+	// to test against. They end up as soft as the rest of the scene when downscaling — fine for a diagnostic
+	// overlay. Both calls also CLEAR their cache, which is what keeps the line lists from growing.
 	{
 		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
@@ -2454,8 +2451,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// and XeGTAO are still to come — and therefore the only way to verify this whole feature on the GPU.
 	RenderMotionDebugOverlay();
 
-	// (Debug/editor lines used to be flushed here, on the finished LDR image — D3D11's slot. They moved up
-	// ahead of RenderTAA so the render scale carries them; see the call site above RenderTAA.)
+	// (Debug/editor lines used to be flushed here; see the call site above RenderTAA.)
 
 	// Do any remaining dx12 stuff BEFORE setting PresentPending
 
