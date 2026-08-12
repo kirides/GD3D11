@@ -686,6 +686,7 @@ struct GothicRendererSettings {
         SectionDrawRadius = 4;
 
         FpsLimit = 0;
+        PausedFpsLimit = 30;
         DrawVOBs = true;
         DrawWorldMesh = 3;
         DrawSkeletalMeshes = true;
@@ -800,6 +801,8 @@ struct GothicRendererSettings {
         EnableOcclusionCulling = false;
         EnablePortalCulling = true;
         PortalCullingNearRadius = 1500.0f;
+        EnablePortalShadowSkip = false;
+        EnableHorizonCulling = false;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
@@ -821,6 +824,7 @@ struct GothicRendererSettings {
         GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
         DrawSectionIntersections = true;
+        DrawWorldOccluders = false;
 
         EnableGodRays = true;
 
@@ -998,6 +1002,13 @@ struct GothicRendererSettings {
 
     /** Rendering options */
     int FpsLimit;
+    /** Cap applied on top of FpsLimit while an in-game menu holds the game paused. ZENGIN renders
+        those frames from a nested loop it never throttles in-game, which lets an idle menu reach
+        thousands of FPS and has been seen to crash drivers - so this cap is mandatory and only
+        its value is configurable, clamped to [PausedFpsLimitMin, PausedFpsLimitMax]. */
+    int PausedFpsLimit;
+    static constexpr int PausedFpsLimitMin = 10;
+    static constexpr int PausedFpsLimitMax = 100;
     bool DrawVOBs;
     bool DrawDynamicVOBs;
     int DrawWorldMesh;
@@ -1051,6 +1062,13 @@ struct GothicRendererSettings {
     /** Rooms within this distance of the camera are never portal-culled (Gothic units, 100 = 1m).
         Raise it if interiors pop while standing near a doorway. */
     float PortalCullingNearRadius;
+    /** Skip the sun-shadow cascades while the view is fully enclosed by sectors, clearing the slices to
+        "shadowed" instead. Requires EnablePortalCulling; see BspPortalCuller::IsOutdoorVisible.
+        Off by default: a false "enclosed" verdict drops every sun shadow, which is very visible. */
+    bool EnablePortalShadowSkip;
+    /** Cull world sections, VOBs and MOBs against the ghost-occluder horizon - ZenGin's outdoor
+        "behind the mountain" test. Main camera pass only; see HorizonCuller. */
+    bool EnableHorizonCulling;
     bool SortRenderQueue;
     bool DrawThreaded;
     EPointLightShadowMode EnablePointlightShadows;
@@ -1063,6 +1081,8 @@ struct GothicRendererSettings {
     /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
     int MSAASamples;
     bool DrawSectionIntersections;
+    /** Debug: outline the world's ghost-occluder polys (see WorldOccluders) in the line renderer. */
+    bool DrawWorldOccluders;
 
     int MaxNumFaces;
 

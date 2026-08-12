@@ -63,35 +63,35 @@ public:
     BspTreeVobVisitor(): seen_flag_id( 1 << g_nextSeenId.fetch_add(1, std::memory_order_relaxed ) ) {
     }
 
+    // A vob is registered in every BSP leaf its box touches, so Visit() is called several times per
+    // vob per pass while only the FIRST call does anything. The plain relaxed load short-circuits the
+    // repeats: a locked read-modify-write (which takes exclusive ownership of the cache line) is then
+    // paid once per vob per pass instead of once per (vob, leaf) pair. Correct because only this
+    // visitor's own thread ever sets seen_flag_id - other threads own other bits of the same word, so
+    // losing the race is impossible; the fetch_or is what keeps their bits intact.
     bool Visit( VobInfo* vobInfo ) {
-        const auto wasFlagged = vobInfo->VisibleInRenderPass.fetch_or( seen_flag_id, std::memory_order_relaxed );
+        if ( (vobInfo->VisibleInRenderPass.load( std::memory_order_relaxed ) & seen_flag_id) != 0 )
+            return false;
 
-        if ( (wasFlagged & seen_flag_id) == 0 ) {
-            vobs.emplace_back( vobInfo );
-            return true;
-        }
-
-        return false;
+        vobInfo->VisibleInRenderPass.fetch_or( seen_flag_id, std::memory_order_relaxed );
+        vobs.emplace_back( vobInfo );
+        return true;
     }
     bool Visit( SkeletalVobInfo* vobInfo ) {
-        const auto wasFlagged = vobInfo->VisibleInRenderPass.fetch_or( seen_flag_id, std::memory_order_relaxed );
+        if ( (vobInfo->VisibleInRenderPass.load( std::memory_order_relaxed ) & seen_flag_id) != 0 )
+            return false;
 
-        if ( (wasFlagged & seen_flag_id) == 0 ) {
-            skeltalVobs.emplace_back( vobInfo );
-            return true;
-        }
-
-        return false;
+        vobInfo->VisibleInRenderPass.fetch_or( seen_flag_id, std::memory_order_relaxed );
+        skeltalVobs.emplace_back( vobInfo );
+        return true;
     }
     bool Visit( VobLightInfo* vobInfo ) {
-        const auto wasFlagged = vobInfo->VisibleInRenderPass.fetch_or( seen_flag_id, std::memory_order_relaxed );
+        if ( (vobInfo->VisibleInRenderPass.load( std::memory_order_relaxed ) & seen_flag_id) != 0 )
+            return false;
 
-        if ( (wasFlagged & seen_flag_id) == 0 ) {
-            lights.emplace_back( vobInfo );
-            return true;
-        }
-
-        return false;
+        vobInfo->VisibleInRenderPass.fetch_or( seen_flag_id, std::memory_order_relaxed );
+        lights.emplace_back( vobInfo );
+        return true;
     }
 
     void ClearForReuse() {

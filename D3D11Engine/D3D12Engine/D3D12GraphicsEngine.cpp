@@ -1705,11 +1705,12 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
 
     if ( !g_MainLoopFramePacingInstalled ) {
+        FrameMark;
         WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
     }
+    PausedFrameLimiterBeginFrame();
 
-    FrameMark;
     TracyD3D12BeginFrame
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
@@ -1848,6 +1849,7 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !g_MainLoopFramePacingInstalled ) {
         FrameLimiterEndFrame();
     }
+    PausedFrameLimiterEndFrame();
 
     return XR_SUCCESS;
 }

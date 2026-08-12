@@ -1240,6 +1240,18 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::SliderInt( "##FPSLimit", &settings.FpsLimit, 10, 300 );
             ImGui::EndDisabled();
 
+            // Always on by design - Gothic renders paused frames from its own unthrottled loop, and
+            // letting that run free crashes some drivers. Only the value is up to the player.
+            ImText( "Paused FPS Limit", buttonWidth );
+            if ( ImGui::IsItemHovered() ) {
+                ImGui::SetTooltip( "Framerate while an in-game menu has the game paused.\n"
+                    "Gothic renders those frames from its own loop without any limit, which can\n"
+                    "reach thousands of FPS and crash some drivers, so this cap can't be turned off." );
+            }
+            ImGui::SameLine();
+            ImGui::SliderInt( "##PausedFPSLimit", &settings.PausedFpsLimit,
+                GothicRendererSettings::PausedFpsLimitMin, GothicRendererSettings::PausedFpsLimitMax );
+
             ImText( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
             float objectDrawDistance = settings.OutdoorVobDrawRadius / 1000.0f;
             if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 1.f, 100.0f, "%.0f" ) ) {
@@ -1841,6 +1853,35 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
 
                 ImGui::Separator();
+                if ( ImGui::Checkbox( "Horizon culling (occluders)", &settings.EnableHorizonCulling ) ) {
+                    Engine::GAPI->GetHorizonCuller().SetEnabled( settings.EnableHorizonCulling );
+                }
+                ImGui::SetItemTooltip( "Cull sections, VOBs and MOBs behind the world's ghost occluders." );
+                {
+                    const auto& hs = Engine::GAPI->GetHorizonCuller().GetStats();
+                    if ( hs.OccludersTotal == 0 ) {
+                        ImGui::TextDisabled( "world ships no occluders" );
+                    } else {
+                        const int tested = hs.BoxesTested.load( std::memory_order_relaxed );
+                        const int rejected = hs.BoxesRejected.load( std::memory_order_relaxed );
+                        ImGui::Text( "occluders: %d/%d in view (%d too near)", hs.OccludersRasterized,
+                            hs.OccludersTotal, hs.OccludersTooNear );
+                        ImGui::Text( "boxes: %d rejected / %d tested (%.0f%%)", rejected, tested,
+                            tested ? (100.0f * rejected / tested) : 0.0f );
+                        // A large negative skyline top means something projected off to infinity and
+                        // the horizon should not be trusted.
+                        if ( hs.HorizonTop < -1000.0f ) {
+                            ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
+                                "skyline top %.0f px - degenerate projection!", hs.HorizonTop );
+                        } else {
+                            ImGui::Text( "skyline top: %.0f px", hs.HorizonTop );
+                        }
+                    }
+                }
+                ImGui::Checkbox( "Draw World Occluders", &settings.DrawWorldOccluders );
+                ImGui::SetItemTooltip( "Outline the world's ghost occluders. Green = near, red = far." );
+
+                ImGui::Separator();
                 auto& portalCuller = Engine::GAPI->GetPortalCuller();
                 if ( ImGui::Checkbox( "Portal culling", &settings.EnablePortalCulling ) ) {
                     portalCuller.SetEnabled( settings.EnablePortalCulling );
@@ -1854,6 +1895,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip( "Rooms closer than this are never culled (100 units = 1m).\n"
                                        "Raise it if interiors pop while standing near a doorway." );
+                ImGui::Checkbox( "Skip sun shadows when enclosed", &settings.EnablePortalShadowSkip );
+                ImGui::SetItemTooltip( "Skip the sun cascades in rooms with no way out to daylight.\n"
+                                       "EXPERIMENTAL: a wrong verdict drops ALL sun shadows." );
                 ImGui::EndDisabled();
 
                 const auto& ps = portalCuller.GetStats();
@@ -1863,6 +1907,20 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ImGui::Text( "sectors: %d active / %d  (portals: %d)",
                         ps.ActiveSectors, ps.NumSectors, ps.NumPortals );
                     ImGui::Text( "camera: %s", ps.CameraOutdoor ? "outdoor" : "in sector" );
+
+                    // Broken down so a wrong verdict says which step decided it.
+                    if ( ps.EnclosedInSector == BspPortalCuller::SECTOR_OUTDOOR ) {
+                        ImGui::TextDisabled( "enclosure: camera not strictly in a room" );
+                    } else if ( ps.CameraRoomOpensOutdoor ) {
+                        ImGui::TextDisabled( "enclosure: room %u has a door outside", ps.EnclosedInSector );
+                    } else if ( ps.OutdoorVisible ) {
+                        ImGui::Text( "enclosure: in room %u, outdoor seen from room %u (walked %d)",
+                            ps.EnclosedInSector, ps.OutdoorSeenFromSector, ps.EnclosureWalkSectors );
+                    } else {
+                        ImGui::TextColored( ImVec4( 0.4f, 1.0f, 0.5f, 1.0f ),
+                            "view fully enclosed in room %u (walked %d) - sun cascades skipped",
+                            ps.EnclosedInSector, ps.EnclosureWalkSectors );
+                    }
                     if ( ps.UnreachableSectors > 0 ) {
                         ImGui::TextColored( ImVec4( 1.0f, 0.7f, 0.2f, 1.0f ),
                             "%d sector(s) unreachable from outdoor - never culled", ps.UnreachableSectors );

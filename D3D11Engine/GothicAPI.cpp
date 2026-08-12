@@ -2052,6 +2052,19 @@ void GothicAPI::LeaveResourceCriticalSection() {
     LeaveCriticalSection( &ResourceCriticalSection );
 }
 
+/** Swap-and-pop removal of a vob from one BSP leaf list. Order in these lists is irrelevant -
+    collection walks them whole - so the swap keeps removal O(list size) instead of the shuffle
+    an erase() would do, and every list stays contiguous for the SIMD distance reject. */
+static void EraseVobFromLeafList( std::vector<LeafVobEntry>& list, const VobInfo* vob ) {
+    for ( auto it = list.begin(); it != list.end(); ++it ) {
+        if ( it->Info == vob ) {
+            *it = list.back();
+            list.pop_back();
+            return;
+        }
+    }
+}
+
 /** Called when a VOB got removed from the world */
 void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     //LogInfo() << "Removing vob: " << vob;
@@ -2145,29 +2158,9 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         for ( unsigned int i = 0; i < nodes->size(); i++ ) {
             BspInfo* node = (*nodes)[i];
             if ( vi ) {
-                for ( auto bit = node->IndoorVobs.begin(); bit != node->IndoorVobs.end(); ++bit ) {
-                    if ( (*bit) == vi ) {
-                        (*bit) = node->IndoorVobs.back();
-                        node->IndoorVobs.pop_back();
-                        break;
-                    }
-                }
-
-                for ( auto bit = node->Vobs.begin(); bit != node->Vobs.end(); ++bit ) {
-                    if ( (*bit) == vi ) {
-                        (*bit) = node->Vobs.back();
-                        node->Vobs.pop_back();
-                        break;
-                    }
-                }
-
-                for ( auto bit = node->SmallVobs.begin(); bit != node->SmallVobs.end(); ++bit ) {
-                    if ( (*bit) == vi ) {
-                        (*bit) = node->SmallVobs.back();
-                        node->SmallVobs.pop_back();
-                        break;
-                    }
-                }
+                EraseVobFromLeafList( node->IndoorVobs, vi );
+                EraseVobFromLeafList( node->Vobs, vi );
+                EraseVobFromLeafList( node->SmallVobs, vi );
             }
 
             if ( li && nodes ) {
@@ -4059,6 +4052,16 @@ bool GothicAPI::IsGamePaused() {
     return game->GetSingleStep();
 }
 
+/** Returns true while an in-game menu holds the game paused */
+bool GothicAPI::IsIngameMenuPaused() {
+    // Deliberately stricter than IsGamePaused(): that one reports "paused" when there is no game
+    // session at all (out-game menu, startup, teardown), which is indistinguishable from loading.
+    // With a session present, singleStep can only have been set by oCGame::Pause(), which every
+    // in-game menu (ESC main menu, inventory/status, log, map) calls before entering zCMenu::Run().
+    oCGame* game = oCGame::GetGame();
+    return game && game->GetSingleStep();
+}
+
 /** Checks if a game is being saved now */
 bool GothicAPI::IsSavingGameNow() {
     oCGame* game = oCGame::GetGame();
@@ -4277,6 +4280,55 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
     }
 }
 
+/** Outlines the world's ghost occluders (WorldOccluders) so their placement can be eyeballed before
+    anything culls against them. Frustum- and distance-limited: a world ships up to ~2500 of them and
+    feeding every one to the line renderer every frame would swamp it. */
+void GothicAPI::DebugDrawOccluders( const Frustum& frustum ) {
+    if ( !LoadedWorldInfo || LoadedWorldInfo->Occluders.IsEmpty() )
+        return;
+
+    const WorldOccluders& occ = LoadedWorldInfo->Occluders;
+    BaseLineRenderer* lines = Engine::GraphicsEngine->GetLineRenderer();
+    if ( !lines )
+        return;
+
+    const XMVECTOR camPos = GetCameraPositionXM();
+    const float maxDist = 20000.0f;   // 200m - beyond that the outlines are unreadable anyway
+    const size_t maxDrawn = 400;      // line-renderer budget; overflow is logged once below
+
+    size_t drawn = 0;
+    size_t skippedForBudget = 0;
+    for ( const WorldOccluders::Entry& e : occ.Entries ) {
+        float distSq;
+        XMStoreFloat( &distSq, XMVector3LengthSq( XMLoadFloat3( &e.Center ) - camPos ) );
+        if ( distSq > (maxDist + e.Radius) * (maxDist + e.Radius) )
+            continue;
+        if ( !frustum.Intersects( zTBBox3D{
+                XMFLOAT3( e.Center.x - e.Radius, e.Center.y - e.Radius, e.Center.z - e.Radius ),
+                XMFLOAT3( e.Center.x + e.Radius, e.Center.y + e.Radius, e.Center.z + e.Radius ) } ) )
+            continue;
+
+        if ( drawn >= maxDrawn ) { skippedForBudget++; continue; }
+
+        // Green near, red far - makes it obvious which ones actually bound the current view.
+        const float t = std::min( 1.0f, std::sqrtf( distSq ) / maxDist );
+        const XMFLOAT4 color( t, 1.0f - t, 0.2f, 1.0f );
+
+        for ( uint32_t v = 0; v < e.NumVerts; v++ ) {
+            const XMFLOAT3& a = occ.Verts[e.VertexOffset + v];
+            const XMFLOAT3& b = occ.Verts[e.VertexOffset + ((v + 1) % e.NumVerts)];
+            lines->AddLine( LineVertex( a, color ), LineVertex( b, color ) );
+        }
+        drawn++;
+    }
+
+    if ( skippedForBudget && !OccluderDebugBudgetLogged ) {
+        LogInfo() << "DrawWorldOccluders: showing " << maxDrawn << " of " << (drawn + skippedForBudget)
+            << " in-view occluders (line budget)";
+        OccluderDebugBudgetLogged = true;
+    }
+}
+
 /** Draws the AABB for the BSP-Tree using the line renderer*/
 void GothicAPI::DebugDrawBSPTree() {
     zCBspTree* tree = LoadedWorldInfo->BspTree;
@@ -4301,6 +4353,8 @@ void GothicAPI::CollectVisibleVobs(
     Frustum frustum = Frustum::AlwaysContainingFrustum();
     bool haveCameraMatrices = false;
     XMMATRIX worldToClip = XMMatrixIdentity();
+    // Kept alongside worldToClip so the horizon cull can measure depth in the SAME camera's space.
+    XMMATRIX cameraView = XMMatrixIdentity();
     if ( auto cam = GetSceneCamera() ) {
         cam->Activate();
 
@@ -4312,6 +4366,7 @@ void GothicAPI::CollectVisibleVobs(
         frustum.BuildPerspective( viewM, projM );
 
         worldToClip = XMMatrixMultiply( viewM, projM );
+        cameraView = viewM;
         haveCameraMatrices = true;
     }
 
@@ -4358,6 +4413,26 @@ void GothicAPI::CollectVisibleVobs(
         oCGame* game = oCGame::GetGame();
         PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
         ctx.portalCuller = &PortalCuller;
+    }
+
+    // Rasterize the ghost-occluder horizon for THIS camera, then hand it to the collect. Main camera
+    // pass only - a shadow cascade has its own frustum and must not test against the player's skyline.
+    Horizon.SetEnabled( RendererState.RendererSettings.EnableHorizonCulling );
+    if ( haveCameraMatrices && LoadedWorldInfo && !LoadedWorldInfo->Occluders.IsEmpty() ) {
+        const INT2 res = Engine::GraphicsEngine->GetResolution();
+        // viewM, NOT GetViewMatrixXM(): worldToClip is viewM*projM from this zCCamera and the horizon
+        // compares depths in that camera's space, while TransformView is pass-dependent (the shadow
+        // cascades overwrite it through SetCameraReplacementPtr).
+        Horizon.Build( LoadedWorldInfo->Occluders, worldToClip, cameraView, ctx.cameraPosition,
+            frustum, res.x, res.y );
+        if ( Horizon.IsActive() )
+            ctx.horizon = &Horizon;
+    } else {
+        Horizon.Invalidate();
+    }
+
+    if ( RendererState.RendererSettings.DrawWorldOccluders ) {
+        DebugDrawOccluders( frustum );
     }
 
     CollectVisibleVobs( ctx );
@@ -4590,7 +4665,8 @@ bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Fr
 
 void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
     std::vector<WorldMeshSectionInfo*>& sections,
-    bool useSectionRadiusFilter ) const {
+    bool useSectionRadiusFilter,
+    const HorizonCuller* horizon ) const {
     if ( !WorldSectionBVHValid || WorldSectionBVHNodes.empty() ) {
         return;
     }
@@ -4613,6 +4689,19 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
         const WorldSectionBVHNode& node = WorldSectionBVHNodes[nodeIndex];
         if ( !frustum.Intersects( node.Bounds ) ) {
             continue;
+        }
+        // Horizon on the BVH node itself: rejecting an interior node drops its whole subtree of
+        // sections in one test, which is where this pays best.
+        if ( horizon ) {
+            const XMFLOAT3 nodeMin( node.Bounds.Center.x - node.Bounds.Extents.x,
+                                    node.Bounds.Center.y - node.Bounds.Extents.y,
+                                    node.Bounds.Center.z - node.Bounds.Extents.z );
+            const XMFLOAT3 nodeMax( node.Bounds.Center.x + node.Bounds.Extents.x,
+                                    node.Bounds.Center.y + node.Bounds.Extents.y,
+                                    node.Bounds.Center.z + node.Bounds.Extents.z );
+            if ( !horizon->IsBoxVisible( nodeMin, nodeMax ) ) {
+                continue;
+            }
         }
 
         if ( node.IsLeaf() ) {
@@ -4660,7 +4749,8 @@ void GothicAPI::UpdateShouldBlockGameInput( ) {
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
     const Frustum* queryFrustum,
-    bool useSectionRadiusFilter ) {
+    bool useSectionRadiusFilter,
+    const HorizonCuller* horizon ) {
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
@@ -4675,10 +4765,15 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             if ( !queryFrustum->IsValid() ) {
                 return true;
             }
-            return queryFrustum->Intersects( section.BoundingBox );
+            if ( !queryFrustum->Intersects( section.BoundingBox ) ) return false;
+        } else if ( GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT ) {
+            return false;
         }
 
-        return GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) != ZTCAM_CLIPTYPE_OUT;
+        if ( horizon && !horizon->IsBoxVisible( section.BoundingBox.Min, section.BoundingBox.Max ) ) {
+            return false;
+        }
+        return true;
     };
 
     const bool queryFrustumValid = queryFrustum == nullptr || queryFrustum->IsValid();
@@ -4704,7 +4799,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             activeFrustum = &generatedFrustum;
         }
 
-        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter );
+        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter, horizon );
         return;
     }
 
@@ -4795,29 +4890,9 @@ void GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob ) {
         BspInfo* node = vob->ParentBSPNodes[i];
 
         // Remove from possible lists
-        for ( std::vector<VobInfo*>::iterator it = node->IndoorVobs.begin(); it != node->IndoorVobs.end(); ++it ) {
-            if ( (*it) == vob ) {
-                (*it) = node->IndoorVobs.back();
-                node->IndoorVobs.pop_back();
-                break;
-            }
-        }
-
-        for ( std::vector<VobInfo*>::iterator it = node->SmallVobs.begin(); it != node->SmallVobs.end(); ++it ) {
-            if ( (*it) == vob ) {
-                (*it) = node->SmallVobs.back();
-                node->SmallVobs.pop_back();
-                break;
-            }
-        }
-
-        for ( std::vector<VobInfo*>::iterator it = node->Vobs.begin(); it != node->Vobs.end(); ++it ) {
-            if ( (*it) == vob ) {
-                (*it) = node->Vobs.back();
-                node->Vobs.pop_back();
-                break;
-            }
-        }
+        EraseVobFromLeafList( node->IndoorVobs, vob );
+        EraseVobFromLeafList( node->SmallVobs, vob );
+        EraseVobFromLeafList( node->Vobs, vob );
     }
     vob->ParentBSPNodes.clear();
 
@@ -4825,9 +4900,9 @@ void GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob ) {
     DynamicallyAddedVobs.push_back( vob );
 }
 
-std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob, std::vector<VobInfo*>* source ) {
-    std::vector<VobInfo*>::iterator itn = source->end();
-    std::vector<VobInfo*>::iterator itc;
+std::vector<LeafVobEntry>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob, std::vector<LeafVobEntry>* source ) {
+    std::vector<LeafVobEntry>::iterator itn = source->end();
+    std::vector<LeafVobEntry>::iterator itc;
 
     // Remove from all nodes
     for ( size_t i = 0; i < vob->ParentBSPNodes.size(); i++ ) {
@@ -4835,7 +4910,7 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
 
         // Remove from possible lists
         for ( auto it = node->IndoorVobs.begin(); it != node->IndoorVobs.end(); ++it ) {
-            if ( (*it) == vob ) {
+            if ( it->Info == vob ) {
                 itc = node->IndoorVobs.erase( it );
                 break;
             }
@@ -4845,7 +4920,7 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
             itn = itc;
 
         for ( auto it = node->SmallVobs.begin(); it != node->SmallVobs.end(); ++it ) {
-            if ( (*it) == vob ) {
+            if ( it->Info == vob ) {
                 itc = node->SmallVobs.erase( it );
                 break;
             }
@@ -4855,7 +4930,7 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
             itn = itc;
 
         for ( auto it = node->Vobs.begin(); it != node->Vobs.end(); ++it ) {
-            if ( (*it) == vob ) {
+            if ( it->Info == vob ) {
                 itc = node->Vobs.erase( it );
                 break;
             }
@@ -4873,7 +4948,7 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
 
 static void CVVH_AddNotDrawnVobToList(
         FXMVECTOR distSq,
-        std::vector<VobInfo*>& source,
+        std::vector<LeafVobEntry>& source,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
         BspTreeVobVisitor* visitor,
@@ -4884,32 +4959,43 @@ static void CVVH_AddNotDrawnVobToList(
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
     // SkipVobFrustumCull: the backend culls these on the GPU (D3D12), so collect distance-only.
     const bool cullingEnabled = ctx.drawFlags.CullVobs && !ctx.drawFlags.SkipVobFrustumCull;
+    // Hoisted out of the loop: with a CONTAINS leaf the per-vob box test is provably redundant
+    // (see CollectVisibleVobsWithLeafCache), so the whole branch collapses to a constant here.
+    const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
+    const HorizonCuller* horizon = ctx.horizon;
 
-    for ( auto const& it : source ) {
-        // Reject on distance FIRST: LastRenderPosition is already in the VobInfo cache line, while
-        // Visit() is an atomic RMW and GetShowVisual() dereferences into Gothic's own heap. Doing
-        // those first meant paying them for every candidate, including ones about to be dropped.
-        XMVECTOR vvdSq = XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) );
+    for ( const LeafVobEntry& entry : source ) {
+        // Reject on distance FIRST, and out of the list element's OWN mirrored position: every
+        // later step - Visit()'s atomic word, GetFlags()' hop into Gothic's heap, LastRenderBBox -
+        // is a dereference of a scattered VobInfo, and the majority of candidates never survive to
+        // need one. This loop therefore walks nothing but the contiguous 16-byte entries.
+        XMVECTOR vvdSq = XMVector3LengthSq( camPos - XMLoadFloat3( &entry.Position ) );
         if ( XMVector3Greater( vvdSq, distSq )) continue;
 
+        VobInfo* it = entry.Info;
         if ( !visitor->Visit( it ) ) continue;
-        
-        const auto vobFlags = it->Vob->GetFlags();
-        if ( !zCVob::FlagGetShowVisual(vobFlags) ) continue;
+
+        const zTVobFlags vobFlags = it->Vob->GetFlags();
+        if ( !vobFlags.ShowVisual ) continue;
 
         // LastRenderBBox rather than Vob->GetBBox(): same value, but it lives in VobInfo instead of
         // Gothic's heap, so the reject path stays off a second allocation entirely.
-        if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
-            && cullingEnabled
-            && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
+        if ( needFrustumTest && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
+        }
+        // Horizon: hidden behind an occluder, so nothing below is built - no instance upload, no indirect
+        // command, no CacheIn. After the frustum test, which is much cheaper.
+        if ( horizon ) {
+            const zTBBox3D& hb = it->LastRenderBBox;
+            if ( !horizon->IsBoxVisible( hb.Min, hb.Max ) )
+                continue;
         }
         if ( portalLeaf ) {
             const zTBBox3D& bb = it->LastRenderBBox;
             if ( !ctx.portalCuller->IsBoxVisibleInLeafSectors( *portalLeaf, bb.Min, bb.Max ) )
                 continue;
         }
-        if ( zCVob::FlagGetVisualAlpha(vobFlags) ) {
+        if ( vobFlags.VisualAlphaEnabled ) {
             ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( XMVectorGetX( vvdSq ) ), it->Vob->GetVobTransparency(), nullptr, it } );
             continue;
         }
@@ -4928,19 +5014,30 @@ static void CVVH_AddNotDrawnVobToList(
     const bool cullingEnabled = ctx.drawFlags.CullVobs;
     const auto vDistSq = XMVectorReplicate( distSq );
 
+    // Same hoist as the static-vob overload: a CONTAINS leaf makes the per-mob box test redundant.
+    const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
+
     for ( auto const& it : source ) {
+        // Distance before Visit(): the test is leaf-independent, so an out-of-range mob fails it in every
+        // leaf and marking it seen changes nothing. Keeps the atomic off the reject path.
+        if ( XMVector3Greater( XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq ) ) {
+            continue;
+        }
+
         if ( !visitor->Visit( it ) ) continue;
 
         if ( !it->Vob->GetShowVisual() )
             continue;
 
-        if ( XMVector3Greater( XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq ) ) {
+        if ( needFrustumTest && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
         }
-        if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
-            && cullingEnabled
-            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
-            continue;
+        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection saves a whole draw plus
+        // its material binds.
+        if ( ctx.horizon ) {
+            const zTBBox3D bb = it->Vob->GetBBox();
+            if ( !ctx.horizon->IsBoxVisible( bb.Min, bb.Max ) )
+                continue;
         }
 
         ctx.queue->PushSkeletalVob( it );
@@ -4973,25 +5070,31 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 if ( v ) {
                     float vobSmallSize = Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
 
+                    // Position is read straight off the zCVob rather than from VobInfo::LastRenderPosition:
+                    // this runs at world load and a VobInfo registered moments ago may not have had
+                    // UpdateState() called on it yet. See LeafVobEntry for why the mirror stays valid.
+                    const LeafVobEntry entry{ vob->GetPositionWorld(), v };
+                    const auto sameVob = [v]( const LeafVobEntry& e ) { return e.Info == v; };
+
                     // Treat indoor vobs as indoor vobs only in outdoor locations
                     if ( outdoorLocation && vob->IsIndoorVob() ) {
                         // Only add once
-                        if (std::ranges::find(bvi.IndoorVobs, v ) == bvi.IndoorVobs.end() ) {
+                        if (std::ranges::find_if(bvi.IndoorVobs, sameVob ) == bvi.IndoorVobs.end() ) {
                             v->ParentBSPNodes.push_back( &bvi );
-                            bvi.IndoorVobs.push_back( v );
+                            bvi.IndoorVobs.push_back( entry );
                             v->IsIndoorVob = true;
                         }
                     } else if ( v->VisualInfo->MeshSize < vobSmallSize ) {
                         // Only add once
-                        if (std::ranges::find(bvi.SmallVobs, v ) == bvi.SmallVobs.end() ) {
+                        if (std::ranges::find_if(bvi.SmallVobs, sameVob ) == bvi.SmallVobs.end() ) {
                             v->ParentBSPNodes.push_back( &bvi );
-                            bvi.SmallVobs.push_back( v );
+                            bvi.SmallVobs.push_back( entry );
                         }
                     } else {
                         // Only add once
-                        if (std::ranges::find(bvi.Vobs, v ) == bvi.Vobs.end() ) {
+                        if (std::ranges::find_if(bvi.Vobs, sameVob ) == bvi.Vobs.end() ) {
                             v->ParentBSPNodes.push_back( &bvi );
-                            bvi.Vobs.push_back( v );
+                            bvi.Vobs.push_back( entry );
                         }
                     }
                 }
@@ -5663,6 +5766,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "CompressBackBuffer", to_string_locale_independent( s.CompressBackBuffer ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AnimateStaticVobs", to_string_locale_independent( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", to_string_locale_independent( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DrawWorldOccluders", to_string_locale_independent( s.DrawWorldOccluders ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", to_string_locale_independent( s.SunLightStrength ).c_str(), ini.c_str() );
 #ifdef BUILD_GOTHIC_1_08k
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", to_string_locale_independent( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5677,7 +5781,10 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnableOcclusionCulling", to_string_locale_independent( s.EnableOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnablePortalCulling", to_string_locale_independent( s.EnablePortalCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableHorizonCulling", to_string_locale_independent( s.EnableHorizonCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "PausedFpsLimit", to_string_locale_independent( s.PausedFpsLimit ).c_str(), ini.c_str() );
     
     auto res = Engine::GraphicsEngine->GetBackbufferResolution();
     WritePrivateProfileStringA( "Display", "TextureQuality", to_string_locale_independent( s.textureMaxSize ).c_str(), ini.c_str() );
@@ -5837,6 +5944,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.CompressBackBuffer = GetPrivateProfileBoolA( "General", "CompressBackBuffer", ds.CompressBackBuffer, ini );
         s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", ds.AnimateStaticVobs, ini );
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
+        s.DrawWorldOccluders = GetPrivateProfileBoolA( "General", "DrawWorldOccluders", ds.DrawWorldOccluders, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
 #ifdef BUILD_GOTHIC_1_08k
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", ds.DrawG1ForestPortals, ini );
@@ -5851,7 +5959,14 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableOcclusionCulling = GetPrivateProfileBoolA( "General", "EnableOcclusionCulling", ds.EnableOcclusionCulling, ini );
         s.EnablePortalCulling = GetPrivateProfileBoolA( "General", "EnablePortalCulling", ds.EnablePortalCulling, ini );
         s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
+        s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
+        s.EnableHorizonCulling = GetPrivateProfileBoolA( "General", "EnableHorizonCulling", ds.EnableHorizonCulling, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
+        s.PausedFpsLimit = GetPrivateProfileIntA( "General", "PausedFpsLimit", ds.PausedFpsLimit, ini.c_str() );
+        // Not optional: an unthrottled paused loop crashes drivers, so the ini can only pick a value
+        // inside the allowed band (0/garbage included) - it can't switch the cap off.
+        s.PausedFpsLimit = std::clamp( s.PausedFpsLimit,
+            GothicRendererSettings::PausedFpsLimitMin, GothicRendererSettings::PausedFpsLimitMax );
 
         // override INI settings with GMP minimum values.
         if ( GMPModeActive ) {
@@ -6681,9 +6796,9 @@ static void CollectLeafVobs(
     auto& VobLightMap = Engine::GAPI->VobLightMap;
 
     zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
-    std::vector<VobInfo*>& listA = base->IndoorVobs;
-    std::vector<VobInfo*>& listB = base->SmallVobs;
-    std::vector<VobInfo*>& listC = base->Vobs;
+    std::vector<LeafVobEntry>& listA = base->IndoorVobs;
+    std::vector<LeafVobEntry>& listB = base->SmallVobs;
+    std::vector<LeafVobEntry>& listC = base->Vobs;
     std::vector<SkeletalVobInfo*>& listD = base->Mobs;
 
     if ( ctx.drawFlags.DrawVOBs ) {
@@ -6971,24 +7086,40 @@ static void CollectVisibleVobsWithLeafCache(
         const __m256 vMaxY = _mm256_load_ps( pMaxY + i );
         const __m256 vMaxZ = _mm256_load_ps( pMaxZ + i );
 
-        // Frustum cull: n-vertex test across all 6 planes.
+        // Frustum cull: n-vertex test across all 6 planes, plus the p-vertex test that upgrades a
+        // surviving leaf from INTERSECTS to CONTAINS.
         // DirectX cached planes have OUTWARD-facing normals (positive dot = outside frustum),
         // matching FastIntersectAxisAlignedBoxPlane: Outside = (Dist > Radius).
-        // For each plane we pick the n-vertex (the AABB corner with the MINIMUM dot product).
-        // If that corner's dot > 0, the ENTIRE AABB is on the outside (positive/outer) side.
-        // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b
-        // So blendv(MinX, MaxX, pNX): pNX>=0 (MSB=0) -> MinX (min along positive normal), pNX<0 (MSB=1) -> MaxX.
+        // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b.
+        //   n-vertex (MINIMUM dot) = blendv(Min, Max, n); dot > 0 => whole AABB outside, leaf rejected.
+        //   p-vertex (MAXIMUM dot) = the same with the operands swapped; dot <= 0 for all six planes =>
+        //     the leaf is fully CONTAINED and nothing inside it needs its own frustum test.
         __m256 vOutside = vZero;
-        for ( int p = 0; p < 6 && !skipVobFrustumCull; ++p ) {
-            const __m256 vPX = _mm256_blendv_ps( vMinX, vMaxX, pNX[p] );
-            const __m256 vPY = _mm256_blendv_ps( vMinY, vMaxY, pNY[p] );
-            const __m256 vPZ = _mm256_blendv_ps( vMinZ, vMaxZ, pNZ[p] );
-            // dot(n, n_vertex) + d: positive means the entire AABB is outside this plane
-            const __m256 vDot = _mm256_fmadd_ps( pNX[p], vPX,
-                                _mm256_fmadd_ps( pNY[p], vPY,
-                                _mm256_fmadd_ps( pNZ[p], vPZ, pD[p] ) ) );
-            // Accumulate "outside" flag: dot > 0 means AABB is fully on the outer side of this plane
-            vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vDot, vZero, _CMP_GT_OQ ) );
+        __m256 vNotContained = vZero;
+        if ( !skipVobFrustumCull ) {
+            for ( int p = 0; p < 6; ++p ) {
+                const __m256 vNX = _mm256_blendv_ps( vMinX, vMaxX, pNX[p] );
+                const __m256 vNY = _mm256_blendv_ps( vMinY, vMaxY, pNY[p] );
+                const __m256 vNZ = _mm256_blendv_ps( vMinZ, vMaxZ, pNZ[p] );
+                const __m256 vNDot = _mm256_fmadd_ps( pNX[p], vNX,
+                                     _mm256_fmadd_ps( pNY[p], vNY,
+                                     _mm256_fmadd_ps( pNZ[p], vNZ, pD[p] ) ) );
+                vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vNDot, vZero, _CMP_GT_OQ ) );
+
+                // The p-vertex differs only in which extent each axis picks, so it reuses the already-loaded
+                // Min/Max registers.
+                const __m256 vPX = _mm256_blendv_ps( vMaxX, vMinX, pNX[p] );
+                const __m256 vPY = _mm256_blendv_ps( vMaxY, vMinY, pNY[p] );
+                const __m256 vPZ = _mm256_blendv_ps( vMaxZ, vMinZ, pNZ[p] );
+                const __m256 vPDot = _mm256_fmadd_ps( pNX[p], vPX,
+                                     _mm256_fmadd_ps( pNY[p], vPY,
+                                     _mm256_fmadd_ps( pNZ[p], vPZ, pD[p] ) ) );
+                vNotContained = _mm256_or_ps( vNotContained, _mm256_cmp_ps( vPDot, vZero, _CMP_GT_OQ ) );
+            }
+        } else {
+            // GPU culling: no frustum rejection at all, and deliberately never CONTAINS - CollectLeafVobs'
+            // per-light sphere test has to stay alive (see the note above).
+            vNotContained = _mm256_cmp_ps( vZero, vZero, _CMP_EQ_OQ );
         }
 
         // Distance cull: squared AABB-to-point distance
@@ -7006,25 +7137,12 @@ static void CollectVisibleVobsWithLeafCache(
         const int cullMask = _mm256_movemask_ps( vOutside );
         if ( cullMask == 0xFF ) continue; // All 8 culled — skip scalar work
 
-        if ( cullMask == 0 ) {
-            for ( uint32_t lane = 0; lane < 8; ++lane ) {
-                const uint32_t idx = i + lane;
-                if ( idx >= cache.Count ) break;
+        // Bit set => that lane's leaf is only partially inside, so its contents keep their own tests.
+        const int partialMask = _mm256_movemask_ps( vNotContained );
 
-                BspInfo* leaf = cache.Leaves[idx];
-                if ( !leaf ) continue;
-                if ( enableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame ) continue;
-
-                const float dx = std::max( 0.0f, std::max( pMinX[idx] - cpX, cpX - pMaxX[idx] ) );
-                const float dy = std::max( 0.0f, std::max( pMinY[idx] - cpY, cpY - pMaxY[idx] ) );
-                const float dz = std::max( 0.0f, std::max( pMinZ[idx] - cpZ, cpZ - pMaxZ[idx] ) );
-                const float leafDistSq = dx * dx + dy * dy + dz * dz;
-
-                // Use INTERSECTS so per-vob frustum checks still run inside CollectLeafVobs.
-                CollectLeafVobs( leaf, leafDistSq, ctx, ContainmentType::INTERSECTS, visitor );
-            }
-            continue;
-        }
+        // Store the already-computed distances instead of recomputing them per surviving lane.
+        alignas( 32 ) float laneDistSq[8];
+        _mm256_store_ps( laneDistSq, vDistSq );
 
         // Process surviving lanes with full scalar logic
         for ( int lane = 0; lane < 8; ++lane ) {
@@ -7040,14 +7158,13 @@ static void CollectVisibleVobsWithLeafCache(
             if ( enableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame )
                 continue;
 
-            // Recompute scalar distance^2 for per-category range checks inside CollectLeafVobs.
-            const float dx = std::max( 0.0f, std::max( pMinX[idx] - cpX, cpX - pMaxX[idx] ) );
-            const float dy = std::max( 0.0f, std::max( pMinY[idx] - cpY, cpY - pMaxY[idx] ) );
-            const float dz = std::max( 0.0f, std::max( pMinZ[idx] - cpZ, cpZ - pMaxZ[idx] ) );
-            const float leafDistSq = dx * dx + dy * dy + dz * dz;
+            // CONTAINS when the leaf box is fully inside all six planes: everything in it then skips its own
+            // frustum test in CollectLeafVobs. A VOB poking out of a contained leaf is kept, not dropped.
+            const ContainmentType containment = ( partialMask & (1 << lane) )
+                ? ContainmentType::INTERSECTS
+                : ContainmentType::CONTAINS;
 
-            // Use INTERSECTS so per-vob frustum checks still run inside CollectLeafVobs
-            CollectLeafVobs( leaf, leafDistSq, ctx, ContainmentType::INTERSECTS, visitor );
+            CollectLeafVobs( leaf, laneDistSq[lane], ctx, containment, visitor );
         }
     }
 }

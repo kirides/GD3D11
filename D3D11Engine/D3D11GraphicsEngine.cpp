@@ -1515,8 +1515,6 @@ static const char* beginFrameEventName = "Frame";
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
-    FrameMarkStart( beginFrameEventName );
-
     auto& rendererState = Engine::GAPI->GetRendererState();
     static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(rendererState.RendererSettings);
     WindowModes currentWindowMode = (WindowModes)rendererState.RendererSettings.ChangeWindowPreset;
@@ -1574,7 +1572,9 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     if ( !g_MainLoopFramePacingInstalled ) {
         WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
+        FrameMarkStart( beginFrameEventName );
     }
+    PausedFrameLimiterBeginFrame();
 
     SteamOverlay::Update();
 #ifdef BUILD_1_12F
@@ -1656,11 +1656,12 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     EndFrameTransientBufferPools();
     PerObjectMaterialInfoPooledBuffer->EndFrame();
     DynamicConstantBufferPool->EndFrame();
-    FrameMarkEnd( beginFrameEventName );
 
     if ( !g_MainLoopFramePacingInstalled ) {
+        FrameMarkEnd( beginFrameEventName );
         FrameLimiterEndFrame();
     }
+    PausedFrameLimiterEndFrame();
     return XR_SUCCESS;
 }
 
@@ -5111,7 +5112,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     static std::vector<WorldMeshSectionInfo*> renderList;
     if ( !m_FrameGeometryCache.worldMeshBuilt ) {
-        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true );
+        // Player view: opt into the ghost-occluder horizon cull (shadow/rain collects must not).
+        const HorizonCuller& horizon = Engine::GAPI->GetHorizonCuller();
+        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true,
+            horizon.IsActive() ? &horizon : nullptr );
         m_FrameGeometryCache.worldMeshBuilt = true;
     }
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)

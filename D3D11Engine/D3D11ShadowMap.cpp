@@ -1123,6 +1123,31 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
     int numCascades = settings.NumShadowCascades;
     bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
 
+    // Fully enclosed view (portal culling): nothing the sun lights is on screen, so clear every
+    // cascade to 0.0 = fully shadowed and cast nothing - the same result the room's own shell would
+    // have produced, for three clears. Only the DRAWS are skipped here; the culls were launched back
+    // in OnStartWorldRendering, before this frame's portal solve existed, and WaitShadowCullingComplete
+    // above already joined them. D3D12 evaluates this early enough to skip the culls too.
+    const bool sunFullyOccluded = isOutdoor && Engine::GAPI->AreSunShadowsFullyOccluded();
+    if ( sunFullyOccluded ) {
+        if ( m_useAtlas && m_shadowAtlas ) {
+            if ( auto dsv = m_shadowAtlas->GetDepthStencilView() ) {
+                m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, 0.0f, 0 );
+            }
+        } else {
+            for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+                if ( auto dsv = GetCascadeDSV( static_cast<UINT>( cascadeIdx ) ) ) {
+                    m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, 0.0f, 0 );
+                }
+            }
+        }
+        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+            m_RenderQueues[cascadeIdx]->Reset();
+        }
+        Engine::GAPI->SetCameraReplacementPtr( nullptr );
+        return XR_SUCCESS;
+    }
+
     if ( isOutdoor ) {
         // For atlas path: clear entire atlas once before rendering all cascades
         if ( m_useAtlas && m_shadowAtlas ) {

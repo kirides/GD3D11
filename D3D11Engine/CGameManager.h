@@ -20,10 +20,12 @@ DWORD g_CGameManagerRunLoop_ReturnAddr = 0;
     instead of being nested inside D3D11GraphicsEngine::OnEndFrame/OnBeginFrame (i.e.
     inside Render()). */
 static void __cdecl CGameManagerRunLoop_PaceFrame() {
+    ++g_MainLoopFrameTick;
     if ( Engine::GraphicsEngine ) {
         Engine::GraphicsEngine->FrameLimiterEndFrame();
         Engine::GraphicsEngine->WaitForFrameLatencyWaitable();
         Engine::GraphicsEngine->FrameLimiterBeginFrame();
+        FrameMark;
     }
 }
 

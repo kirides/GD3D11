@@ -4,6 +4,7 @@
 #include "AlignedAllocator.h"
 #include "Frustum.h"
 #include "BspPortalCuller.h"
+#include "HorizonCuller.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
 #include "zCTree.h"
@@ -45,6 +46,10 @@ struct RndCullContext {
         camera pass sets it: shadow passes must keep collecting casters in rooms the player cannot
         see into, and it is solved for the player camera anyway. */
     const class BspPortalCuller* portalCuller = nullptr;
+
+    /** Ghost-occluder horizon cull for this pass, or null to not use it. Main camera pass only: the
+        horizon is rasterized for the player's view, so a shadow cascade must not test against it. */
+    const class HorizonCuller* horizon = nullptr;
 
     struct
     {
@@ -94,6 +99,23 @@ enum EBspTreeCollectFlags : unsigned int {
     COLLECT_ALL_NO_MUTATE = COLLECT_ALL_MUTATE & ~COLLECT_MUTATE,
 };
 
+/** Entry of a BSP leaf's static-VOB list.
+ *
+ *  The world position is mirrored into the list element instead of being read back out of the
+ *  VobInfo. CollectLeafVobs' first act on every candidate is a distance reject, and with a bare
+ *  VobInfo* list that reject had to dereference a scattered heap object per candidate - a cache
+ *  miss for the majority that get rejected. Inline, the reject walks one contiguous 16-byte-stride
+ *  array and only survivors ever touch the VobInfo.
+ *
+ *  The mirror cannot go stale: a static vob that moves is pulled out of every leaf list by
+ *  MoveVobFromBspToDynamic (from OnVobMoved) *before* its transform is applied, so a VOB that is
+ *  in a leaf list is by construction a VOB that has not moved since it was put there. */
+struct LeafVobEntry {
+    DirectX::XMFLOAT3 Position;
+    VobInfo* Info;
+};
+static_assert( sizeof( LeafVobEntry ) == 16, "LeafVobEntry must stay 4-per-cache-line" );
+
 struct BspInfo {
     BspInfo() {
         NumStaticLights = 0;
@@ -138,9 +160,9 @@ struct BspInfo {
         return Vobs.empty() && IndoorVobs.empty() && SmallVobs.empty() && Lights.empty() && IndoorLights.empty();
     }
 
-    std::vector<VobInfo*> Vobs;
-    std::vector<VobInfo*> IndoorVobs;
-    std::vector<VobInfo*> SmallVobs;
+    std::vector<LeafVobEntry> Vobs;
+    std::vector<LeafVobEntry> IndoorVobs;
+    std::vector<LeafVobEntry> SmallVobs;
     std::vector<VobLightInfo*> Lights;
     std::vector<VobLightInfo*> IndoorLights;
     std::vector<SkeletalVobInfo*> Mobs;
@@ -619,6 +641,10 @@ public:
     /** Returns true, if the game was paused */
     bool IsGamePaused();
 
+    /** Returns true while an in-game menu holds the game paused. Stricter than IsGamePaused():
+        requires a live game session, so startup/teardown don't read as "paused". */
+    bool IsIngameMenuPaused();
+
     /** Checks if a game is being saved now */
     bool IsSavingGameNow();
 
@@ -647,6 +673,9 @@ public:
     /** Draws the AABB for the BSP-Tree using the line renderer*/
     void DebugDrawBSPTree();
 
+    /** Outlines the world's ghost occluders. Gated by RendererSettings::DrawWorldOccluders. */
+    void DebugDrawOccluders( const Frustum& frustum );
+
     /** Recursive helper function to draw the BSP-Tree */
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
@@ -663,7 +692,7 @@ public:
     void MoveVobFromBspToDynamic( VobInfo* vob );
     void MoveVobFromBspToDynamic( SkeletalVobInfo* vob );
 
-    std::vector<VobInfo*>::iterator MoveVobFromBspToDynamic( VobInfo* vob, std::vector<VobInfo*>* source );
+    std::vector<LeafVobEntry>::iterator MoveVobFromBspToDynamic( VobInfo* vob, std::vector<LeafVobEntry>* source );
 
     /** Collects vobs using gothics BSP-Tree */
     void CollectVisibleVobs(
@@ -678,10 +707,14 @@ public:
 
     void CollectVisibleVobs( const RndCullContext& ctx );
 
-    /** Collects visible sections from the current camera perspective */
+    /** Collects visible sections from the current camera perspective.
+        `horizon` opts into the ghost-occluder cull and must stay null for every pass that is not the
+        player's view - it is an explicit parameter rather than a member read precisely so a shadow or
+        rain frustum cannot silently inherit the player's skyline. */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
         const Frustum* queryFrustum = nullptr,
-        bool useSectionRadiusFilter = true );
+        bool useSectionRadiusFilter = true,
+        const HorizonCuller* horizon = nullptr );
 
     /** Returns whether a world mesh intersects the given frustum (true when no bounds are available). */
     bool IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const;
@@ -692,6 +725,19 @@ public:
     /** Sector/portal visibility, rebuilt on every world load. Inactive on worlds without portals. */
     BspPortalCuller& GetPortalCuller() { return PortalCuller; }
     const BspPortalCuller& GetPortalCuller() const { return PortalCuller; }
+
+    /** Ghost-occluder horizon, rebuilt once per frame for the player camera. */
+    HorizonCuller& GetHorizonCuller() { return Horizon; }
+    const HorizonCuller& GetHorizonCuller() const { return Horizon; }
+
+    /** True when the view is fully enclosed by sectors, so the sun cascades need not be rendered and
+        are cleared to "shadowed" instead. Reads the solve the main camera pass ran this frame, so call
+        it only after CollectVisibleVobs. */
+    bool AreSunShadowsFullyOccluded() const {
+        return RendererState.RendererSettings.EnablePortalShadowSkip
+            && PortalCuller.IsActive()
+            && !PortalCuller.IsOutdoorVisible();
+    }
 
     /** Returns the new node from tha base node */
     BspInfo* GetNewBspNode( zCBspBase* base );
@@ -949,7 +995,8 @@ private:
     void ClearWorldSectionBVH();
     void QueryWorldSectionBVH( const Frustum& frustum,
         std::vector<WorldMeshSectionInfo*>& sections,
-        bool useSectionRadiusFilter ) const;
+        bool useSectionRadiusFilter,
+        const HorizonCuller* horizon = nullptr ) const;
     bool UseWorldSectionBVH() const;
 
     /** Collects polygons in the given AABB */
@@ -1078,6 +1125,10 @@ public:
     BspLeafLinearCache LeafLinearCache;
 private:
     BspPortalCuller PortalCuller;
+    HorizonCuller Horizon;
+
+    /** One-shot guard for DebugDrawOccluders' line-budget message. */
+    bool OccluderDebugBudgetLogged = false;
 
     gtl::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
