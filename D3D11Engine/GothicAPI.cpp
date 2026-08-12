@@ -51,6 +51,7 @@
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
+#include "AsyncVisualExtractor.h"
 #include "ThreadPool.h"
 #include "zFILE.h"
 #include "zFILE_VDFS.h"
@@ -221,6 +222,27 @@ namespace
         return nDefault;
     }
     
+    // Win32's GetPrivateProfileInt clamps negative values to 0, which kills any "-1 = auto" sentinel.
+    // Parse the raw string ourselves instead.
+    OPT_DBG_NOINLINE int GetPrivateProfileSignedIntA(
+        const LPCSTR lpAppName,
+        const LPCSTR lpKeyName,
+        const int nDefault,
+        const std::string& lpFileName
+    ) {
+        constexpr int int_str_max = 30;
+        TCHAR nInt[int_str_max];
+        if ( auto count = ::GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nInt, int_str_max, lpFileName.c_str() ) ) {
+            int value;
+            auto dataPtr = &nInt[0];
+            auto [_, ec] = std::from_chars( dataPtr, dataPtr + count, value );
+            if ( ec == std::errc{} ) {
+                return value;
+            }
+        }
+        return nDefault;
+    }
+
     template<typename T>
     std::string to_string_locale_independent(const T value) {
         std::array<char, 255> buffer;
@@ -547,6 +569,13 @@ void GothicAPI::OnWorldUpdate() {
             Engine::GAPI->OnWorldLoaded();
     }
 #endif
+
+    // Retire background extractions that finished on their own and hand the references they held back
+    // to ZENGIN. Has to happen at a top-level point like this one: a release can run a visual's
+    // destructor, which re-enters us via OnVisualDeleted.
+    s_AsyncVisualExtractor->DrainFinished();
+    WorldConverter::PruneFinishedNodeVisuals();
+    s_AsyncVisualExtractor->FlushReleases();
 
     RendererState.RendererInfo.Reset();
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
@@ -883,9 +912,10 @@ void GothicAPI::ResetVobs() {
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
 
-    // clearAndFlush() above already waited for every background LoadzCModelData(...) job to
-    // finish, so it's safe to drop the (now stale) handles without waiting on them again.
-    PendingSkeletalLoads.clear();
+    // Only the held references are left to hand back — clearAndFlush() above waited for every background
+    // extraction and the infos they wrote into are gone. Safe inline rather than deferred: the maps are
+    // empty, so the OnVisualDeleted a release may trigger finds nothing to tear down.
+    s_AsyncVisualExtractor->CancelAll();
 
     // Delete static mesh vobs
     for ( auto const& it : VobMap ) {
@@ -1101,6 +1131,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
 	s.GraphicsPreset = (GothicRendererSettings::E_GraphicsPreset)GetPrivateProfileIntA( "General", "GraphicsPreset", s.GraphicsPreset, ini.c_str() );
     if ( true ) {
 	    s.VisualFXDrawRadius = GetPrivateProfileFloatA( "General", "VisualFXDrawRadius", s.VisualFXDrawRadius, ini );
+	    s.VobLodDrawRadius = GetPrivateProfileFloatA( "General", "VobLodDrawRadius", s.VobLodDrawRadius, ini );
 	    s.OutdoorVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorVobDrawRadius", s.OutdoorVobDrawRadius, ini );
         s.OutdoorSmallVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorSmallVobDrawRadius", s.OutdoorSmallVobDrawRadius, ini );
         s.IndoorVobDrawRadius = GetPrivateProfileFloatA( "General", "IndoorVobDrawRadius", s.IndoorVobDrawRadius, ini );
@@ -1169,6 +1200,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
 
     WritePrivateProfileStringA( "General", "GraphicsPreset", to_string_locale_independent( (int)s.GraphicsPreset ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "VisualFXDrawRadius", to_string_locale_independent( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "VobLodDrawRadius", to_string_locale_independent( s.VobLodDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorVobDrawRadius", to_string_locale_independent( s.OutdoorVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", to_string_locale_independent( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "IndoorVobDrawRadius", to_string_locale_independent( s.IndoorVobDrawRadius ).c_str(), ini.c_str() );
@@ -1944,7 +1976,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
-                if ( it != SkeletalMeshVisuals.end() ) {
+                // Only tear the entry down if it belongs to *this* model: an extraction reference can hold a
+                // model's destructor past a reload that re-bound this name to a newer one. A null Visual
+                // means the extraction never completed, so the entry is nobody else's.
+                if ( it != SkeletalMeshVisuals.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
                         if ( vobInfo->VisualInfo == it->second ) {
@@ -1952,9 +1987,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                         }
                     }
 
-                    // The model is about to be freed by Gothic once this function returns - make sure no
-                    // background extraction job (GothicAPI::LoadzCModelData) is still reading from it.
-                    WaitForPendingSkeletalLoad( it->second );
+                    // Make sure no background extraction is still writing into the info we delete.
+                    s_AsyncVisualExtractor->WaitForSkeletal( it->second );
 
                     delete SkeletalMeshVisuals[str];
                     SkeletalMeshVisuals.erase( str );
@@ -1965,7 +1999,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
             if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
                 oCNPC* npc = static_cast<oCNPC*>(homeVob);
                 auto it = SkeletalMeshNpcs.find( npc );
-                if ( it != SkeletalMeshNpcs.end() ) {
+                // Same identity check as above; the armor change is exactly what it is for, since the
+                // NPC's entry may already have been rebuilt from its new zCModel by the time this
+                // (deferred) destructor gets to run.
+                if ( it != SkeletalMeshNpcs.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
                         if ( vobInfo->VisualInfo == it->second ) {
@@ -1973,9 +2010,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                         }
                     }
 
-                    // The model is about to be freed by Gothic once this function returns - make sure no
-                    // background extraction job (GothicAPI::LoadzCModelData) is still reading from it.
-                    WaitForPendingSkeletalLoad( it->second );
+                    // Make sure no background extraction is still writing into the info we delete.
+                    s_AsyncVisualExtractor->WaitForSkeletal( it->second );
 
                     delete SkeletalMeshNpcs[npc];
                     SkeletalMeshNpcs.erase( npc );
@@ -2419,25 +2455,6 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
     }
 }
 
-/** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any) has
- *  finished, then forgets about it. Must be called before deleting a SkeletalMeshVisualInfo or
- *  destroying the zCModel/oCNPC it was built from - the job reads directly from that model. */
-void GothicAPI::WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi ) {
-    if ( !mi )
-        return;
-
-    auto it = PendingSkeletalLoads.find( mi );
-    if ( it == PendingSkeletalLoads.end() )
-        return;
-
-    TaskHandle<void> handle = std::move( it->second );
-    PendingSkeletalLoads.erase( it );
-
-    handle.cancel(); // Lets the job bail out immediately if it hasn't started running yet (see below)
-    if ( handle.future.valid() )
-        handle.future.wait();
-}
-
 /** Loads the data out of a zCModel */
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
     auto visName = model->GetVisualName();
@@ -2452,34 +2469,14 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
         SkeletalMeshVisuals[str] = mi;
     }
 
-    if ( !mi->Ready.load() ) {
-        auto pendingLoad = PendingSkeletalLoads.find( mi );
-        if ( pendingLoad != PendingSkeletalLoads.end() ) {
-            if ( pendingLoad->second.future.valid() ) {
-                pendingLoad->second.future.wait();
-            }
-        }
-    }
+    // Retire whatever job was still attached to this info before reading Meshes below: it may be
+    // extracting from an older zCModel, and it writes straight into mi.
+    s_AsyncVisualExtractor->WaitForSkeletal( mi );
 
     if ( !mi->Meshes.empty() )
         return mi; // Already loaded
 
-    // Extraction (CPU vertex/weight unpacking + GPU buffer creation) is the expensive part of a
-    // vob popping into range, so run it on a worker thread instead of stalling the main thread.
-    // GothicAPI::OnVisualDeleted() blocks on PendingSkeletalLoads before freeing this model/mi,
-    // and Ready gates every draw/update site so nobody touches Meshes/SkeletalMeshes early.
-    mi->Ready = false;
-    PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
-        if ( token.stop_requested() ) {
-            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
-            // it would read from may already be gone, so don't touch it.
-            mi->Ready.store( true );
-            return;
-        }
-        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
-        mi->Visual = model;
-        mi->Ready.store( true );
-    } );
+    s_AsyncVisualExtractor->ExtractSkeletal( model, mi );
     return mi;
 }
 
@@ -2492,39 +2489,9 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
         SkeletalMeshNpcs[npc] = mi;
     }
 
-    if ( !mi->Ready.load() ) {
-        auto pendingLoad = PendingSkeletalLoads.find( mi );
-        if ( pendingLoad != PendingSkeletalLoads.end() ) {
-            if ( pendingLoad->second.future.valid() ) {
-                pendingLoad->second.future.wait();
-            }
-        }
-    }
-
     // can't cache the meshes and VisualName as it otherwise
     // won't properly fire for changing armors. for whatever reason...
-
-    // See LoadzCModelData(zCModel*) above for why this runs on a worker thread.
-    mi->Ready = false;
-    if ( false /* TODO: the zCMesh can become corrupted on the worker thread when same frame load/unload/load */ ) {
-        PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
-            if ( token.stop_requested() ) {
-                // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
-                // it would read from may already be gone, so don't touch it.
-                mi->Ready.store( true );
-                return;
-            }
-            mi->ClearMeshes();
-            WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
-            mi->Visual = model;
-            mi->Ready.store( true );
-        } );
-    } else {
-        mi->ClearMeshes();
-        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
-        mi->Visual = model;
-        mi->Ready.store( true );
-    }
+    s_AsyncVisualExtractor->ExtractSkeletal( model, mi );
     return mi;
 }
 
@@ -3833,18 +3800,24 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
         for ( auto it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
             float u, v, t;
 
+            // Positions come from the slim CPU copy the world mesh keeps instead of the full vertices.
+            const std::vector<WorldVertexCPU>& verts = it->second->CpuVertices;
+            if ( verts.empty() ) {
+                continue;
+            }
+
             for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( it->second->Vertices[it->second->Indices[i]].Position,
-                    it->second->Vertices[it->second->Indices[i + 1]].Position,
-                    it->second->Vertices[it->second->Indices[i + 2]].Position,
+                if ( Toolbox::IntersectTri( verts[it->second->Indices[i]].Position,
+                    verts[it->second->Indices[i + 1]].Position,
+                    verts[it->second->Indices[i + 2]].Position,
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
 
                         if ( hitTriangle ) {
-                            hitTriangle[0] = it->second->Vertices[it->second->Indices[i]].Position;
-                            hitTriangle[1] = it->second->Vertices[it->second->Indices[i + 1]].Position;
-                            hitTriangle[2] = it->second->Vertices[it->second->Indices[i + 2]].Position;
+                            hitTriangle[0] = verts[it->second->Indices[i]].Position;
+                            hitTriangle[1] = verts[it->second->Indices[i + 1]].Position;
+                            hitTriangle[2] = verts[it->second->Indices[i + 2]].Position;
                         }
 
                         if ( hitMesh ) {
@@ -4970,17 +4943,22 @@ static void CVVH_AddNotDrawnVobToList(
     // (see CollectVisibleVobsWithLeafCache), so the whole branch collapses to a constant here.
     const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
     const HorizonCuller* horizon = ctx.horizon;
+    const float minVobSize = ctx.minVobSize;
 
     for ( const LeafVobEntry& entry : source ) {
-        // Reject on distance FIRST, and out of the list element's OWN mirrored position: every
-        // later step - Visit()'s atomic word, GetFlags()' hop into Gothic's heap, LastRenderBBox -
-        // is a dereference of a scattered VobInfo, and the majority of candidates never survive to
-        // need one. This loop therefore walks nothing but the contiguous 16-byte entries.
+        // Reject on distance FIRST, out of the list element's OWN mirrored position: every later step
+        // dereferences a scattered VobInfo, and most candidates never survive to need one. The reject path
+        // therefore touches nothing but the contiguous 16-byte entries.
         XMVECTOR vvdSq = XMVector3LengthSq( camPos - XMLoadFloat3( &entry.Position ) );
         if ( XMVector3Greater( vvdSq, distSq )) continue;
 
         VobInfo* it = entry.Info;
         if ( !visitor->Visit( it ) ) continue;
+
+        // Caster size gate (shadow cascades only; minVobSize is 0 for every main-view pass). After Visit,
+        // not before: MeshSize is leaf-independent but costs two pointer hops, so pay it once per vob per
+        // pass rather than once per leaf.
+        if ( minVobSize > 0.0f && it->VisualInfo && it->VisualInfo->MeshSize < minVobSize ) continue;
 
         const zTVobFlags vobFlags = it->Vob->GetFlags();
         if ( !vobFlags.ShowVisual ) continue;
@@ -5847,6 +5825,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "SkyOcclusionStrength", to_string_locale_independent( s.SkyOcclusionStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SkyIblNightFloor", to_string_locale_independent( s.SkyIblNightFloor ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "FirstLodCascade", to_string_locale_independent( s.DebugSettings.ShadowCascades.FirstLodCascade ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "CasterMinTexels", to_string_locale_independent( s.DebugSettings.ShadowCascades.CasterMinTexels ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
 
@@ -6006,6 +5986,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SkyOcclusionStrength = GetPrivateProfileFloatA( "Shadows", "SkyOcclusionStrength", ds.SkyOcclusionStrength, ini );
         s.SkyIblNightFloor = GetPrivateProfileFloatA( "Shadows", "SkyIblNightFloor", ds.SkyIblNightFloor, ini );
         s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias = GetPrivateProfileFloatA( "Shadows", "ShadowDepthSlopeBias", ds.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, ini );
+        s.DebugSettings.ShadowCascades.FirstLodCascade = std::clamp( GetPrivateProfileSignedIntA( "Shadows", "FirstLodCascade", ds.DebugSettings.ShadowCascades.FirstLodCascade, ini ), -1, MAX_CSM_CASCADES );
+        s.DebugSettings.ShadowCascades.CasterMinTexels = std::clamp( GetPrivateProfileFloatA( "Shadows", "CasterMinTexels", ds.DebugSettings.ShadowCascades.CasterMinTexels, ini ), 0.0f, 32.0f );
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
         s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
 
@@ -6598,7 +6580,17 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
+                // The world mesh only keeps WorldVertexCPU now, so rebuild the full vertices this wants.
+                // Per-vertex normals come out zero; zCPolygon::CalcNormal() still derives the polygon plane
+                // from the positions, which is what the BSP/collision side of this path uses.
+                std::vector<ExVertexStruct> rebuilt( it->second->CpuVertices.size() );
+                for ( size_t v = 0; v < it->second->CpuVertices.size(); ++v ) {
+                    rebuilt[v].Position = it->second->CpuVertices[v].Position;
+                    rebuilt[v].TexCoord = it->second->CpuVertices[v].TexCoord;
+                    rebuilt[v].TexCoord2 = it->second->CpuVertices[v].TexCoord2;
+                }
+
+                WorldConverter::ConvertExVerticesTozCPolygons( rebuilt, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }

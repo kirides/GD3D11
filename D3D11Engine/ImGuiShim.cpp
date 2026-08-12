@@ -1475,6 +1475,12 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "Draw distance for Special effects, like torches, spells, campfires..." );
         ImGui::EndDisabled();
 
+        ImGui::SliderFloat( "VobLodDrawRadius", &settings.VobLodDrawRadius, 0.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "D3D12 only. Distance past which static VOBs switch to their reduced\n"
+            "progressive-mesh LOD. 0 disables it. Works with GPU VOB culling either way:\n"
+            "the per-instance near/far split comes from the cull compute shader when that\n"
+            "is on, and from the CPU instance upload when it is off." );
+
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
@@ -1852,6 +1858,29 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SliderFloat("Split Bias", &settings.DebugSettings.ShadowCascades.Bias, 0.0f, 10.0f, "%.1f");
                 ImGui::SliderFloat("Depth Slope Bias", &settings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, 0.0f, 8.0f, "%.6f");
                 ImGui::SetItemTooltip("Slope-scaled depth bias for the shadow caster pass. Higher removes shadow acne/stepping on thin geometry; too high detaches contact shadows (peter-panning)");
+
+                int& firstLodCascade = settings.DebugSettings.ShadowCascades.FirstLodCascade;
+                firstLodCascade = std::clamp( firstLodCascade, -1, MAX_CSM_CASCADES );
+                const char* lodFormat = firstLodCascade < 0 ? "Auto"
+                    : (firstLodCascade >= settings.NumShadowCascades ? "%d (off)" : "%d");
+                if ( ImGui::SliderInt( "First LOD cascade", &firstLodCascade, -1, MAX_CSM_CASCADES, lodFormat, ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
+                    firstLodCascade = std::clamp( firstLodCascade, -1, MAX_CSM_CASCADES );
+                }
+                ImGui::SetItemTooltip("First shadow cascade that draws the baked progressive-mesh LOD instead of the\n"
+                                      "full-detail caster geometry. Auto = last cascade on D3D11, cascade %d on D3D12.\n"
+                                      "Lower is cheaper but an edge collapse moves the surface: tight cascades then\n"
+                                      "self-shadow black (facades darkening as the camera tilts up).\n"
+                                      "A value >= the cascade count (%d) disables shadow LOD.",
+                                      SHADOW_LOD_FIRST_CASCADE, settings.NumShadowCascades);
+
+                ImGui::SliderFloat( "Caster min texels", &settings.DebugSettings.ShadowCascades.CasterMinTexels,
+                    0.0f, 16.0f, "%.1f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+                ImGui::SetItemTooltip("Drop a VOB caster from a cascade when its bounding-box diagonal covers\n"
+                                      "fewer than this many texels OF THAT CASCADE (D3D12 only). Scaled per\n"
+                                      "cascade by its own world-units-per-texel, so the near cascade drops\n"
+                                      "almost nothing and only the coarse far ones prune hard. Raising this is\n"
+                                      "the main lever on VOB casters dominating the shadow pass; too high and\n"
+                                      "small props visibly stop casting. 0 = off.");
                 ImGui::EndTabItem();
             }
 
@@ -2070,6 +2099,22 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
             addRowInt( "DrawnLights", rendererInfo.FrameDrawnLights );
             addRowInt( "SectionsDrawn", rendererInfo.FrameNumSectionsDrawn );
             addRowInt( "WorldMeshDrawCalls", rendererInfo.WorldMeshDrawCalls );
+
+            // D3D12 VOB submission shape. The VOB passes dominate the frame and the three candidate causes
+            // — command count, instance count, triangle count — look identical in a Tracy GPU zone, so they
+            // are all listed here. SplitNone/Lod/Alpha say whether the LOD and alpha-prepass sliders are
+            // engaged at all: if everything sits in SplitNone, neither can be doing anything.
+            if ( auto* d12 = dynamic_cast<D3D12GraphicsEngine*>( Engine::GraphicsEngine ) ) {
+                const auto& vs = d12->GetVobFrameStats();
+                addRowLabel( "VOB GpuCull" );
+                ImGui::Text( vs.GpuCullActive ? "on" : "OFF (splits inert)" );
+                addRowUInt( "VOB Commands", vs.Commands );
+                addRowUInt( "VOB Cmd opaque", vs.OpaqueCommands );
+                addRowUInt( "VOB Instances", vs.Instances );
+                addRowUInt( "VOB Visuals", vs.CullVisuals );
+                addRowLabel( "VOB Splits none/lod" );
+                ImGui::Text( "%u / %u", vs.SplitNone, vs.SplitLod );
+            }
             addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );
 

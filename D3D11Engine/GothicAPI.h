@@ -51,6 +51,13 @@ struct RndCullContext {
         horizon is rasterized for the player's view, so a shadow cascade must not test against it. */
     const class HorizonCuller* horizon = nullptr;
 
+    /** Drop static VOBs whose BaseVisualInfo::MeshSize (bounding-box diagonal) is below this, in world
+        units. 0 = keep everything, which is what every main-view pass wants. Set only by the shadow
+        cascades, which derive it from their own world-units-per-texel: a prop that resolves to under a
+        couple of texels in a coarse cascade costs its full vertex + raster work for a smudge. Rejecting
+        it here rather than at draw time also skips its instance upload and indirect command. */
+    float minVobSize = 0.0f;
+
     struct
     {
         float OutdoorVobs;
@@ -1099,16 +1106,6 @@ private:
     /** Re-points a mesh-shaped emitter at its origin's model when ZENGIN's one-shot assignment
      *  missed it (origin had no visual yet). Cheap no-op once the shape is set. */
     void RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx );
-
-    /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
-     *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
-     *  reads from) is destroyed - see WaitForPendingSkeletalLoad(). */
-    gtl::flat_hash_map<SkeletalMeshVisualInfo*, TaskHandle<void>> PendingSkeletalLoads;
-
-    /** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any)
-     *  has finished, then removes it from PendingSkeletalLoads. Must be called before deleting
-     *  a SkeletalMeshVisualInfo or destroying the zCModel/oCNPC it was built from. */
-    void WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi );
 
     /** Set of all vobs we registered by now */
     gtl::flat_hash_set<zCVob*> RegisteredVobs;

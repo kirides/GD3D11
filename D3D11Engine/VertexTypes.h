@@ -43,6 +43,23 @@ struct ExVertexStructGPU {
 };
 static_assert( sizeof( ExVertexStructGPU ) == 36, "ExVertexStructGPU must be 36 bytes to match layout1" );
 
+/** What the CPU keeps of a world-mesh vertex once the GPU buffers are built (28 bytes vs
+    ExVertexStruct's 60). The world mesh is the one geometry set we hold a full second copy of and never
+    free, so this is the largest single CPU-side item in a 32-bit address space.
+
+    Exactly the three fields something still reads after world load:
+      Position  - GothicAPI::TraceWorldMesh (ray picking) and the editor overlays.
+      TexCoord  - WorldConverter::WorldMeshCollectPolyRange rebuilds per-point-light caster meshes from
+                  this, and those get alpha-tested in the cube shadow pass, so UV0 has to be exact.
+      TexCoord2 - the editor's edge visualization (ImGuiEditorView::VisualizeMeshInfo).
+    Normal, Color and Tangent are dropped: after upload nothing reads them back except the dead
+    zCPolygon rebuild path (see GothicAPI::CreatezCPolygonsForSections). */
+struct WorldVertexCPU {
+    float3 Position;
+    float2 TexCoord;
+    float2 TexCoord2;
+};
+
 struct SimpleObjectVertexStruct {
     float3 Position;
     float2 TexCoord;

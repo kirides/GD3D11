@@ -25,6 +25,7 @@
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
+#include "AsyncVisualExtractor.h"
 #include "MorphBlend.h"
 #include "MorphGpu.h"
 #include "ThreadPool.h"
@@ -142,18 +143,6 @@ namespace {
         }
 
         return !outIndices.empty();
-    }
-
-    void CreateLodIndexBuffer( MeshInfo* meshInfo ) {
-        if ( !meshInfo || meshInfo->LodIndices.empty() ) {
-            return;
-        }
-
-        Engine::GraphicsEngine->CreateVertexBuffer( meshInfo->MeshLodIndexBuffer );
-        meshInfo->MeshLodIndexBuffer->Init( meshInfo->LodIndices.data(),
-            meshInfo->LodIndices.size() * sizeof( VERTEX_INDEX ),
-            D3D11VertexBuffer::B_INDEXBUFFER,
-            D3D11VertexBuffer::U_IMMUTABLE );
     }
 
     /** Builds a position-only (float3) companion buffer in the same vertex ordering as the source
@@ -383,7 +372,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     XMVECTOR xmPosition = XMLoadFloat3( &position );
 
 
-    XMVECTOR vRange2 = XMVectorReplicate( range );
+    XMVECTOR vRange2 = XMVectorReplicate( range * range );
 
     // Generate the meshes
     for ( auto const& itx : Engine::GAPI->GetWorldSections() ) {
@@ -413,20 +402,33 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                         m = opaqueMesh;
                     }
 
+                    // The source world mesh only keeps the slim CPU copy (see WorldVertexCPU), so the caster
+                    // vertices are rebuilt with Normal/Color/Tangent zeroed. Lossless here: these meshes are
+                    // only drawn by RenderShadowCube, which writes depth and alpha-tests on TexCoord.
+                    const std::vector<WorldVertexCPU>& src = it.second->CpuVertices;
+                    if ( src.empty() ) {
+                        continue;
+                    }
+
                     // reserve required size beforehand to avoid multiple reallocations
-                    m->Vertices.reserve( it.second->Vertices.size() );
+                    m->Vertices.reserve( src.size() );
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
-                        XMVECTOR v0 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 0]].Position );
-                        XMVECTOR v1 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 1]].Position );
-                        XMVECTOR v2 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 2]].Position );
+                        XMVECTOR v0 = XMLoadFloat3( &src[it.second->Indices[i + 0]].Position );
+                        XMVECTOR v1 = XMLoadFloat3( &src[it.second->Indices[i + 1]].Position );
+                        XMVECTOR v2 = XMLoadFloat3( &src[it.second->Indices[i + 2]].Position );
 
                         if ( XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v0 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v1 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v2 ) ), vRange2 ) ) {
-                            for ( int v = 0; v < 3; v++ )
-                                m->Vertices.emplace_back( it.second->Vertices[it.second->Indices[i + v]] );
+                            for ( int v = 0; v < 3; v++ ) {
+                                const WorldVertexCPU& sv = src[it.second->Indices[i + v]];
+                                ExVertexStruct& dv = m->Vertices.emplace_back();
+                                dv.Position = sv.Position;
+                                dv.TexCoord = sv.TexCoord;
+                                dv.TexCoord2 = sv.TexCoord2;
+                            }
                         }
                     }
                 }
@@ -726,6 +728,16 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     BuildWrappedPositionBuffer( wmi, wrappedVertices );
 
     *outWrappedMesh = wmi;
+
+    // Same trade as ConvertWorldMesh - the readers below key on CpuVertices, so this dead cached-mesh
+    // path has to leave the sections in the same shape the live one does.
+    for ( auto& itx : *outSections ) {
+        for ( auto& ity : itx.second ) {
+            for ( auto const& it : ity.second.WorldMeshes ) {
+                it.second->ShrinkCpuVertices();
+            }
+        }
+    }
 
     // Calculate the approx midpoint of the world
     avgSections /= static_cast<float>(numSections);
@@ -1208,6 +1220,18 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
     *outWrappedMesh = wmi;
 
+    // Everything that needed the full 60-byte vertices has run (section buffers uploaded, both
+    // WrapVertexBuffers passes done); trade them for the 28-byte slim copy. See WorldVertexCPU.
+    {
+        size_t slimBytes = 0;
+        for ( WorldMeshInfo* mesh : allMeshes ) {
+            mesh->ShrinkCpuVertices();
+            slimBytes += mesh->CpuVertices.size() * sizeof( WorldVertexCPU );
+        }
+        LogInfo() << "Worldmesh: CPU vertex copy shrunk to " << (slimBytes / (1024 * 1024)) << " MB (was "
+            << ((totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)) << " MB)";
+    }
+
     // Calculate the approx midpoint of the world
     avgSections /= (float)numSections;
 
@@ -1255,11 +1279,13 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
             it.first.Material->HasAlphaTest() )
             continue;
 
+        // Slim CPU copy; this path only ever wanted Position anyway.
+        const std::vector<WorldVertexCPU>& src = it.second->CpuVertices;
         for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
             // Push all triangles
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i]].Position );
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 1]].Position );
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 2]].Position );
+            vx.emplace_back( src[it.second->Indices[i]].Position );
+            vx.emplace_back( src[it.second->Indices[i + 1]].Position );
+            vx.emplace_back( src[it.second->Indices[i + 2]].Position );
         }
     }
 
@@ -1352,7 +1378,7 @@ void WorldConverter::SaveSectionsToObjUnindexed( const char* file, const std::ma
     for ( auto const& itx : sections ) {
         for ( auto const& ity : itx.second ) {
             for ( auto const& it : ity.second.WorldMeshes ) {
-                for ( auto const& vtx : it.second->Vertices ) {
+                for ( auto const& vtx : it.second->CpuVertices ) {
                     std::string ln = "v " + std::to_string( vtx.Position.x ) + " " + std::to_string( vtx.Position.y ) + " " + std::to_string( vtx.Position.z ) + "\n";
                     fputs( ln.c_str(), f );
                 }
@@ -1437,13 +1463,34 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
     meshInfo->Visual = visual;
 }
 
-/** Extracts a skeletal mesh from a zCMeshSoftSkin */
+/** Extracts a skeletal mesh from a zCMeshSoftSkin. Reads the live softskin list, so main thread only
+    - the background path uses the span overload with a snapshot it holds references on. */
 void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVisualInfo* skeletalMeshInfo ) {
+    zCArray<zCMeshSoftSkin*>* list = model->GetMeshSoftSkinList();
+    ExtractSkeletalMeshFromVob( model, std::span<zCMeshSoftSkin* const>( list->Array, list->NumInArray ), skeletalMeshInfo );
+}
+
+void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMeshSoftSkin* const> softSkins, SkeletalMeshVisualInfo* skeletalMeshInfo ) {
     ZoneScoped;
 
     // This type has multiple skinned meshes inside
-    for ( int i = 0; i < model->GetMeshSoftSkinList()->NumInArray; i++ ) {
-        zCMeshSoftSkin* s = model->GetMeshSoftSkinList()->Array[i];
+    for ( size_t skin = 0; skin < softSkins.size(); skin++ ) {
+        zCMeshSoftSkin* s = softSkins[skin];
+
+        // A softskin being torn down still reports its old submesh count while its submesh array is already
+        // null, and GetSubmesh is plain arithmetic off that base, so it hands out bogus addresses. Dropping
+        // the mesh costs one NPC's geometry until the next re-extract; dereferencing it costs the process.
+        if ( !s || !s->GetSubmeshes() || !s->GetVertWeightStream() ) {
+            // GetModelName() is a plain read of the prototype's own string - no ZENGIN call, no allocation -
+            // so it is safe from a worker thread.
+            static std::atomic<bool> loggedTornSoftSkin = false;
+            if ( !loggedTornSoftSkin.exchange( true ) ) {
+                LogWarn() << "Skipped a zCMeshSoftSkin with no submesh/weight data on '"
+                    << model->GetModelName() << "' (skin " << skin << ") - skipping further reports";
+            }
+            continue;
+        }
+
         std::vector<ExSkelVertexStruct> posList;
 
         // This stream is built as the following:
@@ -1566,7 +1613,10 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
         }
     }
 
-    skeletalMeshInfo->VisualName = model->GetVisualName();
+    // From the snapshot, not model->GetVisualName(): that re-reads the live softskin list, which is
+    // exactly the thing the caller took a snapshot to stop touching.
+    if ( !softSkins.empty() && softSkins[0] )
+        skeletalMeshInfo->VisualName = softSkins[0]->GetObjectNameView();
 }
 
 /** Extracts a zCProgMeshProto from a zCModel */
@@ -1951,7 +2001,11 @@ namespace {
     /** In-flight ExtractNodeVisualAsync jobs. Registered and pruned on the main thread only; the worker
         job itself never touches this list, so a waiter can hold the mutex while waiting on a job without
         ever deadlocking against it. Never more than a handful of entries (one per attachment currently
-        popping in), so a flat vector beats a map here. */
+        popping in), so a flat vector beats a map here.
+
+        'Visual' is held with a zCObject reference for as long as the job runs - see AsyncVisualExtractor
+        for why waiting on the job instead cannot work. Released through that same class, so the release
+        lands at a safe point rather than inside the pruner. */
     struct PendingNodeVisual {
         MeshVisualInfo* MeshInfo;
         zCVisual* Visual;
@@ -1963,8 +2017,15 @@ namespace {
     /** Drops entries whose job has run to completion. Caller must hold s_PendingNodeVisualsMutex. */
     void PruneFinishedNodeVisualsLocked() {
         std::erase_if( s_PendingNodeVisuals, []( const PendingNodeVisual& p ) {
-            return !p.Task.future.valid()
-                || p.Task.future.wait_for( std::chrono::seconds( 0 ) ) == std::future_status::ready;
+            if ( p.Task.future.valid()
+                && p.Task.future.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready ) {
+                return false;
+            }
+            // Never released inline: dropping the last reference runs the visual's destructor, which
+            // re-enters OnVisualDeleted -> WaitForPendingNodeVisuals -> s_PendingNodeVisualsMutex,
+            // which we are holding right now. That is a deadlock, not a race.
+            s_AsyncVisualExtractor->QueueRelease( p.Visual );
+            return true;
         } );
     }
 }
@@ -1996,8 +2057,14 @@ void WorldConverter::WaitForAllPendingNodeVisuals() {
         if ( pending.Task.future.valid() ) {
             pending.Task.future.wait();
         }
+        s_AsyncVisualExtractor->QueueRelease( pending.Visual );
     }
     s_PendingNodeVisuals.clear();
+}
+
+void WorldConverter::PruneFinishedNodeVisuals() {
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    PruneFinishedNodeVisualsLocked();
 }
 
 /** Extracts a node-visual on a worker thread. See the header for the contract. */
@@ -2052,12 +2119,16 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
         ? ResolveMorphRestSource( reinterpret_cast<zCMorphMesh*>(node->NodeVisual) )
         : MorphRestSource{};
 
+    // 'pm' lives inside nodeVisual (for .MMS it is the zCMorphMesh's inner progmesh), so the job may
+    // only read it for as long as nodeVisual is alive. Handed back when the entry is pruned.
     zCVisual* nodeVisual = node->NodeVisual;
+    zCObject_AddRef( nodeVisual );
+
     auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS, restSource]( const std::stop_token& token ) {
         if ( token.stop_requested() ) {
-            // Cancelled before a worker picked it up (world change / shutdown flush) - the visual we
-            // would read from may already be gone. Clear Visual so the next frame notices the mismatch
-            // and re-extracts instead of rendering an empty attachment forever.
+            // Cancelled before a worker picked it up (world change / shutdown flush). Clear Visual so
+            // the next frame notices the mismatch and re-extracts instead of rendering an empty
+            // attachment forever.
             mi->Visual = nullptr;
             mi->Ready.store( true, std::memory_order_release );
             return;
@@ -2276,10 +2347,10 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
             }
         } else {
-            // Reduced caster geometry for the distant shadow cascades, rebuilt from this sub-mesh's own
-            // progressive-mesh data. Built here because it is expressed in the pre-optimization wedge
-            // numbering; OptimizeVertices below carries it through the vertex remap it applies.
-            BuildProgMeshLodIndices( s, mi->LodIndices );
+            // The reduced level is built by OptimizeVertices below (MeshLodBuilder.h). D3D12 ONLY: the VOB
+            // arena is its sole consumer, and on D3D11 it would mean one more per-sub-mesh index buffer on
+            // the backend closest to the 32-bit VA ceiling. Asking for no LOD skips the meshopt
+            // simplification pass and leaves LodIndices empty, so nothing downstream allocates.
 
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
@@ -2295,14 +2366,13 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->Vertices.size(),
                 sizeof( ExVertexStruct ),
                 &mi->ShadowIndices,
-                &mi->LodIndices );
+                Engine::IsD3D12Backend ? &mi->LodIndices : nullptr );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         }
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mi );
-        CreateLodIndexBuffer( mi );
 
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
@@ -2395,13 +2465,20 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     std::set<std::pair<ExVertexStruct, int>, CmpClass> vertices;
     int index = 0;
 
+    // Take the index from the insert result, not a separate counter: CmpClass is an epsilon comparator and
+    // therefore not a strict weak ordering, so a find() can miss an element insert() then rejects as
+    // equivalent, emitting an index >= outVertices.size(). meshopt's buildTriangleAdjacency indexes its
+    // counts[] by it with the bounds assert compiled out, so that corrupts the heap rather than failing.
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
-        auto it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
-        if ( it != vertices.end() ) outIndices.emplace_back( it->second );
-        else {
-            vertices.insert( std::make_pair( input[i], index ) );
-            outIndices.emplace_back( index++ );
-        }
+        auto [it, inserted] = vertices.insert( std::make_pair( input[i], index ) );
+        outIndices.emplace_back( static_cast<VERTEX_INDEX>(it->second) );
+        if ( inserted ) ++index;
+    }
+
+    // 16-bit indices: the per-point-light collector (WorldMeshCollectPolyRange) merges whole section
+    // neighbourhoods into one MeshInfo, so this ceiling is reachable.
+    if ( static_cast<size_t>(index) > static_cast<size_t>(std::numeric_limits<VERTEX_INDEX>::max()) + 1 ) {
+        LogError() << "IndexVertices: " << index << " unique vertices exceeds the 16-bit index range - mesh truncated";
     }
 
     // Check for overlaying triangles and throw them out
@@ -2427,26 +2504,22 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     // so you'll have to rearrange them like this:
     outVertices.clear();
     outVertices.resize( vertices.size() );
+    // No range guard needed anymore: every stored index came from an insert that actually happened,
+    // so it is < vertices.size() by construction.
     for ( auto const& it : vertices ) {
-        if ( static_cast<size_t>(it.second) >= vertices.size() ) {
-            continue;
-        }
-
         outVertices[it.second] = it.first;
     }
 }
 
 void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInputVertices, std::vector<ExVertexStruct>& outVertices, std::vector<unsigned int>& outIndices ) {
     std::set<std::pair<ExVertexStruct, int>, CmpClass> vertices;
-    unsigned int index = 0;
+    int index = 0;
 
+    // Same invariant as the VERTEX_INDEX overload above - see the comment there.
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
-        auto it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
-        if ( it != vertices.end() ) outIndices.emplace_back( it->second );
-        else {
-            vertices.insert( std::make_pair( input[i], index ) );
-            outIndices.emplace_back( index++ );
-        }
+        auto [it, inserted] = vertices.insert( std::make_pair( input[i], index ) );
+        outIndices.emplace_back( static_cast<unsigned int>(it->second) );
+        if ( inserted ) ++index;
     }
 
     // Notice that the vertices in the set are not sorted by the index

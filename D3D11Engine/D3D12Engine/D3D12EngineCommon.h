@@ -32,11 +32,22 @@ struct SkeletalMeshVisualInfo;
 // but based at m_VobCulledInstances (where CSCull compacts the survivors), plus this visual's index into the
 // per-frame VobCullVisual record buffer. cullVisualIndex == 0xFFFFFFFF means "not culled" (the visual didn't
 // fit the record cap, or GPU culling is off) and the command keeps instView + the CPU's instance count.
+// instView/culledInstView survive for the CPU draw loops that still bind per-draw (the blended-VOB replay in
+// D3D12Transparency.cpp). The ExecuteIndirect path no longer uses them: with the VOB arena there is one
+// instance buffer bound per pass, so a command addresses its visual's block through instanceBase — the
+// ELEMENT index of the visual's first instance, which is also what CSPatchArgs adds its run offset to.
 struct FrameVobUpload {
     MeshVisualInfo* visual;
     D3D12_VERTEX_BUFFER_VIEW instView;
     D3D12_VERTEX_BUFFER_VIEW culledInstView;
     UINT numInstances;
+    UINT instanceBase;
+    // Length of the leading NEAR run inside this visual's instance block, for the CPU-side geometry-LOD
+    // split (UploadFrameVobInstances partitions the block by distance while it copies). The far run is the
+    // remainder and is contiguous with it, so it starts at instanceBase + nearInstances. Equal to
+    // numInstances whenever no CPU split applies — including every shadow/rain upload and every GPU-culled
+    // frame, where CSCull does the bucketing instead and CSPatchArgs writes the counts.
+    UINT nearInstances;
     uint32_t cullVisualIndex;
 };
 

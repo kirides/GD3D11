@@ -826,7 +826,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     // Same viewport/scissor/topology the world block set (both are unconditional there... except when the
     // world had no casters), so re-establish them here rather than depending on that branch having run.
     if ( m_RainVobDrawCount > 0 && m_ShadowMap.GetVobIndirectCasterPSO() && m_VobIndirectCmdSig
-        && m_RainVobDrawArgs[m_FrameIndex] ) {
+        && m_RainVobDrawArgs[m_FrameIndex] && m_VobArena.Ready() ) {
         DX_ZONE( cmdList.Get(), "Vobs" );
         TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 
@@ -843,6 +843,10 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
         cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );   // b4 frame-global wind baseline
+        // One IA bind for the pass: the VOB mega-buffers + the shadow instance ring this pass' UploadVobs
+        // slot wrote into (CPU-culled, never compacted — StartInstanceLocation is absolute).
+        BindVobArenaIA( cmdList, m_ShadowVobInstanceBuffer[m_FrameIndex].Get(),
+            m_ShadowInstanceSliceCapacity * kShadowInstanceRingSlots );
         if ( !vobNoAlphaPso ) {
             cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_RainVobDrawCount,
                 m_RainVobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );

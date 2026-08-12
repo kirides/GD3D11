@@ -637,7 +637,7 @@ bool D3D12GraphicsEngine::AcquireStagingSpaceLocked( UINT64 size, UINT64 alignme
 }
 
 
-bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
+bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, UINT64 dstOffset, const void* srcData, UINT64 sizeInBytes ) {
 	if ( !dst || !srcData || sizeInBytes == 0 ) return false;
 
 	// Record into the shared batched copy list (submitted once at flush) — same rationale as
@@ -657,7 +657,7 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* src
 		// 16-byte alignment: CopyBufferRegion imposes none, this is purely so the memcpy lands aligned.
 		if ( AcquireStagingSpaceLocked( sizeInBytes, 16, &stagingResource, &stagingOffset, &stagingCpu ) ) {
 			memcpy( stagingCpu, srcData, sizeInBytes );
-			m_CopyBatchList->CopyBufferRegion( dst, 0, stagingResource, stagingOffset, sizeInBytes );
+			m_CopyBatchList->CopyBufferRegion( dst, dstOffset, stagingResource, stagingOffset, sizeInBytes );
 
 			m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
 			m_CopyBatchBytes += sizeInBytes;
@@ -709,7 +709,7 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* src
 	if ( !BeginCopyBatch() )   // may be a different batch than the one probed above; harmless
 		return false;
 
-	m_CopyBatchList->CopyBufferRegion( dst, 0, upload.Get(), 0, sizeInBytes );
+	m_CopyBatchList->CopyBufferRegion( dst, dstOffset, upload.Get(), 0, sizeInBytes );
 
 	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
 	m_CopyBatchUploadResources.push_back( std::move( upload ) );

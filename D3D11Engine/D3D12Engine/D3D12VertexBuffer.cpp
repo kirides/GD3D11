@@ -4,6 +4,8 @@
 #include "../Engine.h"
 
 #include <meshoptimizer/src/meshoptimizer.h>
+#include "../MeshLodBuilder.h"
+#include "../MeshShadowIndexBuilder.h"
 #include <limits>
 
 using Microsoft::WRL::ComPtr;
@@ -16,6 +18,17 @@ namespace {
     // --- CPU-side meshoptimizer helpers (backend-neutral; mirrors D3D11VertexBuffer.cpp) ---
     constexpr float kOverdrawThreshold = 1.05f;
     constexpr int kNormalQuantizationBits = 10;
+
+    /** See D3D11VertexBuffer.cpp: meshoptimizer's bounds asserts are compiled out (NDEBUG), so an
+        out-of-range index corrupts the heap inside the library instead of failing. */
+    bool IndicesWithinRange( const VERTEX_INDEX* indices, size_t count, unsigned int numVertices ) {
+        for ( size_t i = 0; i < count; ++i ) {
+            if ( static_cast<unsigned int>(indices[i]) >= numVertices ) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     void ConvertIndicesToUInt32( const VERTEX_INDEX* src, size_t count, std::vector<unsigned int>& dst ) {
         dst.resize( count );
@@ -37,43 +50,6 @@ namespace {
             dst[i] = static_cast<VERTEX_INDEX>(src[i]);
         }
         return true;
-    }
-
-    /** Carries a baked progressive-mesh LOD index list through the vertex-fetch remap OptimizeVertices
-        just applied to the mesh, then position-welds it exactly like the shadow index list. On anything
-        unexpected the list is cleared instead of left half-remapped - callers treat an empty LOD list as
-        "this mesh has no reduced level" and fall back to full detail, which is always correct. */
-    void OptimizeLodIndices( std::vector<VERTEX_INDEX>& lodIndices,
-        const std::vector<unsigned int>& remap,
-        const std::vector<uint8_t>& remappedVertices,
-        size_t fetchedVertexCount,
-        unsigned int stride ) {
-        if ( lodIndices.size() % 3 != 0 ) {
-            lodIndices.clear();
-            return;
-        }
-
-        std::vector<unsigned int> lod;
-        ConvertIndicesToUInt32( lodIndices.data(), lodIndices.size(), lod );
-
-        for ( unsigned int& idx : lod ) {
-            // A collapsed triangle can only reference wedges that survive, and every surviving wedge is
-            // referenced by the full-detail index buffer too - so remap never hands back the ~0u it
-            // reserves for unreferenced vertices. Verified rather than trusted: mod content is content.
-            if ( idx >= remap.size() || remap[idx] >= fetchedVertexCount ) {
-                lodIndices.clear();
-                return;
-            }
-            idx = remap[idx];
-        }
-
-        std::vector<unsigned int> welded( lod.size() );
-        meshopt_generateShadowIndexBuffer( welded.data(), lod.data(), lod.size(),
-            remappedVertices.data(), fetchedVertexCount, sizeof( float ) * 3, stride );
-
-        if ( !ConvertIndicesToVertexIndex( welded, lodIndices.data(), lodIndices.size() ) ) {
-            lodIndices.clear();
-        }
     }
 
     float DequantizeSnorm( int v, int bits ) {
@@ -319,6 +295,13 @@ XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* ver
         return XR_FAILED;
     }
 
+    if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
+        LogError() << "OptimizeVertices: index out of range (numVertices=" << numVertices << ") - skipping";
+        if ( outShadowIndices ) outShadowIndices->clear();
+        if ( inOutLodIndices ) inOutLodIndices->clear();
+        return XR_FAILED;
+    }
+
     ZoneScoped;
 
     std::vector<unsigned int> indexData;
@@ -334,26 +317,19 @@ XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* ver
     memcpy( remappedVertices.data(), vertices, remappedVertices.size() );
     meshopt_remapVertexBuffer( remappedVertices.data(), vertices, numVertices, stride, remap.data() );
 
+    // Left empty when welding changed nothing (MeshShadowIndexBuilder.h); Reserve() then leaves
+    // Range::ShadowCount at 0 and BuildVobDrawCommands already falls back to the render range.
     if ( outShadowIndices ) {
-        std::vector<unsigned int> shadowIndices( numIndices );
-        meshopt_generateShadowIndexBuffer( shadowIndices.data(),
-            remappedIndices.data(),
-            numIndices,
-            remappedVertices.data(),
-            fetchedVertexCount,
-            sizeof( float ) * 3,
-            stride );
-
-        outShadowIndices->resize( numIndices );
-        if ( !ConvertIndicesToVertexIndex( shadowIndices, outShadowIndices->data(), outShadowIndices->size() ) ) {
-            LogError() << "OptimizeVertices: shadow index exceeds VERTEX_INDEX range";
-            outShadowIndices->clear();
+        if ( !MeshShadow::BuildShadowIndices( *outShadowIndices, remappedIndices, remappedVertices,
+            fetchedVertexCount, stride, ConvertIndicesToVertexIndex ) ) {
             return XR_FAILED;
         }
     }
 
-    if ( inOutLodIndices && !inOutLodIndices->empty() ) {
-        OptimizeLodIndices( *inOutLodIndices, remap, remappedVertices, fetchedVertexCount, stride );
+    // Pure OUTPUT, and shared with the D3D11 backend (MeshLodBuilder.h) rather than duplicated here.
+    if ( inOutLodIndices ) {
+        MeshLod::BuildSimplifiedIndices( *inOutLodIndices, remappedIndices, remappedVertices,
+            fetchedVertexCount, stride, ConvertIndicesToVertexIndex );
     }
 
     if ( !ConvertIndicesToVertexIndex( remappedIndices, indices, numIndices ) ) {
@@ -381,6 +357,11 @@ XRESULT D3D12VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, uint8_t* vertic
     const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
     if ( numVertices > maxVertexIndex + 1 ) {
         LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
+        return XR_FAILED;
+    }
+
+    if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
+        LogError() << "OptimizeFaces: index out of range (numVertices=" << numVertices << ") - skipping";
         return XR_FAILED;
     }
 

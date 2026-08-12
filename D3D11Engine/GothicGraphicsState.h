@@ -724,6 +724,9 @@ struct GothicRendererSettings {
         OutdoorVobDrawRadius = 30000.0f;
         SkeletalMeshDrawRadius = 6000.0f;
         VisualFXDrawRadius = 10000.0f;
+        // Past readable-silhouette range, but well inside OutdoorVobDrawRadius so it covers most of the
+        // visible VOB population.
+        VobLodDrawRadius = 8000.0f;
 
 #if BUILD_SPACER_NET
         VisualFXDrawRadius = 16000.0f;
@@ -977,6 +980,10 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
         DebugSettings.ShadowCascades.ShadowDepthSlopeBias = 0.0f;
+        DebugSettings.ShadowCascades.FirstLodCascade = -1; // auto
+        // Deliberately conservative: at 2 texels only props that resolve to a smudge get dropped. Raise it
+        // against a capture - this is the one lever left on VOB casters dominating the shadow pass.
+        DebugSettings.ShadowCascades.CasterMinTexels = 2.0f;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1117,6 +1124,9 @@ struct GothicRendererSettings {
     float SkeletalMeshDrawRadius;
     float OutdoorSmallVobDrawRadius;
     float VisualFXDrawRadius;
+    // Distance past which an instanced VOB draws its reduced index buffer (D3D12 main view; cascades pick
+    // LOD by cascade index). 0 = off. Bucketed per INSTANCE in CSCull - Gothic reuses visuals map-wide.
+    float VobLodDrawRadius;
     float SmallVobSize;
     float WorldShadowRangeScale;
     int NumShadowCascades;
@@ -1298,6 +1308,18 @@ struct GothicRendererSettings {
             float Lambda;
             float Bias;
             float ShadowDepthSlopeBias;
+            // First shadow cascade allowed to draw the baked progressive-mesh LOD index buffer.
+            // -1 = auto (D3D11: last cascade, but never below SHADOW_LOD_FIRST_CASCADE; D3D12:
+            // SHADOW_LOD_FIRST_CASCADE). A value >= NumShadowCascades disables the LOD entirely.
+            // Cascades below SHADOW_LOD_FIRST_CASCADE are biased tighter than the deviation an edge
+            // collapse introduces, so they self-shadow the full-detail surface black - see WorldConverter.h.
+            int FirstLodCascade;
+            // Drop a VOB caster from a cascade when its bounding-box diagonal covers fewer than this many
+            // texels OF THAT CASCADE. Scaled per cascade by D3D12ShadowMap::m_CascadeTexelWorld, so the near
+            // cascade (fine texels) drops almost nothing and only the coarse far ones prune hard, where a
+            // prop resolves to a pixel or two of shadow but still costs its full vertex + raster work.
+            // 0 disables it entirely.
+            float CasterMinTexels;
         } ShadowCascades;
         struct {
             bool CullVobs;

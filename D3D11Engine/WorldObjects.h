@@ -106,7 +106,12 @@ struct MeshInfo {
     GfxVertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
     GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
     GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
-    GfxVertexBuffer* GetMeshLodIndexBuffer() const { return MeshLodIndexBuffer.get(); }
+
+    /** The slim CPU-side copy, for code that is handed a MeshInfo* without knowing whether it is a world
+        mesh (the editor overlays, mostly). Null means "this mesh still has its full Vertices array" -
+        which is every mesh except a shrunk WorldMeshInfo - so callers branch once per mesh and fall back.
+        Indexed by the same Indices as Vertices was. */
+    virtual const std::vector<WorldVertexCPU>* GetCpuVertices() const { return nullptr; }
 
     std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
@@ -115,15 +120,17 @@ struct MeshInfo {
     std::unique_ptr<GfxVertexBuffer> MeshPositionBuffer;
     std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
     std::unique_ptr<GfxVertexBuffer> MeshShadowIndexBuffer;
-    // Optional reduced index buffer for distant shadow cascades, baked from ZENGIN's own progressive-mesh
-    // data (zCSubMesh::WedgeMap/VertexUpdates) at SHADOW_LOD_VERTEX_FRACTION. Indexes the very same
-    // MeshVertexBuffer as the other two - a collapse only ever redirects indices onto surviving vertices,
-    // it never produces new ones. Only populated for meshes that actually ship LOD data and clear the
-    // SHADOW_LOD_MIN_TRIANGLES gate, so it is nullptr far more often than not.
-    std::unique_ptr<GfxVertexBuffer> MeshLodIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
+    // Reduced index list over the SAME vertex numbering as Indices (an edge collapse only ever redirects
+    // indices onto surviving vertices, it never adds any), used by the main view's far bucket and by the
+    // far shadow cascades. Built by MeshLodBuilder.h during visual extraction.
+    //
+    // D3D12 ONLY - left empty under D3D11 on purpose. It gets no standalone index buffer: the VOB arena
+    // copies it into the shared mega index buffer and draws it as a range, whereas D3D11 could only bind it
+    // as one more per-sub-mesh buffer, and D3D11 is the backend closest to the 32-bit address-space ceiling.
+    // Also empty for morph sub-meshes, which skip OptimizeVertices entirely.
     std::vector<VERTEX_INDEX> LodIndices;
 
     // Offset in wrapped world mesh
@@ -150,6 +157,19 @@ struct WorldMeshInfo : public MeshInfo {
 
     // Offset in wrapped world mesh
     unsigned int BaseShadowIndexLocation;
+
+    /** Replaces MeshInfo::Vertices, which is dropped once the GPU buffers and the wrapped mesh have been
+        built. Empty until ShrinkCpuVertices() runs, and on any mesh that never went through it - hence the
+        fallback in GetCpuVertices(). */
+    std::vector<WorldVertexCPU> CpuVertices;
+
+    const std::vector<WorldVertexCPU>* GetCpuVertices() const override {
+        return CpuVertices.empty() ? nullptr : &CpuVertices;
+    }
+
+    /** Builds CpuVertices and frees Vertices (capacity included). Call only after the vertex buffer is
+        uploaded AND the wrapped world mesh has been assembled - WrapVertexBuffers reads Vertices. */
+    void ShrinkCpuVertices();
 };
 
 struct QuadMarkInfo {
@@ -320,9 +340,9 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
     /** Submeshes of this visual */
     std::map<zCMaterial*, std::vector<std::unique_ptr<SkeletalMeshInfo>>> SkeletalMeshes;
 
-    /** False while a background LoadzCModelData(...) extraction job (GothicAPI::PendingSkeletalLoads)
-     *  is still filling SkeletalMeshes/Meshes. Draw/update code must skip vobs pointing at a
-     *  not-yet-ready visual instead of touching the (possibly still empty) mesh lists. */
+    /** False while an AsyncVisualExtractor job is still filling SkeletalMeshes/Meshes. Draw/update
+     *  code must skip vobs pointing at a not-yet-ready visual instead of touching the (possibly
+     *  still empty) mesh lists. */
     std::atomic<bool> Ready{true};
 };
 
