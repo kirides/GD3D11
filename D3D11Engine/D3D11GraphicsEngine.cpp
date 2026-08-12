@@ -2474,7 +2474,6 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     if ( useStructuredBones ) {
         const std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + std::min<size_t>( transforms.size(), NUM_MAX_BONES ) );
         if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
-            || !SkeletalBoneTransformsBufferTransient
             || !SkeletalBoneTransformsBufferTransient ) {
             useStructuredBones = false;
         } else {
@@ -2686,7 +2685,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     if ( useStructuredBones ) {
         const std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + std::min<size_t>( transforms.size(), NUM_MAX_BONES ) );
         if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
-            || !SkeletalBoneTransformsBufferTransient
             || !SkeletalBoneTransformsBufferTransient ) {
             useStructuredBones = false;
         } else {
