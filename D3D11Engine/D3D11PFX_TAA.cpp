@@ -239,6 +239,11 @@ void D3D11PFX_TAA::RenderVelocityBuffer(
     vcb.PrevJitterOffset = m_PreviousJitter;
     vcb.Resolution = XMFLOAT2(static_cast<float>(m_Width), static_cast<float>(m_Height));
 
+    // Forward matrix + eye, so the shader's sky branch can reproject the view ray (SkyMotionVectors.h).
+    vcb.UnjitteredViewProj = m_UnjitteredViewProj;
+    const float3 eye = Engine::GAPI->GetCameraPosition();
+    vcb.CameraPosition = XMFLOAT4( eye.x, eye.y, eye.z, 0.0f );
+
     engine->BindDynamicCBToPixelShader( 0, engine->AllocateDynamicCB( &vcb, sizeof( vcb ) ) );
 
     // Set velocity buffer as render target

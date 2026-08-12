@@ -12,9 +12,13 @@ struct TiledPointLight {
     int ShadowCubeIndex; // -1 = no shadow, else index into TextureCubeArray
 };
 
+// Clustered grid - layout-identical to CS_LightCulling.hlsl's and the C++ LightGrid.
+#define NUM_Z_SLICES 16u
+#define MASK_WORDS 16u
+
 struct LightGrid {
-    uint Offset;
-    uint Count;
+    uint WordOccupancy;
+    uint Mask[MASK_WORDS];
 };
 
 cbuffer TiledShadingConstantBuffer : register( b0 ) {
@@ -23,7 +27,8 @@ cbuffer TiledShadingConstantBuffer : register( b0 ) {
     float4 ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     uint LimitLightIntensity;
     uint NumTilesX;
-    float2 Pad1;
+    float ClusterNearZ;   // must match what CS_LightCulling was dispatched with
+    float ClusterFarZ;
     matrix InvView; // For world-space reconstruction (shadow sampling)
 };
 
@@ -35,7 +40,6 @@ Texture2D TX_SI_SP : register( t7 );
 
 StructuredBuffer<TiledPointLight> SB_Lights : register( t8 );
 StructuredBuffer<LightGrid> SB_LightGrid : register( t9 );
-StructuredBuffer<uint> SB_LightIndexList : register( t10 );
 
 TextureCubeArray TX_ShadowCubeArray : register( t11 );
 // Per-slot overlay holding ONLY this frame's moving (skeletal) casters; min'd with the static cube above.
@@ -76,7 +80,11 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     uint tileY = pixelCoord.y / TILE_SIZE;
     uint tileIndex = tileY * NumTilesX + tileX;
 
-    LightGrid grid = SB_LightGrid[tileIndex];
+    // Log-distributed slice from view Z. MUST match CS_LightCulling's SliceOfViewZ.
+    float zView = abs( vsPosition.z );
+    float tz = log2( max( zView, ClusterNearZ ) / ClusterNearZ ) / log2( ClusterFarZ / ClusterNearZ );
+    uint slice = (uint)clamp( floor( tz * (float)NUM_Z_SLICES ), 0.0f, (float)( NUM_Z_SLICES - 1 ) );
+    uint cluster = tileIndex * NUM_Z_SLICES + slice;
 
     // Hoist per-pixel constants outside the light loop
     float3 V = normalize( -vsPosition );
@@ -85,35 +93,44 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     float3 totalLighting = float3( 0, 0, 0 );
     float3 maxLighting = float3( 0, 0, 0 );
 
-    for ( uint i = 0; i < grid.Count; i++ ) {
-        uint lightIdx = SB_LightIndexList[grid.Offset + i];
-        TiledPointLight light = SB_Lights[lightIdx];
+    // Walk only the mask words WordOccupancy flags as non-empty.
+    uint wm = SB_LightGrid[cluster].WordOccupancy;
+    while ( wm != 0 ) {
+        uint w = firstbitlow( wm );
+        wm &= wm - 1;
+        uint m = SB_LightGrid[cluster].Mask[w];
+        while ( m != 0 ) {
+            uint bitIdx = firstbitlow( m );
+            m &= m - 1;
+            uint lightIdx = w * 32u + bitIdx;
+            TiledPointLight light = SB_Lights[lightIdx];
 
-        float3 lightDir = light.PositionView - vsPosition;
-        float distance = length( lightDir );
+            float3 lightDir = light.PositionView - vsPosition;
+            float distance = length( lightDir );
 
-        if ( distance >= light.Range )
-            continue;
+            if ( distance >= light.Range )
+                continue;
 
-        lightDir /= distance;
+            lightDir /= distance;
 
-        float ndl = max( 0, dot( lightDir, normal ) );
-        float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
+            float ndl = max( 0, dot( lightDir, normal ) );
+            float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
-        float3 H = normalize( lightDir + V );
-        float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
-        float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
+            float3 H = normalize( lightDir + V );
+            float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
+            float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
 
-        // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
-        if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
-            float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
-            lighting *= shadow;
+            // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
+            if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
+                float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+                lighting *= shadow;
+            }
+
+            lighting = saturate( lighting );
+
+            totalLighting += lighting;
+            maxLighting = max( maxLighting, lighting );
         }
-
-        lighting = saturate( lighting );
-
-        totalLighting += lighting;
-        maxLighting = max( maxLighting, lighting );
     }
 
     float3 activeLighting;

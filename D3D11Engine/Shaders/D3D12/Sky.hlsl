@@ -10,9 +10,12 @@
 // every frame — so the whole sky costs one draw instead of ~5-15 fixed-function ones.
 //
 // Deliberate divergences from the D3D11 shaders, both because of what D3D12 does and doesn't have:
-//   * No motion-vector output. D3D11's PS_Atmosphere writes velocity to SV_TARGET1 for TAA; D3D12 has no
-//     velocity buffer (TAA is not ported), so this writes colour only and drops the cbPerFrame the D3D11 PS
-//     needed solely for that.
+//   * No motion-vector output, and none needed. The dome writes no depth, so every pixel it covers is still at
+//     the reversed-Z far plane when the CameraVelocity.hlsl fill pass runs at the end of world rendering — and
+//     that pass' far-plane branch (MvSkyVelocity) produces exactly the rotation-only velocity a sky at infinity
+//     has. Doing it there instead of here also covers the fixed-function sky fallback and any hole the dome
+//     misses, and lets this PS keep a single render target and drop the cbPerFrame D3D11's PS_Atmosphere
+//     carries solely for its own SV_TARGET1 velocity write.
 //   * Cloud/night texels are sRGB-decoded on the way in. The D3D12 scene target holds LINEAR radiance (every
 //     lit pass sRGB-decodes its albedo); D3D11 blends these in un-linearized. Same call already made in
 //     Fx.hlsl and the world-transparency port.

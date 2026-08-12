@@ -2959,6 +2959,90 @@ bool D3D12PipelineState::CreateSharpen() {
     return true;
 }
 
+bool D3D12PipelineState::CreateUnderwater() {
+    // Underwater screen effect (Shaders/D3D12/Underwater.hlsl) — port of D3D11GraphicsEngine::DrawUnderwaterEffects.
+    // Non-fatal: DrawUnderwaterEffects() guards on every object here and simply leaves the frame untinted while
+    // the camera is below a water surface.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // --- Quarter-res separable Gaussian (compute). One PSO run twice; the pass direction rides in the
+    // BlurTexelStep root constant, exactly as D3D11 rewrites B_PixelSize between its two blur draws. ---
+    D3D12RootLayout& blurRs = Layout( "UnderwaterBlur" );
+    blurRs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 UnderwaterBlurCB
+    // s0 linear-clamp: pass 1 downsamples the full-res frame, so filtering is the point; the kernel's UVs are
+    // saturate()d (as in Shaders/GaussBlur.h) and must clamp rather than wrap at the screen edge.
+    blurRs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP ) );
+    if ( !blurRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Underwater.BlurRootSig = blurRs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "Underwater.hlsl", "CSBlur", Shadermodel_CS, Underwater.BlurCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    blurRs.ValidateShaders( {
+        { Underwater.BlurCsBlob.Get(), "Underwater.hlsl:CSBlur", D3D12_SHADER_VISIBILITY_ALL },
+        } );
+
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = Underwater.BlurRootSig.Get();
+        pso.CS = { Underwater.BlurCsBlob->GetBufferPointer(), Underwater.BlurCsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( Underwater.BlurPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (underwater blur).";
+            return false;
+        }
+    }
+
+    // --- Full-res composite (graphics): the blurred quarter-res image, UV-distorted, over the display target. ---
+    D3D12RootLayout& compRs = Layout( "UnderwaterComposite" );
+    compRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_PIXEL );   // 0: b0 UnderwaterCompositeCB
+    compRs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP ) );
+    // s1 linear-WRAP: the two distortion lookups scroll by RI_Time and leave [0,1] within seconds, so this one
+    // has to tile (D3D11 samples them through its default wrap sampler).
+    compRs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
+    if ( !compRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                              | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Underwater.CompositeRootSig = compRs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "Underwater.hlsl", "VSFullscreen", Shadermodel_VS, Underwater.CompositeVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "Underwater.hlsl", "PSComposite", Shadermodel_PS, Underwater.CompositePsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    compRs.ValidateShaders( {
+        { Underwater.CompositeVsBlob.Get(), "Underwater.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Underwater.CompositePsBlob.Get(), "Underwater.hlsl:PSComposite", D3D12_SHADER_VISIBILITY_PIXEL  },
+        } );
+
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = Underwater.CompositeRootSig.Get();
+        pso.VS = { Underwater.CompositeVsBlob->GetBufferPointer(), Underwater.CompositeVsBlob->GetBufferSize() };
+        pso.PS = { Underwater.CompositePsBlob->GetBufferPointer(), Underwater.CompositePsBlob->GetBufferSize() };
+        pso.InputLayout = { nullptr, 0 };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0] = DisplayFormat;
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc.Count = 1;
+        pso.SampleMask = UINT_MAX;
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Underwater.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (underwater composite).";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool D3D12PipelineState::CreateAO() {
     // Simple screen-space AO (plan item #4, "SAO"). Two compute root sigs sharing one shape (b0 32-bit
     // consts, one SRV descriptor table, one UAV descriptor table): the main pass (Shaders/D3D12/SSAO.hlsl

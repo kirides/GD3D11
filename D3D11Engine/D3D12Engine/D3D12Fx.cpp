@@ -180,15 +180,26 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             default:
                 continue;
             }
-            alphaFunc = mat->GetAlphaFunc();
-
             // Opaque marks keep writing depth; blended ones must not, or they would depth-reject the
             // transparent geometry drawn after them.
-            const bool depthWrite = ( alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST );
+            const int wantAlphaFunc = mat->GetAlphaFunc();
+            const bool depthWrite = ( wantAlphaFunc == zMAT_ALPHA_FUNC_NONE || wantAlphaFunc == zMAT_ALPHA_FUNC_TEST );
             ID3D12PipelineState* next = litClass
                 ? m_Pipelines.GetOrCreateQuadMarkPipeline( blend, depthWrite )
                 : m_Pipelines.GetOrCreateFxPipeline( blend, false );
-            if ( !next ) continue;
+            if ( !next ) {
+                // Do NOT commit alphaFunc here: leaving it stale is what makes the next mark of the
+                // same alpha func skip this block entirely and draw with whatever pipeline happened to
+                // be bound - or, on the first mark of the run, with none at all.
+                static bool warned = false;
+                if ( !warned ) {
+                    warned = true;
+                    LogWarn() << "D3D12: no quad-mark pipeline for alpha func " << wantAlphaFunc
+                        << " (lit=" << litClass << ") - these marks (blood splats, ground marks) will not draw.";
+                }
+                continue;
+            }
+            alphaFunc = wantAlphaFunc;
             m_CmdList->SetPipelineState( next );
         }
 

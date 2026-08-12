@@ -31,9 +31,25 @@ struct TiledPointLight {
     int32_t ShadowCubeIndex; // -1 = no shadow, else (slot | SHADOW_CUBE_HAS_DYNAMIC)
 };
 
+// Clustered Forward+ grid (CS_LightCulling.hlsl). One entry per CLUSTER - a 16x16 screen tile crossed with one
+// of CLUSTER_Z_SLICES log-distributed view-Z slices - holding a membership bitmask over the first
+// CLUSTER_MAX_LIGHTS entries of the light buffer. WordOccupancy: bit w set iff Mask[w] != 0, so a consumer
+// skips empty words. MUST stay layout-identical to the HLSL copies in CS_LightCulling.hlsl,
+// ForwardPlusLighting.hlsl and CS_TiledShading.hlsl - this is a StructuredBuffer, so a stride mismatch
+// silently misindexes every cluster.
+constexpr uint32_t CLUSTER_TILE_SIZE = 16;
+constexpr uint32_t CLUSTER_Z_SLICES = 16;
+constexpr uint32_t CLUSTER_MAX_LIGHTS = 512;   // >= MAX_TILED_LIGHTS; one bit each
+constexpr uint32_t CLUSTER_MASK_WORDS = CLUSTER_MAX_LIGHTS / 32;
+
+// Gothic's reversed-Z projection has no real far plane, so the slices need a chosen practical far distance.
+// A floor only: the actual value tracks VisualFXDrawRadius, the range point lights are collected out to, so a
+// light past this can still land in a cluster instead of silently lighting nothing.
+constexpr float CLUSTER_MIN_FAR_Z = 4096.0f;
+
 struct LightGrid {
-    uint32_t Offset;
-    uint32_t Count;
+    uint32_t WordOccupancy;
+    uint32_t Mask[CLUSTER_MASK_WORDS];
 };
 
 class D3D11TiledDeferredShading {
@@ -48,7 +64,7 @@ public:
         RenderToTextureBuffer& depthCopy );
 
     /** Packs lights into the structured buffer and dispatches CS_LightCulling.
-        After this call, GetLightBufferSRV/GetLightGridSRV/GetLightIndexListSRV
+        After this call, GetLightBufferSRV/GetLightGridSRV
         are valid for the current frame. Returns the number of tiled lights and
         any lights that must fall back to the legacy path.
         Does NOT run CS_TiledShading — the caller decides how to consume the culled data. */
@@ -64,7 +80,6 @@ public:
     /** SRVs for reading culled light data in pixel shaders (valid after CullLights). */
     ID3D11ShaderResourceView* GetLightBufferSRV() const { return m_LightBufferSRV.Get(); }
     ID3D11ShaderResourceView* GetLightGridSRV() const { return m_LightGridSRV.Get(); }
-    ID3D11ShaderResourceView* GetLightIndexListSRV() const { return m_LightIndexListSRV.Get(); }
     ID3D11ShaderResourceView* GetShadowCubeArraySRV() const { return m_ShadowCubeArraySRV.Get(); }
     bool IsShadowArrayCreated() const { return m_ShadowArrayCreated; }
     ID3D11ShaderResourceView* GetShadowDynCubeArraySRV() const { return m_ShadowDynCubeArraySRV.Get(); }
@@ -94,15 +109,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_LightGrid;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_LightGridSRV;
     Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_LightGridUAV;
-
-    // Global light index list
-    Microsoft::WRL::ComPtr<ID3D11Buffer> m_LightIndexList;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_LightIndexListSRV;
-    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_LightIndexListUAV;
-
-    // Atomic counter for index list allocation
-    Microsoft::WRL::ComPtr<ID3D11Buffer> m_IndexCounter;
-    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_IndexCounterUAV;
 
     // Shadow cubemap array for tiled shadowed lights (lazy-created)
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_ShadowCubeArray;

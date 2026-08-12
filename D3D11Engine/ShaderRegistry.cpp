@@ -391,6 +391,9 @@ void ShaderRegistry::Build() {
     // Velocity Buffer Shader
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Velocity>( "PS_PFX_Velocity.hlsl" ) );
 
+    // Rotation-only motion vectors for the sky (every pixel left at the reversed-Z far plane)
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_SkyVelocity>( "PS_PFX_SkyVelocity.hlsl" ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_CAS>( "PS_PFX_CAS.hlsl" ));
 
 
@@ -403,11 +406,9 @@ void ShaderRegistry::Build() {
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_AdvanceRain>( "CS_AdvanceRain.hlsl" ));
 
-        Shaders.push_back( ShaderInfo::make<CShaderID::CS_LightCulling>( "CS_LightCulling.hlsl" )
-        .with_macros( {
-            { "TILE_SIZE", TO_LITERAL( TILE_SIZE ) },
-            { "MAX_LIGHTS_PER_TILE", TO_LITERAL( MAX_LIGHTS_PER_TILE ) },
-        }));
+        // Clustered cull: its grid dimensions are fixed in the shader and mirrored by the C++
+        // CLUSTER_* constants, so there is nothing left to inject here.
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_LightCulling>( "CS_LightCulling.hlsl" ));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_TiledShading>( "CS_TiledShading.hlsl" ));
 

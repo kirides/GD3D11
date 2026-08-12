@@ -226,7 +226,9 @@ ImGuiShim::~ImGuiShim()
 
 void ImGuiShim::BuildFrameUI()
 {
-    const auto bbres = Engine::GraphicsEngine->GetResolution();
+    // Use the backbuffer resolution here, not GetResolution() - the latter is the (possibly
+    // up-/downscaled) render resolution, which must not affect the UI scale.
+    const auto bbres = Engine::GraphicsEngine->GetBackbufferResolution();
     ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != bbres;
     ImGui::GetIO().FontGlobalScale = bbres.y < 1080 ? static_cast<float>( bbres.y ) / 1080.0f : 1.0f;
 

@@ -29,6 +29,8 @@ struct VelocityBufferConstantBuffer {
     XMFLOAT2 PrevJitterOffset;   // Previous jitter in UV space
     XMFLOAT2 Resolution;
     XMFLOAT2 Padding;
+    XMFLOAT4X4 UnjitteredViewProj; // Current frame's unjittered view-projection (sky reprojection)
+    XMFLOAT4 CameraPosition;       // xyz = eye; w unused (sky reprojection)
 };
 #pragma pack (pop)
 

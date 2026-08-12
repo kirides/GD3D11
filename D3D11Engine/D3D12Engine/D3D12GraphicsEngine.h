@@ -1196,6 +1196,27 @@ private:
     // composites on top, mirroring D3D11's "Sharpen" render-graph pass placement.
     void RenderSharpen();                     // guards on the mode/strength, m_LdrCopyReady and the mode's PSO
 
+    // Underwater screen effect — port of D3D11GraphicsEngine::DrawUnderwaterEffects (D3D12Underwater.cpp).
+    // Runs only while GothicAPI::IsUnderWater(), in the same frame slot D3D11 uses: on the finished LDR image,
+    // after the sharpen pass and before Gothic's 2D UI/HUD composites on top (the HUD must not be blurred or
+    // distorted). Three passes — quarter-res Gaussian H, quarter-res Gaussian V (both tinted by
+    // kUnderwaterColorMod), then a full-res distorted composite back over the display target. The two blur
+    // targets are compute-written, which is why they need no RTV heap slot; the composite has to be a graphics
+    // pass because the display target has no UAV.
+    //
+    // Built LAZILY the first time the player goes under water (same reasoning as the DoF textures — this is a
+    // rare state and the pair costs VA that 32-bit cannot spare for an effect most sessions never trigger).
+    // Both rest in UNORDERED_ACCESS between frames.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_UnderwaterBlur[2];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_UnderwaterBlurAlloc[2];
+    UINT m_UnderwaterBlurSrvSlot[2] = { UINT_MAX, UINT_MAX };
+    UINT m_UnderwaterBlurUavSlot[2] = { UINT_MAX, UINT_MAX };
+    INT2 m_UnderwaterBlurSize = { 0, 0 };       // quarter resolution the pair was built for
+    bool m_UnderwaterResourcesReady = false;
+    bool m_UnderwaterCreateAttempted = false;   // keeps a failed creation from retrying every frame; cleared on resize
+    bool CreateUnderwaterResources( INT2 size );   // (re)builds the quarter-res blur pair + its SRV/UAV slots
+    void DrawUnderwaterEffects();                  // no-op unless underwater; guards on the PSOs + m_LdrCopyReady
+
     // Simple screen-space AO (plan item #4, "SAO"): resolution-dependent R8_UNORM textures (m_AOMask holds the
     // final blurred result; m_AOBlurTemp is the horizontal-blur scratch target), recreated on resize like the
     // bloom pyramid. RenderSSAO dispatches main-estimate -> blurH -> blurV (Shaders/D3D12/SSAO.hlsl) and leaves
@@ -1333,8 +1354,9 @@ private:
         XMFLOAT4X4 PrevViewProj;
         XMFLOAT4X4 UnjitteredViewProj;
         XMFLOAT4X4 InvUnjitteredViewProj;
+        XMFLOAT4 CameraPosition;   // xyz = eye, w unused; only FillCameraVelocity's sky branch reads it
     };
-    static_assert( sizeof( MotionCBData ) == 192, "MotionCBData must match Shaders/D3D12/include/MotionVectors.hlsl" );
+    static_assert( sizeof( MotionCBData ) == 208, "MotionCBData must match Shaders/D3D12/include/MotionVectors.hlsl" );
 
     bool CreateMotionResources( INT2 size );  // (re)builds the velocity/normal targets + their RTV/SRV/UAV views
     bool CreateMotionConstantBuffers();       // one-time: the kBackBufferCount persistently-mapped MotionCB slabs
