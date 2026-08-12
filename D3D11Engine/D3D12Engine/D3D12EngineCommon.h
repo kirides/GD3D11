@@ -12,6 +12,7 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 #include "D3D12TracyDebug.h"
+#include "../ConstantBufferStructs.h"   // VobInstanceInfo — held by value in FrameAttachDraw
 
 class zCTexture;
 class zCVob;
@@ -61,6 +62,9 @@ struct FrameSkelDraw {
 // alphaTested = can the depth/caster PS' `clip(diffuse.a - 0.5)` ever discard for this attachment? Resolved on
 // the main thread with srvSlot (a pool-thread recorder must not read Gothic texture state), and used by every
 // depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
+// inst = the per-instance data this attachment uploaded at collection time (the bytes instView points at),
+// by value so the main-view batcher can re-emit runs of instances CONTIGUOUSLY without reading back the
+// write-combined UPLOAD ring. The per-draw consumers (CSM cascades, point shadows) keep using instView.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
@@ -68,6 +72,12 @@ struct FrameAttachDraw {
     const zCVob*                owner;
     UINT                        srvSlot;
     bool                        alphaTested;
+    VobInstanceInfo             inst;
+    // May this attachment share an instanced draw with others pointing at the same MeshInfo? False only for
+    // an actively morphing .MMS: its vertex buffer is re-deformed per frame for whichever instance is being
+    // drawn, so a batch would give every member the head-of-batch's morph. Out of range it switches to the
+    // shared rest mesh (MeshVisualInfo::RestVisual) and becomes batchable like anything else.
+    bool                        batchable;
 };
 
 // Per-frame GPU point light. Filled by BuildFrameLightBuffer (D3D12Scene.cpp); the point-shadow slot

@@ -72,8 +72,11 @@ public:
     /** Extracts a 3DS-Mesh from a zCVisual */
     static void Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisualInfo* meshInfo );
 
-    /** Extracts a 3DS-Mesh from a zCVisual */
-    static void Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo );
+    /** Extracts a 3DS-Mesh from a zCVisual. 'positionOverride' substitutes for the visual's live position
+        list, which is how a .MMS rest mesh is built: zCMorphMesh deforms one shared position list in place
+        per draw, so the rest pose can only come from zCMorphMeshProto's pristine arrays. Ignored unless it
+        covers every vertex. */
+    static void Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo, const float3* positionOverride = nullptr, int positionOverrideCount = 0 );
 
     /** Updates a Morph-Mesh visual */
     static void UpdateMorphMeshVisual( void* visual, MeshVisualInfo* meshInfo );
@@ -86,6 +89,10 @@ public:
 
     /** Extracts a zCProgMeshProto from a zCMesh */
     static void ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo* meshInfo );
+
+    /** Releases this node's attachment(s) and empties the slot without erasing it. Use instead of
+        deleting a MeshVisualInfo out of a NodeAttachments map - the object is shared. */
+    static void ReleaseNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments, int index );
 
     /** Extracts a node-visual */
     static void ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );

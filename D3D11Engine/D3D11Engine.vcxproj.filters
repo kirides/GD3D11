@@ -930,6 +930,9 @@
     </ClInclude>
     <ClInclude Include="BspPortalCuller.h" />
     <ClInclude Include="HorizonCuller.h" />
+    <ClInclude Include="MorphBlend.h" />
+    <ClInclude Include="SharedVisualRegistry.h" />
+    <ClInclude Include="MorphGpu.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1332,6 +1335,10 @@
     <ClCompile Include="BspPortalCuller.cpp" />
     <ClCompile Include="HorizonCuller.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
+    <ClCompile Include="MorphBlend.cpp" />
+    <ClCompile Include="SharedVisualRegistry.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12MorphFold.cpp" />
+    <ClCompile Include="MorphGpu.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

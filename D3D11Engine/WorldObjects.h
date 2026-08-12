@@ -129,6 +129,11 @@ struct MeshInfo {
     // Offset in wrapped world mesh
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
+
+    /** MeshManager's id for the SOURCE zCSubMesh. NOT a "same buffers" key - a morph attachment and its
+        RestVisual, or two .MDS/.ASC node visuals with different baked node transforms, share a meshId
+        while holding different geometry. Attachment batching keys on the MeshInfo pointer for that
+        reason; only the static-vob sort still uses this, where StaticMeshVisuals rules out the case. */
     uint16_t meshId;
 };
 
@@ -240,18 +245,8 @@ struct MeshVisualInfo : public BaseVisualInfo {
     MeshVisualInfo(const MeshVisualInfo& other) = delete;
     MeshVisualInfo& operator=(const MeshVisualInfo& other) = delete;
 
-    ~MeshVisualInfo() override
-    {
-        // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
-        // Never free the target out from under a running job.
-        if ( !Ready.load( std::memory_order_acquire ) ) {
-            WaitForPendingNodeVisualExtraction( this );
-        }
-        if ( MorphMeshVisual ) {
-            zCObject_Release( MorphMeshVisual );
-        }
-        delete FullMesh;
-    }
+    /** Out of line because it releases RestVisual back to the SharedVisualRegistry. */
+    ~MeshVisualInfo() override;
 
     /** Starts a new frame for this mesh */
     void StartNewFrame() {
@@ -283,6 +278,18 @@ struct MeshVisualInfo : public BaseVisualInfo {
         it flips to true - reading the containers before that races the extraction. Synchronously
         extracted visuals (every other path) leave it at true. */
     std::atomic<bool> Ready{ true };
+
+    /** SharedVisualRegistry bookkeeping; 0/null on visuals owned outright by their holder. SharedKey is
+        the lookup key - unlike Visual it is never rewritten by a background extraction. Destroyed when
+        SharedRefs (the number of NodeAttachments slots pointing here) hits zero. */
+    const void* SharedKey = nullptr;
+    uint32_t SharedRefs = 0;
+
+    /** Shared undeformed conversion of a .MMS, drawn instead of this one whenever the instance isn't
+        actively morphing - our copy would still hold the deformation from the last time it was in range.
+        Keyed on GetRestPoseKey(), so every non-morphing instance lands on one MeshInfo and batches. Null
+        for non-morph attachments. Holds one registry reference, released in the destructor. */
+    MeshVisualInfo* RestVisual = nullptr;
 };
 
 /** Holds the converted mesh of a VOB */
@@ -478,14 +485,8 @@ struct SkeletalVobInfo : public BaseVobInfo {
     SkeletalVobInfo(const SkeletalVobInfo& other) = delete;
     SkeletalVobInfo& operator=(const SkeletalVobInfo& other) = delete;
 
-    ~SkeletalVobInfo() override
-    {
-        for ( auto& [k, meshes] : NodeAttachments ) {
-            for ( MeshVisualInfo* mvi : meshes ) {
-                delete mvi;
-            }
-        }
-    }
+    /** Releases this vob's attachments back to the SharedVisualRegistry - shared, so not ours to delete. */
+    ~SkeletalVobInfo() override;
 
     /** Updates the vobs constantbuffer */
     void UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb);

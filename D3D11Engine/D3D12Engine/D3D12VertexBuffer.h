@@ -88,6 +88,22 @@ public:
         return m_LastWriteSlot == kNoSlot ? nullptr : m_Copies[m_LastWriteSlot].MappedPtr;
     }
 
+    /** --- GPU-written vertex buffers (morph fold) ---
+
+        A buffer created with B_UNORDERED_ACCESS is a DEFAULT-heap (VRAM) resource with
+        ALLOW_UNORDERED_ACCESS and exactly ONE copy: its writer is the GPU, so the CPU-write-vs-GPU-read
+        race the dynamic ring exists for cannot happen, and a barrier orders the fold against the draws.
+        It is never CPU-mapped either, which is what takes it out of the 32-bit address space entirely.
+
+        The state has to be tracked here rather than in the pass, because the pass sees a MeshInfo and the
+        resource outlives any one frame: born in COMMON (a buffer promotes out of COMMON implicitly, so a
+        mesh that is drawn before it has ever been folded is still legal), then flipped UAV <-> VERTEX by
+        DispatchMorphFold. */
+    bool IsUavCapable() const { return m_UavCapable; }
+    enum class EUavState { Common, Unordered, Vertex };
+    EUavState GetUavState() const { return m_UavState; }
+    void SetUavState( EUavState state ) { m_UavState = state; }
+
     /** Called by DrawVertexBufferFF right after it bound the live copy straight off the IA: from here on
         a draw recorded THIS frame reads these bytes, so the next Lock() of the same copy must not write
         over them — Map() redirects it to the CPU shadow instead. See the comment in Map(). */
@@ -110,6 +126,8 @@ private:
     UINT m_NumCopies = 1;      // 1 for static/CPU-only-dynamic buffers, kBackBufferCount for GPU-bound dynamic ones
     UINT m_LastWriteSlot = kNoSlot;   // copy that last took a CPU write — see HasFreshCurrentCopy()
     unsigned int m_SizeInBytes = 0;
+    bool m_UavCapable = false;                        // created with B_UNORDERED_ACCESS (morph fold target)
+    EUavState m_UavState = EUavState::Common;         // only meaningful while m_UavCapable
 
     // Multi-Lock-per-frame protection for the direct-IA path (see Map()). m_DirectBoundSlot is the copy a
     // draw of the CURRENT frame reads off the IA; while Map() sees it as current it hands out m_Shadow.

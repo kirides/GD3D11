@@ -2228,6 +2228,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// pre-resolved D3D12 handles and heap-slot ints snapshotted on this thread before it was launched. It is
 	// specifically NOT safe to move any Gothic read INTO a recorder for the same reason.
 	BuildSkeletalDrawCommands();
+	// Morph attachments (NPC heads, bow/crossbow draw meshes): fold this frame's blend shapes on the GPU into
+	// each submesh's own vertex buffer. Has to precede the depth prepass, which is the first pass of the frame
+	// IN SUBMISSION ORDER that draws one — the shadow cascades and point-shadow cubes record into private
+	// lists but are executed later (FinishShadowPasses). No-op when the fold is unavailable or inactive, in
+	// which case UpdateMorphMeshVisual already deformed them on the CPU during collection. See
+	// D3D12MorphFold.cpp / MorphGpu.h.
+	DispatchMorphFold();
     {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
@@ -3295,42 +3302,133 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( m_AttachDrawArgsPtr[frame] );
         UINT count = 0;
         alphaAttachCmds.clear();
+
+        // --- Instanced batching (main view only) -------------------------------------------------------
+        // A crowd's worth of identical swords otherwise arrives as one one-instance command each, rebinding
+        // two VBVs + an IBV for ~200 vertices. The batch head supplies the VB/IB for every member, so the key
+        // must mean "same buffers": the MeshInfo POINTER, which works as a key because SharedVisualRegistry
+        // dedupes conversions. Not meshId — that identifies the source zCSubMesh and aliases distinct
+        // geometry (see MeshInfo::meshId). Grouped through a hash map, not a sort: nothing downstream depends
+        // on attachment draw order (all opaque, depth-tested).
+        struct AttachBatchKey {
+            const MeshInfo* mesh; UINT mats[3]; bool alphaTested;
+            bool operator==( const AttachBatchKey& o ) const {
+                return mesh == o.mesh && alphaTested == o.alphaTested
+                    && mats[0] == o.mats[0] && mats[1] == o.mats[1] && mats[2] == o.mats[2];
+            }
+        };
+        struct AttachBatchKeyHash {
+            size_t operator()( const AttachBatchKey& k ) const {
+                size_t h = reinterpret_cast<size_t>( k.mesh );
+                h = h * 1000003u ^ k.mats[0];
+                h = h * 1000003u ^ k.mats[1];
+                h = h * 1000003u ^ k.mats[2];
+                return h * 2u + (k.alphaTested ? 1u : 0u);
+            }
+        };
+        struct AttachBatch {
+            const FrameAttachDraw* head;   // supplies the VB/IB + index count for the whole batch
+            UINT mats[3];
+            bool alphaTested;
+            std::vector<const FrameAttachDraw*> members;
+        };
+        // static: retained capacity, no per-frame allocation (same idiom as alphaAttachCmds).
+        static std::unordered_map<AttachBatchKey, size_t, AttachBatchKeyHash> batchIndex;
+        static std::vector<AttachBatch> batches;
+        batchIndex.clear();
+        for ( AttachBatch& b : batches ) b.members.clear();   // keep the inner vectors' capacity
+        size_t usedBatches = 0;
+        size_t unbatchable = 0;   // actively morphing .MMS only — forced singletons, see the plots below
+
         for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
             if ( !a.mesh || a.mesh->Indices.empty() || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() )
                 continue;
             D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
             D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
             if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-            if ( count + alphaAttachCmds.size() >= kMaxAttachDrawCommands ) { logOverflow( "attachment", kMaxAttachDrawCommands ); break; }
 
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
             mats[2] = ResolveDiffuseSlotCacheIn( a.tex );
-            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material — but that
-            // costs nothing here: the prepass cutout is `clip(diffuse.a - 0.5)`, which can only ever discard
-            // when the diffuse actually HAS an alpha channel. The material's HasAlphaTest() flag that the
-            // other three builds also test is pure conservatism (a=1 everywhere never clips).
+            // Alpha-test partition. FrameAttachDraw carries only the texture, not the material, which costs
+            // nothing: the prepass cutout is `clip(diffuse.a - 0.5)` and can only discard where the diffuse
+            // actually has an alpha channel.
             const bool alphaTested = a.tex && a.tex->HasAlphaChannel();
+
+            // !batchable = an actively morphing .MMS (see FrameAttachDraw::batchable). Its own singleton
+            // command, never entered into the index, so nothing can join it either.
+            const bool batchable = a.batchable;
+            const AttachBatchKey key{ a.mesh, { mats[0], mats[1], mats[2] }, alphaTested };
+            size_t bi;
+            auto it = batchable ? batchIndex.find( key ) : batchIndex.end();
+            if ( it != batchIndex.end() ) {
+                bi = it->second;
+            } else {
+                bi = usedBatches++;
+                if ( bi >= batches.size() ) batches.emplace_back();
+                AttachBatch& nb = batches[bi];
+                nb.head = &a;
+                nb.mats[0] = mats[0]; nb.mats[1] = mats[1]; nb.mats[2] = mats[2];
+                nb.alphaTested = alphaTested;
+                if ( batchable ) batchIndex.emplace( key, bi );
+            }
+            batches[bi].members.push_back( &a );
+            if ( !batchable ) ++unbatchable;
+            m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
+        }
+
+        // "in" vs "batches" is the collapse ratio; "unbatch" is how much of the gap is structural rather than
+        // key-splitting (a morphing .MMS can never batch — see FrameAttachDraw::batchable).
+        TracyPlot( "Attach records in", static_cast<int64_t>( g_FrameAttachDraws.size() ) );
+        TracyPlot( "Attach batches out", static_cast<int64_t>( usedBatches ) );
+        TracyPlot( "Attach unbatchable", static_cast<int64_t>( unbatchable ) );
+
+        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single InstVBV
+        // spans them. A second copy of the instance data (the collection-time write the cascade/point-shadow
+        // consumers read through instView stays put), a few KB per frame out of the VOB instance ring.
+        for ( size_t bi = 0; bi < usedBatches; ++bi ) {
+            const AttachBatch& b = batches[bi];
+            if ( b.members.empty() || !b.head ) continue;
+            if ( count + alphaAttachCmds.size() >= kMaxAttachDrawCommands ) { logOverflow( "attachment", kMaxAttachDrawCommands ); break; }
+
+            const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+            const UINT need = instBytes * static_cast<UINT>( b.members.size() );
+            if ( m_VobInstanceBufferOffset + need > m_VobInstanceBufferCapacity ) {
+                if ( !m_VobInstanceOverflowLogged ) {
+                    LogWarn() << "D3D12: VOB instance ring overflow (attachment batches dropped this frame).";
+                    m_VobInstanceOverflowLogged = true;
+                }
+                break;
+            }
+            const UINT instOffset = m_VobInstanceBufferOffset;
+            uint8_t* dst = m_VobInstanceBufferPtr[frame] + instOffset;
+            for ( const FrameAttachDraw* m : b.members ) {
+                memcpy( dst, &m->inst, instBytes );
+                dst += instBytes;
+            }
+            m_VobInstanceBufferOffset += need;
+
+            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( b.head->mesh->GetMeshVertexBuffer() );
+            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( b.head->mesh->GetMeshIndexBuffer() );
 
             VobDrawCommand c{};
             c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-            c.InstVBV = a.instView;
+            c.InstVBV = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, need, instBytes };
             c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-            c.MatNormalIndex  = mats[0];
-            c.MatOrmIndex     = mats[1];
-            c.MatDiffuseIndex = mats[2];
+            c.MatNormalIndex  = b.mats[0];
+            c.MatOrmIndex     = b.mats[1];
+            c.MatDiffuseIndex = b.mats[2];
             c.WindMinHeight   = 0.0f;
             c.WindMaxHeight   = 0.0f;
-            c.Draw.IndexCountPerInstance = static_cast<UINT>( a.mesh->Indices.size() );
-            c.Draw.InstanceCount         = 1;
+            c.Draw.IndexCountPerInstance = static_cast<UINT>( b.head->mesh->Indices.size() );
+            c.Draw.InstanceCount         = static_cast<UINT>( b.members.size() );
             c.Draw.StartIndexLocation    = 0;
             c.Draw.BaseVertexLocation    = 0;
             c.Draw.StartInstanceLocation = 0;
             c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
             c._cmdPad     = 0;
-            if ( alphaTested ) alphaAttachCmds.push_back( c );
-            else               cmds[count++] = c;
-            m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
+            if ( b.alphaTested ) alphaAttachCmds.push_back( c );
+            else                 cmds[count++] = c;
         }
         m_AttachOpaqueDrawCount = count;
         if ( !alphaAttachCmds.empty() ) {
@@ -4248,7 +4346,17 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         // own LastAniUpdateFrame guard already limits this to once per animation frame.
                         WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
                     }
-                    for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
+                    // A non-morphing .MMS draws the shared rest mesh rather than its own copy, which still
+                    // holds the deformation from when it was last inside kMorphMeshMaxDistance. One MeshInfo
+                    // per head type, so they batch. Falls back while the rest mesh is still being built.
+                    MeshVisualInfo* drawVis = mvi;
+                    if ( isMMS && !morphActive && mvi->RestVisual
+                        && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
+                        drawVis = mvi->RestVisual;
+                    }
+                    const bool attBatchable = !isMMS || drawVis != mvi;
+
+                    for ( auto const& [attMat, attMeshes] : drawVis->Meshes ) {
                         zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
                         for ( auto const& attMesh : attMeshes ) {
                             if ( !attMesh || attMesh->Indices.empty() ) continue;
@@ -4279,7 +4387,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             // must not do.
                             entry.attachments.push_back( { attMesh.get(), attTex, attInstView, vi->Vob,
                                 ResolveShadowDiffuseSlot( attTex ),
-                                attTex && attTex->HasAlphaChannel() } );
+                                attTex && attTex->HasAlphaChannel(), vii, attBatchable } );
                         }
                     }
                 }

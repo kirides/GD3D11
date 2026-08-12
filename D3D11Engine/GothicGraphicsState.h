@@ -690,6 +690,14 @@ struct GothicRendererSettings {
         DrawVOBs = true;
         DrawWorldMesh = 3;
         DrawSkeletalMeshes = true;
+        // Off by default: ZENGIN's own deform stays the shipping path until the reimplementation has been
+        // verified on real hardware. VerifyMorphBlend runs both and reports the difference.
+        UseReimplementedMorphBlend = false;
+        VerifyMorphBlend = false;
+        // On where the backend has a working fold pipeline (D3D12 today): it is what removed the per-frame
+        // CPU deform AND the per-instance CPU-writable vertex buffers those needed. Read exactly once, at
+        // the first MorphGpu::IsActive() - see the comment on the member.
+        UseGpuMorphFold = true;
         DrawMobs = true;
         DrawDynamicVOBs = true;
 
@@ -1013,6 +1021,21 @@ struct GothicRendererSettings {
     bool DrawDynamicVOBs;
     int DrawWorldMesh;
     bool DrawSkeletalMeshes;
+    /** Morph attachments (heads, bow/crossbow draw meshes) fold their blend shapes with our own
+        reimplementation (MorphBlend) instead of calling ZENGIN's CalcVertPositions. Same result, but the
+        state it captures is what a GPU deform would consume - this is the A/B switch for that port.
+        AdvanceAnis still runs either way; it is game state, not geometry. */
+    bool UseReimplementedMorphBlend;
+    /** Every morph update also runs ZENGIN's deform and logs the worst per-component deviation from ours.
+        Diagnostic only - it does BOTH deforms, so it is slower than either path. */
+    bool VerifyMorphBlend;
+    /** Fold morph attachments in a compute shader (MorphGpu / Shaders/D3D12/MorphFold.hlsl) instead of
+        deforming them on the CPU and re-uploading the vertex stream every animation frame. Ignored by a
+        backend that has no fold pipeline, which keeps the CPU deform.
+        NOT a live toggle: MorphGpu::IsActive() reads it once and freezes the answer, because it also decides
+        how morph vertex buffers are CREATED (a GPU-written DEFAULT+UAV buffer vs a CPU-writable DYNAMIC one).
+        Changing it in the ImGui window therefore takes effect on the next restart. */
+    bool UseGpuMorphFold;
     bool DrawMobs;
     bool DrawParticleEffects;
     bool DrawSky;

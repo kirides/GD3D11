@@ -50,6 +50,7 @@
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
+#include "SharedVisualRegistry.h"
 #include "ThreadPool.h"
 #include "zFILE.h"
 #include "zFILE_VDFS.h"
@@ -898,6 +899,10 @@ void GothicAPI::ResetVobs() {
     }
     SkeletalMeshVobs.clear();
     AnimatedSkeletalVobs.clear();
+
+    // Every skeletal vob is gone, so this should find nothing left to own. Drops (and logs) whatever
+    // is still there rather than carrying converted meshes into the next world.
+    s_SharedVisualRegistry->Clear();
 }
 
 /** Called when the game loaded a new level */
@@ -1862,6 +1867,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     // Gothic frees this visual once we return - make sure no background node-attachment extraction
     // (WorldConverter::ExtractNodeVisualAsync) is still reading from it.
     WorldConverter::WaitForPendingNodeVisuals( visual );
+
+    // Retire it as a shared-attachment key - the address can be recycled for an unrelated visual.
+    // Attachments still holding the entry keep it alive until their "visual changed" check retires them.
+    s_SharedVisualRegistry->Unregister( visual );
 
     std::vector<std::string> extv;
 
@@ -2904,9 +2913,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
-                // Remove attachment
-                delete nodeAttachments[i][0];
-                nodeAttachments[i].clear();
+                // Remove attachment. Shared, so it goes back to the registry, not deleted here.
+                WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
                 LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
 
@@ -3155,9 +3163,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
         if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
-                // Remove attachment
-                delete nodeAttachments[i][0];
-                nodeAttachments[i].clear();
+                // Remove attachment. Shared, so it goes back to the registry, not deleted here.
+                WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
                 LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
 
@@ -5883,6 +5890,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
+    // morph vertex buffers get created), so the only way to turn it off is for the NEXT run.
+    WritePrivateProfileStringA( "Debug", "GpuMorphFold", to_string_locale_independent( s.UseGpuMorphFold ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseShadowAtlas", to_string_locale_independent( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", to_string_locale_independent( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GenerateAONormalsFromDepth", to_string_locale_independent( s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6105,6 +6115,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
         s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
+        s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
         s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask = GetPrivateProfileBoolA( "Debug", "UseScreenSpaceShadowMask", ds.DebugSettings.FeatureSet.UseScreenSpaceShadowMask, ini );
         s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth = GetPrivateProfileBoolA( "Debug", "GenerateAONormalsFromDepth", ds.DebugSettings.FeatureSet.GenerateAONormalsFromDepth, ini );

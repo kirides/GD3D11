@@ -24,6 +24,9 @@
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
+#include "SharedVisualRegistry.h"
+#include "MorphBlend.h"
+#include "MorphGpu.h"
 #include "ThreadPool.h"
 #include "vendor/mikktspace.h"
 #include "VertexPacking.h"
@@ -1731,15 +1734,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             it->BaseIndexLocation = offsets[i++];
         }
 
-        MeshInfo* wmi = new MeshInfo;
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
-
-        // Init and fill them
-        wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
-        meshInfo->FullMesh = wmi;
+        // FullMesh's buffers are gone - see the note in Extract3DSMeshFromVisual2. Nothing ever bound
+        // them; only BaseIndexLocation above is actually consumed.
     }
 
     // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
@@ -1841,15 +1837,70 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     meshInfo->Visual = reinterpret_cast<zCVisual*>(mesh);
 }
 
+namespace {
+    /** Rest-mesh source for a morph attachment. Resolved on the game thread - StartAni can install a
+        refShapeAni at any time, which changes the rest pose. */
+    struct MorphRestSource {
+        const void* Key = nullptr;          // null means "no rest mesh for this one"
+        const float3* Positions = nullptr;  // pristine, never written by the engine after load
+        int NumVert = 0;
+    };
+
+    MorphRestSource ResolveMorphRestSource( zCMorphMesh* mm ) {
+        MorphRestSource src;
+        if ( !mm ) {
+            return src;
+        }
+
+        // refShape instances get their own key, hence their own rest mesh. Only safe because attachment
+        // batching keys on the MeshInfo pointer - on meshId, two rest poses of one head would collide.
+        const void* key = mm->GetRestPoseKey();
+        if ( !key ) {
+            return src;
+        }
+        int numVert = 0;
+        const float3* positions = mm->GetRestPositions( numVert );
+        if ( !positions || numVert <= 0 ) {
+            return src;
+        }
+        src.Key = key;
+        src.Positions = positions;
+        src.NumVert = numVert;
+        return src;
+    }
+
+    /** Acquires (and fills, if we are the first) the shared rest mesh. Worker-thread safe. */
+    void AttachMorphRestVisual( MeshVisualInfo* morphVisual, zCProgMeshProto* pm, const MorphRestSource& src ) {
+        if ( !src.Key || !pm || morphVisual->RestVisual ) {
+            return;
+        }
+
+        bool needsFill = false;
+        MeshVisualInfo* rest = s_SharedVisualRegistry->Acquire( src.Key, needsFill );
+        if ( needsFill ) {
+            WorldConverter::Extract3DSMeshFromVisual2( pm, rest, src.Positions, src.NumVert );
+            rest->Ready.store( true, std::memory_order_release );
+        }
+        morphVisual->RestVisual = rest;
+    }
+}
+
+/** Drops this node's attachment(s) back to the shared registry and empties the slot. The slot itself
+    stays in the map - callers read find() != end() as "extraction already attempted for this node". */
+void WorldConverter::ReleaseNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments, int index ) {
+    auto& slot = attachments[index];
+    for ( MeshVisualInfo* mvi : slot ) {
+        s_SharedVisualRegistry->Release( mvi );
+    }
+    slot.clear();
+}
+
 /** Extracts a node-visual */
 void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
     ZoneScoped;
 
     // Only allow 1 attachment
-    if ( !attachments[index].empty() ) {
-        delete attachments[index][0];
-        attachments[index].clear();
-    }
+    ReleaseNodeAttachments( attachments, index );
 
     // Extract node visuals
     if ( node->NodeVisual ) {
@@ -1866,21 +1917,31 @@ void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::f
                 return;
             }
 
-            MeshVisualInfo* mi = new MeshVisualInfo;
-            if ( isMMS ) {
-                mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
-                zCObject_AddRef( mi->MorphMeshVisual );
-            }
+            // Every other vob with this visual gets the same object back; only the first converts.
+            bool needsFill = false;
+            MeshVisualInfo* mi = s_SharedVisualRegistry->Acquire( node->NodeVisual, needsFill );
+            if ( needsFill ) {
+                if ( isMMS && !mi->MorphMeshVisual ) {
+                    mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
+                    zCObject_AddRef( mi->MorphMeshVisual );
+                }
 
-            Extract3DSMeshFromVisual2( pm, mi );
-            if ( isMMS ) {
-                mi->Visual = node->NodeVisual;
+                Extract3DSMeshFromVisual2( pm, mi );
+                if ( isMMS ) {
+                    mi->Visual = node->NodeVisual;
+                    AttachMorphRestVisual( mi, pm, ResolveMorphRestSource( reinterpret_cast<zCMorphMesh*>(node->NodeVisual) ) );
+                }
+                mi->Ready.store( true, std::memory_order_release );
             }
 
             attachments[index].emplace_back( mi );
         } else if ( strcmp( ext, ".MDS" ) == 0 || strcmp( ext, ".ASC" ) == 0 ) {
-            MeshVisualInfo* mi = new MeshVisualInfo;
-            ExtractProgMeshProtoFromModel( static_cast<zCModel*>(node->NodeVisual), mi );
+            bool needsFill = false;
+            MeshVisualInfo* mi = s_SharedVisualRegistry->Acquire( node->NodeVisual, needsFill );
+            if ( needsFill ) {
+                ExtractProgMeshProtoFromModel( static_cast<zCModel*>(node->NodeVisual), mi );
+                mi->Ready.store( true, std::memory_order_release );
+            }
             attachments[index].emplace_back( mi );
         }
     }
@@ -1966,24 +2027,33 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
 
     // Only allow 1 attachment (same rule as the synchronous path). The MeshVisualInfo destructor blocks
     // on this visual's own job, so replacing an attachment that is still being extracted is safe.
-    if ( !attachments[index].empty() ) {
-        delete attachments[index][0];
-        attachments[index].clear();
+    ReleaseNodeAttachments( attachments, index );
+
+    // If somebody already built (or is building) this visual we are done - no second worker job.
+    bool needsFill = false;
+    MeshVisualInfo* mi = s_SharedVisualRegistry->Acquire( node->NodeVisual, needsFill );
+    attachments[index].emplace_back( mi );
+    if ( !needsFill ) {
+        return;
     }
 
     // Build the shell on this thread so the caller can already identify the attachment (Visual is what
     // the "did the visual change?" check compares against), then let a worker fill in the meshes.
-    MeshVisualInfo* mi = new MeshVisualInfo;
     mi->Visual = node->NodeVisual;
-    if ( isMMS ) {
+    if ( isMMS && !mi->MorphMeshVisual ) {
         mi->MorphMeshVisual = reinterpret_cast<void*>(node->NodeVisual);
         zCObject_AddRef( mi->MorphMeshVisual );
     }
     mi->Ready.store( false, std::memory_order_relaxed );
-    attachments[index].emplace_back( mi );
+
+    // Resolved here, not in the job: StartAni can install a refShapeAni at any time. The arrays it
+    // points at are written once at load, so the worker can read them freely.
+    const MorphRestSource restSource = isMMS
+        ? ResolveMorphRestSource( reinterpret_cast<zCMorphMesh*>(node->NodeVisual) )
+        : MorphRestSource{};
 
     zCVisual* nodeVisual = node->NodeVisual;
-    auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS]( const std::stop_token& token ) {
+    auto task = Engine::WorkerThreadPool->enqueue( [pm, mi, isMMS, restSource]( const std::stop_token& token ) {
         if ( token.stop_requested() ) {
             // Cancelled before a worker picked it up (world change / shutdown flush) - the visual we
             // would read from may already be gone. Clear Visual so the next frame notices the mismatch
@@ -1997,6 +2067,8 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
             // Extract3DSMeshFromVisual2 sets Visual to the morph mesh's inner progmesh; the attachment
             // identity is the outer zCMorphMesh (mirrors ExtractNodeVisual).
             mi->Visual = reinterpret_cast<zCVisual*>(mi->MorphMeshVisual);
+            // A second conversion, but only for the first morph mesh resolving to this rest pose.
+            AttachMorphRestVisual( mi, pm, restSource );
         }
         mi->Ready.store( true, std::memory_order_release );
     } );
@@ -2019,14 +2091,66 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
     }
     meshInfo->LastAniUpdateFrame = now;
 
+    // Always the engine's: AdvanceAnis is the animation STATE machine (weights, frames, channel
+    // lifetime, random anis), not the deform. Only the deform below has an alternative.
     visual->AdvanceAnis();
-    visual->CalcVertexPositions();
 
     zCProgMeshProto* morphMesh = visual->GetMorphMesh();
     if ( !morphMesh )
         return;
 
-    float3* posList = morphMesh->GetPositionList()->Array;
+    MorphBlend::LogPrototypeBudget( visual );
+
+    // GPU fold: everything below - the deform, the per-wedge ExVertexStruct expansion and the vertex-buffer
+    // re-upload - becomes one Dispatch per submesh the backend records later this frame. All that happens
+    // here is snapshotting the channel state.
+    //
+    // No CPU fallback inside this mode: the vertex buffers are GPU-written DEFAULT-heap UAVs, so nothing here
+    // could write them. An instance Register() refuses (see MorphGpu.cpp) keeps the undeformed conversion
+    // pose, which is what every out-of-range morph attachment already draws.
+    if ( MorphGpu::IsActive() ) {
+        MorphGpu::Register( visual, meshInfo );
+        return;
+    }
+
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.VerifyMorphBlend ) {
+        // Runs both deforms and reports the worst disagreement. Deliberately rate-limited rather than
+        // per-mesh-per-frame; one bad visual will still show up within a second or two.
+        const float deviation = MorphBlend::CompareAgainstEngine( visual );
+        static size_t s_lastReportFrame = 0;
+        static float s_worstSeen = 0.0f;
+        if ( deviation >= 0.0f ) {
+            s_worstSeen = std::max( s_worstSeen, deviation );
+        }
+        if ( now - s_lastReportFrame > 300 ) {
+            s_lastReportFrame = now;
+            LogInfo() << "MorphBlend verify: worst deviation " << s_worstSeen << " units over the last 300 frames";
+            s_worstSeen = 0.0f;
+        }
+    }
+
+    // The deform. 'posList' ends up pointing at whichever one produced this frame's positions.
+    const float3* posList = nullptr;
+    static std::vector<float3> reimplementedPositions;
+    if ( settings.UseReimplementedMorphBlend && !settings.VerifyMorphBlend ) {
+        int restCount = 0;
+        const float3* rest = visual->GetRestPositions( restCount );
+        zCArrayAdapt<float3>* livePositions = morphMesh->GetPositionList();
+        if ( rest && restCount >= livePositions->NumInArray && livePositions->NumInArray > 0 ) {
+            static std::vector<MorphBlend::ChannelState> channels;
+            MorphBlend::CaptureChannels( visual, channels );
+            reimplementedPositions.resize( livePositions->NumInArray );
+            MorphBlend::Apply( channels, rest, livePositions->NumInArray, reimplementedPositions.data() );
+            posList = reimplementedPositions.data();
+        }
+    }
+    if ( !posList ) {
+        // Engine deform (also the fallback when the rest positions aren't available). VerifyMorphBlend
+        // already called this inside CompareAgainstEngine, but it is idempotent for a given state.
+        visual->CalcVertexPositions();
+        posList = morphMesh->GetPositionList()->Array;
+    }
     static std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
         vertices.clear();
@@ -2046,7 +2170,11 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         for ( auto const& it : meshInfo->Meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
+                    // Accessor, not the member: an instance that has been out of morph range for a while
+                    // has had its dynamic buffer handed back, and this is the draw that needs it again.
+                    if ( GfxVertexBuffer* vb = mi->GetMeshVertexBuffer() ) {
+                        vb->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
+                    }
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -2056,13 +2184,17 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
 }
 
 /** Extracts a 3DS-Mesh from a zCVisual */
-void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo ) {
+void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo, const float3* positionOverride, int positionOverrideCount ) {
     ZoneScoped;
 
     XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
     XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 
-    float3* posList = visual->GetPositionList()->Array;
+    // Wedges index the full position list, so a short override would read out of bounds - ignore it.
+    zCArrayAdapt<float3>* livePositions = visual->GetPositionList();
+    const float3* posList = ( positionOverride && positionOverrideCount >= livePositions->NumInArray )
+        ? positionOverride
+        : livePositions->Array;
 
     std::list<std::vector<ExVertexStruct>*> vertexBuffers;
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
@@ -2129,11 +2261,20 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         if ( meshInfo->MorphMeshVisual ) {
-            // We need to keep original indices so that we can reuse them(we can't optimize them)
-            // Use dynamic buffer since we'll reupload it every frame we see this visual
-
-            // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+            // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: both deform paths address
+            // this buffer by WEDGE INDEX, so the wedge numbering has to survive.
+            if ( MorphGpu::IsActive() ) {
+                // GPU fold: a DEFAULT-heap UAV written by MorphFold.hlsl, never by the CPU. Initialized with
+                // this conversion's pose, so it is drawable before its first fold; the fold only ever
+                // rewrites the leading 12-byte Position of each vertex.
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ),
+                    static_cast<GfxVertexBuffer::EBindFlags>( GfxVertexBuffer::B_VERTEXBUFFER | GfxVertexBuffer::B_UNORDERED_ACCESS ),
+                    GfxVertexBuffer::U_DEFAULT );
+            } else {
+                // CPU deform: re-uploaded whole by UpdateMorphMeshVisual every animation frame this instance
+                // is inside kMorphMeshMaxDistance, so it has to stay CPU-writable.
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+            }
         } else {
             // Reduced caster geometry for the distant shadow cascades, rebuilt from this sub-mesh's own
             // progressive-mesh data. Built here because it is expressed in the pre-optimization wedge
@@ -2201,15 +2342,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             i++;
         }
 
-        MeshInfo* wmi = new MeshInfo;
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
-
-        // Init and fill them
-        wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
-        meshInfo->FullMesh = wmi;
+        // MeshVisualInfo::FullMesh is gone: it was write-only, two IMMUTABLE buffers per converted visual
+        // costing only VRAM and address space. WrapVertexBuffers still runs - the draw paths read
+        // BaseIndexLocation above.
     }
 
     // Every submesh was empty: don't let the ±FLT_MAX seeds turn MeshSize into an infinity.
