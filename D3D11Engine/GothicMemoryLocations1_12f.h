@@ -19,6 +19,7 @@ struct GothicMemoryLocations {
         static const unsigned int s_globFreePart = 0x008BA1F8;
         static const unsigned int zCOption = 0x008AE3AC;
         static const unsigned int zRenderer = 0x0090BD90;
+        static const unsigned int screen = 0;
         static const unsigned int sysEvents = 0x00509530;
     };
 

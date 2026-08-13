@@ -205,6 +205,7 @@ struct GothicMemoryLocations {
         static const unsigned int zCOption = 0x009B4350;
         //static const unsigned int zCParser = 0xAB40C0;
         static const unsigned int zRenderer = 0x00AF9728;
+        static const unsigned int screen = 0;
         static const unsigned int zSound = 0x00B18A5C;
     };
 
