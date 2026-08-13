@@ -419,23 +419,18 @@ void D3D12GraphicsEngine::RenderGTAO() {
     // which is what the next barrier on each asserts as its "before" state. Skipping any of these produces a
     // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible artifact.
     {
-        D3D12_RESOURCE_BARRIER post[5] = {
-            TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_GtaoEdges.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_GtaoAOTerm[srcTerm].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+        D3D12ResourceTransition post[5] = {
+            { m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+            { m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { m_GtaoEdges.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { m_GtaoAOTerm[srcTerm].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
             {},   // m_GtaoNormals, only when the reconstruction path actually ran (see below)
         };
         UINT postCount = 4;
         if ( !gbufNormals ) {
-            post[postCount++] = TransitionBarrier( m_GtaoNormals.Get(),
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            post[postCount++] = { m_GtaoNormals.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
         }
-        m_CmdList->ResourceBarrier( postCount, post );
+        m_CmdList->TransitionBarriers( post, postCount );
     }
     if ( gbufNormals ) {
         m_CmdList->TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
