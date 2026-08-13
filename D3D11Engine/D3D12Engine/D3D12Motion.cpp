@@ -258,15 +258,14 @@ void D3D12GraphicsEngine::BeginMotionGBuffer() {
 
     // FillCameraVelocity left the velocity target in a shader-read state at the end of last frame; flip it back.
     if ( m_VelocityInPixelState ) {
-        D3D12_RESOURCE_BARRIER toRT[] = {
-            TransitionBarrier( m_VelocityBuffer.Get(),
+        m_CmdList->TransitionBarriers( {
+            { m_VelocityBuffer.Get(),
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_RENDER_TARGET ),
-            TransitionBarrier( m_NormalBuffer.Get(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET },
+            { m_NormalBuffer.Get(),
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_RENDER_TARGET ),
-        };
-        m_CmdList->ResourceBarrier( _countof( toRT ), toRT );
+                D3D12_RESOURCE_STATE_RENDER_TARGET },
+        } );
         m_VelocityInPixelState = false;
     }
 
@@ -313,13 +312,10 @@ void D3D12GraphicsEngine::FillCameraVelocity() {
     // Velocity RENDER_TARGET -> UAV (the compute pass writes it), depth DEPTH_WRITE -> shader-read. The DSV must
     // be unbound before the depth buffer leaves DEPTH_WRITE, same dance RenderBloom/RenderFogAndGodRays do.
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-    D3D12_RESOURCE_BARRIER toCompute[] = {
-        TransitionBarrier( m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
-    };
-    m_CmdList->ResourceBarrier( _countof( toCompute ), toCompute );
+    m_CmdList->TransitionBarriers( {
+        { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+    } );
 
     m_CmdList->SetPipelineState( m_Pipelines.Motion.FillPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.Motion.FillRootSig.Get() );
@@ -334,15 +330,13 @@ void D3D12GraphicsEngine::FillCameraVelocity() {
     // Depth back to DEPTH_WRITE (the fog/god-ray block downstream expects it there);
     // velocity to the combined shader-read state, which is where the debug overlay and next frame's
     // BeginMotionGBuffer both expect to find it.
-    D3D12_RESOURCE_BARRIER toRead[] = {
-        TransitionBarrier( m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-        TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-        TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE ),
-    };
-    m_CmdList->ResourceBarrier( _countof( toRead ), toRead );
+    m_CmdList->TransitionBarriers( {
+        { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+        { m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+    } );
     m_VelocityInPixelState = true;
 
     // Restore the render target the caller had bound (the scene color + depth), so the fog/god-ray and post
