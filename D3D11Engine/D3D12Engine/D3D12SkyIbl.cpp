@@ -343,13 +343,10 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     // claim a "before" state it was not in (RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH on every rebuild — i.e.
     // continuously, as Gothic's day cycle keeps the sky colours dirty).
     if ( m_SkyEnvInReadState ) {
-        D3D12_RESOURCE_BARRIER toUav[2] = {
-            TransitionBarrier( m_SkyEnvCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_SkyIrradCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, toUav );
+        m_CmdList->TransitionBarriers( {
+        	{ m_SkyEnvCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        	{ m_SkyIrradCube.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
         m_SkyEnvInReadState = false;
     }
 
@@ -388,13 +385,13 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     // writes them while sampling mip 0. That is why m_SkyEnvMip0SrvSlot is a mip-0-only view — a full-chain SRV
     // would require the whole resource in one state.
     {
-        D3D12_RESOURCE_BARRIER b = TransitionBarrier( m_SkyEnvCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         // Subresource index for a mip-mapped array is mip + face * mipCount — mip 0 of all 6 faces.
+        D3D12ResourceTransition mip0[6];
         for ( UINT face = 0; face < 6; ++face ) {
-            b.Transition.Subresource = face * kSkyEnvMips + 0;
-            m_CmdList->ResourceBarrier( 1, &b );
+            mip0[face] = { m_SkyEnvCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, face * kSkyEnvMips + 0 };
         }
+        m_CmdList->TransitionBarriers( mip0, 6 );
     }
 
     // --- Pass 2: GGX prefilter -> env cube mips 1..N -------------------------------------------------------
@@ -434,20 +431,17 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     // Mip 0 is currently NON_PIXEL_SHADER_RESOURCE and mips 1..N UNORDERED_ACCESS; bring the whole resource to
     // PIXEL_SHADER_RESOURCE with per-subresource transitions that state the correct "before" for each.
     {
-        std::vector<D3D12_RESOURCE_BARRIER> barriers;
-        barriers.reserve( 6 * kSkyEnvMips + 1 );
+        D3D12ResourceTransition barriers[6 * kSkyEnvMips + 1];
+        UINT n = 0;
         for ( UINT face = 0; face < 6; ++face ) {
             for ( UINT m = 0; m < kSkyEnvMips; ++m ) {
-                auto b = TransitionBarrier( m_SkyEnvCube.Get(),
+                barriers[n++] = { m_SkyEnvCube.Get(),
                     m == 0 ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-                b.Transition.Subresource = face * kSkyEnvMips + m;
-                barriers.push_back( b );
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, face * kSkyEnvMips + m };
             }
         }
-        barriers.push_back( TransitionBarrier( m_SkyIrradCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ) );
-        m_CmdList->ResourceBarrier( static_cast<UINT>( barriers.size() ), barriers.data() );
+        barriers[n++] = { m_SkyIrradCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        m_CmdList->TransitionBarriers( barriers, n );
     }
 
     m_SkyEnvInReadState = true;
