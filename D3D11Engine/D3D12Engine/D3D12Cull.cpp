@@ -227,9 +227,14 @@ void D3D12GraphicsEngine::BuildHiZ() {
     // Depth prepass left it in DEPTH_WRITE; make it readable for the copy pass and hand it straight back at the
     // end (the VOB/skeletal prepass draws right after need DEPTH_WRITE). Same round-trip DispatchLightCulling
     // and RenderSSAO already do — the DSV stays bound but nothing draws while it is in a read state.
-    pre[preCount++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+    // Both sides of this whole function are compute-only (HiZCopyPSO/HiZReducePSO dispatches and, on the far
+    // end, CSCull) -- m_HiZ never leaves this file and m_DepthBuffer's read window here is scoped tightly to
+    // the copy dispatch below, so narrowing sync to compute-only is safe on both transitions.
+    pre[preCount++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, kBarrierSyncUnspecified, D3D12_BARRIER_SYNC_COMPUTE_SHADING };
     if ( m_HiZInSrvState ) {
-        pre[preCount++] = { m_HiZ.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+        pre[preCount++] = { m_HiZ.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COMPUTE_SHADING };
         m_HiZInSrvState = false;
     }
     m_CmdList->TransitionBarriers( pre, preCount );
@@ -248,8 +253,8 @@ void D3D12GraphicsEngine::BuildHiZ() {
     m_CmdList->SetPipelineState( m_Pipelines.Cull.HiZReducePSO.Get() );
     for ( UINT m = 1; m < m_HiZMipCount; ++m ) {
         // The parent level is read through its UAV, so a UAV barrier (not a transition) is what orders the
-        // previous dispatch's writes against this one's reads.
-        m_CmdList->UAVBarrier( m_HiZ.Get() );
+        // previous dispatch's writes against this one's reads. Both dispatches are HiZReducePSO -- compute-only.
+        m_CmdList->UAVBarrier( m_HiZ.Get(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
 
         const uint32_t consts[4] = { m_HiZMipUavSlot[m - 1], m_HiZMipUavSlot[m], 0u, 0u };
         m_CmdList->SetComputeRoot32BitConstants( 0, 4, consts, 0 );
@@ -258,10 +263,13 @@ void D3D12GraphicsEngine::BuildHiZ() {
         m_CmdList->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
     }
 
-    // CSCull reads the pyramid as an SRV (it needs per-level Load(); an RWTexture2D cannot select a mip).
+    // CSCull reads the pyramid as an SRV (it needs per-level Load(); an RWTexture2D cannot select a mip). The
+    // depth buffer's read here was compute-only (HiZCopyPSO, above); CSCull's read of m_HiZ is compute too.
     m_CmdList->TransitionBarriers( {
-        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-        { m_HiZ.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, kBarrierSyncUnspecified },
+        { m_HiZ.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COMPUTE_SHADING },
     } );
     m_HiZInSrvState = true;
 }

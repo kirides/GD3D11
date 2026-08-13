@@ -340,15 +340,23 @@ public:
     // implemented out-of-line in D3D12Barrier.cpp. Callers still speak legacy D3D12_RESOURCE_STATES;
     // whether the machine actually has enhanced barriers is decided internally (see
     // SetEnhancedBarriersDeviceSupport / List7 below) and is invisible at the call site.
+    /** syncBeforeHint/syncAfterHint narrow the enhanced-barrier sync scope for callers that know exactly
+        which pipeline stage(s) touch the resource on each side (see D3D12ResourceTransition in
+        D3D12Barrier.h for why); leave at the kBarrierSyncUnspecified default to get the table's
+        conservative (but always-correct) scope for the state pair. */
     void TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
-        UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES );
+        UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+        D3D12_BARRIER_SYNC syncBeforeHint = kBarrierSyncUnspecified, D3D12_BARRIER_SYNC syncAfterHint = kBarrierSyncUnspecified );
     void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions ) { TransitionBarriers( transitions.begin(), static_cast<UINT>( transitions.size() ) ); }
     /** Runtime-sized counterpart of the initializer_list overload above, for call sites that build a
         variable-length batch in a loop (e.g. a per-mip reset pass) rather than writing it out literally. */
     void TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count );
-    void UAVBarrier( ID3D12Resource* resource );
+    /** syncHint narrows the UAV barrier's sync scope the same way TransitionBarrier's hints do (both
+        sides of a UAV barrier share one scope, since it orders one dispatch's writes against another's
+        reads on the SAME resource). Defaults to the table's D3D12_BARRIER_SYNC_ALL_SHADING. */
+    void UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
     void UAVBarriers( std::initializer_list<ID3D12Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
-    void UAVBarriers( ID3D12Resource* const* resources, UINT count );
+    void UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
     /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path unconditionally -- see
         D3D12Barrier.cpp for why aliasing doesn't map cleanly onto the enhanced-barrier model. */
     void AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after );

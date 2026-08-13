@@ -119,13 +119,17 @@ namespace {
 } // namespace
 
 void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
-    D3D12_RESOURCE_STATES after, UINT subresource ) {
+    D3D12_RESOURCE_STATES after, UINT subresource, D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint ) {
     if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
         D3D12_BARRIER_SYNC syncBefore, syncAfter;
         D3D12_BARRIER_ACCESS accessBefore, accessAfter;
         D3D12_BARRIER_LAYOUT layoutBefore, layoutAfter;
         if ( MapResourceState( before, syncBefore, accessBefore, layoutBefore )
             && MapResourceState( after, syncAfter, accessAfter, layoutAfter ) ) {
+            // A caller-supplied hint narrows the table's conservative default; access/layout are left alone
+            // since those describe the operation and resource-state itself, not which stage performs it.
+            if ( syncBeforeHint != kBarrierSyncUnspecified ) syncBefore = syncBeforeHint;
+            if ( syncAfterHint != kBarrierSyncUnspecified ) syncAfter = syncAfterHint;
             if ( IsBufferResource( resource ) ) {
                 CD3DX12_BUFFER_BARRIER bufferBarrier( syncBefore, syncAfter, accessBefore, accessAfter, resource );
                 CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
@@ -150,7 +154,9 @@ void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transition
         LogWarn() << "D3D12Barrier: TransitionBarriers batch of " << count
                   << " exceeds kMaxBatchedBarriers (" << kMaxBatchedBarriers << "); issuing one barrier per element.";
 #endif
-        for ( UINT i = 0; i < count; ++i ) TransitionBarrier( transitions[i].Resource, transitions[i].Before, transitions[i].After, transitions[i].Subresource );
+        for ( UINT i = 0; i < count; ++i )
+            TransitionBarrier( transitions[i].Resource, transitions[i].Before, transitions[i].After,
+                transitions[i].Subresource, transitions[i].SyncBefore, transitions[i].SyncAfter );
         return;
     }
 
@@ -169,6 +175,8 @@ void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transition
                 ok = false;
                 break;
             }
+            if ( t.SyncBefore != kBarrierSyncUnspecified ) syncBefore = t.SyncBefore;
+            if ( t.SyncAfter != kBarrierSyncUnspecified ) syncAfter = t.SyncAfter;
             if ( IsBufferResource( t.Resource ) ) {
                 bufferBarriers[numBuffer++] = CD3DX12_BUFFER_BARRIER( syncBefore, syncAfter, accessBefore, accessAfter, t.Resource );
             } else {
@@ -197,9 +205,9 @@ void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transition
     m_List->ResourceBarrier( numLegacy, legacyBarriers );
 }
 
-void D3D12CmdList::UAVBarrier( ID3D12Resource* resource ) {
+void D3D12CmdList::UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint ) {
     if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
-        constexpr D3D12_BARRIER_SYNC kSync = D3D12_BARRIER_SYNC_ALL_SHADING;
+        const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
         constexpr D3D12_BARRIER_ACCESS kAccess = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
         if ( resource && IsBufferResource( resource ) ) {
             CD3DX12_BUFFER_BARRIER bufferBarrier( kSync, kSync, kAccess, kAccess, resource );
@@ -222,19 +230,19 @@ void D3D12CmdList::UAVBarrier( ID3D12Resource* resource ) {
     m_List->ResourceBarrier( 1, &barrier );
 }
 
-void D3D12CmdList::UAVBarriers( ID3D12Resource* const* resources, UINT count ) {
+void D3D12CmdList::UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
     if ( count == 0 ) return;
     if ( count > kMaxBatchedBarriers ) {
 #ifdef DEBUG_D3D11
         LogWarn() << "D3D12Barrier: UAVBarriers batch of " << count
                   << " exceeds kMaxBatchedBarriers (" << kMaxBatchedBarriers << "); issuing one barrier per element.";
 #endif
-        for ( UINT i = 0; i < count; ++i ) UAVBarrier( resources[i] );
+        for ( UINT i = 0; i < count; ++i ) UAVBarrier( resources[i], syncHint );
         return;
     }
 
     if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
-        constexpr D3D12_BARRIER_SYNC kSync = D3D12_BARRIER_SYNC_ALL_SHADING;
+        const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
         constexpr D3D12_BARRIER_ACCESS kAccess = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
         D3D12_TEXTURE_BARRIER textureBarriers[kMaxBatchedBarriers];
         D3D12_BUFFER_BARRIER bufferBarriers[kMaxBatchedBarriers];

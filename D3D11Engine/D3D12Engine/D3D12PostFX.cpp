@@ -177,7 +177,10 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// PIXEL_SHADER_RESOURCE — reading a resource through an SRV while it is in the wrong state returns garbage on
 	// real hardware (this, plus the bloom-mip UAV-vs-SRV state bug below, was the flickering-black-screen cause).
 	if ( !m_SceneColorInPixelState ) {
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+		// The prefilter dispatch immediately below is the ONLY consumer of this transition -- narrow the
+		// enhanced-barrier "after" sync from the table's default (every non-pixel stage) to compute alone.
+		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, kBarrierSyncUnspecified, D3D12_BARRIER_SYNC_COMPUTE_SHADING );
 		m_SceneColorInPixelState = true;
 	}
 	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
@@ -188,6 +191,12 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// texture is undefined. Combined NON_PIXEL|PIXEL so both the compute chain (t0/t1) and the graphics composite
 	// can read it. The bloom mips start each frame in UNORDERED_ACCESS (created that way, and reset back at the
 	// end of this function) so "before" is always UNORDERED_ACCESS here.
+	//
+	// NOT sync-scope-hinted: every intermediate mip is read by the next COMPUTE step, but the one mip that ends
+	// up as finalBloomSrvSlot (down[0] when mipCount==1, else up[0]) is ALSO read by the composite PIXEL shader
+	// below -- narrowing this call's "after" sync to compute-only would under-synchronize that read. Telling the
+	// two cases apart here is exactly the kind of per-call precision this pass deliberately didn't risk without
+	// GPU/debug-layer verification, given this file's own history with bloom-state races (see the comment above).
 	constexpr D3D12_RESOURCE_STATES kBloomRead =
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	auto toBloomRead = [&]( ID3D12Resource* res ) {
