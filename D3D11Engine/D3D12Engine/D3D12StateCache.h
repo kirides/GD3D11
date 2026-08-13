@@ -3,6 +3,8 @@
 #include <wrl/client.h>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include "D3D12Barrier.h"
 
 // Engine-wide redundant-state filter for the D3D12 backend.
 //
@@ -76,6 +78,9 @@ public:
     void Attach( ID3D12GraphicsCommandList* list ) noexcept {
         InvalidateAll();
         m_List = list;
+        // New COM object -> any cached ID3D12GraphicsCommandList7 QueryInterface result is stale.
+        m_List7Queried = false;
+        m_List7.Reset();
     }
 
     const Stats& GetStats() const noexcept { return m_Stats; }
@@ -329,6 +334,30 @@ public:
         m_List->SetComputeRootUnorderedAccessView( param, address );
     }
 
+    // ---- Barriers --------------------------------------------------------------------------------
+    // Like ResourceBarrier below, these don't mutate any state the shadow tracks -- they are grouped
+    // separately only because they carry real logic (the enhanced-barrier translation and fallback),
+    // implemented out-of-line in D3D12Barrier.cpp. Callers still speak legacy D3D12_RESOURCE_STATES;
+    // whether the machine actually has enhanced barriers is decided internally (see
+    // SetEnhancedBarriersDeviceSupport / List7 below) and is invisible at the call site.
+    //
+    // FOUNDATION ONLY as of this writing: no call site in the backend uses these yet. All existing
+    // barrier traffic still goes through the legacy ResourceBarrier() passthrough just below.
+    void TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
+        UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES );
+    void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions );
+    void UAVBarrier( ID3D12Resource* resource );
+    void UAVBarriers( std::initializer_list<ID3D12Resource*> resources );
+    /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path unconditionally -- see
+        D3D12Barrier.cpp for why aliasing doesn't map cleanly onto the enhanced-barrier model. */
+    void AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after );
+
+    /** Set once at backend startup from the device's D3D12Device::EnhancedBarriersSupported(). The
+        backend drives exactly one device per process, so a single process-wide flag (mirroring
+        D3D12RootLayout.cpp's HighestRootSignatureVersion cache) is enough -- no per-instance plumbing
+        needed on every D3D12CmdList. */
+    static void SetEnhancedBarriersDeviceSupport( bool supported ) noexcept { s_DeviceSupportsEnhancedBarriers = supported; }
+
     // ---- Untracked passthrough -----------------------------------------------------------------
     // None of these mutate the pipeline state the shadow tracks.
     void ResourceBarrier( UINT num, const D3D12_RESOURCE_BARRIER* barriers ) { m_List->ResourceBarrier( num, barriers ); }
@@ -476,4 +505,24 @@ private:
     RootArgs m_Gfx;
     RootArgs m_Compute;
     Stats m_Stats;
+
+    // ---- Enhanced-barrier support ----------------------------------------------------------------
+    // Queried lazily, once per underlying list object (see Attach() above for the invalidation).
+    // ID3D12GraphicsCommandList7::Barrier is a pure COM interface -- QueryInterface, no new proc
+    // address -- so this needs nothing beyond what device/list creation already resolved.
+    mutable Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> m_List7;
+    mutable bool m_List7Queried = false;
+
+    ID3D12GraphicsCommandList7* List7() const noexcept {
+        if ( !m_List7Queried ) {
+            m_List7Queried = true;
+            m_List.As( &m_List7 );   // best-effort; leaves m_List7 null on an older runtime
+        }
+        return m_List7.Get();
+    }
+
+    // Whether the device this backend drives reports EnhancedBarriersSupported; see
+    // SetEnhancedBarriersDeviceSupport above. Defaults to false, so barrier calls safely take the
+    // legacy path even if the one call site that sets this were somehow skipped.
+    static inline bool s_DeviceSupportsEnhancedBarriers = false;
 };

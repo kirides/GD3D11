@@ -32,6 +32,10 @@ public:
 
     const std::string& GetDeviceDescription() const { return m_DeviceDescription; }
 
+    /** True if the device reports D3D12_OPTIONS12.EnhancedBarriersSupported. Purely informational —
+        enhanced barriers are optional, never required, so this doesn't affect Init()'s success. */
+    bool EnhancedBarriersSupported() const { return m_EnhancedBarriersSupported; }
+
     ID3D12Device*       GetDevice()      const { return m_Device.Get(); }
     ID3D12CommandQueue* GetDirectQueue() const { return m_DirectQueue.Get(); }
     ID3D12CommandQueue* GetCopyQueue()   const { return m_CopyQueue.Get(); }
@@ -45,4 +49,5 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandQueue>  m_DirectQueue;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue>  m_CopyQueue;
     std::string m_DeviceDescription;
+    bool m_EnhancedBarriersSupported = false;
 };

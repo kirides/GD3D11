@@ -4,6 +4,7 @@
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
+#include <d3dx12_barriers.h>
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zCView.h"
@@ -80,6 +81,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: device creation failed.";
         return XR_FAILED;
     }
+    D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
     if ( !CreateAllocators() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create allocators.";
         return XR_FAILED;
