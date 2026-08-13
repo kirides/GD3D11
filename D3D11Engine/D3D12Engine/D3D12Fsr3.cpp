@@ -37,10 +37,90 @@
 
 // No #pragma comment(lib): every entry point below is resolved at runtime, see Fsr3Dx12Api.
 
+#include <unordered_map>
+
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
 namespace {
+    inline D3D12GraphicsEngine* Engine12() {
+        return static_cast<D3D12GraphicsEngine*>( Engine::GraphicsEngine );
+    }
+
+    // Side table pairing an ID3D12Resource FFX is holding onto with the D3D12MA::Allocation that owns its
+    // VRAM, so FfxResourceDeallocator can release the ALLOCATION (returning the suballocated block to the
+    // pool) rather than just the bare COM resource, which would leak the block for the rest of the process.
+    // FFX only calls these from whichever thread drives FSR3 context create/dispatch — this engine's main
+    // render thread, always — so no locking.
+    std::unordered_map<ID3D12Resource*, ComPtr<D3D12MA::Allocation>> g_FsrAllocations;
+
+    /** Resource allocation callback registered with the FFX DX12 backend (ffxRegisterResourceAllocatorDX12),
+        so FSR3's own internal working buffers come out of the engine's D3D12MA pool — subject to the same
+        VRAM-budget tracking and suballocation as everything else — instead of a bespoke CreateCommittedResource
+        call the pool never sees. */
+    ffxReturnCode_t FfxResourceAllocator( uint32_t /*effectId*/, D3D12_RESOURCE_STATES initialState,
+        const D3D12_HEAP_PROPERTIES* pHeapProps, const D3D12_RESOURCE_DESC* pD3DDesc,
+        const FfxApiResourceDescription* /*pFfxDesc*/, const D3D12_CLEAR_VALUE* pOptimizedClear,
+        ID3D12Resource** ppD3DResource ) {
+        D3D12GraphicsEngine* engine = Engine12();
+        D3D12MA::Allocator* allocator = engine ? engine->GetAllocator() : nullptr;
+        if ( !allocator || !pHeapProps || !pD3DDesc || !ppD3DResource ) return FFX_API_RETURN_ERROR_PARAMETER;
+
+        // The simple ALLOCATION_DESC path only understands the three standard heap types (see D3D12MemAlloc.h);
+        // a CUSTOM heap (UMA tuning) falls back to a direct committed resource so an unusual request never
+        // silently mis-allocates instead of just skipping the pool for that one resource.
+        if ( pHeapProps->Type == D3D12_HEAP_TYPE_DEFAULT || pHeapProps->Type == D3D12_HEAP_TYPE_UPLOAD
+            || pHeapProps->Type == D3D12_HEAP_TYPE_READBACK ) {
+            D3D12MA::ALLOCATION_DESC allocDesc = {};
+            allocDesc.HeapType = pHeapProps->Type;
+            ComPtr<D3D12MA::Allocation> allocation;
+            if ( FAILED( allocator->CreateResource( &allocDesc, pD3DDesc, initialState, pOptimizedClear,
+                allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( ppD3DResource ) ) ) ) {
+                return FFX_API_RETURN_ERROR_MEMORY;
+            }
+            g_FsrAllocations.emplace( *ppD3DResource, std::move( allocation ) );
+            return FFX_API_RETURN_OK;
+        }
+
+        ID3D12Device* device = engine->GetD3DDevice();
+        if ( !device ) return FFX_API_RETURN_ERROR;
+        return SUCCEEDED( device->CreateCommittedResource( pHeapProps, D3D12_HEAP_FLAG_NONE, pD3DDesc,
+            initialState, pOptimizedClear, IID_PPV_ARGS( ppD3DResource ) ) )
+            ? FFX_API_RETURN_OK : FFX_API_RETURN_ERROR_MEMORY;
+    }
+
+    ffxReturnCode_t FfxResourceDeallocator( uint32_t /*effectId*/, ID3D12Resource* pResource ) {
+        if ( !pResource ) return FFX_API_RETURN_OK;
+        // Dropping the Allocation (if this resource came through the pool above) returns its suballocated
+        // block to D3D12MA; either way the resource's own single reference — the one FFX handed back to us —
+        // still needs releasing.
+        g_FsrAllocations.erase( pResource );
+        pResource->Release();
+        return FFX_API_RETURN_OK;
+    }
+
+    /** Heap allocation callback (backs FSR3's aliased/transient internal resources — frame interpolation's
+        use case, which this engine deliberately does not enable; see the file header). D3D12MA has no public
+        "hand me a raw heap" API — it owns heaps internally for its own suballocation — so this goes straight
+        to the device, exactly what FFX's own built-in default heap allocator does. Registered anyway for
+        completeness: if a future SDK update starts using it for the FSR3Upscaler-only context, it already
+        behaves correctly instead of silently falling back to FFX's unregistered default. */
+    ffxReturnCode_t FfxHeapAllocator( uint32_t /*effectId*/, const D3D12_HEAP_DESC* pHeapDesc, bool /*aliasable*/,
+        ID3D12Heap** ppD3DHeap, uint64_t* pHeapStartOffset ) {
+        D3D12GraphicsEngine* engine = Engine12();
+        ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
+        if ( !device || !pHeapDesc || !ppD3DHeap ) return FFX_API_RETURN_ERROR_PARAMETER;
+        if ( FAILED( device->CreateHeap( pHeapDesc, IID_PPV_ARGS( ppD3DHeap ) ) ) ) return FFX_API_RETURN_ERROR_MEMORY;
+        // We hand back the WHOLE heap — no suballocation offset within it.
+        if ( pHeapStartOffset ) *pHeapStartOffset = 0;
+        return FFX_API_RETURN_OK;
+    }
+
+    ffxReturnCode_t FfxHeapDeallocator( uint32_t /*effectId*/, ID3D12Heap* pD3DHeap, uint64_t /*heapStartOffset*/,
+        uint64_t /*heapSize*/ ) {
+        if ( pD3DHeap ) pD3DHeap->Release();
+        return FFX_API_RETURN_OK;
+    }
 
     // Lazily-resolved FFX DX12 entry points.
     //
@@ -70,6 +150,11 @@ namespace {
         decltype( &ffxFsr3UpscalerGetSharedResourceDescriptions ) GetSharedResourceDescriptions = nullptr;
         decltype( &ffxFsr3UpscalerGetJitterPhaseCount )          GetJitterPhaseCount = nullptr;
         decltype( &ffxFsr3UpscalerGetJitterOffset )              GetJitterOffset = nullptr;
+        decltype( &ffxRegisterConstantBufferAllocatorDX12 )      RegisterConstantBufferAllocator = nullptr;
+        decltype( &ffxRegisterResourceAllocatorDX12 )            RegisterResourceAllocator = nullptr;
+        decltype( &ffxRegisterResourceDeallocatorDX12 )          RegisterResourceDeallocator = nullptr;
+        decltype( &ffxRegisterHeapAllocatorDX12 )                RegisterHeapAllocator = nullptr;
+        decltype( &ffxRegisterHeapDeallocatorDX12 )              RegisterHeapDeallocator = nullptr;
 
         /** Resolves every entry point on first call. Idempotent, and sticky on failure so a
             missing DLL is reported once rather than retried every frame. */
@@ -94,24 +179,44 @@ namespace {
                 }
             };
 
-            get( GetScratchMemorySize, "ffxGetScratchMemorySizeDX12" );
-            get( GetDevice, "ffxGetDeviceDX12" );
-            get( GetCommandList, "ffxGetCommandListDX12" );
-            get( GetResource, "ffxGetResourceDX12" );
-            get( GetResourceDescription, "ffxGetResourceDescriptionDX12" );
-            get( GetInterface, "ffxGetInterfaceDX12" );
-            get( ContextCreate, "ffxFsr3UpscalerContextCreate" );
-            get( ContextDispatch, "ffxFsr3UpscalerContextDispatch" );
-            get( ContextDestroy, "ffxFsr3UpscalerContextDestroy" );
-            get( GetSharedResourceDescriptions, "ffxFsr3UpscalerGetSharedResourceDescriptions" );
-            get( GetJitterPhaseCount, "ffxFsr3UpscalerGetJitterPhaseCount" );
-            get( GetJitterOffset, "ffxFsr3UpscalerGetJitterOffset" );
+#define GET_FUNC_NAME(x) #x
+            
+            get( GetScratchMemorySize, GET_FUNC_NAME(ffxGetScratchMemorySizeDX12) );
+            get( GetDevice, GET_FUNC_NAME(ffxGetDeviceDX12) );
+            get( GetCommandList, GET_FUNC_NAME(ffxGetCommandListDX12) );
+            get( GetResource, GET_FUNC_NAME(ffxGetResourceDX12) );
+            get( GetResourceDescription, GET_FUNC_NAME(ffxGetResourceDescriptionDX12) );
+            get( GetInterface, GET_FUNC_NAME(ffxGetInterfaceDX12) );
+            get( ContextCreate, GET_FUNC_NAME(ffxFsr3UpscalerContextCreate) );
+            get( ContextDispatch, GET_FUNC_NAME(ffxFsr3UpscalerContextDispatch) );
+            get( ContextDestroy, GET_FUNC_NAME(ffxFsr3UpscalerContextDestroy) );
+            get( GetSharedResourceDescriptions, GET_FUNC_NAME(ffxFsr3UpscalerGetSharedResourceDescriptions) );
+            get( GetJitterPhaseCount, GET_FUNC_NAME(ffxFsr3UpscalerGetJitterPhaseCount) );
+            get( GetJitterOffset, GET_FUNC_NAME(ffxFsr3UpscalerGetJitterOffset) );
+
+            // get( RegisterConstantBufferAllocator, GET_FUNC_NAME(ffxRegisterConstantBufferAllocatorDX12) );
+            // TODO: use D3D12GraphicsEngine Allocator for those.
+            get( RegisterResourceAllocator, GET_FUNC_NAME(ffxRegisterResourceAllocatorDX12) );
+            get( RegisterResourceDeallocator, GET_FUNC_NAME(ffxRegisterResourceDeallocatorDX12) );
+            get( RegisterHeapAllocator, GET_FUNC_NAME(ffxRegisterHeapAllocatorDX12) );
+            get( RegisterHeapDeallocator, GET_FUNC_NAME(ffxRegisterHeapDeallocatorDX12) );
+            
+#undef GET_FUNC_NAME
 
             if ( !all ) {
                 FreeLibrary( Module );
                 Module = nullptr;
                 return false;
             }
+
+            // Route FSR3's own internal resource/heap allocations through the engine's D3D12MA-backed
+            // allocator instead of leaving them on the DLL's built-in default (a bare CreateCommittedResource
+            // untracked by the pool/VRAM-budget accounting everything else in this engine goes through).
+            // Global registration, so it only needs doing once — this Load() is itself sticky/idempotent.
+            RegisterResourceAllocator( &FfxResourceAllocator );
+            RegisterResourceDeallocator( &FfxResourceDeallocator );
+            RegisterHeapAllocator( &FfxHeapAllocator );
+            RegisterHeapDeallocator( &FfxHeapDeallocator );
 
             Ok = true;
             return true;

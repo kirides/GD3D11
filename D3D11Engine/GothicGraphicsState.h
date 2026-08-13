@@ -796,7 +796,7 @@ struct GothicRendererSettings {
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
-        SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
+        SkyIblIntensity = 0.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
         SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
         SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
         DefaultMaterialRoughness = 0.80f; // D3D12 only: roughness for materials with no _FX/_ORM map
@@ -934,6 +934,8 @@ struct GothicRendererSettings {
         ThreadedShadowCulling = true;
         
         ShadowStrength = 0.20f;
+        
+        EnableBloom = true;
     }
 
     void ApplyGraphicsPreset();
