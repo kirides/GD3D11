@@ -104,6 +104,8 @@ public:
         return DefaultColor;
     }
 
+    static _zCView* GetScreen() { return *reinterpret_cast<_zCView**>(GothicMemoryLocations::GlobalObjects::screen); }
+
     static int rnd2( float x ) {
         if ( x > 0 ) return static_cast<int>(x + 0.5);
         else return static_cast<int>(x - 0.5);
@@ -138,6 +140,54 @@ public:
 #endif
     }
 
+    void RecalcChildsPos()
+    {
+        _zCView* child = childs.root;
+        while ( child ) {
+            child->pposx = 0;
+            child->pposy = 0;
+            child->CalcPixelPos( child->pposx, child->pposy );
+            child->RecalcChildsPos();
+            child = child->next;
+        }
+    }
+
+    void CalcPixelPos( int& ppx, int& ppy )
+    {
+        if ( !owner ) return;
+        ppx += owner->nax( vposx );
+        ppy += owner->nay( vposy );
+        owner->CalcPixelPos( ppx, ppy );
+    }
+
+    void RecalcChildsSize()
+    {
+        _zCView* child = childs.root;
+        while ( child ) {
+            child->SetSize( child->vsizex, child->vsizey );
+            child->RecalcChildsSize();
+            child = child->next;
+        }
+    }
+
+    void SetSize( int vx, int vy )
+    {
+        vsizex = vx; if ( vsizex <= 0 ) vsizex = 1;
+        vsizey = vy; if ( vsizey <= 0 ) vsizey = 1;
+        psizex = 0;
+        psizey = 0;
+        GetPixelSize( psizex, psizey );
+        if ( psizex <= 0 ) psizex = 1;
+        if ( psizey <= 0 ) psizey = 1;
+    }
+
+    void GetPixelSize( int& px, int& py )
+    {
+        if ( !owner ) return;
+        px = owner->nax( vsizex );
+        py = owner->nay( vsizey );
+    }
+
     void PrintChars( int x, int y, const zSTRING& str ) {
         reinterpret_cast<void( __fastcall* )( _zCView*, int, int, int, const zSTRING& )>
             ( GothicMemoryLocations::zCView::PrintChars )( this, 0, x, y, str );
@@ -148,9 +198,9 @@ public:
     }
 
     static void SetVirtualMode( int x, int y, int bpp ) {
-        reinterpret_cast<void( __cdecl* )(int, int, int, void*)>
-            (GothicMemoryLocations::zCView::SetMode)(x, y, bpp, nullptr);
-    }
+            reinterpret_cast<void( __cdecl* )(int, int, int, void*)>
+                (GothicMemoryLocations::zCView::SetMode)(x, y, bpp, nullptr);
+        }
 };
 
 const int MAX_ITEMS = 150;
