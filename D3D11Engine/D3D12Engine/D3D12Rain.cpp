@@ -191,13 +191,11 @@ void D3D12GraphicsEngine::AdvanceRain() {
     // otherwise a paused/stationary first frame would leave the buffer in COMMON/NON_PIXEL_SHADER_RESOURCE
     // with no dispatch ever running to flip it, and the draw's SRV read would be reading stale state.
     if ( m_RainDynamicNeedsInitialBarrier ) {
-        auto b = TransitionBarrier( m_RainBufferDynamic.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_RainBufferDynamic.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_RainDynamicNeedsInitialBarrier = false;
     } else if ( m_RainDynamicInReadState ) {
         // DrawRainParticles left it in NON_PIXEL_SHADER_RESOURCE last frame — flip back before this CS writes it.
-        auto b = TransitionBarrier( m_RainBufferDynamic.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_RainBufferDynamic.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_RainDynamicInReadState = false;
     }
 
@@ -252,8 +250,7 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     // Flip the dynamic buffer UAV -> NON_PIXEL_SHADER_RESOURCE for the VS's root-SRV read (AdvanceRain
     // guarantees it's in UNORDERED_ACCESS by the time it returns, whether or not it actually dispatched).
     {
-        auto b = TransitionBarrier( m_RainBufferDynamic.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_RainBufferDynamic.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         m_RainDynamicInReadState = true;
     }
 
@@ -781,8 +778,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
     // Return the map to DEPTH_WRITE if last frame's readers left it in ALL_SHADER_RESOURCE.
     if ( m_RainShadowInReadState ) {
-        auto toDepth = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-        cmdList->ResourceBarrier( 1, &toDepth );
+        cmdList->TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
         m_RainShadowInReadState = false;
     }
 
@@ -868,7 +864,6 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     // resource leaves DEPTH_WRITE fails GPU validation on the next draw ("resource state ... invalid for use as
     // depth-read/depth-write"). The caller re-establishes the scene-color RT for the lit passes.
     cmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-    auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
-    cmdList->ResourceBarrier( 1, &toRead );
+    cmdList->TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
     m_RainShadowInReadState = true;
 }
