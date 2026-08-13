@@ -1828,8 +1828,8 @@ D3D12GraphicsEngine::GrassCBData D3D12GraphicsEngine::MakeGrassConstants() const
 	static_assert( sizeof( GrassCBData ) == 32, "GrassCBData must be 8 DWORDs to match Vegetation.hlsl's GrassCB" );
 	const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	GrassCBData gcb = {};
-	gcb.Time = Engine::GAPI->GetTimeSeconds();
-	gcb.PrevTime = gcb.Time - Engine::GAPI->GetFrameTimeSec();
+	gcb.Time = Engine::GAPI->GetStableTimeSec();
+	gcb.PrevTime = Engine::GAPI->GetPreviousStableTimeSec();
 	gcb.WindStrength = settings.WindQuality > 0 ? settings.GlobalWindStrength : 0.0f;
 	if ( settings.HeroAffectsObjects ) {
 		gcb.PlayerPosWS = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );

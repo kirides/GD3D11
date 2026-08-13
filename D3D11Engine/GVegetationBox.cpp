@@ -421,8 +421,8 @@ void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer&
     XMFLOAT3 G_NormalVS;
     XMStoreFloat3( &G_NormalVS, XMVector3TransformNormal( XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f ), view) );
     gcb.G_NormalVS = G_NormalVS;
-    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
-    gcb.G_PrevTime = gcb.G_Time - Engine::GAPI->GetFrameTimeSec();
+    gcb.G_Time = Engine::GAPI->GetStableTimeSec();
+    gcb.G_PrevTime = Engine::GAPI->GetPreviousStableTimeSec();
     gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0
         ? Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength
         : 0;

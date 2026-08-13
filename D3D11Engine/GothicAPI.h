@@ -693,6 +693,40 @@ public:
     /** Returns global time */
     float GetTimeSeconds();
 
+    /** Called once per frame from each backend's OnEndFrame, after everything for the frame has been
+        recorded. Snapshots this frame's GetFrameTimeSec() (GetPreviousFrameTimeSec() hands it out for
+        the whole of the NEXT frame), and rolls StableTimeSec (GetStableTimeSec()) forward — stashing
+        its pre-roll value first, so GetPreviousStableTimeSec() can hand out exactly the GetStableTimeSec()
+        value that the frame which just ended rendered with. See the three getters for why none of them
+        are derived from a fresh GetTimeSeconds()/GetFrameTimeSec() call. */
+    void OnEndFrame() {
+        PreviousFrameTimeSec = GetFrameTimeSec();
+        PreviousStableTimeSec = StableTimeSec;
+        StableTimeSec += PreviousFrameTimeSec;
+    }
+
+    /** Returns the frame time (seconds) of the last fully-completed frame — see OnEndFrame(). */
+    float GetPreviousFrameTimeSec() const { return PreviousFrameTimeSec; }
+
+    /** Frame-stable substitute for GetTimeSeconds(): a running total built purely from summed
+        GetFrameTimeSec() snapshots (see OnEndFrame()), fixed for the entire current frame instead of
+        tracking ZenGin's live timer. GetTimeSeconds() itself can change value between two call sites
+        within the same frame (e.g. a nested menu loop re-entering zCTimer::ResetTimer, or simply a
+        depth prepass and a later color pass observing different totalTimeFloatSecs), which desyncs any
+        per-vertex animation (wind sway, …) driven straight from it — the prepass and the color pass end
+        up rasterizing the swayed geometry at different positions and z-fight. Use this wherever a
+        time-driven quantity must render identically across every pass of one frame. */
+    float GetStableTimeSec() const { return StableTimeSec; }
+
+    /** Returns the exact GetStableTimeSec() value the PREVIOUS frame rendered with — the literal prior
+        total, stashed in OnEndFrame() before StableTimeSec rolls forward. Use this instead of
+        `GetStableTimeSec() - GetPreviousFrameTimeSec()`: that reconstruction happens to check out
+        algebraically (both terms are updated together, from the same OnEndFrame() call, so the delta
+        it subtracts is guaranteed to be the one that produced GetStableTimeSec()'s last increment) but
+        it needlessly conflates a timestamp with a duration and re-derives what OnEndFrame() already
+        has on hand — store-and-return is the harder-to-misuse form of the same value. */
+    float GetPreviousStableTimeSec() const { return PreviousStableTimeSec; }
+
     /** Builds the static mesh instancing cache */
     void BuildStaticMeshInstancingCache();
 
@@ -1111,6 +1145,16 @@ private:
 
     /** Bumped once per OnWorldUpdate. See GetFrameNumber(). */
     size_t FrameNumber = 0;
+
+    /** Snapshot of GetFrameTimeSec() taken once at the end of the frame that just finished. See
+        GetPreviousFrameTimeSec(). */
+    float PreviousFrameTimeSec = 0.0f;
+
+    /** Running total of PreviousFrameTimeSec, one frame-stable "current time". See GetStableTimeSec(). */
+    float StableTimeSec = 0.0f;
+
+    /** StableTimeSec's value as of the start of the frame that just finished. See GetPreviousStableTimeSec(). */
+    float PreviousStableTimeSec = 0.0f;
 
     /** Looks up the extracted skeletal mesh data for a live zCModel, NPC-keyed first, then by
      *  visual name. Returns nullptr while no data exists or a background extraction is still
