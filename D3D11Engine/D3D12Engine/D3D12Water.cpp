@@ -387,24 +387,22 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
         const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
             ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-        D3D12_RESOURCE_BARRIER pre[4] = {
-            TransitionBarrier( m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE ),
-            TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE ),
-            TransitionBarrier( m_WaterSceneCopy.Get(), kWaterCopyReadState, D3D12_RESOURCE_STATE_COPY_DEST ),
-            TransitionBarrier( m_WaterDepthCopy.Get(), kWaterCopyReadState, D3D12_RESOURCE_STATE_COPY_DEST ),
-        };
-        m_CmdList->ResourceBarrier( _countof( pre ), pre );
+        m_CmdList->TransitionBarriers( {
+        	{ m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
+        	{ m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
+        	{ m_WaterSceneCopy.Get(), kWaterCopyReadState, D3D12_RESOURCE_STATE_COPY_DEST },
+        	{ m_WaterDepthCopy.Get(), kWaterCopyReadState, D3D12_RESOURCE_STATE_COPY_DEST },
+        } );
 
         m_CmdList->CopyResource( m_WaterSceneCopy.Get(), m_SceneColor.Get() );
         m_CmdList->CopyResource( m_WaterDepthCopy.Get(), m_DepthBuffer.Get() );
 
-        D3D12_RESOURCE_BARRIER post[4] = {
-            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
-            TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
-            TransitionBarrier( m_WaterSceneCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState ),
-            TransitionBarrier( m_WaterDepthCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState ),
-        };
-        m_CmdList->ResourceBarrier( _countof( post ), post );
+        m_CmdList->TransitionBarriers( {
+        	{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+        	{ m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+        	{ m_WaterSceneCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
+        	{ m_WaterDepthCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
+        } );
         m_SceneColorInPixelState = false;   // the scene target is back to RENDER_TARGET regardless of before
 
         // Re-bind what the geometry passes had: HDR scene RTV + the main DSV.
