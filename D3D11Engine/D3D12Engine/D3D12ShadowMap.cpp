@@ -775,9 +775,8 @@ void D3D12ShadowMap::Prepare() {
 
 	// Return the map to DEPTH_WRITE if last frame's lit sampling left it in PIXEL_SHADER_RESOURCE.
 	if ( m_InPixelState ) {
-		auto toDepth = TransitionBarrier( m_Map.Get(),
+		m_E->m_CmdList->TransitionBarrier( m_Map.Get(),
 			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-		m_E->m_CmdList->ResourceBarrier( 1, &toDepth );
 		m_InPixelState = false;
 	}
 
@@ -1427,8 +1426,6 @@ void D3D12ShadowMap::TransitionToReadState( D3D12CmdList& cmdList ) {
 	// frame's Prepare(). (The point-shadow cube and the rain map do their own transition inside their own pass,
 	// which is self-contained in one list.)
 	if ( !cmdList || !m_Map || m_InPixelState ) return;
-	auto toSrv = TransitionBarrier( m_Map.Get(),
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-	cmdList->ResourceBarrier( 1, &toSrv );
+	cmdList->TransitionBarrier( m_Map.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 	m_InPixelState = true;
 }
