@@ -461,8 +461,7 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* t
 
     // Use the active frame's existing command list instead of creating temporary allocators & command lists
     if ( m_FrameOpen && m_CmdList ) {
-        auto toSRV = TransitionBarrier( texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &toSRV );
+        m_CmdList->TransitionBarrier( texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
         return;
     }
 
@@ -478,6 +477,8 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* t
         transitionAllocator.Get(), nullptr, IID_PPV_ARGS( transitionCmdList.ReleaseAndGetAddressOf() ) ) ) )
         return;
 
+    // Bare ID3D12GraphicsCommandList (not the D3D12CmdList wrapper) -- this transient list is built and thrown
+    // away outside the normal per-frame recording path, so it stays on the legacy transition API.
     auto toSRV = TransitionBarrier( texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     transitionCmdList->ResourceBarrier( 1, &toSRV );
     if ( FAILED( transitionCmdList->Close() ) ) return;
@@ -1225,9 +1226,7 @@ void D3D12GraphicsEngine::BindSceneColorTarget() {
 	// it back from PIXEL_SHADER_RESOURCE (last frame's resolve left it there) to RENDER_TARGET when needed.
 	if ( !m_SceneColor || !m_CmdList ) return;
 	if ( m_SceneColorInPixelState ) {
-		auto toRT = TransitionBarrier( m_SceneColor.Get(),
-			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-		m_CmdList->ResourceBarrier( 1, &toRT );
+		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 		m_SceneColorInPixelState = false;
 	}
 	const bool haveDepth = m_DepthBuffer && m_DsvHeap;
@@ -1276,9 +1275,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	DX_ZONE( m_CmdList.Get(), "Tonemap resolve (HDR->display)" );
 
 	if ( !m_SceneColorInPixelState ) {
-		auto toSrv = TransitionBarrier( m_SceneColor.Get(),
-			D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		m_SceneColorInPixelState = true;
 	}
 
@@ -1492,9 +1489,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 	if ( !m_Pipelines.HdrEncode.PSO || !m_Pipelines.HdrEncode.RootSig || m_HdrDisplaySrvSlot == UINT_MAX ) return;
 	DX_ZONE( m_CmdList.Get(), "HDR scanout encode (display->swapchain)" );
 
-	auto toSrv = TransitionBarrier( m_HdrDisplay.Get(),
-		D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-	m_CmdList->ResourceBarrier( 1, &toSrv );
+	m_CmdList->TransitionBarrier( m_HdrDisplay.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 
 	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
@@ -1524,9 +1519,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 
 	// Back to the resting state the next frame's OnBeginFrame expects to clear.
-	auto toRt = TransitionBarrier( m_HdrDisplay.Get(),
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_CmdList->TransitionBarrier( m_HdrDisplay.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 }
 
 
@@ -1937,9 +1930,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
-    auto toRT = TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(),
-        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
-    m_CmdList->ResourceBarrier( 1, &toRT );
+    m_CmdList->TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
     // The swapchain stays transitioned to RENDER_TARGET even in HDR mode — EncodeHdrDisplayToBackBuffer
     // writes it at the end of Present — but everything the frame draws goes to the display target.
@@ -2195,9 +2186,7 @@ XRESULT D3D12GraphicsEngine::Present() {
     // it into the ST.2084 signal the swapchain scans out. No-op in SDR (the display target IS the backbuffer).
     EncodeHdrDisplayToBackBuffer();
 
-    auto toPresent = TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
-    m_CmdList->ResourceBarrier( 1, &toPresent );
+    m_CmdList->TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
 
     // Submit any batched texture/buffer uploads accumulated this frame and insert the single
     // copy->direct cross-queue wait BEFORE the frame's graphics execute, so everything sampled below
@@ -2604,8 +2593,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
     m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 
-    auto toCopySrc = TransitionBarrier( captureTex.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-    m_CmdList->ResourceBarrier( 1, &toCopySrc );
+    m_CmdList->TransitionBarrier( captureTex.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
 
     D3D12_RESOURCE_DESC capDesc = captureTex->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
