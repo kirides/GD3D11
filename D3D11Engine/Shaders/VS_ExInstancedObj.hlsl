@@ -15,7 +15,8 @@ cbuffer WindParams : register(b1)
      float globalTime;
      float minHeight;
      float maxHeight;
-     float2 padding0;
+     float prevGlobalTime; // globalTime as of the previous frame, for wind-sway motion vectors
+     float padding0;
      float3 playerPos;
      float padding1;
 };
@@ -180,17 +181,28 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     localMaxHeight = meta.maxHeight;
 #endif
 
+    // Previous-frame position, swayed with last frame's wind phase (prevGlobalTime) rather than reusing
+    // this frame's swayed `position` — otherwise, for static instances where InstancePrevWorldMatrix ==
+    // InstanceWorldMatrix, the sway motion cancels out of the velocity entirely (both clip positions carry
+    // the identical current-frame displacement), understating swaying grass/foliage as motion-vector-static
+    // and leaving it to smear under TAA/motion blur instead of resolving crisply.
+    float3 prevPosition = Input.vPosition;
+
 #if SHD_INFLUENCE
-    
+
     if (Input.InstanceWind.y > 0)
     {
-        // HERO MOVING BUSHES SHADER
+        // HERO MOVING BUSHES SHADER — applied to prevPosition too, using the CURRENT playerPos (no
+        // previous-frame player position is tracked). Time-independent, so it cancels correctly out of
+        // the velocity when the player hasn't moved; omitting it (as before) leaked the WHOLE push
+        // offset as bogus motion every frame the effect was active, regardless of what actually moved.
         position += CalculatePlayerInfluence(playerPos, position, localMinHeight, localMaxHeight, Input.InstanceWorldMatrix);
+        prevPosition += CalculatePlayerInfluence(playerPos, prevPosition, localMinHeight, localMaxHeight, Input.InstanceWorldMatrix);
     }
 #endif
-    
+
 #if SHD_WIND
-    
+
     if (Input.InstanceWind.x > 0)
     {
         // WIND SHADER
@@ -208,14 +220,24 @@ VS_OUTPUT VSMain( VS_INPUT Input )
             localMaxHeight,
             Input.InstanceWind.x
         );
+
+        prevPosition += ApplyTreeWind(
+            Input.vPosition,
+            normalize(windDir),
+            vertexHeightNorm,
+            prevGlobalTime,
+            Input.InstanceWorldMatrix,
+            localMaxHeight,
+            Input.InstanceWind.x
+        );
     }
 #endif
-    
+
     // Common processing for both cases
     float3 worldPos = mul(float4(position, 1.0), Input.InstanceWorldMatrix).xyz;
-    
+
     // Calculate previous world position for motion vectors
-    float3 prevWorldPos = mul(float4(position, 1.0), Input.InstancePrevWorldMatrix).xyz;
+    float3 prevWorldPos = mul(float4(prevPosition, 1.0), Input.InstancePrevWorldMatrix).xyz;
 
     Output.vPosition = mul(float4(worldPos, 1.0), frame.M_ViewProj);
     Output.vTexcoord = Input.vTex1;
