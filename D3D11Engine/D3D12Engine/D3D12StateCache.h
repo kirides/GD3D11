@@ -340,14 +340,15 @@ public:
     // implemented out-of-line in D3D12Barrier.cpp. Callers still speak legacy D3D12_RESOURCE_STATES;
     // whether the machine actually has enhanced barriers is decided internally (see
     // SetEnhancedBarriersDeviceSupport / List7 below) and is invisible at the call site.
-    //
-    // FOUNDATION ONLY as of this writing: no call site in the backend uses these yet. All existing
-    // barrier traffic still goes through the legacy ResourceBarrier() passthrough just below.
     void TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
         UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES );
-    void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions );
+    void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions ) { TransitionBarriers( transitions.begin(), static_cast<UINT>( transitions.size() ) ); }
+    /** Runtime-sized counterpart of the initializer_list overload above, for call sites that build a
+        variable-length batch in a loop (e.g. a per-mip reset pass) rather than writing it out literally. */
+    void TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count );
     void UAVBarrier( ID3D12Resource* resource );
-    void UAVBarriers( std::initializer_list<ID3D12Resource*> resources );
+    void UAVBarriers( std::initializer_list<ID3D12Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
+    void UAVBarriers( ID3D12Resource* const* resources, UINT count );
     /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path unconditionally -- see
         D3D12Barrier.cpp for why aliasing doesn't map cleanly onto the enhanced-barrier model. */
     void AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after );
