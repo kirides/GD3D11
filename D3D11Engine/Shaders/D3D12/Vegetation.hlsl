@@ -8,7 +8,7 @@ cbuffer FrameCB : register(b0) { float4x4 ViewProj; };
 // normal directly instead of carrying one through the CB).
 cbuffer GrassCB : register(b1)
 {
-    float G_Time;             float G_WindStrength;    float G_HeroAffectStrength; float _gpad0;
+    float G_Time;             float G_WindStrength;    float G_HeroAffectStrength; float G_PrevTime;
     float3 G_PlayerPosWS;     float _gpad1;
 };
 cbuffer FogCB : register(b2) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
@@ -104,7 +104,7 @@ struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : 
 // z-fights against its own depth (the color PSO tests GREATER_EQUAL against what the prepass wrote). The host
 // side has the matching obligation: the same GrassCB (G_Time above all) must be pushed to every pass in a
 // frame, which is why D3D12GraphicsEngine::MakeGrassConstants exists.
-float3 GrassWorldPos( VS_IN i )
+float3 GrassWorldPos( VS_IN i, float time )
 {
     float3 wpos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
 
@@ -112,9 +112,9 @@ float3 GrassWorldPos( VS_IN i )
     wind += sin( i.pos.x * 0.001f ) * 0.5f + 0.5f;
     wind += 0.2f;
 
-    wpos.xz += sin( G_Time + wind ) * 2.0f * i.pos.y * G_WindStrength;
-    wpos.xz += sin( G_Time * 3.0f + wind ) * 1.55f * i.pos.y * G_WindStrength;
-    wpos.xz += sin( G_Time * 5.0f + wind ) * 1.2f * i.pos.y * G_WindStrength;
+    wpos.xz += sin( time + wind ) * 2.0f * i.pos.y * G_WindStrength;
+    wpos.xz += sin( time * 3.0f + wind ) * 1.55f * i.pos.y * G_WindStrength;
+    wpos.xz += sin( time * 5.0f + wind ) * 1.2f * i.pos.y * G_WindStrength;
 
     if ( G_HeroAffectStrength > 0 )
         wpos.xz += GrassHeroAffectOffsetXZ( wpos, i.pos.y );
@@ -125,7 +125,7 @@ float3 GrassWorldPos( VS_IN i )
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    float3 wpos = GrassWorldPos( i );
+    float3 wpos = GrassWorldPos( i, G_Time );
 
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv = i.uv;
@@ -191,7 +191,7 @@ struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_DEPTH_OUT VSDepth( VS_IN i )
 {
     VS_DEPTH_OUT o;
-    o.clip = mul( float4( GrassWorldPos( i ), 1.0 ), ViewProj );
+    o.clip = mul( float4( GrassWorldPos( i, G_Time ), 1.0 ), ViewProj );
     o.uv = i.uv;
     return o;
 }
@@ -226,17 +226,18 @@ struct VS_DEPTH_GBUF_OUT
 VS_DEPTH_GBUF_OUT VSDepthGBuf( VS_IN i )
 {
     VS_DEPTH_GBUF_OUT o;
-    float3 wpos = GrassWorldPos( i );
+    float3 wpos = GrassWorldPos( i, G_Time );
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv   = i.uv;
     o.wpos = wpos;
-    // CAMERA-ONLY velocity: the previous position is fed the CURRENT world position, so the sway itself reports
-    // as static. Reconstructing last frame's sway would mean carrying last frame's G_Time and re-evaluating the
-    // whole sine stack, and the result would still be wrong for the hero-push term (the player moved too).
-    // This is exactly what FillCameraVelocity used to synthesize for these pixels — no worse, one pass earlier,
-    // and now correct at silhouettes where the fill's depth reprojection was picking up the terrain behind.
+    // Re-evaluate the sway at last frame's wind phase (G_PrevTime, carried in the same GrassCB) instead of
+    // reusing this frame's swayed `wpos` — the old CAMERA-ONLY approach fed prevClip the CURRENT world
+    // position, so the sway itself reported zero velocity and TAA/motion blur smeared visibly swaying grass
+    // as if it were static. The hero-push term still uses the CURRENT G_PlayerPosWS for both evaluations
+    // (no previous-frame player position is tracked), which under-reports motion only very close to the
+    // player — a much smaller error than dropping the wind sway's motion entirely.
     o.currClip = mul( float4( wpos, 1.0 ), UnjitteredViewProj );
-    o.prevClip = mul( float4( wpos, 1.0 ), PrevViewProj );
+    o.prevClip = mul( float4( GrassWorldPos( i, G_PrevTime ), 1.0 ), PrevViewProj );
     return o;
 }
 
