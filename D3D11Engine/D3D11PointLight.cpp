@@ -604,6 +604,19 @@ void D3D11PointLight::StartReInit() {
     }
 
     if ( !DynamicLight ) {
+        // cancel() only sets the stop flag for a job that hasn't started reading it yet - it can't
+        // interrupt one that's already inside InitResources(). If that job is still running when we
+        // get called again (e.g. AcquireShadowMap re-evaluating resolution every frame, or a nearby
+        // vob move invalidating the cache again before the previous refresh landed), enqueuing another
+        // one here would race a second InitResources() against the first on the same WorldMeshCache/
+        // VobCache/SkeletalVobCache vectors - unsynchronized concurrent mutation, real heap corruption,
+        // not just staleness. Let the in-flight job finish; WorldCacheInvalid stays true until it does,
+        // so the next StartReInit() call (from wherever) will pick up the invalidation then.
+        if ( m_PendingInit.future.valid()
+            && m_PendingInit.future.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready ) {
+            return;
+        }
+
         InitDone = false;
 
         // Add to queue

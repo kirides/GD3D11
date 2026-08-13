@@ -77,8 +77,9 @@ public:
     static void __fastcall hooked_oCWorldDisableVob( zCWorld* thisptr, void* unknwn, zCVob* vob ) {
         hook_infunc
 
-            // Remove it
-            Engine::GAPI->OnRemovedVob( vob, thisptr );
+            // Disable is a temporary hide, not destruction - the same zCVob* can come back via
+            // oCWorldEnableVob, so don't tear down its VobLightInfo/shadow buffers (tearDownLight=false).
+            Engine::GAPI->OnRemovedVob( vob, thisptr, /*tearDownLight*/ false );
 
         hook_outfunc
             

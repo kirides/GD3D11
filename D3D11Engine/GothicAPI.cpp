@@ -2154,7 +2154,7 @@ static void EraseVobFromLeafList( std::vector<LeafVobEntry>& list, const VobInfo
 }
 
 /** Called when a VOB got removed from the world */
-void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
+void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
     //LogInfo() << "Removing vob: " << vob;
 
     // Symmetric to the OnAddVob side: an inventory preview vob never entered the engine's world-scoped state, so
@@ -2206,7 +2206,9 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     VobInfo* vi = VobMap[vob];
     SkeletalVobInfo* svi = SkeletalVobMap[vob];
 
-    // Tell all dynamic lights that we removed a vob they could have cached
+    // Tell all dynamic lights that we removed a vob they could have cached. This is about other
+    // lights' shadow-caster caches referencing vi/svi, not about `vob` itself being a light, so it
+    // always applies regardless of tearDownLight.
     for ( auto& vlit : VobLightMap ) {
         if ( vi && vlit.second->LightShadowBuffers )
             vlit.second->LightShadowBuffers->OnVobRemovedFromWorld( vi );
@@ -2215,7 +2217,12 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
             vlit.second->LightShadowBuffers->OnVobRemovedFromWorld( svi );
     }
 
-    VobLightInfo* li = VobLightMap[static_cast<zCVobLight*>(vob)];
+    // A disabled zCVobLight keeps its slot in the BSP leaf's LightVobList (that array mirrors the
+    // world's static light layout, not enabled state) and can be re-enabled with the same zCVob*.
+    // Tearing its VobLightInfo down here would delete state that CollectLeafVobs' mirror
+    // (base->Lights) and VobLightMap still expect to find, and that the vob's own IsEnabled() check
+    // is what's supposed to filter out of rendering - not us deleting and recreating it every toggle.
+    VobLightInfo* li = tearDownLight ? VobLightMap[static_cast<zCVobLight*>(vob)] : nullptr;
 
     // Erase it from the particle-effect list
     auto pit = std::ranges::find(ParticleEffectVobs, vob );
@@ -2230,8 +2237,10 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         DecalVobs.pop_back();
     }
 
-    // Erase it from the list of lights
-    VobLightMap.erase( static_cast<zCVobLight*>(vob) );
+    // Erase it from the list of lights - only on a real removal (see tearDownLight comment above).
+    if ( tearDownLight ) {
+        VobLightMap.erase( static_cast<zCVobLight*>(vob) );
+    }
 
     // Remove from BSP-Cache
     std::vector<BspInfo*>* nodes = nullptr;
@@ -2339,7 +2348,7 @@ void GothicAPI::OnSetVisual( zCVob* vob ) {
             }
         }
         // This one is already there. Re-Add it!
-        OnRemovedVob( vob, vob->GetHomeWorld() );
+        OnRemovedVob( vob, vob->GetHomeWorld(), /*tearDownLight:*/ false);
     }
 
     OnAddVob( vob, vob->GetHomeWorld() );
@@ -5156,7 +5165,7 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY
                     && vi->Vob->GetLightRange() > minDynamicUpdateLightRange ) {
                     // Create shadowcubemap, if wanted
-                    BaseShadowedPointLight* bpl;
+                    BaseShadowedPointLight* bpl = nullptr;
                     Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi );
                     vi->LightShadowBuffers.reset(bpl);
                 }
@@ -6936,7 +6945,7 @@ static void CollectLeafVobs(
 
                     // Create shadow-buffers for these lights since it was dynamically added to the world
                     if ( !nvi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
-                        BaseShadowedPointLight* bpl;
+                        BaseShadowedPointLight* bpl = nullptr;
                         Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, nvi, true ); // Also flag as dynamic
                         nvi->LightShadowBuffers.reset(bpl);
                     }

@@ -3,6 +3,9 @@
 
 class zCVobLight : public zCVob {
 public:
+    static const zCClassDef* GetStaticClassDef() {
+        return reinterpret_cast<const zCClassDef*>(GothicMemoryLocations::zCClassDef::zCVobLight);
+    }
 
     struct LightInfoFlags {
         uint8_t isStatic : 1;
