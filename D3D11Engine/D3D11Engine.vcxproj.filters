@@ -1356,6 +1356,7 @@
     <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
     <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
     <ClCompile Include="MorphGpu.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

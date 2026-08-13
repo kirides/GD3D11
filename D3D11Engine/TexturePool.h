@@ -9,11 +9,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace {
-    using TextureHandle = std::unique_ptr<RenderToTextureBuffer, std::function<void( RenderToTextureBuffer* )>>;
-    using DepthStencilHandle = std::unique_ptr<RenderToDepthStencilBuffer, std::function<void( RenderToDepthStencilBuffer* )>>;
-}
-
 class TexturePool {
 public:
     struct Description {
@@ -29,14 +24,47 @@ public:
                 && textureFlags == other.textureFlags;
         }
     };
-
-private:
     struct PooledTexture {
         std::shared_ptr<RenderToTextureBuffer> Texture;
         Description Desc;
         uint64_t LastFrameUsed;
         bool InUse;
     };
+
+    // RAII handle: releasing it just clears the pooled entry's InUse flag rather than
+    // destroying the resource, so "returning" a texture to the pool is O(1) and allocation-free.
+    class Handle {
+    public:
+        Handle() noexcept = default;
+        Handle( std::nullptr_t ) noexcept {}
+        explicit Handle( PooledTexture* entry ) noexcept : m_entry( entry ) {}
+        Handle( const Handle& ) = delete;
+        Handle& operator=( const Handle& ) = delete;
+        Handle( Handle&& other ) noexcept : m_entry( other.m_entry ) { other.m_entry = nullptr; }
+        Handle& operator=( Handle&& other ) noexcept {
+            if ( this != &other ) {
+                Release();
+                m_entry = other.m_entry;
+                other.m_entry = nullptr;
+            }
+            return *this;
+        }
+        ~Handle() { Release(); }
+
+        RenderToTextureBuffer* operator->() const { return m_entry->Texture.get(); }
+        RenderToTextureBuffer& operator*() const { return *m_entry->Texture; }
+        RenderToTextureBuffer* get() const { return m_entry ? m_entry->Texture.get() : nullptr; }
+        explicit operator bool() const { return m_entry != nullptr; }
+        friend bool operator==( const Handle& h, std::nullptr_t ) { return h.m_entry == nullptr; }
+        friend bool operator!=( const Handle& h, std::nullptr_t ) { return h.m_entry != nullptr; }
+        void reset() { Release(); m_entry = nullptr; }
+
+    private:
+        void Release() { if ( m_entry ) m_entry->InUse = false; }
+        PooledTexture* m_entry = nullptr;
+    };
+
+private:
 
     ID3D11Device* m_device;
     std::vector<std::unique_ptr<PooledTexture>> m_pool;
@@ -46,10 +74,7 @@ private:
 public:
     TexturePool( ID3D11Device* device ) : m_device( device ) {}
 
-    // The RAII handle the user holds
-    // using TextureHandle = std::unique_ptr<RenderToTextureBuffer, std::function<void( RenderToTextureBuffer* )>>;
-
-    TextureHandle Acquire( const Description& desc ) {
+    Handle Acquire( const Description& desc ) {
         PooledTexture* found = nullptr;
 
         for ( auto& entry : m_pool ) {
@@ -76,10 +101,8 @@ public:
         found->InUse = true;
         found->LastFrameUsed = m_currentFrame;
 
-        // Return RAII handle with custom deleter to "return" to pool
-        return TextureHandle( found->Texture.get(), [found]( RenderToTextureBuffer* ) {
-            found->InUse = false;
-        } );
+        // Return RAII handle; releasing it just clears InUse, the pooled entry stays alive
+        return Handle( found );
     }
 
     void GiveTick() {
@@ -103,6 +126,8 @@ public:
     }
 };
 
+using TextureHandle = TexturePool::Handle;
+
 
 class DepthStencilPool {
 public:
@@ -124,13 +149,47 @@ public:
         }
     };
 
-private:
     struct PooledDepthStencil {
         std::shared_ptr<RenderToDepthStencilBuffer> Buffer;
         Description Desc;
         uint64_t LastFrameUsed;
         bool InUse;
     };
+
+    // RAII handle: releasing it just clears the pooled entry's InUse flag rather than
+    // destroying the resource, so "returning" a buffer to the pool is O(1) and allocation-free.
+    class Handle {
+    public:
+        Handle() noexcept = default;
+        Handle( std::nullptr_t ) noexcept {}
+        explicit Handle( PooledDepthStencil* entry ) noexcept : m_entry( entry ) {}
+        Handle( const Handle& ) = delete;
+        Handle& operator=( const Handle& ) = delete;
+        Handle( Handle&& other ) noexcept : m_entry( other.m_entry ) { other.m_entry = nullptr; }
+        Handle& operator=( Handle&& other ) noexcept {
+            if ( this != &other ) {
+                Release();
+                m_entry = other.m_entry;
+                other.m_entry = nullptr;
+            }
+            return *this;
+        }
+        ~Handle() { Release(); }
+
+        RenderToDepthStencilBuffer* operator->() const { return m_entry->Buffer.get(); }
+        RenderToDepthStencilBuffer& operator*() const { return *m_entry->Buffer; }
+        RenderToDepthStencilBuffer* get() const { return m_entry ? m_entry->Buffer.get() : nullptr; }
+        explicit operator bool() const { return m_entry != nullptr; }
+        friend bool operator==( const Handle& h, std::nullptr_t ) { return h.m_entry == nullptr; }
+        friend bool operator!=( const Handle& h, std::nullptr_t ) { return h.m_entry != nullptr; }
+        void reset() { Release(); m_entry = nullptr; }
+
+    private:
+        void Release() { if ( m_entry ) m_entry->InUse = false; }
+        PooledDepthStencil* m_entry = nullptr;
+    };
+
+private:
 
     ID3D11Device* m_device;
     std::vector<std::unique_ptr<PooledDepthStencil>> m_pool;
@@ -140,7 +199,7 @@ private:
 public:
     DepthStencilPool( ID3D11Device* device ) : m_device( device ) {}
 
-    DepthStencilHandle Acquire( const Description& desc ) {
+    Handle Acquire( const Description& desc ) {
         PooledDepthStencil* found = nullptr;
 
         for ( auto& entry : m_pool ) {
@@ -179,10 +238,8 @@ public:
         found->InUse = true;
         found->LastFrameUsed = m_currentFrame;
 
-        // Return RAII handle with custom deleter to "return" to pool
-        return DepthStencilHandle( found->Buffer.get(), [found]( RenderToDepthStencilBuffer* ) {
-            found->InUse = false;
-        } );
+        // Return RAII handle; releasing it just clears InUse, the pooled entry stays alive
+        return Handle( found );
     }
 
     void GiveTick() {
@@ -257,3 +314,5 @@ public:
         return count;
     }
 };
+
+using DepthStencilHandle = DepthStencilPool::Handle;

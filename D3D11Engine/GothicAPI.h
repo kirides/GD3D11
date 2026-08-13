@@ -402,8 +402,12 @@ public:
     /** Called when a VOB got added to the BSP-Tree or the world */
     void OnAddVob( zCVob* vob, zCWorld* world );
 
-    /** Called when a VOB got removed from the world */
-    void OnRemovedVob( zCVob* vob, zCWorld* world );
+    /** Called when a VOB got removed from the world. tearDownLight=false is for vobs that are merely
+        being hidden (zCVobLight can be enabled/disabled at will, reusing the same zCVob* both times)
+        rather than actually destroyed - the light's VobLightInfo/shadow buffers must survive that, since
+        light collection expects them to persist and relies on zCVobLight::IsEnabled() to filter hidden
+        lights out of rendering, not on the VobLightInfo being torn down and recreated every toggle. */
+    void OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight = true );
 
     /** Called on a SetVisual-Call of a vob */
     void OnSetVisual( zCVob* vob );

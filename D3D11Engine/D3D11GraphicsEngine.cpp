@@ -9708,6 +9708,20 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
         }
     }
 
+    if ( auto vobLight = vob->As<zCVobLight>() ) {
+        auto found = Engine::GAPI->VobLightMap.find( vobLight );
+    }
+
+    LogInfo() << "OnVobRemovedFromWorld: " << vob->GetName() << " (" << std::hex << reinterpret_cast<DWORD>(vob) << ")";
+    // Spacer can delete/undo a light vob mid-frame.
+    // TODO(diagnostic, remove once root-caused): log whenever this actually removes something, so a
+    // crash log tells us whether this scrub path is even reached before the D3D11ShadowMap dynamic_cast
+    // crash, or whether the removal is happening through a path that never calls OnVobRemovedFromWorld.
+    if ( size_t removed = std::erase_if( m_FrameLights, [vob]( VobLightInfo* li ) { return li->Vob == vob; } ) ) {
+        LogWarn() << "D3D11GraphicsEngine::OnVobRemovedFromWorld: scrubbed " << removed
+            << " stale light(s) from m_FrameLights mid-frame (vob=" << vob << ")";
+    }
+
     DebugPointlight = nullptr;
 
     return XR_SUCCESS;

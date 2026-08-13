@@ -959,7 +959,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         }
         // Create shadowmap in case we should have one but haven't got it yet
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
-            BaseShadowedPointLight* bpl;
+            BaseShadowedPointLight* bpl = nullptr;
             // assume this is a dynamic light
             graphicsEngine->CreateShadowedPointLight( &bpl, light, /*dynamic light*/ true );
             light->LightShadowBuffers.reset(bpl);

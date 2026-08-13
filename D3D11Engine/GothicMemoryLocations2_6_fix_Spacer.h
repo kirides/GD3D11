@@ -566,6 +566,7 @@ struct GothicMemoryLocations {
         static const unsigned int zCTexture = 0x00B18D18;
         static const unsigned int oCMobInter = 0;
         static const unsigned int oCMOB = 0;
+        static const unsigned int zCVobLight = 0;
     };
 
     struct oCItemContainer {
