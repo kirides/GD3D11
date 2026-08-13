@@ -148,17 +148,15 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     // A texture cannot be its own SRV and RTV, and the composite below writes the display target — same
     // copy-then-read shape RenderSMAA / RenderSharpen use. m_LdrCopy rests in COPY_DEST.
     {
-        auto b = TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
     }
     m_CmdList->CopyResource( m_LdrCopy.Get(), displayTarget );
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
-            // NON_PIXEL: the two blur passes read it from compute.
-            TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
-        };
-        m_CmdList->ResourceBarrier( 2, b );
+        // NON_PIXEL: the two blur passes read it from compute.
+        m_CmdList->TransitionBarriers( {
+            { m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+            { displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+        } );
     }
 
     // b0 UnderwaterBlurCB — see Shaders/D3D12/Underwater.hlsl. Only the source/destination and the step
@@ -199,9 +197,7 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     // UAV-write -> SRV-read needs a real state transition, not a UAV barrier: a UAV barrier only orders access
     // and performs no cache flush, so the SRV read would be undefined.
     {
-        auto b = TransitionBarrier( m_UnderwaterBlur[0].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_UnderwaterBlur[0].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
     }
 
     // --- Pass 2: vertical, blur[0] -> blur[1]. ---
@@ -213,13 +209,10 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     m_CmdList->Dispatch( groupsX, groupsY, 1 );
 
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
-            TransitionBarrier( m_UnderwaterBlur[1].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_UnderwaterBlur[0].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, b );
+        m_CmdList->TransitionBarriers( {
+        	{ m_UnderwaterBlur[1].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+        	{ m_UnderwaterBlur[0].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
     }
 
     // --- Pass 3: full-res distorted composite back over the display target. ---
@@ -251,12 +244,9 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
     // there), the blur pair back to UNORDERED_ACCESS. The display target stays RENDER_TARGET and bound, ready
     // for Gothic's 2D UI/HUD to composite on top.
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
-            TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST ),
-            TransitionBarrier( m_UnderwaterBlur[1].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, b );
+        m_CmdList->TransitionBarriers( {
+        	{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
+        	{ m_UnderwaterBlur[1].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
     }
 }
