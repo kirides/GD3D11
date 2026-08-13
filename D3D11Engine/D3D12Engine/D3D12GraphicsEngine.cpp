@@ -2025,6 +2025,7 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
         FrameLimiterEndFrame();
     }
     PausedFrameLimiterEndFrame();
+    Engine::GAPI->OnEndFrame();
 
     return XR_SUCCESS;
 }

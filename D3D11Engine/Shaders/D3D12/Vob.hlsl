@@ -11,7 +11,7 @@ cbuffer LightCB : register(b2) {
 cbuffer WindCB : register(b4)
 {
     float3 WindDir;        float WindGlobalTime;
-    float  WindMinHeight;  float WindMaxHeight;   float2 _windPad0;
+    float  WindMinHeight;  float WindMaxHeight;   float WindPrevGlobalTime; float _windPad0;
     float3 WindPlayerPos;  float _windPad1;
 };
 
@@ -81,11 +81,13 @@ SamplerState smpAoClamp : register(s1);
 // Shared by VSMain and VSDepth so the depth prepass writes EXACTLY the bit-for-bit same swayed position as the
 // color pass — any divergence here would make the reversed-Z GREATER_EQUAL depth test discard swaying geometry
 // the color pass draws in front of where the (unswayed) prepass depth said it should be.
-float3 ApplyVobWind( float3 pos, float2 iwind, float4x4 iworld )
+float3 ApplyVobWind( float3 pos, float2 iwind, float4x4 iworld, float time )
 {
     float3 localPos = pos;
 
-    // "Hero moves the bushes": push away from the player, height-masked + distance-falloff.
+    // "Hero moves the bushes": push away from the player, height-masked + distance-falloff. Always evaluated at
+    // the CURRENT player position even when `time` is WindPrevGlobalTime (no previous-frame player position is
+    // tracked) — see VSDepthGBuf for why that's an acceptable, much smaller error than dropping tree sway motion.
     if ( iwind.y > 0 )
         localPos += ApplyHeroInfluence( WindPlayerPos, localPos, WindMinHeight, WindMaxHeight, iworld );
 
@@ -94,7 +96,7 @@ float3 ApplyVobWind( float3 pos, float2 iwind, float4x4 iworld )
     {
         float heightRange = max( WindMaxHeight - WindMinHeight, 0.001 );
         float heightNorm  = saturate( ( pos.y - WindMinHeight ) / heightRange );
-        localPos += ApplyTreeWind( pos, normalize( WindDir ), heightNorm, WindGlobalTime, iworld, WindMaxHeight, iwind.x );
+        localPos += ApplyTreeWind( pos, normalize( WindDir ), heightNorm, time, iworld, WindMaxHeight, iwind.x );
     }
 
     return localPos;
@@ -116,7 +118,7 @@ struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : T
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld );
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
 
     float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
@@ -163,7 +165,7 @@ struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
 {
     VS_DEPTH_OUT o;
-    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld );
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
     float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv = i.uv;
@@ -333,19 +335,20 @@ struct VS_GBUF_OUT
 VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
 {
     VS_GBUF_OUT o;
-    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld );
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
     float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv   = i.uv;
     o.wnrm = mul( i.nrm, (float3x3)i.iworld );
     o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
-    // The SWAYED local position is reused for the previous frame, so a wind-swayed vob reports only its rigid
-    // motion. This deliberately differs from D3D11's VS_ExInstancedObj.hlsl, which feeds the UN-swayed `position`
-    // to M_PrevWorld and therefore reports the entire sway displacement as if it happened in a single frame —
-    // for a tree canopy that is a large bogus velocity every frame, which TAA/FSR resolve as smeared foliage.
-    // Under-reporting sway (leaves ghost slightly) is the far smaller error; correcting it properly needs last
-    // frame's wind phase, which is a follow-up, not a prerequisite.
-    o.prevClip = mul( float4( localPos, 1.0 ), mul( i.iprevworld, PrevViewProj ) );
+    // Re-evaluate the sway at last frame's wind phase (WindPrevGlobalTime) rather than reusing this frame's
+    // swayed `localPos` — for a static instance (iprevworld == iworld) that reuse made the entire sway term
+    // cancel out of the velocity (both clip positions carried the identical current-frame displacement), so a
+    // swaying tree/bush reported only its rigid (usually zero) motion and TAA/FSR resolved the sway as smeared
+    // foliage. The hero-push term still uses the CURRENT WindPlayerPos for both evaluations (no previous-frame
+    // player position is tracked), which under-reports motion only very close to the player.
+    float3 prevLocalPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindPrevGlobalTime );
+    o.prevClip = mul( float4( prevLocalPos, 1.0 ), mul( i.iprevworld, PrevViewProj ) );
     return o;
 }
 

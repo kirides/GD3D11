@@ -1,7 +1,10 @@
 #include "pch.h"
 #include "D3D11PFX_TAA.h"
 
-#include <FidelityFX/host/ffx_fsr3.h>
+// The composite FSR3 effect (upscaler + frame interpolation) is not built by this fork;
+// only the upscaler is. Its jitter helpers are the same Halton sequence the composite
+// header forwarded to, just under their real names.
+#include <FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h>
 
 #include "Engine.h"
 #include "D3D11GraphicsEngine.h"
@@ -148,7 +151,7 @@ void D3D11PFX_TAA::AdvanceJitter() {
     // Advance to next jitter sample
     auto renderWidth = Engine::GraphicsEngine->GetResolution().x;
     auto displayWidth = Engine::GraphicsEngine->GetBackbufferResolution().x;
-    const int32_t phaseCount = ffxFsr3GetJitterPhaseCount( renderWidth, displayWidth );
+    const int32_t phaseCount = ffxFsr3UpscalerGetJitterPhaseCount( renderWidth, displayWidth );
 
     // 2. Advance index safely
     if ( phaseCount > 0 ) {
@@ -161,7 +164,7 @@ void D3D11PFX_TAA::AdvanceJitter() {
     float jitterX = 0.0f;
     float jitterY = 0.0f;
     if ( phaseCount > 0 ) {
-        ffxFsr3GetJitterOffset( &jitterX, &jitterY, m_JitterIndex, phaseCount );
+        ffxFsr3UpscalerGetJitterOffset( &jitterX, &jitterY, m_JitterIndex, phaseCount );
     }
 
     ++m_FrameNumber;

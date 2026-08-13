@@ -366,7 +366,7 @@ private:
     // The per-frame GrassCB (b1). Built ONCE per frame and pushed identically by the prepass, the CSM caster
     // and the lit pass — every grass VS derives its swayed world position from these, so a pass that saw a
     // different G_Time would place the blade somewhere else and z-fight against the prepass' own depth.
-    struct GrassCBData { float Time; float WindStrength; float HeroAffectStrength; float _pad0; XMFLOAT3 PlayerPosWS; float _pad1; };
+    struct GrassCBData { float Time; float WindStrength; float HeroAffectStrength; float PrevTime; XMFLOAT3 PlayerPosWS; float _pad1; };
     GrassCBData MakeGrassConstants() const;
 
     // Binds every frame-constant root argument of World.RootSig (b0 ViewProj, b1 fog, the Forward+ light

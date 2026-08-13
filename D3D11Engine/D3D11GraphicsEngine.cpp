@@ -1665,6 +1665,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
         FrameLimiterEndFrame();
     }
     PausedFrameLimiterEndFrame();
+    Engine::GAPI->OnEndFrame();
     return XR_SUCCESS;
 }
 

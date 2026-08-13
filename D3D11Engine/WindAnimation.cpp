@@ -66,6 +66,7 @@ void UpdateWindAnimation( VS_ExConstantBuffer_Wind& windBuff ) {
     vobAnimation_WindStrength = (1.0f + rainWeight * (rainMaxStrengthMultiplier - 1.0f))
         * Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength;
 
+    windBuff.prevGlobalTime = WindGlobalTime;
     WindGlobalTime += dt * (1.5f * (1.0f + rainWeight * (rainMaxSpeedMultiplier - 1.0f)));
     windBuff.globalTime = WindGlobalTime;
 }

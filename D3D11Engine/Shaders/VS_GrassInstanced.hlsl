@@ -15,10 +15,26 @@ cbuffer GrassCB : register( b1 )
 	float G_Time;
 	float G_WindStrength;
 	float G_HeroAffectStrength;
-	float2 G_Pad1;
+	float G_PrevTime; // G_Time as of the previous frame, for wind-sway motion vectors
+	float G_Pad1;
 	float3 G_PlayerPosWS;
 	float G_Pad2;
 };
+
+// Same per-blade sway formula VSMain uses, factored out so VSMain and its previous-frame
+// evaluation (for motion vectors) can never drift out of sync.
+float2 GrassWindOffsetXZ(float3 localPos, float time, float windStrength)
+{
+	float wind = sin(localPos.z * 0.001f) * 0.5f + 0.5f;
+	wind += sin(localPos.x * 0.001f) * 0.5f + 0.5f;
+	wind += 0.2f;
+
+	float2 offset = 0;
+	offset += sin(time + wind) * 2.0f * localPos.y * windStrength;
+	offset += sin(time * 3.0f + wind) * 1.55f * localPos.y * windStrength;
+	offset += sin(time * 5.0f + wind) * 1.2f * localPos.y * windStrength;
+	return offset;
+}
 
 // HERO AFFECTS CONST
 static const float grassHeroAffectRange = 45.0f;
@@ -62,16 +78,10 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
 	
-	float3 wpos = mul(float4(Input.vPosition,1), Input.InstanceWorldMatrix).xyz;
-	
-	float wind = sin(Input.vPosition.z * 0.001f) * 0.5f + 0.5f;
-	wind += sin(Input.vPosition.x * 0.001f) * 0.5f + 0.5f;
-	wind += 0.2f;
-	
-	
-	wpos.xz += sin(G_Time + wind) * 2.0f * Input.vPosition.y * G_WindStrength;
-	wpos.xz += sin(G_Time * 3.0f + wind) * 1.55f * Input.vPosition.y * G_WindStrength;
-	wpos.xz += sin(G_Time * 5.0f + wind) * 1.2f * Input.vPosition.y * G_WindStrength;
+	float3 basePos = mul(float4(Input.vPosition,1), Input.InstanceWorldMatrix).xyz;
+
+	float3 wpos = basePos;
+	wpos.xz += GrassWindOffsetXZ(Input.vPosition, G_Time, G_WindStrength);
 
 	if (G_HeroAffectStrength > 0)
 	{
@@ -83,10 +93,24 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vNormalVS = G_NormalVS;
 	Output.vWorldPosition = wpos;
 
-	// Motion Vectors - grass uses static world position for velocity
-	// Wind animation is not tracked per-frame, so we output zero velocity
+	// Motion Vectors - re-evaluate the sway at last frame's wind phase (G_PrevTime) instead of reusing
+	// this frame's swayed `wpos`, which previously collapsed the entire per-blade sway out of the
+	// velocity (grass instances don't move rigidly, so prevClipPos == currClipPos for the wind term)
+	// and made TAA/motion blur treat visibly swaying grass as motion-static, blurring it.
+	float3 prevWpos = basePos;
+	prevWpos.xz += GrassWindOffsetXZ(Input.vPosition, G_PrevTime, G_WindStrength);
+
+	// Hero-push must also be re-applied here (using the CURRENT G_PlayerPosWS — no previous-frame player
+	// position is tracked). Time-independent, so this cancels correctly out of the velocity when the
+	// player hasn't moved; omitting it entirely (as before) leaked the WHOLE push offset as bogus motion
+	// every single frame the effect was active, regardless of whether anything actually moved.
+	if (G_HeroAffectStrength > 0)
+	{
+		prevWpos.xz += GrassHeroAffectOffsetXZ(prevWpos, Input.vPosition.y);
+	}
+
 	Output.vCurrClipPos = mul(float4(wpos, 1.0), frame.M_UnjitteredViewProj);
-	Output.vPrevClipPos = mul(float4(wpos, 1.0), frame.M_PrevViewProj);
+	Output.vPrevClipPos = mul(float4(prevWpos, 1.0), frame.M_PrevViewProj);
 
 	return Output;
 }

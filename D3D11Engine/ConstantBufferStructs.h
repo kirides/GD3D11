@@ -275,7 +275,8 @@ struct VS_ExConstantBuffer_Wind {
 
     float minHeight;
     float maxHeight;
-    float2 padding0;
+    float prevGlobalTime; // globalTime as of the previous frame, for wind-sway motion vectors
+    float padding0;
 
     float3 playerPos;
     float padding1;
@@ -332,7 +333,8 @@ struct GrassConstantBuffer {
     float G_Time;
     float G_WindStrength;
     float G_HeroAffectStrength;
-    float2 G_Pad1;
+    float G_PrevTime; // G_Time as of the previous frame, for wind-sway motion vectors
+    float G_Pad1;
     float3 G_PlayerPosWS;
     // Forward+ with hardware MSAA active: PS_Grass sharpens its alpha test into a per-pixel
     // coverage value instead of a hard binary clip, for the MSAA alpha-to-coverage blend mode.
