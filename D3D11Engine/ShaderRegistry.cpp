@@ -148,6 +148,10 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_World>( "PS_World.hlsl" ).with_macros({ {"MOTION_VECTORS", "1"}})  );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_World_NoMV>( "PS_World.hlsl" )  );
 
+    // Lit quad marks (blood/ground decals): modulates by baked per-vertex static light instead of
+    // PS_World's unlit deferred-fill output. See PS_QuadMarkLit.hlsl for why.
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_QuadMarkLit>( "PS_QuadMarkLit.hlsl" )  );
+
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Water>( "PS_Water.hlsl" )
         .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {

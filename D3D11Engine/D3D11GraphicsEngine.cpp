@@ -9189,13 +9189,17 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         if ( lastAlphaFunc != alphaFunc ) {
             auto& state = Engine::GAPI->GetRendererState();
 
-            // MUL/MUL2 are unlit (PS_Simple), everything else lit (PS_World)
+            // MUL/MUL2 are unlit (PS_Simple), everything else lit (PS_QuadMarkLit)
             const bool modulate = (alphaFunc == zMAT_ALPHA_FUNC_MUL || alphaFunc == zMAT_ALPHA_FUNC_MUL2);
-            SetActivePixelShader( modulate ? PShaderID::PS_Simple : PShaderID::PS_World );
+            SetActivePixelShader( modulate ? PShaderID::PS_Simple : PShaderID::PS_QuadMarkLit );
             BindActivePixelShader();
 
             if ( !modulate ) {
                 ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &state.GraphicsState, sizeof( state.GraphicsState ) );
+
+                const float skyLight = Engine::GAPI->GetSkyDayFactor();
+                const float4 quadMarkLight( skyLight, skyLight, skyLight, 0.0f );
+                ActivePS->UpdateBuffer( "QuadMarkLightCB", &quadMarkLight, sizeof( quadMarkLight ) );
             }
 
             switch ( alphaFunc ) {
