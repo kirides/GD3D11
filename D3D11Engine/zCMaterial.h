@@ -134,22 +134,6 @@ public:
         return reinterpret_cast<zCTexture*( __fastcall* )( zCMaterial* )>( GothicMemoryLocations::zCMaterial::GetAniTexture )( this );
     }
 
-    void BindTexture( int slot ) {
-        if ( zCTexture* texture = GetAniTexture() ) {
-            // Bind it
-            if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                texture->Bind( slot );
-        }
-    }
-
-    void BindTextureSingle( int slot ) {
-        if ( zCTexture* texture = GetTextureSingle() ) {
-            // Bind it
-            if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                texture->Bind( slot );
-        }
-    }
-
     struct MaterialFlags {
         uint8_t smooth : 1;
         uint8_t dontUseLightmaps : 1;
