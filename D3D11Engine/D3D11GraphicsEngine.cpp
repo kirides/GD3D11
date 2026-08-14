@@ -9180,7 +9180,10 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         zCPolygon** polys = mesh->GetPolygons();
         zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : quadMark.Mark->GetMaterial());
         if ( !mat ) continue;
-        mat->BindTexture( 0 );
+        zCTexture* texture = mat->GetAniTexture();
+        if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+
+        texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
 
         const int alphaFunc = mat->GetAlphaFunc();
         if ( lastAlphaFunc != alphaFunc ) {
