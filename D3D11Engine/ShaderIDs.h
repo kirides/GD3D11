@@ -51,6 +51,7 @@ enum class PShaderID : size_t {
     PS_World,
     PS_World_NoMV,
     PS_QuadMarkLit,
+    PS_QuadMarkLitFP,
     PS_Water,
     PS_ParticleDistortion,
     PS_PFX_ApplyParticleDistortion,

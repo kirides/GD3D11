@@ -9170,6 +9170,47 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
+    // Real sun+CSM-shadow+clustered-point-light shading needs the same light/shadow data the
+    // tiled-deferred and Forward+ renderers produce; fall back to the flat day-factor shader when
+    // that path isn't active (legacy per-pixel deferred point lights are out of scope here).
+    const bool useTiledLighting = !FeatureLevel10Compatibility &&
+        Engine::GAPI->GetRendererState().RendererSettings.EnableTiledLighting;
+    D3D11TiledDeferredShading* tiledDeferred = useTiledLighting ? ShadowMaps->GetTiledDeferred() : nullptr;
+    const PShaderID litShader = tiledDeferred ? PShaderID::PS_QuadMarkLitFP : PShaderID::PS_QuadMarkLit;
+
+    if ( tiledDeferred ) {
+        GSky* sky = Engine::GAPI->GetSky();
+        auto atmoCB = sky->GetAtmosphereCB();
+        BindDynamicCBToPixelShader( 1, AllocateDynamicCB( &atmoCB, sizeof( atmoCB ) ) );
+
+        DS_ScreenQuadConstantBuffer scb = ShadowMaps->FillSunCSMConstantBuffer();
+        BindDynamicCBToPixelShader( 4, AllocateDynamicCB( &scb, sizeof( scb ) ) );
+
+        auto res = GetResolution();
+        ForwardPlusTileConstantBuffer tileCB = {};
+        tileCB.ViewportSize = float2( static_cast<float>( res.x ), static_cast<float>( res.y ) );
+        tileCB.NumTilesX = ( static_cast<uint32_t>( res.x ) + 15 ) / 16;
+        tileCB.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
+        tileCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
+        tileCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
+        BindDynamicCBToPixelShader( 5, AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
+
+        ShadowMaps->BindToPixelShader( GetContext().Get(), 3 );
+        ShadowMaps->BindSampler( GetContext().Get(), 2 );
+        GetBlueNoiseTexture()->BindToPixelShader( 6 );
+
+        ID3D11ShaderResourceView* lightSRVs[4] = {
+            tiledDeferred->GetLightBufferSRV(),
+            tiledDeferred->GetLightGridSRV(),
+            nullptr,
+            tiledDeferred->IsShadowArrayCreated() ? tiledDeferred->GetShadowCubeArraySRV() : nullptr,
+        };
+        GetContext()->PSSetShaderResources( 8, 4, lightSRVs );
+        ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
+            ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
+        GetContext()->PSSetShaderResources( 14, 1, &dynCubeSRV );
+    }
+
     int lastAlphaFunc = -1;
     for ( auto const& item : items ) {
         const TransparentQuadMark& quadMark = queue.GetQuadMark( item );
@@ -9189,17 +9230,19 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         if ( lastAlphaFunc != alphaFunc ) {
             auto& state = Engine::GAPI->GetRendererState();
 
-            // MUL/MUL2 are unlit (PS_Simple), everything else lit (PS_QuadMarkLit)
+            // MUL/MUL2 are unlit (PS_Simple), everything else lit (litShader)
             const bool modulate = (alphaFunc == zMAT_ALPHA_FUNC_MUL || alphaFunc == zMAT_ALPHA_FUNC_MUL2);
-            SetActivePixelShader( modulate ? PShaderID::PS_Simple : PShaderID::PS_QuadMarkLit );
+            SetActivePixelShader( modulate ? PShaderID::PS_Simple : litShader );
             BindActivePixelShader();
 
             if ( !modulate ) {
                 ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &state.GraphicsState, sizeof( state.GraphicsState ) );
 
-                const float skyLight = Engine::GAPI->GetSkyDayFactor();
-                const float4 quadMarkLight( skyLight, skyLight, skyLight, 0.0f );
-                ActivePS->UpdateBuffer( "QuadMarkLightCB", &quadMarkLight, sizeof( quadMarkLight ) );
+                if ( !tiledDeferred ) {
+                    const float skyLight = Engine::GAPI->GetSkyDayFactor();
+                    const float4 quadMarkLight( skyLight, skyLight, skyLight, 0.0f );
+                    ActivePS->UpdateBuffer( "QuadMarkLightCB", &quadMarkLight, sizeof( quadMarkLight ) );
+                }
             }
 
             switch ( alphaFunc ) {
@@ -9243,6 +9286,13 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         SetupVS_ExPerInstanceConstantBuffer();
 
         DrawVertexBuffer( quadMark.Info->Mesh.get(), quadMark.Info->NumVertices );
+    }
+
+    if ( tiledDeferred ) {
+        GetContext()->PSSetShaderResources( 3, 1, s_nullSRVs );
+        GetContext()->PSSetShaderResources( 6, 1, s_nullSRVs );
+        GetContext()->PSSetShaderResources( 8, 4, s_nullSRVs );
+        GetContext()->PSSetShaderResources( 14, 1, s_nullSRVs );
     }
 }
 
