@@ -8684,10 +8684,14 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.
     GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get() );
 
+    Engine::GAPI->GetRendererState().DepthState.SetDefault(); // defaul depth: buffer + write on.
+    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
     // Set backface culling
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDefault(); // CULL_BACK is default.
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    UpdateRenderStates();
 
     SetActivePixelShader( PShaderID::PS_Preview_Textured );
     SetActiveVertexShader( VShaderID::VS_Ex );
@@ -9176,7 +9180,10 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         zCPolygon** polys = mesh->GetPolygons();
         zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : quadMark.Mark->GetMaterial());
         if ( !mat ) continue;
-        mat->BindTexture( 0 );
+        zCTexture* texture = mat->GetAniTexture();
+        if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+
+        texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
 
         const int alphaFunc = mat->GetAlphaFunc();
         if ( lastAlphaFunc != alphaFunc ) {
