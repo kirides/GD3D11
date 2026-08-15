@@ -90,6 +90,16 @@ float3 DecodeOctNormal( float2 e )
     return normalize( n );
 }
 
+// Packed tangent decode — matches Shaders/VertexPacking.h DecodeTangent / CPU VertexPacking::EncodeTangent
+// (R10G10B10A2_UNORM at offset 16, already world-space like the normal — the world mesh has no per-instance
+// transform). xyz = unit tangent, w = bitangent handedness sign; PerturbNormal reconstructs B as cross(N,T)*w.
+float4 DecodeTangent( float4 packed )
+{
+    float3 t = packed.xyz * 2.0 - 1.0;
+    float sign = packed.w > 0.5 ? 1.0 : -1.0;
+    return float4( normalize( t ), sign );
+}
+
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with Vob.hlsl/Skeletal.hlsl.
 #include "include/PBRLighting.hlsl"
@@ -97,8 +107,8 @@ float3 DecodeOctNormal( float2 e )
 // the additive wet sheen. Needs the ShadowCB wetness tail above plus `smp`/`shadowCmp`.
 #include "include/Wetness.hlsl"
 
-struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
+struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float4 tan : TANGENT; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float4 wtan : TEXCOORD5; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -108,6 +118,7 @@ VS_OUT VSMain( VS_IN i )
     o.col = i.col;
     o.wpos = i.pos;                          // world verts are already world-space
     o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
+    o.wtan = DecodeTangent( i.tan );         // already world-space, same basis as wnrm
     o.fogDist = length( i.pos - CamPosWS );
     return o;
 }
@@ -147,6 +158,8 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
     o.col = i.col;
     o.wpos = wpos;
     o.wnrm = normalize( wnrm );
+    o.wtan = float4( 0, 0, 0, 0 );   // no packed tangent on this CPU-side vertex — PerturbNormal falls back
+                                      // to the derivative frame here, same as D3D11's untangented quad marks.
     o.fogDist = length( wpos - CamPosWS );
     return o;
 }
@@ -160,7 +173,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
     {
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
-        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp, MatNormalStrength );
+        N = PerturbNormal( N, i.wpos, i.wtan, nrmTex, i.uv, smp, MatNormalStrength );
     }
     float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)

@@ -435,6 +435,47 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     return normalize( mul( nrm, CotangentFrame( N, -p, uv ) ) );
 }
 
+// Builds a TBN from a precomputed (MikkTSpace) vertex tangent. tangent.w is the bitangent handedness sign.
+// N and tangent.xyz must be in the same space (world space here). Direct port of Toolbox.h's
+// tangent_frame_explicit (D3D11's view-space equivalent) — same Gram-Schmidt re-orthonormalization, same
+// single place (the caller's packed handedness sign) that controls handedness.
+float3x3 TangentFrameExplicit( float3 N, float3 T, float sign )
+{
+    T = normalize( T - N * dot( N, T ) );
+    float3 B = cross( N, T ) * sign;
+    return float3x3( T, B, N );
+}
+
+// perturb_normal variant that prefers a precomputed vertex tangent and falls back to the screen-space-
+// derivative CotangentFrame when the tangent is absent/degenerate (e.g. quad marks, VOBs, skeletals — none
+// of which carry a packed tangent) — mirrors Toolbox.h's tangent-taking perturb_normal overload exactly,
+// including its dot(T,T) < 0.25 threshold for "no real tangent here".
+float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex, float2 uv, SamplerState samp, float strength = 1.0 )
+{
+    if ( dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25 )
+    {
+        return PerturbNormal( N, p, nrmTex, uv, samp, strength );
+    }
+
+#if NORMAL_MAP_RESTORE_Z == 1
+    float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
+  #if NORMAL_MAP_MODE == 2
+    nxy.y = -nxy.y;
+  #endif
+    nxy *= strength;
+    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );
+    float3 nrm = normalize( float3( nxy, nz ) );
+#else
+    float3 nrm = nrmTex.Sample( samp, uv ).xyz * 2.0 - 1.0;
+  #if NORMAL_MAP_MODE == 2
+    nrm.y = -nrm.y;
+  #endif
+    nrm.xy *= strength;
+    nrm = normalize( nrm );
+#endif
+    return normalize( mul( nrm, TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w ) ) );
+}
+
 // PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
                               float roughness, float metallic, float ao, float ssao )
