@@ -304,7 +304,7 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     // slopes, which is a much harder failure than mere dimming. Only the specular denominator below needs
     // NdotV guarded against zero, and it already is (max(...,1e-4)).
     if ( NdotL <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float  NdotV = saturate( dot( N, V ) );
+    float NdotV = saturate( dot( N, V ) );
     float3 H = normalize( V + L );
     float NdotH = saturate( dot( N, H ) );
     float VdotH = saturate( dot( V, H ) );
@@ -316,12 +316,7 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     float3 F = PBR_FresnelSchlick( VdotH, F0 );
     float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 ) * specularScale;
     float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
-    // NOT divided by PI: D3D11's tuned light-intensity constants this shares verbatim (SunLightStrength,
-    // the point-light 1.2 scale in D3D12Scene.cpp) were calibrated for a non-energy-normalized diffuse
-    // response, matching this file's OWN EvaluateSkyIBL ambient diffuse (`irradiance*albedo*kD*ao`, also
-    // no /PI). Adding the textbook Lambertian /PI here without re-tuning those constants made every direct
-    // light (sun AND point lights) ~pi times too dark relative to D3D11 for the same authored values.
-    float3 diffuse = kD * baseColor;
+    float3 diffuse = kD * baseColor / PBR_PI;
     return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
 }
 
