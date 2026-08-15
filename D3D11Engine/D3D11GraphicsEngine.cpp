@@ -8440,6 +8440,17 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     // Pixels, so they must be in the space SV_POSITION lives in - the scaled (render) resolution, not the
     // backbuffer one.
     MoonCB moonCb = {};
+
+    if ( rendererState.RendererSettings.AtmosphericScattering ) {
+        if ( auto loadedWorld = Engine::GAPI->GetLoadedWorldInfo(); loadedWorld && loadedWorld->MainWorld ) {
+            if ( auto skyCtrl = loadedWorld->MainWorld->GetSkyControllerOutdoor(); skyCtrl ) {
+                if ( auto planet = skyCtrl->GetPlanet( 1 ); planet && planet->mesh == nullptr ) {
+                    skyCtrl->RenderSkyPre();
+                }
+            }
+        }
+    }
+
     if ( MoonSpriteInfo moon = sky->ResolveMoonSprite( GetResolution() ); moon.Texture ) {
         if ( MyDirectDrawSurface7* surface = moon.Texture->GetSurface() ) {
             if ( ID3D11ShaderResourceView* moonSrv = GetSrvFromGfx( surface->GetEngineTexture() ) ) {
