@@ -298,17 +298,22 @@ bool D3D12Device::Init() {
     }
 
 #ifdef DEBUG_D3D11
+    constexpr bool DEBUG_D3D11_ENABLED = true;
+#else
+    constexpr bool DEBUG_D3D11_ENABLED = false;
+#endif
+
     // Enable the debug layer before device creation when available (best-effort).
     if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) ) {
         auto getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>( GetProcAddress( d3d12, "D3D12GetDebugInterface" ) );
         ComPtr<ID3D12Debug> debug;
-        if ( getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( DEBUG_D3D11_ENABLED && getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
             debug->EnableDebugLayer();
             LogInfo() << "D3D12 debug layer enabled.";
         }
 
         ComPtr<ID3D12Debug1> debug1;
-        if ( SUCCEEDED( debug.As( &debug1 ) ) ) {
+        if ( DEBUG_D3D11_ENABLED && SUCCEEDED( debug.As( &debug1 ) ) ) {
             debug1->SetEnableGPUBasedValidation( FALSE ); // NOTE: This is REALLY expensive. Only use when actually debugging hard crashes.
         }
 
@@ -318,11 +323,11 @@ bool D3D12Device::Init() {
             // Turn on auto-breadcrumbs and page fault reporting
             pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
             pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            pDredSettings->Release();
+            if ( DEBUG_D3D11_ENABLED ) {
+                pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+            }
         }
     }
-#endif
 
     if ( !CreateFactory( m_Factory ) ) {
         LogWarn() << "D3D12Device::Init: failed to create DXGI factory.";

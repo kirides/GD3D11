@@ -2025,8 +2025,6 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
 }
 
 
-#ifdef DEBUG_D3D11
-
 static const wchar_t* GetOpName( D3D12_AUTO_BREADCRUMB_OP op ) {
     switch ( op ) {
     case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return L"SetMarker";
@@ -2089,7 +2087,7 @@ static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
     builder.append( L"--- Outstanding Command List GPU Breadcrumbs ---\n" );
     builder.append( L"Command List Debug Name: " ).append( SafeWideString( node->pCommandListDebugNameW ) ).append( L"\n" );
     builder.append( L"Command Queue Debug Name: " ).append( SafeWideString( node->pCommandQueueDebugNameW ) ).append( L"\n" );
-    OutputDebugStringW( builder.c_str() );
+    LogInfo() << builder.c_str();
 
     // Log out the History of GPU Operations recorded
     // Note: pLastBreadcrumbValue points to the number of completed operations.
@@ -2098,7 +2096,7 @@ static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
 
     builder.clear();
     builder.append( L"Completed Op Count: " ).append( std::to_wstring( completedOps ) ).append( L" / " ).append( std::to_wstring( node->BreadcrumbCount ) ).append( L"\n" );
-    OutputDebugStringW( builder.c_str() );
+    LogInfo() << builder.c_str();
 
     for ( UINT i = 0; i < node->BreadcrumbCount; ++i ) {
         builder.clear();
@@ -2124,7 +2122,7 @@ static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
         }
 
         builder.append( L"\n" );
-        OutputDebugStringW( builder.c_str() );
+        LogInfo() << builder.c_str();
     }
 
     if ( node->pNext ) {
@@ -2148,8 +2146,6 @@ static void DiagnoseErrors(ID3D12Device* device) {
         }
     }
 }
-
-#endif
 
 XRESULT D3D12GraphicsEngine::Present() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
@@ -2211,9 +2207,8 @@ XRESULT D3D12GraphicsEngine::Present() {
     if ( FAILED( hr ) ) {
         auto r = static_cast<uint32_t>(hr);
         if ( hr == DXGI_ERROR_DEVICE_REMOVED) {
-#ifdef DEBUG_D3D11
             DiagnoseErrors( m_Device.GetDevice() );
-#endif
+
             auto removedReason = m_Device.GetDevice()->GetDeviceRemovedReason();
             auto msg = std::format( "D3D12 Present failed (0x{:08X}, reason: 0x{:08X})", r, static_cast<uint32_t>(removedReason) );
             LogWarn() << "D3D12 Present failed (0x" << std::hex << r << ").";

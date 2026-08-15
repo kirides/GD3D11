@@ -272,6 +272,9 @@ struct CPUBreadcrumbContext {
 inline thread_local std::array<CPUBreadcrumbContext, 2048> g_CpuContextHistory;
 inline thread_local UINT g_CurrentRecordingOpIndex = 0;
 
+#define DX_MARKER_VALUE(x) x, std::sizeof(x)
+#define SetMarkerStr(x) SetMarker(x, std::sizeof(x))
+
 struct DXMarker {
     DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const wchar_t* text ) :
         DXMarker( commandList.Get(), text )
@@ -284,25 +287,20 @@ struct DXMarker {
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :
         c( commandList )
     {
-        if ( c && text ) {
+        if ( text ) {
             // Track exactly what string context we are assigning to the CURRENT command slot
             if ( g_CurrentRecordingOpIndex < g_CpuContextHistory.size() ) {
                 g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
             }
 
             UINT byteSize = static_cast<UINT>( (wcslen( text ) + 1) * sizeof( wchar_t ) );
-            c->BeginEvent( 0, text, byteSize );
-
-            // Increment tracking slot to match what DRED maps under the hood
-            g_CurrentRecordingOpIndex++;
+            c->SetMarker( 0, text, byteSize );
         }
+        g_CurrentRecordingOpIndex++;
     }
 
     ~DXMarker() {
-        if ( c ) {
-            c->EndEvent();
-            g_CurrentRecordingOpIndex++;
-        }
+        g_CurrentRecordingOpIndex++;
     }
 
     DXMarker( const DXMarker& ) = delete;
