@@ -148,6 +148,10 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_World>( "PS_World.hlsl" ).with_macros({ {"MOTION_VECTORS", "1"}})  );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_World_NoMV>( "PS_World.hlsl" )  );
 
+    // Lit quad marks (blood/ground decals): modulates by baked per-vertex static light instead of
+    // PS_World's unlit deferred-fill output. See PS_QuadMarkLit.hlsl for why.
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_QuadMarkLit>( "PS_QuadMarkLit.hlsl" )  );
+
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Water>( "PS_Water.hlsl" )
         .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {
@@ -448,6 +452,13 @@ void ShaderRegistry::Build() {
 
         // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));
+
+        // Lit quad marks (blood/ground decals) using the same clustered light data as the Forward+/
+        // tiled-deferred renderers. See DrawQuadMarkRun for the flat-shaded fallback used when tiled
+        // lighting isn't active.
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_QuadMarkLitFP>( "PS_QuadMarkLitFP.hlsl" )
+            .with_macros( shadowMacroBuilder )
+            .with_category( ShaderCategory::LightsAndShadows ) );
 
         // Forward+ pixel shader variants
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_Diffuse>( "PS_Diffuse.hlsl" )
