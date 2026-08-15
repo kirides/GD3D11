@@ -287,7 +287,7 @@ struct DXMarker {
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :
         c( commandList )
     {
-        if ( text ) {
+        if ( c && text ) {
             // Track exactly what string context we are assigning to the CURRENT command slot
             if ( g_CurrentRecordingOpIndex < g_CpuContextHistory.size() ) {
                 g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
@@ -295,12 +295,18 @@ struct DXMarker {
 
             UINT byteSize = static_cast<UINT>( (wcslen( text ) + 1) * sizeof( wchar_t ) );
             c->SetMarker( 0, text, byteSize );
+            c->BeginEvent( 0, text, byteSize );
+
+            // Increment tracking slot to match what DRED maps under the hood
+            g_CurrentRecordingOpIndex++;
         }
-        g_CurrentRecordingOpIndex++;
     }
 
     ~DXMarker() {
-        g_CurrentRecordingOpIndex++;
+        if ( c ) {
+            c->EndEvent();
+            g_CurrentRecordingOpIndex++;
+        }
     }
 
     DXMarker( const DXMarker& ) = delete;
