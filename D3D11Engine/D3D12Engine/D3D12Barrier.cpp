@@ -3,7 +3,6 @@
 #include "D3D12StateCache.h"
 #include "../Logger.h"
 #include <d3dx12_barriers.h>
-#include <mutex>
 
 // Implements the D3D12CmdList barrier methods declared in D3D12StateCache.h. Legacy
 // D3D12_RESOURCE_STATES are the only thing any call site has to think in; everything past that
@@ -141,65 +140,7 @@ namespace {
     // dropping any transition.
     constexpr UINT kMaxBatchedBarriers = 16;
 
-    // Legacy-to-enhanced handoff (BARRIER_INTEROP_INVALID_LAYOUT):
-    //
-    // Every render target/UAV texture in this backend is created via D3D12MA::Allocator::CreateResource
-    // (-> legacy CreateCommittedResource) with an InitialResourceState equal to its steady-state (e.g.
-    // GtaoWorkingDepth is born D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12GTAO.cpp:144) rather than
-    // COMMON -- a legacy-barrier-era optimization to skip a throwaway first transition. Per the
-    // enhanced-barrier spec, a texture created through the legacy path stays "legacy-tracked" until its
-    // first enhanced Barrier() call, and that handoff is only legal when the resource's real
-    // (legacy-model) state at that moment is D3D12_RESOURCE_STATE_COMMON. Since none of these textures
-    // ever pass through COMMON, their first enhanced transition was rejected outright
-    // (STATE_SETTING ERROR #1350) and the runtime silently kept applying none of our barriers to them
-    // from then on (confirmed via GPU-based validation: GtaoWorkingDepth read as SRV by a shader while
-    // still tracked UNORDERED_ACCESS).
-    //
-    // Fix: the first time (ever, per resource object) an enhanced Barrier() touches a texture, issue one
-    // genuine LEGACY ResourceBarrier transitioning it from its true current state to COMMON first, then
-    // treat COMMON as the enhanced barrier's real "before". This requires no changes to any of the ~140
-    // existing TransitionBarrier/UAVBarrier call sites -- they keep passing the resource's actual state
-    // exactly as before; the bridge is entirely internal to BridgeLegacyResourceToCommon.
-    //
-    // "First touch, ever" is tracked via SetPrivateData directly on the ID3D12Resource COM object rather
-    // than an external pointer-keyed set: the marker's lifetime is then tied exactly to that object's
-    // lifetime, so a resource recreated at the same address on resize (GTAO/AO buffers are, per
-    // D3D12GraphicsEngine.h:1318's "recreated on resize" comment) correctly needs (and gets) a fresh
-    // bridge rather than aliasing a stale "already bridged" entry for a destroyed object. Buffers are
-    // untouched by any of this -- D3D12_BUFFER_BARRIER has no Layout, so the interop rule (a LAYOUT
-    // requirement) never applies to them.
-    const GUID kEnhancedHandoffGuid = { 0xa6c1f1b0, 0x9d3e, 0x4b7a, { 0x8c, 0x2f, 0x6e, 0x1d, 0x9a, 0x3b, 0x5c, 0x7d } };
-
-    // Guards the check-and-mark below. Only ever contended by two threads racing the very first-ever
-    // touch of the SAME resource (e.g. a shadow-cascade recorder and the main list); infrequent enough
-    // (once per resource, for the resource's entire lifetime) that a global mutex costs nothing measurable.
-    std::mutex g_HandoffMutex;
-
-    bool NeedsLegacyHandoff( ID3D12Resource* resource ) {
-        std::lock_guard<std::mutex> lock( g_HandoffMutex );
-        UINT8 marker = 0;
-        UINT size = sizeof( marker );
-        if ( SUCCEEDED( resource->GetPrivateData( kEnhancedHandoffGuid, &size, &marker ) ) ) return false;
-        marker = 1;
-        resource->SetPrivateData( kEnhancedHandoffGuid, sizeof( marker ), &marker );
-        return true;
-    }
-
 } // namespace
-
-bool D3D12CmdList::BridgeLegacyResourceToCommon( ID3D12Resource* resource, D3D12_RESOURCE_STATES trueBefore ) {
-    if ( trueBefore == D3D12_RESOURCE_STATE_COMMON ) return false;   // already common; nothing to bridge
-    if ( resource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ) return false;   // no Layout on buffers
-    if ( !NeedsLegacyHandoff( resource ) ) return false;
-    // ALL_SUBRESOURCES regardless of which specific subresource the real transition targets: every
-    // subresource of a resource shares one InitialResourceState at creation, so `trueBefore` describes
-    // all of them uniformly -- one bridge per resource, not one per subresource, correctly hands the
-    // whole thing off in one call.
-    CD3DX12_RESOURCE_BARRIER handoff = CD3DX12_RESOURCE_BARRIER::Transition( resource, trueBefore,
-        D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES );
-    m_List->ResourceBarrier( 1, &handoff );
-    return true;
-}
 
 void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
     D3D12_RESOURCE_STATES after, UINT subresource, D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint ) {
@@ -218,11 +159,6 @@ void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_S
                 CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
                 List7()->Barrier( 1, &group );
             } else {
-                if ( BridgeLegacyResourceToCommon( resource, before ) ) {
-                    syncBefore = D3D12_BARRIER_SYNC_NONE;
-                    accessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
-                    layoutBefore = D3D12_BARRIER_LAYOUT_COMMON;
-                }
                 CD3DX12_TEXTURE_BARRIER textureBarrier( syncBefore, syncAfter, accessBefore, accessAfter,
                     layoutBefore, layoutAfter, resource, SubresourceRange( resource, subresource ) );
                 CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &textureBarrier ) );
@@ -268,11 +204,6 @@ void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transition
             if ( IsBufferResource( t.Resource ) ) {
                 bufferBarriers[numBuffer++] = CD3DX12_BUFFER_BARRIER( syncBefore, syncAfter, accessBefore, accessAfter, t.Resource );
             } else {
-                if ( BridgeLegacyResourceToCommon( t.Resource, t.Before ) ) {
-                    syncBefore = D3D12_BARRIER_SYNC_NONE;
-                    accessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
-                    layoutBefore = D3D12_BARRIER_LAYOUT_COMMON;
-                }
                 textureBarriers[numTexture++] = CD3DX12_TEXTURE_BARRIER( syncBefore, syncAfter, accessBefore, accessAfter,
                     layoutBefore, layoutAfter, t.Resource, SubresourceRange( t.Resource, t.Subresource ) );
             }
@@ -307,14 +238,8 @@ void D3D12CmdList::UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC sync
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
             List7()->Barrier( 1, &group );
         } else if ( resource ) {
-            // A UAV barrier only ever makes sense on a resource already in UNORDERED_ACCESS, so that's
-            // the only possible "true before" state a bridge needs to reason about here.
-            const bool bridged = BridgeLegacyResourceToCommon( resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-            CD3DX12_TEXTURE_BARRIER textureBarrier(
-                bridged ? D3D12_BARRIER_SYNC_NONE : kSync, kSync,
-                bridged ? D3D12_BARRIER_ACCESS_NO_ACCESS : kAccess, kAccess,
-                bridged ? D3D12_BARRIER_LAYOUT_COMMON : D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,
-                D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, resource,
+            CD3DX12_TEXTURE_BARRIER textureBarrier( kSync, kSync, kAccess, kAccess,
+                D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, resource,
                 SubresourceRange( resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) );
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &textureBarrier ) );
             List7()->Barrier( 1, &group );
@@ -354,12 +279,8 @@ void D3D12CmdList::UAVBarriers( ID3D12Resource* const* resources, UINT count, D3
             } else if ( IsBufferResource( resource ) ) {
                 bufferBarriers[numBuffer++] = CD3DX12_BUFFER_BARRIER( kSync, kSync, kAccess, kAccess, resource );
             } else {
-                const bool bridged = BridgeLegacyResourceToCommon( resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                textureBarriers[numTexture++] = CD3DX12_TEXTURE_BARRIER(
-                    bridged ? D3D12_BARRIER_SYNC_NONE : kSync, kSync,
-                    bridged ? D3D12_BARRIER_ACCESS_NO_ACCESS : kAccess, kAccess,
-                    bridged ? D3D12_BARRIER_LAYOUT_COMMON : D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,
-                    D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, resource,
+                textureBarriers[numTexture++] = CD3DX12_TEXTURE_BARRIER( kSync, kSync, kAccess, kAccess,
+                    D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, resource,
                     SubresourceRange( resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) );
             }
         }
