@@ -12,6 +12,7 @@
 // exactly like D3D11 (`DrawFog && isOutdoor`, `EnableGodRays && isOutdoor`).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"
@@ -122,7 +123,7 @@ bool D3D12GraphicsEngine::CreateFogResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a god-ray texture (" << ds4.x << "x" << ds4.y << ").";
             return false;
@@ -255,8 +256,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     {
         m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
-        auto b = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDepthRead );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDepthRead );
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -265,9 +265,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
     if ( godRays ) {
         // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV.
         if ( !m_SceneColorInPixelState ) {
-            auto toSrv = TransitionBarrier( m_SceneColor.Get(),
-                D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-            m_CmdList->ResourceBarrier( 1, &toSrv );
+            m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
             m_SceneColorInPixelState = true;
         }
         m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
@@ -285,9 +283,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
 
         // UAV write -> SRV read needs a real state transition, not just a UAV barrier (see RenderBloom).
         {
-            auto b = TransitionBarrier( m_GodRayMask.Get(),
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-            m_CmdList->ResourceBarrier( 1, &b );
+            m_CmdList->TransitionBarrier( m_GodRayMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         }
 
         // --- Pass 2: radial blur (m_GodRayMask -> m_GodRayZoom) ---
@@ -297,11 +293,10 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
 
         // Result -> pixel-shader readable for the composition; mask back to its resting UNORDERED_ACCESS.
         {
-            D3D12_RESOURCE_BARRIER b[2] = {
-                TransitionBarrier( m_GodRayZoom.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-                TransitionBarrier( m_GodRayMask.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            };
-            m_CmdList->ResourceBarrier( 2, b );
+            m_CmdList->TransitionBarriers( {
+            	{ m_GodRayZoom.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+            	{ m_GodRayMask.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            } );
         }
     }
 
@@ -383,9 +378,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
 
     // Scene color back to RENDER_TARGET (the god-ray mask pass may have flipped it to a read state).
     if ( m_SceneColorInPixelState ) {
-        auto toRt = TransitionBarrier( m_SceneColor.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-        m_CmdList->ResourceBarrier( 1, &toRt );
+        m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
         m_SceneColorInPixelState = false;
     }
 
@@ -413,12 +406,12 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
     // UNORDERED_ACCESS, depth back to DEPTH_WRITE. The scene color stays bound as the RTV, which is exactly
     // what RenderBloom (the next pass) assumes.
     {
-        D3D12_RESOURCE_BARRIER b[2];
+        D3D12ResourceTransition b[2];
         UINT n = 0;
         if ( godRays )
-            b[n++] = TransitionBarrier( m_GodRayZoom.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        b[n++] = TransitionBarrier( m_DepthBuffer.Get(), kDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-        m_CmdList->ResourceBarrier( n, b );
+            b[n++] = { m_GodRayZoom.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+        b[n++] = { m_DepthBuffer.Get(), kDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE };
+        m_CmdList->TransitionBarriers( b, n );
     }
 
     m_ColorTargetIsHDR = true;

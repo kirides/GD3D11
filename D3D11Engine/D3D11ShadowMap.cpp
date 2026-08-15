@@ -1418,6 +1418,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
         settings.RainSunLightStrength,
         std::min( 1.0f, rain * 2.0f ) );
     scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
+    scb.SQ_SunSpecularEnabled = ( settings.SpecularHighlightsFlags & GothicRendererSettings::SH_SUN ) ? 1.0f : 0.0f;
 
     for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
         XMStoreFloat4x4( &scb.SQ_ShadowViewProj[cascadeIdx],
@@ -1560,6 +1561,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
     // matches more with the increasing fog-density
 
     scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
+    scb.SQ_SunSpecularEnabled = ( settings.SpecularHighlightsFlags & GothicRendererSettings::SH_SUN ) ? 1.0f : 0.0f;
 
     // CSM: Alle Cascade-Matrizen setzen
 

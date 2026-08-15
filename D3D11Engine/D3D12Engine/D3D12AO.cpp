@@ -18,6 +18,7 @@
 // snapshot scheme by accident of running a frame behind.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -51,7 +52,7 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create an SSAO texture (" << size.x << "x" << size.y << ").";
             return false;
@@ -165,17 +166,13 @@ void D3D12GraphicsEngine::RenderSSAO() {
 void D3D12GraphicsEngine::BeginAoDepthRead() {
     // The prepass left m_DepthBuffer in DEPTH_WRITE; the AO compute passes read it as an SRV. Same round-trip
     // BuildHiZ does a few calls earlier — the DSV stays bound but nothing draws while it is in a read state.
-    auto b = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-    m_CmdList->ResourceBarrier( 1, &b );
+    m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 }
 
 void D3D12GraphicsEngine::EndAoDepthRead() {
     // Straight back to DEPTH_WRITE: the lit geometry passes right after this re-test (and re-write) depth, and
     // every later transition of this resource asserts DEPTH_WRITE as its "before" state.
-    auto b = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE );
-    m_CmdList->ResourceBarrier( 1, &b );
+    m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 }
 
 void D3D12GraphicsEngine::RenderSimpleSSAO() {
@@ -202,8 +199,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     // The AO mask rests in UNORDERED_ACCESS (its creation state) except right after a prior successful run,
     // which leaves it PIXEL_SHADER_RESOURCE for the lit passes.
     if ( m_AOMaskInPixelState ) {
-        auto b = TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_AOMaskInPixelState = false;
     }
 
@@ -229,8 +225,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     // same reasoning as the bloom pyramid's UAV<->SRV round-trips). Both blur-pair slot 0 entries alias
     // m_AOMask/m_AOBlurTemp respectively, so transitioning the resource covers whichever pair reads it.
     {
-        auto b = TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
     }
 
     struct BlurCB {
@@ -249,11 +244,10 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
         m_CmdList->Dispatch( gx, gy, 1 );
     }
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
-            TransitionBarrier( m_AOBlurTemp.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, b );
+        m_CmdList->TransitionBarriers( {
+        	{ m_AOBlurTemp.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        	{ m_AOMask.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
     }
 
     // --- Blur pass 2 (vertical): m_AOBlurTemp -> m_AOMask (final) ---
@@ -271,11 +265,10 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     // assert an UNORDERED_ACCESS "before" state that doesn't match reality (GPU validation:
     // "RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH" on AOBlurTemp).
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
-            TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_AOBlurTemp.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, b );
+        m_CmdList->TransitionBarriers( {
+        	{ m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+        	{ m_AOBlurTemp.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
     }
 
     EndAoDepthRead();

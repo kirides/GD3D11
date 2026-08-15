@@ -1025,7 +1025,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		GPULight& L = dst[count];
 		XMStoreFloat3( &L.PositionView, XMVector3TransformCoord( XMLoadFloat3( &pw ), view ) );
 		L.Range = cand.range;
-		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, cand.isStatic ? 0.0f : 1.0f );
+		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor,
+			lightSettings.PointLightSpecularScale( cand.isStatic ) );
 		L.PositionWorld = pw;
 		L.ShadowCubeIndex = -1;
 		L.ShadowOrigin = cand.shadowOrigin;
@@ -2828,6 +2829,10 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             uint32_t normalIdx  = 0xFFFFFFFFu;
             uint32_t ormIdx     = GetDefaultOrmSrvSlot();
             float normalStrength = 1.0f;
+            if (auto info = Engine::GAPI->GetMaterialInfoFrom(meshKey.Material)) {
+                normalStrength = info->buffer.NormalmapStrength;
+            }
+            
             if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
                     if ( GfxTexture* gfx = s->GetEngineTexture() ) {
@@ -3006,7 +3011,7 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 
     DX_ZONE( m_CmdList.Get(), "Morph arena refresh" );
 
-    static std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    static std::vector<D3D12ResourceTransition> barriers;
     static std::vector<std::pair<MeshInfo*, D3D12VertexBuffer*>> copies;
     barriers.clear();
     copies.clear();
@@ -3021,14 +3026,13 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
         if ( src->IsUavCapable() ) {
             const D3D12_RESOURCE_STATES from = ( src->GetUavState() == D3D12VertexBuffer::EUavState::Vertex )
                 ? D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER : D3D12_RESOURCE_STATE_COMMON;
-            barriers.push_back( TransitionBarrier( src->GetResource(), from, D3D12_RESOURCE_STATE_COPY_SOURCE ) );
+            barriers.push_back( { src->GetResource(), from, D3D12_RESOURCE_STATE_COPY_SOURCE } );
         }
         copies.emplace_back( mi, src );
     }
     if ( copies.empty() ) return;
 
-    if ( !barriers.empty() )
-        m_CmdList->ResourceBarrier( static_cast<UINT>( barriers.size() ), barriers.data() );
+    m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 
     for ( auto const& [mi, src] : copies ) {
         const D3D12VobArena::Range* range = m_VobArena.Find( mi );
@@ -3046,13 +3050,13 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     barriers.clear();
     for ( auto const& [mi, src] : copies ) {
         if ( !src->IsUavCapable() ) continue;
-        barriers.push_back( TransitionBarrier( src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER ) );
+        barriers.push_back( { src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
         src->SetUavState( D3D12VertexBuffer::EUavState::Vertex );
     }
-    barriers.push_back( TransitionBarrier( m_VobArena.GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER ) );
-    m_CmdList->ResourceBarrier( static_cast<UINT>( barriers.size() ), barriers.data() );
+    barriers.push_back( { m_VobArena.GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
+    m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 }
 
 
@@ -3807,8 +3811,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // UNORDERED_ACCESS so the cull CS can write it as a root UAV. Skipped on the first dispatch after
     // (re)creation, when it's already in UAV (see CreateLightCullBuffers / m_LightGridInPixelState).
     if ( m_LightGridInPixelState ) {
-        D3D12_RESOURCE_BARRIER pre = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &pre );
+        m_CmdList->TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_LightGridInPixelState = false;
     }
 
@@ -3843,8 +3846,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // XY bounds. Do NOT re-add the Z dimension without changing LightCull.hlsl.
     m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
 
-    D3D12_RESOURCE_BARRIER post = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-    m_CmdList->ResourceBarrier( 1, &post );
+    m_CmdList->TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     m_LightGridInPixelState = true;
 }
 

@@ -1043,7 +1043,7 @@ private:
         Microsoft::WRL::ComPtr<D3D12MA::Allocation> IndicesAlloc;
     };
     std::unordered_map<const void*, MorphTableGpu> m_MorphTables;
-    std::vector<D3D12_RESOURCE_BARRIER> m_MorphBarriers;   // scratch; keeps its capacity across frames
+    std::vector<D3D12ResourceTransition> m_MorphBarriers;   // scratch; keeps its capacity across frames
     // This frame's queue, moved out of MorphGpu by DispatchMorphFold (see MorphGpu::TakeJobs). Members rather
     // than locals so they keep their capacity across frames.
     std::vector<MorphGpu::Job> m_MorphJobs;

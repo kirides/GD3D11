@@ -1646,6 +1646,16 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "Gothic fills rooms and caves with 10-30 co-located 'atmospheric' static lights that only raise the\n"
             "ambient level; with HDR output they stack up and make interiors far too bright.");
 
+        ImGui::Text( "Specular Highlights" );
+        ImGui::SetItemTooltip("Some players find specular highlights (bright glints on lit surfaces) visually\n"
+            "distracting. Untick a category to keep its diffuse lighting but drop its specular highlight.");
+        ImGui::CheckboxFlags( "Sun##SpecSun", &settings.SpecularHighlightsFlags, GothicRendererSettings::SH_SUN );
+        ImGui::SameLine();
+        ImGui::CheckboxFlags( "Pointlights##SpecPointlights", &settings.SpecularHighlightsFlags, GothicRendererSettings::SH_POINTLIGHTS );
+        ImGui::SameLine();
+        ImGui::CheckboxFlags( "Atmospheric Lights##SpecAtmospheric", &settings.SpecularHighlightsFlags, GothicRendererSettings::SH_ATMOSPHERIC );
+        ImGui::SetItemTooltip("The static, co-located fill lights Gothic pre-places to brighten rooms/caves.");
+
         // ImGui::Checkbox("FastShadows", &settings.FastShadows );	
         ImGui::Checkbox( "DrawShadowGeometry", &settings.DrawShadowGeometry );
         if ( settings.RendererMode != GothicRendererSettings::RM_ForwardPlus) {

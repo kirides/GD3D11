@@ -15,6 +15,7 @@
 // their own CPU cull against their own frustum (a caster outside the player's view still casts into it).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -54,7 +55,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
         m_HiZAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HiZ.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the Hi-Z pyramid (" << m_HiZWidth << "x" << m_HiZHeight << ").";
         return false;
@@ -222,17 +223,21 @@ void D3D12GraphicsEngine::BuildHiZ() {
 
     DX_ZONE( m_CmdList.Get(), "Hi-Z build" );
 
-    D3D12_RESOURCE_BARRIER pre[2] = {};
+    D3D12ResourceTransition pre[2] = {};
     UINT preCount = 0;
     // Depth prepass left it in DEPTH_WRITE; make it readable for the copy pass and hand it straight back at the
     // end (the VOB/skeletal prepass draws right after need DEPTH_WRITE). Same round-trip DispatchLightCulling
     // and RenderSSAO already do — the DSV stays bound but nothing draws while it is in a read state.
-    pre[preCount++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+    // Both sides here are compute-only (HiZCopyPSO/HiZReducePSO, and CSCull further down), so the sync
+    // scope is narrowed to compute rather than the table's broader default.
+    pre[preCount++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, kBarrierSyncUnspecified, D3D12_BARRIER_SYNC_COMPUTE_SHADING };
     if ( m_HiZInSrvState ) {
-        pre[preCount++] = TransitionBarrier( m_HiZ.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        pre[preCount++] = { m_HiZ.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COMPUTE_SHADING };
         m_HiZInSrvState = false;
     }
-    m_CmdList->ResourceBarrier( preCount, pre );
+    m_CmdList->TransitionBarriers( pre, preCount );
 
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.HiZRootSig.Get() );
 
@@ -247,12 +252,9 @@ void D3D12GraphicsEngine::BuildHiZ() {
     // --- mip N-1 -> mip N ---
     m_CmdList->SetPipelineState( m_Pipelines.Cull.HiZReducePSO.Get() );
     for ( UINT m = 1; m < m_HiZMipCount; ++m ) {
-        // The parent level is read through its UAV, so a UAV barrier (not a transition) is what orders the
-        // previous dispatch's writes against this one's reads.
-        D3D12_RESOURCE_BARRIER uavBarrier = {};
-        uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        uavBarrier.UAV.pResource = m_HiZ.Get();
-        m_CmdList->ResourceBarrier( 1, &uavBarrier );
+        // The parent level is read through its UAV, so a UAV barrier (not a transition) orders the
+        // previous dispatch's writes against this one's reads; both sides are compute-only.
+        m_CmdList->UAVBarrier( m_HiZ.Get(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
 
         const uint32_t consts[4] = { m_HiZMipUavSlot[m - 1], m_HiZMipUavSlot[m], 0u, 0u };
         m_CmdList->SetComputeRoot32BitConstants( 0, 4, consts, 0 );
@@ -261,12 +263,14 @@ void D3D12GraphicsEngine::BuildHiZ() {
         m_CmdList->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
     }
 
-    D3D12_RESOURCE_BARRIER post[2] = {
-        TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
-        // CSCull reads the pyramid as an SRV (it needs per-level Load(); an RWTexture2D cannot select a mip).
-        TransitionBarrier( m_HiZ.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
-    };
-    m_CmdList->ResourceBarrier( 2, post );
+    // CSCull reads the pyramid as an SRV (it needs per-level Load(); an RWTexture2D can't select a mip);
+    // both this and the depth buffer's read are compute-only.
+    m_CmdList->TransitionBarriers( {
+        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, kBarrierSyncUnspecified },
+        { m_HiZ.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_BARRIER_SYNC_COMPUTE_SHADING, D3D12_BARRIER_SYNC_COMPUTE_SHADING },
+    } );
     m_HiZInSrvState = true;
 }
 
@@ -282,10 +286,10 @@ void D3D12GraphicsEngine::CullVobsGPU() {
 
     // --- Restore rest states the previous frame's draws left behind (same pattern as m_LightGridInPixelState) ---
     {
-        D3D12_RESOURCE_BARRIER pre[3] = {};
+        D3D12ResourceTransition pre[3] = {};
         UINT n = 0;
         if ( m_VobDrawArgsGpuInIndirectState ) {
-            pre[n++] = TransitionBarrier( m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COPY_DEST );
+            pre[n++] = { m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_COPY_DEST };
             m_VobDrawArgsGpuInIndirectState = false;
         }
         // Cull-record overflow safety net: a visual that didn't fit kMaxCullVisuals keeps VisualIndex
@@ -298,23 +302,22 @@ void D3D12GraphicsEngine::CullVobsGPU() {
         // frame that actually overflowed — i.e. essentially never, since the cap is 16384 visuals.
         const bool seedCulled = m_VobCullVisualOverflowed && m_VobInstanceBufferOffset > 0;
         if ( m_VobCulledInstancesInVertexState ) {
-            pre[n++] = TransitionBarrier( m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-                seedCulled ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            pre[n++] = { m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                seedCulled ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             m_VobCulledInstancesInVertexState = false;
         }
         if ( m_VobVisibleCountsInSrvState ) {
-            pre[n++] = TransitionBarrier( m_VobVisibleCounts.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            pre[n++] = { m_VobVisibleCounts.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
             m_VobVisibleCountsInSrvState = false;
         }
-        if ( n ) m_CmdList->ResourceBarrier( n, pre );
+        m_CmdList->TransitionBarriers( pre, n );
 
         if ( seedCulled ) {
             m_CmdList->CopyBufferRegion( m_VobCulledInstances.Get(), 0, m_VobInstanceBuffer[m_FrameIndex].Get(), 0,
                 m_VobInstanceBufferOffset );
             // Back to UNORDERED_ACCESS for CSCull, which is about to overwrite the compacted prefixes.
-            D3D12_RESOURCE_BARRIER toUav = TransitionBarrier( m_VobCulledInstances.Get(),
+            m_CmdList->TransitionBarrier( m_VobCulledInstances.Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-            m_CmdList->ResourceBarrier( 1, &toUav );
         }
     }
 
@@ -370,11 +373,10 @@ void D3D12GraphicsEngine::CullVobsGPU() {
 
     // --- Pass 2: write the surviving counts into the indirect arguments ---
     {
-        D3D12_RESOURCE_BARRIER mid[2] = {
-            TransitionBarrier( m_VobVisibleCounts.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, mid );
+        m_CmdList->TransitionBarriers( {
+        	{ m_VobVisibleCounts.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        	{ m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
         m_VobVisibleCountsInSrvState = true;
     }
 
@@ -399,11 +401,10 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     m_CmdList->Dispatch( ( m_VobDrawCount + 63 ) / 64, 1, 1 );
 
     // --- Hand both buffers to the two VOB passes ---
-    D3D12_RESOURCE_BARRIER post[2] = {
-        TransitionBarrier( m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT ),
-        TransitionBarrier( m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER ),
-    };
-    m_CmdList->ResourceBarrier( 2, post );
+    m_CmdList->TransitionBarriers( {
+    	{ m_VobDrawArgsGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+    	{ m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+    } );
     m_VobDrawArgsGpuInIndirectState = true;
     m_VobCulledInstancesInVertexState = true;
 }

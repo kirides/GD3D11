@@ -40,7 +40,7 @@ cbuffer ShadowCB : register(b3)
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
     float    ShadowAOStrength;  float WorldAOStrength;
-    float    SkyOccStrength;    float _shpad;
+    float    SkyOccStrength;    float SunSpecularEnabled;
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;

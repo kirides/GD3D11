@@ -3,6 +3,7 @@
 #include "../pch.h"
 #include "D3D12ShadowMap.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
@@ -120,7 +121,7 @@ bool D3D12ShadowMap::CreateTextureAndViews( UINT size ) {
 	// Born in DEPTH_WRITE; each frame Prepare() writes then transitions to PIXEL_SHADER_RESOURCE and back.
 	m_MapAlloc.Reset();
 	m_Map.Reset();
-	if ( FAILED( m_E->m_Allocator->CreateResource( &allocDesc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), allocDesc, dd,
 		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_MapAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_Map.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
@@ -688,7 +689,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		XMFLOAT3   SunDirWS;          float ShadowMapSize;
 		XMFLOAT3   SunColor;          float SunIntensity;
 		XMFLOAT3   CascadeTexelWorld; float AmbientStrength;
-		float ShadowAOStrength; float WorldAOStrength; float SkyOccStrength; float _pad1;
+		float ShadowAOStrength; float WorldAOStrength; float SkyOccStrength; float SunSpecularEnabled;
 	} cb;
 	static_assert( sizeof( cb ) == D3D12GraphicsEngine::kWetnessCbOffset, "ShadowCB head size must match the HLSL layout" );
 	const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
@@ -733,7 +734,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	// PBRLighting.hlsl ComputeSunLightingPBR. Only the IBL branch reads it; the flat fallback already carries
 	// vertLighting through shadowAO.
 	cb.SkyOccStrength = std::clamp( set.SkyOcclusionStrength, 0.0f, 1.0f );
-	cb._pad1 = 0.0f;
+	cb.SunSpecularEnabled = ( set.SpecularHighlightsFlags & GothicRendererSettings::SH_SUN ) ? 1.0f : 0.0f;
 	memcpy( mapped, &cb, sizeof( cb ) );
 }
 
@@ -775,9 +776,8 @@ void D3D12ShadowMap::Prepare() {
 
 	// Return the map to DEPTH_WRITE if last frame's lit sampling left it in PIXEL_SHADER_RESOURCE.
 	if ( m_InPixelState ) {
-		auto toDepth = TransitionBarrier( m_Map.Get(),
+		m_E->m_CmdList->TransitionBarrier( m_Map.Get(),
 			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-		m_E->m_CmdList->ResourceBarrier( 1, &toDepth );
 		m_InPixelState = false;
 	}
 
@@ -1427,8 +1427,6 @@ void D3D12ShadowMap::TransitionToReadState( D3D12CmdList& cmdList ) {
 	// frame's Prepare(). (The point-shadow cube and the rain map do their own transition inside their own pass,
 	// which is self-contained in one list.)
 	if ( !cmdList || !m_Map || m_InPixelState ) return;
-	auto toSrv = TransitionBarrier( m_Map.Get(),
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-	cmdList->ResourceBarrier( 1, &toSrv );
+	cmdList->TransitionBarrier( m_Map.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 	m_InPixelState = true;
 }

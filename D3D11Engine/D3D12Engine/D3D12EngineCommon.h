@@ -272,16 +272,28 @@ struct CPUBreadcrumbContext {
 inline thread_local std::array<CPUBreadcrumbContext, 2048> g_CpuContextHistory;
 inline thread_local UINT g_CurrentRecordingOpIndex = 0;
 
+#define DX_MARKER_VALUE(x) x, std::sizeof(x)
+#define SetMarkerStr(x) SetMarker(x, std::sizeof(x))
+
 struct DXMarker {
     DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const wchar_t* text ) :
         DXMarker( commandList.Get(), text )
     {
     }
 
+    template<UINT TTextLen>
+    inline static DXMarker Create( ID3D12GraphicsCommandList* commandList, const wchar_t( &text )[TTextLen] ) {
+        return DXMarker( commandList, text, TTextLen );
+    }
+
     // Raw-pointer overload: the MT shadow-cascade recorder (PrepareSunShadows / RecordShadowCascade) is handed a
     // bare ID3D12GraphicsCommandList* so the same body can record into m_CmdList or into a per-cascade list.
     // The breadcrumb ring this writes is thread_local, so concurrent recorders don't collide.
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :
+        DXMarker( commandList, text, wcslen( text ) )
+    {}
+
+    DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text, size_t len ) :
         c( commandList )
     {
         if ( c && text ) {
@@ -290,7 +302,8 @@ struct DXMarker {
                 g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
             }
 
-            UINT byteSize = static_cast<UINT>( (wcslen( text ) + 1) * sizeof( wchar_t ) );
+            UINT byteSize = static_cast<UINT>( (len + 1) * sizeof( wchar_t ) );
+            c->SetMarker( 0, text, byteSize );
             c->BeginEvent( 0, text, byteSize );
 
             // Increment tracking slot to match what DRED maps under the hood
@@ -320,7 +333,7 @@ inline void ResetCpuContextTracker() {
     }
 }
 
-#define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__(cmdList, L##nameStr)
+#define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__ = DXMarker::Create(cmdList, L##nameStr)
 
 // Simple whole-resource transition barrier (legacy barriers; no enhanced-barrier path on inbox D3D12).
 inline D3D12_RESOURCE_BARRIER TransitionBarrier( ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {

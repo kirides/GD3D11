@@ -296,8 +296,15 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
                            float roughness, float metallic, float attenuation, float specularScale )
 {
     float NdotL = saturate( dot( N, L ) );
+    // NdotV deliberately does NOT gate the whole function (D3D11's FP_ComputeSunLighting has no view-
+    // dependent cutoff on its diffuse/ambient response either — only its specular term reads V at all).
+    // saturate(dot(N,V)) legitimately touches exactly 0 at ordinary shading-normal/silhouette grazing —
+    // e.g. standing in the street looking up along a shallow roof pitch — and early-returning 0.0 there
+    // used to black out the ENTIRE direct contribution (diffuse included) on exactly those grazing-viewed
+    // slopes, which is a much harder failure than mere dimming. Only the specular denominator below needs
+    // NdotV guarded against zero, and it already is (max(...,1e-4)).
+    if ( NdotL <= 0.0 || attenuation <= 0.0 ) return 0.0;
     float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
     float3 H = normalize( V + L );
     float NdotH = saturate( dot( N, H ) );
     float VdotH = saturate( dot( V, H ) );
@@ -435,6 +442,47 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     return normalize( mul( nrm, CotangentFrame( N, -p, uv ) ) );
 }
 
+// Builds a TBN from a precomputed (MikkTSpace) vertex tangent. tangent.w is the bitangent handedness sign.
+// N and tangent.xyz must be in the same space (world space here). Direct port of Toolbox.h's
+// tangent_frame_explicit (D3D11's view-space equivalent) — same Gram-Schmidt re-orthonormalization, same
+// single place (the caller's packed handedness sign) that controls handedness.
+float3x3 TangentFrameExplicit( float3 N, float3 T, float sign )
+{
+    T = normalize( T - N * dot( N, T ) );
+    float3 B = cross( N, T ) * sign;
+    return float3x3( T, B, N );
+}
+
+// perturb_normal variant that prefers a precomputed vertex tangent and falls back to the screen-space-
+// derivative CotangentFrame when the tangent is absent/degenerate (e.g. quad marks, VOBs, skeletals — none
+// of which carry a packed tangent) — mirrors Toolbox.h's tangent-taking perturb_normal overload exactly,
+// including its dot(T,T) < 0.25 threshold for "no real tangent here".
+float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex, float2 uv, SamplerState samp, float strength = 1.0 )
+{
+    if ( dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25 )
+    {
+        return PerturbNormal( N, p, nrmTex, uv, samp, strength );
+    }
+
+#if NORMAL_MAP_RESTORE_Z == 1
+    float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
+  #if NORMAL_MAP_MODE == 2
+    nxy.y = -nxy.y;
+  #endif
+    nxy *= strength;
+    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );
+    float3 nrm = normalize( float3( nxy, nz ) );
+#else
+    float3 nrm = nrmTex.Sample( samp, uv ).xyz * 2.0 - 1.0;
+  #if NORMAL_MAP_MODE == 2
+    nrm.y = -nrm.y;
+  #endif
+    nrm.xy *= strength;
+    nrm = normalize( nrm );
+#endif
+    return normalize( mul( nrm, TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w ) ) );
+}
+
 // PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
                               float roughness, float metallic, float ao, float ssao )
@@ -443,10 +491,6 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float3 L = SunDirWS;                            // dir toward the sun (world space)
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
-
-    // Direct sun term N.L
-    float NdotL = saturate( dot( N, L ) );
-    float sun = NdotL * shadow;
 
     // AO factors driven by Gothic's vertex/ground light
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
@@ -492,9 +536,15 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     else
         ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 
-    // Direct Sun term
-    float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, 1.0 );
+    // Direct Sun term. PBR_DirectLighting saturates dot(N,L) and folds it in ONCE itself (see its final
+    // `NdotL * attenuation`) — `attenuation` here must therefore be everything EXCEPT N.L (shadow/AO/
+    // intensity only), or the cosine term gets applied twice (NdotL^2). That used to be exactly the bug:
+    // `sun = NdotL * shadow` was folded into this attenuation, squaring N.L inside PBR_DirectLighting.
+    // NdotL^2 vs NdotL is close to identity at grazing-to-normal incidence (NdotL~1) but crushes moderately
+    // sun-facing slopes hard (e.g. NdotL 0.75 -> 0.56, a 25% cut on top of an already-dim baked-light gate) —
+    // which is exactly the "sloped roofs go dark under full sun, no shadow, no normal map involved" symptom.
+    float sunAtten = shadow * worldAO * SunIntensity;
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, SunSpecularEnabled );
 
     return ambientSun + directSun;
 }

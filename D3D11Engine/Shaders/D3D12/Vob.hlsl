@@ -34,7 +34,7 @@ cbuffer ShadowCB : register(b3)
     float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
     // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
     // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
-    float    SkyOccStrength;    float _shpad;
+    float    SkyOccStrength;    float SunSpecularEnabled;
     // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
     // lit shaders and in the CPU-side WetnessCBData.
     float4x4 RainViewProj;

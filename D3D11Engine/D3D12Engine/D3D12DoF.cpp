@@ -14,6 +14,7 @@
 // texture and is copied back), so nothing downstream has to know the pass ran.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -66,7 +67,7 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         // Every one of these rests in UNORDERED_ACCESS between frames (see RenderDepthOfField), so create them
         // in it — that makes the "before" state at the top of the pass deterministic on the very first frame.
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a depth-of-field texture (" << w << "x" << h << ").";
             return false;
@@ -200,16 +201,16 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
     // an SRV (same dance RenderTAA / RenderBloom / RenderFogAndGodRays do).
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
     {
-        D3D12_RESOURCE_BARRIER pre[3];
+        D3D12ResourceTransition pre[3];
         UINT n = 0;
         if ( !m_SceneColorInPixelState ) {
-            pre[n++] = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
         }
-        pre[n++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDoFDepthRead );
-        pre[n++] = TransitionBarrier( m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( n, pre );
+        pre[n++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDoFDepthRead };
+        pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+        m_CmdList->TransitionBarriers( pre, n );
         m_SceneColorInPixelState = true;
     }
 
@@ -226,13 +227,10 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
     // resting UAV state. A UAV-write -> SRV-read handover needs a real state transition, not a UAV barrier: a
     // UAV barrier only orders UAV access and performs no cache flush, so the SRV read would be undefined.
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
-            TransitionBarrier( m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-        };
-        m_CmdList->ResourceBarrier( 2, b );
+        m_CmdList->TransitionBarriers( {
+        	{ m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        	{ m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        } );
     }
     m_DoFFocusIndex = curIdx;
     m_DoFFocusValid = true;
@@ -246,9 +244,7 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
     m_CmdList->Dispatch( ( m_DoFHalfSize.x + 7 ) / 8, ( m_DoFHalfSize.y + 7 ) / 8, 1 );
 
     {
-        auto b = TransitionBarrier( m_DoFHalf.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_DoFHalf.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
     }
 
     // --- Pass 2: full-res composite into the scratch texture ---
@@ -261,31 +257,23 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
 
     // Hand the result back to the scene colour. Both are kSceneColorFormat, so this is a straight CopyResource.
     {
-        D3D12_RESOURCE_BARRIER toCopy[2] = {
-            TransitionBarrier( m_DoFComposite.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE ),
-            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST ),
-        };
-        m_CmdList->ResourceBarrier( 2, toCopy );
+        m_CmdList->TransitionBarriers( {
+        	{ m_DoFComposite.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE },
+        	{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
+        } );
         m_CmdList->CopyResource( m_SceneColor.Get(), m_DoFComposite.Get() );
     }
 
     // Resting states for the next frame: every DoF texture back to UNORDERED_ACCESS, depth back to DEPTH_WRITE,
     // scene colour back to RENDER_TARGET for bloom / the tonemap.
     {
-        D3D12_RESOURCE_BARRIER post[5] = {
-            TransitionBarrier( m_DoFComposite.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_DoFHalf.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
-            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_RENDER_TARGET ),
-        };
-        m_CmdList->ResourceBarrier( 5, post );
+        m_CmdList->TransitionBarriers( {
+        	{ m_DoFComposite.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        	{ m_DoFHalf.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        	{ m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        	{ m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+        	{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET },
+        } );
         m_SceneColorInPixelState = false;
     }
 

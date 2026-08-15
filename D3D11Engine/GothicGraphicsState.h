@@ -920,7 +920,8 @@ struct GothicRendererSettings {
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
         DisableStaticPointlights = false;
-        
+        SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
+
         ApplyGraphicsPreset();
         ApplyAssaoPreset(1);
 
@@ -1296,6 +1297,20 @@ struct GothicRendererSettings {
     // with 10-30 co-located "atmospheric" static fill lights that exist only to raise the ambient level; under
     // an HDR pipeline they stack into a badly over-bright interior. D3D12 backend only (see BuildFrameLightBuffer).
     bool DisableStaticPointlights;
+    // Which lights are allowed to produce a specular highlight, as an OR of flags. Some players find specular
+    // highlights visually distracting (torches/spell-light glints on every surface) and want them gone without
+    // losing diffuse lighting entirely. Reuses the existing "isStatic -> Color.w=0" suppression D3D11/D3D12
+    // already apply to atmospheric fill lights (see BuildFrameLightBuffer / D3D11TiledDeferredShading) - that
+    // trick just becomes flag-driven instead of hardcoded, and the sun gets the same treatment via a new
+    // SQ_SunSpecularEnabled / SunSpecularEnabled constant (see D3D11ShadowMap::Upload*Constants / D3D12ShadowMap::
+    // UploadSamplingConstants). Both backends.
+    enum ESpecularHighlights : int {
+        SH_NONE = 0,
+        SH_SUN = 1 << 0,
+        SH_POINTLIGHTS = 1 << 1,
+        SH_ATMOSPHERIC = 1 << 2,
+    };
+    int SpecularHighlightsFlags;
     
     struct {
         struct {
@@ -1345,6 +1360,13 @@ struct GothicRendererSettings {
     bool GetIsTAAEnabled() const {
         return AntiAliasingMode == E_AntiAliasingMode::AA_TAA
             || AntiAliasingMode == E_AntiAliasingMode::AA_FSR;
+    }
+
+    // Specular scale (0/1) for a point light's Color.w, per SpecularHighlightsFlags. Static lights are Gothic's
+    // "atmospheric" fill lights; everything else is a regular dynamic/static point light.
+    float PointLightSpecularScale( bool isStatic ) const {
+        const int flag = isStatic ? SH_ATMOSPHERIC : SH_POINTLIGHTS;
+        return ( SpecularHighlightsFlags & flag ) ? 1.0f : 0.0f;
     }
 };
 
