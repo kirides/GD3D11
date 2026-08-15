@@ -171,12 +171,6 @@ namespace {
         return true;
     }
 
-    // Enhanced barriers (D3D12_FEATURE_D3D12_OPTIONS12.EnhancedBarriersSupported) replace legacy
-    // D3D12_RESOURCE_BARRIER transitions with explicit sync/access/layout groups and drop most of
-    // the split-barrier/subresource-state bookkeeping. This is a pure runtime capability query — it
-    // needs no new proc address (CheckFeatureSupport is already resolved through the base
-    // ID3D12Device interface we already have), so it works regardless of whether the Agility SDK
-    // core is active. Optional, never required: callers without it keep using legacy transitions.
     bool DeviceSupportsEnhancedBarriers( ID3D12Device* device, std::string* outReason ) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12 = {};
         if ( FAILED( device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof( options12 ) ) )

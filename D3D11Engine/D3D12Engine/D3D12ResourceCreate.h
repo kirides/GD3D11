@@ -2,19 +2,14 @@
 #include <D3D12MemAlloc.h>
 #include "D3D12StateCache.h"
 
-// Shared helper for creating textures that are exempt from the legacy-to-enhanced-barrier handoff
-// (D3D12Barrier.cpp's BridgeLegacyResourceToCommon / BARRIER_INTEROP_INVALID_LAYOUT) entirely, rather
-// than needing that bridge at all. When the device supports enhanced barriers, the resource is created
-// directly in D3D12_BARRIER_LAYOUT tracking (ID3D12Device10::CreateCommittedResource3, via
-// D3D12MA::Allocator::CreateResource3) instead of legacy D3D12_RESOURCE_STATES tracking -- it never has
-// legacy-tracked history to hand off from, so its first TransitionBarrier()/UAVBarrier() call finds it
-// already enhanced-tracked and BridgeLegacyResourceToCommon's NeedsLegacyHandoff correctly never fires
-// for it. Falls back to the legacy CreateResource(D3D12_RESOURCE_STATES) when enhanced barriers are
-// unavailable, same "always have a fallback" policy as every other enhanced-barrier code path here.
+// Texture creation helper: when the device supports enhanced barriers, creates the resource directly
+// in D3D12_BARRIER_LAYOUT tracking (D3D12MA::Allocator::CreateResource3) instead of legacy
+// D3D12_RESOURCE_STATES tracking, so its first barrier call already finds it enhanced-tracked. Falls
+// back to the legacy CreateResource() when enhanced barriers are unavailable.
 //
-// NOT for resources that must stay on the fully-legacy barrier path on purpose (D3D12Fsr3.cpp's FFX
-// interop resources -- FFX's own DX12 backend issues legacy barriers against them and expects the
-// exact legacy state, see the comment in D3D12Fsr3.cpp) -- those keep calling CreateResource directly.
+// Not for resources that must stay on the legacy barrier path on purpose (e.g. FFX/FSR3 interop
+// resources, which FFX's own DX12 backend transitions with legacy barriers) -- those call
+// CreateResource directly.
 namespace D3D12ResourceCreate {
 
     /** Maps a creation-time initial D3D12_RESOURCE_STATES to the equivalent D3D12_BARRIER_LAYOUT. Covers
@@ -57,9 +52,8 @@ namespace D3D12ResourceCreate {
             const HRESULT hr = allocator->CreateResource3( &allocDesc, &desc1, ToInitialLayout( legacyState ),
                 clearValue, 0, nullptr, outAlloc, riid, outResource );
             if ( SUCCEEDED( hr ) ) return hr;
-            // CreateResource3 failing despite EnhancedBarriersSupported() shouldn't happen (that flag is
-            // itself gated on device capability), but fall through to the legacy call rather than fail
-            // outright -- consistent with the rest of this backend's fallback policy.
+            // Shouldn't happen given EnhancedBarriersSupported(), but fall through to the legacy call
+            // rather than fail outright.
         }
         return allocator->CreateResource( &allocDesc, &desc, legacyState, clearValue, outAlloc, riid, outResource );
     }

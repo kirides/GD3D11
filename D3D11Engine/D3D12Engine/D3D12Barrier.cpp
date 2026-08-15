@@ -4,15 +4,10 @@
 #include "../Logger.h"
 #include <d3dx12_barriers.h>
 
-// Implements the D3D12CmdList barrier methods declared in D3D12StateCache.h. Legacy
-// D3D12_RESOURCE_STATES are the only thing any call site has to think in; everything past that
-// point -- enhanced-barrier availability, the sync/access/layout translation, buffer-vs-texture
-// dispatch -- is handled internally and is invisible to the caller.
-//
-// The state->(sync, access, layout) mapping below is deliberately conservative where a legacy state
-// doesn't map cleanly onto a single enhanced-barrier concept -- broad sync scope, broad access --
-// because a barrier that is too broad is merely slower, never wrong. Tightening individual call
-// sites' sync scopes is a follow-up tuning pass, not part of this migration.
+// Call sites think only in legacy D3D12_RESOURCE_STATES; enhanced-barrier translation and
+// buffer-vs-texture dispatch happen here. Where a legacy state doesn't map cleanly onto one
+// enhanced-barrier concept, the mapping below is deliberately conservative (broad sync/access) --
+// a barrier that's too broad is merely slower, never wrong.
 
 namespace {
 
@@ -65,10 +60,8 @@ namespace {
     bool MapResourceState( D3D12_RESOURCE_STATES state, D3D12_BARRIER_SYNC& sync, D3D12_BARRIER_ACCESS& access,
         D3D12_BARRIER_LAYOUT& layout ) {
         if ( state == D3D12_RESOURCE_STATE_COMMON ) {
-            // Spec rule (confirmed by the debug layer's INCOMPATIBLE_BARRIER_VALUES error): ACCESS_NO_ACCESS
-            // may only pair with a non-UNDEFINED layout when Sync is SYNC_NONE. SYNC_ALL here was invalid
-            // and closed the command list on literally every frame's back-buffer PRESENT<->RENDER_TARGET
-            // transition -- the total render hang this table entry caused.
+            // Spec rule: ACCESS_NO_ACCESS may only pair with a non-UNDEFINED layout when Sync is
+            // SYNC_NONE (debug layer: INCOMPATIBLE_BARRIER_VALUES otherwise).
             sync = D3D12_BARRIER_SYNC_NONE;
             access = D3D12_BARRIER_ACCESS_NO_ACCESS;
             layout = D3D12_BARRIER_LAYOUT_COMMON;
@@ -107,23 +100,16 @@ namespace {
     }
 
     // `subresource` is a flat D3D12CalcSubresource-style index (MipSlice + ArraySlice*MipLevels +
-    // PlaneSlice*MipLevels*ArraySize), NOT a mip level -- decoding it as a bare mip level (the previous
-    // version of this function) put e.g. PointShadowCubeArray's face/slot index straight into
-    // IndexOrFirstMipLevel and blew past its real (1) mip count on every barrier past subresource 0.
+    // PlaneSlice*MipLevels*ArraySize), not a mip level.
     CD3DX12_BARRIER_SUBRESOURCE_RANGE SubresourceRange( ID3D12Resource* resource, UINT subresource ) {
         const D3D12_RESOURCE_DESC desc = resource->GetDesc();
         const UINT mipLevels = desc.MipLevels;
         const UINT arraySize = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
         if ( subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) {
-            // NumMipLevels == 0 is NOT a wildcard for "all subresources" -- it is the sentinel that makes
-            // IndexOrFirstMipLevel mean a single plain subresource index instead (see
-            // CD3DX12_BARRIER_SUBRESOURCE_RANGE's single-UINT constructor in d3dx12_barriers.h, which
-            // passes {Subresource, 0, 0, 0, 0, 0} specifically to select ONE subresource). Using (0,0,0,0,0,0)
-            // here therefore only ever covered subresource 0 -- every array slice/mip past index 0 on any
-            // multi-subresource resource (shadow cascade arrays, cube arrays, mip chains) silently never
-            // received an enhanced barrier at all. Covering "all" means spelling out the real extents.
-            // Plane count is hardcoded to 1: every depth format this backend actually creates (D32_FLOAT,
-            // D16_UNORM) is single-plane; a stencil-bearing format would need a real plane count query.
+            // NumMipLevels == 0 is not a wildcard for "all subresources" in CD3DX12_BARRIER_SUBRESOURCE_RANGE
+            // -- it's the sentinel that makes IndexOrFirstMipLevel select a single subresource instead. The
+            // real extents must be spelled out to cover every slice/mip. Plane count is hardcoded to 1: every
+            // depth format this backend creates (D32_FLOAT, D16_UNORM) is single-plane.
             return CD3DX12_BARRIER_SUBRESOURCE_RANGE( 0, mipLevels, 0, arraySize, 0, 1 );
         }
         const UINT mipSlice = subresource % mipLevels;
@@ -132,12 +118,9 @@ namespace {
         return CD3DX12_BARRIER_SUBRESOURCE_RANGE( mipSlice, 1, arraySlice, 1, planeSlice, 1 );
     }
 
-    // Batch cap for TransitionBarriers()/UAVBarriers(): every call site in this backend batches a
-    // handful of resources ahead of one dispatch/draw (post-FX ping-pong targets, cull UAV sets),
-    // never more than a few. Fixed-size stack storage keeps this off the per-frame allocation path
-    // (see CLAUDE.md's per-frame allocation rule); a batch that somehow exceeds the cap logs a
-    // warning and degrades to one Barrier()/ResourceBarrier() call per element instead of silently
-    // dropping any transition.
+    // Batch cap for TransitionBarriers()/UAVBarriers(); fixed-size stack storage to stay off the
+    // per-frame allocation path. A batch that exceeds this logs a warning and falls back to one
+    // Barrier() call per element.
     constexpr UINT kMaxBatchedBarriers = 16;
 
 } // namespace
@@ -150,8 +133,8 @@ void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_S
         D3D12_BARRIER_LAYOUT layoutBefore, layoutAfter;
         if ( MapResourceState( before, syncBefore, accessBefore, layoutBefore )
             && MapResourceState( after, syncAfter, accessAfter, layoutAfter ) ) {
-            // A caller-supplied hint narrows the table's conservative default; access/layout are left alone
-            // since those describe the operation and resource-state itself, not which stage performs it.
+            // A caller hint narrows the table's conservative default sync scope only; access/layout
+            // describe the resource state itself, not which stage performs it.
             if ( syncBeforeHint != kBarrierSyncUnspecified ) syncBefore = syncBeforeHint;
             if ( syncAfterHint != kBarrierSyncUnspecified ) syncAfter = syncAfterHint;
             if ( IsBufferResource( resource ) ) {

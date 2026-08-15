@@ -335,40 +335,26 @@ public:
     }
 
     // ---- Barriers --------------------------------------------------------------------------------
-    // Like ResourceBarrier below, these don't mutate any state the shadow tracks -- they are grouped
-    // separately only because they carry real logic (the enhanced-barrier translation and fallback),
-    // implemented out-of-line in D3D12Barrier.cpp. Callers still speak legacy D3D12_RESOURCE_STATES;
-    // whether the machine actually has enhanced barriers is decided internally (see
-    // SetEnhancedBarriersDeviceSupport / List7 below) and is invisible at the call site.
+    // Grouped separately from the passthrough section below because these carry real logic (enhanced-
+    // barrier translation + legacy fallback, in D3D12Barrier.cpp) though they don't touch the shadow.
     /** syncBeforeHint/syncAfterHint narrow the enhanced-barrier sync scope for callers that know exactly
-        which pipeline stage(s) touch the resource on each side (see D3D12ResourceTransition in
-        D3D12Barrier.h for why); leave at the kBarrierSyncUnspecified default to get the table's
-        conservative (but always-correct) scope for the state pair. */
+        which pipeline stage(s) touch the resource on each side; leave at kBarrierSyncUnspecified for the
+        table's conservative (but always-correct) scope. */
     void TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
         UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
         D3D12_BARRIER_SYNC syncBeforeHint = kBarrierSyncUnspecified, D3D12_BARRIER_SYNC syncAfterHint = kBarrierSyncUnspecified );
     void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions ) { TransitionBarriers( transitions.begin(), static_cast<UINT>( transitions.size() ) ); }
-    /** Runtime-sized counterpart of the initializer_list overload above, for call sites that build a
-        variable-length batch in a loop (e.g. a per-mip reset pass) rather than writing it out literally. */
     void TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count );
-    /** syncHint narrows the UAV barrier's sync scope the same way TransitionBarrier's hints do (both
-        sides of a UAV barrier share one scope, since it orders one dispatch's writes against another's
-        reads on the SAME resource). Defaults to the table's D3D12_BARRIER_SYNC_ALL_SHADING. */
     void UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
     void UAVBarriers( std::initializer_list<ID3D12Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
     void UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
-    /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path unconditionally -- see
-        D3D12Barrier.cpp for why aliasing doesn't map cleanly onto the enhanced-barrier model. */
+    /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path -- see D3D12Barrier.cpp for why
+        aliasing doesn't map cleanly onto the enhanced-barrier model. */
     void AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after );
 
-    /** Set once at backend startup from the device's D3D12Device::EnhancedBarriersSupported(). The
-        backend drives exactly one device per process, so a single process-wide flag (mirroring
-        D3D12RootLayout.cpp's HighestRootSignatureVersion cache) is enough -- no per-instance plumbing
-        needed on every D3D12CmdList. */
     static void SetEnhancedBarriersDeviceSupport( bool supported ) noexcept { s_DeviceSupportsEnhancedBarriers = supported; }
-    /** Queried by resource-creation call sites (D3D12ResourceCreate.h) to decide CreateResource3
-        (D3D12_BARRIER_LAYOUT initial layout, no legacy-tracking handoff ever needed) vs. the legacy
-        CreateResource (D3D12_RESOURCE_STATES). Same flag that gates every barrier call. */
+    /** Queried by D3D12ResourceCreate.h to decide CreateResource3 (D3D12_BARRIER_LAYOUT initial layout)
+        vs. legacy CreateResource (D3D12_RESOURCE_STATES). Same flag that gates every barrier call. */
     static bool EnhancedBarriersSupported() noexcept { return s_DeviceSupportsEnhancedBarriers; }
 
     // ---- Untracked passthrough -----------------------------------------------------------------
@@ -520,9 +506,7 @@ private:
     Stats m_Stats;
 
     // ---- Enhanced-barrier support ----------------------------------------------------------------
-    // Queried lazily, once per underlying list object (see Attach() above for the invalidation).
-    // ID3D12GraphicsCommandList7::Barrier is a pure COM interface -- QueryInterface, no new proc
-    // address -- so this needs nothing beyond what device/list creation already resolved.
+    // Queried lazily once per underlying list object (see Attach() for the invalidation).
     mutable Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> m_List7;
     mutable bool m_List7Queried = false;
 
@@ -534,8 +518,6 @@ private:
         return m_List7.Get();
     }
 
-    // Whether the device this backend drives reports EnhancedBarriersSupported; see
-    // SetEnhancedBarriersDeviceSupport above. Defaults to false, so barrier calls safely take the
-    // legacy path even if the one call site that sets this were somehow skipped.
+    // Defaults to false, so barrier calls safely take the legacy path until set.
     static inline bool s_DeviceSupportsEnhancedBarriers = false;
 };
