@@ -25,6 +25,7 @@
 // binds nothing but two root-constant blocks — there is no descriptor table and no per-frame heap churn.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -141,7 +142,7 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
             dd.SampleDesc.Count = 1;
             dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
             dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
                 LogWarn() << "D3D12: failed to create an XeGTAO texture (" << size.x << "x" << size.y << ").";
                 return false;

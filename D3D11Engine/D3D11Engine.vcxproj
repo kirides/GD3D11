@@ -944,6 +944,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D12Engine\D3D12ShaderBackend.h" />
     <ClInclude Include="D3D12Engine\D3D12StateCache.h" />
     <ClInclude Include="D3D12Engine\D3D12Barrier.h" />
+    <ClInclude Include="D3D12Engine\D3D12ResourceCreate.h" />
     <ClInclude Include="D3D12Engine\D3D12RenderQueue.h" />
     <ClInclude Include="D3D12Engine\D3D12ShadowMap.h" />
     <ClInclude Include="D3D12Engine\D3D12VobArena.h" />

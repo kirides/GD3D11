@@ -3,6 +3,7 @@
 #include "../pch.h"
 #include "D3D12ShadowMap.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
@@ -120,7 +121,7 @@ bool D3D12ShadowMap::CreateTextureAndViews( UINT size ) {
 	// Born in DEPTH_WRITE; each frame Prepare() writes then transitions to PIXEL_SHADER_RESOURCE and back.
 	m_MapAlloc.Reset();
 	m_Map.Reset();
-	if ( FAILED( m_E->m_Allocator->CreateResource( &allocDesc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), allocDesc, dd,
 		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_MapAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_Map.ReleaseAndGetAddressOf() ) ) ) )
 		return false;

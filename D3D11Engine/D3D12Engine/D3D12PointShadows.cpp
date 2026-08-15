@@ -3,6 +3,7 @@
 #include "../pch.h"
 #include "D3D12PointShadows.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
@@ -117,7 +118,7 @@ bool D3D12PointShadows::Init() {
 	D3D12_CLEAR_VALUE clear = {};
 	clear.Format = DXGI_FORMAT_D16_UNORM;
 	clear.DepthStencil.Depth = 1.0f;
-	if ( FAILED( m_E->m_Allocator->CreateResource( &defaultAlloc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, dd,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_CubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_Cube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
@@ -147,7 +148,7 @@ bool D3D12PointShadows::Init() {
 	// composite — m_Cube above is the static base and the two are min'd in the shader). Born in
 	// PIXEL_SHADER_RESOURCE, same as the static one, because it IS sampled now; it also gets its own bindless SRV
 	// below. Cleared to far on creation, so a slot that has never had an overlay reads as fully unoccluded.
-	if ( FAILED( m_E->m_Allocator->CreateResource( &defaultAlloc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, dd,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_DynCubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_DynCube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
@@ -196,7 +197,7 @@ bool D3D12PointShadows::Init() {
 	ld.Width = kStaticCubeSize;
 	ld.Height = kStaticCubeSize;
 	ld.DepthOrArraySize = static_cast<UINT16>(kMaxStaticCubes * 6);
-	if ( FAILED( m_E->m_Allocator->CreateResource( &defaultAlloc, &ld,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, ld,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_LowCubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_LowCube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;

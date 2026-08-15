@@ -6,6 +6,7 @@
 // resources do.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
@@ -460,7 +461,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     clear.Format = DXGI_FORMAT_D32_FLOAT;
     clear.DepthStencil.Depth = 1.0f;   // normal-Z: 1.0 == far (not reversed-Z, matches the CSM sun map)
 
-    if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
+    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
         m_RainShadowMapAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainShadowMap.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the rain shadow map resource.";
         return false;

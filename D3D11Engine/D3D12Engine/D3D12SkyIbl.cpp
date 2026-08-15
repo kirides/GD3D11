@@ -23,6 +23,7 @@
 // address-space budget, which is exactly why this stage comes before a probe grid.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"
@@ -113,7 +114,7 @@ bool D3D12GraphicsEngine::CreateSkyIblResources() {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a sky-IBL cubemap (" << size << "^2, " << mips << " mips).";
             return false;

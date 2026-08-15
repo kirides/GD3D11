@@ -12,6 +12,7 @@
 // exactly like D3D11 (`DrawFog && isOutdoor`, `EnableGodRays && isOutdoor`).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"
@@ -122,7 +123,7 @@ bool D3D12GraphicsEngine::CreateFogResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a god-ray texture (" << ds4.x << "x" << ds4.y << ").";
             return false;

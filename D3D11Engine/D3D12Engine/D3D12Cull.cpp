@@ -15,6 +15,7 @@
 // their own CPU cull against their own frustum (a caster outside the player's view still casts into it).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -54,7 +55,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
         m_HiZAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HiZ.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the Hi-Z pyramid (" << m_HiZWidth << "x" << m_HiZHeight << ").";
         return false;

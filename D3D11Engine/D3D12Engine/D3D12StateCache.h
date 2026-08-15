@@ -366,6 +366,10 @@ public:
         D3D12RootLayout.cpp's HighestRootSignatureVersion cache) is enough -- no per-instance plumbing
         needed on every D3D12CmdList. */
     static void SetEnhancedBarriersDeviceSupport( bool supported ) noexcept { s_DeviceSupportsEnhancedBarriers = supported; }
+    /** Queried by resource-creation call sites (D3D12ResourceCreate.h) to decide CreateResource3
+        (D3D12_BARRIER_LAYOUT initial layout, no legacy-tracking handoff ever needed) vs. the legacy
+        CreateResource (D3D12_RESOURCE_STATES). Same flag that gates every barrier call. */
+    static bool EnhancedBarriersSupported() noexcept { return s_DeviceSupportsEnhancedBarriers; }
 
     // ---- Untracked passthrough -----------------------------------------------------------------
     // None of these mutate the pipeline state the shadow tracks.

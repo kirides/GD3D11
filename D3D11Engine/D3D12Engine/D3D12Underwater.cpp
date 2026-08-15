@@ -19,6 +19,7 @@
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12Texture.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -85,7 +86,7 @@ bool D3D12GraphicsEngine::CreateUnderwaterResources( INT2 size ) {
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         // Both rest in UNORDERED_ACCESS between frames (see DrawUnderwaterEffects), so create them in it —
         // that makes the "before" state at the top of the pass deterministic on the very first frame.
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, m_UnderwaterBlurAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_UnderwaterBlur[i].ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create an underwater blur texture ("

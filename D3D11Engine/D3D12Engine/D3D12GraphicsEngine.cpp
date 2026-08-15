@@ -1,6 +1,7 @@
 // D3D12GraphicsEngine — core: device/queues/swapchain/frame/present/uploads/resources.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
@@ -1062,7 +1063,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 
 	// Born in DEPTH_WRITE. Now also SRV-readable: DispatchLightCulling brackets a NON_PIXEL_SHADER_RESOURCE
 	// read of it (per-tile far-Z) and transitions back to DEPTH_WRITE, so it is DEPTH_WRITE at every other point.
-	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd,
 		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_DepthBufferAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
 		LogWarn() << "D3D12: failed to create the depth buffer (" << size.x << "x" << size.y << ").";
@@ -1142,7 +1143,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetPreviewDsv() {
 	clear.Format = DXGI_FORMAT_D32_FLOAT;
 	clear.DepthStencil.Depth = 0.0f;   // reversed-Z far, same as the scene depth
 
-	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
 		m_PreviewDepthAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_PreviewDepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
 		LogWarn() << "D3D12: failed to create the inventory-preview depth buffer ("
 			<< m_BackbufferResolution.x << "x" << m_BackbufferResolution.y << ") — item previews will not render.";
@@ -1189,7 +1190,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 
 	// Born in RENDER_TARGET (the world pass renders straight into it; ResolveSceneToBackBuffer flips it to
 	// PIXEL_SHADER_RESOURCE and back next frame). GPU is idle at every call site (init / post-WaitForGpuIdle resize).
-	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd,
 		D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_SceneColorAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
 		LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
@@ -1455,7 +1456,7 @@ bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 	clearValue.Format = kHdrDisplayFormat;
 	memcpy( clearValue.Color, m_ClearColor, sizeof( clearValue.Color ) );
 
-	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
 		m_HdrDisplayAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HdrDisplay.ReleaseAndGetAddressOf() ) ) ) ) {
 		LogWarn() << "D3D12: failed to create the HDR display composite target (" << size.x << "x" << size.y << ").";
 		return false;
@@ -2546,7 +2547,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
 
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> captureAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource> captureTex;
-    if ( FAILED( m_Allocator->CreateResource( &allocDesc, &td, D3D12_RESOURCE_STATE_RENDER_TARGET,
+    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, td, D3D12_RESOURCE_STATE_RENDER_TARGET,
         &clearValue, captureAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( captureTex.ReleaseAndGetAddressOf() ) ) ) ) {
         LogInfo() << (thumbnail ? "Thumbnail failed. Capture texture could not be created" : "GetBackbufferData failed. Capture texture could not be created");
         RestoreFrameRenderTarget();

@@ -930,6 +930,9 @@
     <ClInclude Include="D3D12Engine\D3D12Barrier.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12ResourceCreate.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\InstancingUtils.h" />
     <ClInclude Include="D3D12Engine\D3D12RenderQueue.h">
       <Filter>Engine\D3D12</Filter>

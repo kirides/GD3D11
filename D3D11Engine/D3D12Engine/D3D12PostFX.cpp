@@ -1,6 +1,7 @@
 // D3D12GraphicsEngine — post-FX: bloom pyramid, luminance auto-exposure, SMAA, sharpen.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
@@ -92,7 +93,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 		dd.SampleDesc.Count = 1;
 		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd,
+		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
 			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
 			LogWarn() << "D3D12: failed to create a bloom pyramid texture (" << w << "x" << h << ").";
@@ -497,7 +498,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	dd.SampleDesc.Count = 1;
 	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 	dd.Flags = D3D12_RESOURCE_FLAG_NONE;
-	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 		m_LdrCopyAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrCopy.ReleaseAndGetAddressOf() ) ) ) ) {
 		LogWarn() << "D3D12: failed to create the LDR post-FX scratch copy (SMAA/sharpen will be unavailable).";
 		return false;

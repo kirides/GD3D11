@@ -35,6 +35,7 @@
 // RenderMotionDebugOverlay renders either one for the DebugSettings.TAA.Display* flags.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zCCamera.h"
@@ -83,7 +84,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
         clear.Format = format;
         memcpy( clear.Color, clearColor, sizeof( clear.Color ) );
 
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET,
             &clear, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a motion G-buffer target (" << size.x << "x" << size.y << ").";
             return false;
