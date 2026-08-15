@@ -444,10 +444,6 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
 
-    // Direct sun term N.L
-    float NdotL = saturate( dot( N, L ) );
-    float sun = NdotL * shadow;
-
     // AO factors driven by Gothic's vertex/ground light
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
@@ -492,8 +488,14 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     else
         ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 
-    // Direct Sun term
-    float sunAtten = sun * worldAO * SunIntensity;
+    // Direct Sun term. PBR_DirectLighting saturates dot(N,L) and folds it in ONCE itself (see its final
+    // `NdotL * attenuation`) — `attenuation` here must therefore be everything EXCEPT N.L (shadow/AO/
+    // intensity only), or the cosine term gets applied twice (NdotL^2). That used to be exactly the bug:
+    // `sun = NdotL * shadow` was folded into this attenuation, squaring N.L inside PBR_DirectLighting.
+    // NdotL^2 vs NdotL is close to identity at grazing-to-normal incidence (NdotL~1) but crushes moderately
+    // sun-facing slopes hard (e.g. NdotL 0.75 -> 0.56, a 25% cut on top of an already-dim baked-light gate) —
+    // which is exactly the "sloped roofs go dark under full sun, no shadow, no normal map involved" symptom.
+    float sunAtten = shadow * worldAO * SunIntensity;
     float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, 1.0 );
 
     return ambientSun + directSun;
