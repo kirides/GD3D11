@@ -405,6 +405,18 @@ public:
     }
 
 private:
+    // Bridges a texture resource from legacy state tracking into enhanced-barrier tracking the first
+    // time (ever, for that resource object) an enhanced Barrier() touches it. Implemented in
+    // D3D12Barrier.cpp; see the comment there for why this is required at all (BARRIER_INTEROP_INVALID_LAYOUT)
+    // and why identity is tracked via SetPrivateData on the resource rather than an external set.
+    // `trueBefore` must be the resource's actual current (legacy-model) state -- for TransitionBarrier
+    // that's simply the caller's `before` argument; for UAVBarrier it's always UNORDERED_ACCESS, since a
+    // UAV barrier only ever makes sense on a resource already in that state. Returns true (and has
+    // already issued one legacy ResourceBarrier to COMMON on `m_List`) if a bridge was needed, in which
+    // case the caller must treat the enhanced barrier's "before" side as
+    // {SYNC_NONE, ACCESS_NO_ACCESS, LAYOUT_COMMON} instead of whatever the state table produced.
+    bool BridgeLegacyResourceToCommon( ID3D12Resource* resource, D3D12_RESOURCE_STATES trueBefore );
+
     static constexpr UINT kMaxViewports = 4;
     static constexpr UINT kInvalidCount = 0xFFFFFFFFu;
 
