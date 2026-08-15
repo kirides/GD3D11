@@ -2829,6 +2829,10 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             uint32_t normalIdx  = 0xFFFFFFFFu;
             uint32_t ormIdx     = GetDefaultOrmSrvSlot();
             float normalStrength = 1.0f;
+            if (auto info = Engine::GAPI->GetMaterialInfoFrom(meshKey.Material)) {
+                normalStrength = info->buffer.NormalmapStrength;
+            }
+            
             if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
                     if ( GfxTexture* gfx = s->GetEngineTexture() ) {
