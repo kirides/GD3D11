@@ -30,6 +30,7 @@
 #include "../GSky.h"
 #include "../GMesh.h"
 #include "../WorldObjects.h"
+#include "../zCWorld.h"
 #include "../VertexTypes.h"
 #include "../zCTexture.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
@@ -174,6 +175,18 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );                  // b0 ViewProj
     m_CmdList->SetGraphicsRootConstantBufferView( 1, m_SkyCBGpu[m_FrameIndex] );      // b1 Atmosphere
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 16, &world, 0 );                     // b2 World
+
+    auto& rendererState = Engine::GAPI->GetRendererState();
+
+    if ( rendererState.RendererSettings.AtmosphericScattering ) {
+        if ( auto loadedWorld = Engine::GAPI->GetLoadedWorldInfo(); loadedWorld && loadedWorld->MainWorld ) {
+            if ( auto skyCtrl = loadedWorld->MainWorld->GetSkyControllerOutdoor(); skyCtrl ) {
+                if ( auto planet = skyCtrl->GetPlanet( 1 ); planet && planet->mesh == nullptr ) {
+                    skyCtrl->RenderSkyPre();
+                }
+            }
+        }
+    }
 
     // The moon (planets[1]) — the one thing the fixed-function sky drew that the bare scattering dome does
     // not. GSky resolves the placement (shared with D3D11's sky, which composites the same sprite); all this
