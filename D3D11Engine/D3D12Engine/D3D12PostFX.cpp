@@ -1,6 +1,7 @@
 // D3D12GraphicsEngine — post-FX: bloom pyramid, luminance auto-exposure, SMAA, sharpen.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
@@ -92,7 +93,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 		dd.SampleDesc.Count = 1;
 		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd,
+		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
 			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
 			LogWarn() << "D3D12: failed to create a bloom pyramid texture (" << w << "x" << h << ").";
@@ -177,8 +178,9 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// PIXEL_SHADER_RESOURCE — reading a resource through an SRV while it is in the wrong state returns garbage on
 	// real hardware (this, plus the bloom-mip UAV-vs-SRV state bug below, was the flickering-black-screen cause).
 	if ( !m_SceneColorInPixelState ) {
-		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-		m_CmdList->ResourceBarrier( 1, &toSrv );
+		// Only the prefilter dispatch below consumes this, so the "after" sync is narrowed to compute.
+		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+			D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, kBarrierSyncUnspecified, D3D12_BARRIER_SYNC_COMPUTE_SHADING );
 		m_SceneColorInPixelState = true;
 	}
 	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
@@ -189,11 +191,14 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// texture is undefined. Combined NON_PIXEL|PIXEL so both the compute chain (t0/t1) and the graphics composite
 	// can read it. The bloom mips start each frame in UNORDERED_ACCESS (created that way, and reset back at the
 	// end of this function) so "before" is always UNORDERED_ACCESS here.
+	//
+	// Not sync-scope-hinted: every intermediate mip is read by the next compute step, but the mip that ends up
+	// as finalBloomSrvSlot is also read by the composite pixel shader below, so a compute-only hint here would
+	// under-synchronize that read.
 	constexpr D3D12_RESOURCE_STATES kBloomRead =
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	auto toBloomRead = [&]( ID3D12Resource* res ) {
-		auto b = TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kBloomRead );
-		m_CmdList->ResourceBarrier( 1, &b );
+		m_CmdList->TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kBloomRead );
 		};
 
 	// --- Prefilter: scene color -> down[0] ---
@@ -270,8 +275,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( finalBloomSrvSlot ) );
 	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &settings.BloomStrength ), 0 );
 
-	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	m_SceneColorInPixelState = false;
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -287,13 +291,13 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// so the "before" state is deterministic at the top of the next RenderBloom (the toBloomRead transitions
 	// above all assume UNORDERED_ACCESS). Done AFTER the composite, which still reads the final mip as an SRV.
 	{
-		D3D12_RESOURCE_BARRIER resets[2 * kBloomMaxMips];
+		D3D12ResourceTransition resets[2 * kBloomMaxMips];
 		UINT n = 0;
 		for ( int i = 0; i < mipCount; ++i )
-			resets[n++] = TransitionBarrier( m_BloomDown[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+			resets[n++] = { m_BloomDown[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
 		for ( int i = 0; i < mipCount - 1; ++i )
-			resets[n++] = TransitionBarrier( m_BloomUp[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-		if ( n ) m_CmdList->ResourceBarrier( n, resets );
+			resets[n++] = { m_BloomUp[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+		m_CmdList->TransitionBarriers( resets, n );
 	}
 
 	m_ColorTargetIsHDR = true;   // just rebound m_SceneColor as RTV above
@@ -386,14 +390,12 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	DX_ZONE( m_CmdList.Get(), "Dynamic Exposure (luminance reduce+adapt)" );
 
 	if ( !m_SceneColorInPixelState ) {
-		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 		m_SceneColorInPixelState = true;
 	}
 	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
-	auto toUav = TransitionBarrier( m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-	m_CmdList->ResourceBarrier( 1, &toUav );
+	m_CmdList->TransitionBarrier( m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
 	// --- Level 1: reduce scene color -> per-group partial sums ---
@@ -407,13 +409,11 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
 
 	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
-	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	m_SceneColorInPixelState = false;
 
 	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV barrier.
-	auto partialToSrv = TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-	m_CmdList->ResourceBarrier( 1, &partialToSrv );
+	m_CmdList->TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 
 	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
 	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float Tau; };
@@ -429,11 +429,10 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 
 	// Reset PartialSums to UNORDERED_ACCESS for next frame's reduce write; AdaptedLum to a PS-readable state for
 	// Tonemap (both ResolveSceneToBackBuffer and the thumbnail/screenshot re-tonemap read it later this frame).
-	D3D12_RESOURCE_BARRIER post[2] = {
-		TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-		TransitionBarrier( m_LumAdaptedBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-	};
-	m_CmdList->ResourceBarrier( 2, post );
+	m_CmdList->TransitionBarriers( {
+		{ m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+		{ m_LumAdaptedBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+	} );
 	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 }
 
@@ -496,7 +495,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	dd.SampleDesc.Count = 1;
 	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 	dd.Flags = D3D12_RESOURCE_FLAG_NONE;
-	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
 		m_LdrCopyAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrCopy.ReleaseAndGetAddressOf() ) ) ) ) {
 		LogWarn() << "D3D12: failed to create the LDR post-FX scratch copy (SMAA/sharpen will be unavailable).";
 		return false;
@@ -613,16 +612,14 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	// --- Copy the tonemapped display image into m_LdrCopy (the SMAA color input). ---
 	// Display target: RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST.
 	{
-		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-		m_CmdList->ResourceBarrier( 1, &b );
+		m_CmdList->TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
 	}
 	m_CmdList->CopyResource( m_LdrCopy.Get(), backBuffer );
 	{
-		D3D12_RESOURCE_BARRIER b[2] = {
-			TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-			TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
-		};
-		m_CmdList->ResourceBarrier( 2, b );
+		m_CmdList->TransitionBarriers( {
+			{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+			{ backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+		} );
 	}
 
 	// Common state for all three fullscreen-triangle passes.
@@ -652,8 +649,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	m_CmdList->ClearRenderTargetView( m_SmaaEdgesRtv, clearZero, 0, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 	{
-		auto b = TransitionBarrier( m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		m_CmdList->ResourceBarrier( 1, &b );
+		m_CmdList->TransitionBarrier( m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 	}
 
 	// --- Pass 2: blend-weight calculation (edges + area + search -> blend). blend rests in RENDER_TARGET. ---
@@ -663,8 +659,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	m_CmdList->ClearRenderTargetView( m_SmaaBlendRtv, clearZero, 0, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 	{
-		auto b = TransitionBarrier( m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		m_CmdList->ResourceBarrier( 1, &b );
+		m_CmdList->TransitionBarrier( m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 	}
 
 	// --- Pass 3: neighborhood blending (color + blend -> swapchain). ---
@@ -676,12 +671,11 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	// Restore resting states for next frame: color -> COPY_DEST, edges/blend -> RENDER_TARGET. Swapchain stays
 	// RENDER_TARGET (bound above), ready for Gothic's 2D UI/HUD to composite on top.
 	{
-		D3D12_RESOURCE_BARRIER b[3] = {
-			TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST ),
-			TransitionBarrier( m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
-			TransitionBarrier( m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
-		};
-		m_CmdList->ResourceBarrier( 3, b );
+		m_CmdList->TransitionBarriers( {
+			{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
+			{ m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+			{ m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+		} );
 	}
 }
 
@@ -715,16 +709,14 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	// A texture can't be its own SRV and RTV, so sharpen a copy of the display target back onto itself.
 	// Same shape as D3D11 (both of its modes copy into the pfx temp buffer first). m_LdrCopy rests in COPY_DEST.
 	{
-		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-		m_CmdList->ResourceBarrier( 1, &b );
+		m_CmdList->TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
 	}
 	m_CmdList->CopyResource( m_LdrCopy.Get(), backBuffer );
 	{
-		D3D12_RESOURCE_BARRIER b[2] = {
-			TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-			TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
-		};
-		m_CmdList->ResourceBarrier( 2, b );
+		m_CmdList->TransitionBarriers( {
+			{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+			{ backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+		} );
 	}
 
 	// b0: { uint4 CasConst0; uint4 CasConst1; uint SrcIndex; float SharpenStrength; float2 TextureSize }.
@@ -762,7 +754,6 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	// Back to the resting state so the next user of the scratch copy (next frame's SMAA/sharpen) finds it in
 	// COPY_DEST. The swapchain stays RENDER_TARGET for Gothic's 2D UI/HUD.
 	{
-		auto b = TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
-		m_CmdList->ResourceBarrier( 1, &b );
+		m_CmdList->TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
 	}
 }

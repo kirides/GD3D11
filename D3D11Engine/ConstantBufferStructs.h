@@ -214,7 +214,8 @@ struct DS_ScreenQuadConstantBuffer {
     // World-space sun direction, precomputed on CPU (== normalize(AC_LightPos)).
     // Avoids re-deriving it per-pixel via normalize(mul(SQ_LightDirectionVS, SQ_InvView)).
     float3 SQ_LightDirectionWS;
-    float SQ_Pad0;
+    // 0/1 toggle for the sun's specular highlight (GothicRendererSettings::SH_SUN); was unused padding.
+    float SQ_SunSpecularEnabled;
 
     float4 SQ_LightColor;
     

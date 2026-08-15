@@ -171,6 +171,16 @@ namespace {
         return true;
     }
 
+    bool DeviceSupportsEnhancedBarriers( ID3D12Device* device, std::string* outReason ) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12 = {};
+        if ( FAILED( device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof( options12 ) ) )
+            || !options12.EnhancedBarriersSupported ) {
+            if ( outReason ) *outReason = "the driver/runtime does not report D3D12_OPTIONS12.EnhancedBarriersSupported";
+            return false;
+        }
+        return true;
+    }
+
     /** Returns true if the adapter supports a FL12_0 D3D12 device that can also do SM6.6 bindless
         (capability check only — the temporary device is dropped again). */
     bool AdapterSupportsD3D12( PFN_D3D12_CREATE_DEVICE createDevice, IDXGIAdapter1* adapter,
@@ -288,17 +298,22 @@ bool D3D12Device::Init() {
     }
 
 #ifdef DEBUG_D3D11
+    constexpr bool DEBUG_D3D11_ENABLED = true;
+#else
+    constexpr bool DEBUG_D3D11_ENABLED = false;
+#endif
+
     // Enable the debug layer before device creation when available (best-effort).
     if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) ) {
         auto getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>( GetProcAddress( d3d12, "D3D12GetDebugInterface" ) );
         ComPtr<ID3D12Debug> debug;
-        if ( getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( DEBUG_D3D11_ENABLED && getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
             debug->EnableDebugLayer();
             LogInfo() << "D3D12 debug layer enabled.";
         }
 
         ComPtr<ID3D12Debug1> debug1;
-        if ( SUCCEEDED( debug.As( &debug1 ) ) ) {
+        if ( DEBUG_D3D11_ENABLED && SUCCEEDED( debug.As( &debug1 ) ) ) {
             debug1->SetEnableGPUBasedValidation( FALSE ); // NOTE: This is REALLY expensive. Only use when actually debugging hard crashes.
         }
 
@@ -308,11 +323,11 @@ bool D3D12Device::Init() {
             // Turn on auto-breadcrumbs and page fault reporting
             pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
             pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            pDredSettings->Release();
+            if ( DEBUG_D3D11_ENABLED ) {
+                pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+            }
         }
     }
-#endif
 
     if ( !CreateFactory( m_Factory ) ) {
         LogWarn() << "D3D12Device::Init: failed to create DXGI factory.";
@@ -332,6 +347,14 @@ bool D3D12Device::Init() {
         return false;
     }
     LogInfo() << "D3D12 device created on: " << m_DeviceDescription.c_str();
+
+    std::string barrierReason;
+    m_EnhancedBarriersSupported = DeviceSupportsEnhancedBarriers( m_Device.Get(), &barrierReason );
+    if ( m_EnhancedBarriersSupported ) {
+        LogInfo() << "D3D12: enhanced barriers supported.";
+    } else {
+        LogInfo() << "D3D12: enhanced barriers unavailable (" << barrierReason.c_str() << "); using legacy transitions.";
+    }
 
     // Direct (graphics) queue
     D3D12_COMMAND_QUEUE_DESC directDesc = {};

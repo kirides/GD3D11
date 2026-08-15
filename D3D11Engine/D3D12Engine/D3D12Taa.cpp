@@ -23,6 +23,7 @@
 // MotionCB::UnjitteredViewProj deliberately stays clean so motion vectors do not encode the jitter as motion.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zCCamera.h"
@@ -76,7 +77,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, m_TaaHistoryAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_TaaHistory[i].ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a TAA history buffer (" << size.x << "x" << size.y << ").";
@@ -101,7 +102,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         D3D12_CLEAR_VALUE clear = {};
         clear.Format = DXGI_FORMAT_D32_FLOAT;
         clear.DepthStencil.Depth = 0.0f;   // reversed-Z
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, kPrevDepthReadState, &clear,
+        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kPrevDepthReadState, &clear,
             m_TaaPrevDepthAlloc.ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_TaaPrevDepth.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create the TAA previous-depth snapshot.";
@@ -237,17 +238,17 @@ void D3D12GraphicsEngine::RenderTAA() {
     // Depth leaves DEPTH_WRITE, so unbind the DSV first (same dance RenderBloom / RenderFogAndGodRays do).
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
     {
-        D3D12_RESOURCE_BARRIER pre[4];
+        D3D12ResourceTransition pre[4];
         UINT n = 0;
         if ( !m_SceneColorInPixelState ) {
-            pre[n++] = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
         }
-        pre[n++] = TransitionBarrier( m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        pre[n++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        if ( n ) m_CmdList->ResourceBarrier( n, pre );
+        pre[n++] = { m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+        pre[n++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+        m_CmdList->TransitionBarriers( pre, n );
         m_SceneColorInPixelState = true;
     }
 
@@ -311,50 +312,37 @@ void D3D12GraphicsEngine::RenderTAA() {
     // Nothing downstream on this backend reads scene-colour alpha (bloom, luminance and the tonemap all take
     // .rgb), and the fog composition only preserves alpha rather than consuming it.
     {
-        D3D12_RESOURCE_BARRIER toCopy[] = {
-            TransitionBarrier( m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE ),
-            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST ),
-        };
-        m_CmdList->ResourceBarrier( _countof( toCopy ), toCopy );
+        m_CmdList->TransitionBarriers( {
+            { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE },
+            { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
+        } );
         m_CmdList->CopyResource( m_SceneColor.Get(), m_TaaHistory[writeIdx].Get() );
     }
 
     // Snapshot this frame's depth for the NEXT frame's disocclusion test. Nothing else in the frame keeps a
     // previous-frame depth, so this pass owns the copy.
     if ( m_TaaPrevDepth ) {
-        D3D12_RESOURCE_BARRIER toCopy[] = {
-            TransitionBarrier( m_TaaPrevDepth.Get(), kPrevDepthReadState, D3D12_RESOURCE_STATE_COPY_DEST ),
-            TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_SOURCE ),
-        };
-        m_CmdList->ResourceBarrier( _countof( toCopy ), toCopy );
+        m_CmdList->TransitionBarriers( {
+            { m_TaaPrevDepth.Get(), kPrevDepthReadState, D3D12_RESOURCE_STATE_COPY_DEST },
+            { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE },
+        } );
         m_CmdList->CopyResource( m_TaaPrevDepth.Get(), m_DepthBuffer.Get() );
-        D3D12_RESOURCE_BARRIER back[] = {
-            TransitionBarrier( m_TaaPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kPrevDepthReadState ),
-            TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_DEPTH_WRITE ),
-        };
-        m_CmdList->ResourceBarrier( _countof( back ), back );
+        m_CmdList->TransitionBarriers( {
+            { m_TaaPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kPrevDepthReadState },
+            { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+        } );
         m_TaaPrevDepthValid = true;
     } else {
-        auto depthBack = TransitionBarrier( m_DepthBuffer.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-        m_CmdList->ResourceBarrier( 1, &depthBack );
+        m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
     }
 
     // Rest states for the next frame: history back to UAV (both slots), scene colour back to RENDER_TARGET.
     {
-        D3D12_RESOURCE_BARRIER post[] = {
-            TransitionBarrier( m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_RENDER_TARGET ),
-        };
-        m_CmdList->ResourceBarrier( _countof( post ), post );
+        m_CmdList->TransitionBarriers( {
+            { m_TaaHistory[writeIdx].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET },
+        } );
         m_SceneColorInPixelState = false;
     }
 

@@ -3,6 +3,7 @@
 #include "../pch.h"
 #include "D3D12PointShadows.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
@@ -83,7 +84,7 @@ namespace {
 	// Barrier scratch for Record()'s per-slot (6-subresource) transitions. Reused across frames — the
 	// point-shadow pass is single-consumer (one recorder list) and the project's standing rule is no per-frame
 	// (re)allocations on the frame path.
-	std::vector<D3D12_RESOURCE_BARRIER> g_PsBarriers;
+	std::vector<D3D12ResourceTransition> g_PsBarriers;
 }
 
 
@@ -117,7 +118,7 @@ bool D3D12PointShadows::Init() {
 	D3D12_CLEAR_VALUE clear = {};
 	clear.Format = DXGI_FORMAT_D16_UNORM;
 	clear.DepthStencil.Depth = 1.0f;
-	if ( FAILED( m_E->m_Allocator->CreateResource( &defaultAlloc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, dd,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_CubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_Cube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
@@ -147,7 +148,7 @@ bool D3D12PointShadows::Init() {
 	// composite — m_Cube above is the static base and the two are min'd in the shader). Born in
 	// PIXEL_SHADER_RESOURCE, same as the static one, because it IS sampled now; it also gets its own bindless SRV
 	// below. Cleared to far on creation, so a slot that has never had an overlay reads as fully unoccluded.
-	if ( FAILED( m_E->m_Allocator->CreateResource( &defaultAlloc, &dd,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, dd,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_DynCubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_DynCube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
@@ -196,7 +197,7 @@ bool D3D12PointShadows::Init() {
 	ld.Width = kStaticCubeSize;
 	ld.Height = kStaticCubeSize;
 	ld.DepthOrArraySize = static_cast<UINT16>(kMaxStaticCubes * 6);
-	if ( FAILED( m_E->m_Allocator->CreateResource( &defaultAlloc, &ld,
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, ld,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_LowCubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_LowCube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
@@ -1025,21 +1026,14 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// per phase so the GPU pays one pipeline flush per phase rather than one per slot.
 	auto pushSlot = [&]( ID3D12Resource* res, D3D12_RESOURCE_STATES* slotStates, UINT slot, D3D12_RESOURCE_STATES after ) {
 		if ( slotStates[slot] == after ) return;   // already there — no redundant barrier
-		D3D12_RESOURCE_BARRIER b = {};
-		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		b.Transition.pResource = res;
-		b.Transition.StateBefore = slotStates[slot];
-		b.Transition.StateAfter = after;
 		for ( UINT face = 0; face < 6; ++face ) {
-			b.Transition.Subresource = slot * 6 + face;
-			g_PsBarriers.push_back( b );
+			g_PsBarriers.push_back( { res, slotStates[slot], after, slot * 6 + face } );
 		}
 		slotStates[slot] = after;
 		};
 	auto flushBarriers = [&]() {
 		if ( g_PsBarriers.empty() ) return;
-		cmdList->ResourceBarrier( static_cast<UINT>( g_PsBarriers.size() ), g_PsBarriers.data() );
+		cmdList->TransitionBarriers( g_PsBarriers.data(), static_cast<UINT>( g_PsBarriers.size() ) );
 		g_PsBarriers.clear();
 		};
 	g_PsBarriers.clear();

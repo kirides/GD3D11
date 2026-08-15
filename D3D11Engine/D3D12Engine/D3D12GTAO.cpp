@@ -25,6 +25,7 @@
 // binds nothing but two root-constant blocks — there is no descriptor table and no per-frame heap churn.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -141,7 +142,7 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
             dd.SampleDesc.Count = 1;
             dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
             dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
                 LogWarn() << "D3D12: failed to create an XeGTAO texture (" << size.x << "x" << size.y << ").";
                 return false;
@@ -330,27 +331,19 @@ void D3D12GraphicsEngine::RenderGTAO() {
     // frame is what normally moves it and still expects to find it there.
     BeginAoDepthRead();
     if ( gbufNormals ) {
-        auto b = TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
     }
     // ...and flip m_AOMask back if a previous successful AO run left it readable for the lit passes.
     if ( m_AOMaskInPixelState ) {
-        auto b = TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_AOMaskInPixelState = false;
     }
 
     auto toRead = [&]( ID3D12Resource* res ) {
-        auto b = TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         };
     auto toWrite = [&]( ID3D12Resource* res ) {
-        auto b = TransitionBarrier( res, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( res, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         };
 
     // --- 1. Prefilter depths ---------------------------------------------------------------------------------
@@ -427,28 +420,21 @@ void D3D12GraphicsEngine::RenderGTAO() {
     // which is what the next barrier on each asserts as its "before" state. Skipping any of these produces a
     // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible artifact.
     {
-        D3D12_RESOURCE_BARRIER post[5] = {
-            TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
-            TransitionBarrier( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_GtaoEdges.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
-            TransitionBarrier( m_GtaoAOTerm[srcTerm].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+        D3D12ResourceTransition post[5] = {
+            { m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+            { m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { m_GtaoEdges.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            { m_GtaoAOTerm[srcTerm].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
             {},   // m_GtaoNormals, only when the reconstruction path actually ran (see below)
         };
         UINT postCount = 4;
         if ( !gbufNormals ) {
-            post[postCount++] = TransitionBarrier( m_GtaoNormals.Get(),
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            post[postCount++] = { m_GtaoNormals.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
         }
-        m_CmdList->ResourceBarrier( postCount, post );
+        m_CmdList->TransitionBarriers( post, postCount );
     }
     if ( gbufNormals ) {
-        auto b = TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_RENDER_TARGET );
-        m_CmdList->ResourceBarrier( 1, &b );
+        m_CmdList->TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
     }
     EndAoDepthRead();
 

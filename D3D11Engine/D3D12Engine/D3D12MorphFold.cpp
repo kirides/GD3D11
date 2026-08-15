@@ -202,7 +202,7 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
         // first fold was legal too), VERTEX_AND_CONSTANT_BUFFER on every fold after it.
         const D3D12_RESOURCE_STATES from = ( out->GetUavState() == D3D12VertexBuffer::EUavState::Vertex )
             ? D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER : D3D12_RESOURCE_STATE_COMMON;
-        m_MorphBarriers.push_back( TransitionBarrier( out->GetResource(), from, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) );
+        m_MorphBarriers.push_back( { out->GetResource(), from, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } );
         out->SetUavState( D3D12VertexBuffer::EUavState::Unordered );
 
         resolved.push_back( { &job,
@@ -220,7 +220,7 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
         // submitted later on the direct queue) could read the tables before the copies land.
         FlushTextureUploads();
     }
-    m_CmdList->ResourceBarrier( static_cast<UINT>( m_MorphBarriers.size() ), m_MorphBarriers.data() );
+    m_CmdList->TransitionBarriers( m_MorphBarriers.data(), static_cast<UINT>( m_MorphBarriers.size() ) );
 
     // --- One dispatch per submesh ---
     m_CmdList->SetPipelineState( m_Pipelines.MorphFold.PSO.Get() );
@@ -257,11 +257,11 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
     // --- Hand every folded buffer to the geometry passes ---
     m_MorphBarriers.clear();
     for ( const ResolvedJob& r : resolved ) {
-        m_MorphBarriers.push_back( TransitionBarrier( r.Out->GetResource(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER ) );
+        m_MorphBarriers.push_back( { r.Out->GetResource(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
         r.Out->SetUavState( D3D12VertexBuffer::EUavState::Vertex );
     }
-    m_CmdList->ResourceBarrier( static_cast<UINT>( m_MorphBarriers.size() ), m_MorphBarriers.data() );
+    m_CmdList->TransitionBarriers( m_MorphBarriers.data(), static_cast<UINT>( m_MorphBarriers.size() ) );
 
     m_MorphFoldSubmeshCount = static_cast<UINT>( resolved.size() );
     // How much a crowded frame actually folds, and how much table memory the world's head types add up to.

@@ -3,6 +3,8 @@
 #include <wrl/client.h>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include "D3D12Barrier.h"
 
 // Engine-wide redundant-state filter for the D3D12 backend.
 //
@@ -76,6 +78,9 @@ public:
     void Attach( ID3D12GraphicsCommandList* list ) noexcept {
         InvalidateAll();
         m_List = list;
+        // New COM object -> any cached ID3D12GraphicsCommandList7 QueryInterface result is stale.
+        m_List7Queried = false;
+        m_List7.Reset();
     }
 
     const Stats& GetStats() const noexcept { return m_Stats; }
@@ -329,6 +334,29 @@ public:
         m_List->SetComputeRootUnorderedAccessView( param, address );
     }
 
+    // ---- Barriers --------------------------------------------------------------------------------
+    // Grouped separately from the passthrough section below because these carry real logic (enhanced-
+    // barrier translation + legacy fallback, in D3D12Barrier.cpp) though they don't touch the shadow.
+    /** syncBeforeHint/syncAfterHint narrow the enhanced-barrier sync scope for callers that know exactly
+        which pipeline stage(s) touch the resource on each side; leave at kBarrierSyncUnspecified for the
+        table's conservative (but always-correct) scope. */
+    void TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
+        UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+        D3D12_BARRIER_SYNC syncBeforeHint = kBarrierSyncUnspecified, D3D12_BARRIER_SYNC syncAfterHint = kBarrierSyncUnspecified );
+    void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions ) { TransitionBarriers( transitions.begin(), static_cast<UINT>( transitions.size() ) ); }
+    void TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count );
+    void UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
+    void UAVBarriers( std::initializer_list<ID3D12Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
+    void UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
+    /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path -- see D3D12Barrier.cpp for why
+        aliasing doesn't map cleanly onto the enhanced-barrier model. */
+    void AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after );
+
+    static void SetEnhancedBarriersDeviceSupport( bool supported ) noexcept { s_DeviceSupportsEnhancedBarriers = supported; }
+    /** Queried by D3D12ResourceCreate.h to decide CreateResource3 (D3D12_BARRIER_LAYOUT initial layout)
+        vs. legacy CreateResource (D3D12_RESOURCE_STATES). Same flag that gates every barrier call. */
+    static bool EnhancedBarriersSupported() noexcept { return s_DeviceSupportsEnhancedBarriers; }
+
     // ---- Untracked passthrough -----------------------------------------------------------------
     // None of these mutate the pipeline state the shadow tracks.
     void ResourceBarrier( UINT num, const D3D12_RESOURCE_BARRIER* barriers ) { m_List->ResourceBarrier( num, barriers ); }
@@ -476,4 +504,20 @@ private:
     RootArgs m_Gfx;
     RootArgs m_Compute;
     Stats m_Stats;
+
+    // ---- Enhanced-barrier support ----------------------------------------------------------------
+    // Queried lazily once per underlying list object (see Attach() for the invalidation).
+    mutable Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> m_List7;
+    mutable bool m_List7Queried = false;
+
+    ID3D12GraphicsCommandList7* List7() const noexcept {
+        if ( !m_List7Queried ) {
+            m_List7Queried = true;
+            m_List.As( &m_List7 );   // best-effort; leaves m_List7 null on an older runtime
+        }
+        return m_List7.Get();
+    }
+
+    // Defaults to false, so barrier calls safely take the legacy path until set.
+    static inline bool s_DeviceSupportsEnhancedBarriers = false;
 };

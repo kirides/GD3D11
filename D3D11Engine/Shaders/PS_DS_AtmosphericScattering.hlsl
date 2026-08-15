@@ -22,7 +22,7 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float SQ_ShadowmapSize;
 
     float3 SQ_LightDirectionWS;
-    float SQ_Pad0;
+    float SQ_SunSpecularEnabled;   // 0/1 toggle for the sun's specular highlight
 
     float4 SQ_LightColor;
     matrix SQ_ShadowViewProj[MAX_CSM_CASCADES];
@@ -340,7 +340,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     // so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.
     float ssao = TX_AO.Sample(SS_Linear, uv).r;
 
-    spec = pow(spec, specPower) * specIntensity;
+    spec = pow(spec, specPower) * specIntensity * SQ_SunSpecularEnabled;
     float3 specBare = spec * lightColor.rgb * sun + specWet * lightColor.rgb;
     float3 specColored = saturate(lerp(specBare, specBare * diffuse.rgb, specMod));
 	
