@@ -5876,6 +5876,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "CasterMinTexels", to_string_locale_independent( s.DebugSettings.ShadowCascades.CasterMinTexels ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "AllowSelfShadowingPointlights", to_string_locale_independent( s.AllowSelfShadowingPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "DisableStaticPointlights", to_string_locale_independent( s.DisableStaticPointlights ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SpecularHighlightsFlags", to_string_locale_independent( s.SpecularHighlightsFlags ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", to_string_locale_independent( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AntiAliasing", to_string_locale_independent( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
@@ -6038,6 +6039,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DebugSettings.ShadowCascades.CasterMinTexels = std::clamp( GetPrivateProfileFloatA( "Shadows", "CasterMinTexels", ds.DebugSettings.ShadowCascades.CasterMinTexels, ini ), 0.0f, 32.0f );
         s.AllowSelfShadowingPointlights = GetPrivateProfileBoolA( "Shadows", "AllowSelfShadowingPointlights", ds.AllowSelfShadowingPointlights, ini );
         s.DisableStaticPointlights = GetPrivateProfileBoolA( "Shadows", "DisableStaticPointlights", ds.DisableStaticPointlights, ini );
+        s.SpecularHighlightsFlags = GetPrivateProfileSignedIntA( "Shadows", "SpecularHighlightsFlags", ds.SpecularHighlightsFlags, ini );
 
         INT2 res = {};
         RECT desktopRect;

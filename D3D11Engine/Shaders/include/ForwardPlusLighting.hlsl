@@ -50,7 +50,7 @@ cbuffer FP_ScreenQuadConstantBuffer : register( b4 )
     float3 SQ_LightDirectionVS;
     float SQ_ShadowmapSize;
     float3 SQ_LightDirectionWS;
-    float SQ_Pad0;
+    float SQ_SunSpecularEnabled;   // 0/1 toggle for the sun's specular highlight
     float4 SQ_LightColor;
     matrix SQ_ShadowViewProj[MAX_CSM_CASCADES];
     float SQ_ShadowStrength;
@@ -236,7 +236,7 @@ float3 FP_ComputeSunLighting(
     float sunStrength = dot( lightColor.rgb, float3( 0.333f, 0.333f, 0.333f ) );
     float sun = saturate( dot( normalize( SQ_LightDirectionVS ), normal ) * shadow );
 
-    spec = pow( spec, specPower ) * specIntensity;
+    spec = pow( spec, specPower ) * specIntensity * SQ_SunSpecularEnabled;
     float3 specBare = spec * lightColor.rgb * sun;
     float3 specColored = saturate( lerp( specBare, specBare * diffuseColor, specMod ) );
 

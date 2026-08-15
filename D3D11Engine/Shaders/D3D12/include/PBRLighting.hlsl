@@ -544,7 +544,7 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     // sun-facing slopes hard (e.g. NdotL 0.75 -> 0.56, a 25% cut on top of an already-dim baked-light gate) —
     // which is exactly the "sloped roofs go dark under full sun, no shadow, no normal map involved" symptom.
     float sunAtten = shadow * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, 1.0 );
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, SunSpecularEnabled );
 
     return ambientSun + directSun;
 }

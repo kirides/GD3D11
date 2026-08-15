@@ -1025,7 +1025,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		GPULight& L = dst[count];
 		XMStoreFloat3( &L.PositionView, XMVector3TransformCoord( XMLoadFloat3( &pw ), view ) );
 		L.Range = cand.range;
-		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, cand.isStatic ? 0.0f : 1.0f );
+		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor,
+			lightSettings.PointLightSpecularScale( cand.isStatic ) );
 		L.PositionWorld = pw;
 		L.ShadowCubeIndex = -1;
 		L.ShadowOrigin = cand.shadowOrigin;

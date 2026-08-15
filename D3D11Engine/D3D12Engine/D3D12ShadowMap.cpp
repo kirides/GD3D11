@@ -689,7 +689,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 		XMFLOAT3   SunDirWS;          float ShadowMapSize;
 		XMFLOAT3   SunColor;          float SunIntensity;
 		XMFLOAT3   CascadeTexelWorld; float AmbientStrength;
-		float ShadowAOStrength; float WorldAOStrength; float SkyOccStrength; float _pad1;
+		float ShadowAOStrength; float WorldAOStrength; float SkyOccStrength; float SunSpecularEnabled;
 	} cb;
 	static_assert( sizeof( cb ) == D3D12GraphicsEngine::kWetnessCbOffset, "ShadowCB head size must match the HLSL layout" );
 	const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
@@ -734,7 +734,7 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	// PBRLighting.hlsl ComputeSunLightingPBR. Only the IBL branch reads it; the flat fallback already carries
 	// vertLighting through shadowAO.
 	cb.SkyOccStrength = std::clamp( set.SkyOcclusionStrength, 0.0f, 1.0f );
-	cb._pad1 = 0.0f;
+	cb.SunSpecularEnabled = ( set.SpecularHighlightsFlags & GothicRendererSettings::SH_SUN ) ? 1.0f : 0.0f;
 	memcpy( mapped, &cb, sizeof( cb ) );
 }
 

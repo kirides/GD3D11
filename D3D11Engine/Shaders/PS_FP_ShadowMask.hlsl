@@ -27,7 +27,7 @@ cbuffer DS_ScreenQuadConstantBuffer : register( b0 )
     float  SQ_ShadowmapSize;
 
     float3 SQ_LightDirectionWS;
-    float  SQ_Pad0;
+    float  SQ_SunSpecularEnabled;
 
     float4 SQ_LightColor;
     matrix SQ_ShadowViewProj[MAX_CSM_CASCADES];

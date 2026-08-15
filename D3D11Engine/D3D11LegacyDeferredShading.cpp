@@ -88,7 +88,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         vob->DoAnimation();
 
         plcb.PL_Color = float4( vob->GetLightColor() );
-        plcb.PL_Color.w = vob->IsStatic() ? 0.0f : 1.0f;
+        plcb.PL_Color.w = settings.PointLightSpecularScale( vob->IsStatic() );
         plcb.PL_Range = vob->GetLightRange();
         plcb.Pl_PositionWorld = vob->GetPositionWorld();
         plcb.PL_Outdoor = light->IsIndoorVob ? 0.0f : 1.0f;

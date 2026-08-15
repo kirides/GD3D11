@@ -33,7 +33,7 @@ cbuffer ShadowCB : register(b3)
     float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
     // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
     // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
-    float    SkyOccStrength;    float _shpad;
+    float    SkyOccStrength;    float SunSpecularEnabled;
     // --- Scene wetness (rain) tail, uploaded separately by UploadWetnessConstants after the rain shadow
     // pass has computed this frame's rain camera. Keep in sync with Vob.hlsl/Skeletal.hlsl and the
     // WetnessCBData struct on the CPU side. RainShadowIndex/DistortionIndex are 0xFFFFFFFF when the rain
