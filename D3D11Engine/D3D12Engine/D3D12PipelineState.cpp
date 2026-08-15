@@ -376,14 +376,17 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( c
         ps = WorldTransparency.EnvPsBlob.Get();
     }
 
-    // Same packed 36-byte world vertex the opaque pass consumes; VSTransparent just doesn't read NORMAL.
+    // Same packed 36-byte world vertex the opaque pass consumes; VSTransparent just doesn't read NORMAL/TANGENT.
     // (Kept as a superset of what the VS declares so the color and depth-fill PSOs are byte-identical apart
-    // from blend/depth state — see the water Z-prepass lesson about ULP-divergent depth.)
+    // from blend/depth state — see the water Z-prepass lesson about ULP-divergent depth.) VS_IN in World.hlsl
+    // (shared by VSTransparent/VSTransparentEnv/VSTransparentPortal) now declares TANGENT — must match or
+    // CreateGraphicsPipelineState fails E_INVALIDARG (signature/layout mismatch).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,   0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,      0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R10G10B10A2_UNORM, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,      0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
