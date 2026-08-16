@@ -50,10 +50,16 @@ public:
 
         hook_infunc
 
-            if ( /*((zCVob *)thisptr)->GetVisual() || */Engine::GAPI->GetSkeletalVobByVob( thisptr ) ) {
-                // This may causes the vob to be added and removed multiple times, but makes sure we get all changes of armor
-                Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
-                Engine::GAPI->OnAddVob( thisptr, thisptr->GetHomeWorld() );
+            // oCNpc::InitModel only rewrites the zCModel's mesh library in place (RemoveMeshLibAll +
+            // ApplyMeshLib on armor equip/unequip) - the vob's visual identity doesn't change, so there's
+            // no need to tear the vob out of the BSP/light/instancing state via Remove+Add. Re-run the
+            // extraction and re-assign it explicitly (mirroring OnAddVob) rather than relying on
+            // LoadzCModelData reusing the same cached SkeletalMeshVisualInfo - OnVisualDeleted can null
+            // out and drop that cache entry (a genuine SetVisual model swap), and if that raced ahead of
+            // this call, re-pointing VisualInfo is what keeps the already-registered vob from going stuck
+            // on a null/stale visual instead of picking up the freshly re-created one.
+            if ( SkeletalVobInfo* svi = Engine::GAPI->GetSkeletalVobByVob( thisptr ) ) {
+                svi->VisualInfo = Engine::GAPI->LoadzCModelData( static_cast<oCNPC*>(thisptr) );
             }
 
         hook_outfunc
