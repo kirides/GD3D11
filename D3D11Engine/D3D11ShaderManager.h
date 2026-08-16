@@ -5,15 +5,23 @@
 #include "D3D11HDShader.h"
 #include "D3D11GShader.h"
 #include "D3D11CShader.h"
+#include <cstdint>
+#include <string>
+#include <utility>
 
 class D3D11ShaderManager {
 public:
     D3D11ShaderManager();
     ~D3D11ShaderManager();
 
-    /** Compiles the shader from file and outputs error messages if needed */
+    // Compiles the shader from file and outputs error messages if needed. Cached on disk in
+    // system\GD3D11\shadercache\D3D11\; delete that directory to force a full recompile.
     static HRESULT CompileShaderFromFile( const CHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros );
     static HRESULT CompileShaderFromFile( const WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros );
+
+    static void LogAndResetCacheStats( const char* context );
+
+    using ShaderDeps = std::vector<std::pair<std::string, uint64_t>>;
 
     /** Creates list with ShaderInfos */
     XRESULT Init();
@@ -39,6 +47,10 @@ public:
     std::shared_ptr<D3D11CShader>& GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
 
 private:
+    // Uncached compile; outDeps, when non-null, receives every #include resolved.
+    static HRESULT CompileShaderFromFileRaw( const WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel,
+        ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros, ShaderDeps* outDeps );
+
     XRESULT CompileShader( ShaderInfo& si );
 
     void UpdateVShader( size_t index, D3D11VShader* shader ) { std::unique_lock<std::mutex> lock( _VShaderMutex ); VShaders[index].reset( shader ); }

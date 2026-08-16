@@ -15,6 +15,7 @@
 #include <d3dcompiler.h>
 #include "D3D11PFX_TAA.h"
 #include "D3D11FileRelativeInclude.h"
+#include "ShaderCacheHash.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -36,6 +37,166 @@ extern bool FeatureRTArrayIndexFromAnyShader;
 extern bool haveWindAnimations;
 #endif
 
+namespace {
+    // #includes aren't known until D3D11FileRelativeInclude resolves them, so they aren't part of the
+    // cache key itself -- a lookup instead re-hashes every recorded #include, which stays correct
+    // transitively for free. A newly added #include changes the top-level source text (and thus the
+    // key) on its own. Editing a shader orphans its old cache entries; deleting the shadercache
+    // directory is always safe.
+    using ShaderDeps = D3D11ShaderManager::ShaderDeps;
+
+    // Bump when the D3DCOMPILE_* flags below change in a way that alters codegen.
+    constexpr uint32_t kDxbcCacheArgsRevision = 1;
+    constexpr uint32_t kDxbcCacheFormatVersion = 1;
+    const char* kDxbcCacheDirRel = "\\system\\GD3D11\\shadercache\\D3D11\\";
+
+    int g_CacheHits = 0;
+    int g_CacheMisses = 0;
+
+    uint64_t HashFileContents( const std::string& path ) {
+        std::ifstream in( path, std::ios::binary );
+        if ( !in ) return 0;
+        std::string data;
+        data.assign( std::istreambuf_iterator<char>( in ), std::istreambuf_iterator<char>() );
+        if ( data.empty() ) return 0;
+        const uint64_t h = ShaderCacheHash::HashBytes( data.data(), data.size() );
+        return h ? h : 1;
+    }
+
+    // Deliberately not the GPU adapter/driver identity: DXBC is portable IR produced by this DLL
+    // alone; the driver JITs it to native ISA later using its own separate, self-invalidating cache.
+    uint64_t FxcVersionHash() {
+        static uint64_t s_hash = [] () -> uint64_t {
+            HMODULE hMod = nullptr;
+            if ( !GetModuleHandleExA( GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                    reinterpret_cast<LPCSTR>( &D3DCompileFromFile ), &hMod ) || !hMod ) {
+                return 0;
+            }
+            char path[MAX_PATH] = {};
+            if ( !GetModuleFileNameA( hMod, path, MAX_PATH ) ) return 0;
+            return HashFileContents( path );
+        }( );
+        return s_hash;
+    }
+
+    uint64_t ComputeCacheKey( const std::string& relFileName, const std::string& source, const char* entryPoint,
+        const char* target, const std::vector<D3D_SHADER_MACRO>& macros ) {
+        uint64_t h = ShaderCacheHash::HashString( relFileName.c_str() );
+        h = ShaderCacheHash::HashBytes( source.data(), source.size(), h );
+        h = ShaderCacheHash::HashString( entryPoint, h );
+        h = ShaderCacheHash::HashString( target, h );
+        for ( const auto& m : macros ) {
+            if ( !m.Name ) continue;
+            h = ShaderCacheHash::HashString( m.Name, h );
+            h = ShaderCacheHash::HashString( m.Definition ? m.Definition : "", h );
+        }
+        const uint32_t argsRev = kDxbcCacheArgsRevision;
+        h = ShaderCacheHash::HashBytes( &argsRev, sizeof( argsRev ), h );
+#ifdef DEBUG_D3D11
+        h = ShaderCacheHash::HashString( "dbg", h );   // never share debug (-Zi -Od) blobs with release
+#else
+        h = ShaderCacheHash::HashString( "rel", h );
+#endif
+        const uint64_t fxc = FxcVersionHash();
+        return ShaderCacheHash::HashBytes( &fxc, sizeof( fxc ), h );
+    }
+
+    std::string CacheFilePath( uint64_t key, bool createDir ) {
+        const std::string dir = Engine::GAPI->GetStartDirectory() + kDxbcCacheDirRel;
+        if ( createDir ) {
+            // CreateDirectory has no "create parents" flag; both levels may be missing.
+            const std::string parent = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shadercache";
+            CreateDirectoryA( parent.c_str(), nullptr );
+            if ( !CreateDirectoryA( dir.c_str(), nullptr ) && GetLastError() != ERROR_ALREADY_EXISTS )
+                return "";
+        }
+        char name[32] = {};
+        sprintf_s( name, "%016llx.dxbc", static_cast<unsigned long long>( key ) );
+        return dir + name;
+    }
+
+    template<typename T> bool ReadPod( std::ifstream& in, T& out ) {
+        return static_cast<bool>( in.read( reinterpret_cast<char*>( &out ), sizeof( T ) ) );
+    }
+    template<typename T> void WritePod( std::ofstream& out, const T& value ) {
+        out.write( reinterpret_cast<const char*>( &value ), sizeof( T ) );
+    }
+
+    // Deps are stored relative to the start directory so the cache is portable across installs.
+    bool TryLoadCachedBlob( uint64_t key, ID3DBlob** ppCode ) {
+        const std::string path = CacheFilePath( key, false );
+        if ( path.empty() ) return false;
+        std::ifstream in( path, std::ios::binary );
+        if ( !in ) return false;
+
+        char magic[4] = {};
+        uint32_t version = 0;
+        uint64_t storedKey = 0;
+        uint32_t depCount = 0;
+        if ( !in.read( magic, 4 ) || memcmp( magic, "GDBC", 4 ) != 0 ) return false;
+        if ( !ReadPod( in, version ) || version != kDxbcCacheFormatVersion ) return false;
+        if ( !ReadPod( in, storedKey ) || storedKey != key ) return false;
+        if ( !ReadPod( in, depCount ) || depCount > 256 ) return false;
+
+        const std::string startDir = Engine::GAPI->GetStartDirectory();
+        for ( uint32_t i = 0; i < depCount; ++i ) {
+            uint32_t nameLen = 0;
+            uint64_t storedHash = 0;
+            if ( !ReadPod( in, nameLen ) || nameLen == 0 || nameLen > 512 ) return false;
+            std::string relName( nameLen, '\0' );
+            if ( !in.read( relName.data(), nameLen ) ) return false;
+            if ( !ReadPod( in, storedHash ) ) return false;
+
+            std::ifstream depIn( startDir + "\\" + relName, std::ios::binary );
+            if ( !depIn ) return false;   // include vanished
+            std::string depSource;
+            depSource.assign( std::istreambuf_iterator<char>( depIn ), std::istreambuf_iterator<char>() );
+            if ( ShaderCacheHash::HashBytes( depSource.data(), depSource.size() ) != storedHash ) return false;   // include edited
+        }
+
+        uint32_t blobSize = 0;
+        if ( !ReadPod( in, blobSize ) || blobSize == 0 || blobSize > ( 64u << 20 ) ) return false;
+
+        Microsoft::WRL::ComPtr<ID3DBlob> blob;
+        if ( FAILED( D3DCreateBlob( blobSize, blob.GetAddressOf() ) ) ) return false;
+        if ( !in.read( static_cast<char*>( blob->GetBufferPointer() ), blobSize ) ) return false;
+        *ppCode = blob.Detach();
+        return true;
+    }
+
+    // Writes to a temp file and renames, so a crash mid-write can't leave a torn entry.
+    void StoreCachedBlob( uint64_t key, const ShaderDeps& deps, ID3DBlob* code ) {
+        if ( !code || code->GetBufferSize() == 0 || deps.size() > 256 ) return;
+        const std::string path = CacheFilePath( key, true );
+        if ( path.empty() ) return;
+        const std::string tmp = path + ".tmp";
+
+        const std::string startDir = Engine::GAPI->GetStartDirectory();
+        {
+            std::ofstream out( tmp, std::ios::binary | std::ios::trunc );
+            if ( !out ) return;
+            out.write( "GDBC", 4 );
+            WritePod( out, kDxbcCacheFormatVersion );
+            WritePod( out, key );
+            WritePod( out, static_cast<uint32_t>( deps.size() ) );
+            for ( const auto& [absPath, hash] : deps ) {
+                std::error_code ec;
+                std::string relStr = std::filesystem::relative( absPath, startDir, ec ).string();
+                if ( ec || relStr.empty() ) relStr = absPath;   // fallback: dep lives outside StartDirectory
+                WritePod( out, static_cast<uint32_t>( relStr.size() ) );
+                out.write( relStr.data(), static_cast<std::streamsize>( relStr.size() ) );
+                WritePod( out, hash );
+            }
+            WritePod( out, static_cast<uint32_t>( code->GetBufferSize() ) );
+            out.write( static_cast<const char*>( code->GetBufferPointer() ),
+                static_cast<std::streamsize>( code->GetBufferSize() ) );
+            if ( !out ) { out.close(); DeleteFileA( tmp.c_str() ); return; }
+        }
+        if ( !MoveFileExA( tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING ) )
+            DeleteFileA( tmp.c_str() );
+    }
+}
+
 D3D11ShaderManager::D3D11ShaderManager()
     : VShaders( static_cast<size_t>(VShaderID::COUNT) )
     , PShaders( static_cast<size_t>(PShaderID::COUNT) )
@@ -54,17 +215,48 @@ D3D11ShaderManager::~D3D11ShaderManager() {
 // Find and compile the specified shader
 //--------------------------------------------------------------------------------------
 HRESULT D3D11ShaderManager::CompileShaderFromFile( const CHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros ) {
-    auto shaderFile = Toolbox::ToWideChar( szFileName );
+    const std::string relFileName = szFileName;
+    const std::string fullPath = Engine::GAPI->GetStartDirectory() + "\\" + relFileName;
 
-    return CompileShaderFromFile(
-        shaderFile.c_str(),
-        szEntryPoint,
-        szShaderModel,
-        ppBlobOut,
-        makros);
+    std::ifstream srcIn( fullPath, std::ios::binary );
+    if ( !srcIn ) {
+        // Let the raw compiler produce its usual "file not found"-style error/log.
+        auto shaderFile = Toolbox::ToWideChar( szFileName );
+        return CompileShaderFromFileRaw( shaderFile.c_str(), szEntryPoint, szShaderModel, ppBlobOut, makros, nullptr );
+    }
+    std::string source;
+    source.assign( std::istreambuf_iterator<char>( srcIn ), std::istreambuf_iterator<char>() );
+
+    const uint64_t cacheKey = ComputeCacheKey( relFileName, source, szEntryPoint, szShaderModel, makros );
+    if ( TryLoadCachedBlob( cacheKey, ppBlobOut ) ) {
+        ++g_CacheHits;
+        return S_OK;
+    }
+    ++g_CacheMisses;
+
+    auto shaderFile = Toolbox::ToWideChar( szFileName );
+    ShaderDeps deps;
+    HRESULT hr = CompileShaderFromFileRaw( shaderFile.c_str(), szEntryPoint, szShaderModel, ppBlobOut, makros, &deps );
+    if ( SUCCEEDED( hr ) ) {
+        StoreCachedBlob( cacheKey, deps, *ppBlobOut );
+    }
+    return hr;
+}
+
+void D3D11ShaderManager::LogAndResetCacheStats( const char* context ) {
+    if ( g_CacheHits == 0 && g_CacheMisses == 0 ) return;
+    LogInfo() << "D3D11 shader cache (" << ( context ? context : "" ) << "): " << g_CacheHits
+        << " reused from disk, " << g_CacheMisses << " compiled."
+        << ( g_CacheHits == 0 ? " (first run for these shaders, or d3dcompiler_47.dll changed)" : "" );
+    g_CacheHits = 0;
+    g_CacheMisses = 0;
 }
 
 HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros ) {
+    return CompileShaderFromFileRaw( szFileName, szEntryPoint, szShaderModel, ppBlobOut, makros, nullptr );
+}
+
+HRESULT D3D11ShaderManager::CompileShaderFromFileRaw( const WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros, ShaderDeps* outDeps ) {
     HRESULT hr = S_OK;
 
     DWORD dwShaderFlags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -104,6 +296,8 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCS
 
         return hr;
     }
+
+    if ( outDeps ) *outDeps = includeHandler.Dependencies();
 
     return S_OK;
 }
@@ -310,6 +504,8 @@ XRESULT D3D11ShaderManager::LoadShaders( ShaderCategory categories ) {
 
     // Join all threads (call Threadpool destructor)
     // compilationTP.reset();
+
+    LogAndResetCacheStats( "LoadShaders" );
 
     return XR_SUCCESS;
 }
