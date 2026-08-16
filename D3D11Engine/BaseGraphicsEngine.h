@@ -342,6 +342,13 @@ public:
     /** Called when a vob was removed from the world */
     virtual XRESULT OnVobRemovedFromWorld( zCVob* vob ) { return XR_SUCCESS; }
 
+    /** Called from MeshInfo::~MeshInfo(), right before its buffers/CPU vectors are torn down. A MeshInfo can
+        be freed independently of any world (re)load - e.g. a shared MeshVisualInfo's last VOB reference
+        dropping via SharedVisualRegistry::Release() - so any backend that caches raw MeshInfo* pointers
+        outside the mesh's own owner (D3D12's VOB arena mega-buffer) MUST use this to drop them; otherwise a
+        later pass walking that cache dereferences freed memory. No-op by default (D3D11 keeps no such cache). */
+    virtual void OnMeshInfoDestroyed( MeshInfo* mesh ) {}
+
     /** Reloads shaders */
     virtual XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All ) { return XR_SUCCESS; }
 

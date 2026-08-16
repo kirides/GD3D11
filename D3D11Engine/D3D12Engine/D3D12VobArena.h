@@ -79,6 +79,25 @@ public:
         return it == m_Ranges.end() ? nullptr : &it->second;
     }
 
+    /** Drops `mesh` from every list the arena tracks it in - called from D3D12GraphicsEngine::
+        OnMeshInfoDestroyed right before the MeshInfo (and its Vertices/Indices) are freed. A MeshInfo can be
+        deleted independently of Reset() (e.g. a shared MeshVisualInfo's last VOB reference dropping via
+        SharedVisualRegistry::Release() while the world stays loaded), and without this the next Reallocate()
+        walks m_Resident and re-uploads from freed memory - a use-after-free that surfaces as a garbage
+        `sizeInBytes` in UploadBufferData. Leaves the mesh's reserved vertex/index range as dead space in the
+        buffers (no compaction) rather than reflow every later range; cheap and safe, and the next full world
+        reload (Reset()) reclaims it anyway. Safe to call from any thread - takes the same lock QueueVisual
+        does and only otherwise touches state that only Flush() (main thread) mutates, exactly like Find(). */
+    void Forget( const MeshInfo* mesh ) {
+        {
+            std::lock_guard<std::mutex> lock( m_PendingMutex );
+            std::erase_if( m_Pending, [mesh]( const PendingMesh& p ) { return p.Mesh == mesh; } );
+        }
+        m_Ranges.erase( mesh );
+        std::erase( m_Resident, mesh );
+        std::erase( m_Dynamic, mesh );
+    }
+
     /** Sub-meshes whose vertices are rewritten every frame (animated static VOBs built from an .MMS —
         either ZENGIN's CPU deform or the GPU morph fold). Their arena range holds the CONVERSION pose
         after upload and has to be refreshed from the mesh's own vertex buffer once per frame; the engine
