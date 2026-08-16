@@ -118,10 +118,11 @@ namespace {
         return CD3DX12_BARRIER_SUBRESOURCE_RANGE( mipSlice, 1, arraySlice, 1, planeSlice, 1 );
     }
 
-    // Batch cap for TransitionBarriers()/UAVBarriers(); fixed-size stack storage to stay off the
-    // per-frame allocation path. A batch that exceeds this logs a warning and falls back to one
-    // Barrier() call per element.
-    constexpr UINT kMaxBatchedBarriers = 16;
+    // Chunk size for TransitionBarriers()/UAVBarriers(); fixed-size stack storage to stay off the
+    // per-frame allocation path. Batches larger than this (e.g. point-shadow slot transitions,
+    // up to kMaxCubes*6 faces) are split into multiple grouped Barrier() calls rather than
+    // degrading to one Barrier() per element -- that would defeat the point of batching.
+    constexpr UINT kMaxBatchedBarriers = 64;
 
 } // namespace
 
@@ -155,17 +156,17 @@ void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_S
 }
 
 void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count ) {
-    if ( count == 0 ) return;
-    if ( count > kMaxBatchedBarriers ) {
-#ifdef DEBUG_D3D11
-        LogWarn() << "D3D12Barrier: TransitionBarriers batch of " << count
-                  << " exceeds kMaxBatchedBarriers (" << kMaxBatchedBarriers << "); issuing one barrier per element.";
-#endif
-        for ( UINT i = 0; i < count; ++i )
-            TransitionBarrier( transitions[i].Resource, transitions[i].Before, transitions[i].After,
-                transitions[i].Subresource, transitions[i].SyncBefore, transitions[i].SyncAfter );
-        return;
+    // Batches larger than kMaxBatchedBarriers are issued as multiple grouped Barrier() calls
+    // (still far fewer than one call per element) rather than degrading to one Barrier() per
+    // transition, which would defeat the point of batching for e.g. point-shadow slot updates.
+    for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
+        const UINT chunk = std::min( count - offset, kMaxBatchedBarriers );
+        TransitionBarriersChunk( transitions + offset, chunk );
     }
+}
+
+void D3D12CmdList::TransitionBarriersChunk( const D3D12ResourceTransition* transitions, UINT count ) {
+    if ( count == 0 ) return;
 
     if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
         D3D12_TEXTURE_BARRIER textureBarriers[kMaxBatchedBarriers];
@@ -238,15 +239,15 @@ void D3D12CmdList::UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC sync
 }
 
 void D3D12CmdList::UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
-    if ( count == 0 ) return;
-    if ( count > kMaxBatchedBarriers ) {
-#ifdef DEBUG_D3D11
-        LogWarn() << "D3D12Barrier: UAVBarriers batch of " << count
-                  << " exceeds kMaxBatchedBarriers (" << kMaxBatchedBarriers << "); issuing one barrier per element.";
-#endif
-        for ( UINT i = 0; i < count; ++i ) UAVBarrier( resources[i], syncHint );
-        return;
+    // See TransitionBarriers() -- chunk rather than degrade to one Barrier() per element.
+    for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
+        const UINT chunk = std::min( count - offset, kMaxBatchedBarriers );
+        UAVBarriersChunk( resources + offset, chunk, syncHint );
     }
+}
+
+void D3D12CmdList::UAVBarriersChunk( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
+    if ( count == 0 ) return;
 
     if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
         const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
