@@ -62,20 +62,27 @@ public:
             && GetCurrentShadowMode() == GothicRendererSettings::PLS_UPDATE_DYNAMIC;
     }
 
-    bool HasShadowMap(int shadowMapKind ) const { 
+    bool HasShadowMap(int shadowMapKind ) const {
         if ( shadowMapKind == 0 ) return m_DepthCubemap != nullptr;
         return m_TiledDepthTarget != nullptr;
     }
     int GetShadowMapResolution() const { return m_CurrentResolution; }
     ID3D11Texture2D* GetShadowCubeTexture() const { return m_DepthCubemap ? m_DepthCubemap->GetTexture().Get() : nullptr; }
 
+    /** Whether this light belongs in the low-res static-only tiled tier rather than the full-res one. */
+    bool WantsStaticOnlySlot() const {
+        return GetCurrentShadowMode() == GothicRendererSettings::PLS_STATIC_ONLY;
+    }
+
     void AcquireShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseShadowMap();
 
-    // Tiled deferred slot management (renders directly into shared TextureCubeArray)
-    void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner );
+    // Tiled deferred slot management (renders directly into a shared TextureCubeArray). `lowRes` selects
+    // which of the two independent slot pools this came from - see WantsStaticOnlySlot().
+    void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes );
     void ClearTiledSlot();
     int GetTiledSlot() const { return m_TiledSlotIndex; }
+    bool IsTiledSlotLowRes() const { return m_TiledSlotLowRes; }
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
@@ -122,6 +129,7 @@ protected:
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;
+    bool m_TiledSlotLowRes = false; // which of the two independent slot pools m_TiledSlotIndex indexes into
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;
     TaskHandle<void> m_PendingInit;

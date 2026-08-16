@@ -9218,6 +9218,9 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
             ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
         GetContext()->PSSetShaderResources( 14, 1, &dynCubeSRV );
+        ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
+            ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
+        GetContext()->PSSetShaderResources( 15, 1, &staticCubeSRV );
     }
 
     int lastAlphaFunc = -1;
@@ -9301,7 +9304,7 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         GetContext()->PSSetShaderResources( 3, 1, s_nullSRVs );
         GetContext()->PSSetShaderResources( 6, 1, s_nullSRVs );
         GetContext()->PSSetShaderResources( 8, 4, s_nullSRVs );
-        GetContext()->PSSetShaderResources( 14, 1, s_nullSRVs );
+        GetContext()->PSSetShaderResources( 14, 2, s_nullSRVs ); // dynamic + static-only shadow cubes
     }
 }
 
