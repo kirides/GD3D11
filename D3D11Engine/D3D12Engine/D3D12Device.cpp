@@ -320,7 +320,10 @@ bool D3D12Device::Init() {
         // Enable DRED
         ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> pDredSettings;
         if ( getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( pDredSettings.ReleaseAndGetAddressOf() ) ) ) ) {
-            // Turn on auto-breadcrumbs and page fault reporting
+            // Auto-breadcrumbs + their CPU-side context are always on: cheap, and they're what
+            // D3D12GraphicsEngine::DiagnoseErrors dumps to Log.txt on device removal on every machine.
+            // Page-fault tracking stays debug-only — it walks the whole resource residency set on GPU
+            // crash, which is not something to pay for (or rely on) on a player's machine.
             pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
             pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
             if ( DEBUG_D3D11_ENABLED ) {

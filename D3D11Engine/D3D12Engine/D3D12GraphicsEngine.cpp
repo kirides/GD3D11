@@ -2133,18 +2133,34 @@ static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
 
 
 static void DiagnoseErrors(ID3D12Device* device) {
-    // Enable the debug layer before device creation when available (best-effort).
-    if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) ) {
-        auto getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>(GetProcAddress( d3d12, "D3D12GetDebugInterface" ));
-
-        ComPtr<ID3D12DeviceRemovedExtendedData1> pRemovedExtendedData;
-        if ( SUCCEEDED( device->QueryInterface( IID_PPV_ARGS( pRemovedExtendedData.ReleaseAndGetAddressOf() ) ) ) ) {
-            D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 output;
-            if (SUCCEEDED( pRemovedExtendedData->GetAutoBreadcrumbsOutput1( &output ) )) {
-                PrintNode( output.pHeadAutoBreadcrumbNode );
-            }
-        }
+    // Deliberately does NOT read GetPageFaultAllocationOutput: page-fault tracking is only ever turned on
+    // under DEBUG_D3D11 (see D3D12Device::Init) and must never be relied on for player-machine diagnostics.
+    // Auto-breadcrumbs + breadcrumb context are FORCED_ON unconditionally, so this is always available.
+    ComPtr<ID3D12DeviceRemovedExtendedData1> pRemovedExtendedData;
+    if ( !device || FAILED( device->QueryInterface( IID_PPV_ARGS( pRemovedExtendedData.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12 DiagnoseErrors: ID3D12DeviceRemovedExtendedData1 unavailable, no breadcrumbs to dump.";
+        return;
     }
+
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 output;
+    if ( SUCCEEDED( pRemovedExtendedData->GetAutoBreadcrumbsOutput1( &output ) ) ) {
+        PrintNode( output.pHeadAutoBreadcrumbNode );
+    } else {
+        LogWarn() << "D3D12 DiagnoseErrors: GetAutoBreadcrumbsOutput1 failed, no breadcrumbs to dump.";
+    }
+}
+
+
+void D3D12GraphicsEngine::HandleDeviceRemoved( HRESULT removedReason, const char* context ) {
+    // Best-effort: the device may itself be in a state where this queries nothing, but DiagnoseErrors
+    // handles that (logs and returns) rather than crashing here on top of the original failure.
+    DiagnoseErrors( m_Device.GetDevice() );
+
+    auto msg = std::format( "D3D12 device removed at {} (reason: 0x{:08X}). See Log.txt for GPU breadcrumbs.",
+        context, static_cast<uint32_t>( removedReason ) );
+    LogWarn() << msg.c_str();
+    MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Device Removed", MB_OK );
+    exit( removedReason );
 }
 
 XRESULT D3D12GraphicsEngine::Present() {
@@ -2207,12 +2223,8 @@ XRESULT D3D12GraphicsEngine::Present() {
     if ( FAILED( hr ) ) {
         auto r = static_cast<uint32_t>(hr);
         if ( hr == DXGI_ERROR_DEVICE_REMOVED) {
-            DiagnoseErrors( m_Device.GetDevice() );
-
             auto removedReason = m_Device.GetDevice()->GetDeviceRemovedReason();
-            auto msg = std::format( "D3D12 Present failed (0x{:08X}, reason: 0x{:08X})", r, static_cast<uint32_t>(removedReason) );
-            LogWarn() << "D3D12 Present failed (0x" << std::hex << r << ").";
-            MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Error", MB_OK );
+            HandleDeviceRemoved( removedReason, "Present" ); // [[noreturn]]
         } else {
             auto msg = std::format( "D3D12 Present failed (0x{:08X})", r );
             LogWarn() << "D3D12 Present failed (0x" << std::hex << r << ").";
@@ -2255,9 +2267,11 @@ bool D3D12GraphicsEngine::WaitOnFrameFence( UINT64 value, const char* site ) {
             << ". Device removed reason: 0x" << std::hex << static_cast<uint32_t>( removedReason ) << std::dec << ".";
 
         if ( FAILED( removedReason ) ) {
-            // The fence can no longer advance — waiting more only extends the freeze.
+            // The fence can no longer advance — waiting more only extends the freeze. Diagnose + terminate
+            // here rather than returning false: every caller of WaitOnFrameFence ignores that return value
+            // and would otherwise carry on resetting allocators/lists against a dead device.
             LogWarn() << "D3D12: giving up on frame fence " << value << " — the device is gone.";
-            return false;
+            HandleDeviceRemoved( removedReason, site ); // [[noreturn]]
         }
     }
 }
