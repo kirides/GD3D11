@@ -8444,9 +8444,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     if ( rendererState.RendererSettings.AtmosphericScattering ) {
         if ( auto loadedWorld = Engine::GAPI->GetLoadedWorldInfo(); loadedWorld && loadedWorld->MainWorld ) {
             if ( auto skyCtrl = loadedWorld->MainWorld->GetSkyControllerOutdoor(); skyCtrl ) {
-                if ( auto planet = skyCtrl->GetPlanet( 1 ); planet && planet->mesh == nullptr ) {
-                    skyCtrl->RenderSkyPre();
-                }
+                skyCtrl->EnsureInit();
             }
         }
     }

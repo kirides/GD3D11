@@ -431,6 +431,20 @@ public:
         return pos;
     }
 
+    bool IsInitDone() {
+        return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_InitDone )) != 0;
+    }
+
+    /** zCSkyControler_Outdoor::Init() - what RenderSkyPre() lazily calls if !initDone, minus the full FF sky
+        prep RenderSkyPre() does afterwards. No-op if the address isn't known for this build (Spacer). */
+    void EnsureInit() {
+        if ( IsInitDone() ) return;
+        if constexpr ( GothicMemoryLocations::zCSkyController_Outdoor::Init != 0 ) {
+            reinterpret_cast<void( __fastcall* )( zCSkyController_Outdoor* )>
+                ( GothicMemoryLocations::zCSkyController_Outdoor::Init )( this );
+        }
+    }
+
     /** planets[i] — [0] sun, [1] moon. Live engine data, so Gothic.ini's zMoonSize/zMoonName and any
         script/mod tweak to the tint or size are picked up automatically. */
     zCSkyPlanet* GetPlanet( int index ) {

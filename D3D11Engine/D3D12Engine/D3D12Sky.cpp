@@ -31,6 +31,7 @@
 #include "../GMesh.h"
 #include "../WorldObjects.h"
 #include "../VertexTypes.h"
+#include "../zCWorld.h"
 #include "../zCTexture.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 
@@ -178,6 +179,13 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
     // The moon (planets[1]) — the one thing the fixed-function sky drew that the bare scattering dome does
     // not. GSky resolves the placement (shared with D3D11's sky, which composites the same sprite); all this
     // backend adds is the bindless slot. Composited by the dome's own pixel shader, so it costs no extra draw.
+    // EnsureInit() forces planets[1].mesh to exist, since this path never calls RenderSkyPre() itself.
+    if ( auto loadedWorld = Engine::GAPI->GetLoadedWorldInfo(); loadedWorld && loadedWorld->MainWorld ) {
+        if ( auto skyCtrl = loadedWorld->MainWorld->GetSkyControllerOutdoor(); skyCtrl ) {
+            skyCtrl->EnsureInit();
+        }
+    }
+
     const MoonSpriteInfo moon = sky->ResolveMoonSprite( m_Resolution );
 
     SkyMaterialConsts matCb = {};
