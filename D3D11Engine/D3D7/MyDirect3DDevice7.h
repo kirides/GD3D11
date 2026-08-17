@@ -207,6 +207,12 @@ public:
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE SetRenderState( D3DRENDERSTATETYPE State, DWORD Value ) override {
 		DebugWrite( "MyDirect3DDevice7::SetRenderState" );
 
+		// Any renderstate Gothic's fixed-function UI touches (blend/depth/alpha/fog/...) is read lazily by
+		// FlushFF2DBatch()'s eventual DrawVertexArray call, not by this setter. A batch already accumulated
+		// under the OLD state must go out before the new state takes effect, or it would silently be redrawn
+		// with the wrong state. See FlushFF2DBatch's comment for the full rationale.
+		FlushFF2DBatch();
+
 		GothicRendererState& state = Engine::GAPI->GetRendererState();
 
 		// Extract the needed renderstates
@@ -296,9 +302,26 @@ public:
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE SetTexture( DWORD dwStage, LPDIRECTDRAWSURFACE7 lplpTexture ) override {
 		DebugWrite( "MyDirect3DDevice7::SetTexture" );
 
-		// Bind the texture
-		MyDirectDrawSurface7* surface = static_cast<MyDirectDrawSurface7*>(lplpTexture);
-		if ( surface ) {
+		// Gothic's 2D UI (zCView::Blit) rebinds its slot-0 texture before every single quad, but long runs of
+		// quads reuse the exact same surface pointer (e.g. every empty inventory slot shares one border
+		// texture). Skip the rebind AND the flush when the pointer hasn't changed, so those runs stay in one
+		// FF2DBatch instead of being cut into one draw call per quad. A real change still flushes first (see
+		// FlushFF2DBatch) so no batch is submitted under the wrong texture.
+		if ( dwStage == 0 ) {
+			if ( lplpTexture && lplpTexture != m_LastFF2DTextureStage0 ) {
+				FlushFF2DBatch();
+				static_cast<MyDirectDrawSurface7*>(lplpTexture)->BindToSlot( dwStage );
+				m_LastFF2DTextureStage0 = lplpTexture;
+			}
+			// lplpTexture == nullptr: mirrors the original behavior of doing nothing (Gothic never actually
+			// unbinds slot 0 this way); lplpTexture == m_LastFF2DTextureStage0: already bound, nothing to do.
+			return S_OK;
+		}
+
+		// Stages other than 0 aren't part of the UI batching (Gothic's fixed-function UI never uses them);
+		// keep the original unconditional flush+bind behavior.
+		FlushFF2DBatch();
+		if ( MyDirectDrawSurface7* surface = static_cast<MyDirectDrawSurface7*>(lplpTexture) ) {
 			surface->BindToSlot( dwStage );
 		}
 
@@ -312,6 +335,10 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE SetTextureStageState( DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value ) override {
 		DebugWrite( "MyDirect3DDevice7::SetTextureStageState" );
+
+		// Same reasoning as SetRenderState: FF_Stages[] feeds FFPipelineConstantBuffer, read only when
+		// FlushFF2DBatch() finally issues the draw.
+		FlushFF2DBatch();
 
 		GothicRendererState& state = Engine::GAPI->GetRendererState();
 		switch ( Type ) {
@@ -436,6 +463,10 @@ public:
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE SetViewport( LPD3DVIEWPORT7 lpViewport ) override {
 		DebugWrite( "MyDirect3DDevice7::SetViewport" );
 
+		// A pending batch was built against the OLD viewport's BindViewportInformation state; flush before
+		// switching (inventory slots each set their own item-preview viewport between UI quad draws).
+		FlushFF2DBatch();
+
 		float scale = std::max( 0.1f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );
 
 		ViewportInfo vp;
@@ -459,6 +490,11 @@ public:
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE BeginScene() override {
 		DebugWrite( "MyDirect3DDevice7::BeginScene" );
 
+		// Nothing should carry a pending FF2DBatch across a frame boundary, but drop it rather than let a
+		// stale batch (built against last frame's now-invalid dynamic VB contents) get flushed into this one.
+		m_FF2DBatch.clear();
+		m_LastFF2DTextureStage0 = nullptr;
+
 		Engine::GraphicsEngine->OnBeginFrame();
 		return S_OK;
 	}
@@ -475,6 +511,7 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE Clear( DWORD dwCount, LPD3DRECT lpRects, DWORD dwFlags, D3DCOLOR dwColor, D3DVALUE dvZ, DWORD dwStencil ) override {
 		DebugWrite( "MyDirect3DDevice7::Clear" );
+		FlushFF2DBatch();
 		return S_OK;
 	}
 
@@ -495,16 +532,19 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawIndexedPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitive" );
+		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawIndexedPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitiveStrided" );
+		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawIndexedPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitiveVB" );
+		FlushFF2DBatch();
 		return S_OK;
 	}
 
@@ -564,15 +604,20 @@ public:
 		}
 
 		Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_FixedFunctionPipe );
-		if ( dptPrimitiveType == D3DPT_TRIANGLEFAN ) {
-			static std::vector<ExVertexStruct> vertexList;
-			vertexList.clear();
-			WorldConverter::TriangleFanToList( &exv[0], dwVertexCount, &vertexList );
 
-			Engine::GraphicsEngine->DrawVertexArray( &vertexList[0], vertexList.size() );
-		} else {
-			if ( dptPrimitiveType == D3DPT_TRIANGLELIST )
-				Engine::GraphicsEngine->DrawVertexArray( &exv[0], dwVertexCount );
+		// This call's geometry chooses between VS_TransformedEx and its MAX_Z (sky) variant based on the
+		// CURRENT render stage, above. A batch already accumulated for the other variant must go out first,
+		// or it would end up drawn with whichever VS this call selects instead of the one it was built for.
+		const bool isSky = Engine::GAPI->GetRendererState().RendererInfo.RenderStage == STAGE_DRAW_SKY;
+		if ( !m_FF2DBatch.empty() && isSky != m_FF2DBatchIsSky ) {
+			FlushFF2DBatch();
+		}
+		m_FF2DBatchIsSky = isSky;
+
+		if ( dptPrimitiveType == D3DPT_TRIANGLEFAN ) {
+			WorldConverter::TriangleFanToList( &exv[0], dwVertexCount, &m_FF2DBatch );
+		} else if ( dptPrimitiveType == D3DPT_TRIANGLELIST ) {
+			m_FF2DBatch.insert( m_FF2DBatch.end(), exv.begin(), exv.end() );
 		}
 
 		exv.clear(); // static, keep the memory allocated
@@ -580,13 +625,29 @@ public:
 		return S_OK;
 	}
 
+	/** Submits every 2D screen quad accumulated by DrawPrimitive since the last flush as a single draw call.
+		Gothic's fixed-function UI (zCView::Blit, oCItemContainer::Draw, ...) issues one DrawPrimitive per
+		quad and typically re-binds the same texture/blend state for long runs of them (e.g. every empty
+		inventory slot border) — accumulating those into one CPU-side vertex list and submitting once here
+		turns N draw calls + N dynamic-VB uploads into 1, without changing what actually gets drawn. Must be
+		called (see call sites) before anything that would make the accumulated batch render differently than
+		intended: a texture/state/viewport change, or any non-UI draw path. */
+	void FlushFF2DBatch() {
+		if ( m_FF2DBatch.empty() ) return;
+
+		Engine::GraphicsEngine->DrawVertexArray( m_FF2DBatch.data(), static_cast<unsigned int>(m_FF2DBatch.size()) );
+		m_FF2DBatch.clear();
+	}
+
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitiveStrided" );
+		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitiveVB" );
+		FlushFF2DBatch();
 		if ( d3dptPrimitiveType < 4 )
 		{
 			return S_OK;
@@ -624,6 +685,8 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE EndScene() override {
 		DebugWrite( "MyDirect3DDevice7::EndScene" );
+
+		FlushFF2DBatch();
 
 		hook_infunc
 
@@ -703,4 +766,10 @@ public:
 private:
 	D3DDEVICEDESC7 FakeDeviceDesc;
 	int RefCount;
+
+	// See FlushFF2DBatch(). Kept as members (not the DrawPrimitive-local `static std::vector<ExVertexStruct>
+	// exv` above) since they must survive across separate DrawPrimitive calls, unlike that per-call scratch buffer.
+	std::vector<ExVertexStruct> m_FF2DBatch;
+	bool m_FF2DBatchIsSky = false;
+	LPDIRECTDRAWSURFACE7 m_LastFF2DTextureStage0 = nullptr;
 };
