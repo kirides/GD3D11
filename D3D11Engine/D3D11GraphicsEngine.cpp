@@ -10043,11 +10043,6 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     reinterpret_cast<void( __thiscall* )(DWORD_PTR, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 19, 5); // D3DRENDERSTATE_SRCBLEND
     reinterpret_cast<void( __thiscall* )(DWORD_PTR, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 20, 6); // D3DRENDERSTATE_DESTBLEND
 
-    //
-    // Backup old renderstates, BlendState can be ignored here.
-    //
-    auto oldDepthState = Engine::GAPI->GetRendererState().DepthState.Clone();
-
     Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
