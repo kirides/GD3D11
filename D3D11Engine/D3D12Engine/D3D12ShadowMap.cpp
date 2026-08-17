@@ -312,6 +312,8 @@ bool D3D12ShadowMap::Init() {
 			{ "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 			{ "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 			{ "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			// VSDepthAttach takes the full VS_IN (Vob.hlsl), which declares INSTANCE_GP_SLOT — required here too.
+			{ "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 140, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 		};
 		pso.pRootSignature = m_E->m_Pipelines.World.RootSig.Get();
 		pso.VS = { m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferSize() };

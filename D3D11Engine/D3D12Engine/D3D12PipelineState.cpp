@@ -1046,6 +1046,8 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        // VSDepthAttach takes the full VS_IN (Vob.hlsl), which declares INSTANCE_GP_SLOT — required here too.
+        { "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 140, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
     pso.VS = { World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
     pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
@@ -1196,7 +1198,7 @@ bool D3D12PipelineState::CreateVob() {
 
     // Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24); slot 1 = per-instance data
     // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128,
-    // {windStrenth, canBeAffectedByPlayer} @132 (see Vob.hlsl's wind sway — VSMain only, not the depth prepass).
+    // {windStrenth, canBeAffectedByPlayer} @132, GP_Slot @140 (bit 31 = focus highlight).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -1207,6 +1209,7 @@ bool D3D12PipelineState::CreateVob() {
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 140, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
 
     // Reuse the world root signature (b0 ViewProj + t0 SRV + static sampler s0 — identical needs).

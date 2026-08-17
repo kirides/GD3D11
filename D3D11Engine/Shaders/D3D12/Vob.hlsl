@@ -112,8 +112,10 @@ struct VS_IN
     // VobInstanceInfo::{windStrenth, canBeAffectedByPlayer} (@132/@136) — 0 for non-wind-flagged vobs, so the
     // branches below are no-ops for ordinary instances (matches D3D11's per-instance InstanceWind.x/y > 0 gate).
     float2   iwind    : INSTANCE_WINDFLUENCE;
+    // VobInstanceInfo::GP_Slot (@140) — bit 31 is the focus-highlight flag.
+    uint     igpslot  : INSTANCE_GP_SLOT;
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; float focus : TEXCOORD5; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -127,6 +129,7 @@ VS_OUT VSMain( VS_IN i )
     o.wpos = worldPos;
     o.wnrm = mul( i.nrm, (float3x3)i.iworld );
     o.fogDist = length( worldPos - CamPosWS );
+    o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
 }
 
@@ -154,6 +157,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    rgb *= 1.0f + step( 1.5f, i.focus );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
@@ -208,6 +212,7 @@ VS_OUT VSMainAttach( VS_IN i )
     o.wpos = worldPos;
     o.wnrm = mul( i.nrm, (float3x3)i.iworld );
     o.fogDist = length( worldPos - CamPosWS );
+    o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
 }
 
@@ -251,6 +256,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    rgb *= 1.0f + step( 1.5f, i.focus );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }

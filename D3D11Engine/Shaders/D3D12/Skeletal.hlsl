@@ -162,6 +162,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    rgb *= 1.0f + step( 1.5f, i.col.a );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
