@@ -4,7 +4,7 @@
 #include "Engine.h"
 #include "D3D11VertexBuffer.h"
 #include "GothicAPI.h"
-#include "D3D11VertexBuffer.h"
+#include "D3D11PipelineStateCache.h"
 
 D3D11LineRenderer::D3D11LineRenderer() {
     LineBuffer = nullptr;
@@ -48,7 +48,7 @@ XRESULT D3D11LineRenderer::Flush() {
     engine->SetupVS_ExMeshDrawCall();
     engine->SetupVS_ExConstantBuffer();
     engine->SetupVS_ExPerInstanceConstantBuffer();
-    engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( engine->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
 
     // Draw the lines
     UINT offset = 0;
@@ -93,7 +93,7 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     engine->SetupVS_ExMeshDrawCall();
-    engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( engine->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
 
     // Draw the lines
     UINT offset = 0;

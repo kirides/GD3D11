@@ -12,6 +12,7 @@
 #include "GothicAPI.h"
 #include "GothicGraphicsState.h"
 #include "ConstantBufferStructs.h"
+#include "D3D11PipelineStateCache.h"
 #include "GSky.h"
 #include "zCTexture.h"
 #include "zCMaterial.h"
@@ -64,7 +65,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             context->OMSetRenderTargets( 1, &nullRTV, dsv );
 
             // Disable pixel shader for depth-only rendering
-            context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( context.Get(), nullptr );
 
             engine.SetRenderingStage( D3D11ENGINE_RENDER_STAGE::DES_Z_PRE_PASS );
 

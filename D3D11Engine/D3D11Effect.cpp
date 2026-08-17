@@ -8,6 +8,7 @@
 #include "D3D11VShader.h"
 #include "D3D11GShader.h"
 #include "D3D11PShader.h"
+#include "D3D11PipelineStateCache.h"
 #include "GSky.h"
 #include <DDSTextureLoader.h>
 #include "RenderToTextureBuffer.h"
@@ -201,12 +202,12 @@ XRESULT D3D11Effect::DrawRain() {
         e->GetContext()->SOSetTargets( 1, D3D11VertexBuffer::From( RainBufferStreamTo.get() )->GetVertexBuffer().GetAddressOf(), &offset );
 
         // Apply shaders
-        e->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        D3D11PipelineStateCache::SetPixelShader( e->GetContext().Get(), nullptr );
         particleAdvanceVS->Apply();
         streamOutGS->Apply();
 
         // Rendering points only
-        e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
+        D3D11PipelineStateCache::SetPrimitiveTopology( e->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
         e->SetDefaultStates();
         e->UpdateRenderStates();
 
@@ -236,7 +237,7 @@ XRESULT D3D11Effect::DrawRain() {
     state.RasterizerState.SetDirty();
 
     // Rendering instances only
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+    D3D11PipelineStateCache::SetPrimitiveTopology( e->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     e->UpdateRenderStates();
 
     // Apply particle shaders
@@ -283,7 +284,7 @@ XRESULT D3D11Effect::DrawRain() {
     }
 
     // Reset this
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( e->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     e->GetContext()->GSSetShader( nullptr, 0, 0 );
     return XR_SUCCESS;
 }
@@ -395,7 +396,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
     state.RasterizerState.SetDirty();
 
     // Rendering instances only
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+    D3D11PipelineStateCache::SetPrimitiveTopology( e->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     e->UpdateRenderStates();
 
     // Apply particle shaders
@@ -441,7 +442,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
     }
 
     // Reset primitive topology
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( e->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     return XR_SUCCESS;
 }
 

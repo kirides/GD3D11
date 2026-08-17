@@ -9,6 +9,7 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
 #include "StringID.h"
+#include "D3D11PipelineStateCache.h"
 
 extern bool FeatureLevel10Compatibility;
 
@@ -48,7 +49,8 @@ XRESULT D3D11PShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
 
 /** Applys the shaders */
 XRESULT D3D11PShader::Apply() {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShader( PixelShader.Get(), nullptr, 0 );
+    D3D11PipelineStateCache::SetPixelShader(
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext().Get(), PixelShader.Get() );
     return XR_SUCCESS;
 }
 

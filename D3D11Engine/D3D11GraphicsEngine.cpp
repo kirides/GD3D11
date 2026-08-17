@@ -10,6 +10,7 @@
 #include "D3D11OcclusionQuerry.h"
 #include "D3D11PShader.h"
 #include "D3D11PfxRenderer.h"
+#include "D3D11PipelineStateCache.h"
 #include "D3D11PipelineStates.h"
 #include "D3D11PointLight.h"
 #include "D3D11ShaderManager.h"
@@ -2194,7 +2195,7 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         ActivePS->UpdateBuffer("AlphaBlendInfo", &colorBuffer, sizeof(colorBuffer));
 
         UpdateRenderStates();
-        GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
         GetContext()->Draw( 12, 0 );
     }
 
@@ -2470,7 +2471,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
@@ -2546,7 +2547,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
@@ -2628,7 +2629,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
             ActivePS = nullptr;
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
@@ -2683,7 +2684,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
@@ -2729,7 +2730,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
             ActivePS = nullptr;
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
@@ -3007,7 +3008,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     
     auto perInstanceCb = ActiveVS->GetInputIndex("Matrices_PerInstances");
     auto boneRangeCb = ActiveVS->GetInputIndex( "BoneTransformRange" );
@@ -3047,7 +3048,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         } else if ( RenderingStage == DES_SHADOWMAP) {
             // Unbind PixelShader in this case
             if (ActivePS) {
-                Context->PSSetShader( nullptr, nullptr, 0 );
+                D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                 ActivePS = nullptr;
             }
             wantShader = false;
@@ -3057,7 +3058,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     if ( isZPrepass ) {
         // Unbind PS for z-prepass, we need to try to ignore any textures that require alpha(testing)
         // as this otherwise slows down prepass too much.
-        Context->PSSetShader( nullptr, nullptr, 0 );
+        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
         ActivePS = nullptr;
         wantShader = true;
     }
@@ -3091,7 +3092,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             } else if (lastTex != nullptr) {
                 Context->PSSetShaderResources( 0, 1, s_nullSRVs );
                 lastTex = nullptr;
-                Context->PSSetShader( nullptr, nullptr, 0 );
+                D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                 ActivePS = nullptr;
             }
             return true;
@@ -3710,7 +3711,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             BindActivePixelShader();
         }
 
-        Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
         // Bind instance buffer to slot 1 (persists across batches)
         UINT instOffset = nodeAttachmentBufferOffset;
@@ -3727,7 +3728,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
                 ActivePS->Apply();
             } else {
-                Context->PSSetShader( nullptr, nullptr, 0 );
+                D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                 ActivePS = nullptr;
             }
             wantShader = false;
@@ -3773,7 +3774,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 } else if ( lastPs != nullptr ) {
                     ActivePS = nullptr;
                     lastPs = nullptr;
-                    GetContext()->PSSetShader( nullptr, nullptr, 0 );
+                    D3D11PipelineStateCache::SetPixelShader( GetContext().Get(), nullptr );
                 }
             } else if ( wantShader && batch.Texture && batch.Texture != lastBatchTex ) {
                 if ( !BindTextureNRFX( batch.Material, batch.Texture, isMainOrGhost, true ) ) {
@@ -4734,7 +4735,7 @@ void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
         ActivePS->Apply();
     }
 
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 }
 
 void D3D11GraphicsEngine::PreparePerFrameConstantBuffer(VS_ExConstantBuffer_PerFrame& cb)
@@ -5308,7 +5309,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     // Sorted later, against every other blended drawable, by the transparency queue.
     TransparencyQueue& transparencyQueue = Engine::GAPI->GetTransparencyQueue();
 
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     GetContext()->DSSetShader( nullptr, nullptr, 0 );
     GetContext()->HSSetShader( nullptr, nullptr, 0 );
 
@@ -5408,7 +5409,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         || isZPrepass) {
         ZoneScopedN( "DrawWorldMesh::DepthPrepass" );
         auto _scopeDepthPrepass = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::DepthPrepass" ) );
-        GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        D3D11PipelineStateCache::SetPixelShader( GetContext().Get(), nullptr );
 
         auto isAlphaMesh = []( const auto& mesh ) {
             zCTexture* texture = mesh.first.Texture;
@@ -5659,7 +5660,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
         UpdateRenderStates();
 
-        GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        D3D11PipelineStateCache::SetPixelShader( GetContext().Get(), nullptr );
 
         if ( !FeatureLevel10Compatibility ) {
             // MDI path: upload all draw args and dispatch in one call
@@ -5870,7 +5871,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         if ( !linearDepth )  // Only unbind when not rendering linear depth
                         {
                             // Unbind PS
-                            Context->PSSetShader( nullptr, nullptr, 0 );
+                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         } else {
                             if ( lastTex != WhiteTexture.get() ) {
                                 WhiteTexture->BindToPixelShader( 0 );
@@ -5932,7 +5933,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                     // depth
                                 {
                                     // Unbind PS
-                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                                 } else {
                                     if ( lastTex != WhiteTexture.get() ) {
                                         WhiteTexture->BindToPixelShader( 0 );
@@ -6224,7 +6225,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         if ( !linearDepth )  // Only unbind when not rendering linear depth
                         {
                             // Unbind PS
-                            Context->PSSetShader( nullptr, nullptr, 0 );
+                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         } else {
                             if ( lastTex != WhiteTexture.get() ) {
                                 WhiteTexture->BindToPixelShader( 0 );
@@ -6285,7 +6286,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                     // depth
                                 {
                                     // Unbind PS
-                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                                 } else {
                                     if ( lastTex != WhiteTexture.get() ) {
                                         WhiteTexture->BindToPixelShader( 0 );
@@ -6496,7 +6497,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows && !cullingFrustum ) {
         if ( !linearDepth ) {
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
         }
 
         for ( const WorldMeshSectionInfo* section : visibleSections ) {
@@ -6575,7 +6576,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" ) );
         if ( !linearDepth ) {
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
         }
 
         // Depth-only opaque geometry needs only Position: feed the slim 12-byte stream + VS_ExDepth.
@@ -6717,7 +6718,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         if ( !linearDepth )  // Only unbind when not rendering linear depth
         {
             // Unbind PS
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
         }
 
         // For pure depth output (null PS) the transform only needs Position, so feed the slim
@@ -7021,7 +7022,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         if ( !linearDepth )  // Only unbind when not rendering linear depth
         {
             // Unbind PS
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
         }
 
         ConstantBufferSlot windBuffer = INVALID_SHADER_CB_SLOT;
@@ -7141,7 +7142,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 {
                     // Unbind PS
                     if ( currPs != nullptr ) {
-                        Context->PSSetShader( nullptr, nullptr, 0 );
+                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         currPs = nullptr;
                     }
                 }
@@ -7487,7 +7488,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         }
 
         if ( isZPrepass ) {
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
         }
 
         if ( renderSettings.DrawVOBs ||
@@ -7711,7 +7712,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             if ( isZPrepass ) {
                 // force alpha testing for vobs in prepass.
                 ActivePS = nullptr;
-                Context->PSSetShader( nullptr, nullptr, 0 );
+                D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
             }
 
             zCTexture* lastTex = nullptr;
@@ -7947,7 +7948,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             }
         }
 
-        GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
         GetContext()->DSSetShader( nullptr, nullptr, 0 );
         GetContext()->HSSetShader( nullptr, nullptr, 0 );
         ActiveHDS = nullptr;
@@ -9690,7 +9691,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     ActiveVS->UpdateBuffer("ParticleGSInfo", &gcb, sizeof(gcb));
 
     // Rendering points only
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+    D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     UpdateRenderStates();
 
     for ( auto const& textureParticleRenderInfo : pvecAdd ) {
@@ -9754,7 +9755,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
         DrawVertexBufferInstanced( TempParticlesVertexBuffer.get(), 4, instances.size(), sizeof( ParticleInstanceInfo ) );
     }
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     state.BlendState.SetDefault();
     state.BlendState.SetDirty();
 
@@ -10077,7 +10078,7 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     BindActivePixelShader();
 
     // Set vertex type
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 
@@ -10103,11 +10104,6 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     // Draw the verticies
     //
     DrawVertexBuffer( TempVertexBuffer.get(), vertices.size(), sizeof( ExVertexStruct ) );
-
-    oldDepthState.ApplyTo( Engine::GAPI->GetRendererState().DepthState );
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-    UpdateRenderStates();
 
     graphicState.FF_Stages[0].ColorOp = copyColorOp;
     graphicState.FF_Stages[1].ColorOp = copyColorOp2;

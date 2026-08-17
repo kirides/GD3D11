@@ -49,6 +49,7 @@
 
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
+#include "D3D11PipelineStateCache.h"
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
 #include "AsyncVisualExtractor.h"
@@ -3331,7 +3332,7 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
         if ( TransVobInfo.skeletalVob ) {
             // We need to do Z-prepass first
             g->UnbindActivePS();
-            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( g->GetContext().Get(), nullptr );
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance );
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
@@ -3354,7 +3355,7 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
 
             // We need to do Z-prepass first
             g->UnbindActivePS();
-            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+            D3D11PipelineStateCache::SetPixelShader( g->GetContext().Get(), nullptr );
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
                 if ( materialMesh.first ) {

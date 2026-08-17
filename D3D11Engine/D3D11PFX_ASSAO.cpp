@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "BaseGraphicsEngine.h"
+#include "D3D11PipelineStateCache.h"
 
 #include <iostream>
 #include <fstream>
@@ -55,6 +56,10 @@ void D3D11PFX_ASSAO::Render(
 
 
     m_assaoEffect->Draw( settingsCopy, &inputs );
+
+    // ASSAODX11 (vendored) rebinds IA/VS/PS directly on the context; our cache has no visibility
+    // into that, so forget what it believed was bound.
+    D3D11PipelineStateCache::InvalidateAll();
 }
 
 void DestroyAssaoEffect( ASSAO_Effect* effect )

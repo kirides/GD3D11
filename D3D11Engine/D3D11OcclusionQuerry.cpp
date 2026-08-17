@@ -2,6 +2,7 @@
 #include "D3D11OcclusionQuerry.h"
 #include "Engine.h"
 #include "D3D11GraphicsEngine.h"
+#include "D3D11PipelineStateCache.h"
 #include "GothicAPI.h"
 #include "zCBspTree.h"
 #include "Toolbox.h"
@@ -144,7 +145,7 @@ void D3D11OcclusionQuerry::BeginOcclusionPass() {
     g->SetupVS_ExConstantBuffer();
 
     // Unbind not needed shaders
-    g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+    D3D11PipelineStateCache::SetPixelShader( g->GetContext().Get(), nullptr );
     g->GetContext()->HSSetShader( nullptr, nullptr, 0 );
     g->GetContext()->DSSetSamplers( 0, 0, nullptr );
 }

@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "D3D11GraphicsEngine.h"
 #include "GFSDK_SSAO.h"
+#include "D3D11PipelineStateCache.h"
 #include "RenderToTextureBuffer.h"
 #include "GothicAPI.h"
 
@@ -80,6 +81,10 @@ XRESULT D3D11NVHBAO::Render(
 
     GFSDK_SSAO_Status status;
     status = AOContext->RenderAO( engine->GetContext().Get(), Input, Params, Output );
+
+    // The HBAO+ SDK is a precompiled black box that rebinds IA/VS/PS state on the context directly;
+    // our cache has no visibility into that, so forget what it believed was bound.
+    D3D11PipelineStateCache::InvalidateAll();
 
     if ( status != GFSDK_SSAO_OK ) {
         LogError() << "Failed to render Nvidia HBAO+! Result: " << status;
