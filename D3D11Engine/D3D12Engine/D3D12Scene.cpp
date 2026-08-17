@@ -23,6 +23,9 @@
 #include "../zFont.h"
 #include "../zCCamera.h"
 #include "../oCGame.h"
+#include "../oCNPC.h"
+#include "../oCMobInter.h"
+#include "../zCParser.h"
 #include "../oCVisFX.h"
 #include "../DXGIHelpers.h"
 #include "../WindAnimation.h"
@@ -269,6 +272,40 @@ namespace {
         return fog;
     }
 
+
+    // Mirrors D3D11GraphicsEngine's DrawSkeletalMeshVobs playerFocusVob filtering.
+    const zCVob* ComputeSkeletalFocusVob() {
+        const bool interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
+        const bool meleeFocusEnabled = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive();
+        zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
+        if ( !playerFocusVob ) return nullptr;
+
+        if ( auto npc = playerFocusVob->As<oCNPC>() ) {
+#ifdef BUILD_GOTHIC_1_CLASSIC
+            static int idxZsTalk = -2;
+            if ( idxZsTalk == -2 ) { idxZsTalk = zCParser::GetParser()->GetIndex( "ZS_TALK" ); }
+            if ( npc->GetStates()->IsInState( idxZsTalk ) ) {
+                return nullptr;
+            }
+#endif
+            if ( !meleeFocusEnabled ) {
+                return nullptr;
+            }
+        } else if ( !interactiveFocusEnabled ) {
+            return nullptr;
+        } else {
+            if ( oCMobInter* mobInter = playerFocusVob->As<oCMobInter>() ) {
+                if ( mobInter->IsInteractingWith( oCGame::GetPlayer() ) || !mobInter->HasName() ) {
+                    return nullptr;
+                }
+            } else if ( oCMob* mob = playerFocusVob->As<oCMob>() ) {
+                if ( !mob->HasName() ) {
+                    return nullptr;
+                }
+            }
+        }
+        return playerFocusVob;
+    }
 
     gtl::flat_hash_map<BaseVisualInfo*, int16_t> g_vobInfoVisualToBucket;
     std::vector<BaseVisualInfo*> g_vobInfoVisualIndexToVisualInfo;
@@ -2176,8 +2213,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// collectGhosts=true ONLY here: this is the list D3D11's GothicAPI::DrawWorldMeshNaive walks, and the
 	// reroute of ghost NPCs into TransparencyVobs is that function's job. Static MOBs (g_FrameMobs) keep the
 	// plain drop — D3D11 does not reroute them either.
-	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), nullptr, -1, nullptr, 0.0f, 1, true );
-	PrepareFrameSkeletals( g_FrameMobs );
+	const zCVob* skeletalFocusVob = ComputeSkeletalFocusVob();
+	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), nullptr, -1, nullptr, 0.0f, 1, true, skeletalFocusVob );
+	PrepareFrameSkeletals( g_FrameMobs, nullptr, -1, nullptr, 0.0f, 1, false, skeletalFocusVob );
 
 	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
 	// globalTime were already advanced once in OnBeginFrame; minHeight/maxHeight are refreshed per-visual right
@@ -4340,7 +4378,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
 
 void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade,
-    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts ) {
+    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts, const zCVob* playerFocusVob ) {
     // Run each candidate skeletal vob's once-per-frame animation update, upload its instance + bone CBs and
     // its attachments' VOB-instance data ONCE (cached in g_SkelUploadCache — the pose is view-independent),
     // and record the resulting GPU addresses into the caller's list: the main view's g_FrameSkelDraws/
@@ -4565,7 +4603,9 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
                 SkeletalInstanceCB inst = {};
                 XMStoreFloat4x4( &inst.World, xmWorld );
-                inst.ModelColor = XMFLOAT4( groundLight.x, groundLight.y, groundLight.z, groundLight.w );
+                // ModelColor.w doubles as the focus-highlight sentinel — Skeletal.hlsl's PSMain reads it as i.col.a.
+                const float focusSentinel = ( playerFocusVob && playerFocusVob == vi->Vob ) ? 2.0f : groundLight.w;
+                inst.ModelColor = XMFLOAT4( groundLight.x, groundLight.y, groundLight.z, focusSentinel );
                 inst.Fatness = model->GetModelFatness();
                 // StoreVobPreviousTransforms (end of the previous frame) is what fills PrevWorldMatrix; before
                 // its first run HasValidPrevTransforms is false and the current world doubles as the previous.
@@ -4706,6 +4746,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             vii.world = attWorld;
                             vii.prevWorld = attPrevWorld;   // motion vectors — see attPrevWorld above
                             vii.color = groundLight.ToDWORD();
+                            // Focus-highlight bit for node-attached MOBs (tree-saw trunks, beds) — mirrors Vob.hlsl's VSMainAttach.
+                            vii.GP_Slot |= ( playerFocusVob && playerFocusVob == vi->Vob ) ? ( 1u << 31 ) : 0u;
                             vii.windStrenth = attFatness;             // reinterpreted as Fatness — see VSMainAttach
                             vii.canBeAffectedByPlayer = attScaling;   // reinterpreted as Scaling — see VSMainAttach
                             const UINT instOffset = m_VobInstanceBufferOffset;
