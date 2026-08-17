@@ -947,12 +947,82 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     const bool staticOnlyMode = settings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
 
     // Draw pointlight shadows
-    std::list<VobLightInfo*> importantUpdates;
+    static std::vector<std::pair<float, VobLightInfo*>> importantUpdates;
+    importantUpdates.clear();
 
     DepthStencilPool* dsPool = graphicsEngine->GetPfxRenderer()->GetDepthStencilPool();
-    
+
     const bool isTiledShadingEnabled = m_TiledDeferred && settings.EnableTiledLighting;
     const int requiredShadowMapKind = isTiledShadingEnabled ? 1 : 0;
+
+    // Tiled lights share small fixed-size cube-array pools (unlike legacy, where every light gets its own
+    // unbounded DepthStencilPool allocation), so requests are ranked closest-to-player and may evict the
+    // farthest current occupant under pressure - mirrors D3D12PointShadows' SelectShadowedLights. Two
+    // independent pools: WantsStaticOnlySlot() lights route to the low-res MAX_STATIC_SHADOW_CUBEMAPS pool
+    // instead of the full-res MAX_SHADOW_CUBEMAPS one.
+    struct PendingAcquire { VobLightInfo* light; D3D11PointLight* pl; float distSq; int desiredResolution; bool wantsLowTier; };
+    static std::vector<PendingAcquire> candidates;
+    candidates.clear();
+
+    static std::array<VobLightInfo*, MAX_SHADOW_CUBEMAPS> slotOwnerLightHigh;
+    slotOwnerLightHigh.fill( nullptr );
+    static std::array<VobLightInfo*, MAX_STATIC_SHADOW_CUBEMAPS> slotOwnerLightLow;
+    slotOwnerLightLow.fill( nullptr );
+
+    // A slot must be held by a light ~1.7x farther than a challenger to be evicted, to avoid thrashing
+    // between similarly-distant lights every frame (mirrors D3D12PointShadows' kIncumbentBias).
+    constexpr float kPointShadowIncumbentBias = 0.35f;
+
+    auto allocateOrEvictSlot = [&]( float requesterDistSq, auto& slotOwnerArray, uint32_t poolSize, auto&& allocate ) -> int {
+        int slot = allocate();
+        if ( slot >= 0 ) return slot;
+
+        int worstSlot = -1;
+        float worstDistSq = -1.0f;
+        for ( uint32_t s = 0; s < poolSize; s++ ) {
+            VobLightInfo* owner = slotOwnerArray[s];
+            if ( !owner ) continue;
+            const float ownerDistSq = XMVectorGetX( XMVector3LengthSq( owner->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+            if ( ownerDistSq > worstDistSq ) {
+                worstDistSq = ownerDistSq;
+                worstSlot = static_cast<int>(s);
+            }
+        }
+        if ( worstSlot < 0 || requesterDistSq * kPointShadowIncumbentBias >= worstDistSq ) {
+            return -1;
+        }
+        VobLightInfo* worstOwner = slotOwnerArray[worstSlot];
+        D3D11PointLight* worstPl = dynamic_cast<D3D11PointLight*>(worstOwner->LightShadowBuffers.get());
+        if ( !worstPl ) return -1;
+
+        worstPl->ClearTiledSlot();
+        slotOwnerArray[worstSlot] = nullptr;
+        return allocate();
+    };
+
+    auto classifyLight = [&]( VobLightInfo* light, D3D11PointLight* pl, float distSq ) {
+        bool needsUpdate = pl->NeedsUpdate();
+        bool isInited = pl->IsInited();
+
+        if ( isInited ) {
+            if ( needsUpdate || light->UpdateShadows ) {
+                importantUpdates.emplace_back( distSq, light );
+            }
+            else if ( partialShadowUpdate && !staticOnlyMode ) {
+                auto& queue = graphicsEngine->FrameShadowUpdateLights;
+                if ( std::find( queue.begin(), queue.end(), light ) == queue.end() ) {
+                    queue.emplace_back( light );
+                }
+            } else if ( staticOnlyMode ) {
+                auto& queue = graphicsEngine->FrameShadowUpdateLights;
+                auto queued = std::find( queue.begin(), queue.end(), light );
+                if ( queued != queue.end() ) {
+                    queue.erase( queued );
+                }
+            }
+        }
+    };
+
     for ( auto const& light : lights ) {
         if ( !light->Vob->IsEnabled() || !light->VisibleInFrame ) {
             continue;
@@ -966,6 +1036,19 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         }
 
         if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) ) {
+            bool wantsLowTier = isTiledShadingEnabled && pl->WantsStaticOnlySlot();
+
+            if ( isTiledShadingEnabled ) {
+                int ownSlot = pl->GetTiledSlot();
+                if ( ownSlot >= 0 ) {
+                    if ( pl->IsTiledSlotLowRes() && static_cast<uint32_t>(ownSlot) < MAX_STATIC_SHADOW_CUBEMAPS ) {
+                        slotOwnerLightLow[ownSlot] = light;
+                    } else if ( !pl->IsTiledSlotLowRes() && static_cast<uint32_t>(ownSlot) < MAX_SHADOW_CUBEMAPS ) {
+                        slotOwnerLightHigh[ownSlot] = light;
+                    }
+                }
+            }
+
             const float d = XMVectorGetX( XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
             float range = light->Vob->GetLightRange();
             const float rangeSq = range * range;
@@ -973,8 +1056,9 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
             float distVeryCloseSq = (range * 0.8f) * (range * 0.8f);
             float distMaxShadowSq = (range * 9.0f) * (range * 9.0f); // Fade out entirely after this
 
-            // pick shadow resolution based on distance.
-            int desiredResolution = SHADOW_CUBE_SIZE; // Fallback / far distance
+            // Resolution also doubles as the tier-mismatch check below: a light whose tier flipped no longer
+            // matches its current GetShadowMapResolution(), so it re-acquires into the right tier automatically.
+            int desiredResolution = wantsLowTier ? STATIC_SHADOW_CUBE_SIZE : SHADOW_CUBE_SIZE;
             if ( d < distVeryCloseSq && !staticOnlyMode ) {
                 light->UpdateShadows = true;
                 // for now, keep all lights/shadows the same size, otherwise they change their "volume"
@@ -983,74 +1067,77 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
             bool inShadowRange = d < distMaxShadowSq;
             if ( inShadowRange ) {
-                // Acquire memory if it doesn't have it (or resolution changed)
                 if ( !pl->HasShadowMap( requiredShadowMapKind ) || pl->GetShadowMapResolution() != desiredResolution ) {
-                    pl->ClearTiledSlot();
-                    pl->ReleaseShadowMap();
-
-                    // Try tiled slot for small (64×64) lights when tiled lighting is active
-                    if ( isTiledShadingEnabled ) {
-                        if ( desiredResolution != SHADOW_CUBE_SIZE ) {
-                            light->UpdateShadows = false;
-                            continue; // should never happen, as we currently only use one resolution, but just in case, don't try to put bigger shadowmaps into tiled slots
-                        }
-                        int slot = m_TiledDeferred->AllocateSlot();
-                        if ( slot >= 0 ) {
-                            pl->SetTiledSlot( slot, m_TiledDeferred->GetSlotTarget( slot ), m_TiledDeferred.get() );
-                            pl->SetCurrentResolution( desiredResolution );
-                        } else {
-                            light->UpdateShadows = false;
-                            continue; // failed to allocate tiled slot, skip shadow rendering for this light this frame
-                        }
-                    } else {
-                        pl->AcquireShadowMap( dsPool, desiredResolution );
-                    }
-
-                    light->UpdateShadows = true; // Force an immediate render this frame
+                    candidates.push_back( { light, pl, d, desiredResolution, wantsLowTier } );
+                    continue;
                 }
 
-                bool needsUpdate = pl->NeedsUpdate();
-                bool isInited = pl->IsInited();
-
-                // Sort into Important vs Background Queue
-                if ( isInited ) {
-                    // Immediate Priority: Light moved, was just created, or explicit flag set
-                    if ( needsUpdate || light->UpdateShadows ) {
-                        importantUpdates.emplace_back( light );
-                    }
-                    // Background Priority: Add to round-robin queue if not already there
-                    else if ( partialShadowUpdate && !staticOnlyMode ) {
-                        auto& queue = graphicsEngine->FrameShadowUpdateLights;
-                        if ( std::find( queue.begin(), queue.end(), light ) == queue.end() ) {
-                            queue.emplace_back( light );
-                        }
-                    } else if ( staticOnlyMode ) {
-                        auto& queue = graphicsEngine->FrameShadowUpdateLights;
-                        auto queued = std::find( queue.begin(), queue.end(), light );
-                        if ( queued != queue.end() ) {
-                            queue.erase( queued );
-                        }
-                    }
-                }
+                classifyLight( light, pl, d );
             } else {
-                // Out of range: Return VRAM to the pool!
                 if ( pl->HasAnyShadowMap() ) {
                     pl->ClearTiledSlot();
                     pl->ReleaseShadowMap();
 
-                    // Erase from the update queue if it happens to be pending
                     auto it = std::find( graphicsEngine->FrameShadowUpdateLights.begin(), graphicsEngine->FrameShadowUpdateLights.end(), light );
                     if ( it != graphicsEngine->FrameShadowUpdateLights.end() ) {
                         graphicsEngine->FrameShadowUpdateLights.erase( it );
                     }
 
-                    auto importantIt = std::find( importantUpdates.begin(), importantUpdates.end(), light );
+                    auto importantIt = std::find_if( importantUpdates.begin(), importantUpdates.end(),
+                        [&]( const auto& entry ) { return entry.second == light; } );
                     if ( importantIt != importantUpdates.end() ) {
                         importantUpdates.erase( importantIt );
                     }
                 }
             }
         }
+    }
+
+    std::sort( candidates.begin(), candidates.end(), []( const PendingAcquire& a, const PendingAcquire& b ) {
+        return a.distSq < b.distSq;
+    } );
+
+    for ( auto& c : candidates ) {
+        D3D11PointLight* pl = c.pl;
+        VobLightInfo* light = c.light;
+
+        pl->ClearTiledSlot();
+        pl->ReleaseShadowMap();
+
+        if ( isTiledShadingEnabled ) {
+            int slot;
+            if ( c.wantsLowTier ) {
+                slot = allocateOrEvictSlot( c.distSq, slotOwnerLightLow, MAX_STATIC_SHADOW_CUBEMAPS,
+                    [&] { return m_TiledDeferred->AllocateStaticSlot(); } );
+            } else {
+                if ( c.desiredResolution != SHADOW_CUBE_SIZE ) {
+                    // only one high-tier resolution is ever used; don't put a mismatched size into a tiled slot
+                    light->UpdateShadows = false;
+                    continue;
+                }
+                slot = allocateOrEvictSlot( c.distSq, slotOwnerLightHigh, MAX_SHADOW_CUBEMAPS,
+                    [&] { return m_TiledDeferred->AllocateSlot(); } );
+            }
+
+            if ( slot < 0 ) {
+                light->UpdateShadows = false;
+                continue;
+            }
+
+            if ( c.wantsLowTier ) {
+                pl->SetTiledSlot( slot, m_TiledDeferred->GetStaticSlotTarget( slot ), m_TiledDeferred.get(), true );
+                slotOwnerLightLow[slot] = light;
+            } else {
+                pl->SetTiledSlot( slot, m_TiledDeferred->GetSlotTarget( slot ), m_TiledDeferred.get(), false );
+                slotOwnerLightHigh[slot] = light;
+            }
+            pl->SetCurrentResolution( c.desiredResolution );
+        } else {
+            pl->AcquireShadowMap( dsPool, c.desiredResolution );
+        }
+
+        light->UpdateShadows = true;
+        classifyLight( light, pl, c.distSq );
     }
 
     // Render the immediate priority lights - but never more than a handful in one frame.
@@ -1062,9 +1149,13 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     // matrices are replaced mid-frame, so their cubes finish rendering with another light's projection -
     // which shows up as point-light shadows randomly cut off along a cube-face edge, on a different set of
     // lights every time. Overflow keeps its UpdateShadows flag and drains through the round-robin below.
+    std::sort( importantUpdates.begin(), importantUpdates.end(), []( const auto& a, const auto& b ) {
+        return a.first < b.first;
+    } );
+
     constexpr int maxImportantUpdates = 8;
     int importantDone = 0;
-    for ( auto const& importantUpdate : importantUpdates ) {
+    for ( auto const& [distSq, importantUpdate] : importantUpdates ) {
         if ( importantDone >= maxImportantUpdates ) {
             auto& queue = graphicsEngine->FrameShadowUpdateLights;
             if ( std::find( queue.begin(), queue.end(), importantUpdate ) == queue.end() ) {

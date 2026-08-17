@@ -317,7 +317,7 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zTBBox3D& bb ) {
 		const float cz = std::min( std::max( ss.pos.z, bb.Min.z ), bb.Max.z );
 		const float dx = ss.pos.x - cx, dy = ss.pos.y - cy, dz = ss.pos.z - cz;
 		if ( dx * dx + dy * dy + dz * dz < ss.range * ss.range )
-			ss.staticValid = false;   // removed vob was within this light's static coverage → re-cache
+			ss.staticValid = false;   // removed vob was within this light's static coverage -- re-cache
 	}
 }
 
@@ -705,7 +705,8 @@ void D3D12PointShadows::Prepare() {
 	}
 	auto faceCb = [&]( UINT slot ) { return m_FaceCBGpu[frame] + static_cast<UINT64>( slot ) * 512; };
 
-	// Reset the tight VOB-instance ring — only static-VOB gathers use it (the dynamic pass has no VOBs).
+	// Reset the tight VOB-instance ring — shared by the static-VOB gather (Phase A) and the dynamic overlay's
+	// mesh-vob gather (Phase C).
 	m_VobInstOffset = 0;
 	uint8_t* const viBase = m_VobInstPtr[frame];
 	const D3D12_GPU_VIRTUAL_ADDRESS viGpu = haveVobs ? m_VobInstGpu[frame] : 0;
@@ -790,10 +791,11 @@ void D3D12PointShadows::Prepare() {
 			rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 
 			// --- Instanced VOBs (static decoration): range-cull instances, pack 64B world matrices into the
-			// tight ring, draw count*6 (InstanceDataStepRate=6 -> 6 faces per real instance). Skipped for
-			// isStatic() lights — mirrors D3D11's RenderStaticShadowPass staticCasterMask, which restricts a
-			// static light's (cached) cube to world-mesh-only casters, no VOBs/MOBS. ---
-			if ( haveVobs && !m_Slots[ps.slot].isStatic ) {
+			// tight ring, draw count*6. An isStatic() slot additionally requires GP_Slot bit 30 (ZENGIN's own
+			// StaticVob flag) per instance — items are always StaticVob==false and would otherwise get baked
+			// into a cube that never re-renders. Items cast via the dynamic overlay (Phase C) instead. ---
+			if ( haveVobs ) {
+				const bool staticTier = m_Slots[ps.slot].isStatic;
 				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
 					MeshVisualInfo* visual = up.visual;
 					if ( !visual || visual->Instances.empty() ) continue;
@@ -804,6 +806,7 @@ void D3D12PointShadows::Prepare() {
 					UINT count = 0;
 					bool overflow = false;
 					for ( const VobInstanceInfo& inst : visual->Instances ) {
+						if ( staticTier && !( inst.GP_Slot & ( 1u << 30 ) ) ) continue;   // not a StaticVob — see above
 						float dx = inst.world._14 - ps.posWS.x, dy = inst.world._24 - ps.posWS.y, dz = inst.world._34 - ps.posWS.z;
 						if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
 						if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
@@ -859,12 +862,12 @@ void D3D12PointShadows::Prepare() {
 		// slot's active cube is exactly its static depth, rendered in place.
 		// The round-robin gate (P2.10h) is ps.renderDynamic: far/less-important dynamic lights only get the
 		// skeletal overlay on their scheduled frame (see SelectShadowedLights).
-		if ( haveSkel && ps.renderDynamic && ps.overlayEligible ) {
-			// Self-shadow exclusion: a light carried by an NPC (e.g. a torch in its hand) otherwise casts that
-			// NPC's own body as a huge shadow blob into its own cube — see BuildExcludeList / D3D11's
-			// GetHasOriginVob+SetupVobsToExclude.
+		if ( ps.renderDynamic && ps.overlayEligible ) {
+			// Self-shadow exclusion (see BuildExcludeList) — shared by the skeletal/attachment gather and the
+			// dynamic-mesh-vob gather below.
 			const bool hasExclusions = BuildExcludeList( m_Slots[ps.slot].owner, excludeVobs );
 
+		if ( haveSkel ) {
 			// Sphere-cull the FULL registered skeletal-vob list against THIS light (parity with the CSM cascade
 			// fix — a caster invisible to the player, but within a torch's range, can still cast a shadow into
 			// it), reusing g_SkelUploadCache so an NPC already prepared for the main view/a cascade this frame
@@ -940,6 +943,64 @@ void D3D12PointShadows::Prepare() {
 					g_PsDynAttachDraws.push_back( d );
 				}
 			}
+		}   // haveSkel
+
+			// --- Dynamic (non-skeletal) mesh vobs: items (StaticVob clear, see GetDynamicMeshVobs), excluded
+			// from the static-only tier and drawn here instead, same as a node attachment. Independent of
+			// haveSkel — no NPC required. ---
+			if ( psPipe.CasterVobPSO ) {
+				for ( VobInfo* vi : Engine::GAPI->GetDynamicMeshVobs() ) {
+					if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
+					if ( hasExclusions && std::find( excludeVobs.begin(), excludeVobs.end(), vi->Vob ) != excludeVobs.end() )
+						continue;
+					MeshVisualInfo* visual = static_cast<MeshVisualInfo*>( vi->VisualInfo );
+					const XMFLOAT3 pos = vi->Vob->GetPositionWorld();
+					const float cullR = ps.range + visual->MeshSize * 0.5f;
+					float dx = pos.x - ps.posWS.x, dy = pos.y - ps.posWS.y, dz = pos.z - ps.posWS.z;
+					if ( dx * dx + dy * dy + dz * dz >= cullR * cullR ) continue;
+					if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
+						if ( !m_VobInstOverflowLogged ) {
+							LogWarn() << "D3D12: point-shadow VOB instance ring overflow ("
+								<< m_VobInstCapacity << " bytes/frame); some dynamic-item cube casters dropped.";
+							m_VobInstOverflowLogged = true;
+						}
+						break;
+					}
+
+					// Live transform, not a cached one — an interact-slot item's position is synced onto its
+					// NPC's hand bone every tick regardless of whether it's on screen.
+					const UINT instOffset = m_VobInstOffset;
+					XMFLOAT4X4 world;
+					XMStoreFloat4x4( &world, vi->Vob->GetWorldMatrixXM() );
+					memcpy( viBase + instOffset, &world, sizeof( XMFLOAT4X4 ) );
+					m_VobInstOffset += sizeof( XMFLOAT4X4 );
+					const D3D12_VERTEX_BUFFER_VIEW instView = { m_VobInstGpu[frame] + instOffset, sizeof( XMFLOAT4X4 ), sizeof( XMFLOAT4X4 ) };
+
+					for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+						zCTexture* const matTex = meshKey.Material->GetAniTexture();
+						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
+							|| meshKey.Material->HasAlphaTest();
+						for ( MeshInfo* mi : meshList ) {
+							if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
+							D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+							D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+							if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+							PointShadowDraw d;
+							d.vb = mvb; d.ib = mib;
+							d.stride = sizeof( ExVertexStruct );
+							d.indexCount = static_cast<UINT>( mi->Indices.size() );
+							d.instanceCount = 6;
+							d.srv = srv;
+							d.instView = instView;
+							d.alphaTested = matAlphaTested;
+							g_PsDynAttachDraws.push_back( d );
+						}
+					}
+				}
+			}
+
 			rec.dynSkelEnd   = static_cast<UINT>( g_PsDynSkelDraws.size() );
 			rec.dynAttachEnd = static_cast<UINT>( g_PsDynAttachDraws.size() );
 		}

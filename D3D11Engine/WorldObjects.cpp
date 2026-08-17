@@ -75,6 +75,10 @@ MeshInfo::~MeshInfo() {
     //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Indices.size() * sizeof(VERTEX_INDEX);
     //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Vertices.size() * sizeof(ExVertexStruct);
 
+    // Drop any raw MeshInfo* a backend cached outside this object's own owner (D3D12's VOB arena
+    // mega-buffer) BEFORE Vertices/Indices below are torn down - see OnMeshInfoDestroyed's comment.
+    if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->OnMeshInfoDestroyed( this );
+
     MeshVertexBuffer.reset();
     MeshPositionBuffer.reset();
     MeshIndexBuffer.reset();

@@ -8444,9 +8444,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     if ( rendererState.RendererSettings.AtmosphericScattering ) {
         if ( auto loadedWorld = Engine::GAPI->GetLoadedWorldInfo(); loadedWorld && loadedWorld->MainWorld ) {
             if ( auto skyCtrl = loadedWorld->MainWorld->GetSkyControllerOutdoor(); skyCtrl ) {
-                if ( auto planet = skyCtrl->GetPlanet( 1 ); planet && planet->mesh == nullptr ) {
-                    skyCtrl->RenderSkyPre();
-                }
+                skyCtrl->EnsureInit();
             }
         }
     }
@@ -8458,6 +8456,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
                 moonCb.Moon_CenterPx = XMFLOAT2( moon.CenterPx[0], moon.CenterPx[1] );
                 moonCb.Moon_HalfSizePx = XMFLOAT2( moon.HalfSizePx[0], moon.HalfSizePx[1] );
                 moonCb.Moon_Color = XMFLOAT4( moon.Color[0], moon.Color[1], moon.Color[2], moon.Color[3] );
+                moonCb.Moon_RotationAngle = moon.RotationAngle;
             }
         }
     }
@@ -9220,6 +9219,9 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
             ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
         GetContext()->PSSetShaderResources( 14, 1, &dynCubeSRV );
+        ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
+            ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
+        GetContext()->PSSetShaderResources( 15, 1, &staticCubeSRV );
     }
 
     int lastAlphaFunc = -1;
@@ -9303,7 +9305,7 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         GetContext()->PSSetShaderResources( 3, 1, s_nullSRVs );
         GetContext()->PSSetShaderResources( 6, 1, s_nullSRVs );
         GetContext()->PSSetShaderResources( 8, 4, s_nullSRVs );
-        GetContext()->PSSetShaderResources( 14, 1, s_nullSRVs );
+        GetContext()->PSSetShaderResources( 14, 2, s_nullSRVs ); // dynamic + static-only shadow cubes
     }
 }
 

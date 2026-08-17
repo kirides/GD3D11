@@ -158,6 +158,80 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
     }
 }
 
+void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
+    if ( m_StaticShadowArrayCreated ) return;
+    m_StaticShadowArrayCreated = true;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = STATIC_SHADOW_CUBE_SIZE;
+    desc.Height = STATIC_SHADOW_CUBE_SIZE;
+    desc.MipLevels = 1;
+    desc.ArraySize = MAX_STATIC_SHADOW_CUBEMAPS * 6;
+    desc.Format = DXGI_FORMAT_R16_TYPELESS;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+
+    // Fail closed rather than build an SRV/DSVs from a null resource - see MAX_STATIC_SHADOW_CUBEMAPS in the header.
+    if ( FAILED( m_device->CreateTexture2D( &desc, nullptr, m_ShadowStaticCubeArray.ReleaseAndGetAddressOf() ) ) ) {
+        LogWarn() << "Failed to create the low-res static-only point-light shadow array; static point lights "
+            "will render unshadowed.";
+        m_ShadowStaticCubeArray.Reset();
+        return;
+    }
+    SetDebugName( m_ShadowStaticCubeArray.Get(), "TiledDeferred_ShadowStaticCubeArray" );
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R16_UNORM;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
+    srvDesc.TextureCubeArray.MostDetailedMip = 0;
+    srvDesc.TextureCubeArray.MipLevels = 1;
+    srvDesc.TextureCubeArray.First2DArrayFace = 0;
+    srvDesc.TextureCubeArray.NumCubes = MAX_STATIC_SHADOW_CUBEMAPS;
+
+    m_device->CreateShaderResourceView( m_ShadowStaticCubeArray.Get(), &srvDesc, m_ShadowStaticCubeArraySRV.ReleaseAndGetAddressOf() );
+    SetDebugName( m_ShadowStaticCubeArraySRV.Get(), "TiledDeferred_ShadowStaticCubeArray_SRV" );
+
+    for ( uint32_t slot = 0; slot < MAX_STATIC_SHADOW_CUBEMAPS; slot++ ) {
+        D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        dsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsvDesc.Texture2DArray.FirstArraySlice = slot * 6;
+        dsvDesc.Texture2DArray.ArraySize = 6;
+        dsvDesc.Texture2DArray.MipSlice = 0;
+
+        m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &dsvDesc, m_StaticSlotDSVs[slot].ReleaseAndGetAddressOf() );
+
+        m_StaticSlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
+            m_ShadowStaticCubeArray, m_StaticSlotDSVs[slot], nullptr,
+            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE );
+    }
+}
+
+int D3D11TiledDeferredShading::AllocateStaticSlot() {
+    EnsureStaticShadowArray();
+    if ( !m_ShadowStaticCubeArray ) return -1;
+    for ( uint32_t i = 0; i < MAX_STATIC_SHADOW_CUBEMAPS; i++ ) {
+        if ( !m_StaticSlotInUse[i] ) {
+            m_StaticSlotInUse[i] = true;
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+void D3D11TiledDeferredShading::FreeStaticSlot( int slot ) {
+    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_STATIC_SHADOW_CUBEMAPS )
+        m_StaticSlotInUse[slot] = false;
+}
+
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetStaticSlotTarget( int slot ) {
+    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_STATIC_SHADOW_CUBEMAPS && m_StaticShadowArrayCreated )
+        return m_StaticSlotViews[slot].get();
+    return nullptr;
+}
+
 int D3D11TiledDeferredShading::AllocateSlot() {
     EnsureShadowArray();
     for ( uint32_t i = 0; i < MAX_SHADOW_CUBEMAPS; i++ ) {
@@ -292,12 +366,14 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // even if the shader branches around SampleCmpLevelZero
         graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
 
-        // Bind shadow cubemap array SRVs (static at t11, dynamic overlay at t12). The overlay array may not
-        // exist yet - a null SRV is fine, no light can carry SHADOW_CUBE_HAS_DYNAMIC before it is created.
+        // Static at t11, dynamic overlay at t12, low-res static-only tier at t13.
         if ( cullResult.HasShadowedTiledLights && m_ShadowArrayCreated ) {
             context->CSSetShaderResources( 11, 1, m_ShadowCubeArraySRV.GetAddressOf() );
             ID3D11ShaderResourceView* dynSRV = m_ShadowDynArrayCreated ? m_ShadowDynCubeArraySRV.Get() : nullptr;
             context->CSSetShaderResources( 12, 1, &dynSRV );
+        }
+        if ( cullResult.HasShadowedTiledLights && m_StaticShadowArrayCreated ) {
+            context->CSSetShaderResources( 13, 1, m_ShadowStaticCubeArraySRV.GetAddressOf() );
         }
 
         // Bind HDR UAV
@@ -309,8 +385,8 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // Unbind everything
         ID3D11UnorderedAccessView* nullUAV = nullptr;
         context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
-        ID3D11ShaderResourceView* nullSRVs[13] = {};
-        context->CSSetShaderResources( 0, 13, nullSRVs ); // t0-t12, incl. both shadow cube arrays
+        ID3D11ShaderResourceView* nullSRVs[14] = {};
+        context->CSSetShaderResources( 0, 14, nullSRVs ); // t0-t13
         context->CSSetShader( nullptr, nullptr, 0 );
 
         // Restore HDR as RTV
@@ -423,9 +499,8 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
 
         if ( hasShadow ) {
-            // The slot's static depth lives in the main array; flag the ones that also have this frame's
-            // skeletal overlay in the dynamic array so the shader knows to take the second sample.
             tl.ShadowCubeIndex = pl->GetTiledSlot()
+                | ( pl->IsTiledSlotLowRes() ? SHADOW_CUBE_TIER_LOW : 0 )
                 | ( pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
             hasShadowedTiledLights = true;
         } else {

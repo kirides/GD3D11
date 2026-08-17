@@ -936,6 +936,7 @@ void GothicAPI::ResetVobs() {
     // Holds indices into the (now gone) sector arrays and BspInfo::SectorIds - must not outlive them.
     PortalCuller.Clear();
     DynamicallyAddedVobs.clear();
+    DynamicMeshVobs.clear();   // non-owning, aliases VobMap's VobInfo* -- deleted below via VobMap, not here
     DecalVobs.clear();
     VobsByVisual.clear();
     SkeletalVobMap.clear();
@@ -2319,6 +2320,14 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
         }
     }
 
+    for ( size_t i = 0; i< DynamicMeshVobs.size(); ++i ) {
+        if ( DynamicMeshVobs[i]->Vob == vob ) {
+            DynamicMeshVobs[i] = DynamicMeshVobs.back();
+            DynamicMeshVobs.pop_back();
+            break;
+        }
+    }
+
     // Erase it from vob-map
     auto vit = VobMap.find( vob );
     if ( vit != VobMap.end() ) {
@@ -2432,6 +2441,9 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 }
                 // Add to map
                 VobsByVisual[vob->GetVisual()].push_back( vi );
+
+                // Non-static (StaticVob==false) registry for the D3D12 point-shadow dynamic overlay; see GetDynamicMeshVobs().
+                if ( !vob->GetFlags().StaticVob ) DynamicMeshVobs.push_back( vi );
 
                 // Inventory vobs are deliberately left out of this: they are added and removed once per slot per
                 // frame while a container is open, and the engine-side notification is world-scoped work
@@ -4516,6 +4528,8 @@ void GothicAPI::CollectVisibleVobs(
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
             vii.GP_Slot |= playerFocusVob == it->Vob ? 1 << 31 : 0;
+            // Bit 30: StaticVob flag, read by the D3D12 point-shadow static-VOB gather (CPU-only, no shader use).
+            vii.GP_Slot |= it->Vob->GetFlags().StaticVob ? 1u << 30 : 0;
 
             zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
             if ( aniMode != zVISUAL_ANIMODE_NONE ) {
@@ -5428,6 +5442,10 @@ std::vector<SkeletalVobInfo*>& GothicAPI::GetAnimatedSkeletalMeshVobs() {
 
 std::vector<VobInfo*>& GothicAPI::GetDynamicallyAddedVobs() {
     return DynamicallyAddedVobs;
+}
+
+std::vector<VobInfo*>& GothicAPI::GetDynamicMeshVobs() {
+    return DynamicMeshVobs;
 }
     
 /** Returns a texture from the given surface */

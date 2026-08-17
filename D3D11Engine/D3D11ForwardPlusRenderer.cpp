@@ -323,6 +323,11 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
                     ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
                 context->PSSetShaderResources( 14, 1, &dynCubeSRV );
+
+                // --- Low-res static-only shadow tier at t15 ---
+                ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
+                    ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
+                context->PSSetShaderResources( 15, 1, &staticCubeSRV );
             }
 
             // --- Bind shadow mask at t12 ---
@@ -348,7 +353,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             context->PSSetShaderResources( 3, 1, s_nullSRVs );
             context->PSSetShaderResources( 6, 1, s_nullSRVs );
             context->PSSetShaderResources( 8, 4, s_nullSRVs );
-            context->PSSetShaderResources( 12, 3, s_nullSRVs ); // shadow mask, AO mask, dynamic shadow cubes
+            context->PSSetShaderResources( 12, 4, s_nullSRVs ); // shadow mask, AO mask, dynamic + static-only shadow cubes
 
             // Restore default depth comparison
             depthState.SetDefault();

@@ -31,6 +31,7 @@
 #include "../GMesh.h"
 #include "../WorldObjects.h"
 #include "../VertexTypes.h"
+#include "../zCWorld.h"
 #include "../zCTexture.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 
@@ -46,7 +47,7 @@ namespace {
         UINT  CloudIndex;
         UINT  NightIndex;
         UINT  MoonIndex;
-        UINT  Pad0;
+        float MoonRotationAngle;   // radians, clockwise from screen-up - see MoonSpriteInfo::RotationAngle
         float MoonCenterPx[2];
         float MoonHalfSizePx[2];
         float MoonColor[4];
@@ -178,12 +179,20 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
     // The moon (planets[1]) — the one thing the fixed-function sky drew that the bare scattering dome does
     // not. GSky resolves the placement (shared with D3D11's sky, which composites the same sprite); all this
     // backend adds is the bindless slot. Composited by the dome's own pixel shader, so it costs no extra draw.
+    // EnsureInit() forces planets[1].mesh to exist, since this path never calls RenderSkyPre() itself.
+    if ( auto loadedWorld = Engine::GAPI->GetLoadedWorldInfo(); loadedWorld && loadedWorld->MainWorld ) {
+        if ( auto skyCtrl = loadedWorld->MainWorld->GetSkyControllerOutdoor(); skyCtrl ) {
+            skyCtrl->EnsureInit();
+        }
+    }
+
     const MoonSpriteInfo moon = sky->ResolveMoonSprite( m_Resolution );
 
     SkyMaterialConsts matCb = {};
     matCb.CloudIndex = SkyTextureSlot( sky->GetCloudTextureGfx() );
     matCb.NightIndex = SkyTextureSlot( sky->GetNightTextureGfx() );
     matCb.MoonIndex = ZenTextureSlot( moon.Texture );
+    matCb.MoonRotationAngle = moon.RotationAngle;
     matCb.MoonCenterPx[0] = moon.CenterPx[0];
     matCb.MoonCenterPx[1] = moon.CenterPx[1];
     matCb.MoonHalfSizePx[0] = moon.HalfSizePx[0];

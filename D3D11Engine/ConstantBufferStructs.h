@@ -497,6 +497,8 @@ struct MoonCB {
     XMFLOAT2 Moon_CenterPx;     // sprite centre, in pixels of the scaled render target
     XMFLOAT2 Moon_HalfSizePx;   // sprite half-extents, same space
     XMFLOAT4 Moon_Color;        // rgb = planet tint by height, a = accumulated fade (horizon, fog, rain)
+    float Moon_RotationAngle;   // radians, clockwise from screen-up - see MoonSpriteInfo::RotationAngle
+    XMFLOAT3 Moon_Pad0;
 };
 
 #pragma pack (pop)

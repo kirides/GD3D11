@@ -139,6 +139,7 @@ TextureCubeArray FP_ShadowCubeArray : register( t11 );
 // Per-slot overlay holding ONLY this frame's moving (skeletal) casters; min'd with the static cube above.
 // t12/t13 are the shadow and AO masks, so this lands at t14. See PLS_SHADOW_HAS_DYNAMIC in PointLightShadows.h.
 TextureCubeArray FP_ShadowDynCubeArray : register( t14 );
+TextureCubeArray FP_ShadowStaticCubeArray : register( t15 ); // low-res static-only tier, PLS_SHADOW_TIER_LOW
 
 // ============================================
 // Point Light Accumulation (matches CS_TiledShading.hlsl)
@@ -205,7 +206,7 @@ float3 FP_ComputePointLighting(
             // Don't fetch shadows if the light contribution is effectively zero.
             if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
             {
-                float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+                float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, FP_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
                 lighting *= shadow;
             }
 

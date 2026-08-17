@@ -122,7 +122,7 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_Color = 0x594;
         //static const unsigned int Interpolate = 0x005E8C20;
         static const unsigned int Offset_InitDone = 0x7C;
-        //static const unsigned int Init = 0x005E6A00;
+        static const unsigned int Init = 0; // not determined for Spacer.exe
         static const unsigned int GetUnderwaterFX = 0x0076AE40;
 
         static const unsigned int SetCameraLocationHint = 0x00526860;

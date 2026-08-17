@@ -1,4 +1,6 @@
 #include "D3D11FileRelativeInclude.h"
+#include "ShaderCacheHash.h"
+#include <algorithm>
 
 HRESULT __stdcall D3D11FileRelativeInclude::Open( D3D_INCLUDE_TYPE includeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes )
 {
@@ -51,6 +53,12 @@ HRESULT __stdcall D3D11FileRelativeInclude::Open( D3D_INCLUDE_TYPE includeType, 
 
     // Track the directory of THIS include, so nested includes resolve against it.
     ParentDirByData.emplace( dataPtr, fullPath.parent_path() );
+
+    // FXC re-opens the same header once per #include site; dedup.
+    const std::string pathStr = fullPath.string();
+    if ( std::none_of( m_Deps.begin(), m_Deps.end(), [&]( const auto& d ) { return d.first == pathStr; } ) ) {
+        m_Deps.emplace_back( pathStr, ShaderCacheHash::HashBytes( buffer.get(), static_cast<size_t>( size ) ) );
+    }
 
     OwnedBuffers.emplace_back( std::move( buffer ) );
     return S_OK;

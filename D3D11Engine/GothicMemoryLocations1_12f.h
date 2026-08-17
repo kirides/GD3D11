@@ -137,6 +137,9 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_LastMasterTime = 0x70;
         static const unsigned int Offset_MasterState = 0x74;
 
+        static const unsigned int Offset_InitDone = 0x68;
+        static const unsigned int Init = 0x005DA640;
+
         static const unsigned int GetUnderwaterFX = 0x5D8600;
 		static const unsigned int Offset_FarZ = 0x56C;
         static const unsigned int Offset_Color = 0x580;

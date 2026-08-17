@@ -1642,7 +1642,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip("Lets things like torches and lights from players also cast shadow for players.");
 
         ImGui::Checkbox( "Disable static Pointlights", &settings.DisableStaticPointlights );
-        ImGui::SetItemTooltip("D3D12 only. Drops every static light from the scene.\n"
+        ImGui::SetItemTooltip("Drops every static light from the scene.\n"
             "Gothic fills rooms and caves with 10-30 co-located 'atmospheric' static lights that only raise the\n"
             "ambient level; with HDR output they stack up and make interiors far too bright.");
 

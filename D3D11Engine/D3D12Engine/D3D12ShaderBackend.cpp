@@ -15,6 +15,7 @@
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zFILE_VDFS.h"
+#include "../ShaderCacheHash.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -82,64 +83,56 @@ namespace {
         return str;
     }
 
-    // ---- On-disk DXIL cache ---------------------------------------------------------------------------
-    // Every launch and every ReloadAll recompiles ~60 entry points, so each successful compile is persisted.
-    // The key covers the top-level source, entry point, target, macros, the args revision below and the DXC
-    // version. #includes can't be in the key (they aren't known until DXC asks for them), so the include
-    // handler records each resolved file + its hash into the entry and a lookup re-hashes them; that is
-    // transitive for free. A newly ADDED #include changes the source text, hence the key, on its own.
-    //
-    // Editing a shader orphans its old entries rather than replacing them. Deleting the shadercache
-    // directory is always safe and is how you reclaim that space or force a full recompile.
+    // #includes can't be in the cache key directly (they aren't known until DXC asks for them); the
+    // include handler records each resolved file + its hash instead, and a lookup re-hashes them,
+    // staying correct transitively for free. Editing a shader orphans its old entries; deleting the
+    // shadercache directory is always safe.
     using ShaderDeps = std::vector<std::pair<std::string, uint64_t>>;
 
-    // Bump when the DXC argument list in CompileSource changes in a way that alters codegen (a new -D, an
-    // optimization level, -enable-16bit-types...). Entries written by an older revision then simply miss.
+    // Bump when the DXC argument list in CompileSource changes in a way that alters codegen.
     constexpr uint32_t kDxilCacheArgsRevision = 1;
     constexpr uint32_t kDxilCacheFormatVersion = 1;
     const char* kDxilCacheDirRel = "\\system\\GD3D11\\shadercache\\D3D12\\";
 
-    // Tally for LogAndResetCacheStats. Compilation is single-threaded, so plain ints are enough.
     int g_CacheHits = 0;
     int g_CacheMisses = 0;
 
-    // FNV-1a 64. These only have to notice a file the user edited; a collision costs a stale shader.
-    constexpr uint64_t kFnvOffset = 1469598103934665603ull;
-    constexpr uint64_t kFnvPrime = 1099511628211ull;
+    using ShaderCacheHash::HashBytes;
+    using ShaderCacheHash::HashString;
 
-    uint64_t HashBytes( const void* data, size_t size, uint64_t seed = kFnvOffset ) {
-        const unsigned char* p = static_cast<const unsigned char*>( data );
-        uint64_t h = seed;
-        for ( size_t i = 0; i < size; ++i ) { h ^= p[i]; h *= kFnvPrime; }
-        return h;
-    }
-    uint64_t HashString( const char* str, uint64_t seed = kFnvOffset ) {
-        return str ? HashBytes( str, strlen( str ), seed ) : HashBytes( "", 0, seed );
+    uint64_t HashFileContents( const std::string& path ) {
+        std::ifstream in( path, std::ios::binary );
+        if ( !in ) return 0;
+        std::string data;
+        data.assign( std::istreambuf_iterator<char>( in ), std::istreambuf_iterator<char>() );
+        if ( data.empty() ) return 0;
+        const uint64_t h = HashBytes( data.data(), data.size() );
+        return h ? h : 1;
     }
 
-    /** DXC's own version, so upgrading dxcompiler.dll invalidates everything it produced. Queried once;
-        0 when DXC is unavailable. */
+    // Deliberately not the GPU adapter/driver identity: DXIL is portable IR produced by these two
+    // DLLs alone; the driver JITs it to native ISA later using its own separate, self-invalidating cache.
     uint64_t DxcVersionHash() {
         static uint64_t s_hash = [] () -> uint64_t {
-            PFN_DXC_CREATE_INSTANCE create = ResolveDxcCreateInstance();
-            if ( !create ) return 0;
-            ComPtr<IDxcCompiler3> compiler;
-            if ( FAILED( create( kClsidDxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ) return 0;
-            ComPtr<IDxcVersionInfo> version;
-            if ( FAILED( compiler.As( &version ) ) ) return 0;
-            UINT32 major = 0, minor = 0;
-            version->GetVersion( &major, &minor );
-            uint64_t h = HashBytes( &major, sizeof( major ) );
-            h = HashBytes( &minor, sizeof( minor ), h );
-            // Two builds of the same 1.x.y differ in codegen often enough to fold in the commit too.
-            ComPtr<IDxcVersionInfo2> version2;
-            if ( SUCCEEDED( version.As( &version2 ) ) ) {
-                UINT32 commitCount = 0; char* commitHash = nullptr;
-                if ( SUCCEEDED( version2->GetCommitInfo( &commitCount, &commitHash ) ) ) {
-                    h = HashBytes( &commitCount, sizeof( commitCount ), h );
-                    if ( commitHash ) { h = HashString( commitHash, h ); CoTaskMemFree( commitHash ); }
-                }
+            if ( !ResolveDxcCreateInstance() ) return 0;   // ensures dxcompiler.dll + dxil.dll are loaded
+
+            HMODULE hCompiler = GetModuleHandleA( "dxcompiler.dll" );
+            HMODULE hDxil = GetModuleHandleA( "dxil.dll" );
+            if ( !hCompiler || !hDxil ) return 0;
+
+            char compilerPath[MAX_PATH] = {};
+            char dxilPath[MAX_PATH] = {};
+            if ( !GetModuleFileNameA( hCompiler, compilerPath, MAX_PATH ) ||
+                !GetModuleFileNameA( hDxil, dxilPath, MAX_PATH ) ) {
+                return 0;
             }
+
+            const uint64_t hCompilerFile = HashFileContents( compilerPath );
+            const uint64_t hDxilFile = HashFileContents( dxilPath );
+            if ( hCompilerFile == 0 || hDxilFile == 0 ) return 0;
+
+            uint64_t h = HashBytes( &hCompilerFile, sizeof( hCompilerFile ) );
+            h = HashBytes( &hDxilFile, sizeof( hDxilFile ), h );
             return h ? h : 1;   // never 0 on success — 0 is the "unavailable" sentinel
         }( );
         return s_hash;

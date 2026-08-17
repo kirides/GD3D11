@@ -27,6 +27,9 @@ cbuffer MoonCB : register( b2 )
 	// rgb = RenderPlanets' color0->color1 tint by moon height, a = its accumulated fade (horizon, fog, rain).
 	// a == 0 means "not visible this frame" and no moon texture is bound.
 	float4 Moon_Color;
+
+	float Moon_RotationAngle;   // radians, clockwise from screen-up - the moon's parallactic tilt
+	float3 Moon_Pad0;
 };
 
 //--------------------------------------------------------------------------------------
@@ -106,9 +109,12 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	// deliberately no phase logic here.
 	if ( Moon_Color.a > 0.0f )
 	{
-		// Pixel -> sprite UV. The sprite is axis-aligned in screen space (RenderDecal resets the camera
-		// rotation, making the quad parallel to the screen plane), so this is a plain rect map.
-		float2 moonUV = ( Input.vPosition.xy - Moon_CenterPx ) / Moon_HalfSizePx * 0.5f + 0.5f;
+		// Pixel -> sprite UV, counter-rotated by Moon_RotationAngle to apply the parallactic tilt.
+		float2 delta = Input.vPosition.xy - Moon_CenterPx;
+		float sinR, cosR;
+		sincos( Moon_RotationAngle, sinR, cosR );
+		delta = float2( delta.x * cosR + delta.y * sinR, delta.y * cosR - delta.x * sinR );
+		float2 moonUV = delta / Moon_HalfSizePx * 0.5f + 0.5f;
 		if ( all( moonUV == saturate( moonUV ) ) )
 		{
 			float4 m = TX_Moon.Sample( SS_Clamp, moonUV );

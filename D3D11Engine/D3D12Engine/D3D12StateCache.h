@@ -395,6 +395,11 @@ public:
     }
 
 private:
+    // TransitionBarriers()/UAVBarriers() split a caller's batch into chunks of at most
+    // kMaxBatchedBarriers (see D3D12Barrier.cpp) and issue one grouped Barrier() call per chunk.
+    void TransitionBarriersChunk( const D3D12ResourceTransition* transitions, UINT count );
+    void UAVBarriersChunk( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint );
+
     static constexpr UINT kMaxViewports = 4;
     static constexpr UINT kInvalidCount = 0xFFFFFFFFu;
 

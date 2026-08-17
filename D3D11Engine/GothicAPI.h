@@ -564,6 +564,10 @@ public:
     std::vector<SkeletalVobInfo*>& GetAnimatedSkeletalMeshVobs();
     std::vector<VobInfo*>& GetDynamicallyAddedVobs();
 
+    /** Non-skeletal mesh vobs with StaticVob clear (items) -- moving-caster source for the D3D12
+     *  point-shadow dynamic overlay, mirroring GetSkeletalMeshVobs. */
+    std::vector<VobInfo*>& GetDynamicMeshVobs();
+
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();
     XMVECTOR XM_CALLCONV GetCameraPositionXM();
@@ -1111,6 +1115,8 @@ private:
     /** List of vobs with skeletal meshes (Having a zCModel-Visual) */
     std::vector<SkeletalVobInfo*> SkeletalMeshVobs;
     std::vector<SkeletalVobInfo*> AnimatedSkeletalVobs;
+    /** Non-skeletal mesh vobs added with GetFlags().StaticVob clear -- see GetDynamicMeshVobs(). */
+    std::vector<VobInfo*> DynamicMeshVobs;
     std::vector<TransparencyVobInfo> TransparencyVobs;
     std::vector<SkeletalVobInfo*> VNSkeletalVobs;
 

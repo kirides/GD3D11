@@ -45,6 +45,7 @@ TextureCubeArray TX_ShadowCubeArray : register( t11 );
 // Per-slot overlay holding ONLY this frame's moving (skeletal) casters; min'd with the static cube above.
 // See PLS_SHADOW_HAS_DYNAMIC in include/PointLightShadows.h.
 TextureCubeArray TX_ShadowDynCubeArray : register( t12 );
+TextureCubeArray TX_ShadowStaticCubeArray : register( t13 ); // low-res static-only tier, PLS_SHADOW_TIER_LOW
 
 RWTexture2D<float4> RW_HDR : register( u0 );
 
@@ -122,7 +123,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
             // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
             if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
-                float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+                float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, TX_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
                 lighting *= shadow;
             }
 

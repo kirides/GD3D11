@@ -141,8 +141,9 @@ void D3D11PointLight::ReleaseShadowMap() {
 
 }
 
-void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner ) {
+void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes ) {
     m_TiledSlotIndex = slot;
+    m_TiledSlotLowRes = lowRes;
     m_TiledDepthTarget = target;
     m_TiledOwner = owner;
 
@@ -154,9 +155,14 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
 
 void D3D11PointLight::ClearTiledSlot() {
     if ( m_TiledSlotIndex >= 0 && m_TiledOwner ) {
-        m_TiledOwner->FreeSlot( m_TiledSlotIndex );
+        if ( m_TiledSlotLowRes ) {
+            m_TiledOwner->FreeStaticSlot( m_TiledSlotIndex );
+        } else {
+            m_TiledOwner->FreeSlot( m_TiledSlotIndex );
+        }
     }
     m_TiledSlotIndex = -1;
+    m_TiledSlotLowRes = false;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
     m_StaticShadowReady = false;

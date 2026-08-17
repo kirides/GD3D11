@@ -16,12 +16,26 @@ constexpr uint32_t MAX_TILED_LIGHTS = 400;
 constexpr uint32_t MAX_SHADOW_CUBEMAPS = 128;
 constexpr uint32_t SHADOW_CUBE_SIZE = 128; // Must match POINTLIGHT_SHADOWMAP_SIZE
 
-// ShadowCubeIndex encoding: -1 = unshadowed, else (slot | flags). Bit 30 marks that the slot also has a valid
-// dynamic (skeletal overlay) cube in the second array, which the shader samples and min's with the static one.
-// Keeping the flag in bit 30 leaves the value positive, so "ShadowCubeIndex >= 0" still means shadowed.
-// Mirrors PLS_SHADOW_HAS_DYNAMIC / PLS_SHADOW_SLOT_MASK in Shaders/include/PointLightShadows.h.
+// Low-res STATIC-ONLY tier: WantsStaticOnlySlot() lights never receive a dynamic overlay and cache their
+// cube forever once rendered, so they don't need full resolution and get their own budget instead of
+// competing with the full-res pool above.
+//
+// 340 is a HARD CEILING: a cube array is a Texture2DArray of slot*6 slices, and D3D11 caps a Texture2D
+// array at D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices - 2048/6 = 341. Exceeding it fails
+// CreateTexture2D, and since EnsureStaticShadowArray() marks the array "created" before that call, the
+// failure is silent: every static light still gets a slot and a non-null target wrapping null D3D11
+// resources, so its shadow SRV binds null and samples as 0 - i.e. fully black/occluded, not unshadowed.
+constexpr uint32_t MAX_STATIC_SHADOW_CUBEMAPS = 340;
+constexpr uint32_t STATIC_SHADOW_CUBE_SIZE = 32;
+static_assert( MAX_STATIC_SHADOW_CUBEMAPS * 6 <= 2048, "static shadow cube array exceeds D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
+static_assert( MAX_SHADOW_CUBEMAPS * 6 <= 2048, "dynamic shadow cube array exceeds D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
+
+// ShadowCubeIndex encoding: -1 = unshadowed, else (slot | flags). Bit 30 = slot also has a dynamic overlay
+// in the second array (min'd with the static sample). Bit 29 = slot lives in the low-res static array
+// instead of the full-res one (never set together with bit 30). Mirrors PLS_SHADOW_* in PointLightShadows.h.
 constexpr int32_t SHADOW_CUBE_HAS_DYNAMIC = 0x40000000;
-constexpr int32_t SHADOW_CUBE_SLOT_MASK = 0x3FFFFFFF;
+constexpr int32_t SHADOW_CUBE_TIER_LOW = 0x20000000;
+constexpr int32_t SHADOW_CUBE_SLOT_MASK = 0x1FFFFFFF;
 
 struct TiledPointLight {
     DirectX::XMFLOAT3 PositionView;
@@ -84,6 +98,8 @@ public:
     bool IsShadowArrayCreated() const { return m_ShadowArrayCreated; }
     ID3D11ShaderResourceView* GetShadowDynCubeArraySRV() const { return m_ShadowDynCubeArraySRV.Get(); }
     bool IsDynShadowArrayCreated() const { return m_ShadowDynArrayCreated; }
+    ID3D11ShaderResourceView* GetShadowStaticCubeArraySRV() const { return m_ShadowStaticCubeArraySRV.Get(); }
+    bool IsStaticShadowArrayCreated() const { return m_StaticShadowArrayCreated; }
 
     // Shadow cubemap array slot management
     int AllocateSlot();
@@ -93,10 +109,16 @@ public:
         so worlds that never render a moving caster into a point-light cube never pay for it. */
     RenderToDepthStencilBuffer* GetDynSlotTarget( int slot );
 
+    // Low-res static-only tier - see WantsStaticOnlySlot()/SHADOW_CUBE_TIER_LOW.
+    int AllocateStaticSlot();
+    void FreeStaticSlot( int slot );
+    RenderToDepthStencilBuffer* GetStaticSlotTarget( int slot );
+
 private:
     void EnsureBuffers( uint32_t numTilesX, uint32_t numTilesY );
     void EnsureShadowArray();
     void EnsureDynShadowArray();
+    void EnsureStaticShadowArray();
 
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
@@ -127,6 +149,14 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_SHADOW_CUBEMAPS> m_SlotDynDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_SHADOW_CUBEMAPS> m_SlotDynViews;
     bool m_ShadowDynArrayCreated = false;
+
+    // Low-res static-only cube array (see WantsStaticOnlySlot()). Lazy-created like the arrays above.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_ShadowStaticCubeArray;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowStaticCubeArraySRV;
+    std::bitset<MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotInUse;
+    std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotDSVs;
+    std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotViews;
+    bool m_StaticShadowArrayCreated = false;
 
     uint32_t m_lastNumTilesX = 0;
     uint32_t m_lastNumTilesY = 0;

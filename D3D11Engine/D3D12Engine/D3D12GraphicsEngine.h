@@ -220,6 +220,8 @@ public:
 
     void OnAddVob(VobInfo* vi) override;
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
+    // Purges the VOB arena's cache of this MeshInfo* before it's freed - see BaseGraphicsEngine's doc comment.
+    void OnMeshInfoDestroyed( MeshInfo* mesh ) override { m_VobArena.Forget( mesh ); }
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }
@@ -408,6 +410,12 @@ private:
         waiting. Returns false if it gave up because the device is gone. */
     bool WaitOnFrameFence( UINT64 value, const char* site );
     static constexpr DWORD kFenceWaitTimeoutMs = 2000;
+
+    /** Dumps DRED auto-breadcrumbs (+ the CPU-side scope context recorded alongside them) to Log.txt,
+        shows the player a message box with the removed-reason code, then terminates the process. Called
+        from every path that observes the device is gone (Present() returning DXGI_ERROR_DEVICE_REMOVED,
+        and WaitOnFrameFence giving up) so a lost device is never silently swallowed. */
+    [[noreturn]] void HandleDeviceRemoved( HRESULT removedReason, const char* context );
 
     // Mid-frame synchronous flush for GetBackbufferData: closes + executes the currently-recorded m_CmdList
     // and blocks until the GPU has consumed it, then Resets the same allocator/list so recording can
