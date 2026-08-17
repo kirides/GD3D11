@@ -753,13 +753,6 @@ XRESULT D3D11GraphicsEngine::Init() {
     SetDebugName( TempMorphedMeshBigVertexBuffer->GetShaderResourceView().Get(), "TempVertexBuffer->ShaderResourceView" );
     SetDebugName( TempMorphedMeshBigVertexBuffer->GetVertexBuffer().Get(), "TempVertexBuffer->VertexBuffer" );
 
-    TempHUDVertexBuffer = std::make_unique<D3D11VertexBuffer>();
-    TempHUDVertexBuffer->Init(
-        nullptr, HUD_BUFFER_SIZE, D3D11VertexBuffer::B_VERTEXBUFFER,
-        D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
-    SetDebugName( TempHUDVertexBuffer->GetShaderResourceView().Get(), "TempVertexBuffer->ShaderResourceView" );
-    SetDebugName( TempHUDVertexBuffer->GetVertexBuffer().Get(), "TempVertexBuffer->VertexBuffer" );
-
     DynamicInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
     DynamicInstancingBuffer->Init(
         nullptr, INSTANCING_BUFFER_SIZE, D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -1384,7 +1377,7 @@ void D3D11GraphicsEngine::BeginFrameTransientBufferPools() {
     }
 
     for ( FrameInstancingBufferPool* pool : { &m_MainVobInstancingPool, &m_ShadowVobInstancingPool,
-        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool } ) {
+        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool, &m_UIVertexPool } ) {
         pool->FrameIndex = (pool->FrameIndex + 1) % kTransientPoolFrameCount;
         auto& slot = pool->Slots[pool->FrameIndex];
         WaitForTransientPoolFence( slot.Fence, slot.FencePending );
@@ -1412,7 +1405,7 @@ void D3D11GraphicsEngine::EndFrameTransientBufferPools() {
     }
 
     for ( FrameInstancingBufferPool* pool : { &m_MainVobInstancingPool, &m_ShadowVobInstancingPool,
-        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool } ) {
+        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool, &m_UIVertexPool } ) {
         auto& slot = pool->Slots[pool->FrameIndex];
         if ( !slot.Buffer ) {
             continue;
@@ -2297,12 +2290,29 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
 
     SetupVS_ExMeshDrawCall();
 
-    EnsureTempVertexBufferSize( TempHUDVertexBuffer, stride * numVertices );
-    TempHUDVertexBuffer->UpdateBuffer( vertices, stride * numVertices );
+    // Fixed-function 2D/UI quads (zCView::Blit via MyDirect3DDevice7::DrawPrimitive, glyph runs,
+    // the Bink YUV quad, ...) land here once per draw, often many times a frame at small vertex
+    // counts. A per-call WRITE_DISCARD forces the driver to rename the buffer's backing allocation
+    // every time; sub-allocating from the fenced instancing-style ring instead lets every map after
+    // the first (already fence-waited in BeginFrameTransientBufferPools) use WRITE_NO_OVERWRITE,
+    // same as the VOB/node-attachment instancing pools.
+    const unsigned int neededBytes = stride * numVertices;
+    FrameInstancingAllocation uiAlloc = AcquireFrameInstancingAllocation( m_UIVertexPool, neededBytes, "UIVertexRing" );
+    if ( !uiAlloc.Buffer ) {
+        return XR_FAILED;
+    }
 
-    UINT offset = 0;
+    void* mappedData;
+    UINT mappedSize;
+    if ( XR_SUCCESS != uiAlloc.Buffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE, &mappedData, &mappedSize ) ) {
+        return XR_FAILED;
+    }
+    memcpy( static_cast<byte*>(mappedData) + uiAlloc.OffsetInBytes, vertices, neededBytes );
+    uiAlloc.Buffer->Unmap();
+
+    UINT offset = uiAlloc.OffsetInBytes;
     UINT uStride = stride;
-    GetContext()->IASetVertexBuffers( 0, 1, TempHUDVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    GetContext()->IASetVertexBuffers( 0, 1, uiAlloc.Buffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
     GetContext()->Draw( numVertices, startVertex );

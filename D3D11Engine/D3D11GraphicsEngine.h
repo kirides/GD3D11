@@ -35,7 +35,6 @@ const unsigned int POLYS_BUFFER_SIZE = 1024 * sizeof( ExVertexStruct );
 const unsigned int PARTICLES_BUFFER_SIZE = 3072 * sizeof( ParticleInstanceInfo );
 const unsigned int MORPHEDMESH_SMALL_BUFFER_SIZE = 3072 * sizeof( ExVertexStruct );
 const unsigned int MORPHEDMESH_HIGH_BUFFER_SIZE = 20480 * sizeof( ExVertexStruct );
-const unsigned int HUD_BUFFER_SIZE = 6 * sizeof( ExVertexStruct );
 const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
@@ -716,6 +715,11 @@ private:
     FrameInstancingBufferPool m_ShadowVobInstancingPool;
     FrameInstancingBufferPool m_MainNodeAttachmentInstancingPool;
     FrameInstancingBufferPool m_ShadowNodeAttachmentInstancingPool;
+    // DrawVertexArray's dynamic vertex data (2D UI/FF-pipe quads, glyph runs, Bink YUV quad, ...).
+    // Was a single D3D11VertexBuffer remapped WRITE_DISCARD on every call (TempHUDVertexBuffer, now
+    // removed); every DrawPrimitive-driven UI draw forced a fresh driver-side rename. This pool gets
+    // the same fenced-ring/NO_OVERWRITE treatment as the instancing pools above instead.
+    FrameInstancingBufferPool m_UIVertexPool;
 
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;
@@ -761,7 +765,6 @@ private:
     std::unique_ptr<D3D11VertexBuffer> TempParticlesVertexBuffer;
     std::unique_ptr<D3D11VertexBuffer> TempMorphedMeshSmallVertexBuffer;
     std::unique_ptr<D3D11VertexBuffer> TempMorphedMeshBigVertexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> TempHUDVertexBuffer;
 
     /** Cached refresh rate for the current exclusive-fullscreen mode (D3D11-only concept). */
     DXGI_RATIONAL CachedRefreshRate;
