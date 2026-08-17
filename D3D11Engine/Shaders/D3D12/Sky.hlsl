@@ -31,7 +31,7 @@ cbuffer SkyMaterialCB : register( b3 )
     uint CloudIndex;   // SRV heap slot of the cloud/day texture (bindless); 0xFFFFFFFF = none
     uint NightIndex;   // SRV heap slot of the star/night texture (bindless); 0xFFFFFFFF = none
     uint MoonIndex;    // SRV heap slot of the moon texture (bindless); 0xFFFFFFFF = don't draw the moon
-    uint _SkyPad0;
+    float MoonRotationAngle;   // radians, clockwise from screen-up - see MoonSpriteInfo::RotationAngle
 
     // The moon is composited as a screen-space sprite rather than drawn as geometry, because that is exactly
     // what the fixed-function sky does: zCSkyControler_Outdoor::RenderPlanets projects the planet DIRECTION to
@@ -113,9 +113,12 @@ float3 ApplyMoon( float3 atmoColor, float2 pixelPos )
 {
     if ( MoonIndex == 0xFFFFFFFF ) return atmoColor;
 
-    // Pixel -> sprite UV. The sprite is axis-aligned in screen space (RenderDecal resets the camera rotation,
-    // making the quad parallel to the screen plane), so this is a plain rect map.
-    float2 uv = ( pixelPos - MoonCenterPx ) / MoonHalfSizePx * 0.5f + 0.5f;
+    // Pixel -> sprite UV, counter-rotated by MoonRotationAngle to apply the parallactic tilt.
+    float2 delta = pixelPos - MoonCenterPx;
+    float sinR, cosR;
+    sincos( MoonRotationAngle, sinR, cosR );
+    delta = float2( delta.x * cosR + delta.y * sinR, delta.y * cosR - delta.x * sinR );
+    float2 uv = delta / MoonHalfSizePx * 0.5f + 0.5f;
     if ( any( uv != saturate( uv ) ) ) return atmoColor;   // outside the sprite
 
     Texture2D<float4> moonTex = ResourceDescriptorHeap[MoonIndex];

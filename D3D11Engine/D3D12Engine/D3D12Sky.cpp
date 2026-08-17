@@ -47,7 +47,7 @@ namespace {
         UINT  CloudIndex;
         UINT  NightIndex;
         UINT  MoonIndex;
-        UINT  Pad0;
+        float MoonRotationAngle;   // radians, clockwise from screen-up - see MoonSpriteInfo::RotationAngle
         float MoonCenterPx[2];
         float MoonHalfSizePx[2];
         float MoonColor[4];
@@ -192,6 +192,7 @@ bool D3D12GraphicsEngine::DrawAtmosphereSkyDome() {
     matCb.CloudIndex = SkyTextureSlot( sky->GetCloudTextureGfx() );
     matCb.NightIndex = SkyTextureSlot( sky->GetNightTextureGfx() );
     matCb.MoonIndex = ZenTextureSlot( moon.Texture );
+    matCb.MoonRotationAngle = moon.RotationAngle;
     matCb.MoonCenterPx[0] = moon.CenterPx[0];
     matCb.MoonCenterPx[1] = moon.CenterPx[1];
     matCb.MoonHalfSizePx[0] = moon.HalfSizePx[0];

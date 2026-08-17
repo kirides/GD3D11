@@ -518,21 +518,44 @@ MoonSpriteInfo GSky::ResolveMoonSprite( const INT2& resolution ) {
     const float scale = moon->size / viewPos.z;
     const XMVECTOR centreView = XMVectorSet( viewPos.x * scale, viewPos.y * scale, moon->size, 1.0f );
     constexpr float kQuadHalfExtent = 50.0f;   // CreateQuadMesh spans -50..+50 on both axes
-    const XMVECTOR edgeXView = XMVectorAdd( centreView, XMVectorSet( kQuadHalfExtent, 0.0f, 0.0f, 0.0f ) );
     const XMVECTOR edgeYView = XMVectorAdd( centreView, XMVectorSet( 0.0f, kQuadHalfExtent, 0.0f, 0.0f ) );
 
-    XMFLOAT3 c, ex, ey;
+    XMFLOAT3 c, ey;
     XMStoreFloat3( &c, XMVector3TransformCoord( centreView, proj ) );
-    XMStoreFloat3( &ex, XMVector3TransformCoord( edgeXView, proj ) );
     XMStoreFloat3( &ey, XMVector3TransformCoord( edgeYView, proj ) );
 
     const float w = static_cast<float>( resolution.x );
     const float h = static_cast<float>( resolution.y );
     out.CenterPx[0] = ( c.x * 0.5f + 0.5f ) * w;
     out.CenterPx[1] = ( c.y * -0.5f + 0.5f ) * h;
-    out.HalfSizePx[0] = std::abs( ex.x - c.x ) * 0.5f * w;
-    out.HalfSizePx[1] = std::abs( ey.y - c.y ) * 0.5f * h;
-    if ( out.HalfSizePx[0] < 0.5f || out.HalfSizePx[1] < 0.5f ) return out;   // sub-pixel: nothing to draw
+
+    // Derived from the Y edge only and reused for both axes: zCCamera's fovV = fovH*(ydim/xdim) (a
+    // degree-linear, not tan-linear, approximation) makes proj._11 and proj._22 disagree off 4:3, so
+    // per-axis half-sizes stretched the sprite with screen aspect. This keeps it a uniform square.
+    const float halfSizePx = std::abs( ey.y - c.y ) * 0.5f * h;
+    out.HalfSizePx[0] = halfSizePx;
+    out.HalfSizePx[1] = halfSizePx;
+    if ( halfSizePx < 0.5f ) return out;   // sub-pixel: nothing to draw
+
+    // Parallactic tilt: RenderDecal is screen-locked (never rotates), but a real moon's "up" tracks world-up
+    // projected onto the sky at its position. Build that tangent-space up axis and measure its on-screen tilt.
+    constexpr XMVECTORF32 kWorldUp = { 0.0f, 1.0f, 0.0f, 0.0f };
+    const XMVECTOR dirV = XMLoadFloat3( &dirWS );
+    XMVECTOR rightAxisWorld = XMVector3Cross( kWorldUp, dirV );
+    if ( XMVectorGetX( XMVector3LengthSq( rightAxisWorld ) ) > 1e-6f ) {   // else: moon at the zenith, singular
+        rightAxisWorld = XMVector3Normalize( rightAxisWorld );
+        const XMVECTOR upAxisWorld = XMVector3Cross( dirV, rightAxisWorld );
+        const XMVECTOR upAxisView = XMVector3TransformNormal( upAxisWorld, view );
+
+        const XMVECTOR tiltPointView = XMVectorAdd( centreView, XMVectorScale( upAxisView, kQuadHalfExtent ) );
+        XMFLOAT3 tiltNdc;
+        XMStoreFloat3( &tiltNdc, XMVector3TransformCoord( tiltPointView, proj ) );
+
+        const float dx = ( tiltNdc.x - c.x ) * w;
+        const float dy = ( tiltNdc.y - c.y ) * -h;
+        if ( dx != 0.0f || dy != 0.0f )
+            out.RotationAngle = atan2f( dx, -dy );
+    }
 
     out.Texture = tex;
     out.Color[0] = res.x / 255.0f;

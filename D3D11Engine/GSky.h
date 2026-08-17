@@ -32,6 +32,9 @@ struct MoonSpriteInfo {
     float CenterPx[2] = { 0.0f, 0.0f };
     float HalfSizePx[2] = { 0.0f, 0.0f };
     float Color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    /** Radians, clockwise from screen-up - the moon's parallactic tilt. 0 at the zenith (tilt undefined). */
+    float RotationAngle = 0.0f;
 };
 
 class zCTexture;

@@ -8456,6 +8456,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
                 moonCb.Moon_CenterPx = XMFLOAT2( moon.CenterPx[0], moon.CenterPx[1] );
                 moonCb.Moon_HalfSizePx = XMFLOAT2( moon.HalfSizePx[0], moon.HalfSizePx[1] );
                 moonCb.Moon_Color = XMFLOAT4( moon.Color[0], moon.Color[1], moon.Color[2], moon.Color[3] );
+                moonCb.Moon_RotationAngle = moon.RotationAngle;
             }
         }
     }
