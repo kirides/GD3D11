@@ -307,7 +307,10 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // shadow slots and invalidate any whose light range the new VOB reaches, forcing a one-time static re-render
     // next frame (staticValid=false → renderStatic). Slots are empty during world load (owner==nullptr) so this is
     // a no-op then; the margin mirrors the static-VOB gather's cull (ps.range + visual->MeshSize * 0.5f).
-    if ( vi->Vob && vi->VisualInfo )
+    // Gated on StaticVob: items are always StaticVob==false (even ones just lying around, since oItem clears it
+    // unconditionally), and an NPC eating/drinking spawns/despawns one constantly -- without this gate that
+    // forced a full re-render of every nearby cached slot, causing a visible one-frame shadow blackout.
+    if ( vi->Vob && vi->VisualInfo && vi->Vob->GetFlags().StaticVob )
         m_PointShadows.InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
 }
 
@@ -320,7 +323,8 @@ XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     // uses) and force a one-time static re-render (staticValid=false) for any slot it intersects. Over-invalidation
     // is harmless (one extra static pass); under-invalidation would leave the removed vob's shadow frozen in the
     // cache. Slots are empty during world load (owner==nullptr) so this is a no-op then.
-    if ( vob ) m_PointShadows.InvalidateStaticForVobRemoved( vob->GetBBox() );
+    // Gated on StaticVob -- see OnAddVob.
+    if ( vob && vob->GetFlags().StaticVob ) m_PointShadows.InvalidateStaticForVobRemoved( vob->GetBBox() );
     return XR_SUCCESS;
 }
 

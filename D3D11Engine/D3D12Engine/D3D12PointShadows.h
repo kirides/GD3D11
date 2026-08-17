@@ -218,10 +218,9 @@ private:
                                              // low-tier slot ever reaches — so a cluster leaving it null is safe.
         DirectX::XMFLOAT3 pos = {};          // last static-rendered cube origin (move detection)
         float             range = 0.0f;      // last static-rendered range (range-change detection)
-        bool              isStatic = false;  // Vob->IsStatic(): gates Prepare() — static lights get a
-                                             // world-mesh-only static-aside cache (no VOB casters) and never
-                                             // receive the per-frame skeletal dynamic overlay (mirrors D3D11's
-                                             // GetCurrentShadowMode forcing PLS_STATIC_ONLY for static lights).
+        bool              isStatic = false;  // Vob->IsStatic(): gates Prepare() — static lights cache world mesh
+                                             // plus StaticVob-flagged decoration once, forever; never receive the
+                                             // per-frame dynamic overlay (mirrors D3D11's PLS_STATIC_ONLY).
         bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
                                              // cube itself) holds valid static-only depth; false => must re-render static
         bool              dynamicValid = false; // this slot's DYNAMIC cube holds a valid skeletal overlay, as of the
