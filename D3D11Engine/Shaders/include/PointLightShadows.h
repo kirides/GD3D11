@@ -82,9 +82,10 @@ float3 PLS_ComputePointLightLighting(
 
 void PLS_PrepareShadowSampling(
     float3 wsPosition,
-    float3 N, 
+    float3 N,
     float3 lightPosWorld,
     float lightRange,
+    bool tierLow,
     out float3 dir,
     out float compareDistance,
     out float fixedBias,
@@ -119,6 +120,15 @@ void PLS_PrepareShadowSampling(
 
     float baseBlur = lerp( 0.02f, 0.08f, depthCurve );
 
+    // The low-res static-only tier packs the same 90-deg cube face into 1/4 the texels per axis, so its
+    // texels cover ~4x more world space at the same distance. Widen the bias/blur to match (mirrors D3D12's
+    // `coarse` factor in PBRLighting.hlsl's SamplePointShadow) - otherwise the kernel tuned for the full-res
+    // array is far narrower than that tier's actual texel footprint and the PCF barely blurs anything,
+    // leaving the low-res cube's texel edges visibly blocky.
+    float tierScale = tierLow ? 4.0f : 1.0f;
+    fixedBias *= tierScale;
+    baseBlur *= tierScale;
+
     float noise = PLS_AggressiveNoise(wsPosition * 50.0f);
     fixedBlurScale = baseBlur * lerp(0.5f, 1.5f, noise);
 
@@ -148,7 +158,7 @@ float PLS_SampleShadowCube(
     float cosA;
 
     PLS_PrepareShadowSampling(
-        wsPosition, N, lightPosWorld, lightRange,
+        wsPosition, N, lightPosWorld, lightRange, false,
         dir, compareDistance, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
@@ -197,7 +207,7 @@ float PLS_SampleShadowCubeArray(
     float cosA;
 
     PLS_PrepareShadowSampling(
-        wsPosition, N, lightPosWorld, lightRange,
+        wsPosition, N, lightPosWorld, lightRange, tierLow,
         dir, compareDistance, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
