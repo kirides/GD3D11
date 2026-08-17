@@ -1,9 +1,50 @@
 #include "pch.h"
 #include "BaseLineRenderer.h"
+#include "Logger.h"
 
 BaseLineRenderer::BaseLineRenderer() {}
 
 BaseLineRenderer::~BaseLineRenderer() {}
+
+/** Adds a line to the list */
+XRESULT BaseLineRenderer::AddLine( const LineVertex& v1, const LineVertex& v2 ) {
+    if ( LineCache.size() + 2 > kMaxCachedVertices ) {
+        if ( !CacheOverflowLogged ) {
+            LogWarn() << "Debug-line cache full (" << kMaxCachedVertices
+                << " vertices). Further lines are dropped until it is flushed.";
+            CacheOverflowLogged = true;
+        }
+        return XR_FAILED;
+    }
+
+    LineCache.push_back( v1 );
+    LineCache.push_back( v2 );
+    return XR_SUCCESS;
+}
+
+/** Adds a screen-space line to the list */
+XRESULT BaseLineRenderer::AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 ) {
+    if ( ScreenSpaceLineCache.size() + 2 > kMaxCachedVertices ) {
+        if ( !CacheOverflowLogged ) {
+            LogWarn() << "Screen-space debug-line cache full (" << kMaxCachedVertices
+                << " vertices). Further lines are dropped until it is flushed.";
+            CacheOverflowLogged = true;
+        }
+        return XR_FAILED;
+    }
+
+    ScreenSpaceLineCache.push_back( v1 );
+    ScreenSpaceLineCache.push_back( v2 );
+    return XR_SUCCESS;
+}
+
+/** Clears the line cache */
+XRESULT BaseLineRenderer::ClearCache() {
+    LineCache.clear();
+    ScreenSpaceLineCache.clear();
+    CacheOverflowLogged = false;
+    return XR_SUCCESS;
+}
 
 /** Plots a vector of floats */
 void BaseLineRenderer::PlotNumbers( const std::vector<float>& values, const XMFLOAT3& location, const XMFLOAT3& direction, float distance, float heightScale, const XMFLOAT4& color ) {

@@ -32,15 +32,15 @@ public:
     virtual ~BaseLineRenderer();
 
     /** Adds a line to the list */
-    virtual XRESULT AddLine( const LineVertex& v1, const LineVertex& v2 ) = 0;
-    virtual XRESULT AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 ) = 0;
+    virtual XRESULT AddLine( const LineVertex& v1, const LineVertex& v2 );
+    virtual XRESULT AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 );
 
     /** Flushes the cached lines */
     virtual XRESULT Flush() = 0;
     virtual XRESULT FlushScreenSpace() = 0;
 
     /** Clears the line cache */
-    virtual XRESULT ClearCache() = 0;
+    virtual XRESULT ClearCache();
 
     /** Adds a point locator to the renderlist */
     void AddPointLocator( const XMFLOAT3& location, float size = 1, const XMFLOAT4& color = XMFLOAT4( 1, 1, 1, 1 ) );
@@ -64,5 +64,16 @@ public:
 
     /** Draws a wireframe mesh */
     void AddWireframeMesh( const std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices, const XMFLOAT4& color = XMFLOAT4( 1, 1, 1, 1 ), const XMFLOAT4X4* world = nullptr );
+
+protected:
+    // Hard cap per list, in VERTICES (two per line). Nothing drains these lists unless a frame actually
+    // renders the world, so an unbounded push (a stuck editor overlay, a world that never renders) would
+    // otherwise grow forever. 1M vertices = 32 MB of cache — far past anything the debug overlays emit.
+    static constexpr size_t kMaxCachedVertices = 1u << 20;
+
+    /** Line cache, shared storage for backends to Flush()/FlushScreenSpace() from */
+    std::vector<LineVertex> LineCache;
+    std::vector<LineVertex> ScreenSpaceLineCache;
+    bool CacheOverflowLogged = false;
 };
 
