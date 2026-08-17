@@ -710,6 +710,9 @@ XRESULT D3D11GraphicsEngine::Init() {
     if ( SUCCEEDED( hr ) ) {
         FeatureRTArrayIndexFromAnyShader = options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
+        LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: VPAndRTArrayIndexFromAnyShaderFeedingRasterizer = " << (FeatureRTArrayIndexFromAnyShader ? "Supported" : "Unsupported");
+    } else {
+        LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
     }
 
     LogInfo() << "Creating ShaderManager";
