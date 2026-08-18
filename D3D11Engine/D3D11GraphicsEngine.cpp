@@ -5915,6 +5915,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                             continue;
                         }
 
+                        if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshInfoByKey->second, f ) ) {
+                            continue;
+                        }
+
                         bool isAlpha = false;
                         // Bind texture
                         if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
