@@ -75,8 +75,8 @@
       "inherits": "base-msvc",
       "cacheVariables": {
         "GD3D11_SIMD": "AVX2",
-        "GD3D11_TRACY_ENABLE": "ON",
-        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
         "GD3D11_TRACY_CALLSTACK": "8"
       }
     },
@@ -132,8 +132,8 @@
         "GD3D11_PROFILE": "NOOPT",
         "GD3D11_WIN32_LEAN_AND_MEAN": "ON",
         "GD3D11_PUBLIC_RELEASE": "OFF",
-        "GD3D11_TRACY_ENABLE": "ON",
-        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
         "GD3D11_TRACY_CALLSTACK": "8"
       }
     },
@@ -144,8 +144,8 @@
         "GD3D11_GAME": "G1",
         "GD3D11_PROFILE": "NOOPT",
         "GD3D11_PUBLIC_RELEASE": "OFF",
-        "GD3D11_TRACY_ENABLE": "ON",
-        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
         "GD3D11_TRACY_CALLSTACK": "8"
       }
     },
@@ -184,8 +184,8 @@
       "inherits": "base-clang",
       "cacheVariables": {
         "GD3D11_PROFILE": "NOOPT",
-        "GD3D11_TRACY_ENABLE": "ON",
-        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
         "GD3D11_TRACY_CALLSTACK": "8"
       }
     },
@@ -194,8 +194,8 @@
       "inherits": "base-clang",
       "cacheVariables": {
         "GD3D11_SIMD": "AVX",
-        "GD3D11_TRACY_ENABLE": "ON",
-        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
         "GD3D11_TRACY_CALLSTACK": "8"
       }
     },
@@ -204,8 +204,8 @@
       "inherits": "base-clang",
       "cacheVariables": {
         "GD3D11_SIMD": "AVX2",
-        "GD3D11_TRACY_ENABLE": "ON",
-        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
         "GD3D11_TRACY_CALLSTACK": "8"
       }
     },
