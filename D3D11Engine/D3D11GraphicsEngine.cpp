@@ -5896,6 +5896,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     GetShadowAwareIndexCount( mesh, isAlpha ) );
             }
         } else {
+            auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::WorldMesh" ) );
             Frustum f;
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections = {};
@@ -5967,6 +5968,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     }
 
     if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+        auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::Vobs" ) );
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
         // construct new renderedvob list or fake one
@@ -6006,7 +6008,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         GfxTexture* lastBoundTexture = nullptr;
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
         VS_ExConstantBuffer_PerInstance cb;
-        
+
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer( cb );
@@ -6049,6 +6051,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     bool renderNPCs = !noNPCs && drawAnimatedCasters;
     if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
+        auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::MOBs" ) );
         // Draw visible vobs here
         std::list<SkeletalVobInfo*> rndVob;
 
@@ -6104,6 +6107,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
+            auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::NPCs" ) );
             for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
                 if ( !skeletalMeshVob->VisualInfo ) {
                     // Seems to happen in Gothic 1
