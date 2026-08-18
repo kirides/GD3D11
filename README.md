@@ -87,6 +87,7 @@ Building the mod is currently only possible with Windows, but should be easy to 
 - Download & install **Git** (or any Git client) and clone this GitHub repository to get the GD3D11 code.
 - Download & install **Microsoft Visual Studio 2019** (Community Edition is fine, make sure to enable C++ Tools during installation!). Might work on 2015 or 2017 but untested.
 - ~~Download ... DirectX SDK ...~~ Not dependent on DirectX SDK anymore.
+- Download & install/clone **[vcpkg](https://github.com/microsoft/vcpkg)**, then set the `VCPKG_ROOT` environment variable to point at it. Dependencies (DirectXMath, DirectXMesh, DirectXTK, XAudio2Redist, the D3D12 Agility SDK headers) are fetched automatically from vcpkg's manifest (`vcpkg.json`) the first time you build — there's nothing to restore manually.
 - Optional: Set environment variables "G2_SYSTEM_PATH" and/or "G1_SYSTEM_PATH", which should point to the "system"-folders of the games.
 
 To build GD3D11, open its solution file (.sln) with Visual Studio. It will the load all the required projects. There are multiple build targets, one for release and one for developing / testing, for both games each:
