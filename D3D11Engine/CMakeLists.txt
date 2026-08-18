@@ -53,7 +53,6 @@ if(WIN32)
 endif()
 
 find_package(directxmath CONFIG REQUIRED)
-find_package(directxmesh CONFIG REQUIRED)
 find_package(directxtk CONFIG REQUIRED)
 find_package(xaudio2redist CONFIG REQUIRED)
 # directx-headers only supplies d3d12.h/d3dx12*.h here. Its compiled GUID/helper
@@ -64,7 +63,6 @@ find_package(directx-headers CONFIG REQUIRED)
 
 target_link_libraries(D3D11Engine PRIVATE
   Microsoft::DirectXMath
-  Microsoft::DirectXMesh
   Microsoft::DirectXTK
   Microsoft::XAudio2Redist
 )

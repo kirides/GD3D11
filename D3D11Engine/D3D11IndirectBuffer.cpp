@@ -3,7 +3,6 @@
 #include "pch.h"
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
-#include <DirectXMesh.h>
 #include "D3D11_Helpers.h"
 
 D3D11IndirectBuffer::D3D11IndirectBuffer() : SizeInBytes(0) {}
