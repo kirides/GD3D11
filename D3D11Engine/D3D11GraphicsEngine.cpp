@@ -5815,7 +5815,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
     };
-    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, 16);
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
     // Update and bind buffer of PS
     PerObjectState ocb;
@@ -5863,7 +5863,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             SetActiveVertexShader( VShaderID::VS_ExPackedCube );
             SetupVS_ExMeshDrawCall();
             SetupVS_ExConstantBuffer();
-            ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, 16 );
+            ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
             BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
         };
         auto drawFromWrappedMesh = [&]( MeshInfo* mesh ) {
