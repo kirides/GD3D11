@@ -25,6 +25,32 @@ static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2(-0.258169f, -0.912648f)
 };
 
+// Extra ring used only for the low-res static-only tier (STATIC_SHADOW_CUBE_SIZE, 32^2 faces). At that
+// resolution each texel covers a large solid angle, so the caster silhouette itself is blocky - not just
+// its edge. PLS_SHADOW_BLUR_OFFSETS alone (8 taps in a tight ring) isn't enough support to average that
+// away; combined with PLS_SHADOW_BLUR_TIER_LOW_COUNT taps and a wider radius (see PLS_PrepareShadowSampling's
+// tierLow blur boost) this ring pushes the PCF footprint across several texels so the steps blend into a
+// smooth gradient instead of visible squares.
+static const int PLS_SHADOW_BLUR_TIER_LOW_COUNT = 16;
+static const float2 PLS_SHADOW_BLUR_OFFSETS_TIER_LOW[PLS_SHADOW_BLUR_TIER_LOW_COUNT] = {
+    float2( 0.076849f, -0.078216f),
+    float2(-0.165415f,  0.370808f),
+    float2(-0.551062f, -0.407284f),
+    float2( 0.449733f, -0.518174f),
+    float2( 0.347526f,  0.730303f),
+    float2(-0.840654f,  0.134261f),
+    float2( 0.896791f,  0.038446f),
+    float2(-0.258169f, -0.912648f),
+    float2( 0.573813f,  0.398287f),
+    float2(-0.398287f,  0.573813f),
+    float2( 0.184238f,  0.982878f),
+    float2(-0.982878f, -0.184238f),
+    float2( 0.712698f, -0.701456f),
+    float2(-0.701456f, -0.712698f),
+    float2( 0.994522f,  0.104528f),
+    float2(-0.104528f,  0.994522f)
+};
+
 float PLS_AggressiveNoise(float3 p)
 {
     float3 p3  = frac(p * 0.1031f);
@@ -129,6 +155,14 @@ void PLS_PrepareShadowSampling(
     fixedBias *= tierScale;
     baseBlur *= tierScale;
 
+    // Texel-matching alone (tierScale) keeps the SAME relative footprint as the full-res tier, but at 32^2
+    // only a handful of texels span the whole penumbra, so a texel-proportional blur still steps visibly.
+    // Widen the low tier further (blur only - not bias, to avoid light leaking through casters) so the PCF
+    // kernel spans several static-tier texels and the boundary reads as a soft gradient instead of blocks.
+    const float tierLowBlurBoost = 2.5f;
+    if ( tierLow )
+        baseBlur *= tierLowBlurBoost;
+
     float noise = PLS_AggressiveNoise(wsPosition * 50.0f);
     fixedBlurScale = baseBlur * lerp(0.5f, 1.5f, noise);
 
@@ -212,9 +246,17 @@ float PLS_SampleShadowCubeArray(
         right, up, sinA, cosA );
 
     float shd = 0;
-    [unroll] for ( int i = 0; i < PLS_SHADOW_BLUR_COUNT; i++ )
+    int tapCount = tierLow ? PLS_SHADOW_BLUR_TIER_LOW_COUNT : PLS_SHADOW_BLUR_COUNT;
+
+    [unroll] for ( int i = 0; i < PLS_SHADOW_BLUR_TIER_LOW_COUNT; i++ )
     {
-        float2 kernel = PLS_SHADOW_BLUR_OFFSETS[i];
+        if ( i >= tapCount )
+            break;
+
+        // '& 7' keeps this a valid compile-time-constant index into the 8-element array even though the
+        // [unroll] loop runs i up to 15 - the else branch is only ever taken (via tapCount/break above)
+        // for i < 8, so the wrap is never actually observed, just required for FXC to accept the index.
+        float2 kernel = tierLow ? PLS_SHADOW_BLUR_OFFSETS_TIER_LOW[i] : PLS_SHADOW_BLUR_OFFSETS[i & 7];
         float2 rotatedKernel = float2( kernel.x * cosA - kernel.y * sinA, kernel.x * sinA + kernel.y * cosA );
         float3 perturbedDir = normalize( dir + (right * rotatedKernel.x + up * rotatedKernel.y) * fixedBlurScale );
         float4 sampleCoord = float4( perturbedDir, (float)cubeIndex );
@@ -237,7 +279,7 @@ float PLS_SampleShadowCubeArray(
         shd += s;
     }
 
-    float finalShadow = shd / PLS_SHADOW_BLUR_COUNT;
+    float finalShadow = shd / (float)tapCount;
 
     // Shadow Distance Fading
     float distanceToLight = length(wsPosition - lightPosWorld);
