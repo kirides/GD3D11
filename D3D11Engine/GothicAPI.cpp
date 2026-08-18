@@ -3038,8 +3038,23 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                 if ( g->GetRenderingStage() == DES_SHADOWMAP
                     || g->GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+
+                    g->GetWhiteTexture()->BindToPixelShader( 0 );
+                    void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
+
                     for ( auto const& itm : mvi->Meshes ) {
                         // no texture binding for shadowmap
+
+                        if ( itm.first->GetAniTexture()->GetCacheState() != zRES_CACHED_IN ) {
+                            continue;
+                        }
+                        if ( itm.first->HasAlphaTest() || itm.first->GetAniTexture()->HasAlphaChannel() ) {
+                            itm.first->GetAniTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                            lastTex = itm.first->GetAniTexture()->GetSurface()->GetEngineTexture();
+                        } else {
+                            g->GetWhiteTexture()->BindToPixelShader( 0 );
+                            lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
+                        }
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
