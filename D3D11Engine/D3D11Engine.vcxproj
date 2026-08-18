@@ -1890,10 +1890,16 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   <!-- vcpkg's classic MSBuild integration only adds the flat "include" root; DirectXTK,
        XAudio2Redist and the D3D12 headers install into namespaced subfolders to avoid
        colliding with directxtk12/legacy XAudio2/the Windows SDK, so those subfolders need
-       to be added explicitly. -->
+       to be added explicitly. Reuse vcpkg.targets' own $(_ZVcpkgCurrentInstalledDir) (rather
+       than reconstructing the path from $(VcpkgTriplet)) because vcpkg's manifest-mode
+       installed directory is itself triplet-doubled
+       (vcpkg_installed\<triplet>\<triplet>\...) — reconstructing it independently silently
+       pointed at a directory vcpkg never populates on a clean checkout (only worked locally
+       because a stray single-triplet install already existed there; CI had neither and
+       failed with "Cannot open include file: DDSTextureLoader.h"). -->
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(MSBuildProjectDirectory)\..\vcpkg_installed\$(VcpkgTriplet)\include\directxtk;$(MSBuildProjectDirectory)\..\vcpkg_installed\$(VcpkgTriplet)\include\xaudio2redist;$(MSBuildProjectDirectory)\..\vcpkg_installed\$(VcpkgTriplet)\include\directx</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(_ZVcpkgCurrentInstalledDir)include\directxtk;$(_ZVcpkgCurrentInstalledDir)include\xaudio2redist;$(_ZVcpkgCurrentInstalledDir)include\directx</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
 </Project>
