@@ -69,6 +69,12 @@
     <VcpkgEnableManifest>true</VcpkgEnableManifest>
     <VcpkgUseStatic>true</VcpkgUseStatic>
     <VcpkgUseMD>true</VcpkgUseMD>
+    <!-- Without this, vcpkg.targets' manifest-mode default computes the installed dir as
+         vcpkg_installed\<triplet>\ and then passes THAT as the vcpkg install root, which
+         appends <triplet>\ again internally, doubling it. Setting this ourselves to the
+         triplet-less root matches the layout the CMake presets already use
+         (vcpkg_installed\<triplet>\), so both build systems share one install tree. -->
+    <VcpkgInstalledDir>$(MSBuildProjectDirectory)\..\vcpkg_installed\</VcpkgInstalledDir>
   </PropertyGroup>
   <Import Project="$(VCPKG_ROOT)\scripts\buildsystems\msbuild\vcpkg.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
