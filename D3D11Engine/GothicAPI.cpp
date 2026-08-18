@@ -3039,21 +3039,28 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 if ( g->GetRenderingStage() == DES_SHADOWMAP
                     || g->GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
 
+                    const bool isCube = g->GetRenderingStage() == DES_SHADOWMAP_CUBE;
                     g->GetWhiteTexture()->BindToPixelShader( 0 );
                     void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
 
                     for ( auto const& itm : mvi->Meshes ) {
                         // no texture binding for shadowmap
 
-                        if ( itm.first->GetAniTexture()->GetCacheState() != zRES_CACHED_IN ) {
-                            continue;
-                        }
-                        if ( itm.first->HasAlphaTest() || itm.first->GetAniTexture()->HasAlphaChannel() ) {
-                            itm.first->GetAniTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = itm.first->GetAniTexture()->GetSurface()->GetEngineTexture();
-                        } else {
-                            g->GetWhiteTexture()->BindToPixelShader( 0 );
-                            lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
+                        if ( lastTex != itm.first->GetAniTexture() ) {
+                            if ( itm.first->GetAniTexture()->GetCacheState() != zRES_CACHED_IN ) {
+                                continue;
+                            }
+                            if ( itm.first->HasAlphaTest() || itm.first->GetAniTexture()->HasAlphaChannel() ) {
+                                itm.first->GetAniTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                lastTex = itm.first->GetAniTexture();
+                            } else if ( isCube ) {
+                                g->GetWhiteTexture()->BindToPixelShader( 0 );
+                                lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
+                            } else {
+                                lastTex = nullptr;
+                                static ID3D11ShaderResourceView* nullSrv = nullptr;
+                                g->GetContext()->PSSetShaderResources( 0, 1, &nullSrv );
+                            }
                         }
 
                         // Go through all meshes using that material
