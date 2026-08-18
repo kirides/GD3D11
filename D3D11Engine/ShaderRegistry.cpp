@@ -343,6 +343,11 @@ void ShaderRegistry::Build() {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayered>( "VS_ExLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
+        // Decodes the wrapped world mesh (Engine::GAPI->GetWrappedWorldMesh(), packed
+        // ExVertexStructGPU, 36 B) - VS_ExLayered's plain VS_INPUT can't read that stream.
+        Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPackedLayered>( "VS_ExPackedLayered.hlsl" )
+            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX ) );
+
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLayered>( "VS_ExNodeLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
