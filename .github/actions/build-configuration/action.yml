@@ -17,10 +17,15 @@ runs:
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v3
 
-    - name: Restore NuGet packages
-      working-directory: ${{ env.GITHUB_WORKSPACE }}
-      shell: pwsh
-      run: nuget restore .
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v11
+      with:
+        vcpkgGitCommitId: 39344dff01c5a5a0134caf2624cdd492f05d30ea
+        # Only clone/bootstrap vcpkg and export VCPKG_ROOT here; the actual manifest
+        # install (with the x86-windows-static-md triplet) happens automatically
+        # during MSBuild via vcpkg's own MSBuild integration (vcpkg.props/targets),
+        # same as local builds.
+        runVcpkgInstall: false
 
     - name: Run MSBuild
       id: build
