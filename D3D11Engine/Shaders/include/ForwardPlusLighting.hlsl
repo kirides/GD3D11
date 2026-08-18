@@ -206,7 +206,11 @@ float3 FP_ComputePointLighting(
             // Don't fetch shadows if the light contribution is effectively zero.
             if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
             {
-                float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, FP_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+                // SQ_FrameIndex is only ever incremented while camera jitter (TAA/FSR) is baked into the
+                // projection (see D3D11ShadowMap.cpp's FillSunCSMConstantBuffer) - same "is TAA active" signal
+                // GetPoissonRotationSCForCascade uses above for the sun CSM.
+                bool taaActive = SQ_FrameIndex != 0;
+                float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, FP_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex, taaActive );
                 lighting *= shadow;
             }
 

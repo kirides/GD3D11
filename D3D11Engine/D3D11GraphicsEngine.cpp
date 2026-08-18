@@ -6240,8 +6240,39 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     void* lastTex = nullptr;
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
         auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::Layered" ) );
+
+        // World-mesh sub-meshes don't own standalone GPU buffers - section->WorldMeshes /
+        // worldMeshCache only carry an index range (MeshInfo::BaseIndexLocation) into the single
+        // wrapped world mesh (Engine::GAPI->GetWrappedWorldMesh()), packed as ExVertexStructGPU -
+        // the same buffer ShadowPass_DrawWorldMesh/CSM draw from. VS_ExLayered's plain VS_INPUT
+        // can't decode that stream, so switch to the packed-decoding layered variant and bind the
+        // wrapped mesh once for this block; VOBs drawn afterward are unpacked ExVertexStruct and
+        // need VS_ExLayered back. FullStaticMesh (the FastShadows branch below) is the one
+        // exception - it's built as plain ExVertexStruct with its own buffer, so it keeps using
+        // whatever VS is already active.
+        //
+        // First pass: always draw the full (non-welded) index range - GetShadowAwareIndexCount(mesh,
+        // true) / mesh->BaseIndexLocation - as if every material were alpha-tested, mirroring
+        // DrawWorldAround's GS-path equivalent.
+        bool usedPackedWorldMeshVS = false;
+        auto ensurePackedWorldMeshVS = [&]() {
+            if ( usedPackedWorldMeshVS ) return;
+            usedPackedWorldMeshVS = true;
+            SetActiveVertexShader( VShaderID::VS_ExPackedLayered );
+            SetupVS_ExMeshDrawCall();
+            SetupVS_ExConstantBuffer();
+            ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
+            BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
+        };
+        auto drawFromWrappedMeshInstanced = [&]( MeshInfo* mesh ) {
+            ensurePackedWorldMeshVS();
+            const unsigned int count = GetShadowAwareIndexCount( mesh, true );
+            if ( !count ) return;
+            Context->DrawIndexedInstanced( count, 6, mesh->BaseIndexLocation, 0, 0 );
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += count / 3;
+        };
+
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
         //		 The current solution won't use the cache at all when there are
@@ -6285,12 +6316,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     }
                 }
 
-                // Draw from wrapped mesh
-                MeshInfo* mesh = meshInfoByKey->second;
-                DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
-                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
-                    GetShadowAwareIndexCount( mesh, isAlpha ),
-                    6 );
+                drawFromWrappedMeshInstanced( meshInfoByKey->second );
             }
         } else {
             Frustum f;
@@ -6350,15 +6376,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             }
                         }
 
-                        // Draw from wrapped mesh
-                        MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
-                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
-                            GetShadowAwareIndexCount( mesh, isAlpha ),
-                            6 );
+                        drawFromWrappedMeshInstanced( meshInfoByKey->second );
                     }
                 }
             }
+        }
+
+        if ( usedPackedWorldMeshVS ) {
+            // Restore VS_ExLayered (plain unpacked ExVertexStruct) for the VOB/mob draws below.
+            SetActiveVertexShader( VShaderID::VS_ExLayered );
+            SetupVS_ExMeshDrawCall();
+            SetupVS_ExConstantBuffer();
         }
     }
     

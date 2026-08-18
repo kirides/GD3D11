@@ -97,7 +97,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float ndl = max(0, dot(lightDir, normal));
 	
 	// Apply dynamic shadow
-	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, wsNormal, Pl_PositionWorld, PL_Range);
+	bool taaActive = PL_JitterOffset.x != 0.0f || PL_JitterOffset.y != 0.0f;
+	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, wsNormal, Pl_PositionWorld, PL_Range, taaActive);
 	//return float4(ndl.rrr,1);
 	
 	// Get rid of lighting on the backfaces of normalmapped surfaces
