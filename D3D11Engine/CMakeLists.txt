@@ -18,37 +18,13 @@ function(gd3d11_get_package_version package_id out_var)
   set(${out_var} "${_pkg_version}" PARENT_SCOPE)
 endfunction()
 
-gd3d11_get_package_version("directxmath" GD3D11_DIRECTXMATH_VERSION)
-gd3d11_get_package_version("directxmesh_desktop_2019" GD3D11_DIRECTXMESH_VERSION)
-gd3d11_get_package_version("directxtk_desktop_2019" GD3D11_DIRECTXTK_VERSION)
 gd3d11_get_package_version("Microsoft.Direct3D.D3D12" GD3D11_D3D12AGILITY_VERSION)
-gd3d11_get_package_version("Microsoft.XAudio2.Redist" GD3D11_XAUDIO2_VERSION)
 
 set(GD3D11_NUGET_PACKAGES_DIR "${CMAKE_SOURCE_DIR}/packages" CACHE PATH "NuGet packages directory")
-
-set(_directxmath_include "")
-if(NOT GD3D11_DIRECTXMATH_VERSION STREQUAL "")
-  set(_directxmath_include "${GD3D11_NUGET_PACKAGES_DIR}/directxmath.${GD3D11_DIRECTXMATH_VERSION}/include")
-endif()
-
-set(_directxmesh_root "")
-if(NOT GD3D11_DIRECTXMESH_VERSION STREQUAL "")
-  set(_directxmesh_root "${GD3D11_NUGET_PACKAGES_DIR}/directxmesh_desktop_2019.${GD3D11_DIRECTXMESH_VERSION}")
-endif()
-
-set(_directxtk_root "")
-if(NOT GD3D11_DIRECTXTK_VERSION STREQUAL "")
-  set(_directxtk_root "${GD3D11_NUGET_PACKAGES_DIR}/directxtk_desktop_2019.${GD3D11_DIRECTXTK_VERSION}")
-endif()
 
 set(_d3d12agility_include "")
 if(NOT GD3D11_D3D12AGILITY_VERSION STREQUAL "")
   set(_d3d12agility_include "${GD3D11_NUGET_PACKAGES_DIR}/Microsoft.Direct3D.D3D12.${GD3D11_D3D12AGILITY_VERSION}/build/native/include")
-endif()
-
-set(_xaudio2_root "")
-if(NOT GD3D11_XAUDIO2_VERSION STREQUAL "")
-  set(_xaudio2_root "${GD3D11_NUGET_PACKAGES_DIR}/Microsoft.XAudio2.Redist.${GD3D11_XAUDIO2_VERSION}")
 endif()
 
 add_library(D3D11Engine SHARED ${GD3D11_ENGINE_SOURCES} ddraw.def)
@@ -66,24 +42,8 @@ target_include_directories(D3D11Engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include/imgui/backends
 )
 
-if(EXISTS "${_directxmath_include}")
-  target_include_directories(D3D11Engine BEFORE PRIVATE "${_directxmath_include}")
-endif()
-
-if(EXISTS "${_directxmesh_root}/include")
-  target_include_directories(D3D11Engine BEFORE PRIVATE "${_directxmesh_root}/include")
-endif()
-
-if(EXISTS "${_directxtk_root}/include")
-  target_include_directories(D3D11Engine BEFORE PRIVATE "${_directxtk_root}/include")
-endif()
-
 if(EXISTS "${_d3d12agility_include}")
   target_include_directories(D3D11Engine BEFORE PRIVATE "${_d3d12agility_include}" "${_d3d12agility_include}/d3dx12")
-endif()
-
-if(EXISTS "${_xaudio2_root}/build/native/include")
-  target_include_directories(D3D11Engine BEFORE PRIVATE "${_xaudio2_root}/build/native/include")
 endif()
 
 gd3d11_apply_windows_sdk_includes(D3D11Engine)
@@ -111,57 +71,39 @@ target_link_directories(D3D11Engine PRIVATE
   ${GD3D11_VENDOR_LIB_DIR}
 )
 
-set(_gd3d11_nuget_cpp_lib_cfg "$<$<CONFIG:Debug>:Debug>$<$<NOT:$<CONFIG:Debug>>:Release>")
-set(_gd3d11_nuget_xaudio_lib_cfg "$<$<CONFIG:Debug>:debug>$<$<NOT:$<CONFIG:Debug>>:release>")
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-  set(_gd3d11_nuget_cpp_lib_cfg "Release")
-  set(_gd3d11_nuget_xaudio_lib_cfg "release")
-endif()
-
-if(EXISTS "${_directxmesh_root}/native/lib/x86")
-  target_link_directories(D3D11Engine PRIVATE "${_directxmesh_root}/native/lib/x86/${_gd3d11_nuget_cpp_lib_cfg}")
-endif()
-
-if(EXISTS "${_directxtk_root}/native/lib/x86")
-  target_link_directories(D3D11Engine PRIVATE "${_directxtk_root}/native/lib/x86/${_gd3d11_nuget_cpp_lib_cfg}")
-endif()
-
-if(EXISTS "${_xaudio2_root}/build/native")
-  target_link_directories(D3D11Engine PRIVATE "${_xaudio2_root}/build/native/${_gd3d11_nuget_xaudio_lib_cfg}/lib/x86")
-endif()
-
 if(EXISTS "${CMAKE_SOURCE_DIR}/blobs/libs")
   target_link_directories(D3D11Engine PRIVATE "${CMAKE_SOURCE_DIR}/blobs/libs")
 endif()
 
-if(NOT GD3D11_DIRECTXTK_LIB_PATH STREQUAL "")
-  target_link_directories(D3D11Engine PRIVATE "${GD3D11_DIRECTXTK_LIB_PATH}")
-endif()
-
 if(WIN32)
   target_link_libraries(D3D11Engine PRIVATE
-    DirectXMesh.lib
-    DirectXTK.lib
-    DirectXTKAudioWin7.lib
-    xaudio2_9redist.lib
-    xapobaseredist.lib
     amd_ags_x86_2022_MD.lib
     assimp-vc143-mt.lib
     GFSDK_SSAO_D3D11.win32.lib
   )
 endif()
 
-if(GD3D11_USE_VCPKG)
-  find_package(directxmath CONFIG QUIET)
-  find_package(directxmesh CONFIG QUIET)
-  find_package(directxtk CONFIG QUIET)
+find_package(directxmath CONFIG REQUIRED)
+find_package(directxmesh CONFIG REQUIRED)
+find_package(directxtk CONFIG REQUIRED)
+find_package(xaudio2redist CONFIG REQUIRED)
 
-  gd3d11_link_if_target(D3D11Engine Microsoft::DirectXMath)
-  gd3d11_link_if_target(D3D11Engine directxmath)
-  gd3d11_link_if_target(D3D11Engine Microsoft::DirectXMesh)
-  gd3d11_link_if_target(D3D11Engine directxmesh)
-  gd3d11_link_if_target(D3D11Engine Microsoft::DirectXTK)
-  gd3d11_link_if_target(D3D11Engine directxtk)
+target_link_libraries(D3D11Engine PRIVATE
+  Microsoft::DirectXMath
+  Microsoft::DirectXMesh
+  Microsoft::DirectXTK
+  Microsoft::XAudio2Redist
+)
+
+# The Windows SDK ships its own (older) DirectXMath/DirectXCollision/XAudio2 headers
+# under Include/<ver>/um. Those must not shadow the vcpkg-provided ones pulled in
+# above, so force the vcpkg include dirs to the front of the search order.
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+  target_include_directories(D3D11Engine BEFORE PRIVATE
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include"
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/directxtk"
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/xaudio2redist"
+  )
 endif()
 
 if(GD3D11_DEPLOY_AFTER_BUILD)

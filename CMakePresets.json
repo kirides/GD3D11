@@ -12,7 +12,9 @@
       "generator": "Visual Studio 18 2026",
       "architecture": "Win32",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "toolchainFile": "E:/git/github/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static-md",
         "CMAKE_CXX_STANDARD": "23",
         "GD3D11_BUILD_ENGINE": "ON",
         "GD3D11_BUILD_LAUNCHER": "ON",
@@ -24,8 +26,7 @@
         "GD3D11_SPACER": "OFF",
         "GD3D11_WIN32_LEAN_AND_MEAN": "ON",
         "GD3D11_TRACY_ENABLE": "OFF",
-        "GD3D11_TRACY_ON_DEMAND": "OFF",
-        "GD3D11_USE_VCPKG": "ON"
+        "GD3D11_TRACY_ON_DEMAND": "OFF"
       }
     },
     {
@@ -33,10 +34,14 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "toolchainFile": "E:/git/github/vcpkg/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x86-windows-static-md",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_FLAGS": "-m32",
+        "CMAKE_CXX_FLAGS": "-m32",
         "CMAKE_CXX_STANDARD": "23",
         "GD3D11_BUILD_ENGINE": "ON",
         "GD3D11_BUILD_LAUNCHER": "ON",
@@ -49,8 +54,7 @@
         "GD3D11_SPACER": "OFF",
         "GD3D11_WIN32_LEAN_AND_MEAN": "ON",
         "GD3D11_TRACY_ENABLE": "OFF",
-        "GD3D11_TRACY_ON_DEMAND": "OFF",
-        "GD3D11_USE_VCPKG": "ON"
+        "GD3D11_TRACY_ON_DEMAND": "OFF"
       }
     },
     {

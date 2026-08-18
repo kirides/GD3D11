@@ -7,7 +7,6 @@ include(GD3D11Helpers)
 
 option(GD3D11_BUILD_ENGINE "Build the D3D11Engine ddraw.dll target" ON)
 option(GD3D11_BUILD_LAUNCHER "Build the Launcher ddraw.dll target" ON)
-option(GD3D11_USE_VCPKG "Use vcpkg packages when available" ON)
 option(GD3D11_DEPLOY_AFTER_BUILD "Copy build output into game system path after build" OFF)
 
 set(GD3D11_GAME "G2" CACHE STRING "Game target (G2, G1, G1_12F)")
@@ -34,7 +33,6 @@ set(GD3D11_SYSTEM_PATH_G1 "$ENV{G1_SYSTEM_PATH}" CACHE PATH "Gothic 1 deployment
 set(GD3D11_SYSTEM_PATH_G2 "$ENV{G2_SYSTEM_PATH}" CACHE PATH "Gothic 2 deployment path")
 
 set(GD3D11_VENDOR_LIB_DIR "${CMAKE_SOURCE_DIR}/lib" CACHE PATH "Directory with vendored .lib files")
-set(GD3D11_DIRECTXTK_LIB_PATH "" CACHE PATH "Optional legacy DirectXTK lib path")
 
 gd3d11_validate_enum(GD3D11_GAME "G2;G1;G1_12F")
 gd3d11_validate_enum(GD3D11_SIMD "SSE2;AVX;AVX2")
