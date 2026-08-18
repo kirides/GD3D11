@@ -21,6 +21,7 @@ endfunction()
 gd3d11_get_package_version("directxmath" GD3D11_DIRECTXMATH_VERSION)
 gd3d11_get_package_version("directxmesh_desktop_2019" GD3D11_DIRECTXMESH_VERSION)
 gd3d11_get_package_version("directxtk_desktop_2019" GD3D11_DIRECTXTK_VERSION)
+gd3d11_get_package_version("Microsoft.Direct3D.D3D12" GD3D11_D3D12AGILITY_VERSION)
 gd3d11_get_package_version("Microsoft.XAudio2.Redist" GD3D11_XAUDIO2_VERSION)
 
 set(GD3D11_NUGET_PACKAGES_DIR "${CMAKE_SOURCE_DIR}/packages" CACHE PATH "NuGet packages directory")
@@ -38,6 +39,11 @@ endif()
 set(_directxtk_root "")
 if(NOT GD3D11_DIRECTXTK_VERSION STREQUAL "")
   set(_directxtk_root "${GD3D11_NUGET_PACKAGES_DIR}/directxtk_desktop_2019.${GD3D11_DIRECTXTK_VERSION}")
+endif()
+
+set(_d3d12agility_include "")
+if(NOT GD3D11_D3D12AGILITY_VERSION STREQUAL "")
+  set(_d3d12agility_include "${GD3D11_NUGET_PACKAGES_DIR}/Microsoft.Direct3D.D3D12.${GD3D11_D3D12AGILITY_VERSION}/build/native/include")
 endif()
 
 set(_xaudio2_root "")
@@ -70,6 +76,10 @@ endif()
 
 if(EXISTS "${_directxtk_root}/include")
   target_include_directories(D3D11Engine BEFORE PRIVATE "${_directxtk_root}/include")
+endif()
+
+if(EXISTS "${_d3d12agility_include}")
+  target_include_directories(D3D11Engine BEFORE PRIVATE "${_d3d12agility_include}" "${_d3d12agility_include}/d3dx12")
 endif()
 
 if(EXISTS "${_xaudio2_root}/build/native/include")
@@ -137,9 +147,6 @@ if(WIN32)
     xapobaseredist.lib
     amd_ags_x86_2022_MD.lib
     assimp-vc143-mt.lib
-    ffx_backend_dx11_x86.lib
-    ffx_fsr2_x86.lib
-    ffx_fsr3upscaler_x86.lib
     GFSDK_SSAO_D3D11.win32.lib
   )
 endif()
