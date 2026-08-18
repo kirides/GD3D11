@@ -54,7 +54,6 @@ endif()
 
 find_package(directxmath CONFIG REQUIRED)
 find_package(directxtk CONFIG REQUIRED)
-find_package(xaudio2redist CONFIG REQUIRED)
 # directx-headers only supplies d3d12.h/d3dx12*.h here. Its compiled GUID/helper
 # libs are deliberately not linked: dxguid.lib (already linked below) already
 # supplies the D3D12 IIDs this project needs, and D3D12 stays dynamically loaded
@@ -64,7 +63,6 @@ find_package(directx-headers CONFIG REQUIRED)
 target_link_libraries(D3D11Engine PRIVATE
   Microsoft::DirectXMath
   Microsoft::DirectXTK
-  Microsoft::XAudio2Redist
 )
 
 # The Windows SDK ships its own (older) DirectXMath/DirectXCollision/XAudio2/D3D12
@@ -74,7 +72,6 @@ if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
   target_include_directories(D3D11Engine BEFORE PRIVATE
     "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include"
     "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/directxtk"
-    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/xaudio2redist"
     "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/directx"
   )
 endif()

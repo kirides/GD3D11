@@ -5,7 +5,6 @@
   "dependencies": [
     "directxmath",
     "directxtk",
-    "xaudio2redist",
     "directx-headers",
     "directx12-agility"
   ]
