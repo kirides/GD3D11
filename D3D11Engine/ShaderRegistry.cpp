@@ -360,7 +360,7 @@ void ShaderRegistry::Build() {
             .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCube>( "VS_ExNodeCube.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCube>( "VS_ExSkeletalCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
