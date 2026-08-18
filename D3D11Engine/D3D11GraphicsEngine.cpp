@@ -5991,6 +5991,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     if ( isOutdoor && it->IsIndoorVob != indoor ) {
                         continue;
                     }
+
+                    if ( ignoreVob != nullptr && ignoreVob( it->Vob ) ) {
+                        continue;
+                    }
                     rndVob.emplace_back( it );
                 }
             }
