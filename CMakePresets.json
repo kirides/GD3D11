@@ -12,7 +12,7 @@
       "generator": "Visual Studio 18 2026",
       "architecture": "Win32",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "toolchainFile": "E:/git/github/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x86-windows-static-md",
         "CMAKE_CXX_STANDARD": "23",
@@ -34,7 +34,7 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "toolchainFile": "E:/git/github/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x86-windows-static-md",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",

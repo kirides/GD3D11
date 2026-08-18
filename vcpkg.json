@@ -5,6 +5,8 @@
     "directxmath",
     "directxmesh",
     "directxtk",
-    "xaudio2redist"
+    "xaudio2redist",
+    "directx-headers",
+    "directx12-agility"
   ]
 }
