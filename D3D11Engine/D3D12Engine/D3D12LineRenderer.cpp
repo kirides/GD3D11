@@ -26,38 +26,6 @@ namespace {
 }
 
 
-XRESULT D3D12LineRenderer::AddLine( const LineVertex& v1, const LineVertex& v2 ) {
-    if ( LineCache.size() + 2 > kMaxCachedVertices ) {
-        if ( !CacheOverflowLogged ) {
-            LogWarn() << "D3D12: debug-line cache full (" << kMaxCachedVertices
-                << " vertices). Further lines are dropped until it is flushed.";
-            CacheOverflowLogged = true;
-        }
-        return XR_FAILED;
-    }
-
-    LineCache.push_back( v1 );
-    LineCache.push_back( v2 );
-    return XR_SUCCESS;
-}
-
-
-XRESULT D3D12LineRenderer::AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 ) {
-    if ( ScreenSpaceLineCache.size() + 2 > kMaxCachedVertices ) {
-        if ( !CacheOverflowLogged ) {
-            LogWarn() << "D3D12: screen-space debug-line cache full (" << kMaxCachedVertices
-                << " vertices). Further lines are dropped until it is flushed.";
-            CacheOverflowLogged = true;
-        }
-        return XR_FAILED;
-    }
-
-    ScreenSpaceLineCache.push_back( v1 );
-    ScreenSpaceLineCache.push_back( v2 );
-    return XR_SUCCESS;
-}
-
-
 XRESULT D3D12LineRenderer::Flush() {
     if ( !LineCache.empty() ) {
         if ( D3D12GraphicsEngine* engine = ActiveD3D12Engine() )
@@ -75,16 +43,6 @@ XRESULT D3D12LineRenderer::FlushScreenSpace() {
             engine->DrawLines( ScreenSpaceLineCache, true );
         ScreenSpaceLineCache.clear();
     }
-    CacheOverflowLogged = false;
-    return XR_SUCCESS;
-}
-
-
-XRESULT D3D12LineRenderer::ClearCache() {
-    // D3D11LineRenderer::ClearCache only clears the world-space list; clearing both here is strictly safer
-    // (this is the only path that can drop screen-space lines without a frame having drawn them).
-    LineCache.clear();
-    ScreenSpaceLineCache.clear();
     CacheOverflowLogged = false;
     return XR_SUCCESS;
 }

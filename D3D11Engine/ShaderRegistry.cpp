@@ -344,7 +344,7 @@ void ShaderRegistry::Build() {
             .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLayered>( "VS_ExNodeLayered.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLayered>( "VS_ExSkeletalLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
@@ -359,8 +359,13 @@ void ShaderRegistry::Build() {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCube>( "VS_ExCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
+        // Decodes the wrapped world mesh (Engine::GAPI->GetWrappedWorldMesh(), packed
+        // ExVertexStructGPU, 36 B) - VS_ExCube's plain VS_INPUT can't read that stream.
+        Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPackedCube>( "VS_ExPackedCube.hlsl" )
+            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX ) );
+
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCube>( "VS_ExNodeCube.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCube>( "VS_ExSkeletalCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )

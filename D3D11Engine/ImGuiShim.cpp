@@ -1,5 +1,6 @@
 #include "ImGuiShim.h"
 #include "GSky.h"
+#include "D3D11PipelineStateCache.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include <VersionHelpers.h>
 #include <ShellScalingApi.h>
@@ -299,6 +300,11 @@ void ImGuiShim::RenderLoop()
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
+
+    // imgui_impl_dx11 binds its own IA/VS/PS state directly on the context (and, though it restores
+    // the pre-render state on exit today, that's an implementation detail of the vendored backend, not
+    // a contract) -- don't trust our cache's belief about what's bound across it.
+    D3D11PipelineStateCache::InvalidateAll();
 
     CallEndFrameScript();
 }

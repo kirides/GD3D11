@@ -1,5 +1,6 @@
 #include "D3D11SMAA.h"
 #include "../D3D11ShaderManager.h"
+#include "../D3D11PipelineStateCache.h"
 
 // Include DirectXTK or your preferred texture loader
 #include "DDSTextureLoader.h" // Assuming DirectXTK availability
@@ -200,6 +201,11 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
 
     // Cleanup
     m_context->PSSetShaderResources(0, 3, nullSRVs);
+
+    // This class binds IA/VS/PS directly on the shared context, not through D3D11PipelineStateCache
+    // (it owns its own m_vsEdge/m_psLumaEdge/... rather than the engine's ShaderManager shaders), so
+    // the cache has no idea any of this happened. Forget what it believed was bound.
+    D3D11PipelineStateCache::InvalidateAll();
 }
 
 void D3D11SMAA::ReleaseResources() {

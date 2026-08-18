@@ -22,6 +22,7 @@
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_SAO.h"
 #include "D3D11PFX_ASSAO.h"
+#include "D3D11PipelineStateCache.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "GSky.h"
@@ -159,7 +160,7 @@ XRESULT D3D11PfxRenderer::DrawFullScreenQuad() {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     engine->UpdateRenderStates();
 
-    engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( engine->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     //Draw the mesh
     engine->GetContext()->Draw( 3, 0 );

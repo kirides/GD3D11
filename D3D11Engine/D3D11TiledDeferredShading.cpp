@@ -65,7 +65,8 @@ void D3D11TiledDeferredShading::EnsureShadowArray() {
     desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE; 
     desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
 
-    m_device->CreateTexture2D( &desc, nullptr, m_ShadowCubeArray.ReleaseAndGetAddressOf() );
+    HRESULT hr;
+    LE( m_device->CreateTexture2D( &desc, nullptr, m_ShadowCubeArray.ReleaseAndGetAddressOf() ));
     SetDebugName( m_ShadowCubeArray.Get(), "TiledDeferred_ShadowCubeArray" );
 
     // SRV for sampling in the tiled shading CS
@@ -77,7 +78,7 @@ void D3D11TiledDeferredShading::EnsureShadowArray() {
     srvDesc.TextureCubeArray.First2DArrayFace = 0;
     srvDesc.TextureCubeArray.NumCubes = MAX_SHADOW_CUBEMAPS;
 
-    m_device->CreateShaderResourceView( m_ShadowCubeArray.Get(), &srvDesc, m_ShadowCubeArraySRV.ReleaseAndGetAddressOf() );
+    LE(m_device->CreateShaderResourceView( m_ShadowCubeArray.Get(), &srvDesc, m_ShadowCubeArraySRV.ReleaseAndGetAddressOf() ));
     SetDebugName( m_ShadowCubeArraySRV.Get(), "TiledDeferred_ShadowCubeArray_SRV" );
 
     // Per-slot DSVs (6 faces each) and RenderToDepthStencilBuffer view wrappers
@@ -89,7 +90,7 @@ void D3D11TiledDeferredShading::EnsureShadowArray() {
         dsvDesc.Texture2DArray.ArraySize = 6;
         dsvDesc.Texture2DArray.MipSlice = 0;
 
-        m_device->CreateDepthStencilView( m_ShadowCubeArray.Get(), &dsvDesc, m_SlotDSVs[slot].ReleaseAndGetAddressOf() );
+        LE(m_device->CreateDepthStencilView( m_ShadowCubeArray.Get(), &dsvDesc, m_SlotDSVs[slot].ReleaseAndGetAddressOf() ));
 
         // View wrapper for RenderShadowCube() interface (uses GetSizeX() and GetDepthStencilView())
         m_SlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
@@ -139,9 +140,10 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
     srvDesc.TextureCubeArray.First2DArrayFace = 0;
     srvDesc.TextureCubeArray.NumCubes = MAX_SHADOW_CUBEMAPS;
 
-    m_device->CreateShaderResourceView( m_ShadowDynCubeArray.Get(), &srvDesc, m_ShadowDynCubeArraySRV.ReleaseAndGetAddressOf() );
+    HRESULT hr;
+    LE(m_device->CreateShaderResourceView( m_ShadowDynCubeArray.Get(), &srvDesc, m_ShadowDynCubeArraySRV.ReleaseAndGetAddressOf() ));
     SetDebugName( m_ShadowDynCubeArraySRV.Get(), "TiledDeferred_ShadowDynCubeArray_SRV" );
-
+    
     for ( uint32_t slot = 0; slot < MAX_SHADOW_CUBEMAPS; slot++ ) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
         dsvDesc.Format = DXGI_FORMAT_D16_UNORM;
@@ -150,7 +152,7 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
         dsvDesc.Texture2DArray.ArraySize = 6;
         dsvDesc.Texture2DArray.MipSlice = 0;
 
-        m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() );
+        LE(m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() ));
 
         m_SlotDynViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowDynCubeArray, m_SlotDynDSVs[slot], nullptr,
@@ -190,7 +192,8 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     srvDesc.TextureCubeArray.First2DArrayFace = 0;
     srvDesc.TextureCubeArray.NumCubes = MAX_STATIC_SHADOW_CUBEMAPS;
 
-    m_device->CreateShaderResourceView( m_ShadowStaticCubeArray.Get(), &srvDesc, m_ShadowStaticCubeArraySRV.ReleaseAndGetAddressOf() );
+    HRESULT hr;
+    LE(m_device->CreateShaderResourceView( m_ShadowStaticCubeArray.Get(), &srvDesc, m_ShadowStaticCubeArraySRV.ReleaseAndGetAddressOf() ));
     SetDebugName( m_ShadowStaticCubeArraySRV.Get(), "TiledDeferred_ShadowStaticCubeArray_SRV" );
 
     for ( uint32_t slot = 0; slot < MAX_STATIC_SHADOW_CUBEMAPS; slot++ ) {
@@ -201,7 +204,7 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
         dsvDesc.Texture2DArray.ArraySize = 6;
         dsvDesc.Texture2DArray.MipSlice = 0;
 
-        m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &dsvDesc, m_StaticSlotDSVs[slot].ReleaseAndGetAddressOf() );
+        LE(m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &dsvDesc, m_StaticSlotDSVs[slot].ReleaseAndGetAddressOf() ));
 
         m_StaticSlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowStaticCubeArray, m_StaticSlotDSVs[slot], nullptr,
@@ -282,7 +285,9 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
     desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     desc.StructureByteStride = sizeof( LightGrid );
 
-    m_device->CreateBuffer( &desc, nullptr, m_LightGrid.ReleaseAndGetAddressOf() );
+    HRESULT hr;
+
+    LE(m_device->CreateBuffer( &desc, nullptr, m_LightGrid.ReleaseAndGetAddressOf() ));
     SetDebugName( m_LightGrid.Get(), "TiledDeferred_LightGrid" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -290,7 +295,7 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     srvDesc.Buffer.ElementWidth = totalClusters;
 
-    m_device->CreateShaderResourceView( m_LightGrid.Get(), &srvDesc, m_LightGridSRV.ReleaseAndGetAddressOf() );
+    LE(m_device->CreateShaderResourceView( m_LightGrid.Get(), &srvDesc, m_LightGridSRV.ReleaseAndGetAddressOf() ));
     SetDebugName( m_LightGridSRV.Get(), "TiledDeferred_LightGrid_SRV" );
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
@@ -298,7 +303,7 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
     uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
     uavDesc.Buffer.NumElements = totalClusters;
 
-    m_device->CreateUnorderedAccessView( m_LightGrid.Get(), &uavDesc, m_LightGridUAV.ReleaseAndGetAddressOf() );
+    LE(m_device->CreateUnorderedAccessView( m_LightGrid.Get(), &uavDesc, m_LightGridUAV.ReleaseAndGetAddressOf() ));
     SetDebugName( m_LightGridUAV.Get(), "TiledDeferred_LightGrid_UAV" );
 }
 

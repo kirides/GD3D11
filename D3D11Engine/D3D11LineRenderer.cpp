@@ -4,7 +4,7 @@
 #include "Engine.h"
 #include "D3D11VertexBuffer.h"
 #include "GothicAPI.h"
-#include "D3D11VertexBuffer.h"
+#include "D3D11PipelineStateCache.h"
 
 D3D11LineRenderer::D3D11LineRenderer() {
     LineBuffer = nullptr;
@@ -13,28 +13,6 @@ D3D11LineRenderer::D3D11LineRenderer() {
 
 D3D11LineRenderer::~D3D11LineRenderer() {
     LineBuffer.reset();
-}
-
-/** Adds a line to the list */
-XRESULT D3D11LineRenderer::AddLine( const LineVertex& v1, const LineVertex& v2 ) {
-    if ( LineCache.size() >= 0xFFFFFFFF ) {
-        return XR_FAILED;
-    }
-
-    LineCache.push_back( v1 );
-    LineCache.push_back( v2 );
-    return XR_SUCCESS;
-}
-
-/** Adds a line to the list */
-XRESULT D3D11LineRenderer::AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 ) {
-    if ( ScreenSpaceLineCache.size() >= 0xFFFFFFFF ) {
-        return XR_FAILED;
-    }
-
-    ScreenSpaceLineCache.push_back( v1 );
-    ScreenSpaceLineCache.push_back( v2 );
-    return XR_SUCCESS;
 }
 
 /** Flushes the cached lines */
@@ -70,7 +48,7 @@ XRESULT D3D11LineRenderer::Flush() {
     engine->SetupVS_ExMeshDrawCall();
     engine->SetupVS_ExConstantBuffer();
     engine->SetupVS_ExPerInstanceConstantBuffer();
-    engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( engine->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
 
     // Draw the lines
     UINT offset = 0;
@@ -115,7 +93,7 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     engine->SetupVS_ExMeshDrawCall();
-    engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( engine->GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_LINELIST );
 
     // Draw the lines
     UINT offset = 0;
@@ -127,11 +105,5 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
 
     // Clear for the next frame
     ScreenSpaceLineCache.clear();
-    return XR_SUCCESS;
-}
-
-/** Clears the line cache */
-XRESULT D3D11LineRenderer::ClearCache() {
-    LineCache.clear();
     return XR_SUCCESS;
 }

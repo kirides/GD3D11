@@ -1,6 +1,7 @@
 #include "D3D11GraphicsEngineBase.h"
 
 #include "D3D11LineRenderer.h"
+#include "D3D11PipelineStateCache.h"
 #include "D3D11PipelineStates.h"
 #include "D3D11PointLight.h"
 #include "D3D11PShader.h"
@@ -171,7 +172,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     pShader->Apply();
 
     // Set vertex type
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    D3D11PipelineStateCache::SetPrimitiveTopology( GetContext().Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     // Bind the viewport information to the shader
     D3D11_VIEWPORT vp;

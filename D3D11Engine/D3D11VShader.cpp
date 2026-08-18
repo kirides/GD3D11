@@ -8,6 +8,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
+#include "D3D11PipelineStateCache.h"
 
 extern bool FeatureLevel10Compatibility;
 
@@ -245,8 +246,8 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
 XRESULT D3D11VShader::Apply() {
     auto context = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext().Get();
 
-    context->IASetInputLayout( InputLayout.Get() );
-    context->VSSetShader( VertexShader.Get(), nullptr, 0 );
+    D3D11PipelineStateCache::SetInputLayout( context, InputLayout.Get() );
+    D3D11PipelineStateCache::SetVertexShader( context, VertexShader.Get() );
 
     return XR_SUCCESS;
 }

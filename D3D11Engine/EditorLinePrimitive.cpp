@@ -3,6 +3,7 @@
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
 #include "D3D11PShader.h"
+#include "D3D11PipelineStateCache.h"
 #include "BaseLineRenderer.h"
 #include "GothicAPI.h"
 #include "GfxVertexBuffer.h"
@@ -851,7 +852,7 @@ void EditorLinePrimitive::RenderVertexBuffer( const std::unique_ptr<GfxVertexBuf
     engine->GetContext()->IASetVertexBuffers( 0, 1, &nativeVB, &stride, &offset );
     engine->GetContext()->IASetIndexBuffer( nullptr, DXGI_FORMAT_UNKNOWN, 0 );
 
-    engine->GetContext()->IASetPrimitiveTopology( Topology );
+    D3D11PipelineStateCache::SetPrimitiveTopology( engine->GetContext().Get(), Topology );
 
     engine->GetContext()->Draw( NumVertices, 0 );
 }
