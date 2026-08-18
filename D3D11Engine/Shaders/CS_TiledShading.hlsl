@@ -123,7 +123,8 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
             // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
             if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
-                float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, TX_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+                bool taaActive = JitterOffset.x != 0.0f || JitterOffset.y != 0.0f;
+                float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, TX_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex, taaActive );
                 lighting *= shadow;
             }
 

@@ -112,6 +112,7 @@ void PLS_PrepareShadowSampling(
     float3 lightPosWorld,
     float lightRange,
     bool tierLow,
+    bool taaActive,
     out float3 dir,
     out float compareDistance,
     out float fixedBias,
@@ -163,24 +164,41 @@ void PLS_PrepareShadowSampling(
     if ( tierLow )
         baseBlur *= tierLowBlurBoost;
 
-    float noise = PLS_AggressiveNoise(wsPosition * 50.0f);
-    fixedBlurScale = baseBlur * lerp(0.5f, 1.5f, noise);
+    // The rotation/blur-scale jitter below is a spatial hash of wsPosition, not a temporal one - it exists
+    // to break up the Poisson ring into dither that TAA/FSR resolves into smooth soft shadows over several
+    // frames. A hash is discontinuous: without TAA to average it out, the sub-pixel shift in reconstructed
+    // wsPosition from ordinary camera motion flips the hash output unpredictably frame to frame, which reads
+    // as flicker/sparkle rather than dither. Mirrors GetPoissonRotationSCForCascade's SQ_FrameIndex==0 guard
+    // in ShadowSampling.h - fall back to a fixed rotation/scale (still temporally stable, just static-banded)
+    // when the caller reports no camera jitter is active.
+    if ( taaActive )
+    {
+        float noise = PLS_AggressiveNoise(wsPosition * 50.0f);
+        fixedBlurScale = baseBlur * lerp(0.5f, 1.5f, noise);
+
+        float angle = noise * 6.2831853f;
+        sincos( angle, sinA, cosA );
+    }
+    else
+    {
+        fixedBlurScale = baseBlur;
+        sinA = 0.0f;
+        cosA = 1.0f;
+    }
 
     up = abs( dir.y ) < 0.999f ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
     right = normalize( cross( up, dir ) );
     up = cross( dir, right );
-
-    float angle = noise * 6.2831853f;
-    sincos( angle, sinA, cosA );
 }
 
 float PLS_SampleShadowCube(
     TextureCube shadowCube,
     SamplerComparisonState samplerState,
     float3 wsPosition,
-    float3 N, 
+    float3 N,
     float3 lightPosWorld,
-    float lightRange )
+    float lightRange,
+    bool taaActive )
 {
     float3 dir;
     float compareDistance;
@@ -192,7 +210,7 @@ float PLS_SampleShadowCube(
     float cosA;
 
     PLS_PrepareShadowSampling(
-        wsPosition, N, lightPosWorld, lightRange, false,
+        wsPosition, N, lightPosWorld, lightRange, false, taaActive,
         dir, compareDistance, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
@@ -225,7 +243,8 @@ float PLS_SampleShadowCubeArray(
     float3 N,
     float3 lightPosWorld,
     float lightRange,
-    int encodedIndex )
+    int encodedIndex,
+    bool taaActive )
 {
     int cubeIndex = encodedIndex & PLS_SHADOW_SLOT_MASK;
     bool tierLow = ( encodedIndex & PLS_SHADOW_TIER_LOW ) != 0;
@@ -241,7 +260,7 @@ float PLS_SampleShadowCubeArray(
     float cosA;
 
     PLS_PrepareShadowSampling(
-        wsPosition, N, lightPosWorld, lightRange, tierLow,
+        wsPosition, N, lightPosWorld, lightRange, tierLow, taaActive,
         dir, compareDistance, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
