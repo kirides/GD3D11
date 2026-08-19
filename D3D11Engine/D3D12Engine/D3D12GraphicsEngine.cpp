@@ -1870,7 +1870,10 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         FrameMark;
         WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
-    }
+    } else if ( Engine::GAPI->IsIngameMenuPaused()) {
+        FrameMark;
+	}
+
     PausedFrameLimiterBeginFrame();
 
     TracyD3D12BeginFrame;
