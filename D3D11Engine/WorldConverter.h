@@ -101,6 +101,9 @@ public:
         deleting a MeshVisualInfo out of a NodeAttachments map - the object is shared. */
     static void ReleaseNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments, int index );
 
+    /** Releases and clears every slot. */
+    static void ReleaseAllNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
+
     /** Extracts a node-visual */
     static void ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
 

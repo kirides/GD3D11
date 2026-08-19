@@ -59,6 +59,10 @@ public:
             // this call, re-pointing VisualInfo is what keeps the already-registered vob from going stuck
             // on a null/stale visual instead of picking up the freshly re-created one.
             if ( SkeletalVobInfo* svi = Engine::GAPI->GetSkeletalVobByVob( thisptr ) ) {
+                // Forces head/held-item attachments to re-extract against the settled model instead of
+                // trusting the per-frame pointer-identity check, which fast repeated visual swaps can fool.
+                WorldConverter::ReleaseAllNodeAttachments( svi->NodeAttachments );
+
                 svi->VisualInfo = Engine::GAPI->LoadzCModelData( static_cast<oCNPC*>(thisptr) );
             }
 

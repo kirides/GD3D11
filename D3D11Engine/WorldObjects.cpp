@@ -8,6 +8,7 @@
 #include "zCTexture.h"
 #include "D3D11_Helpers.h"
 #include "SharedVisualRegistry.h"
+#include "WorldConverter.h"
 
 MeshVisualInfo::~MeshVisualInfo() {
     // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
@@ -27,11 +28,7 @@ MeshVisualInfo::~MeshVisualInfo() {
 }
 
 SkeletalVobInfo::~SkeletalVobInfo() {
-    for ( auto& [k, meshes] : NodeAttachments ) {
-        for ( MeshVisualInfo* mvi : meshes ) {
-            s_SharedVisualRegistry->Release( mvi );
-        }
-    }
+    WorldConverter::ReleaseAllNodeAttachments( NodeAttachments );
 }
 
 /** Updates the vobs constantbuffer */
