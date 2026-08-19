@@ -2942,11 +2942,14 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         // Check if this is loaded
         if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
             // It's not, extract it
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
-        // Check for changed visual
-        if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+        // Check for changed visual. Gated on GetIsReady(): the worker thread writes Visual as it
+        // finishes extracting, so comparing against it any earlier races the extraction job (mirrors
+        // the D3D12 attachment path).
+        if ( nodeAttachments[i].size() && nodeAttachments[i][0]->GetIsReady()
+            && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
                 // Remove attachment. Shared, so it goes back to the registry, not deleted here.
@@ -2957,7 +2960,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 continue; // Go to next attachment
             }
             // Load the new one
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
         if ( model->GetDrawHandVisualsOnly() ) {
@@ -2982,8 +2985,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
                 auto prevWorldNode = prevWorldMatrix * prevTransform;
 
-                if ( !mvi->Visual ) {
-                    LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                // Still being extracted on a worker thread — Meshes is being written to right now, so
+                // skip this attachment entirely for this frame rather than race it (mirrors D3D12).
+                if ( !mvi->GetIsReady() || !mvi->Visual ) {
                     continue;
                 }
 
@@ -3214,11 +3218,14 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
         // Check if this is loaded
         if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
             // It's not, extract it
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
-        // Check for changed visual
-        if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+        // Check for changed visual. Gated on GetIsReady(): the worker thread writes Visual as it
+        // finishes extracting, so comparing against it any earlier races the extraction job (mirrors
+        // the D3D12 attachment path).
+        if ( nodeAttachments[i].size() && nodeAttachments[i][0]->GetIsReady()
+            && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
                 // Remove attachment. Shared, so it goes back to the registry, not deleted here.
@@ -3229,7 +3236,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 continue; // Go to next attachment
             }
             // Load the new one
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
         if ( model->GetDrawHandVisualsOnly() ) {
@@ -3251,8 +3258,9 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 XMFLOAT4X4 finalWorld;
                 XMStoreFloat4x4( &finalWorld, xmWorld * curTransform );
 
-                if ( !mvi->Visual ) {
-                    LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                // Still being extracted on a worker thread — Meshes is being written to right now, so
+                // skip this attachment entirely for this frame rather than race it (mirrors D3D12).
+                if ( !mvi->GetIsReady() || !mvi->Visual ) {
                     continue;
                 }
 
