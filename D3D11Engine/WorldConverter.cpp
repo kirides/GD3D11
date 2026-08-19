@@ -1945,6 +1945,15 @@ void WorldConverter::ReleaseNodeAttachments( gtl::flat_hash_map<int, std::vector
     slot.clear();
 }
 
+void WorldConverter::ReleaseAllNodeAttachments( gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
+    for ( auto& [index, slot] : attachments ) {
+        for ( MeshVisualInfo* mvi : slot ) {
+            s_SharedVisualRegistry->Release( mvi );
+        }
+    }
+    attachments.clear();
+}
+
 /** Extracts a node-visual */
 void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
     ZoneScoped;
