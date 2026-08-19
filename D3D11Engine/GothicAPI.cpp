@@ -4623,16 +4623,18 @@ void GothicAPI::CollectVisibleVobs(
             renderQueue.lights.push_back( vi );
             vi->VisibleInFrame = true;
 
-            // Update the lights shadows if: Light is dynamic or full shadow-updates are set
-            if ( !vi->IsPFXVobLight ) {
-                // TODO: should things like "light-spell" also cast shadows?
-                // i mean, we make torches cast them, why not also spells?
-                if ( lightUpdateEnabled && !vi->Vob->IsStatic() ) {
-                    const float lightRange = vi->Vob->GetLightRange();
-                    if ( lightRange > minDynamicUpdateLightRange && distSq < (lightRange * lightRange) )
-                        vi->UpdateShadows = true;
-                }
+            if ( lightUpdateEnabled ) {
+                // things like candles MUST also draw shadow cubes, otherwise they shine through walls.
+                const float lightRange = vi->Vob->GetLightRange();
+
+                // force light update for static/pfx lights, well anyone who hasent managed to get its shadow at least once
+                // otherwise we get ugly light bleeding from stuff like torches or spellFx
+                if ( distSq < (lightRange * lightRange) )
+                    vi->UpdateShadows = true;
             }
+            const bool pfxNeedsBake = vi->IsStaticVobLight && (!vi->LightShadowBuffers || !vi->LightShadowBuffers->IsShadowReady());
+            if ( pfxNeedsBake )
+                vi->UpdateShadows = true;
         }
     }
 }
@@ -5224,6 +5226,22 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 VobLightInfo* vi = new VobLightInfo;
                 vi->Vob = vob;
                 VobLightMap[vob] = vi;
+                if ( vob->IsIndoorVob() ) {
+                    vi->IsIndoorVob = true;
+                }
+
+                if ( zCVob* parent = vob->GetVobParent(); parent ) {
+                    if ( auto visFx = parent->As<oCVisualFX>() ) {
+                        bool isPfx = true;
+                        if (auto origin = visFx->GetOrigin()) {
+                            // any PFX that stems from an ITEM should be counted as simple light.
+                            isPfx = !origin->As<oCItem>();
+                        }
+                        vi->IsPFXVobLight = isPfx;
+                    }
+                }
+                
+                vi->IsStaticVobLight = vob->GetLightInfoFlags().isStatic;
 
                 float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
                 if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY
@@ -5234,9 +5252,6 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                     vi->LightShadowBuffers.reset(bpl);
                 }
 
-                if ( vob->IsIndoorVob() ) {
-                    vi->IsIndoorVob = true;
-                }
 
                 bvi.Lights.push_back( vi );
             } else {
@@ -7012,11 +7027,18 @@ static void CollectLeafVobs(
                     }
 
                     nvi->IsPFXVobLight = PFXVobLight;
-                    nvi->UpdateShadows = !PFXVobLight;
+                    nvi->UpdateShadows = true;
                     vit = VobLightMap.emplace( vob, nvi ).first;
 
-                    // Create shadow-buffers for these lights since it was dynamically added to the world
-                    if ( !nvi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                    // Create shadow-buffers for these lights since it was dynamically added to the world.
+                    // PFX lights (candles/torches/campfires) get one too - they used to be excluded here
+                    // outright because their origin can be anywhere in the vob tree (including NPCs/the
+                    // player) with no reliable way to self-exclude it, which caused huge phantom shadows.
+                    // D3D11PointLight now sidesteps that by restricting PFX casters to world mesh only (see
+                    // RenderStaticShadowPass), so they can safely get shadows instead of none at all - the
+                    // previous exclusion meant candles/torches never cast any shadow and their light bled
+                    // straight through walls.
+                    if ( rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
                         BaseShadowedPointLight* bpl = nullptr;
                         Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, nvi, true ); // Also flag as dynamic
                         nvi->LightShadowBuffers.reset(bpl);
@@ -7036,13 +7058,14 @@ static void CollectLeafVobs(
             // it skips could not have rejected the light either.
             if ( !visitor->Visit( vi ) ) continue;
 
-            BoundingSphere lightSphere;
-            lightSphere.Center = vob->GetPositionWorld();
-            lightSphere.Radius = lightRange;
 
             // Cull any lights that are not visible even though they are in range
-            if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) )
-                continue;
+            if ( clipResult != ContainmentType::CONTAINS) {
+                BoundingSphere lightSphere;
+                lightSphere.Center = vob->GetPositionWorld();
+                lightSphere.Radius = lightRange;
+                if ( !ctx.frustum.Intersects( lightSphere ) ) continue;
+            }
 
             ctx.queue->PushLightVob( vi );
         }

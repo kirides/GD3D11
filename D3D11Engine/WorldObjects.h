@@ -438,6 +438,7 @@ struct VobLightInfo {
         Vob{},
         VisibleInRenderPass{},
         IsPFXVobLight{},
+        IsStaticVobLight{},
         IsIndoorVob{},
         ParentBSPNodes{},
         LightShadowBuffers{},
@@ -460,7 +461,7 @@ struct VobLightInfo {
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
     std::atomic<size_t> VisibleInRenderPass;
     bool IsPFXVobLight;
-
+    bool IsStaticVobLight;
     /** True if this is an indoor-vob */
     bool IsIndoorVob;
 

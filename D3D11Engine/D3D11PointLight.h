@@ -52,6 +52,10 @@ public:
         return m_StaticShadowReady;
     }
 
+    bool IsShadowReady() const override {
+        return m_StaticShadowReady;
+    }
+
     /** True when this light's tiled slot in the dynamic-overlay cube array holds a valid, already-rendered set
         of moving casters. Drives SHADOW_CUBE_HAS_DYNAMIC, i.e. whether the shader takes the second sample.
         Only PLS_UPDATE_DYNAMIC ever refreshes that overlay, so the mode is re-checked here rather than trusted
@@ -76,6 +80,13 @@ public:
 
     void AcquireShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseShadowMap();
+
+    // Debug-visualization accessors (see ImGuiShim::RenderPointLightShadowDebugWindow).
+    VobLightInfo* GetLightInfo() const { return LightInfo; }
+    ID3D11Texture2D* GetTiledShadowCubeTexture() const { return m_TiledDepthTarget ? m_TiledDepthTarget->GetTexture().Get() : nullptr; }
+    int GetTiledFaceBaseSlice() const { return m_TiledSlotIndex >= 0 ? m_TiledSlotIndex * 6 : -1; }
+    float GetDebugZNear() const { return m_DebugLastZNear; }
+    float GetDebugZFar() const { return m_DebugLastZFar; }
 
     // Tiled deferred slot management (renders directly into a shared TextureCubeArray). `lowRes` selects
     // which of the two independent slot pools this came from - see WantsStaticOnlySlot().
@@ -126,6 +137,8 @@ protected:
         overlay that still holds another light's (or a stale) depth. */
     bool m_HasDynamicOverlay = false;
     int m_LastShadowMode = -1;
+    float m_DebugLastZNear = 0.0f;
+    float m_DebugLastZFar = 0.0f;
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;

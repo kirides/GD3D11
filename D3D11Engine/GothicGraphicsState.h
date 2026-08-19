@@ -1355,6 +1355,12 @@ struct GothicRendererSettings {
             bool GenerateAONormalsFromDepth; // Forward+: build smooth normals from depth for SAO/ASSAO
             bool ForceFeatureLevel10;
         } FeatureSet;
+        struct {
+            // Draws a wireframe range-sphere at every active point light and opens an ImGui window with
+            // stats + the raw shadow-cube faces (unwrapped as a cross) for whichever light is nearest the
+            // camera. See ImGuiShim::RenderPointLightShadowDebugWindow.
+            bool Enabled;
+        } PointLightDebug;
     } DebugSettings;
 
     bool GetIsTAAEnabled() const {
