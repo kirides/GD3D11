@@ -89,66 +89,35 @@ void D3D12RenderGraph::Compile() {
         }
     }
 
-    // --- Interval coloring: decide WHICH arena byte range each internal, actually-read resource gets. ---
-    // A simple best-fit "free list keyed by when its current occupant's lifetime ends" allocator. Resource
-    // counts here are a handful to a few dozen even in a heavy post-fx graph, so the O(n^2) scan below is
-    // negligible CPU cost run once per Compile() (i.e. once per graph rebuild, typically once per frame).
+    // --- Offset assignment: give each internal, actually-read resource its arena byte range. ---
+    // Delegated entirely to D3D12AliasedTextureArena::ReserveNamedRange, keyed by RGTextureDesc::name —
+    // see that method's comment for why identity (a stable name) rather than a bump-allocation position
+    // decides the offset: several real passes are conditionally active frame to frame (god rays only with
+    // the sun up, DoF only if enabled, ...), so "whatever the running total happens to be when this
+    // resource is first requested" drifts and forces spurious aliasing churn on unrelated passes. This
+    // also means two DIFFERENT names never share memory through this graph any more (no more within-
+    // Compile() best-fit reuse) — acceptable at the current scale; see ReserveNamedRange's comment.
     m_resourceOffsets.assign( m_nextHandle, 0 );
     m_resourceHasOffset.assign( m_nextHandle, false );
     if ( !m_arena ) return;
 
-    struct ArenaRange { UINT64 offset; UINT64 size; uint32_t occupantLastPass; };
-    static thread_local std::vector<ArenaRange> ranges;   // reused scratch, cleared below — not per-frame growth
-    ranges.clear();
-    // NOT reset to 0 here: fresh space is bump-allocated through the ARENA's own persistent, frame-scoped
-    // cursor (D3D12AliasedTextureArena::ReserveBumpRange), shared by every D3D12RenderGraph that runs this
-    // frame — see that method's comment for why a graph-local cursor starting at 0 every Compile() call
-    // would make independent per-function graphs (DoF's, the god-ray pass's, ...) collide and thrash.
-
-    // Process in firstPass order so "has this range's occupant already finished by the time I start"
-    // is a meaningful question — an index-order scan would let a later-starting resource steal a range
-    // out from under one that starts earlier but was registered with a higher handle index.
-    std::vector<uint32_t> order;
-    order.reserve( m_nextHandle );
     for ( uint32_t i = 0; i < m_nextHandle; ++i ) {
         if ( m_externalTextures[i] != nullptr ) continue;   // external resources are never arena-backed
-        if ( !m_resourceLifetimes[i].isRead ) continue;      // never allocated at all (RenderGraph::Execute kills the pass)
-        order.push_back( i );
-    }
-    std::sort( order.begin(), order.end(), [this]( uint32_t a, uint32_t b ) {
-        return m_resourceLifetimes[a].firstPass < m_resourceLifetimes[b].firstPass;
-        } );
+        if ( !m_resourceLifetimes[i].isRead ) continue;      // never allocated at all (Execute kills the pass)
 
-    for ( uint32_t i : order ) {
         const RGTextureDesc& desc = m_resourceDescs[i];
         const bool needsUav = ( desc.textureFlags & 1u ) != 0;
         UINT64 size = 0, alignment = 0;
         m_arena->GetAllocationInfo( desc.width, desc.height, static_cast<DXGI_FORMAT>( desc.format ), needsUav, size, alignment );
         if ( size == 0 ) continue;   // GetAllocationInfo failed (no device) — leave unassigned, Execute skips it
 
-        const uint32_t firstPass = m_resourceLifetimes[i].firstPass;
-        const uint32_t lastPass = m_resourceLifetimes[i].lastPass;
-
-        int best = -1;
-        for ( size_t r = 0; r < ranges.size(); ++r ) {
-            if ( ranges[r].occupantLastPass >= firstPass ) continue;   // still in use when this one needs to start
-            if ( ranges[r].size < size ) continue;
-            if ( best == -1 || ranges[r].size < ranges[(size_t)best].size ) best = (int)r;   // best fit
+        const UINT64 offset = m_arena->ReserveNamedRange( desc.name, size, alignment );
+        if ( offset == UINT64_MAX ) {
+            LogWarn() << "D3D12RenderGraph: aliasing arena exhausted (" << ( D3D12AliasedTextureArena::kArenaCapacityBytes / (1024*1024) )
+                << " MB) — a transient resource will be skipped this frame.";
+            continue;   // m_resourceHasOffset[i] stays false; AllocateResourcesForPass skips it
         }
-
-        if ( best != -1 ) {
-            ranges[(size_t)best].occupantLastPass = lastPass;
-            m_resourceOffsets[i] = ranges[(size_t)best].offset;
-        } else {
-            const UINT64 offset = m_arena->ReserveBumpRange( size, alignment );
-            if ( offset == UINT64_MAX ) {
-                LogWarn() << "D3D12RenderGraph: aliasing arena exhausted (" << ( D3D12AliasedTextureArena::kArenaCapacityBytes / (1024*1024) )
-                    << " MB) — a transient resource will be skipped this frame.";
-                continue;   // m_resourceHasOffset[i] stays false; AllocateResourcesForPass skips it
-            }
-            ranges.push_back( { offset, size, lastPass } );
-            m_resourceOffsets[i] = offset;
-        }
+        m_resourceOffsets[i] = offset;
         m_resourceHasOffset[i] = true;
     }
 }

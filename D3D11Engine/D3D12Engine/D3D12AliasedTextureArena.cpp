@@ -45,10 +45,15 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     return m_RtvHeap.Init( m_Device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxSlots, L"D3D12AliasedTextureArena_RTV" );
 }
 
-UINT64 D3D12AliasedTextureArena::ReserveBumpRange( UINT64 size, UINT64 alignment ) {
-    const UINT64 offset = alignment ? ( ( m_FrameBumpOffset + alignment - 1 ) / alignment ) * alignment : m_FrameBumpOffset;
+UINT64 D3D12AliasedTextureArena::ReserveNamedRange( const std::wstring& name, UINT64 size, UINT64 alignment ) {
+    auto it = m_NamedRanges.find( name );
+    if ( it != m_NamedRanges.end() ) return it->second;
+
+    const UINT64 offset = alignment ? ( ( m_BumpOffset + alignment - 1 ) / alignment ) * alignment : m_BumpOffset;
     if ( offset + size > kArenaCapacityBytes ) return UINT64_MAX;
-    m_FrameBumpOffset = offset + size;
+    m_BumpOffset = offset + size;
+
+    m_NamedRanges.emplace( name, offset );
     return offset;
 }
 
@@ -124,4 +129,6 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
 
 void D3D12AliasedTextureArena::Clear() {
     m_Slots.clear();
+    m_NamedRanges.clear();
+    m_BumpOffset = 0;
 }

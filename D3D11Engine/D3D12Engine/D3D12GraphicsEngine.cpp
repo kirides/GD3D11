@@ -1698,6 +1698,13 @@ bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
     resolve, which is where the up/downscale happens. Only depth + scene color are fatal; the rest follow
     the same non-fatal contract they have on the resize path (their passes guard on the resource existing). */
 bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
+    // Every D3D12RenderGraph-managed transient texture (DoF/god-ray/underwater/SMAA scratch) is sized off
+    // m_Resolution or m_BackbufferResolution, both of which are about to change — their names' reserved
+    // offsets (D3D12AliasedTextureArena::ReserveNamedRange) must NOT survive into the new resolution, or a
+    // name would keep its old, now too-small range and silently corrupt whatever got packed after it. This
+    // always runs before CreateDisplayResolutionTargets (every call site below), so one Clear() covers both.
+    m_AliasArena.Clear();
+
     // The FFX context is built for one specific (render, display) size pair and its internal resources are
     // freed immediately by ffxFsr3UpscalerContextDestroy — so it has to go here, on a path whose callers have
     // already idled the GPU, rather than lazily from the frame. EnsureFsr3Ready rebuilds it next frame.
@@ -1887,10 +1894,6 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     PausedFrameLimiterBeginFrame();
 
     TracyD3D12BeginFrame;
-
-    // Reset the render-graph aliasing arena's persistent bump cursor for this frame — see
-    // D3D12AliasedTextureArena::ReserveBumpRange for why this must be a per-FRAME reset, not per-graph.
-    m_AliasArena.BeginFrame();
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in

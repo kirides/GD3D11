@@ -45,21 +45,24 @@ private:
     (Read/Write/CreateTexture, firstPass/lastPass from Compile()), so it stays a drop-in mental model
     for anyone who already knows the D3D11 side. Where it goes further: D3D11 has no placed-resource
     API, so its RenderGraph can only PACK transient textures into a free-list pool (one dedicated
-    allocation per distinct Description, reused across frames — see TexturePool.h). D3D12 can actually
-    ALIAS them — have two textures with non-overlapping lifetimes share the exact same GPU memory at
-    different points in the same frame — via D3D12AliasedTextureArena. Compile() below is what decides
-    the packing: a simple interval-coloring pass over the already-computed firstPass/lastPass lifetimes
-    (best-fit reuse of any arena byte range whose current occupant's lifetime has already ended,
-    bump-allocating a new range otherwise). See D3D12AliasedTextureArena::Acquire for the barrier this
-    packing requires when a range's occupant actually changes.
+    allocation per distinct Description, reused across frames — see TexturePool.h). D3D12 CAN alias two
+    textures with non-overlapping lifetimes onto the exact same GPU memory, via D3D12AliasedTextureArena
+    — Compile() asks the arena for each internal, actually-read resource's byte range.
 
-    NOT YET WIRED INTO THE D3D12 FRAME LOOP. No pass constructs one today: D3D12 has no Forward+
-    pass-graph structure yet (D3D12Scene.cpp is still a monolith of direct calls) and its existing
-    post-fx resources (DoF, motion G-buffer, bloom, ...) are intentionally long-lived rather than
-    per-frame transient (see D3D12DoF.cpp / D3D12Motion.cpp) — not what this is for. This lands the
-    infrastructure ahead of the first genuinely transient per-frame scratch resource that needs it — the
-    natural first consumer is a Forward+ screen-space shadow-mask / AO-mask texture, mirroring
-    D3D11ForwardPlusRenderer::AddGeometryPasses.
+    In active use today: RenderDepthOfField, RenderFogAndGodRays, DrawUnderwaterEffects and RenderSMAA
+    each build a small LOCAL D3D12RenderGraph (constructed fresh per call, same pattern D3D11's own
+    per-frame `RenderGraph graph(...)` uses) for their own private scratch textures. See D3D12DoF.cpp /
+    D3D12Fog.cpp / D3D12Underwater.cpp / D3D12PostFX.cpp.
+
+    Offset assignment is presently NAME-KEYED, not true interval-coloring: D3D12AliasedTextureArena::
+    ReserveNamedRange gives each RGTextureDesc::name a byte range that is PERMANENT for the arena's
+    current epoch (until the next resolution change), rather than recomputing packing per Compile() call.
+    This was a deliberate correction — see ReserveNamedRange's own comment for the two bugs pure
+    bump/interval packing hit in practice (independent per-function graphs colliding at offset 0, and
+    conditionally-active passes shifting everyone downstream of them). The tradeoff: two DIFFERENT names
+    no longer share memory through this graph, only a given name's own steady-state reuse across frames.
+    Real cross-effect aliasing (the more ambitious "even better than D3D11" case) is future work for when
+    the transient set is large enough that the packing actually matters — see ReserveNamedRange.
 
     Resource STATE transitions (RENDER_TARGET <-> SHADER_RESOURCE etc) are still NOT automatic — each
     pass' execute callback remains responsible for transitioning whatever it binds, same as every other

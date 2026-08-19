@@ -3,6 +3,8 @@
 #include <wrl/client.h>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 #include "D3D12RenderTarget.h"
 #include "D3D12PooledDescriptorHeap.h"
@@ -43,28 +45,34 @@ public:
 
     bool Attach( D3D12GraphicsEngine& engine );
 
-    /** Resets the persistent bump-allocation cursor (see ReserveBumpRange) for a new frame. Call ONCE per
-        frame, before the first D3D12RenderGraph::Compile() call that might touch this arena — e.g.
-        D3D12GraphicsEngine::OnBeginFrame, which fires every frame in the menu and in-game alike. */
-    void BeginFrame() { m_FrameBumpOffset = 0; }
-
     /** {size, alignment} D3D12 would need for a texture matching this description, WITHOUT creating it
         — what D3D12RenderGraph's interval colorer sizes its packing against. */
     void GetAllocationInfo( UINT width, UINT height, DXGI_FORMAT format, bool needsUav, UINT64& outSize, UINT64& outAlignment ) const;
 
-    /** Bump-allocates `size` bytes (aligned to `alignment`) from a cursor that is PERSISTENT ACROSS EVERY
-        D3D12RenderGraph that touches this arena in the same frame — not reset per graph, only per
-        BeginFrame(). This is the reason multiple independent per-function local graphs (DoF's, the god-ray
-        pass's, ...) don't stomp on each other: if each graph's Compile() instead restarted its own bump
-        pointer at 0, the FIRST resource of every graph would collide at the same offset and every one of
-        them would see its occupant change EVERY SINGLE CALL — real GPU-correct (an aliasing barrier would
-        still fire) but real waste (a fresh CreatePlacedResource + view pair every frame for every one of
-        them, exactly the per-frame-allocation churn CLAUDE.md's central rule exists to avoid). Sharing one
-        monotonically-advancing cursor for the whole frame means each graph's resources land at STABLE,
-        non-overlapping offsets that repeat identically frame after frame (the post-fx call order is fixed),
-        so after the first frame every Acquire() is a same-desc cache hit — steady state, no churn. Returns
-        UINT64_MAX if the request would exceed kArenaCapacityBytes (caller logs and skips the resource). */
-    UINT64 ReserveBumpRange( UINT64 size, UINT64 alignment );
+    /** Returns the byte offset permanently reserved for `name`, bump-allocating a fresh one on first sight.
+        STABLE for the life of the current epoch (until the next Clear()): a name's offset never moves once
+        assigned, regardless of which OTHER passes happen to run (or not) in any given frame.
+
+        This used to be a plain per-frame bump cursor (ReserveBumpRange, reset every frame in BeginFrame()),
+        which fixed the original cross-graph-collision bug (independent per-function local graphs — DoF's,
+        the god-ray pass's, SMAA's — all restarting their own cursor at 0 and stomping on each other) but
+        left a subtler one: several of these passes are CONDITIONALLY active (god rays only with the sun up
+        and outdoors, DoF only if EnableDoF, SMAA only in AA_SMAA, underwater only while submerged), so the
+        cumulative bump total at the point any given pass runs varies frame to frame — toggling ANY earlier
+        effect shifts every LATER one's offset, forcing a spurious aliasing barrier + resource recreation
+        for a pass whose own state didn't change at all.
+
+        Keying by name instead of "whatever the running total happens to be right now" removes that drift
+        entirely: each logical resource (RGTextureDesc::name, e.g. L"DoFHalf") permanently owns its own
+        range once first requested. The tradeoff is real: two DIFFERENT names never share memory this way
+        (no more cross-effect aliasing), only a given name's own steady-state reuse — but at the current
+        scale (a handful of few-MB scratch textures against a 256 MB arena) that memory saving was never
+        the point; proving the placed-resource + aliasing-barrier mechanism works was. Revisit if a much
+        larger transient set (e.g. a real Forward+ pass graph) makes actual cross-effect packing worth the
+        complexity of tracking "did this specific other name's lifetime end before this one's started" per
+        frame rather than once. Returns UINT64_MAX if the request would exceed kArenaCapacityBytes (caller
+        logs and skips the resource). */
+    UINT64 ReserveNamedRange( const std::wstring& name, UINT64 size, UINT64 alignment );
 
     /** Places (or reuses) a texture at the given byte offset for THIS pass, as decided by
         D3D12RenderGraph::Compile()'s interval coloring. If a different resource previously occupied
@@ -76,7 +84,10 @@ public:
         (arena exhausted, format+size rejected by the driver, ...). */
     D3D12RenderTarget* Acquire( UINT64 slotOffset, UINT width, UINT height, DXGI_FORMAT format, bool needsUav, D3D12CmdList& cmdList );
 
-    void Clear();   // drops every placed resource + their SRV/RTV slots (resize / level change); keeps the heap
+    /** Drops every placed resource + their SRV/RTV slots AND every name's reserved offset, starting a fresh
+        allocation epoch — call on resize (the only time a name's requested size legitimately changes, since
+        every one of these textures is sized off m_Resolution/m_BackbufferResolution). Keeps the heap itself. */
+    void Clear();
 
 private:
     struct Slot {
@@ -96,5 +107,6 @@ private:
 
     std::vector<std::unique_ptr<Slot>> m_Slots;
     bool m_LoggedExhaustion = false;
-    UINT64 m_FrameBumpOffset = 0;   // see ReserveBumpRange / BeginFrame
+    UINT64 m_BumpOffset = 0;                            // next never-yet-claimed byte, for a NEW name only
+    std::unordered_map<std::wstring, UINT64> m_NamedRanges;   // name -> permanently-reserved offset (this epoch)
 };
