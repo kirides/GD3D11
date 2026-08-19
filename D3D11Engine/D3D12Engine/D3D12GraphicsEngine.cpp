@@ -1873,7 +1873,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     }
     PausedFrameLimiterBeginFrame();
 
-    TracyD3D12BeginFrame
+    TracyD3D12BeginFrame;
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in
