@@ -37,11 +37,11 @@ using TracyVkCtx = void*;
 #  error "You must include Vulkan headers before including TracyVulkan.hpp"
 #endif
 
-#include <assert.h>
 #include <stdlib.h>
 #include "Tracy.hpp"
 #include "../client/TracyProfiler.hpp"
 #include "../client/TracyCallstack.hpp"
+#include "../common/TracyAssert.hpp"
 
 #include <atomic>
 
@@ -91,7 +91,11 @@ class VkCtx
 {
     friend class VkCtxScope;
 
-    enum { QueryCount = 64 * 1024 };
+#if !defined __APPLE__
+    static constexpr size_t QueryCount = 64 * 1024;
+#else
+    static constexpr size_t QueryCount = 4 * 1024;
+#endif
 
 public:
 #if defined TRACY_VK_USE_SYMBOL_TABLE
@@ -101,7 +105,7 @@ public:
 #endif
         : m_device( device )
         , m_timeDomain( VK_TIME_DOMAIN_DEVICE_EXT )
-        , m_context( GetGpuCtxCounter().fetch_add( 1, std::memory_order_relaxed ) )
+        , m_context( NextGpuContextId() )
         , m_head( 0 )
         , m_tail( 0 )
         , m_oldCnt( 0 )
@@ -110,7 +114,7 @@ public:
         , m_vkGetCalibratedTimestampsEXT( vkGetCalibratedTimestampsEXT )
 #endif
     {
-        assert( m_context != 255 );
+        TRACY_ASSERT( m_context != InvalidGpuContextId );
 
 #if defined TRACY_VK_USE_SYMBOL_TABLE
         PopulateSymbolTable(instance, instanceProcAddr, deviceProcAddr);
@@ -164,7 +168,7 @@ public:
         else
         {
             FindCalibratedTimestampDeviation();
-            Calibrate( device, m_prevCalibration, tgpu );
+            Calibrate( m_prevCalibration, tgpu );
             tcpu = Profiler::GetTime();
         }
 
@@ -186,7 +190,7 @@ public:
 #endif
         : m_device( device )
         , m_timeDomain( VK_TIME_DOMAIN_DEVICE_EXT )
-        , m_context( GetGpuCtxCounter().fetch_add(1, std::memory_order_relaxed) )
+        , m_context( NextGpuContextId() )
         , m_head( 0 )
         , m_tail( 0 )
         , m_oldCnt( 0 )
@@ -195,23 +199,23 @@ public:
         , m_vkGetCalibratedTimestampsEXT( vkGetCalibratedTimestampsEXT )
 #endif
     {
-        assert( m_context != 255);
+        TRACY_ASSERT( m_context != InvalidGpuContextId);
 
 #if defined TRACY_VK_USE_SYMBOL_TABLE
         PopulateSymbolTable(instance, instanceProcAddr, deviceProcAddr);
         m_vkGetCalibratedTimestampsEXT = m_symbols.vkGetCalibratedTimestampsEXT;
 #endif
 
-        assert( VK_FUNCTION_WRAPPER( vkResetQueryPool ) != nullptr );
-        assert( VK_FUNCTION_WRAPPER( vkGetPhysicalDeviceCalibrateableTimeDomainsEXT ) != nullptr );
-        assert( VK_FUNCTION_WRAPPER( vkGetCalibratedTimestampsEXT ) != nullptr );
+        TRACY_ASSERT( VK_FUNCTION_WRAPPER( vkResetQueryPool ) != nullptr );
+        TRACY_ASSERT( VK_FUNCTION_WRAPPER( vkGetPhysicalDeviceCalibrateableTimeDomainsEXT ) != nullptr );
+        TRACY_ASSERT( VK_FUNCTION_WRAPPER( vkGetCalibratedTimestampsEXT ) != nullptr );
 
         FindAvailableTimeDomains( physdev, VK_FUNCTION_WRAPPER( vkGetPhysicalDeviceCalibrateableTimeDomainsEXT ) );
 
         // We require a host time domain to be available to properly calibrate.
         FindCalibratedTimestampDeviation();
         int64_t tgpu;
-        Calibrate( device, m_prevCalibration, tgpu );
+        Calibrate( m_prevCalibration, tgpu );
         int64_t tcpu = Profiler::GetTime();
 
         CreateQueryPool();
@@ -238,7 +242,7 @@ public:
 
         auto item = Profiler::QueueSerial();
         MemWrite( &item->hdr.type, QueueType::GpuContextName );
-        MemWrite( &item->gpuContextNameFat.context, m_context );
+        MemWrite( &item->gpuContextNameFat.context, uint8_t( m_context ) );
         MemWrite( &item->gpuContextNameFat.ptr, (uint64_t)ptr );
         MemWrite( &item->gpuContextNameFat.size, len );
 #ifdef TRACY_ON_DEMAND
@@ -263,11 +267,11 @@ public:
             m_tail = head;
             m_oldCnt = 0;
             int64_t tgpu;
-            if( m_timeDomain != VK_TIME_DOMAIN_DEVICE_EXT ) Calibrate( m_device, m_prevCalibration, tgpu );
+            if( m_timeDomain != VK_TIME_DOMAIN_DEVICE_EXT ) Calibrate( m_prevCalibration, tgpu, 10 );
             return;
         }
 #endif
-        assert( head > m_tail );
+        TRACY_ASSERT( head > m_tail );
 
         const unsigned int wrappedTail = (unsigned int)( m_tail % m_queryCount );
 
@@ -280,7 +284,7 @@ public:
         else
         {
             cnt = (unsigned int)( head - m_tail );
-            assert( cnt <= m_queryCount );
+            TRACY_ASSERT( cnt <= m_queryCount );
             if( wrappedTail + cnt > m_queryCount )
             {
                 cnt = m_queryCount - wrappedTail;
@@ -305,14 +309,14 @@ public:
             MemWrite( &item->hdr.type, QueueType::GpuTime );
             MemWrite( &item->gpuTime.gpuTime, m_res[idx * 2] );
             MemWrite( &item->gpuTime.queryId, uint16_t( wrappedTail + idx ) );
-            MemWrite( &item->gpuTime.context, m_context );
+            MemWrite( &item->gpuTime.context, uint8_t( m_context ) );
             Profiler::QueueSerialFinish();
         }
 
         if( m_timeDomain != VK_TIME_DOMAIN_DEVICE_EXT )
         {
-            int64_t tgpu, tcpu;
-            Calibrate( m_device, tcpu, tgpu );
+            int64_t tgpu, tcpu = m_prevCalibration;
+            Calibrate( tcpu, tgpu, 10 );
             const auto refCpu = Profiler::GetTime();
             const auto delta = tcpu - m_prevCalibration;
             if( delta > 0 )
@@ -323,7 +327,7 @@ public:
                 MemWrite( &item->gpuCalibration.gpuTime, tgpu );
                 MemWrite( &item->gpuCalibration.cpuTime, refCpu );
                 MemWrite( &item->gpuCalibration.cpuDelta, delta );
-                MemWrite( &item->gpuCalibration.context, m_context );
+                MemWrite( &item->gpuCalibration.context, uint8_t( m_context ) );
                 Profiler::QueueSerialFinish();
             }
         }
@@ -341,7 +345,7 @@ public:
         return id % m_queryCount;
     }
 
-    tracy_force_inline uint8_t GetId() const
+    tracy_force_inline int32_t GetId() const
     {
         return m_context;
     }
@@ -352,30 +356,49 @@ public:
     }
 
 private:
-    tracy_force_inline void Calibrate( VkDevice device, int64_t& tCpu, int64_t& tGpu )
+    tracy_force_inline int64_t VulkanTimeToPlatformTime(uint64_t tCpu)
     {
-        assert( m_timeDomain != VK_TIME_DOMAIN_DEVICE_EXT );
+#if defined _WIN32
+        return tCpu * m_qpcToNs;
+#elif defined __linux__ && defined CLOCK_MONOTONIC_RAW
+        return tCpu;
+#else
+        TRACY_ASSERT( false );
+        return 0;
+#endif
+    }
+
+    tracy_force_inline bool GetCalibratedTimestamps( int64_t& tCpu, int64_t& tGpu, uint64_t& tDeviation )
+    {
+        TRACY_ASSERT( m_device );
+        TRACY_ASSERT( m_timeDomain != VK_TIME_DOMAIN_DEVICE_EXT );
         VkCalibratedTimestampInfoEXT spec[2] = {
             { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT },
             { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, m_timeDomain },
         };
         uint64_t ts[2];
         uint64_t deviation;
-        do
-        {
-            m_vkGetCalibratedTimestampsEXT( device, 2, spec, ts, &deviation );
-        }
-        while( deviation > m_deviation );
+        VkResult result = m_vkGetCalibratedTimestampsEXT( m_device, 2, spec, ts, &deviation );
+        if ( result != VK_SUCCESS ) return false;
+        tGpu = ts[0];
+        tCpu = VulkanTimeToPlatformTime(ts[1]);
+        tDeviation = deviation;
+        return true;
+    }
 
-#if defined _WIN32
-        tGpu = ts[0];
-        tCpu = ts[1] * m_qpcToNs;
-#elif defined __linux__ && defined CLOCK_MONOTONIC_RAW
-        tGpu = ts[0];
-        tCpu = ts[1];
-#else
-        assert( false );
-#endif
+    tracy_force_inline bool Calibrate( int64_t& tCpu, int64_t& tGpu, uint64_t maxSamples = ~uint64_t(0) )
+    {
+        for ( uint64_t i = 0; i < maxSamples; ++i )
+        {
+            int64_t cpu, gpu;
+            uint64_t deviation;
+            if( !GetCalibratedTimestamps( cpu, gpu, deviation ) ) continue;
+            if( deviation > m_deviation ) continue;
+            tCpu = cpu;
+            tGpu = gpu;
+            return true;
+        }
+        return false;
     }
 
     tracy_force_inline void CreateQueryPool()
@@ -414,28 +437,25 @@ private:
 
     tracy_force_inline void FindCalibratedTimestampDeviation()
     {
-        assert( m_timeDomain != VK_TIME_DOMAIN_DEVICE_EXT );
+#if defined _WIN32
+        m_qpcToNs = int64_t( 1000000000. / GetFrequencyQpc() );
+#endif
+
         constexpr size_t NumProbes = 32;
-        VkCalibratedTimestampInfoEXT spec[2] = {
-            { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT },
-            { VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, m_timeDomain },
-        };
-        uint64_t ts[2];
         uint64_t deviation[NumProbes];
         for( size_t i=0; i<NumProbes; i++ ) {
-            m_vkGetCalibratedTimestampsEXT( m_device, 2, spec, ts, deviation + i );
+            int64_t cpu, gpu;
+            deviation[i] = ~uint64_t(0);
+            GetCalibratedTimestamps( cpu, gpu, deviation[i] );
         }
+
         uint64_t minDeviation = deviation[0];
         for( size_t i=1; i<NumProbes; i++ ) {
             if ( minDeviation > deviation[i] ) {
                 minDeviation = deviation[i];
             }
         }
-        m_deviation = minDeviation * 3 / 2;
-
-#if defined _WIN32
-        m_qpcToNs = int64_t( 1000000000. / GetFrequencyQpc() );
-#endif
+        m_deviation = minDeviation * 3 / 2; // i.e., 1.5x minDeviation
     }
 
     tracy_force_inline void WriteInitialItem( VkPhysicalDevice physdev, int64_t tcpu, int64_t tgpu )
@@ -453,8 +473,8 @@ private:
         MemWrite( &item->gpuNewContext.gpuTime, tgpu );
         memset( &item->gpuNewContext.thread, 0, sizeof( item->gpuNewContext.thread ) );
         MemWrite( &item->gpuNewContext.period, period );
-        MemWrite( &item->gpuNewContext.context, m_context );
-        MemWrite( &item->gpuNewContext.flags, flags );
+        MemWrite( &item->gpuNewContext.context, uint8_t( m_context ) );
+        MemWrite( &item->gpuNewContext.flags, GpuContextFlags( flags ) );
         MemWrite( &item->gpuNewContext.type, GpuContextType::Vulkan );
 
 #ifdef TRACY_ON_DEMAND
@@ -497,7 +517,7 @@ private:
     int64_t m_qpcToNs;
 #endif
     int64_t m_prevCalibration;
-    uint8_t m_context;
+    int32_t m_context;
 
     std::atomic<uint64_t> m_head;
     uint64_t m_tail;
@@ -515,6 +535,7 @@ public:
     tracy_force_inline VkCtxScope( VkCtx* ctx, const SourceLocationData* srcloc, VkCommandBuffer cmdbuf, bool is_active )
 #ifdef TRACY_ON_DEMAND
         : m_active( is_active && GetProfiler().IsConnected() )
+        , m_connectionId( GetProfiler().ConnectionId() )
 #else
         : m_active( is_active )
 #endif
@@ -532,13 +553,14 @@ public:
         MemWrite( &item->gpuZoneBegin.srcloc, (uint64_t)srcloc );
         MemWrite( &item->gpuZoneBegin.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneBegin.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneBegin.context, ctx->GetId() );
+        MemWrite( &item->gpuZoneBegin.context, uint8_t( ctx->GetId() ) );
         Profiler::QueueSerialFinish();
     }
 
     tracy_force_inline VkCtxScope( VkCtx* ctx, const SourceLocationData* srcloc, VkCommandBuffer cmdbuf, int32_t depth, bool is_active )
 #ifdef TRACY_ON_DEMAND
         : m_active( is_active && GetProfiler().IsConnected() )
+        , m_connectionId( GetProfiler().ConnectionId() )
 #else
         : m_active( is_active )
 #endif
@@ -565,13 +587,14 @@ public:
         MemWrite( &item->gpuZoneBegin.srcloc, (uint64_t)srcloc );
         MemWrite( &item->gpuZoneBegin.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneBegin.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneBegin.context, ctx->GetId() );
+        MemWrite( &item->gpuZoneBegin.context, uint8_t( ctx->GetId() ) );
         Profiler::QueueSerialFinish();
     }
 
     tracy_force_inline VkCtxScope( VkCtx* ctx, uint32_t line, const char* source, size_t sourceSz, const char* function, size_t functionSz, const char* name, size_t nameSz, VkCommandBuffer cmdbuf, bool is_active )
 #ifdef TRACY_ON_DEMAND
         : m_active( is_active && GetProfiler().IsConnected() )
+        , m_connectionId( GetProfiler().ConnectionId() )
 #else
         : m_active( is_active )
 #endif
@@ -590,13 +613,14 @@ public:
         MemWrite( &item->gpuZoneBegin.srcloc, srcloc );
         MemWrite( &item->gpuZoneBegin.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneBegin.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneBegin.context, ctx->GetId() );
+        MemWrite( &item->gpuZoneBegin.context, uint8_t( ctx->GetId() ) );
         Profiler::QueueSerialFinish();
     }
 
     tracy_force_inline VkCtxScope( VkCtx* ctx, uint32_t line, const char* source, size_t sourceSz, const char* function, size_t functionSz, const char* name, size_t nameSz, VkCommandBuffer cmdbuf, int32_t depth, bool is_active )
 #ifdef TRACY_ON_DEMAND
         : m_active( is_active && GetProfiler().IsConnected() )
+        , m_connectionId( GetProfiler().ConnectionId() )
 #else
         : m_active( is_active )
 #endif
@@ -624,7 +648,7 @@ public:
         MemWrite( &item->gpuZoneBegin.srcloc, srcloc );
         MemWrite( &item->gpuZoneBegin.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneBegin.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneBegin.context, ctx->GetId() );
+        MemWrite( &item->gpuZoneBegin.context, uint8_t( ctx->GetId() ) );
         Profiler::QueueSerialFinish();
     }
 
@@ -635,17 +659,24 @@ public:
         const auto queryId = m_ctx->NextQueryId();
         CONTEXT_VK_FUNCTION_WRAPPER( vkCmdWriteTimestamp( m_cmdbuf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_ctx->m_query, queryId ) );
 
+#ifdef TRACY_ON_DEMAND
+        if( GetProfiler().ConnectionId() != m_connectionId ) return;
+#endif
         auto item = Profiler::QueueSerial();
         MemWrite( &item->hdr.type, QueueType::GpuZoneEndSerial );
         MemWrite( &item->gpuZoneEnd.cpuTime, Profiler::GetTime() );
         MemWrite( &item->gpuZoneEnd.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneEnd.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneEnd.context, m_ctx->GetId() );
+        MemWrite( &item->gpuZoneEnd.context, uint8_t( m_ctx->GetId() ) );
         Profiler::QueueSerialFinish();
     }
 
 private:
     const bool m_active;
+
+#ifdef TRACY_ON_DEMAND
+    uint64_t m_connectionId = 0;
+#endif
 
     VkCommandBuffer m_cmdbuf;
     VkCtx* m_ctx;
