@@ -27,6 +27,7 @@
 #include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include <memory>
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
@@ -119,9 +120,41 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
 }
 
 
-/** Focus resolve -> half-res blur -> full-res composite -> copy back over the scene colour, the last three
-    steps issued through a local D3D12RenderGraph (see the file header). */
-void D3D12GraphicsEngine::RenderDepthOfField() {
+// b0 DoFCB — see Shaders/D3D12/DoF.hlsl. One block shared by all three passes; the per-pass fields (OutIndex
+// and the output resolution) are rewritten between dispatches, everything else is set once. Lives on the heap
+// (not a RenderDepthOfField stack local) because it is written and read across MULTIPLE pass callbacks that
+// now run later, inside `graph`'s single deferred Execute() — a stack local captured by reference would be
+// dangling by the time that happens, since RenderDepthOfField itself returns right after registering its
+// passes. Every cross-pass mutable value in this file follows the same shared_ptr-capture-by-value pattern.
+namespace {
+    struct DoFConsts {
+        float    FocusRange;
+        float    BokehRadius;
+        float    MaxBlur;
+        uint32_t FocusValid;
+        uint32_t SceneIndex;
+        uint32_t DepthIndex;
+        uint32_t PrevFocusIndex;
+        uint32_t FocusIndex;
+        uint32_t BlurIndex;
+        uint32_t FocusUavIndex;
+        uint32_t OutIndex;
+        uint32_t Pad;
+        float    FullResX;
+        float    FullResY;
+        float    OutResX;
+        float    OutResY;
+    };
+    static_assert( sizeof( DoFConsts ) == 16 * sizeof( uint32_t ),
+        "DoFConsts must match DoF.hlsl's b0 DoFCB and the 16 root constants pushed below" );
+}
+
+/** Registers DoF's passes (prepare -> focus resolve -> half-res blur -> full-res composite -> copy back over
+    the scene colour -> restore) onto the SHARED per-frame graph — see D3D12RenderGraph.h and this file's
+    header comment. Called directly from the postFxGraph construction in D3D12Scene.cpp's
+    OnStartWorldRendering, NOT wrapped in its own opaque pass, so its own sub-passes are visible to (and
+    scheduled correctly among) every other post-FX pass. */
+void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( !settings.EnableDoF ) return;
     if ( !m_FrameOpen || !m_CmdList || !m_SceneColor || m_SceneColorSrvSlot == UINT_MAX
@@ -146,84 +179,67 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
         : m_Pipelines.DoF.BlurPSO.Get();
     if ( !blurPso ) return;
 
-    DX_ZONE( m_CmdList.Get(), "Depth of Field" );
-    TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth of Field" );
-
     const UINT prevIdx = m_DoFFocusIndex;
     const UINT curIdx = 1 - m_DoFFocusIndex;
     const INT2 halfSize = { std::max( 1, m_Resolution.x / 2 ), std::max( 1, m_Resolution.y / 2 ) };
 
-    // b0 DoFCB — see Shaders/D3D12/DoF.hlsl. One block for all three passes; the per-pass fields (OutIndex and
-    // the output resolution) are rewritten between dispatches, everything else is set once here.
-    struct DoFConsts {
-        float    FocusRange;
-        float    BokehRadius;
-        float    MaxBlur;
-        uint32_t FocusValid;
-        uint32_t SceneIndex;
-        uint32_t DepthIndex;
-        uint32_t PrevFocusIndex;
-        uint32_t FocusIndex;
-        uint32_t BlurIndex;
-        uint32_t FocusUavIndex;
-        uint32_t OutIndex;
-        uint32_t Pad;
-        float    FullResX;
-        float    FullResY;
-        float    OutResX;
-        float    OutResY;
-    } cb = {};
-    static_assert( sizeof( DoFConsts ) == 16 * sizeof( uint32_t ),
-        "DoFConsts must match DoF.hlsl's b0 DoFCB and the 16 root constants pushed below" );
-
+    auto cb = std::make_shared<DoFConsts>();
     // The same three tuning values D3D11PFX_DepthOfField pushes, straight from the shared settings. D3D11 also
     // uploads DoF_ProjParams / near / far, which none of the three compute shaders read (depth linearization is
     // the parameter-free reversed-Z reciprocal) — so they are not carried over.
-    cb.FocusRange = settings.DoFFocusRange;
-    cb.BokehRadius = settings.DoFBokehRadius;
-    cb.MaxBlur = settings.DoFMaxBlur;
-    cb.FocusValid = m_DoFFocusValid ? 1u : 0u;
-    cb.SceneIndex = m_SceneColorSrvSlot;
-    cb.DepthIndex = m_DepthSrvSlot;
-    cb.PrevFocusIndex = m_DoFFocusSrvSlot[prevIdx];
-    cb.FocusIndex = m_DoFFocusSrvSlot[curIdx];
-    cb.FocusUavIndex = m_DoFFocusUavSlot[curIdx];
-    cb.FullResX = static_cast<float>( m_Resolution.x );
-    cb.FullResY = static_cast<float>( m_Resolution.y );
+    cb->FocusRange = settings.DoFFocusRange;
+    cb->BokehRadius = settings.DoFBokehRadius;
+    cb->MaxBlur = settings.DoFMaxBlur;
+    cb->FocusValid = m_DoFFocusValid ? 1u : 0u;
+    cb->SceneIndex = m_SceneColorSrvSlot;
+    cb->DepthIndex = m_DepthSrvSlot;
+    cb->PrevFocusIndex = m_DoFFocusSrvSlot[prevIdx];
+    cb->FocusIndex = m_DoFFocusSrvSlot[curIdx];
+    cb->FocusUavIndex = m_DoFFocusUavSlot[curIdx];
+    cb->FullResX = static_cast<float>( m_Resolution.x );
+    cb->FullResY = static_cast<float>( m_Resolution.y );
 
-    // Scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus UAV -> readable.
-    // The DSV/RTV must be unbound first: a resource cannot be bound as a render target while it is read through
-    // an SRV (same dance RenderTAA / RenderBloom / RenderFogAndGodRays do). None of this touches the graph's
-    // resources, so it happens once, directly, before the graph runs.
-    m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-    {
-        D3D12ResourceTransition pre[3];
-        UINT n = 0;
-        if ( !m_SceneColorInPixelState ) {
-            pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-        }
-        pre[n++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDoFDepthRead };
-        pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-        m_CmdList->TransitionBarriers( pre, n );
-        m_SceneColorInPixelState = true;
-    }
-
-    D3D12RenderGraph dofGraph( &m_AliasArena );
+    auto compositeCopied = std::make_shared<bool>( false );   // did the composite pass actually run the copy-back?
+    // Plain locals, NOT shared_ptr like cb/compositeCopied above: a handle is only ever written once,
+    // synchronously, inside a pass's own setup lambda (builder.CreateTexture) — never during the deferred
+    // Execute() — so by the time any lambda (this pass's own execute callback, or a LATER pass's setup/
+    // execute callback) captures it by value, the assignment has already happened. Nothing here crosses
+    // the "written at deferred-execution time, read at deferred-execution time" boundary the shared_ptr
+    // treatment exists for (see cb/compositeCopied, which genuinely are mutated across passes' callbacks).
     RGResourceHandle halfHandle = RG_INVALID_HANDLE;
     RGResourceHandle compositeHandle = RG_INVALID_HANDLE;
-    bool compositeCopied = false;   // did the composite pass below actually run the copy-back?
 
-    // --- Pass 0: focus resolve (1x1) --- Writes through FocusUavIndex, not OutIndex, and reads neither OutRes
-    // — it is the one pass whose output is a fixed 1x1 texel, so those three fields stay at zero-init here.
-    // Touches no graph resources (m_DoFFocus is a persistent member pair, not transient), but the curIdx/
-    // prevIdx UAV<->SRV handover it performs must happen before the blur pass below reads FocusIndex.
-    dofGraph.AddPass( RG_PASS_NAME( "DoF Focus Resolve" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-        pass.m_executeCallback = [this, prevIdx, curIdx, &cb]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+    // --- Prepare: scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus
+    // UAV -> readable. The DSV/RTV must be unbound first: a resource cannot be bound as a render target while
+    // read through an SRV (same dance RenderTAA / RenderBloom / RenderFogAndGodRays do). None of this touches
+    // graph resources, so it is its own tiny pass with no Read/Write, exactly like "Debug Lines"/"TAA".
+    graph.AddPass( RG_PASS_NAME( "DoF Prepare" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+        pass.m_executeCallback = [this, prevIdx]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+            DX_ZONE( cmdList.Get(), "Depth of Field" );
+            cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+            D3D12ResourceTransition pre[3];
+            UINT n = 0;
+            if ( !m_SceneColorInPixelState ) {
+                pre[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+            }
+            pre[n++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDoFDepthRead };
+            pre[n++] = { m_DoFFocus[prevIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+            cmdList.TransitionBarriers( pre, n );
+            m_SceneColorInPixelState = true;
+            };
+        } );
+
+    // --- Focus resolve (1x1) --- Writes through FocusUavIndex, not OutIndex, and reads neither OutRes — it is
+    // the one pass whose output is a fixed 1x1 texel, so those three fields stay at zero-init here. Touches no
+    // graph resources (m_DoFFocus is a persistent member pair, not transient), but the curIdx/prevIdx UAV<->SRV
+    // handover it performs must happen before the blur pass below reads FocusIndex.
+    graph.AddPass( RG_PASS_NAME( "DoF Focus Resolve" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+        pass.m_executeCallback = [this, prevIdx, curIdx, cb]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
             cmdList.SetPipelineState( m_Pipelines.DoF.FocusPSO.Get() );
-            cmdList.SetComputeRoot32BitConstants( 0, 16, &cb, 0 );
+            cmdList.SetComputeRoot32BitConstants( 0, 16, cb.get(), 0 );
             cmdList.Dispatch( 1, 1, 1 );
 
             // This frame's focus value becomes the read side for the two passes below; hand the previous one
@@ -239,17 +255,15 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
             };
         } );
 
-    // --- Pass 1: half-res bokeh (or Gaussian) blur --- The first CreateTexture() this backend has ever issued
-    // through D3D12RenderGraph: a real transient resource, acquired from m_AliasArena via interval coloring
-    // rather than held as a member. tex->State is caller-maintained (see D3D12RenderTarget.h) — check it
-    // rather than assuming, since a freshly (re)placed resource starts at RENDER_TARGET while a reused one
-    // already sits wherever last frame's DoF pass left it.
-    dofGraph.AddPass( RG_PASS_NAME( "DoF Half-Res Blur" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+    // --- Half-res bokeh (or Gaussian) blur --- tex->State is caller-maintained (see D3D12RenderTarget.h) —
+    // check it rather than assuming, since a freshly (re)placed resource starts at RENDER_TARGET while a
+    // reused one already sits wherever last frame's DoF pass left it.
+    graph.AddPass( RG_PASS_NAME( "DoF Half-Res Blur" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         halfHandle = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
             static_cast<int>( kSceneColorFormat ), L"DoFHalf", kRgNeedsUav } );
 
-        pass.m_executeCallback = [this, blurPso, halfSize, &cb, halfHandle]( const D3D12RenderGraph& graph, D3D12CmdList& cmdList ) {
-            D3D12RenderTarget* half = graph.GetPhysicalTexture( halfHandle );
+        pass.m_executeCallback = [this, blurPso, halfSize, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
             if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — skip the blur
 
             if ( half->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
@@ -259,10 +273,10 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
 
             cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
             cmdList.SetPipelineState( blurPso );
-            cb.OutIndex = half->GetUavSlot();
-            cb.OutResX = static_cast<float>( halfSize.x );
-            cb.OutResY = static_cast<float>( halfSize.y );
-            cmdList.SetComputeRoot32BitConstants( 0, 16, &cb, 0 );
+            cb->OutIndex = half->GetUavSlot();
+            cb->OutResX = static_cast<float>( halfSize.x );
+            cb->OutResY = static_cast<float>( halfSize.y );
+            cmdList.SetComputeRoot32BitConstants( 0, 16, cb.get(), 0 );
             cmdList.Dispatch( ( halfSize.x + 7 ) / 8, ( halfSize.y + 7 ) / 8, 1 );
 
             // The composite pass below samples this through BlurIndex (its SRV slot).
@@ -271,8 +285,8 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
             };
         } );
 
-    // --- Pass 2: full-res composite into a graph-managed scratch texture, then copy back onto the scene colour ---
-    dofGraph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+    // --- Full-res composite into a graph-managed scratch texture, then copy back onto the scene colour ---
+    graph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         builder.Read( halfHandle );
         compositeHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
             static_cast<int>( kSceneColorFormat ), L"DoFComposite", kRgNeedsUav } );
@@ -284,9 +298,9 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
         // external effect and skip the callback. See D3D12RenderPass::m_hasExternalSideEffect.
         builder.MarkExternalEffect();
 
-        pass.m_executeCallback = [this, &cb, &compositeCopied, halfHandle, compositeHandle]( const D3D12RenderGraph& graph, D3D12CmdList& cmdList ) {
-            D3D12RenderTarget* half = graph.GetPhysicalTexture( halfHandle );
-            D3D12RenderTarget* composite = graph.GetPhysicalTexture( compositeHandle );
+        pass.m_executeCallback = [this, cb, compositeCopied, halfHandle, compositeHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
+            D3D12RenderTarget* composite = g.GetPhysicalTexture( compositeHandle );
             if ( !half || !composite ) return;   // scene colour / depth / focus are still restored below unconditionally
 
             if ( composite->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
@@ -296,11 +310,11 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
 
             cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
             cmdList.SetPipelineState( m_Pipelines.DoF.CompositePSO.Get() );
-            cb.BlurIndex = half->GetSrvSlot();
-            cb.OutIndex = composite->GetUavSlot();
-            cb.OutResX = static_cast<float>( m_Resolution.x );
-            cb.OutResY = static_cast<float>( m_Resolution.y );
-            cmdList.SetComputeRoot32BitConstants( 0, 16, &cb, 0 );
+            cb->BlurIndex = half->GetSrvSlot();
+            cb->OutIndex = composite->GetUavSlot();
+            cb->OutResX = static_cast<float>( m_Resolution.x );
+            cb->OutResY = static_cast<float>( m_Resolution.y );
+            cmdList.SetComputeRoot32BitConstants( 0, 16, cb.get(), 0 );
             cmdList.Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
 
             // Hand the result back to the scene colour. Both are kSceneColorFormat, so this is a straight copy.
@@ -310,27 +324,28 @@ void D3D12GraphicsEngine::RenderDepthOfField() {
                 } );
             cmdList.CopyResource( m_SceneColor.Get(), composite->GetResource() );
             composite->State = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            compositeCopied = true;
+            *compositeCopied = true;
             };
         } );
 
-    dofGraph.Compile();
-    dofGraph.Execute( m_CmdList );
+    // --- Restore: resting states for the engine-owned resources DoF borrowed — NOT graph-managed, so nothing
+    // else restores them, and this must run regardless of whether the composite pass above actually found its
+    // textures (see its early-out). Depth back to DEPTH_WRITE, scene colour back to RENDER_TARGET (from
+    // COPY_DEST if the copy-back ran, otherwise from the plain shader-read state Prepare put it in), this
+    // frame's focus texture back to its UAV resting state for whenever it becomes "prevIdx" again.
+    graph.AddPass( RG_PASS_NAME( "DoF Restore" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+        pass.m_executeCallback = [this, curIdx, compositeCopied]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+            cmdList.TransitionBarriers( {
+                { m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+                { m_SceneColor.Get(), *compositeCopied ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET },
+                { m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+                } );
+            m_SceneColorInPixelState = false;
 
-    // Resting states for the engine-owned resources DoF borrowed — NOT graph-managed, so nothing else restores
-    // them, and this must run regardless of whether the composite pass above actually found its textures (see
-    // its early-out). Depth back to DEPTH_WRITE, scene colour back to RENDER_TARGET (from COPY_DEST if the
-    // copy-back ran, otherwise from the plain shader-read state the pre-pass block put it in), this frame's
-    // focus texture back to its UAV resting state for whenever it becomes "prevIdx" again.
-    m_CmdList->TransitionBarriers( {
-        { m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-        { m_SceneColor.Get(), compositeCopied ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_RENDER_TARGET },
-        { m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            // Rebind the scene colour + depth for whatever comes next in the frame (bloom re-transitions the
+            // scene colour itself, but the render target must not be left unbound).
+            BindSceneColorTarget();
+            };
         } );
-    m_SceneColorInPixelState = false;
-
-    // Rebind the scene colour + depth for whatever comes next in the frame (bloom re-transitions the scene
-    // colour itself, but the render target must not be left unbound).
-    BindSceneColorTarget();
 }

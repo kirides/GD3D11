@@ -49,20 +49,28 @@ private:
     textures with non-overlapping lifetimes onto the exact same GPU memory, via D3D12AliasedTextureArena
     — Compile() asks the arena for each internal, actually-read resource's byte range.
 
-    In active use today: RenderDepthOfField, RenderFogAndGodRays, DrawUnderwaterEffects and RenderSMAA
-    each build a small LOCAL D3D12RenderGraph (constructed fresh per call, same pattern D3D11's own
-    per-frame `RenderGraph graph(...)` uses) for their own private scratch textures. See D3D12DoF.cpp /
-    D3D12Fog.cpp / D3D12Underwater.cpp / D3D12PostFX.cpp.
+    In active use today: ONE shared instance, `postFxGraph`, built once per frame in D3D12Scene.cpp's
+    OnStartWorldRendering (same pattern D3D11's own per-frame `RenderGraph graph(...)` uses) and passed
+    BY REFERENCE into RenderFogAndGodRays / RenderDepthOfField / DrawUnderwaterEffects / RenderSMAA, each
+    of which registers its own passes directly onto it rather than building a private local graph. That
+    used to be per-function local graphs (each constructing its own D3D12RenderGraph); unifying them was
+    a deliberate correction once it became clear a single shared graph, not several independent ones, is
+    what actually matches D3D11's own structure — see the functions themselves (D3D12DoF.cpp /
+    D3D12Fog.cpp / D3D12Underwater.cpp / D3D12PostFX.cpp) for the pattern every one of them follows: any
+    per-function state that used to be a stack local captured by reference now has to be heap-allocated
+    (`std::make_shared`) and captured by value instead, because the function returns — and its stack
+    frame dies — long before postFxGraph.Execute() actually invokes the deferred callbacks.
 
-    Offset assignment is presently NAME-KEYED, not true interval-coloring: D3D12AliasedTextureArena::
+    Offset assignment is NAME-KEYED, not true interval-coloring: D3D12AliasedTextureArena::
     ReserveNamedRange gives each RGTextureDesc::name a byte range that is PERMANENT for the arena's
     current epoch (until the next resolution change), rather than recomputing packing per Compile() call.
-    This was a deliberate correction — see ReserveNamedRange's own comment for the two bugs pure
-    bump/interval packing hit in practice (independent per-function graphs colliding at offset 0, and
-    conditionally-active passes shifting everyone downstream of them). The tradeoff: two DIFFERENT names
-    no longer share memory through this graph, only a given name's own steady-state reuse across frames.
-    Real cross-effect aliasing (the more ambitious "even better than D3D11" case) is future work for when
-    the transient set is large enough that the packing actually matters — see ReserveNamedRange.
+    This was ALSO a deliberate correction, and it stays even under one shared graph — see
+    ReserveNamedRange's own comment: several real passes (god rays, DoF, SMAA, underwater) are
+    conditionally active per frame, so even within a single graph, pure position-based packing would
+    still shift every pass registered after a toggled one and force spurious churn. The tradeoff: two
+    DIFFERENT names no longer share memory through this graph, only a given name's own steady-state reuse
+    across frames. Real cross-effect aliasing (the more ambitious "even better than D3D11" case) is
+    future work for when the transient set is large enough that the packing actually matters.
 
     Resource STATE transitions (RENDER_TARGET <-> SHADER_RESOURCE etc) are still NOT automatic — each
     pass' execute callback remains responsible for transitioning whatever it binds, same as every other

@@ -34,6 +34,7 @@
 #include "D3D12RenderQueue.h"
 #include "D3D12RenderGraph.h"
 #include "InstancingUtils.h"
+#include <memory>
 
 // CAS constant setup (ffxCasSetup) for RenderSharpen — the same CPU-side call D3D11PFX_CAS::Apply makes.
 // ConstantBufferStructs.h (pulled in above) already includes ffx_core.h with FFX_CPU defined.
@@ -522,9 +523,19 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 // both are purely single-frame scratch (written then read once then dead, no cross-frame data dependency),
 // so they are now D3D12RenderGraph-managed transient textures acquired fresh every call inside RenderSMAA
 // instead — same conversion DoF's/the god-ray/the underwater scratch textures got.
+namespace {
+    // Root constants b0: float4 RT_METRICS (1/w,1/h,w,h) + 5 bindless SRV heap indices. Lives on the heap
+    // (shared_ptr) because EdgesIdx/BlendIdx are filled in by two passes and read by a third, all of which
+    // run later, deferred inside the shared graph's Execute() — see D3D12DoF.cpp's file header for why a
+    // stack local captured by reference can't be used here any more.
+    struct SmaaConsts {
+        float RTMetrics[4];
+        UINT ColorIdx, EdgesIdx, BlendIdx, AreaIdx, SearchIdx;
+    };
+    constexpr float kSmaaClearZero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+}
 
-
-void D3D12GraphicsEngine::RenderSMAA() {
+void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 	// 3-pass SMAA on the tonemapped LDR swapchain image (mirrors D3D11SMAA::Render). Called from
 	// OnStartWorldRendering right after ResolveSceneToBackBuffer, while the swapchain backbuffer is bound as the
 	// RENDER_TARGET and holds the tonemapped frame — before Gothic's 2D UI/HUD draws on top (so the HUD stays
@@ -536,52 +547,40 @@ void D3D12GraphicsEngine::RenderSMAA() {
 		|| !m_Pipelines.Smaa.RootSig || !m_Pipelines.Smaa.EdgePSO || !m_Pipelines.Smaa.BlendPSO || !m_Pipelines.Smaa.NeighborPSO )
 		return;
 
-	DX_ZONE( m_CmdList.Get(), "SMAA" );
-
-	ID3D12Resource* backBuffer = GetDisplayTarget();
-	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
-
-	// --- Copy the tonemapped display image into m_LdrCopy (the SMAA color input). ---
-	// Display target: RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST. Not graph-managed (shared
-	// with Sharpen/Underwater — see the header comment), so this happens before the graph runs.
-	{
-		m_CmdList->TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-	}
-	m_CmdList->CopyResource( m_LdrCopy.Get(), backBuffer );
-	{
-		m_CmdList->TransitionBarriers( {
-			{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-			{ backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-		} );
-	}
-
-	// Common state for all three fullscreen-triangle passes.
-	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
-	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
-
-	// Root constants b0: float4 RT_METRICS (1/w,1/h,w,h) + 5 bindless SRV heap indices. EdgesIdx/BlendIdx are
-	// resolved once the graph places the two textures below.
-	struct SmaaConsts {
-		float RTMetrics[4];
-		UINT ColorIdx, EdgesIdx, BlendIdx, AreaIdx, SearchIdx;
-	} consts = {
+	auto consts = std::make_shared<SmaaConsts>( SmaaConsts{
 		{ 1.0f / m_BackbufferResolution.x, 1.0f / m_BackbufferResolution.y, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ) },
 		m_LdrCopySrvSlot, 0, 0,
 		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
-	};
-	const float clearZero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-
-	D3D12RenderGraph smaaGraph( &m_AliasArena );
+		} );
+	// Plain locals (not shared_ptr): a handle is only ever written once, synchronously, inside a pass's own
+	// setup lambda — never during the deferred Execute() — so by-value capture in any later lambda already
+	// sees the final value. See D3D12DoF.cpp's file header for the full explanation.
 	RGResourceHandle edgesHandle = RG_INVALID_HANDLE;
 	RGResourceHandle blendHandle = RG_INVALID_HANDLE;
 
-	// --- Pass 1: edge detection (color -> edges). ---
-	smaaGraph.AddPass( RG_PASS_NAME( "SMAA Edge Detection" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+	// --- Copy the tonemapped display image into m_LdrCopy (the SMAA color input). Display target:
+	// RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST. Not graph-managed (shared with Sharpen/
+	// Underwater — see the header comment). ---
+	graph.AddPass( RG_PASS_NAME( "SMAA Copy" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+			DX_ZONE( cmdList.Get(), "SMAA" );
+			ID3D12Resource* backBuffer = GetDisplayTarget();
+			cmdList.TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
+			cmdList.CopyResource( m_LdrCopy.Get(), backBuffer );
+			cmdList.TransitionBarriers( {
+				{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+				{ backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+				} );
+			};
+		} );
+
+	// --- Edge detection (color -> edges). ---
+	graph.AddPass( RG_PASS_NAME( "SMAA Edge Detection" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
 		edgesHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
 			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaEdges", 0u } );
 
-		pass.m_executeCallback = [this, vp, sc, &consts, &clearZero, edgesHandle]( const D3D12RenderGraph& graph, D3D12CmdList& cmdList ) {
-			D3D12RenderTarget* edges = graph.GetPhysicalTexture( edgesHandle );
+		pass.m_executeCallback = [this, consts, edgesHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+			D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
 			if ( !edges ) return;
 
 			if ( edges->State != D3D12_RESOURCE_STATE_RENDER_TARGET ) {
@@ -589,17 +588,19 @@ void D3D12GraphicsEngine::RenderSMAA() {
 				edges->State = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			}
 
-			consts.EdgesIdx = edges->GetSrvSlot();
+			consts->EdgesIdx = edges->GetSrvSlot();
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 			cmdList.RSSetViewports( 1, &vp );
 			cmdList.RSSetScissorRects( 1, &sc );
 			cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 			cmdList.IASetVertexBuffers( 0, 0, nullptr );
 			cmdList.SetGraphicsRootSignature( m_Pipelines.Smaa.RootSig.Get() );
 			cmdList.SetPipelineState( m_Pipelines.Smaa.EdgePSO.Get() );
-			cmdList.SetGraphicsRoot32BitConstants( 0, 9, &consts, 0 );
+			cmdList.SetGraphicsRoot32BitConstants( 0, 9, consts.get(), 0 );
 			const D3D12_CPU_DESCRIPTOR_HANDLE rtv = edges->GetRTV();
 			cmdList.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
-			cmdList.ClearRenderTargetView( rtv, clearZero, 0, nullptr );
+			cmdList.ClearRenderTargetView( rtv, kSmaaClearZero, 0, nullptr );
 			cmdList.DrawInstanced( 3, 1, 0, 0 );
 
 			cmdList.TransitionBarrier( edges->GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
@@ -607,17 +608,17 @@ void D3D12GraphicsEngine::RenderSMAA() {
 			};
 		} );
 
-	// --- Pass 2: blend-weight calculation (edges + area + search -> blend). ---
-	smaaGraph.AddPass( RG_PASS_NAME( "SMAA Blend Weight" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+	// --- Blend-weight calculation (edges + area + search -> blend). ---
+	graph.AddPass( RG_PASS_NAME( "SMAA Blend Weight" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
 		builder.Read( edgesHandle );
 		blendHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
 			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaBlend", 0u } );
-		// Pass 3 further down reads this pass's result via consts.BlendIdx, a plain local — not a graph
-		// Read(), so mark the side effect explicitly.
+		// The neighborhood-blend pass further down reads this pass's result via consts->BlendIdx, a plain
+		// shared value — not a graph Read(), so mark the side effect explicitly.
 		builder.MarkExternalEffect();
 
-		pass.m_executeCallback = [this, vp, sc, &consts, &clearZero, blendHandle]( const D3D12RenderGraph& graph, D3D12CmdList& cmdList ) {
-			D3D12RenderTarget* blend = graph.GetPhysicalTexture( blendHandle );
+		pass.m_executeCallback = [this, consts, blendHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+			D3D12RenderTarget* blend = g.GetPhysicalTexture( blendHandle );
 			if ( !blend ) return;
 
 			if ( blend->State != D3D12_RESOURCE_STATE_RENDER_TARGET ) {
@@ -625,17 +626,19 @@ void D3D12GraphicsEngine::RenderSMAA() {
 				blend->State = D3D12_RESOURCE_STATE_RENDER_TARGET;
 			}
 
-			consts.BlendIdx = blend->GetSrvSlot();
+			consts->BlendIdx = blend->GetSrvSlot();
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 			cmdList.RSSetViewports( 1, &vp );
 			cmdList.RSSetScissorRects( 1, &sc );
 			cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 			cmdList.IASetVertexBuffers( 0, 0, nullptr );
 			cmdList.SetGraphicsRootSignature( m_Pipelines.Smaa.RootSig.Get() );
 			cmdList.SetPipelineState( m_Pipelines.Smaa.BlendPSO.Get() );
-			cmdList.SetGraphicsRoot32BitConstants( 0, 9, &consts, 0 );
+			cmdList.SetGraphicsRoot32BitConstants( 0, 9, consts.get(), 0 );
 			const D3D12_CPU_DESCRIPTOR_HANDLE rtv = blend->GetRTV();
 			cmdList.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
-			cmdList.ClearRenderTargetView( rtv, clearZero, 0, nullptr );
+			cmdList.ClearRenderTargetView( rtv, kSmaaClearZero, 0, nullptr );
 			cmdList.DrawInstanced( 3, 1, 0, 0 );
 
 			cmdList.TransitionBarrier( blend->GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
@@ -643,24 +646,30 @@ void D3D12GraphicsEngine::RenderSMAA() {
 			};
 		} );
 
-	smaaGraph.Compile();
-	smaaGraph.Execute( m_CmdList );
+	// --- Neighborhood blending (color + blend -> swapchain). ---
+	graph.AddPass( RG_PASS_NAME( "SMAA Neighborhood Blend" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this, consts]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+			ID3D12Resource* backBuffer = GetDisplayTarget();
+			D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
+			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+			cmdList.RSSetViewports( 1, &vp );
+			cmdList.RSSetScissorRects( 1, &sc );
+			cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+			cmdList.IASetVertexBuffers( 0, 0, nullptr );
+			cmdList.SetGraphicsRootSignature( m_Pipelines.Smaa.RootSig.Get() );
+			cmdList.SetPipelineState( m_Pipelines.Smaa.NeighborPSO.Get() );
+			cmdList.SetGraphicsRoot32BitConstants( 0, 9, consts.get(), 0 );
+			cmdList.OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
+			cmdList.DrawInstanced( 3, 1, 0, 0 );
 
-	// --- Pass 3: neighborhood blending (color + blend -> swapchain). ---
-	m_CmdList->RSSetViewports( 1, &vp );
-	m_CmdList->RSSetScissorRects( 1, &sc );
-	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
-	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Smaa.RootSig.Get() );
-	m_CmdList->SetPipelineState( m_Pipelines.Smaa.NeighborPSO.Get() );
-	m_CmdList->SetGraphicsRoot32BitConstants( 0, 9, &consts, 0 );
-	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
-	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
-
-	// Resting state for next frame: color -> COPY_DEST. Swapchain stays RENDER_TARGET (bound above), ready for
-	// Gothic's 2D UI/HUD to composite on top. Edges/blend need no explicit reset — D3D12RenderTarget::State is
-	// caller-maintained and self-correcting, same as DoF's and the god-ray/underwater textures.
-	m_CmdList->TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+			// Resting state for next frame: color -> COPY_DEST. Swapchain stays RENDER_TARGET (bound above),
+			// ready for Gothic's 2D UI/HUD to composite on top. Edges/blend need no explicit reset —
+			// D3D12RenderTarget::State is caller-maintained and self-correcting, same as DoF's and the
+			// god-ray/underwater textures.
+			cmdList.TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+			};
+		} );
 }
 
 

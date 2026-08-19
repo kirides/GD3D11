@@ -2466,10 +2466,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same
 	// slot D3D11's PostFX composition occupies (after the ghosts/particle passes, before bloom+tonemap). Both
-	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise.
-	postFxGraph.AddPass( RG_PASS_NAME( "Fog + God Rays" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFogAndGodRays(); };
-		} );
+	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise. Registers its
+	// own passes directly onto postFxGraph (not wrapped in an opaque pass here) — see D3D12DoF.cpp's file
+	// header for why: its god-ray mask/zoom scratch textures need to be real graph resources, visible to
+	// (and correctly scheduled among) every other post-FX pass in this SAME shared graph.
+	RenderFogAndGodRays( postFxGraph );
 
 	// Debug/editor lines, INSIDE the scene rather than over the finished LDR image (D3D11's slot): drawing
 	// them at native size afterwards would need a native-res copy of the scene depth for the world-space list
@@ -2498,9 +2499,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// B" block, i.e. after the upscale/TAA stage and before bloom. Blurring before bloom is what makes an
 	// out-of-focus highlight bloom as the disc it has become rather than as the point it was; being after TAA
 	// keeps a moving focus point from smearing through the temporal history. No-op unless EnableDoF.
-	postFxGraph.AddPass( RG_PASS_NAME( "Depth Of Field" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderDepthOfField(); };
-		} );
+	RenderDepthOfField( postFxGraph );
 
 	postFxGraph.AddPass( RG_PASS_NAME( "Bloom" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
 		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderBloom(); };
@@ -2527,9 +2526,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
 	// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
 	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
-	postFxGraph.AddPass( RG_PASS_NAME( "SMAA" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderSMAA(); };
-		} );
+	RenderSMAA( postFxGraph );
 
 	// Post-tonemap sharpening (SHARPEN_CAS by default — this one is ON for a stock config, unlike SMAA).
 	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.
@@ -2540,9 +2537,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Underwater screen effect (blue-tinted blur + animated UV distortion), only while the camera is below a
 	// water surface. D3D11 adds its "Draw UnderwaterFX" pass in exactly this slot: after the AA/sharpen passes,
 	// on the finished image, and before Gothic's own 2D UI/HUD phase — the HUD must stay sharp and untinted.
-	postFxGraph.AddPass( RG_PASS_NAME( "Underwater FX" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { DrawUnderwaterEffects(); };
-		} );
+	DrawUnderwaterEffects( postFxGraph );
 
 	// Developer view of the motion-vector / normal G-buffer, over the finished image (before Gothic's 2D UI and
 	// the ImGui overlay composite, so both stay readable on top of it). No-op unless one of the shared

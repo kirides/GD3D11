@@ -1222,7 +1222,9 @@ private:
     std::unique_ptr<D3D12Texture> m_SmaaSearchTex;                   // precomputed search LUT (66x33 R8), loaded once
     bool m_SmaaTexturesLoaded = false;
     bool LoadSmaaTextures();                  // one-time: load the area + search LUTs from system\GD3D11\Textures
-    void RenderSMAA();                        // 3-pass SMAA on the swapchain LDR image (guards on the toggle + resources)
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
+    // header / D3D12RenderDepthOfField's declaration above for why.
+    void RenderSMAA( class D3D12RenderGraph& graph );
 
     // Shared scratch copy of the tonemapped LDR swapchain image, used by every post-tonemap pass that has to
     // read the frame while writing it back (SMAA's color input, the sharpen source). Only one such pass reads
@@ -1254,7 +1256,9 @@ private:
     // transient textures acquired fresh every call inside DrawUnderwaterEffects instead — same conversion
     // DoF's and the god-ray mask/zoom textures got (see D3D12DoF.cpp / D3D12Fog.cpp). No lazy-creation flags
     // or resize hook needed any more either.
-    void DrawUnderwaterEffects();                  // no-op unless underwater; guards on the PSOs + m_LdrCopyReady
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
+    // header / D3D12RenderDepthOfField's declaration above for why.
+    void DrawUnderwaterEffects( class D3D12RenderGraph& graph );   // no-op unless underwater; guards on the PSOs + m_LdrCopyReady
 
     // Simple screen-space AO (plan item #4, "SAO"): resolution-dependent R8_UNORM textures (m_AOMask holds the
     // final blurred result; m_AOBlurTemp is the horizontal-blur scratch target), recreated on resize like the
@@ -1543,7 +1547,10 @@ private:
     bool m_DoFCreateAttempted = false;
 
     bool CreateDoFResources( INT2 size );  // (re)builds the persistent focus ping-pong only
-    void RenderDepthOfField();             // focus resolve -> half-res blur -> composite -> copy back
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph (postFxGraph, built in
+    // D3D12Scene.cpp's OnStartWorldRendering) instead of building its own — see D3D12RenderGraph.h and
+    // D3D12DoF.cpp's file header for why. Class forward-declared below; the .cpp includes D3D12RenderGraph.h.
+    void RenderDepthOfField( class D3D12RenderGraph& graph );
 
     // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------
     // Replaces the flat greyscale ambient floor in PBRLighting.hlsl's ComputeSunLightingPBR
@@ -1649,7 +1656,9 @@ private:
     bool m_HeightFogActive = false;
     bool EvaluateHeightFogActive() const;     // DrawFog && outdoor && resources/PSOs present
     bool CreateFogConstantBuffers();          // one-time: the per-frame-in-flight composition CB ring
-    void RenderFogAndGodRays();               // god-ray mask+zoom compute, then the fullscreen composition blend
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
+    // header / D3D12RenderDepthOfField's declaration above for why.
+    void RenderFogAndGodRays( class D3D12RenderGraph& graph );   // god-ray mask+zoom compute, then the fullscreen composition blend
 
     // ---- Water refraction / reflection (D3D12Water.cpp) — port of D3D11's DrawWaterSurfaces + PS_Water ----
     // Water is drawn OPAQUE and does its own see-through compositing from copies of the finished opaque
