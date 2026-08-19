@@ -99,6 +99,15 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create SRV heap.";
         return XR_FAILED;
     }
+    if ( !m_TexturePool.Attach( *this ) ) {
+        // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
+        // that infrastructure stays unavailable until the next Init(). Nothing in today's frame depends on it.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the pooled-render-target RTV heap.";
+    }
+    if ( !m_AliasArena.Attach( *this ) ) {
+        // Non-fatal for the same reason: no pass constructs a D3D12RenderGraph yet (see D3D12RenderGraph.h).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the render-graph aliasing arena.";
+    }
     if ( !m_Pipelines.Init( &m_Device, &m_ShaderBackend ) ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;
@@ -1689,6 +1698,13 @@ bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
     resolve, which is where the up/downscale happens. Only depth + scene color are fatal; the rest follow
     the same non-fatal contract they have on the resize path (their passes guard on the resource existing). */
 bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
+    // Every D3D12RenderGraph-managed transient texture (DoF/god-ray/underwater/SMAA scratch) is sized off
+    // m_Resolution or m_BackbufferResolution, both of which are about to change — their names' reserved
+    // offsets (D3D12AliasedTextureArena::ReserveNamedRange) must NOT survive into the new resolution, or a
+    // name would keep its old, now too-small range and silently corrupt whatever got packed after it. This
+    // always runs before CreateDisplayResolutionTargets (every call site below), so one Clear() covers both.
+    m_AliasArena.Clear();
+
     // The FFX context is built for one specific (render, display) size pair and its internal resources are
     // freed immediately by ffxFsr3UpscalerContextDestroy — so it has to go here, on a path whose callers have
     // already idled the GPU, rather than lazily from the frame. EnsureFsr3Ready rebuilds it next frame.
@@ -1705,8 +1721,10 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     m_DoFCreateAttempted = false;
     if ( m_DoFResourcesReady ) CreateDoFResources( renderSize );
     CreateHiZResources( renderSize );    // without it the GPU VOB cull runs frustum-only (no occlusion)
-    CreateFogResources( renderSize );    // height fog/god rays are opt-in; RenderFogAndGodRays no-ops without them
-    ReleaseWaterCopyResources();         // rebuilt at the new size by the next frame that renders water
+    // Height-fog/god-ray textures no longer need a resize hook — they're D3D12RenderGraph-managed transients
+    // acquired fresh at the current resolution every call (see D3D12Fog.cpp's RenderFogAndGodRays).
+    // Water's scene/depth copies no longer need a resize hook — they're D3D12RenderGraph-managed transients
+    // acquired fresh at the current resolution every call (see D3D12Water.cpp's DrawWaterSurfaces).
     if ( !CreateLumPartialBuffer( renderSize ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on this and skips the update, leaving m_LumAdaptedBuffer
         // at its last valid value.
@@ -1722,9 +1740,9 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
     ReleaseFsr3();                          // display size is half of the pair the FFX context is built for
     CreateLdrCopyResource( displaySize );   // shared LDR scratch for SMAA/sharpen; both no-op without it
-    CreateSmaaResources( displaySize );     // SMAA is opt-in (AntiAliasingMode == AA_SMAA)
-    m_UnderwaterCreateAttempted = false;
-    if ( m_UnderwaterResourcesReady ) CreateUnderwaterResources( displaySize );
+    // SMAA's edges/blend and the underwater blur pair no longer need a resize hook — both are
+    // D3D12RenderGraph-managed transients acquired fresh at the current resolution every call (see
+    // D3D12PostFX.cpp's RenderSMAA / D3D12Underwater.cpp's DrawUnderwaterEffects).
 }
 
 
@@ -1870,10 +1888,13 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         FrameMark;
         WaitForFrameLatencyWaitable();
         FrameLimiterBeginFrame();
-    }
+    } else if ( Engine::GAPI->IsIngameMenuPaused()) {
+        FrameMark;
+	}
+
     PausedFrameLimiterBeginFrame();
 
-    TracyD3D12BeginFrame
+    TracyD3D12BeginFrame;
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in
@@ -2318,6 +2339,8 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     for ( auto& cleanupCallback : jobs ) {
         if ( cleanupCallback ) cleanupCallback(); // Calls FreeSrvSlot() and drops the captured ComPtrs
     }
+
+    m_TexturePool.GiveTick();
 }
 
 

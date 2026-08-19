@@ -22,6 +22,8 @@
 #include "D3D12ShadowMap.h"
 #include "D3D12VobArena.h"
 #include "D3D12PointShadows.h"
+#include "D3D12TexturePool.h"
+#include "D3D12AliasedTextureArena.h"
 
 struct RenderBucket;
 class D3D12LineRenderer;
@@ -638,6 +640,18 @@ private:
     // uncontended lock here is a few tens of ns, negligible next to a draw call.
     mutable std::mutex m_SrvHeapMutex;
 
+    // General-purpose pooled render targets (mirrors D3D11's TexturePool — see D3D12TexturePool.h).
+    // No longer used by D3D12RenderGraph (see D3D12AliasedTextureArena below), but kept as a standalone
+    // utility for non-graph pooled needs. Declared after the SRV free-list above (and everything that
+    // manages it) so a pooled target's SRV slot is freed before that bookkeeping is torn down at shutdown.
+    D3D12TexturePool m_TexturePool;
+
+    // D3D12RenderGraph's transient-texture backing store (see D3D12AliasedTextureArena.h / D3D12RenderGraph.h)
+    // — aliases non-overlapping-lifetime transient textures into one shared heap via placed resources.
+    // Not wired into a live pass yet; see D3D12RenderGraph.h for why and for the intended first consumer.
+    // Same declaration-order reasoning as m_TexturePool above.
+    D3D12AliasedTextureArena m_AliasArena;
+
     // Loads + compiles the backend's HLSL from Shaders\D3D12\*.hlsl at runtime (DXC/SM6.6, zFILE_VDFS).
     D3D12ShaderBackend m_ShaderBackend;
 
@@ -1193,29 +1207,24 @@ private:
     // SMAA anti-aliasing (runtime toggle: RendererSettings.AntiAliasingMode == AA_SMAA). Mirrors the D3D11
     // 3-pass post-FX (D3D11SMAA::Render): run on the tonemapped LDR swapchain image right after
     // ResolveSceneToBackBuffer, before Gothic's 2D UI/HUD composites on top (so the HUD stays crisp).
-    //   1. Edge detection      color        -> m_SmaaEdges
-    //   2. Blend-weight calc    edges+LUTs   -> m_SmaaBlend
+    //   1. Edge detection      color        -> edges
+    //   2. Blend-weight calc    edges+LUTs   -> blend
     //   3. Neighborhood blend   color+blend  -> swapchain
     // m_LdrCopy (below) holds the copy of the tonemapped LDR image the color pass reads (the swapchain can't be
     // both the SMAA color SRV and the pass-3 RTV at once), so the effect costs one extra full-res copy per frame
-    // while enabled. The area/search LUTs are precomputed static textures loaded once; edges/blend are
-    // resolution-dependent (recreated on resize like the bloom pyramid). All are bound bindlessly (SRV heap
+    // while enabled. The area/search LUTs are precomputed static textures loaded once. Edges/blend USED to be
+    // resolution-dependent members (recreated on resize like the bloom pyramid); both are purely single-frame
+    // scratch (written then read once then dead, no cross-frame data dependency), so they are now
+    // D3D12RenderGraph-managed transient textures acquired fresh every call inside RenderSMAA instead — same
+    // conversion DoF's/the god-ray/the underwater scratch textures got. All are bound bindlessly (SRV heap
     // index -> b0 root const).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaEdges;         // pass-1 output (R8G8B8A8)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaEdgesAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaBlend;         // pass-2 output (R8G8B8A8)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaBlendAlloc;
-    UINT m_SmaaEdgesSrvSlot = UINT_MAX;
-    UINT m_SmaaBlendSrvSlot = UINT_MAX;
-    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaEdgesRtv = {};                 // RTV heap slot kBackBufferMax+1
-    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaBlendRtv = {};                 // RTV heap slot kBackBufferMax+2
     std::unique_ptr<D3D12Texture> m_SmaaAreaTex;                     // precomputed area LUT (160x560 R8G8), loaded once
     std::unique_ptr<D3D12Texture> m_SmaaSearchTex;                   // precomputed search LUT (66x33 R8), loaded once
     bool m_SmaaTexturesLoaded = false;
-    bool m_SmaaResourcesReady = false;                              // edges/blend created for the current resolution
     bool LoadSmaaTextures();                  // one-time: load the area + search LUTs from system\GD3D11\Textures
-    bool CreateSmaaResources( INT2 size );    // (re)builds the resolution-dependent edges/blend textures + views
-    void RenderSMAA();                        // 3-pass SMAA on the swapchain LDR image (guards on the toggle + resources)
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
+    // header / D3D12RenderDepthOfField's declaration above for why.
+    void RenderSMAA( class D3D12RenderGraph& graph );
 
     // Shared scratch copy of the tonemapped LDR swapchain image, used by every post-tonemap pass that has to
     // read the frame while writing it back (SMAA's color input, the sharpen source). Only one such pass reads
@@ -1241,18 +1250,15 @@ private:
     // targets are compute-written, which is why they need no RTV heap slot; the composite has to be a graphics
     // pass because the display target has no UAV.
     //
-    // Built LAZILY the first time the player goes under water (same reasoning as the DoF textures — this is a
-    // rare state and the pair costs VA that 32-bit cannot spare for an effect most sessions never trigger).
-    // Both rest in UNORDERED_ACCESS between frames.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_UnderwaterBlur[2];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_UnderwaterBlurAlloc[2];
-    UINT m_UnderwaterBlurSrvSlot[2] = { UINT_MAX, UINT_MAX };
-    UINT m_UnderwaterBlurUavSlot[2] = { UINT_MAX, UINT_MAX };
-    INT2 m_UnderwaterBlurSize = { 0, 0 };       // quarter resolution the pair was built for
-    bool m_UnderwaterResourcesReady = false;
-    bool m_UnderwaterCreateAttempted = false;   // keeps a failed creation from retrying every frame; cleared on resize
-    bool CreateUnderwaterResources( INT2 size );   // (re)builds the quarter-res blur pair + its SRV/UAV slots
-    void DrawUnderwaterEffects();                  // no-op unless underwater; guards on the PSOs + m_LdrCopyReady
+    // USED to be built lazily as members the first time the player went under water (same reasoning as DoF's
+    // old members — rare state, 32-bit VA is scarce). Both were purely single-frame scratch (written then
+    // read once then dead, no cross-frame data dependency), so they are now D3D12RenderGraph-managed
+    // transient textures acquired fresh every call inside DrawUnderwaterEffects instead — same conversion
+    // DoF's and the god-ray mask/zoom textures got (see D3D12DoF.cpp / D3D12Fog.cpp). No lazy-creation flags
+    // or resize hook needed any more either.
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
+    // header / D3D12RenderDepthOfField's declaration above for why.
+    void DrawUnderwaterEffects( class D3D12RenderGraph& graph );   // no-op unless underwater; guards on the PSOs + m_LdrCopyReady
 
     // Simple screen-space AO (plan item #4, "SAO"): resolution-dependent R8_UNORM textures (m_AOMask holds the
     // final blurred result; m_AOBlurTemp is the horizontal-blur scratch target), recreated on resize like the
@@ -1519,14 +1525,14 @@ private:
     //
     //   m_DoFFocus[2]  1x1 R32_FLOAT ping-pong. The auto-focus distance, temporally smoothed against the
     //                  previous frame's value — pass 0 reads [m_DoFFocusIndex] and writes [1 - m_DoFFocusIndex].
-    //   m_DoFHalf      half-res kSceneColorFormat: rgb = bokeh blur, a = centre CoC (pass 1).
-    //   m_DoFComposite full-res kSceneColorFormat scratch. Compute cannot read and write the scene colour in one
-    //                  dispatch, so pass 2 writes here and the result is CopyResource'd back — same shape as the
-    //                  TAA resolve's history copy, and both are kSceneColorFormat so the copy is a straight one.
+    //                  Must persist across frames (that's the whole point of the smoothing), so it stays a
+    //                  member, built LAZILY (see CreateDoFResources): DoF is off in a stock config.
     //
-    // Unlike the bloom/AO/TAA resources these are built LAZILY (see CreateDoFResources): DoF is off in a stock
-    // config, and a full-res RGBA16F scratch plus a half-res one is ~20 MB of virtual address space at 1080p —
-    // real money in a 32-bit process. The resize path only rebuilds them if they already exist.
+    // The half-res bokeh-blur target and the full-res composite scratch USED to live here as members too; they
+    // are now D3D12RenderGraph-managed transient textures acquired fresh every call from m_AliasArena instead
+    // (see D3D12DoF.cpp's RenderDepthOfField) — first live consumer of the render graph's actual resource
+    // system. That also removes the need for the old "did the resolution change without us following" guard:
+    // asking the graph for the CURRENT resolution's size every call handles a resize for free.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFFocus[2];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFFocusAlloc[2];
     UINT m_DoFFocusSrvSlot[2] = { UINT_MAX, UINT_MAX };
@@ -1535,21 +1541,16 @@ private:
     // The focus textures' initial contents are undefined, so the first resolve must SNAP to the measured depth
     // instead of blending against garbage (DoFCB::FocusValid). Cleared whenever the pair is (re)created.
     bool m_DoFFocusValid = false;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFHalf;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFHalfAlloc;
-    UINT m_DoFHalfSrvSlot = UINT_MAX;
-    UINT m_DoFHalfUavSlot = UINT_MAX;
-    INT2 m_DoFHalfSize = { 0, 0 };
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFComposite;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFCompositeAlloc;
-    UINT m_DoFCompositeUavSlot = UINT_MAX;
     bool m_DoFResourcesReady = false;
     // Set once creation has been attempted at the current resolution, so a failure (out of heap slots, out of
     // memory) is logged once and not retried every frame while DoF stays enabled. Cleared on resize.
     bool m_DoFCreateAttempted = false;
 
-    bool CreateDoFResources( INT2 size );  // (re)builds the focus pair, the half-res blur target and the scratch
-    void RenderDepthOfField();             // focus resolve -> half-res blur -> composite -> copy back
+    bool CreateDoFResources( INT2 size );  // (re)builds the persistent focus ping-pong only
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph (postFxGraph, built in
+    // D3D12Scene.cpp's OnStartWorldRendering) instead of building its own — see D3D12RenderGraph.h and
+    // D3D12DoF.cpp's file header for why. Class forward-declared below; the .cpp includes D3D12RenderGraph.h.
+    void RenderDepthOfField( class D3D12RenderGraph& graph );
 
     // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------
     // Replaces the flat greyscale ambient floor in PBRLighting.hlsl's ComputeSunLightingPBR
@@ -1631,19 +1632,14 @@ private:
 
     // ---- Height fog + god rays (plan item #5) — D3D12 port of D3D11's PostFX composition pass. -------------
     // Two quarter-resolution HDR textures carry the god-ray chain (mask -> radial blur), mirroring D3D11's
-    // GetTempBufferDS4() pool textures; both rest in UNORDERED_ACCESS between frames like the bloom mips.
+    // GetTempBufferDS4() pool textures. USED to be members that rested in UNORDERED_ACCESS between frames
+    // like the bloom mips; both are purely single-frame scratch (written then read once then dead, no
+    // cross-frame data dependency — unlike bloom's pyramid or TAA's history), so they are now
+    // D3D12RenderGraph-managed transient textures acquired fresh every call from m_AliasArena inside
+    // RenderFogAndGodRays instead (see D3D12Fog.cpp — same conversion DoF's scratch textures got).
     // The composition itself needs no scene-color copy: it blends premultiplied straight onto m_SceneColor
     // (see Shaders/D3D12/HeightFog.hlsl's header for why that's equivalent to D3D11's copy-and-lerp).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GodRayMask;        // quarter-res, sky-only pixels of the scene
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GodRayMaskAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GodRayZoom;        // quarter-res, radially blurred rays
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GodRayZoomAlloc;
-    UINT m_GodRayMaskSrvSlot = UINT_MAX;
-    UINT m_GodRayMaskUavSlot = UINT_MAX;
-    UINT m_GodRayZoomSrvSlot = UINT_MAX;
-    UINT m_GodRayZoomUavSlot = UINT_MAX;
-    INT2 m_GodRaySize = { 0, 0 };             // quarter of the scene resolution (rounded up, min 1)
-    bool m_FogResourcesReady = false;
+    //
     // Per-frame-in-flight constant buffer for the composition pass: 512 B split into two 256-B-aligned
     // blocks — [0,256) the HeightfogConstantBuffer (b0), [256,512) the AtmosphereConstantBuffer (b1). Both
     // are filled once per frame in RenderFogAndGodRays from the exact same GAPI/GSky values D3D11 uses.
@@ -1659,9 +1655,10 @@ private:
     // Evaluated once per frame at the top of OnStartWorldRendering, before any geometry pass reads it.
     bool m_HeightFogActive = false;
     bool EvaluateHeightFogActive() const;     // DrawFog && outdoor && resources/PSOs present
-    bool CreateFogResources( INT2 size );     // (re)builds the quarter-res god-ray textures + their SRV/UAV slots
     bool CreateFogConstantBuffers();          // one-time: the per-frame-in-flight composition CB ring
-    void RenderFogAndGodRays();               // god-ray mask+zoom compute, then the fullscreen composition blend
+    // Registers its passes onto the caller's SHARED per-frame D3D12RenderGraph — see D3D12DoF.cpp's file
+    // header / D3D12RenderDepthOfField's declaration above for why.
+    void RenderFogAndGodRays( class D3D12RenderGraph& graph );   // god-ray mask+zoom compute, then the fullscreen composition blend
 
     // ---- Water refraction / reflection (D3D12Water.cpp) — port of D3D11's DrawWaterSurfaces + PS_Water ----
     // Water is drawn OPAQUE and does its own see-through compositing from copies of the finished opaque
@@ -1669,16 +1666,20 @@ private:
     // and CopyDepthStencil()s the depth before the water Z-prepass). Both copies must be taken BEFORE the
     // water Z-prepass writes the surface's own depth, or the refraction would read water-vs-water.
     //
-    // Allocated lazily on the first frame a world actually renders water (~24 MB of 32-bit VA at 1080p,
-    // which menus, indoor worlds and water-free maps should not pay) and released on resize, where the GPU
-    // is already idle; EnsureWaterCopyResources() then rebuilds them at the new size on the next water frame.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterSceneCopy;      // pre-water HDR scene (kSceneColorFormat)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterSceneCopyAlloc;
-    UINT m_WaterSceneCopySrvSlot = UINT_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterDepthCopy;      // pre-water depth (R32_TYPELESS -> R32_FLOAT SRV)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterDepthCopyAlloc;
-    UINT m_WaterDepthCopySrvSlot = UINT_MAX;
-    INT2 m_WaterCopySize = { 0, 0 };          // resolution the two copies were built for (0,0 = not allocated)
+    // USED to be allocated lazily as members the first frame a world actually rendered water (~24 MB of
+    // 32-bit VA at 1080p, which menus, indoor worlds and water-free maps should not pay). Both are purely
+    // single-frame scratch (copied from the opaque scene, read by the water shader, then dead — no
+    // cross-frame data dependency), so they are now D3D12RenderGraph-managed transient textures acquired
+    // fresh every call inside DrawWaterSurfaces instead — same conversion DoF's/the god-ray/the underwater/
+    // SMAA scratch textures got (see D3D12DoF.cpp for the pattern). DrawWaterSurfaces is a BaseGraphicsEngine
+    // override (fixed signature, no graph parameter), so — unlike the postFxGraph-fed functions — it builds
+    // its own small LOCAL D3D12RenderGraph; that is safe now that D3D12AliasedTextureArena::ReserveNamedRange
+    // dedups by name across the WHOLE arena, not per-graph-instance (see its comment).
+    //
+    // The depth copy is created as plain R32_FLOAT (not R32_TYPELESS + ALLOW_DEPTH_STENCIL like the old
+    // member): CopyResource only requires format-FAMILY compatibility (R32_TYPELESS and R32_FLOAT share one),
+    // not matching resource flags, and this copy is never bound as an actual depth target — only ever
+    // CopyResource's destination and an SRV source — so ALLOW_DEPTH_STENCIL was never actually required.
 
     // reflect_cube.dds as a real TextureCube — the static sky/environment reflection D3D11 binds at t3, and
     // the fallback whenever an SSR ray misses or leaves the screen. D3D12Texture is Texture2D-only, so this
@@ -1699,8 +1700,6 @@ private:
 
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
-    bool EnsureWaterCopyResources();          // lazy (re)build of the scene+depth copies at m_Resolution
-    void ReleaseWaterCopyResources();         // called on resize (GPU idle) so the next water frame rebuilds
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT

@@ -19,7 +19,7 @@ MeshVisualInfo* SharedVisualRegistry::Acquire( const void* key, bool& outNeedsFi
 
         // A cancelled extraction leaves a finished-but-empty entry. Hand it out for a refill, or it
         // stays empty forever - the "visual changed" check just lands back here on the same dead object.
-        outNeedsFill = mvi->Ready.load( std::memory_order_acquire ) && !mvi->Visual;
+        outNeedsFill = mvi->GetIsReady() && !mvi->Visual;
         if ( outNeedsFill ) {
             mvi->Ready.store( false, std::memory_order_release );
         }

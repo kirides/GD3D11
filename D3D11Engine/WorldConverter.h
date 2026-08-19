@@ -117,8 +117,17 @@ public:
         which must not run while the game thread animates the same model. */
     static void ExtractNodeVisualAsync( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
 
-    /** Blocks until any in-flight ExtractNodeVisualAsync job reading from 'visual' has finished. Must be
-        called before ZENGIN frees a visual (GothicAPI::OnVisualDeleted). */
+    /** Same idea as ExtractNodeVisualAsync, but for a MeshVisualInfo that isn't SharedVisualRegistry-owned
+        (GothicAPI::StaticMeshVisuals / ParticleEffectProgMeshes): no shell-building or rest-pose handling,
+        just "run Extract3DSMeshFromVisual2 on a worker, hold a reference on 'holdVisual' for the job's
+        duration, flip Ready when done". 'holdVisual' is the object whose destruction the caller learns of
+        through GothicAPI::OnVisualDeleted - the outer zCMorphMesh for a .MMS, 'pm' itself otherwise - and
+        must be kept alive (zCObject-ref'd) by the caller until this call returns, since the job's own
+        reference is only taken here. Falls back to the synchronous call when there is no worker pool. */
+    static void Extract3DSMeshFromVisual2Async( zCVisual* holdVisual, zCProgMeshProto* pm, MeshVisualInfo* meshInfo );
+
+    /** Blocks until any in-flight ExtractNodeVisualAsync/Extract3DSMeshFromVisual2Async job reading from
+        'visual' has finished. Must be called before ZENGIN frees a visual (GothicAPI::OnVisualDeleted). */
     static void WaitForPendingNodeVisuals( zCVisual* visual );
 
     /** Blocks until every in-flight ExtractNodeVisualAsync job has finished. */

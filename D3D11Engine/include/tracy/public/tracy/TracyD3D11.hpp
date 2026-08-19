@@ -33,17 +33,17 @@ using TracyD3D11Ctx = void*;
 #else
 
 #include <atomic>
-#include <assert.h>
 #include <stdlib.h>
 
 #include "Tracy.hpp"
 #include "../client/TracyProfiler.hpp"
 #include "../client/TracyCallstack.hpp"
+#include "../common/TracyAssert.hpp"
 #include "../common/TracyYield.hpp"
 
 #include <d3d11.h>
 
-#define TracyD3D11Panic(msg, ...) do { assert(false && "TracyD3D11: " msg); TracyMessageLC("TracyD3D11: " msg, tracy::Color::Red4); __VA_ARGS__; } while(false);
+#define TracyD3D11Panic(msg, ...) do { TRACY_ASSERT(false && "TracyD3D11: " msg); TracyMessageLC("TracyD3D11: " msg, tracy::Color::Red4); __VA_ARGS__; } while(false);
 
 namespace tracy
 {
@@ -108,7 +108,7 @@ public:
                 continue;
             }
 
-            if (disjoint.Disjoint)
+            if (disjoint.Disjoint || disjoint.Frequency == 0)
                 continue;
 
             UINT64 timestamp = 0;
@@ -121,7 +121,7 @@ public:
         }
 
         // ready to roll
-        m_contextId = GetGpuCtxCounter().fetch_add(1);
+        m_contextId = NextGpuContextId();
         m_immediateDevCtx->Begin(m_disjointQuery);
         m_previousCheckpoint = m_nextCheckpoint = 0;
 
@@ -131,8 +131,8 @@ public:
         MemWrite( &item->gpuNewContext.gpuTime, tgpu );
         MemWrite( &item->gpuNewContext.thread, uint32_t(0) );   // #TODO: why not GetThreadHandle()?
         MemWrite( &item->gpuNewContext.period, 1.0f );
-        MemWrite( &item->gpuNewContext.context, m_contextId);
-        MemWrite( &item->gpuNewContext.flags, uint8_t(0) );
+        MemWrite( &item->gpuNewContext.context, uint8_t(m_contextId));
+        MemWrite( &item->gpuNewContext.flags, GpuContextFlags(0) );
         MemWrite( &item->gpuNewContext.type, GpuContextType::Direct3D11 );
 
 #ifdef TRACY_ON_DEMAND
@@ -167,7 +167,7 @@ public:
 
         auto item = Profiler::QueueSerial();
         MemWrite( &item->hdr.type, QueueType::GpuContextName );
-        MemWrite( &item->gpuContextNameFat.context, m_contextId );
+        MemWrite( &item->gpuContextNameFat.context, uint8_t(m_contextId) );
         MemWrite( &item->gpuContextNameFat.ptr, (uint64_t)ptr );
         MemWrite( &item->gpuContextNameFat.size, len );
 #ifdef TRACY_ON_DEMAND
@@ -217,6 +217,13 @@ public:
             return;
         }
 
+        if (disjoint.Frequency == 0)
+        {
+            m_previousCheckpoint = m_nextCheckpoint;
+            TracyD3D11Panic("zero GPU timestamp frequency; dropping.");
+            return;
+        }
+
         auto begin = m_previousCheckpoint;
         auto end = m_nextCheckpoint;
         for (auto i = begin; i != end; ++i)
@@ -233,7 +240,7 @@ public:
             MemWrite(&item->hdr.type, QueueType::GpuTime);
             MemWrite(&item->gpuTime.gpuTime, static_cast<int64_t>(timestamp));
             MemWrite(&item->gpuTime.queryId, static_cast<uint16_t>(k));
-            MemWrite(&item->gpuTime.context, m_contextId);
+            MemWrite(&item->gpuTime.context, uint8_t(m_contextId));
             Profiler::QueueSerialFinish();
         }
 
@@ -280,7 +287,7 @@ private:
             YieldThread();  // busy-wait :-( attempt to reduce power usage with _mm_pause() & friends...
     }
 
-    tracy_force_inline uint8_t GetContextId() const
+    tracy_force_inline int32_t GetContextId() const
     {
         return m_contextId;
     }
@@ -291,7 +298,7 @@ private:
     ID3D11Query* m_queries[MaxQueries];
     ID3D11Query* m_disjointQuery = nullptr;
 
-    uint8_t m_contextId = 255;  // NOTE: apparently, 255 means invalid id; is this documented anywhere?
+    int32_t m_contextId = InvalidGpuContextId;
 
     uintptr_t m_queryCounter = 0;
 
@@ -365,12 +372,15 @@ public:
         const auto queryId = m_ctx->NextQueryId();
         m_ctx->m_immediateDevCtx->End(m_ctx->GetQueryObjectFromId(queryId));
 
+#ifdef TRACY_ON_DEMAND
+        if( GetProfiler().ConnectionId() != m_connectionId ) return;
+#endif
         auto* item = Profiler::QueueSerial();
         MemWrite( &item->hdr.type, QueueType::GpuZoneEndSerial );
         MemWrite( &item->gpuZoneEnd.cpuTime, Profiler::GetTime() );
         MemWrite( &item->gpuZoneEnd.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneEnd.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneEnd.context, m_ctx->GetContextId() );
+        MemWrite( &item->gpuZoneEnd.context, uint8_t(m_ctx->GetContextId()) );
         Profiler::QueueSerialFinish();
     }
 
@@ -378,6 +388,7 @@ private:
     tracy_force_inline D3D11ZoneScope( D3D11Ctx* ctx, bool active )
 #ifdef TRACY_ON_DEMAND
         : m_active( active && GetProfiler().IsConnected() )
+        , m_connectionId( GetProfiler().ConnectionId() )
 #else
         : m_active( active )
 #endif
@@ -396,11 +407,15 @@ private:
         MemWrite( &item->gpuZoneBegin.srcloc, sourceLocation );
         MemWrite( &item->gpuZoneBegin.thread, GetThreadHandle() );
         MemWrite( &item->gpuZoneBegin.queryId, uint16_t( queryId ) );
-        MemWrite( &item->gpuZoneBegin.context, m_ctx->GetContextId() );
+        MemWrite( &item->gpuZoneBegin.context, uint8_t(m_ctx->GetContextId()) );
         Profiler::QueueSerialFinish();
     }
 
     const bool m_active;
+
+#ifdef TRACY_ON_DEMAND
+    uint64_t m_connectionId = 0;
+#endif
 
     D3D11Ctx* m_ctx;
 };
@@ -418,7 +433,6 @@ static inline void DestroyD3D11Context( D3D11Ctx* ctx )
     tracy_free( ctx );
 }
 }
-
 #undef TracyD3D11Panic
 
 using TracyD3D11Ctx = tracy::D3D11Ctx*;

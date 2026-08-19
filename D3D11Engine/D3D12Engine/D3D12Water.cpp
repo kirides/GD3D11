@@ -25,6 +25,7 @@
 #include "D3D12Texture.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12PipelineState.h"
+#include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"
@@ -124,102 +125,6 @@ bool D3D12GraphicsEngine::CreateWaterConstantBuffers() {
         m_WaterCBMapped[i] = static_cast<uint8_t*>( mapped );
         m_WaterCBGpu[i] = m_WaterCB[i]->GetGPUVirtualAddress();
     }
-    return true;
-}
-
-
-void D3D12GraphicsEngine::ReleaseWaterCopyResources() {
-    // Called from the resize path, where the GPU has already been waited idle — so dropping the resources
-    // outright is safe and there is no need to go through QueueSrvResourceForRelease. The heap slots are
-    // deliberately KEPT: EnsureWaterCopyResources re-points the same descriptors at the new textures, which
-    // avoids leaking a pair of slots on every resolution change.
-    m_WaterSceneCopy.Reset();
-    m_WaterSceneCopyAlloc.Reset();
-    m_WaterDepthCopy.Reset();
-    m_WaterDepthCopyAlloc.Reset();
-    m_WaterCopySize = { 0, 0 };
-}
-
-
-bool D3D12GraphicsEngine::EnsureWaterCopyResources() {
-    // Lazy: only worlds that actually render water pay the ~24 MB of 32-bit VA these two full-resolution
-    // surfaces cost at 1080p. Menus, indoor worlds and water-free maps never allocate them.
-    if ( m_WaterSceneCopy && m_WaterDepthCopy
-        && m_WaterCopySize.x == m_Resolution.x && m_WaterCopySize.y == m_Resolution.y )
-        return true;
-
-    ReleaseWaterCopyResources();
-    if ( m_Resolution.x < 4 || m_Resolution.y < 4 || !m_DepthBuffer || !m_SceneColor ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device ) return false;
-
-    D3D12MA::ALLOCATION_DESC heapDefault = {};
-    heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
-
-    // Scene copy: same format as m_SceneColor so CopyResource is a straight blit.
-    {
-        D3D12_RESOURCE_DESC dd = {};
-        dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        dd.Width = static_cast<UINT64>( m_Resolution.x );
-        dd.Height = static_cast<UINT>( m_Resolution.y );
-        dd.DepthOrArraySize = 1;
-        dd.MipLevels = 1;
-        dd.Format = kSceneColorFormat;
-        dd.SampleDesc.Count = 1;
-        dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, kWaterCopyReadState, nullptr,
-            m_WaterSceneCopyAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_WaterSceneCopy.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the water scene copy (" << m_Resolution.x << "x" << m_Resolution.y << ").";
-            ReleaseWaterCopyResources();
-            return false;
-        }
-        m_WaterSceneCopy->SetName( L"WaterSceneCopy" );
-    }
-
-    // Depth copy: SAME resource desc as m_DepthBuffer (R32_TYPELESS + ALLOW_DEPTH_STENCIL, see
-    // CreateDepthBuffer) so CopyResource is unambiguously legal — identical reasoning to m_TaaPrevDepth in
-    // CreateTaaResources.
-    {
-        D3D12_RESOURCE_DESC dd = {};
-        dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        dd.Width = static_cast<UINT64>( m_Resolution.x );
-        dd.Height = static_cast<UINT>( m_Resolution.y );
-        dd.DepthOrArraySize = 1;
-        dd.MipLevels = 1;
-        dd.Format = DXGI_FORMAT_R32_TYPELESS;
-        dd.SampleDesc.Count = 1;
-        dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-        D3D12_CLEAR_VALUE clear = {};
-        clear.Format = DXGI_FORMAT_D32_FLOAT;
-        clear.DepthStencil.Depth = 0.0f;   // reversed-Z, same optimized clear as the real depth buffer
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, kWaterCopyReadState, &clear,
-            m_WaterDepthCopyAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_WaterDepthCopy.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the water depth copy (" << m_Resolution.x << "x" << m_Resolution.y << ").";
-            ReleaseWaterCopyResources();
-            return false;
-        }
-        m_WaterDepthCopy->SetName( L"WaterDepthCopy" );
-    }
-
-    if ( m_WaterSceneCopySrvSlot == UINT_MAX ) m_WaterSceneCopySrvSlot = AllocateSrvSlot();
-    if ( m_WaterDepthCopySrvSlot == UINT_MAX ) m_WaterDepthCopySrvSlot = AllocateSrvSlot();
-    if ( m_WaterSceneCopySrvSlot == UINT_MAX || m_WaterDepthCopySrvSlot == UINT_MAX ) {
-        LogWarn() << "D3D12: SRV heap exhausted allocating slots for the water copies.";
-        ReleaseWaterCopyResources();
-        return false;
-    }
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Texture2D.MipLevels = 1;
-    srv.Format = kSceneColorFormat;
-    device->CreateShaderResourceView( m_WaterSceneCopy.Get(), &srv, GetSrvCpuHandle( m_WaterSceneCopySrvSlot ) );
-    srv.Format = DXGI_FORMAT_R32_FLOAT;   // typed view of the typeless depth copy
-    device->CreateShaderResourceView( m_WaterDepthCopy.Get(), &srv, GetSrvCpuHandle( m_WaterDepthCopySrvSlot ) );
-
-    m_WaterCopySize = m_Resolution;
     return true;
 }
 
@@ -377,33 +282,78 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // ---------------------------------------------------------------------------------------------------
     // Steps 1+2: snapshot the finished opaque scene and its depth, BEFORE the Z-prepass below writes the
     // water surface's own depth. Getting the order wrong would have the refraction read water-vs-water
-    // (shallowDepth collapses to 0 everywhere and the surface goes flat/black).
+    // (shallowDepth collapses to 0 everywhere and the surface goes flat/black). Both copies are graph-managed
+    // transients (see the header comment on the old m_WaterSceneCopy/m_WaterDepthCopy members) — this
+    // function is a BaseGraphicsEngine override with a fixed signature, so it builds its own small LOCAL
+    // D3D12RenderGraph rather than taking a shared one (safe: D3D12AliasedTextureArena::ReserveNamedRange
+    // dedups by name across the whole arena, not per-graph-instance).
     // ---------------------------------------------------------------------------------------------------
-    const bool copiesReady = EnsureWaterCopyResources() && m_WaterCBMapped[m_FrameIndex];
-    if ( copiesReady ) {
-        DX_ZONE( m_CmdList.Get(), "Water scene+depth copy" );
-        // Both sources must leave their bound states, so drop the render targets first.
-        m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+    UINT waterSceneSrvSlot = UINT_MAX;
+    UINT waterDepthSrvSlot = UINT_MAX;
+    bool copiesReady = false;
+    if ( m_WaterCBMapped[m_FrameIndex] ) {
+        D3D12RenderGraph waterGraph( &m_AliasArena );
+        RGResourceHandle sceneHandle = RG_INVALID_HANDLE;
+        RGResourceHandle depthHandle = RG_INVALID_HANDLE;
 
-        const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
-            ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-        m_CmdList->TransitionBarriers( {
-        	{ m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
-        	{ m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
-        	{ m_WaterSceneCopy.Get(), kWaterCopyReadState, D3D12_RESOURCE_STATE_COPY_DEST },
-        	{ m_WaterDepthCopy.Get(), kWaterCopyReadState, D3D12_RESOURCE_STATE_COPY_DEST },
-        } );
+        waterGraph.AddPass( RG_PASS_NAME( "Water Copy" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            // CreateTexture()'s state param gets both into COPY_DEST automatically before this callback
+            // runs, so the callback itself never needs to check/transition scene->State or depth->State on
+            // entry — only m_SceneColor/m_DepthBuffer (not graph-tracked) still need a manual transition.
+            sceneHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
+                static_cast<int>( kSceneColorFormat ), L"WaterSceneCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
+            // Plain R32_FLOAT, not R32_TYPELESS+ALLOW_DEPTH_STENCIL: CopyResource only needs format-FAMILY
+            // compatibility (R32_TYPELESS and R32_FLOAT share one) and this is never bound as a real depth
+            // target — see the header comment.
+            depthHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
+                static_cast<int>( DXGI_FORMAT_R32_FLOAT ), L"WaterDepthCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
+            // Nothing ever Read()s either handle (both leave the graph via waterSceneSrvSlot/
+            // waterDepthSrvSlot, plain locals read back further down) — mark the side effect explicitly.
+            builder.MarkExternalEffect();
 
-        m_CmdList->CopyResource( m_WaterSceneCopy.Get(), m_SceneColor.Get() );
-        m_CmdList->CopyResource( m_WaterDepthCopy.Get(), m_DepthBuffer.Get() );
+            pass.m_executeCallback = [this, sceneHandle, depthHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* scene = g.GetPhysicalTexture( sceneHandle );
+                D3D12RenderTarget* depth = g.GetPhysicalTexture( depthHandle );
+                if ( !scene || !depth ) return;
 
-        m_CmdList->TransitionBarriers( {
-        	{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-        	{ m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-        	{ m_WaterSceneCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
-        	{ m_WaterDepthCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
-        } );
-        m_SceneColorInPixelState = false;   // the scene target is back to RENDER_TARGET regardless of before
+                // Both sources must leave their bound states, so drop the render targets first.
+                cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+
+                const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
+                    ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+                cmdList.TransitionBarriers( {
+                    { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
+                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
+                    } );
+
+                cmdList.CopyResource( scene->GetResource(), m_SceneColor.Get() );
+                cmdList.CopyResource( depth->GetResource(), m_DepthBuffer.Get() );
+
+                cmdList.TransitionBarriers( {
+                    { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+                    { scene->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
+                    { depth->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
+                    } );
+                scene->State = kWaterCopyReadState;
+                depth->State = kWaterCopyReadState;
+                m_SceneColorInPixelState = false;   // the scene target is back to RENDER_TARGET regardless of before
+                };
+            } );
+
+        waterGraph.Compile();
+        waterGraph.Execute( m_CmdList );
+
+        // Execute() has already run by this point (this is a local, synchronous graph — see the header
+        // comment), so the physical textures it placed are valid to query immediately, unlike the deferred
+        // postFxGraph pattern DoF/SMAA/etc. use.
+        if ( D3D12RenderTarget* scene = waterGraph.GetPhysicalTexture( sceneHandle ) ) {
+            if ( D3D12RenderTarget* depth = waterGraph.GetPhysicalTexture( depthHandle ) ) {
+                waterSceneSrvSlot = scene->GetSrvSlot();
+                waterDepthSrvSlot = depth->GetSrvSlot();
+                copiesReady = true;
+            }
+        }
 
         // Re-bind what the geometry passes had: HDR scene RTV + the main DSV.
         m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &mainDsv );
@@ -425,8 +375,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         // matrix's _33/_34 — pass them explicitly rather than relying on that transposition being obvious.
         cb.ProjA = projM._33;
         cb.ProjB = projM._34;
-        cb.DepthIndex = m_WaterDepthCopySrvSlot;
-        cb.SceneIndex = m_WaterSceneCopySrvSlot;
+        cb.DepthIndex = waterDepthSrvSlot;
+        cb.SceneIndex = waterSceneSrvSlot;
         // The distortion texture drives every wave normal in the shader. If it failed to load, fall back to
         // the 1x1 black texture: the distortion decode (x*2-1) then yields a constant vector, so the water
         // renders with static (unanimated) waves instead of not at all.

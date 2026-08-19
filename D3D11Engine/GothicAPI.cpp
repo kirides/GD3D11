@@ -1874,12 +1874,12 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     for ( auto&& it : SkeletalMeshVisuals ) {
         // Skip entries a background LoadzCModelData(...) job is still filling in - mutating
         // Meshes/SkeletalMeshes here would race with the worker thread writing to the same maps.
-        if ( !it.second->Ready.load() ) continue;
+        if ( !it.second->GetIsReady() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
     for ( auto&& it : SkeletalMeshNpcs ) {
-        if ( !it.second->Ready.load() ) continue;
+        if ( !it.second->GetIsReady() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
@@ -2418,7 +2418,11 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                     zCObject_AddRef( mi->MorphMeshVisual );
                 }
 
-                WorldConverter::Extract3DSMeshFromVisual2( pm, mi );
+                // Hand the expensive part (vertex unpacking + GPU buffer creation) to a worker thread -
+                // this fires once per distinct mesh during world load, and blocking here for every one of
+                // them is what makes loading (and mass-PFX-spawn) stutter. 'mi' is inserted below already
+                // Ready==false; draw sites must skip it until the job flips that back to true.
+                WorldConverter::Extract3DSMeshFromVisual2Async( vob->GetVisual(), pm, mi );
                 StaticMeshVisuals[pm] = mi;
             }
 
@@ -2585,7 +2589,7 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
         }
     }
 
-    if ( !skeletalMesh || !skeletalMesh->Ready.load() )
+    if ( !skeletalMesh || !skeletalMesh->GetIsReady() )
         return nullptr; // Still being built on a worker thread - don't touch its mesh data yet
 
     // A model can reach OnAddVob before Gothic has built its soft-skin list (freshly spawned NPCs
@@ -2818,7 +2822,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
 
-    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() )
         return; // Still being built on a worker thread - don't touch its mesh data yet
 
     model->SetIsVisible( true );
@@ -2938,11 +2942,14 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         // Check if this is loaded
         if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
             // It's not, extract it
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
-        // Check for changed visual
-        if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+        // Check for changed visual. Gated on GetIsReady(): the worker thread writes Visual as it
+        // finishes extracting, so comparing against it any earlier races the extraction job (mirrors
+        // the D3D12 attachment path).
+        if ( nodeAttachments[i].size() && nodeAttachments[i][0]->GetIsReady()
+            && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
                 // Remove attachment. Shared, so it goes back to the registry, not deleted here.
@@ -2953,7 +2960,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 continue; // Go to next attachment
             }
             // Load the new one
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
         if ( model->GetDrawHandVisualsOnly() ) {
@@ -2978,8 +2985,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
                 auto prevWorldNode = prevWorldMatrix * prevTransform;
 
-                if ( !mvi->Visual ) {
-                    LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                // Still being extracted on a worker thread — Meshes is being written to right now, so
+                // skip this attachment entirely for this frame rather than race it (mirrors D3D12).
+                if ( !mvi->GetIsReady() || !mvi->Visual ) {
                     continue;
                 }
 
@@ -3102,7 +3110,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
 
-    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() )
         return; // Still being built on a worker thread - don't touch its mesh data yet
 
     model->SetIsVisible( true );
@@ -3210,11 +3218,14 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
         // Check if this is loaded
         if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
             // It's not, extract it
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
-        // Check for changed visual
-        if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+        // Check for changed visual. Gated on GetIsReady(): the worker thread writes Visual as it
+        // finishes extracting, so comparing against it any earlier races the extraction job (mirrors
+        // the D3D12 attachment path).
+        if ( nodeAttachments[i].size() && nodeAttachments[i][0]->GetIsReady()
+            && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
             // Check for deleted attachment
             if ( !node->NodeVisual ) {
                 // Remove attachment. Shared, so it goes back to the registry, not deleted here.
@@ -3225,7 +3236,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 continue; // Go to next attachment
             }
             // Load the new one
-            WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
         }
 
         if ( model->GetDrawHandVisualsOnly() ) {
@@ -3247,8 +3258,9 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 XMFLOAT4X4 finalWorld;
                 XMStoreFloat4x4( &finalWorld, xmWorld * curTransform );
 
-                if ( !mvi->Visual ) {
-                    LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                // Still being extracted on a worker thread — Meshes is being written to right now, so
+                // skip this attachment entirely for this frame rather than race it (mirrors D3D12).
+                if ( !mvi->GetIsReady() || !mvi->Visual ) {
                     continue;
                 }
 
@@ -3369,6 +3381,10 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
             cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - skip until Meshes is safe to iterate.
+            if ( !TransVobInfo.normalVob->VisualInfo->GetIsReady() ) return;
+
             g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
             
@@ -3442,7 +3458,7 @@ void GothicAPI::DrawSkeletalVN() {
 
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
-        if ( model && vi->VisualInfo && static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() ) {
+        if ( model && vi->VisualInfo && static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() ) {
             XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
             XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
@@ -3754,6 +3770,11 @@ VobInfo* GothicAPI::TraceStaticMeshVobsBB( const XMFLOAT3& origin, const XMFLOAT
     XMFLOAT3 max;
 
     for ( auto& [vob, vobInfo] : VobMap ) {
+        // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+        // Extract3DSMeshFromVisual2Async) - skip until BBox/Meshes are safe to read (this is the editor's
+        // mouse-picking ray, which later walks vobInfo->VisualInfo->Meshes via TraceVisualInfo).
+        if ( !vobInfo->VisualInfo || !vobInfo->VisualInfo->GetIsReady() ) continue;
+
         XMMATRIX world = XMMatrixTranspose( XMLoadFloat4x4( vob->GetWorldMatrixPtr() ) );
         XMStoreFloat3( &min, XMVector3TransformCoord( XMLoadFloat3( &vobInfo->VisualInfo->BBox.Min ), world ) );
         XMStoreFloat3( &max, XMVector3TransformCoord( XMLoadFloat3( &vobInfo->VisualInfo->BBox.Max ), world ) );
@@ -6453,7 +6474,9 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
                     WorldConverter::ExtractProgMeshProtoFromModel( model, mi );
                 } else if ( zCProgMeshProto* progMesh = emitter->GetVisShpProgMesh() ) {
                     MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
-                    WorldConverter::Extract3DSMeshFromVisual2( progMesh, mi );
+                    // Same rationale as GothicAPI::OnAddVob: spawning many PFX with a prog-mesh particle
+                    // shape at once (e.g. a fire/smoke burst) shouldn't hitch the frame it happens on.
+                    WorldConverter::Extract3DSMeshFromVisual2Async( progMesh, progMesh, mi );
                 } else if ( zCMesh* mesh = emitter->GetVisShpMesh() ) {
                     MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     WorldConverter::ExtractProgMeshProtoFromMesh( mesh, mi );

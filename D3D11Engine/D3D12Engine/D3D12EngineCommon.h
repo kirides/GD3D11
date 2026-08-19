@@ -303,7 +303,6 @@ struct DXMarker {
             }
 
             UINT byteSize = static_cast<UINT>( (len + 1) * sizeof( wchar_t ) );
-            c->SetMarker( 0, text, byteSize );
             c->BeginEvent( 0, text, byteSize );
 
             // Increment tracking slot to match what DRED maps under the hood

@@ -20,8 +20,10 @@
 #include "D3D12GraphicsEngine.h"
 #include "D3D12Texture.h"
 #include "D3D12ResourceCreate.h"
+#include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include <memory>
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
@@ -41,127 +43,11 @@ namespace {
     constexpr DXGI_FORMAT kUnderwaterBlurFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
-/** (Re)creates the quarter-res blur ping-pong pair.
-
-    Called LAZILY from DrawUnderwaterEffects the first time the camera actually goes under water, and from the
-    resize path only if the pair already exists — same policy as the DoF textures, and for the same reason:
-    most sessions never trigger this and 32-bit address space is the scarce resource (see CLAUDE.md). Heap
-    slots are allocated once and re-pointed at the fresh resources. Non-fatal: on failure
-    m_UnderwaterResourcesReady stays false and DrawUnderwaterEffects no-ops, leaving the frame untinted. */
-bool D3D12GraphicsEngine::CreateUnderwaterResources( INT2 size ) {
-    m_UnderwaterResourcesReady = false;
-    m_UnderwaterCreateAttempted = true;
-    if ( size.x < 4 || size.y < 4 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device || !m_Allocator ) return false;
-    // Init runs before the first CreateSwapChain; don't build resources for a pipeline that failed there.
-    if ( !m_Pipelines.Underwater.BlurPSO || !m_Pipelines.Underwater.CompositePSO ) return false;
-
-    // Integer-divided like D3D11's fxbuffer->GetSizeX() / 4, and never below 1 texel so a tiny window cannot
-    // produce a zero-sized resource.
-    m_UnderwaterBlurSize = { std::max( 1, size.x / 4 ), std::max( 1, size.y / 4 ) };
-
-    D3D12MA::ALLOCATION_DESC heapDefault = {};
-    heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Texture2D.MipLevels = 1;
-    srv.Format = kUnderwaterBlurFormat;
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    uav.Format = kUnderwaterBlurFormat;
-
-    for ( UINT i = 0; i < 2; ++i ) {
-        D3D12_RESOURCE_DESC dd = {};
-        dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        dd.Width = static_cast<UINT64>( m_UnderwaterBlurSize.x );
-        dd.Height = static_cast<UINT>( m_UnderwaterBlurSize.y );
-        dd.DepthOrArraySize = 1;
-        dd.MipLevels = 1;
-        dd.Format = kUnderwaterBlurFormat;
-        dd.SampleDesc.Count = 1;
-        dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        // Both rest in UNORDERED_ACCESS between frames (see DrawUnderwaterEffects), so create them in it —
-        // that makes the "before" state at the top of the pass deterministic on the very first frame.
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, m_UnderwaterBlurAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_UnderwaterBlur[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create an underwater blur texture ("
-                << m_UnderwaterBlurSize.x << "x" << m_UnderwaterBlurSize.y << ").";
-            return false;
-        }
-        m_UnderwaterBlur[i]->SetName( i == 0 ? L"UnderwaterBlurH" : L"UnderwaterBlurV" );
-
-        if ( m_UnderwaterBlurSrvSlot[i] == UINT_MAX ) m_UnderwaterBlurSrvSlot[i] = AllocateSrvSlot();
-        if ( m_UnderwaterBlurUavSlot[i] == UINT_MAX ) m_UnderwaterBlurUavSlot[i] = AllocateSrvSlot();
-        if ( m_UnderwaterBlurSrvSlot[i] == UINT_MAX || m_UnderwaterBlurUavSlot[i] == UINT_MAX ) return false;
-
-        device->CreateShaderResourceView( m_UnderwaterBlur[i].Get(), &srv, GetSrvCpuHandle( m_UnderwaterBlurSrvSlot[i] ) );
-        device->CreateUnorderedAccessView( m_UnderwaterBlur[i].Get(), nullptr, &uav, GetSrvCpuHandle( m_UnderwaterBlurUavSlot[i] ) );
-    }
-
-    m_UnderwaterResourcesReady = true;
-    return true;
-}
-
-
-/** Blur H -> blur V (both quarter-res, both tinted) -> distorted full-res composite over the display target. */
-void D3D12GraphicsEngine::DrawUnderwaterEffects() {
-    if ( !Engine::GAPI->IsUnderWater() ) return;
-    if ( !m_FrameOpen || !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady ) return;
-    if ( !m_Pipelines.Underwater.BlurRootSig || !m_Pipelines.Underwater.BlurPSO
-        || !m_Pipelines.Underwater.CompositeRootSig || !m_Pipelines.Underwater.CompositePSO )
-        return;
-
-    // Lazily build the quarter-res pair the first time the player submerges. Creating a resource mid-frame is
-    // safe: nothing is destroyed here, so there is no in-flight resource to fence against.
-    if ( !m_UnderwaterResourcesReady ) {
-        if ( m_UnderwaterCreateAttempted ) return;
-        if ( !CreateUnderwaterResources( m_BackbufferResolution ) ) {
-            LogWarn() << "D3D12: the camera is under water but the underwater blur textures could not be "
-                         "created — the underwater effect is disabled.";
-            return;
-        }
-    }
-    // Resolution changed without the resources following (the resize path only rebuilds them if they already
-    // exist, so this is a belt-and-braces check rather than an expected state).
-    if ( m_UnderwaterBlurSize.x != std::max( 1, m_BackbufferResolution.x / 4 )
-        || m_UnderwaterBlurSize.y != std::max( 1, m_BackbufferResolution.y / 4 ) )
-        return;
-
-    // distortion2.dds drives both UV offsets. If it failed to load, fall back to the 1x1 white texture: that
-    // degrades the animated distortion to a constant sub-pixel shift instead of dropping the blue blur too.
-    const D3D12Texture* distortion = ( m_DistortionTexture && m_DistortionTexture->HasSRV() )
-        ? m_DistortionTexture.get()
-        : ( ( m_WhiteTexture && m_WhiteTexture->HasSRV() ) ? m_WhiteTexture.get() : nullptr );
-    if ( !distortion ) return;
-
-    DX_ZONE( m_CmdList.Get(), "Underwater FX" );
-    TracyD3D12ZoneCGX( m_CmdList.Get(), "Underwater FX" );
-
-    ID3D12Resource* displayTarget = GetDisplayTarget();
-    D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = GetDisplayRtv();
-
-    // --- Copy the finished display image into m_LdrCopy (the blur's source). ---
-    // A texture cannot be its own SRV and RTV, and the composite below writes the display target — same
-    // copy-then-read shape RenderSMAA / RenderSharpen use. m_LdrCopy rests in COPY_DEST.
-    {
-        m_CmdList->TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-    }
-    m_CmdList->CopyResource( m_LdrCopy.Get(), displayTarget );
-    {
-        // NON_PIXEL: the two blur passes read it from compute.
-        m_CmdList->TransitionBarriers( {
-            { m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-            { displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-        } );
-    }
-
-    // b0 UnderwaterBlurCB — see Shaders/D3D12/Underwater.hlsl. Only the source/destination and the step
-    // direction change between the two passes.
+// b0 UnderwaterBlurCB — see Shaders/D3D12/Underwater.hlsl. Only the source/destination and the step direction
+// change between the two blur passes. Lives on the heap (shared_ptr, not a stack local) because it is written
+// and read across MULTIPLE pass callbacks that run later, deferred inside the shared graph's Execute() — see
+// D3D12DoF.cpp's file header for why a plain stack local captured by reference can't be used here any more.
+namespace {
     struct BlurConsts {
         uint32_t SrcIndex;
         uint32_t OutIndex;
@@ -172,82 +58,155 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects() {
         float    OutResY;
         float    BlurSize;
         float    Pad;
-    } cb = {};
+    };
     static_assert( sizeof( BlurConsts ) == 12 * sizeof( uint32_t ),
         "BlurConsts must match Underwater.hlsl's b0 UnderwaterBlurCB and the 12 root constants pushed below" );
+}
 
-    std::copy( std::begin( kUnderwaterColorMod ), std::end( kUnderwaterColorMod ), std::begin( cb.ColorMod ) );
-    cb.OutResX = static_cast<float>( m_UnderwaterBlurSize.x );
-    cb.OutResY = static_cast<float>( m_UnderwaterBlurSize.y );
-    cb.BlurSize = kUnderwaterBlurSize;
+/** Registers the underwater FX passes (copy -> blur H -> blur V -> distorted composite) onto the SHARED
+    per-frame graph — see D3D12DoF.cpp's file header for the general pattern. Blur H -> blur V (both
+    quarter-res, both tinted) -> distorted full-res composite over the display target. The quarter-res blur
+    pair USED to be built lazily as members the first time the camera went under water (same reasoning DoF's
+    old members had — rare state, 32-bit VA is scarce). Both are purely single-frame scratch (written then
+    read once then dead, no cross-frame data dependency), so they are now D3D12RenderGraph-managed transient
+    textures acquired fresh every call instead — same conversion DoF's and the god-ray mask/zoom textures got
+    (see D3D12DoF.cpp / D3D12Fog.cpp). */
+void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
+    if ( !Engine::GAPI->IsUnderWater() ) return;
+    if ( !m_FrameOpen || !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady ) return;
+    if ( !m_Pipelines.Underwater.BlurRootSig || !m_Pipelines.Underwater.BlurPSO
+        || !m_Pipelines.Underwater.CompositeRootSig || !m_Pipelines.Underwater.CompositePSO )
+        return;
 
-    m_CmdList->SetComputeRootSignature( m_Pipelines.Underwater.BlurRootSig.Get() );
-    m_CmdList->SetPipelineState( m_Pipelines.Underwater.BlurPSO.Get() );
+    // distortion2.dds drives both UV offsets. If it failed to load, fall back to the 1x1 white texture: that
+    // degrades the animated distortion to a constant sub-pixel shift instead of dropping the blue blur too.
+    // A raw pointer is fine to capture by value below: both candidates are persistent engine members, not
+    // stack locals.
+    const D3D12Texture* distortion = ( m_DistortionTexture && m_DistortionTexture->HasSRV() )
+        ? m_DistortionTexture.get()
+        : ( ( m_WhiteTexture && m_WhiteTexture->HasSRV() ) ? m_WhiteTexture.get() : nullptr );
+    if ( !distortion ) return;
 
-    const UINT groupsX = ( static_cast<UINT>( m_UnderwaterBlurSize.x ) + 7 ) / 8;
-    const UINT groupsY = ( static_cast<UINT>( m_UnderwaterBlurSize.y ) + 7 ) / 8;
+    const INT2 blurSize = { std::max( 1, m_BackbufferResolution.x / 4 ), std::max( 1, m_BackbufferResolution.y / 4 ) };
+    const UINT groupsX = ( static_cast<UINT>( blurSize.x ) + 7 ) / 8;
+    const UINT groupsY = ( static_cast<UINT>( blurSize.y ) + 7 ) / 8;
 
-    // --- Pass 1: horizontal, full-res frame -> blur[0] (this is also the 4x downscale). ---
-    cb.SrcIndex = m_LdrCopySrvSlot;
-    cb.OutIndex = m_UnderwaterBlurUavSlot[0];
-    cb.TexelStepX = 1.0f / m_UnderwaterBlurSize.x;
-    cb.TexelStepY = 0.0f;
-    m_CmdList->SetComputeRoot32BitConstants( 0, 12, &cb, 0 );
-    m_CmdList->Dispatch( groupsX, groupsY, 1 );
+    auto cb = std::make_shared<BlurConsts>();
+    std::copy( std::begin( kUnderwaterColorMod ), std::end( kUnderwaterColorMod ), std::begin( cb->ColorMod ) );
+    cb->OutResX = static_cast<float>( blurSize.x );
+    cb->OutResY = static_cast<float>( blurSize.y );
+    cb->BlurSize = kUnderwaterBlurSize;
 
-    // UAV-write -> SRV-read needs a real state transition, not a UAV barrier: a UAV barrier only orders access
-    // and performs no cache flush, so the SRV read would be undefined.
-    {
-        m_CmdList->TransitionBarrier( m_UnderwaterBlur[0].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-    }
+    // Plain locals (not shared_ptr): a handle is only ever written once, synchronously, inside a pass's own
+    // setup lambda — never during the deferred Execute() — so by-value capture in any later lambda already
+    // sees the final value. See D3D12DoF.cpp's file header for the full explanation.
+    RGResourceHandle blurHHandle = RG_INVALID_HANDLE;
+    RGResourceHandle blurVHandle = RG_INVALID_HANDLE;
+    auto blurVSrvSlot = std::make_shared<UINT>( UINT_MAX );   // resolved by Blur V; read by Composite further down
 
-    // --- Pass 2: vertical, blur[0] -> blur[1]. ---
-    cb.SrcIndex = m_UnderwaterBlurSrvSlot[0];
-    cb.OutIndex = m_UnderwaterBlurUavSlot[1];
-    cb.TexelStepX = 0.0f;
-    cb.TexelStepY = 1.0f / m_UnderwaterBlurSize.y;
-    m_CmdList->SetComputeRoot32BitConstants( 0, 12, &cb, 0 );
-    m_CmdList->Dispatch( groupsX, groupsY, 1 );
-
-    {
-        m_CmdList->TransitionBarriers( {
-        	{ m_UnderwaterBlur[1].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-        	{ m_UnderwaterBlur[0].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+    // --- Copy the finished display image into m_LdrCopy (the blur's source). A texture cannot be its own
+    // SRV and RTV, and the composite pass writes the display target — same copy-then-read shape RenderSMAA /
+    // RenderSharpen use. m_LdrCopy rests in COPY_DEST. ---
+    graph.AddPass( RG_PASS_NAME( "Underwater Copy" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+        pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+            DX_ZONE( cmdList.Get(), "Underwater FX" );
+            ID3D12Resource* displayTarget = GetDisplayTarget();
+            cmdList.TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
+            cmdList.CopyResource( m_LdrCopy.Get(), displayTarget );
+            // NON_PIXEL: the two blur passes read it from compute.
+            cmdList.TransitionBarriers( {
+                { m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+                { displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+                } );
+            };
         } );
-    }
 
-    // --- Pass 3: full-res distorted composite back over the display target. ---
-    struct CompositeConsts {
-        uint32_t BlurIndex;
-        uint32_t DistortionIndex;
-        float    Time;
-        float    Pad;
-    } comp = {};
-    static_assert( sizeof( CompositeConsts ) == 4 * sizeof( uint32_t ),
-        "CompositeConsts must match Underwater.hlsl's b0 UnderwaterCompositeCB and the 4 root constants below" );
-    comp.BlurIndex = m_UnderwaterBlurSrvSlot[1];
-    comp.DistortionIndex = distortion->GetSrvSlot();
-    comp.Time = Engine::GAPI->GetTimeSeconds();   // D3D11's RI_Time
+    // --- Horizontal, full-res frame -> blurH (this is also the 4x downscale). --- CreateTexture()'s state
+    // param gets blurH into UNORDERED_ACCESS automatically; Blur V's Read() below transitions it to
+    // shader-read afterward — neither needs a manual check/transition here.
+    graph.AddPass( RG_PASS_NAME( "Underwater Blur H" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        blurHHandle = builder.CreateTexture( { static_cast<uint32_t>( blurSize.x ), static_cast<uint32_t>( blurSize.y ),
+            static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurH", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
-    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
-    const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
-    m_CmdList->RSSetViewports( 1, &vp );
-    m_CmdList->RSSetScissorRects( 1, &sc );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
-    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Underwater.CompositeRootSig.Get() );
-    m_CmdList->SetPipelineState( m_Pipelines.Underwater.CompositePSO.Get() );
-    m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, &comp, 0 );
-    m_CmdList->OMSetRenderTargets( 1, &displayRtv, FALSE, nullptr );
-    m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+        pass.m_executeCallback = [this, cb, groupsX, groupsY, blurHHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            D3D12RenderTarget* blurH = g.GetPhysicalTexture( blurHHandle );
+            if ( !blurH ) return;
 
-    // Resting states for the next frame: the scratch copy back to COPY_DEST (SMAA/sharpen expect to find it
-    // there), the blur pair back to UNORDERED_ACCESS. The display target stays RENDER_TARGET and bound, ready
-    // for Gothic's 2D UI/HUD to composite on top.
-    {
-        m_CmdList->TransitionBarriers( {
-        	{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
-        	{ m_UnderwaterBlur[1].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+            cb->SrcIndex = m_LdrCopySrvSlot;
+            cb->OutIndex = blurH->GetUavSlot();
+            cb->TexelStepX = 1.0f / blurH->GetWidth();
+            cb->TexelStepY = 0.0f;
+            cmdList.SetComputeRootSignature( m_Pipelines.Underwater.BlurRootSig.Get() );
+            cmdList.SetPipelineState( m_Pipelines.Underwater.BlurPSO.Get() );
+            cmdList.SetComputeRoot32BitConstants( 0, 12, cb.get(), 0 );
+            cmdList.Dispatch( groupsX, groupsY, 1 );
+            };
         } );
-    }
+
+    // --- Vertical, blurH -> blurV. ---
+    graph.AddPass( RG_PASS_NAME( "Underwater Blur V" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        builder.Read( blurHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        blurVHandle = builder.CreateTexture( { static_cast<uint32_t>( blurSize.x ), static_cast<uint32_t>( blurSize.y ),
+            static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurV", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        // The composite pass further down reads this pass's result via blurVSrvSlot, a plain shared value —
+        // not a graph Read(), so mark the side effect explicitly. Since nothing ever Read()s blurVHandle, its
+        // final transition to PIXEL_SHADER_RESOURCE below stays manual too — there's no Read() to hang it off.
+        builder.MarkExternalEffect();
+
+        pass.m_executeCallback = [this, cb, groupsX, groupsY, blurVSrvSlot, blurHHandle, blurVHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            D3D12RenderTarget* blurH = g.GetPhysicalTexture( blurHHandle );
+            D3D12RenderTarget* blurV = g.GetPhysicalTexture( blurVHandle );
+            if ( !blurH || !blurV ) return;
+
+            cb->SrcIndex = blurH->GetSrvSlot();
+            cb->OutIndex = blurV->GetUavSlot();
+            cb->TexelStepX = 0.0f;
+            cb->TexelStepY = 1.0f / blurV->GetHeight();
+            cmdList.SetComputeRootSignature( m_Pipelines.Underwater.BlurRootSig.Get() );
+            cmdList.SetPipelineState( m_Pipelines.Underwater.BlurPSO.Get() );
+            cmdList.SetComputeRoot32BitConstants( 0, 12, cb.get(), 0 );
+            cmdList.Dispatch( groupsX, groupsY, 1 );
+
+            cmdList.TransitionBarrier( blurV->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+            blurV->State = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            *blurVSrvSlot = blurV->GetSrvSlot();
+            };
+        } );
+
+    // --- Full-res distorted composite back over the display target. ---
+    graph.AddPass( RG_PASS_NAME( "Underwater Composite" ), [&, distortion]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+        pass.m_executeCallback = [this, distortion, blurVSrvSlot]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+            struct CompositeConsts {
+                uint32_t BlurIndex;
+                uint32_t DistortionIndex;
+                float    Time;
+                float    Pad;
+            } comp = {};
+            static_assert( sizeof( CompositeConsts ) == 4 * sizeof( uint32_t ),
+                "CompositeConsts must match Underwater.hlsl's b0 UnderwaterCompositeCB and the 4 root constants below" );
+            comp.BlurIndex = *blurVSrvSlot;
+            comp.DistortionIndex = distortion->GetSrvSlot();
+            comp.Time = Engine::GAPI->GetTimeSeconds();   // D3D11's RI_Time
+
+            ID3D12Resource* displayTarget = GetDisplayTarget();
+            D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = GetDisplayRtv();
+            const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+            const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+            cmdList.RSSetViewports( 1, &vp );
+            cmdList.RSSetScissorRects( 1, &sc );
+            cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+            cmdList.IASetVertexBuffers( 0, 0, nullptr );
+            cmdList.SetGraphicsRootSignature( m_Pipelines.Underwater.CompositeRootSig.Get() );
+            cmdList.SetPipelineState( m_Pipelines.Underwater.CompositePSO.Get() );
+            cmdList.SetGraphicsRoot32BitConstants( 0, 4, &comp, 0 );
+            cmdList.OMSetRenderTargets( 1, &displayRtv, FALSE, nullptr );
+            cmdList.DrawInstanced( 3, 1, 0, 0 );
+
+            // Resting state for the next frame: the scratch copy back to COPY_DEST (SMAA/sharpen expect to
+            // find it there). The display target stays RENDER_TARGET and bound, ready for Gothic's 2D UI/HUD
+            // to composite on top. The blur pair needs no explicit reset — D3D12RenderTarget::State is
+            // caller-maintained and self-correcting, same as DoF's and the god-ray textures.
+            cmdList.TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+            };
+        } );
 }

@@ -13,7 +13,7 @@
 MeshVisualInfo::~MeshVisualInfo() {
     // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
     // Never free the target out from under a running job.
-    if ( !Ready.load( std::memory_order_acquire ) ) {
+    if ( !GetIsReady() ) {
         WaitForPendingNodeVisualExtraction( this );
     }
     // The rest mesh is shared with every other zCMorphMesh resolving to the same rest pose.

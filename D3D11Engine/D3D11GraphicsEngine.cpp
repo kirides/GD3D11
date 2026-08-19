@@ -2932,7 +2932,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
             zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
             if ( !model || !vi->VisualInfo || !vi->Vob->GetShowVisual()
-                || !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() ) {
+                || !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() ) {
                 continue;
             }
             vi->UpdateState();
@@ -3159,7 +3159,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             model->SetIsVisible( true );
             if ( !vi->VisualInfo )
                 continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
-            if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+            if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() )
                 continue; // Still being built on a worker thread - don't touch its mesh data yet
             if ( !vi->Vob->GetShowVisual() )
                 continue;
@@ -3441,11 +3441,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 // Check if this is loaded
                 if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
-                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+                    WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
                 }
 
-                // Check for changed visual
-                if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+                // Check for changed visual. Gated on GetIsReady(): the worker thread writes Visual as
+                // it finishes extracting, so comparing against it any earlier races the extraction job
+                // (mirrors the D3D12 attachment path).
+                if ( nodeAttachments[i].size() && nodeAttachments[i][0]->GetIsReady()
+                    && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
                     // Check for deleted attachment
                     if ( !node->NodeVisual ) {
                         // Remove attachment. Shared, so it goes back to the registry, not deleted here.
@@ -3455,7 +3458,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         continue; // Go to next attachment
                     }
-                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+                    WorldConverter::ExtractNodeVisualAsync( i, node, nodeAttachments );
                 }
 
                 auto nodeAttachment = nodeAttachments.find( i );
@@ -3478,8 +3481,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
 
-                    if ( !mvi->Visual ) {
-                        LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                    // Still being extracted on a worker thread — Meshes is being written to right now,
+                    // so skip this attachment entirely for this frame rather than race it (mirrors D3D12).
+                    if ( !mvi->GetIsReady() || !mvi->Visual ) {
                         continue;
                     }
 
@@ -3571,7 +3575,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         // when it was last in range. Falls back to that copy until the rest mesh is built.
                         MeshVisualInfo* drawVis = mvi;
                         if ( isMMS && mvi->RestVisual
-                            && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
+                            && mvi->RestVisual->GetIsReady() ) {
                             drawVis = mvi->RestVisual;
                         }
 
@@ -5843,37 +5847,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
 
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        // World-mesh sub-meshes don't own standalone GPU buffers - section->WorldMeshes /
-        // worldMeshCache only carry an index range (MeshInfo::BaseIndexLocation) into the single
-        // wrapped world mesh (Engine::GAPI->GetWrappedWorldMesh()), packed as ExVertexStructGPU -
-        // the same buffer ShadowPass_DrawWorldMesh/CSM draw from. VS_ExCube's plain VS_INPUT can't
-        // decode that stream, so switch to the packed-decoding cube variant and bind the wrapped
-        // mesh once for this block; VOBs afterward are unpacked ExVertexStruct and need VS_ExCube
-        // back. FullStaticMesh (the FastShadows branch below) is the one exception - it's built as
-        // plain ExVertexStruct with its own buffer, so it keeps using whatever VS is already active.
-        //
-        // First pass: always draw the full (non-welded) index range - GetShadowAwareIndexCount(mesh,
-        // true) / mesh->BaseIndexLocation, as if every material were alpha-tested - rather than
-        // picking the shadow-welded range per material. Simpler, and correctness comes first; the
-        // welded/reduced range can come back once this is confirmed working.
-        bool usedPackedWorldMeshVS = false;
-        auto ensurePackedWorldMeshVS = [&]() {
-            if ( usedPackedWorldMeshVS ) return;
-            usedPackedWorldMeshVS = true;
-            SetActiveVertexShader( VShaderID::VS_ExPackedCube );
-            SetupVS_ExMeshDrawCall();
-            SetupVS_ExConstantBuffer();
-            ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
-            BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
-        };
-        auto drawFromWrappedMesh = [&]( MeshInfo* mesh ) {
-            ensurePackedWorldMeshVS();
-            const unsigned int count = GetShadowAwareIndexCount( mesh, true );
-            if ( !count ) return;
-            Context->DrawIndexed( count, mesh->BaseIndexLocation, 0 );
-            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += count / 3;
-        };
-
+        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
         //		 The current solution won't use the cache at all when there are
@@ -5920,7 +5894,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
                 }
 
-                drawFromWrappedMesh( meshInfoByKey->second );
+                // Draw from wrapped mesh
+                MeshInfo* mesh = meshInfoByKey->second;
+                DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
+                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                    GetShadowAwareIndexCount( mesh, isAlpha ) );
             }
         } else {
             auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::WorldMesh" ) );
@@ -5983,17 +5961,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                             }
                         }
 
-                        drawFromWrappedMesh( meshInfoByKey->second );
+                        // Draw from wrapped mesh
+                        MeshInfo* mesh = meshInfoByKey->second;
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
+                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                            GetShadowAwareIndexCount( mesh, isAlpha ) );
+
+                        if ( worldMeshCache ) {
+                            worldMeshCache->push_back( *meshInfoByKey );
+                        }
                     }
                 }
             }
-        }
-
-        if ( usedPackedWorldMeshVS ) {
-            // Restore VS_ExCube (plain unpacked ExVertexStruct) for the VOB/mob draws below.
-            SetActiveVertexShader( VShaderID::VS_ExCube );
-            SetupVS_ExMeshDrawCall();
-            SetupVS_ExConstantBuffer();
         }
     }
 
@@ -6040,6 +6019,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         VS_ExConstantBuffer_PerInstance cb;
 
         for ( auto const& vobInfo : rl ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - skip until Meshes/MeshesByTexture are safe to iterate.
+            if ( !vobInfo->VisualInfo->GetIsReady() ) continue;
+
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer( cb );
 
@@ -6240,39 +6223,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     void* lastTex = nullptr;
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
         auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::Layered" ) );
-
-        // World-mesh sub-meshes don't own standalone GPU buffers - section->WorldMeshes /
-        // worldMeshCache only carry an index range (MeshInfo::BaseIndexLocation) into the single
-        // wrapped world mesh (Engine::GAPI->GetWrappedWorldMesh()), packed as ExVertexStructGPU -
-        // the same buffer ShadowPass_DrawWorldMesh/CSM draw from. VS_ExLayered's plain VS_INPUT
-        // can't decode that stream, so switch to the packed-decoding layered variant and bind the
-        // wrapped mesh once for this block; VOBs drawn afterward are unpacked ExVertexStruct and
-        // need VS_ExLayered back. FullStaticMesh (the FastShadows branch below) is the one
-        // exception - it's built as plain ExVertexStruct with its own buffer, so it keeps using
-        // whatever VS is already active.
-        //
-        // First pass: always draw the full (non-welded) index range - GetShadowAwareIndexCount(mesh,
-        // true) / mesh->BaseIndexLocation - as if every material were alpha-tested, mirroring
-        // DrawWorldAround's GS-path equivalent.
-        bool usedPackedWorldMeshVS = false;
-        auto ensurePackedWorldMeshVS = [&]() {
-            if ( usedPackedWorldMeshVS ) return;
-            usedPackedWorldMeshVS = true;
-            SetActiveVertexShader( VShaderID::VS_ExPackedLayered );
-            SetupVS_ExMeshDrawCall();
-            SetupVS_ExConstantBuffer();
-            ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
-            BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
-        };
-        auto drawFromWrappedMeshInstanced = [&]( MeshInfo* mesh ) {
-            ensurePackedWorldMeshVS();
-            const unsigned int count = GetShadowAwareIndexCount( mesh, true );
-            if ( !count ) return;
-            Context->DrawIndexedInstanced( count, 6, mesh->BaseIndexLocation, 0, 0 );
-            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += count / 3;
-        };
-
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
         //		 The current solution won't use the cache at all when there are
@@ -6316,7 +6268,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     }
                 }
 
-                drawFromWrappedMeshInstanced( meshInfoByKey->second );
+                // Draw from wrapped mesh
+                MeshInfo* mesh = meshInfoByKey->second;
+                DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
+                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                    GetShadowAwareIndexCount( mesh, isAlpha ),
+                    6 );
             }
         } else {
             Frustum f;
@@ -6376,17 +6333,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             }
                         }
 
-                        drawFromWrappedMeshInstanced( meshInfoByKey->second );
+                        // Draw from wrapped mesh
+                        MeshInfo* mesh = meshInfoByKey->second;
+                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
+                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                            GetShadowAwareIndexCount( mesh, isAlpha ),
+                            6 );
+
+                        if ( worldMeshCache ) {
+                            worldMeshCache->push_back( *meshInfoByKey );
+                        }
                     }
                 }
             }
-        }
-
-        if ( usedPackedWorldMeshVS ) {
-            // Restore VS_ExLayered (plain unpacked ExVertexStruct) for the VOB/mob draws below.
-            SetActiveVertexShader( VShaderID::VS_ExLayered );
-            SetupVS_ExMeshDrawCall();
-            SetupVS_ExConstantBuffer();
         }
     }
     
@@ -6437,6 +6396,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         GfxTexture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - skip until Meshes/MeshesByTexture are safe to iterate.
+            if ( !vobInfo->VisualInfo->GetIsReady() ) continue;
+
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer( cb );
             BindDynamicCBToVertexShader( 1, AllocateDynamicCB( &cb ) );
@@ -8777,6 +8740,10 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 
 /** Draws a VOB (used for inventory) */
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
+    // Still being filled in on a worker thread (GothicAPI::OnAddVob's async Extract3DSMeshFromVisual2Async)
+    // - skip until Meshes is safe to iterate. The item pops in a frame or two later instead.
+    if ( !vob->VisualInfo || !vob->VisualInfo->GetIsReady() ) return;
+
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
 
     // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.

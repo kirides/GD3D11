@@ -2158,6 +2158,35 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
     s_PendingNodeVisuals.emplace_back( mi, nodeVisual, std::move( task ) );
 }
 
+void WorldConverter::Extract3DSMeshFromVisual2Async( zCVisual* holdVisual, zCProgMeshProto* pm, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
+    if ( !Engine::WorkerThreadPool ) {
+        Extract3DSMeshFromVisual2( pm, meshInfo );
+        return;
+    }
+
+    meshInfo->Ready.store( false, std::memory_order_relaxed );
+
+    zCObject_AddRef( holdVisual );
+
+    auto task = Engine::WorkerThreadPool->enqueue( [pm, meshInfo]( const std::stop_token& token ) {
+        if ( token.stop_requested() ) {
+            // World teardown / vob removed before a worker picked this up. 'meshInfo' is about to be
+            // deleted by the caller (which already waited for us via WaitForPendingNodeVisuals), so there
+            // is nothing left to fill in - just unblock that wait.
+            meshInfo->Ready.store( true, std::memory_order_release );
+            return;
+        }
+        Extract3DSMeshFromVisual2( pm, meshInfo );
+        meshInfo->Ready.store( true, std::memory_order_release );
+    } );
+
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    PruneFinishedNodeVisualsLocked();
+    s_PendingNodeVisuals.emplace_back( meshInfo, holdVisual, std::move( task ) );
+}
+
 /** Updates a Morph-Mesh visual */
 void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) {
     ZoneScoped;
