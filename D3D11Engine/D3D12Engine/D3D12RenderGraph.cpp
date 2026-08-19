@@ -3,6 +3,8 @@
 #include "D3D12GraphicsEngine.h"
 #include "D3D12EngineCommon.h"   // DXMarker
 #include "D3D12StateCache.h"     // D3D12CmdList
+#include "../Logger.h"
+#include <algorithm>
 
 // Implement D3D12RGBuilder methods (must be done after D3D12RenderGraph is fully defined)
 RGResourceHandle D3D12RGBuilder::Read( RGResourceHandle handle ) {
@@ -24,8 +26,10 @@ RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D
     uint32_t index = m_nextHandle++;
 
     m_externalTextures.resize( m_nextHandle, nullptr );
-    m_activeTextures.resize( m_nextHandle );
+    m_activeTextures.resize( m_nextHandle, nullptr );
     m_resourceDescs.resize( m_nextHandle );
+    m_resourceOffsets.resize( m_nextHandle, 0 );
+    m_resourceHasOffset.resize( m_nextHandle, false );
 
     m_externalTextures[index] = externalTarget;
     m_resourceDescs[index] = { 0, 0, 0, name }; // Dummy desc for name tracking
@@ -37,8 +41,10 @@ RGResourceHandle D3D12RenderGraph::RegisterResource( const RGTextureDesc& desc )
     uint32_t index = m_nextHandle++;
 
     m_externalTextures.resize( m_nextHandle, nullptr );
-    m_activeTextures.resize( m_nextHandle );
+    m_activeTextures.resize( m_nextHandle, nullptr );
     m_resourceDescs.resize( m_nextHandle );
+    m_resourceOffsets.resize( m_nextHandle, 0 );
+    m_resourceHasOffset.resize( m_nextHandle, false );
 
     m_resourceDescs[index] = desc;
 
@@ -69,6 +75,67 @@ void D3D12RenderGraph::Compile() {
             m_resourceLifetimes[index].isRead = true;
         }
     }
+
+    // --- Interval coloring: decide WHICH arena byte range each internal, actually-read resource gets. ---
+    // A simple best-fit "free list keyed by when its current occupant's lifetime ends" allocator. Resource
+    // counts here are a handful to a few dozen even in a heavy post-fx graph, so the O(n^2) scan below is
+    // negligible CPU cost run once per Compile() (i.e. once per graph rebuild, typically once per frame).
+    m_resourceOffsets.assign( m_nextHandle, 0 );
+    m_resourceHasOffset.assign( m_nextHandle, false );
+    if ( !m_arena ) return;
+
+    struct ArenaRange { UINT64 offset; UINT64 size; uint32_t occupantLastPass; };
+    static thread_local std::vector<ArenaRange> ranges;   // reused scratch, cleared below — not per-frame growth
+    ranges.clear();
+    UINT64 bumpOffset = 0;
+
+    // Process in firstPass order so "has this range's occupant already finished by the time I start"
+    // is a meaningful question — an index-order scan would let a later-starting resource steal a range
+    // out from under one that starts earlier but was registered with a higher handle index.
+    std::vector<uint32_t> order;
+    order.reserve( m_nextHandle );
+    for ( uint32_t i = 0; i < m_nextHandle; ++i ) {
+        if ( m_externalTextures[i] != nullptr ) continue;   // external resources are never arena-backed
+        if ( !m_resourceLifetimes[i].isRead ) continue;      // never allocated at all (RenderGraph::Execute kills the pass)
+        order.push_back( i );
+    }
+    std::sort( order.begin(), order.end(), [this]( uint32_t a, uint32_t b ) {
+        return m_resourceLifetimes[a].firstPass < m_resourceLifetimes[b].firstPass;
+        } );
+
+    for ( uint32_t i : order ) {
+        const RGTextureDesc& desc = m_resourceDescs[i];
+        const bool needsUav = ( desc.textureFlags & 1u ) != 0;
+        UINT64 size = 0, alignment = 0;
+        m_arena->GetAllocationInfo( desc.width, desc.height, static_cast<DXGI_FORMAT>( desc.format ), needsUav, size, alignment );
+        if ( size == 0 ) continue;   // GetAllocationInfo failed (no device) — leave unassigned, Execute skips it
+
+        const uint32_t firstPass = m_resourceLifetimes[i].firstPass;
+        const uint32_t lastPass = m_resourceLifetimes[i].lastPass;
+
+        int best = -1;
+        for ( size_t r = 0; r < ranges.size(); ++r ) {
+            if ( ranges[r].occupantLastPass >= firstPass ) continue;   // still in use when this one needs to start
+            if ( ranges[r].size < size ) continue;
+            if ( best == -1 || ranges[r].size < ranges[(size_t)best].size ) best = (int)r;   // best fit
+        }
+
+        if ( best != -1 ) {
+            ranges[(size_t)best].occupantLastPass = lastPass;
+            m_resourceOffsets[i] = ranges[(size_t)best].offset;
+        } else {
+            UINT64 offset = alignment ? ( ( bumpOffset + alignment - 1 ) / alignment ) * alignment : bumpOffset;
+            if ( offset + size > D3D12AliasedTextureArena::kArenaCapacityBytes ) {
+                LogWarn() << "D3D12RenderGraph: aliasing arena exhausted (" << ( D3D12AliasedTextureArena::kArenaCapacityBytes / (1024*1024) )
+                    << " MB) — a transient resource will be skipped this frame.";
+                continue;   // m_resourceHasOffset[i] stays false; AllocateResourcesForPass skips it
+            }
+            ranges.push_back( { offset, size, lastPass } );
+            m_resourceOffsets[i] = offset;
+            bumpOffset = offset + size;
+        }
+        m_resourceHasOffset[i] = true;
+    }
 }
 
 void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
@@ -76,7 +143,7 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
     for ( size_t i = 0; i < m_passes.size(); ++i ) {
         const auto& pass = m_passes[i];
 
-        AllocateResourcesForPass( i );
+        AllocateResourcesForPass( i, cmdList );
 
         // Eliminate any passes whose writes are never read
         bool isPassDead = false;
@@ -97,35 +164,19 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
             ZoneName( pass->m_name.narrow, strlen( pass->m_name.narrow ) );
             pass->m_executeCallback( *this, cmdList );
         }
-
-        ReleaseResourcesForPass( i );
     }
 }
 
-void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex ) {
+void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList ) {
     for ( uint32_t i = 0; i < m_resourceLifetimes.size(); ++i ) {
-        if ( m_resourceLifetimes[i].firstPass == (uint32_t)passIndex ) {
-            if ( m_externalTextures[i] != nullptr ) continue;
-            if ( !m_resourceLifetimes[i].isRead ) continue;
+        if ( m_resourceLifetimes[i].firstPass != (uint32_t)passIndex ) continue;
+        if ( m_externalTextures[i] != nullptr ) continue;
+        if ( !m_resourceLifetimes[i].isRead ) continue;
+        if ( !m_resourceHasOffset[i] ) continue;   // Compile() couldn't fit it — leave m_activeTextures[i] null
 
-            const RGTextureDesc& desc = m_resourceDescs[i];
-            D3D12TexturePool::Description poolDesc{
-                desc.width, desc.height, static_cast<DXGI_FORMAT>( desc.format ),
-                ( desc.textureFlags & 1u ) != 0   // bit 0 == NeedsUav
-            };
-
-            m_activeTextures[i] = m_texturePool->Acquire( poolDesc );
-        }
-    }
-}
-
-void D3D12RenderGraph::ReleaseResourcesForPass( size_t passIndex ) {
-    for ( uint32_t i = 0; i < m_resourceLifetimes.size(); ++i ) {
-        if ( m_resourceLifetimes[i].lastPass == (uint32_t)passIndex ) {
-            if ( m_externalTextures[i] != nullptr ) continue;
-
-            // Resetting the handle triggers returning it to the D3D12TexturePool automatically.
-            m_activeTextures[i].reset();
-        }
+        const RGTextureDesc& desc = m_resourceDescs[i];
+        const bool needsUav = ( desc.textureFlags & 1u ) != 0;
+        m_activeTextures[i] = m_arena->Acquire( m_resourceOffsets[i], desc.width, desc.height,
+            static_cast<DXGI_FORMAT>( desc.format ), needsUav, cmdList );
     }
 }

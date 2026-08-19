@@ -104,6 +104,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         // that infrastructure stays unavailable until the next Init(). Nothing in today's frame depends on it.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the pooled-render-target RTV heap.";
     }
+    if ( !m_AliasArena.Attach( *this ) ) {
+        // Non-fatal for the same reason: no pass constructs a D3D12RenderGraph yet (see D3D12RenderGraph.h).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the render-graph aliasing arena.";
+    }
     if ( !m_Pipelines.Init( &m_Device, &m_ShaderBackend ) ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;

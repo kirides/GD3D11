@@ -813,6 +813,9 @@
     <ClInclude Include="D3D12Engine\D3D12RenderGraph.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12AliasedTextureArena.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12LineRenderer.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1047,6 +1050,9 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12RenderGraph.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12AliasedTextureArena.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12AO.cpp">
