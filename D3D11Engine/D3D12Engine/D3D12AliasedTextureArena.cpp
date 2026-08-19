@@ -45,6 +45,13 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     return m_RtvHeap.Init( m_Device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxSlots, L"D3D12AliasedTextureArena_RTV" );
 }
 
+UINT64 D3D12AliasedTextureArena::ReserveBumpRange( UINT64 size, UINT64 alignment ) {
+    const UINT64 offset = alignment ? ( ( m_FrameBumpOffset + alignment - 1 ) / alignment ) * alignment : m_FrameBumpOffset;
+    if ( offset + size > kArenaCapacityBytes ) return UINT64_MAX;
+    m_FrameBumpOffset = offset + size;
+    return offset;
+}
+
 void D3D12AliasedTextureArena::GetAllocationInfo( UINT width, UINT height, DXGI_FORMAT format, bool needsUav, UINT64& outSize, UINT64& outAlignment ) const {
     outSize = 0;
     outAlignment = 0;

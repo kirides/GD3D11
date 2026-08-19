@@ -13,6 +13,7 @@
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12ResourceCreate.h"
+#include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"
@@ -97,70 +98,10 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
 }
 
 
-bool D3D12GraphicsEngine::CreateFogResources( INT2 size ) {
-    // Quarter-resolution god-ray chain (mask -> radial blur), the D3D12 equivalent of D3D11's
-    // GetTempBufferDS4() pool textures. HDR format so bright sky pixels keep their intensity through the
-    // 64-tap blur, exactly like D3D11 (which uses GetBackBufferFormat(), i.e. its HDR intermediate).
-    m_FogResourcesReady = false;
-    m_GodRaySize = { 0, 0 };
-    if ( size.x < 8 || size.y < 8 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device ) return false;
-
-    const INT2 ds4 = { std::max( 1, size.x / 4 ), std::max( 1, size.y / 4 ) };
-
-    D3D12MA::ALLOCATION_DESC heapDefault = {};
-    heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
-
-    auto makeTex = [&]( ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
-        D3D12_RESOURCE_DESC dd = {};
-        dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        dd.Width = static_cast<UINT64>( ds4.x );
-        dd.Height = static_cast<UINT>( ds4.y );
-        dd.DepthOrArraySize = 1;
-        dd.MipLevels = 1;
-        dd.Format = kSceneColorFormat;
-        dd.SampleDesc.Count = 1;
-        dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create a god-ray texture (" << ds4.x << "x" << ds4.y << ").";
-            return false;
-        }
-        out->SetName( name );
-        return true;
-        };
-
-    if ( !makeTex( m_GodRayMask, m_GodRayMaskAlloc, L"GodRayMask" ) ) return false;
-    if ( !makeTex( m_GodRayZoom, m_GodRayZoomAlloc, L"GodRayZoom" ) ) return false;
-
-    auto ensureSlot = [&]( UINT& slot ) -> bool {
-        if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
-        return slot != UINT_MAX;
-        };
-    if ( !ensureSlot( m_GodRayMaskSrvSlot ) || !ensureSlot( m_GodRayMaskUavSlot )
-        || !ensureSlot( m_GodRayZoomSrvSlot ) || !ensureSlot( m_GodRayZoomUavSlot ) )
-        return false;
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-    srv.Format = kSceneColorFormat;
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Texture2D.MipLevels = 1;
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-    uav.Format = kSceneColorFormat;
-    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-
-    device->CreateShaderResourceView( m_GodRayMask.Get(), &srv, GetSrvCpuHandle( m_GodRayMaskSrvSlot ) );
-    device->CreateUnorderedAccessView( m_GodRayMask.Get(), nullptr, &uav, GetSrvCpuHandle( m_GodRayMaskUavSlot ) );
-    device->CreateShaderResourceView( m_GodRayZoom.Get(), &srv, GetSrvCpuHandle( m_GodRayZoomSrvSlot ) );
-    device->CreateUnorderedAccessView( m_GodRayZoom.Get(), nullptr, &uav, GetSrvCpuHandle( m_GodRayZoomUavSlot ) );
-
-    m_GodRaySize = ds4;
-    m_FogResourcesReady = true;
-    return true;
-}
+// God-ray mask + zoom textures used to be built here as members (see CreateFogResources's former home) — both
+// are purely single-frame scratch (written then read once then dead, no cross-frame data dependency), so they
+// are now D3D12RenderGraph-managed transient textures acquired fresh every call inside RenderFogAndGodRays
+// instead. Same conversion DoF's scratch textures got — see D3D12DoF.cpp.
 
 
 bool D3D12GraphicsEngine::EvaluateHeightFogActive() const {
@@ -192,8 +133,9 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
 
     // God rays: `EnableGodRays && isOutdoor` (D3D11), plus this backend's resource/PSO guards. The outdoor
     // test is already folded into EvaluateHeightFogActive; redo the BSP check here so god rays can still run
-    // in the (settings-wise possible) DrawFog=off case.
-    bool godRays = settings.EnableGodRays && m_FogResourcesReady
+    // in the (settings-wise possible) DrawFog=off case. No resource-readiness check any more: the mask/zoom
+    // textures are graph-managed transients acquired on demand below, not built ahead of time.
+    bool godRays = settings.EnableGodRays
         && m_Pipelines.Fog.MaskPSO && m_Pipelines.Fog.ZoomPSO && m_Pipelines.Fog.GodRayRootSig
         && m_SceneColorSrvSlot != UINT_MAX;
     if ( godRays ) {
@@ -239,8 +181,8 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
                 if ( std::abs( zoomConsts.Center[1] - 0.5f ) > 0.5f )
                     zoomConsts.Weight *= std::max( 0.0f, 1.0f - ( std::abs( zoomConsts.Center[1] - 0.5f ) - 0.5f ) / 0.5f );
 
-                zoomConsts.MaskIndex = m_GodRayMaskSrvSlot;
-                zoomConsts.OutputIndex = m_GodRayZoomUavSlot;
+                // MaskIndex/OutputIndex are resolved once the graph actually places the two textures below
+                // (their SRV/UAV slots don't exist yet at this point).
             }
         }
     }
@@ -260,44 +202,90 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
     }
 
     // ---------------------------------------------------------------------------------------------------
-    // God rays: quarter-res mask -> quarter-res radial blur (both compute, both bindless).
+    // God rays: quarter-res mask -> quarter-res radial blur (both compute, both bindless), through a local
+    // D3D12RenderGraph — same conversion DoF's scratch textures got (see D3D12DoF.cpp), and for the same
+    // reason: both textures are written then read once then dead, with no cross-frame data dependency.
     // ---------------------------------------------------------------------------------------------------
+    UINT godRayZoomSrvSlot = UINT_MAX;   // resolved by the Zoom pass below; read by the composition further down
     if ( godRays ) {
-        // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV.
+        // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV. Not
+        // graph-managed (m_SceneColor is a plain member, not imported), so this happens before the graph runs.
         if ( !m_SceneColorInPixelState ) {
             m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
             m_SceneColorInPixelState = true;
         }
         m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
-        const UINT gx = ( static_cast<UINT>( m_GodRaySize.x ) + 7 ) / 8;
-        const UINT gy = ( static_cast<UINT>( m_GodRaySize.y ) + 7 ) / 8;
+        const INT2 godRaySize = { std::max( 1, m_Resolution.x / 4 ), std::max( 1, m_Resolution.y / 4 ) };
+        const UINT gx = ( static_cast<UINT>( godRaySize.x ) + 7 ) / 8;
+        const UINT gy = ( static_cast<UINT>( godRaySize.y ) + 7 ) / 8;
 
-        m_CmdList->SetComputeRootSignature( m_Pipelines.Fog.GodRayRootSig.Get() );
+        D3D12RenderGraph fogGraph( &m_AliasArena );
+        RGResourceHandle maskHandle = RG_INVALID_HANDLE;
+        RGResourceHandle zoomHandle = RG_INVALID_HANDLE;
 
-        // --- Pass 1: mask (scene color + depth -> m_GodRayMask) ---
-        GodRayMaskConsts maskConsts = { m_SceneColorSrvSlot, m_DepthSrvSlot, m_GodRayMaskUavSlot, 0 };
-        m_CmdList->SetPipelineState( m_Pipelines.Fog.MaskPSO.Get() );
-        m_CmdList->SetComputeRoot32BitConstants( 0, 4, &maskConsts, 0 );
-        m_CmdList->Dispatch( gx, gy, 1 );
+        // --- Pass 1: mask (scene color + depth -> mask) ---
+        fogGraph.AddPass( RG_PASS_NAME( "God Ray Mask" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            maskHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
+                static_cast<int>( kSceneColorFormat ), L"GodRayMask", 1u } );
 
-        // UAV write -> SRV read needs a real state transition, not just a UAV barrier (see RenderBloom).
-        {
-            m_CmdList->TransitionBarrier( m_GodRayMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        }
+            pass.m_executeCallback = [this, gx, gy, maskHandle]( const D3D12RenderGraph& graph, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* mask = graph.GetPhysicalTexture( maskHandle );
+                if ( !mask ) return;
 
-        // --- Pass 2: radial blur (m_GodRayMask -> m_GodRayZoom) ---
-        m_CmdList->SetPipelineState( m_Pipelines.Fog.ZoomPSO.Get() );
-        m_CmdList->SetComputeRoot32BitConstants( 0, 12, &zoomConsts, 0 );
-        m_CmdList->Dispatch( gx, gy, 1 );
+                if ( mask->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
+                    cmdList.TransitionBarrier( mask->GetResource(), mask->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                    mask->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                }
 
-        // Result -> pixel-shader readable for the composition; mask back to its resting UNORDERED_ACCESS.
-        {
-            m_CmdList->TransitionBarriers( {
-            	{ m_GodRayZoom.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-            	{ m_GodRayMask.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+                GodRayMaskConsts maskConsts = { m_SceneColorSrvSlot, m_DepthSrvSlot, mask->GetUavSlot(), 0 };
+                cmdList.SetComputeRootSignature( m_Pipelines.Fog.GodRayRootSig.Get() );
+                cmdList.SetPipelineState( m_Pipelines.Fog.MaskPSO.Get() );
+                cmdList.SetComputeRoot32BitConstants( 0, 4, &maskConsts, 0 );
+                cmdList.Dispatch( gx, gy, 1 );
+
+                // UAV write -> SRV read needs a real state transition, not just a UAV barrier (see RenderBloom).
+                cmdList.TransitionBarrier( mask->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+                mask->State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                };
             } );
-        }
+
+        // --- Pass 2: radial blur (mask -> zoom) ---
+        fogGraph.AddPass( RG_PASS_NAME( "God Ray Zoom" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            builder.Read( maskHandle );
+            zoomHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
+                static_cast<int>( kSceneColorFormat ), L"GodRayZoom", 1u } );
+            // The composition draw further down reads this pass's result via godRayZoomSrvSlot, a plain
+            // local captured by reference — not a graph Read(), so mark the side effect explicitly (see
+            // D3D12RenderPass::m_hasExternalSideEffect).
+            builder.MarkExternalEffect();
+
+            pass.m_executeCallback = [this, gx, gy, &zoomConsts, &godRayZoomSrvSlot, maskHandle, zoomHandle]( const D3D12RenderGraph& graph, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* mask = graph.GetPhysicalTexture( maskHandle );
+                D3D12RenderTarget* zoom = graph.GetPhysicalTexture( zoomHandle );
+                if ( !mask || !zoom ) return;
+
+                if ( zoom->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
+                    cmdList.TransitionBarrier( zoom->GetResource(), zoom->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                    zoom->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                }
+
+                zoomConsts.MaskIndex = mask->GetSrvSlot();
+                zoomConsts.OutputIndex = zoom->GetUavSlot();
+                cmdList.SetComputeRootSignature( m_Pipelines.Fog.GodRayRootSig.Get() );
+                cmdList.SetPipelineState( m_Pipelines.Fog.ZoomPSO.Get() );
+                cmdList.SetComputeRoot32BitConstants( 0, 12, &zoomConsts, 0 );
+                cmdList.Dispatch( gx, gy, 1 );
+
+                // Result -> pixel-shader readable for the composition below.
+                cmdList.TransitionBarrier( zoom->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+                zoom->State = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                godRayZoomSrvSlot = zoom->GetSrvSlot();
+                };
+            } );
+
+        fogGraph.Compile();
+        fogGraph.Execute( m_CmdList );
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -392,7 +380,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
 
     FogCompositeConsts consts = {};
     consts.DepthIndex = m_DepthSrvSlot;
-    consts.GodRaysIndex = godRays ? m_GodRayZoomSrvSlot : 0u;
+    consts.GodRaysIndex = godRays ? godRayZoomSrvSlot : 0u;
     consts.Flags = ( heightFog ? kFogFlagHeightFog : 0u ) | ( godRays ? kFogFlagGodRays : 0u );
 
     m_CmdList->SetPipelineState( m_Pipelines.Fog.CompositePSO.Get() );
@@ -402,17 +390,12 @@ void D3D12GraphicsEngine::RenderFogAndGodRays() {
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, &consts, 0 );
     m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 
-    // Restore the resting states the rest of the frame (and the next one) expects: god-ray result back to
-    // UNORDERED_ACCESS, depth back to DEPTH_WRITE. The scene color stays bound as the RTV, which is exactly
-    // what RenderBloom (the next pass) assumes.
-    {
-        D3D12ResourceTransition b[2];
-        UINT n = 0;
-        if ( godRays )
-            b[n++] = { m_GodRayZoom.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
-        b[n++] = { m_DepthBuffer.Get(), kDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE };
-        m_CmdList->TransitionBarriers( b, n );
-    }
+    // Restore the resting state the rest of the frame (and the next one) expects: depth back to DEPTH_WRITE.
+    // The scene color stays bound as the RTV, which is exactly what RenderBloom (the next pass) assumes. The
+    // god-ray zoom texture needs no explicit reset any more — D3D12RenderTarget::State is caller-maintained
+    // and self-correcting: next frame's Zoom pass checks it and transitions from whatever it actually finds
+    // (see the pass callback above), the same way DoF's scratch textures work.
+    m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), kDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 
     m_ColorTargetIsHDR = true;
 }

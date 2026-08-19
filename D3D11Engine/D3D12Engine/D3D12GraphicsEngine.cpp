@@ -1714,7 +1714,8 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     m_DoFCreateAttempted = false;
     if ( m_DoFResourcesReady ) CreateDoFResources( renderSize );
     CreateHiZResources( renderSize );    // without it the GPU VOB cull runs frustum-only (no occlusion)
-    CreateFogResources( renderSize );    // height fog/god rays are opt-in; RenderFogAndGodRays no-ops without them
+    // Height-fog/god-ray textures no longer need a resize hook — they're D3D12RenderGraph-managed transients
+    // acquired fresh at the current resolution every call (see D3D12Fog.cpp's RenderFogAndGodRays).
     ReleaseWaterCopyResources();         // rebuilt at the new size by the next frame that renders water
     if ( !CreateLumPartialBuffer( renderSize ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on this and skips the update, leaving m_LumAdaptedBuffer
@@ -1731,9 +1732,9 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
     ReleaseFsr3();                          // display size is half of the pair the FFX context is built for
     CreateLdrCopyResource( displaySize );   // shared LDR scratch for SMAA/sharpen; both no-op without it
-    CreateSmaaResources( displaySize );     // SMAA is opt-in (AntiAliasingMode == AA_SMAA)
-    m_UnderwaterCreateAttempted = false;
-    if ( m_UnderwaterResourcesReady ) CreateUnderwaterResources( displaySize );
+    // SMAA's edges/blend and the underwater blur pair no longer need a resize hook — both are
+    // D3D12RenderGraph-managed transients acquired fresh at the current resolution every call (see
+    // D3D12PostFX.cpp's RenderSMAA / D3D12Underwater.cpp's DrawUnderwaterEffects).
 }
 
 
@@ -1886,6 +1887,10 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     PausedFrameLimiterBeginFrame();
 
     TracyD3D12BeginFrame;
+
+    // Reset the render-graph aliasing arena's persistent bump cursor for this frame — see
+    // D3D12AliasedTextureArena::ReserveBumpRange for why this must be a per-FRAME reset, not per-graph.
+    m_AliasArena.BeginFrame();
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in

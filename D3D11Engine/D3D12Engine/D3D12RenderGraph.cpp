@@ -100,7 +100,10 @@ void D3D12RenderGraph::Compile() {
     struct ArenaRange { UINT64 offset; UINT64 size; uint32_t occupantLastPass; };
     static thread_local std::vector<ArenaRange> ranges;   // reused scratch, cleared below — not per-frame growth
     ranges.clear();
-    UINT64 bumpOffset = 0;
+    // NOT reset to 0 here: fresh space is bump-allocated through the ARENA's own persistent, frame-scoped
+    // cursor (D3D12AliasedTextureArena::ReserveBumpRange), shared by every D3D12RenderGraph that runs this
+    // frame — see that method's comment for why a graph-local cursor starting at 0 every Compile() call
+    // would make independent per-function graphs (DoF's, the god-ray pass's, ...) collide and thrash.
 
     // Process in firstPass order so "has this range's occupant already finished by the time I start"
     // is a meaningful question — an index-order scan would let a later-starting resource steal a range
@@ -137,15 +140,14 @@ void D3D12RenderGraph::Compile() {
             ranges[(size_t)best].occupantLastPass = lastPass;
             m_resourceOffsets[i] = ranges[(size_t)best].offset;
         } else {
-            UINT64 offset = alignment ? ( ( bumpOffset + alignment - 1 ) / alignment ) * alignment : bumpOffset;
-            if ( offset + size > D3D12AliasedTextureArena::kArenaCapacityBytes ) {
+            const UINT64 offset = m_arena->ReserveBumpRange( size, alignment );
+            if ( offset == UINT64_MAX ) {
                 LogWarn() << "D3D12RenderGraph: aliasing arena exhausted (" << ( D3D12AliasedTextureArena::kArenaCapacityBytes / (1024*1024) )
                     << " MB) — a transient resource will be skipped this frame.";
                 continue;   // m_resourceHasOffset[i] stays false; AllocateResourcesForPass skips it
             }
             ranges.push_back( { offset, size, lastPass } );
             m_resourceOffsets[i] = offset;
-            bumpOffset = offset + size;
         }
         m_resourceHasOffset[i] = true;
     }
