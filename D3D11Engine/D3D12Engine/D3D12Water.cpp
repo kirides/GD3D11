@@ -297,13 +297,19 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         RGResourceHandle depthHandle = RG_INVALID_HANDLE;
 
         waterGraph.AddPass( RG_PASS_NAME( "Water Copy" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            // CreateTexture()'s state param gets both into COPY_DEST automatically before this callback
+            // runs, so the callback itself never needs to check/transition scene->State or depth->State on
+            // entry — only m_SceneColor/m_DepthBuffer (not graph-tracked) still need a manual transition.
             sceneHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
-                static_cast<int>( kSceneColorFormat ), L"WaterSceneCopy", 0u } );
+                static_cast<int>( kSceneColorFormat ), L"WaterSceneCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
             // Plain R32_FLOAT, not R32_TYPELESS+ALLOW_DEPTH_STENCIL: CopyResource only needs format-FAMILY
             // compatibility (R32_TYPELESS and R32_FLOAT share one) and this is never bound as a real depth
             // target — see the header comment.
             depthHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
-                static_cast<int>( DXGI_FORMAT_R32_FLOAT ), L"WaterDepthCopy", 0u } );
+                static_cast<int>( DXGI_FORMAT_R32_FLOAT ), L"WaterDepthCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
+            // Nothing ever Read()s either handle (both leave the graph via waterSceneSrvSlot/
+            // waterDepthSrvSlot, plain locals read back further down) — mark the side effect explicitly.
+            builder.MarkExternalEffect();
 
             pass.m_executeCallback = [this, sceneHandle, depthHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
                 D3D12RenderTarget* scene = g.GetPhysicalTexture( sceneHandle );
@@ -315,15 +321,10 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
                 const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
                     ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-                D3D12ResourceTransition pre[4] = {
+                cmdList.TransitionBarriers( {
                     { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
                     { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
-                    { scene->GetResource(), scene->State, D3D12_RESOURCE_STATE_COPY_DEST },
-                    { depth->GetResource(), depth->State, D3D12_RESOURCE_STATE_COPY_DEST },
-                };
-                cmdList.TransitionBarriers( pre, 4 );
-                scene->State = D3D12_RESOURCE_STATE_COPY_DEST;
-                depth->State = D3D12_RESOURCE_STATE_COPY_DEST;
+                    } );
 
                 cmdList.CopyResource( scene->GetResource(), m_SceneColor.Get() );
                 cmdList.CopyResource( depth->GetResource(), m_DepthBuffer.Get() );

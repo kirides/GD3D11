@@ -574,19 +574,16 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 			};
 		} );
 
-	// --- Edge detection (color -> edges). ---
+	// --- Edge detection (color -> edges). --- CreateTexture()'s state param gets edges into RENDER_TARGET
+	// automatically; the Blend Weight pass's Read() below transitions it to shader-read afterward — neither
+	// needs a manual check/transition here.
 	graph.AddPass( RG_PASS_NAME( "SMAA Edge Detection" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
 		edgesHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
-			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaEdges", 0u } );
+			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaEdges", 0u }, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
 		pass.m_executeCallback = [this, consts, edgesHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
 			D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
 			if ( !edges ) return;
-
-			if ( edges->State != D3D12_RESOURCE_STATE_RENDER_TARGET ) {
-				cmdList.TransitionBarrier( edges->GetResource(), edges->State, D3D12_RESOURCE_STATE_RENDER_TARGET );
-				edges->State = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			}
 
 			consts->EdgesIdx = edges->GetSrvSlot();
 			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
@@ -602,17 +599,17 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 			cmdList.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 			cmdList.ClearRenderTargetView( rtv, kSmaaClearZero, 0, nullptr );
 			cmdList.DrawInstanced( 3, 1, 0, 0 );
-
-			cmdList.TransitionBarrier( edges->GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-			edges->State = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 			};
 		} );
 
-	// --- Blend-weight calculation (edges + area + search -> blend). ---
+	// --- Blend-weight calculation (edges + area + search -> blend). --- CreateTexture()'s state param gets
+	// blend into RENDER_TARGET automatically; nothing ever Read()s blendHandle (the neighborhood-blend pass
+	// consumes it via consts->BlendIdx, a side channel), so its final transition to PIXEL_SHADER_RESOURCE
+	// stays manual — there's no Read() to hang it off.
 	graph.AddPass( RG_PASS_NAME( "SMAA Blend Weight" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-		builder.Read( edgesHandle );
+		builder.Read( edgesHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		blendHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
-			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaBlend", 0u } );
+			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaBlend", 0u }, D3D12_RESOURCE_STATE_RENDER_TARGET );
 		// The neighborhood-blend pass further down reads this pass's result via consts->BlendIdx, a plain
 		// shared value — not a graph Read(), so mark the side effect explicitly.
 		builder.MarkExternalEffect();
@@ -620,11 +617,6 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 		pass.m_executeCallback = [this, consts, blendHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
 			D3D12RenderTarget* blend = g.GetPhysicalTexture( blendHandle );
 			if ( !blend ) return;
-
-			if ( blend->State != D3D12_RESOURCE_STATE_RENDER_TARGET ) {
-				cmdList.TransitionBarrier( blend->GetResource(), blend->State, D3D12_RESOURCE_STATE_RENDER_TARGET );
-				blend->State = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			}
 
 			consts->BlendIdx = blend->GetSrvSlot();
 			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };

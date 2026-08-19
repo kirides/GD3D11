@@ -21,14 +21,19 @@ public:
         : m_graph( graph ), m_pass( pass ) {
     }
 
-    // Declare that this pass READS from a resource (Source)
-    RGResourceHandle Read( RGResourceHandle handle );
+    // Declare that this pass READS from a resource (Source), in the given state — e.g.
+    // D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE for a compute SRV read, ..._PIXEL_SHADER_RESOURCE for
+    // a pixel-shader sample. Execute() transitions the resource into `state` automatically before this
+    // pass's callback runs (internal handles only — see D3D12RenderTarget::State and RGResourceUsage).
+    RGResourceHandle Read( RGResourceHandle handle, D3D12_RESOURCE_STATES state );
 
-    // Declare that this pass WRITES to a resource (Sink)
-    RGResourceHandle Write( RGResourceHandle handle );
+    // Declare that this pass WRITES to a resource (Sink), in the given state — e.g. RENDER_TARGET for a
+    // draw, UNORDERED_ACCESS for a compute dispatch. Same automatic-transition treatment as Read().
+    RGResourceHandle Write( RGResourceHandle handle, D3D12_RESOURCE_STATES state );
 
-    // Declare a brand new transient resource that lives only for this graph execution
-    RGResourceHandle CreateTexture( const RGTextureDesc& desc );
+    // Declare a brand new transient resource that lives only for this graph execution, and the state this
+    // pass needs it in for its first use (matches Write()'s automatic-transition contract).
+    RGResourceHandle CreateTexture( const RGTextureDesc& desc, D3D12_RESOURCE_STATES initialState );
 
     // Declare that this pass has a real effect the graph doesn't track as a Write (see
     // D3D12RenderPass::m_hasExternalSideEffect) — call this instead of inventing a fake Write handle when
@@ -72,11 +77,14 @@ private:
     across frames. Real cross-effect aliasing (the more ambitious "even better than D3D11" case) is
     future work for when the transient set is large enough that the packing actually matters.
 
-    Resource STATE transitions (RENDER_TARGET <-> SHADER_RESOURCE etc) are still NOT automatic — each
-    pass' execute callback remains responsible for transitioning whatever it binds, same as every other
-    D3D12 pass in this backend (see D3D12RenderTarget::State). Only the ALIASING hazard (memory reuse
-    between two different logical resources) is handled by the graph; the ordinary read/write hazard
-    within one resource's own lifetime is not. */
+    Resource STATE transitions (RENDER_TARGET <-> SHADER_RESOURCE etc) ARE now automatic for internal
+    (CreateTexture()'d) handles: every Read()/Write() carries the state that pass needs the resource in,
+    and Execute() transitions it there — batched into one D3D12CmdList::TransitionBarriers() call per pass
+    — immediately before that pass's callback runs, then updates D3D12RenderTarget::State. A callback only
+    needs to barrier manually for a state change IT makes mid-callback that no Read/Write models (DoF's
+    composite pass transitioning its scratch to COPY_SOURCE right before copying it out is exactly that —
+    nothing else in the graph ever reads it, so there is no Read() to hang that transition off of). External
+    (imported) handles are untouched by this — the graph has never tracked their state, and still doesn't. */
 class D3D12RenderGraph {
 public:
     D3D12RenderGraph( D3D12AliasedTextureArena* arena ) : m_arena( arena ) {}
@@ -125,6 +133,7 @@ private:
     std::vector<D3D12RenderTarget*> m_externalTextures;
 
     void AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList );
+    void TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
 };
 
 template<typename SetupFunc>

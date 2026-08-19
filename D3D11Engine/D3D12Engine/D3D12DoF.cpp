@@ -255,21 +255,18 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             };
         } );
 
-    // --- Half-res bokeh (or Gaussian) blur --- tex->State is caller-maintained (see D3D12RenderTarget.h) —
-    // check it rather than assuming, since a freshly (re)placed resource starts at RENDER_TARGET while a
-    // reused one already sits wherever last frame's DoF pass left it.
+    // --- Half-res bokeh (or Gaussian) blur --- CreateTexture()'s state param gets this into UNORDERED_ACCESS
+    // automatically before the callback below runs (D3D12RenderGraph::Execute) — whether that means
+    // transitioning a freshly (re)placed resource from RENDER_TARGET or one reused from wherever last
+    // frame's DoF pass left it, and the composite pass's Read() below transitions it to shader-read
+    // afterward — neither needs a manual check/transition here any more.
     graph.AddPass( RG_PASS_NAME( "DoF Half-Res Blur" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         halfHandle = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
-            static_cast<int>( kSceneColorFormat ), L"DoFHalf", kRgNeedsUav } );
+            static_cast<int>( kSceneColorFormat ), L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
         pass.m_executeCallback = [this, blurPso, halfSize, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
             D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
             if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — skip the blur
-
-            if ( half->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
-                cmdList.TransitionBarrier( half->GetResource(), half->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                half->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            }
 
             cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
             cmdList.SetPipelineState( blurPso );
@@ -278,18 +275,14 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             cb->OutResY = static_cast<float>( halfSize.y );
             cmdList.SetComputeRoot32BitConstants( 0, 16, cb.get(), 0 );
             cmdList.Dispatch( ( halfSize.x + 7 ) / 8, ( halfSize.y + 7 ) / 8, 1 );
-
-            // The composite pass below samples this through BlurIndex (its SRV slot).
-            cmdList.TransitionBarrier( half->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-            half->State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             };
         } );
 
     // --- Full-res composite into a graph-managed scratch texture, then copy back onto the scene colour ---
     graph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-        builder.Read( halfHandle );
+        builder.Read( halfHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         compositeHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
-            static_cast<int>( kSceneColorFormat ), L"DoFComposite", kRgNeedsUav } );
+            static_cast<int>( kSceneColorFormat ), L"DoFComposite", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         // CreateTexture() already declares compositeHandle read (see D3D12RGBuilder::CreateTexture), so the
         // resource itself is allocated. What's still missing is that its VISIBLE result leaves the graph
         // entirely via the CopyResource onto m_SceneColor below — a plain member, not a resource the graph
@@ -303,11 +296,8 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             D3D12RenderTarget* composite = g.GetPhysicalTexture( compositeHandle );
             if ( !half || !composite ) return;   // scene colour / depth / focus are still restored below unconditionally
 
-            if ( composite->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
-                cmdList.TransitionBarrier( composite->GetResource(), composite->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                composite->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            }
-
+            // composite is already UNORDERED_ACCESS here (CreateTexture()'s declared state, applied
+            // automatically by Execute() before this callback runs).
             cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
             cmdList.SetPipelineState( m_Pipelines.DoF.CompositePSO.Get() );
             cb->BlurIndex = half->GetSrvSlot();

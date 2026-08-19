@@ -7,17 +7,17 @@
 #include <algorithm>
 
 // Implement D3D12RGBuilder methods (must be done after D3D12RenderGraph is fully defined)
-RGResourceHandle D3D12RGBuilder::Read( RGResourceHandle handle ) {
-    m_pass.m_reads.push_back( handle );
+RGResourceHandle D3D12RGBuilder::Read( RGResourceHandle handle, D3D12_RESOURCE_STATES state ) {
+    m_pass.m_reads.push_back( { handle, state } );
     return handle;
 }
 
-RGResourceHandle D3D12RGBuilder::Write( RGResourceHandle handle ) {
-    m_pass.m_writes.push_back( handle );
+RGResourceHandle D3D12RGBuilder::Write( RGResourceHandle handle, D3D12_RESOURCE_STATES state ) {
+    m_pass.m_writes.push_back( { handle, state } );
     return handle;
 }
 
-RGResourceHandle D3D12RGBuilder::CreateTexture( const RGTextureDesc& desc ) {
+RGResourceHandle D3D12RGBuilder::CreateTexture( const RGTextureDesc& desc, D3D12_RESOURCE_STATES initialState ) {
     RGResourceHandle handle = m_graph.RegisterResource( desc );
     // Creating it implies both writing it (obviously) AND reading it: a resource nobody ever intends to
     // use isn't worth creating, so "created" is treated as sufficient demand on its own — the same way an
@@ -27,8 +27,11 @@ RGResourceHandle D3D12RGBuilder::CreateTexture( const RGTextureDesc& desc ) {
     // the same callback) has to remember an extra explicit Read() of its own Write() or the resource is
     // silently never allocated at all — isRead gates BOTH Compile()'s interval-coloring AND
     // AllocateResourcesForPass, so GetPhysicalTexture() quietly returns null with no error anywhere.
-    Read( handle );
-    return Write( handle );
+    // Both declarations carry the SAME initialState: the implicit Read isn't a second, different usage,
+    // it's just what makes the resource count as "wanted" — Execute()'s automatic transition only actually
+    // runs once for this pass (see TransitionPassResources' dedup-by-current-State check).
+    Read( handle, initialState );
+    return Write( handle, initialState );
 }
 
 void D3D12RGBuilder::MarkExternalEffect() {
@@ -71,8 +74,8 @@ void D3D12RenderGraph::Compile() {
         const auto& pass = m_passes[passIndex];
 
         // Track writes (creation/modification)
-        for ( RGResourceHandle writeHandle : pass->m_writes ) {
-            uint32_t index = D3D12GetHandleIndex( writeHandle );
+        for ( const RGResourceUsage& write : pass->m_writes ) {
+            uint32_t index = D3D12GetHandleIndex( write.Handle );
 
             if ( m_resourceLifetimes[index].firstPass == UINT32_MAX ) {
                 m_resourceLifetimes[index].firstPass = (uint32_t)passIndex;
@@ -81,8 +84,8 @@ void D3D12RenderGraph::Compile() {
         }
 
         // Track reads (usage)
-        for ( RGResourceHandle readHandle : pass->m_reads ) {
-            uint32_t index = D3D12GetHandleIndex( readHandle );
+        for ( const RGResourceUsage& read : pass->m_reads ) {
+            uint32_t index = D3D12GetHandleIndex( read.Handle );
 
             m_resourceLifetimes[index].lastPass = (uint32_t)passIndex;
             m_resourceLifetimes[index].isRead = true;
@@ -134,9 +137,9 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
         bool isPassDead = false;
         if ( !pass->m_hasExternalSideEffect && !pass->m_writes.empty() ) {
             isPassDead = true;
-            for ( RGResourceHandle writeHandle : pass->m_writes ) {
-                uint32_t index = D3D12GetHandleIndex( writeHandle );
-                if ( D3D12IsExternalHandle( writeHandle ) || m_resourceLifetimes[index].isRead ) {
+            for ( const RGResourceUsage& write : pass->m_writes ) {
+                uint32_t index = D3D12GetHandleIndex( write.Handle );
+                if ( D3D12IsExternalHandle( write.Handle ) || m_resourceLifetimes[index].isRead ) {
                     isPassDead = false;
                     break;
                 }
@@ -147,6 +150,7 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
             DXMarker marker( cmdList.Get(), pass->m_name.wide );
             ZoneScoped;
             ZoneName( pass->m_name.narrow, strlen( pass->m_name.narrow ) );
+            TransitionPassResources( *pass, cmdList );
             pass->m_executeCallback( *this, cmdList );
         }
     }
@@ -164,4 +168,30 @@ void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex, D3D12CmdList&
         m_activeTextures[i] = m_arena->Acquire( m_resourceOffsets[i], desc.width, desc.height,
             static_cast<DXGI_FORMAT>( desc.format ), needsUav, cmdList );
     }
+}
+
+void D3D12RenderGraph::TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList ) {
+    // Generous per-pass cap: every pass converted so far touches at most a couple of graph resources.
+    // Passes with more just take an extra TransitionBarriers() call rather than losing a transition.
+    constexpr UINT kMaxPerPass = 16;
+    D3D12ResourceTransition transitions[kMaxPerPass];
+    UINT n = 0;
+
+    auto consider = [&]( const RGResourceUsage& usage ) {
+        if ( D3D12IsExternalHandle( usage.Handle ) ) return;   // not graph-tracked; caller manages state manually
+        D3D12RenderTarget* tex = GetPhysicalTexture( usage.Handle );
+        if ( !tex || tex->State == usage.State ) return;       // absent (skipped resource) or already there
+        if ( n < kMaxPerPass ) {
+            transitions[n++] = { tex->GetResource(), tex->State, usage.State };
+        } else {
+            // Fall back to an individual call past the batch cap rather than dropping the transition.
+            cmdList.TransitionBarrier( tex->GetResource(), tex->State, usage.State );
+        }
+        tex->State = usage.State;
+        };
+
+    for ( const RGResourceUsage& write : pass.m_writes ) consider( write );
+    for ( const RGResourceUsage& read : pass.m_reads ) consider( read );
+
+    if ( n > 0 ) cmdList.TransitionBarriers( transitions, n );
 }

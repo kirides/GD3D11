@@ -1,4 +1,5 @@
 #pragma once
+#include <d3d12.h>
 #include <functional>
 #include <vector>
 #include "../RenderPass.h"    // reuse RGPassName / RG_PASS_NAME — both fully backend-neutral
@@ -6,6 +7,21 @@
 
 class D3D12RenderGraph;
 class D3D12CmdList;
+
+/** One resource usage a pass declares (via D3D12RGBuilder::Read/Write) — the handle plus the resource
+    STATE the pass needs it in. D3D12RenderGraph::Execute() uses this to insert transition barriers
+    automatically for graph-owned (internal, CreateTexture()'d) resources: right before a pass's callback
+    runs, every one of its declared reads/writes whose current D3D12RenderTarget::State doesn't already
+    match gets transitioned, batched into one D3D12CmdList::TransitionBarriers() call. A pass's callback
+    therefore no longer needs to check/transition a graph resource into the state it declared for itself
+    — only for state changes it makes MID-callback that no other pass's declaration models (e.g. DoF's
+    composite pass transitioning its UAV-written scratch to COPY_SOURCE right before copying it out; see
+    D3D12DoF.cpp). External (imported) handles are skipped — the graph never tracks their state, exactly
+    as before. */
+struct RGResourceUsage {
+    RGResourceHandle Handle;
+    D3D12_RESOURCE_STATES State;
+};
 
 /** D3D12 counterpart of RenderPass (RenderPass.h) — same Reads/Writes declaration shape as the D3D11
     side. Differs in the execute callback: D3D12 has no implicit "current context" the way D3D11's
@@ -17,8 +33,8 @@ public:
     D3D12RenderPass( RGPassName name ) : m_name( std::move( name ) ) {}
 
     RGPassName m_name;
-    std::vector<RGResourceHandle> m_reads;   // Sources
-    std::vector<RGResourceHandle> m_writes;  // Sinks
+    std::vector<RGResourceUsage> m_reads;   // Sources
+    std::vector<RGResourceUsage> m_writes;  // Sinks
 
     // Set via D3D12RGBuilder::MarkExternalEffect() by a pass whose execute callback affects something the
     // graph doesn't track as a Write — e.g. copying a graph-managed transient texture onto an externally-

@@ -229,58 +229,48 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         RGResourceHandle maskHandle = RG_INVALID_HANDLE;
         RGResourceHandle zoomHandle = RG_INVALID_HANDLE;
 
-        // --- Mask (scene color + depth -> mask) ---
+        // --- Mask (scene color + depth -> mask) --- CreateTexture()'s state param gets mask into
+        // UNORDERED_ACCESS automatically before this callback runs; the Zoom pass's Read() below
+        // transitions it to shader-read afterward — neither needs a manual check/transition here.
         graph.AddPass( RG_PASS_NAME( "God Ray Mask" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
             maskHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
-                static_cast<int>( kSceneColorFormat ), L"GodRayMask", 1u } );
+                static_cast<int>( kSceneColorFormat ), L"GodRayMask", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
             pass.m_executeCallback = [this, gx, gy, maskHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
                 D3D12RenderTarget* mask = g.GetPhysicalTexture( maskHandle );
                 if ( !mask ) return;
 
                 // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV.
+                // Not graph-tracked (m_SceneColor is a plain member), so still transitioned manually.
                 if ( !m_SceneColorInPixelState ) {
                     cmdList.TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
                     m_SceneColorInPixelState = true;
                 }
                 cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
-                if ( mask->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
-                    cmdList.TransitionBarrier( mask->GetResource(), mask->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                    mask->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                }
-
                 GodRayMaskConsts maskConsts = { m_SceneColorSrvSlot, m_DepthSrvSlot, mask->GetUavSlot(), 0 };
                 cmdList.SetComputeRootSignature( m_Pipelines.Fog.GodRayRootSig.Get() );
                 cmdList.SetPipelineState( m_Pipelines.Fog.MaskPSO.Get() );
                 cmdList.SetComputeRoot32BitConstants( 0, 4, &maskConsts, 0 );
                 cmdList.Dispatch( gx, gy, 1 );
-
-                // UAV write -> SRV read needs a real state transition, not just a UAV barrier (see RenderBloom).
-                cmdList.TransitionBarrier( mask->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-                mask->State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 };
             } );
 
         // --- Radial blur (mask -> zoom) ---
         graph.AddPass( RG_PASS_NAME( "God Ray Zoom" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-            builder.Read( maskHandle );
+            builder.Read( maskHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
             zoomHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
-                static_cast<int>( kSceneColorFormat ), L"GodRayZoom", 1u } );
+                static_cast<int>( kSceneColorFormat ), L"GodRayZoom", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
             // The composition pass further down reads this pass's result via godRayZoomSrvSlot, a plain
             // shared value — not a graph Read(), so mark the side effect explicitly (see
-            // D3D12RenderPass::m_hasExternalSideEffect).
+            // D3D12RenderPass::m_hasExternalSideEffect). Since nothing ever Read()s zoomHandle, its final
+            // transition to PIXEL_SHADER_RESOURCE below stays manual too — there's no Read() to hang it off.
             builder.MarkExternalEffect();
 
             pass.m_executeCallback = [this, gx, gy, zoomConsts, godRayZoomSrvSlot, maskHandle, zoomHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
                 D3D12RenderTarget* mask = g.GetPhysicalTexture( maskHandle );
                 D3D12RenderTarget* zoom = g.GetPhysicalTexture( zoomHandle );
                 if ( !mask || !zoom ) return;
-
-                if ( zoom->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
-                    cmdList.TransitionBarrier( zoom->GetResource(), zoom->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                    zoom->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                }
 
                 zoomConsts->MaskIndex = mask->GetSrvSlot();
                 zoomConsts->OutputIndex = zoom->GetUavSlot();

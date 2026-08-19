@@ -121,19 +121,16 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
             };
         } );
 
-    // --- Horizontal, full-res frame -> blurH (this is also the 4x downscale). ---
+    // --- Horizontal, full-res frame -> blurH (this is also the 4x downscale). --- CreateTexture()'s state
+    // param gets blurH into UNORDERED_ACCESS automatically; Blur V's Read() below transitions it to
+    // shader-read afterward — neither needs a manual check/transition here.
     graph.AddPass( RG_PASS_NAME( "Underwater Blur H" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         blurHHandle = builder.CreateTexture( { static_cast<uint32_t>( blurSize.x ), static_cast<uint32_t>( blurSize.y ),
-            static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurH", 1u } );
+            static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurH", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
         pass.m_executeCallback = [this, cb, groupsX, groupsY, blurHHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
             D3D12RenderTarget* blurH = g.GetPhysicalTexture( blurHHandle );
             if ( !blurH ) return;
-
-            if ( blurH->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
-                cmdList.TransitionBarrier( blurH->GetResource(), blurH->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                blurH->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            }
 
             cb->SrcIndex = m_LdrCopySrvSlot;
             cb->OutIndex = blurH->GetUavSlot();
@@ -143,32 +140,23 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
             cmdList.SetPipelineState( m_Pipelines.Underwater.BlurPSO.Get() );
             cmdList.SetComputeRoot32BitConstants( 0, 12, cb.get(), 0 );
             cmdList.Dispatch( groupsX, groupsY, 1 );
-
-            // UAV-write -> SRV-read needs a real state transition, not a UAV barrier: a UAV barrier only
-            // orders access and performs no cache flush, so the SRV read would be undefined.
-            cmdList.TransitionBarrier( blurH->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-            blurH->State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             };
         } );
 
     // --- Vertical, blurH -> blurV. ---
     graph.AddPass( RG_PASS_NAME( "Underwater Blur V" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-        builder.Read( blurHHandle );
+        builder.Read( blurHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         blurVHandle = builder.CreateTexture( { static_cast<uint32_t>( blurSize.x ), static_cast<uint32_t>( blurSize.y ),
-            static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurV", 1u } );
+            static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurV", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         // The composite pass further down reads this pass's result via blurVSrvSlot, a plain shared value —
-        // not a graph Read(), so mark the side effect explicitly.
+        // not a graph Read(), so mark the side effect explicitly. Since nothing ever Read()s blurVHandle, its
+        // final transition to PIXEL_SHADER_RESOURCE below stays manual too — there's no Read() to hang it off.
         builder.MarkExternalEffect();
 
         pass.m_executeCallback = [this, cb, groupsX, groupsY, blurVSrvSlot, blurHHandle, blurVHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
             D3D12RenderTarget* blurH = g.GetPhysicalTexture( blurHHandle );
             D3D12RenderTarget* blurV = g.GetPhysicalTexture( blurVHandle );
             if ( !blurH || !blurV ) return;
-
-            if ( blurV->State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
-                cmdList.TransitionBarrier( blurV->GetResource(), blurV->State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-                blurV->State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            }
 
             cb->SrcIndex = blurH->GetSrvSlot();
             cb->OutIndex = blurV->GetUavSlot();
