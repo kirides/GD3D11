@@ -99,6 +99,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create SRV heap.";
         return XR_FAILED;
     }
+    if ( !m_TexturePool.Attach( *this ) ) {
+        // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
+        // that infrastructure stays unavailable until the next Init(). Nothing in today's frame depends on it.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the pooled-render-target RTV heap.";
+    }
     if ( !m_Pipelines.Init( &m_Device, &m_ShaderBackend ) ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;
@@ -2321,6 +2326,8 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     for ( auto& cleanupCallback : jobs ) {
         if ( cleanupCallback ) cleanupCallback(); // Calls FreeSrvSlot() and drops the captured ComPtrs
     }
+
+    m_TexturePool.GiveTick();
 }
 
 

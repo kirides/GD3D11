@@ -798,6 +798,21 @@
     <ClInclude Include="D3D12Engine\D3D12Texture.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12PooledDescriptorHeap.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12RenderTarget.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12TexturePool.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12RenderPass.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12RenderGraph.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12LineRenderer.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1020,6 +1035,18 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Texture.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PooledDescriptorHeap.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12RenderTarget.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12TexturePool.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12RenderGraph.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12AO.cpp">

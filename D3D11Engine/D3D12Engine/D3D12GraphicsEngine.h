@@ -22,6 +22,7 @@
 #include "D3D12ShadowMap.h"
 #include "D3D12VobArena.h"
 #include "D3D12PointShadows.h"
+#include "D3D12TexturePool.h"
 
 struct RenderBucket;
 class D3D12LineRenderer;
@@ -637,6 +638,12 @@ private:
     // targets a private CPU-visible descriptor slot the render thread's own draws don't write to) — an
     // uncontended lock here is a few tens of ns, negligible next to a draw call.
     mutable std::mutex m_SrvHeapMutex;
+
+    // Pooled/transient render targets for D3D12RenderGraph (mirrors D3D11's TexturePool — see
+    // D3D12TexturePool.h). Not wired into a pass yet; see D3D12RenderGraph.h for why and for the
+    // intended first consumer. Declared after the SRV free-list above (and everything that manages it)
+    // so a pooled target's SRV slot is freed before that bookkeeping is torn down at shutdown.
+    D3D12TexturePool m_TexturePool;
 
     // Loads + compiles the backend's HLSL from Shaders\D3D12\*.hlsl at runtime (DXC/SM6.6, zFILE_VDFS).
     D3D12ShaderBackend m_ShaderBackend;
