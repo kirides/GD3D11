@@ -1666,16 +1666,20 @@ private:
     // and CopyDepthStencil()s the depth before the water Z-prepass). Both copies must be taken BEFORE the
     // water Z-prepass writes the surface's own depth, or the refraction would read water-vs-water.
     //
-    // Allocated lazily on the first frame a world actually renders water (~24 MB of 32-bit VA at 1080p,
-    // which menus, indoor worlds and water-free maps should not pay) and released on resize, where the GPU
-    // is already idle; EnsureWaterCopyResources() then rebuilds them at the new size on the next water frame.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterSceneCopy;      // pre-water HDR scene (kSceneColorFormat)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterSceneCopyAlloc;
-    UINT m_WaterSceneCopySrvSlot = UINT_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterDepthCopy;      // pre-water depth (R32_TYPELESS -> R32_FLOAT SRV)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterDepthCopyAlloc;
-    UINT m_WaterDepthCopySrvSlot = UINT_MAX;
-    INT2 m_WaterCopySize = { 0, 0 };          // resolution the two copies were built for (0,0 = not allocated)
+    // USED to be allocated lazily as members the first frame a world actually rendered water (~24 MB of
+    // 32-bit VA at 1080p, which menus, indoor worlds and water-free maps should not pay). Both are purely
+    // single-frame scratch (copied from the opaque scene, read by the water shader, then dead — no
+    // cross-frame data dependency), so they are now D3D12RenderGraph-managed transient textures acquired
+    // fresh every call inside DrawWaterSurfaces instead — same conversion DoF's/the god-ray/the underwater/
+    // SMAA scratch textures got (see D3D12DoF.cpp for the pattern). DrawWaterSurfaces is a BaseGraphicsEngine
+    // override (fixed signature, no graph parameter), so — unlike the postFxGraph-fed functions — it builds
+    // its own small LOCAL D3D12RenderGraph; that is safe now that D3D12AliasedTextureArena::ReserveNamedRange
+    // dedups by name across the WHOLE arena, not per-graph-instance (see its comment).
+    //
+    // The depth copy is created as plain R32_FLOAT (not R32_TYPELESS + ALLOW_DEPTH_STENCIL like the old
+    // member): CopyResource only requires format-FAMILY compatibility (R32_TYPELESS and R32_FLOAT share one),
+    // not matching resource flags, and this copy is never bound as an actual depth target — only ever
+    // CopyResource's destination and an SRV source — so ALLOW_DEPTH_STENCIL was never actually required.
 
     // reflect_cube.dds as a real TextureCube — the static sky/environment reflection D3D11 binds at t3, and
     // the fallback whenever an SSR ray misses or leaves the screen. D3D12Texture is Texture2D-only, so this
@@ -1696,8 +1700,6 @@ private:
 
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
-    bool EnsureWaterCopyResources();          // lazy (re)build of the scene+depth copies at m_Resolution
-    void ReleaseWaterCopyResources();         // called on resize (GPU idle) so the next water frame rebuilds
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT

@@ -1723,7 +1723,8 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     CreateHiZResources( renderSize );    // without it the GPU VOB cull runs frustum-only (no occlusion)
     // Height-fog/god-ray textures no longer need a resize hook — they're D3D12RenderGraph-managed transients
     // acquired fresh at the current resolution every call (see D3D12Fog.cpp's RenderFogAndGodRays).
-    ReleaseWaterCopyResources();         // rebuilt at the new size by the next frame that renders water
+    // Water's scene/depth copies no longer need a resize hook — they're D3D12RenderGraph-managed transients
+    // acquired fresh at the current resolution every call (see D3D12Water.cpp's DrawWaterSurfaces).
     if ( !CreateLumPartialBuffer( renderSize ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on this and skips the update, leaving m_LumAdaptedBuffer
         // at its last valid value.
