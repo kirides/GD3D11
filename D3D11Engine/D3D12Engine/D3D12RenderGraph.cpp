@@ -19,7 +19,20 @@ RGResourceHandle D3D12RGBuilder::Write( RGResourceHandle handle ) {
 
 RGResourceHandle D3D12RGBuilder::CreateTexture( const RGTextureDesc& desc ) {
     RGResourceHandle handle = m_graph.RegisterResource( desc );
-    return Write( handle ); // Creating it implies we are writing to it
+    // Creating it implies both writing it (obviously) AND reading it: a resource nobody ever intends to
+    // use isn't worth creating, so "created" is treated as sufficient demand on its own — the same way an
+    // externally-imported resource's Write() is (see D3D12IsExternalHandle in Execute()'s dead-pass check).
+    // Without the implicit Read, a pass that creates AND consumes a resource purely within itself (see
+    // D3D12DoF.cpp's composite pass, which UAV-writes its scratch texture then CopyResource's it out in
+    // the same callback) has to remember an extra explicit Read() of its own Write() or the resource is
+    // silently never allocated at all — isRead gates BOTH Compile()'s interval-coloring AND
+    // AllocateResourcesForPass, so GetPhysicalTexture() quietly returns null with no error anywhere.
+    Read( handle );
+    return Write( handle );
+}
+
+void D3D12RGBuilder::MarkExternalEffect() {
+    m_pass.m_hasExternalSideEffect = true;
 }
 
 RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget ) {
@@ -145,9 +158,10 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
 
         AllocateResourcesForPass( i, cmdList );
 
-        // Eliminate any passes whose writes are never read
+        // Eliminate any passes whose writes are never read — unless the pass told us (MarkExternalEffect)
+        // that it has a real effect the graph doesn't track as a Write in the first place.
         bool isPassDead = false;
-        if ( !pass->m_writes.empty() ) {
+        if ( !pass->m_hasExternalSideEffect && !pass->m_writes.empty() ) {
             isPassDead = true;
             for ( RGResourceHandle writeHandle : pass->m_writes ) {
                 uint32_t index = D3D12GetHandleIndex( writeHandle );

@@ -30,6 +30,12 @@ public:
     // Declare a brand new transient resource that lives only for this graph execution
     RGResourceHandle CreateTexture( const RGTextureDesc& desc );
 
+    // Declare that this pass has a real effect the graph doesn't track as a Write (see
+    // D3D12RenderPass::m_hasExternalSideEffect) — call this instead of inventing a fake Write handle when
+    // a pass's only externally-visible output is, say, a CopyResource onto a plain member the graph never
+    // imported. Exempts the pass from dead-pass elimination unconditionally.
+    void MarkExternalEffect();
+
 private:
     D3D12RenderGraph& m_graph;
     D3D12RenderPass& m_pass;

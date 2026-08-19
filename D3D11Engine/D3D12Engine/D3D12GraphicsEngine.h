@@ -1533,14 +1533,14 @@ private:
     //
     //   m_DoFFocus[2]  1x1 R32_FLOAT ping-pong. The auto-focus distance, temporally smoothed against the
     //                  previous frame's value — pass 0 reads [m_DoFFocusIndex] and writes [1 - m_DoFFocusIndex].
-    //   m_DoFHalf      half-res kSceneColorFormat: rgb = bokeh blur, a = centre CoC (pass 1).
-    //   m_DoFComposite full-res kSceneColorFormat scratch. Compute cannot read and write the scene colour in one
-    //                  dispatch, so pass 2 writes here and the result is CopyResource'd back — same shape as the
-    //                  TAA resolve's history copy, and both are kSceneColorFormat so the copy is a straight one.
+    //                  Must persist across frames (that's the whole point of the smoothing), so it stays a
+    //                  member, built LAZILY (see CreateDoFResources): DoF is off in a stock config.
     //
-    // Unlike the bloom/AO/TAA resources these are built LAZILY (see CreateDoFResources): DoF is off in a stock
-    // config, and a full-res RGBA16F scratch plus a half-res one is ~20 MB of virtual address space at 1080p —
-    // real money in a 32-bit process. The resize path only rebuilds them if they already exist.
+    // The half-res bokeh-blur target and the full-res composite scratch USED to live here as members too; they
+    // are now D3D12RenderGraph-managed transient textures acquired fresh every call from m_AliasArena instead
+    // (see D3D12DoF.cpp's RenderDepthOfField) — first live consumer of the render graph's actual resource
+    // system. That also removes the need for the old "did the resolution change without us following" guard:
+    // asking the graph for the CURRENT resolution's size every call handles a resize for free.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFFocus[2];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFFocusAlloc[2];
     UINT m_DoFFocusSrvSlot[2] = { UINT_MAX, UINT_MAX };
@@ -1549,20 +1549,12 @@ private:
     // The focus textures' initial contents are undefined, so the first resolve must SNAP to the measured depth
     // instead of blending against garbage (DoFCB::FocusValid). Cleared whenever the pair is (re)created.
     bool m_DoFFocusValid = false;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFHalf;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFHalfAlloc;
-    UINT m_DoFHalfSrvSlot = UINT_MAX;
-    UINT m_DoFHalfUavSlot = UINT_MAX;
-    INT2 m_DoFHalfSize = { 0, 0 };
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFComposite;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFCompositeAlloc;
-    UINT m_DoFCompositeUavSlot = UINT_MAX;
     bool m_DoFResourcesReady = false;
     // Set once creation has been attempted at the current resolution, so a failure (out of heap slots, out of
     // memory) is logged once and not retried every frame while DoF stays enabled. Cleared on resize.
     bool m_DoFCreateAttempted = false;
 
-    bool CreateDoFResources( INT2 size );  // (re)builds the focus pair, the half-res blur target and the scratch
+    bool CreateDoFResources( INT2 size );  // (re)builds the persistent focus ping-pong only
     void RenderDepthOfField();             // focus resolve -> half-res blur -> composite -> copy back
 
     // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------

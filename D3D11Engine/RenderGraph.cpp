@@ -16,6 +16,7 @@ RGResourceHandle RGBuilder::Write( RGResourceHandle handle ) {
 
 RGResourceHandle RGBuilder::CreateTexture( const RGTextureDesc& desc ) {
     RGResourceHandle handle = m_graph.RegisterResource( desc );
+    Read( handle ); // otherwise the texture might never be created
     return Write( handle ); // Creating it implies we are writing to it
 }
 
