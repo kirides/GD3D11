@@ -34,6 +34,7 @@
 #include "../Toolbox.h"
 
 #include "D3D12RenderQueue.h"
+#include "D3D12RenderGraph.h"
 #include "InstancingUtils.h"
 #include "../ThreadPool.h"   // Engine::RenderingThreadPool — MT shadow-cascade cull/record fan-out
 
@@ -2449,21 +2450,39 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the clear sentinel, so the true per-object velocities the prepass wrote are left alone. See D3D12Motion.cpp.
 	FillCameraVelocity();
 
+	// --- Post-FX tail, issued through D3D12RenderGraph. --------------------------------------------------
+	// First live-frame use of the render-graph infrastructure (D3D12RenderGraph.h / D3D12AliasedTextureArena.h)
+	// — previously landed but never called. DELIBERATELY control-flow only for this increment: every pass
+	// below declares no Read/Write, so Compile()'s dead-pass elimination never triggers (a pass with no
+	// declared writes always executes) and every one of these still runs unconditionally, in the same
+	// order, exactly like the flat call sequence this replaces. Each function keeps managing its own
+	// resources and barriers internally, completely unchanged — see the per-function doc comments in
+	// D3D12Fog.cpp/D3D12Taa.cpp/D3D12DoF.cpp/D3D12PostFX.cpp/D3D12Fsr3.cpp/D3D12Underwater.cpp for what
+	// each one reads/writes. The payoff here is purely structural: named, GPU-marker-tagged (PIX/RenderDoc)
+	// and Tracy-zoned passes instead of a flat call list, ahead of a follow-up that teaches individual
+	// passes to expose their resources as graph handles — that is what would let Compile() actually
+	// alias/reorder them, the same way a Forward+ shadow-mask/AO-mask scratch texture eventually will.
+	D3D12RenderGraph postFxGraph( &m_AliasArena );
+
 	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same
 	// slot D3D11's PostFX composition occupies (after the ghosts/particle passes, before bloom+tonemap). Both
 	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise.
-	RenderFogAndGodRays();
+	postFxGraph.AddPass( RG_PASS_NAME( "Fog + God Rays" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFogAndGodRays(); };
+		} );
 
 	// Debug/editor lines, INSIDE the scene rather than over the finished LDR image (D3D11's slot): drawing
 	// them at native size afterwards would need a native-res copy of the scene depth for the world-space list
 	// to test against. They end up as soft as the rest of the scene when downscaling — fine for a diagnostic
-	// overlay. Both calls also CLEAR their cache, which is what keeps the line lists from growing.
-	{
-		DX_ZONE( m_CmdList.Get(), "Draw debug lines" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
-		m_LineRenderer->Flush();
-		m_LineRenderer->FlushScreenSpace();
-	}
+	// overlay. Both calls also CLEAR their cache, which is what keeps the line lists from growing. The pass's
+	// own DXMarker/Tracy zone (added by D3D12RenderGraph::Execute) replaces what used to be a manual DX_ZONE/
+	// TracyD3D12ZoneCGX pair here.
+	postFxGraph.AddPass( RG_PASS_NAME( "Debug Lines" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) {
+			m_LineRenderer->Flush();
+			m_LineRenderer->FlushScreenSpace();
+			};
+		} );
 
 	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
 	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
@@ -2471,47 +2490,70 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// scene and belong inside the temporal accumulation) and BEFORE bloom + luminance adaptation (blooming or
 	// auto-exposing an aliased frame makes the flicker TAA exists to remove worse). The resolve writes the
 	// scene colour back in place, so nothing below needs to know it ran. No-op unless AA_TAA.
-	RenderTAA();
+	postFxGraph.AddPass( RG_PASS_NAME( "TAA" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderTAA(); };
+		} );
 
 	// Depth of field, on the resolved LINEAR HDR scene: D3D11 runs it as the first pass of its "Post-processing
 	// B" block, i.e. after the upscale/TAA stage and before bloom. Blurring before bloom is what makes an
 	// out-of-focus highlight bloom as the disc it has become rather than as the point it was; being after TAA
 	// keeps a moving focus point from smearing through the temporal history. No-op unless EnableDoF.
-	RenderDepthOfField();
+	postFxGraph.AddPass( RG_PASS_NAME( "Depth Of Field" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderDepthOfField(); };
+		} );
 
-	RenderBloom();
-	RenderLuminanceAdapt();
+	postFxGraph.AddPass( RG_PASS_NAME( "Bloom" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderBloom(); };
+		} );
+	postFxGraph.AddPass( RG_PASS_NAME( "Luminance Adapt" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderLuminanceAdapt(); };
+		} );
 
 	// FSR 3 temporal upscale (AA_FSR + the FSR 3 upscaler; mutually exclusive with RenderTAA above). Deliberately
 	// AFTER bloom/luminance and immediately before the tonemap resolve, i.e. on the linear HDR scene rather than
 	// on the finished LDR image D3D11 upscales — see D3D12Fsr3.cpp for the reasoning. It writes a DISPLAY-res
 	// target, which ResolveSceneToBackBuffer then samples in place of the render-res scene colour, so the
 	// resolve's implicit bilinear upscale becomes a 1:1 blit. No-op (and the resolve keeps upscaling) otherwise.
-	RenderFsr3Upscale();
+	postFxGraph.AddPass( RG_PASS_NAME( "FSR3 Upscale" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderFsr3Upscale(); };
+		} );
 
 	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
 	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
-	ResolveSceneToBackBuffer();
+	postFxGraph.AddPass( RG_PASS_NAME( "Resolve Scene To BackBuffer" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { ResolveSceneToBackBuffer(); };
+		} );
 
 	// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
 	// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
 	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
-	RenderSMAA();
+	postFxGraph.AddPass( RG_PASS_NAME( "SMAA" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderSMAA(); };
+		} );
 
 	// Post-tonemap sharpening (SHARPEN_CAS by default — this one is ON for a stock config, unlike SMAA).
 	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.
-	RenderSharpen();
+	postFxGraph.AddPass( RG_PASS_NAME( "Sharpen" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderSharpen(); };
+		} );
 
 	// Underwater screen effect (blue-tinted blur + animated UV distortion), only while the camera is below a
 	// water surface. D3D11 adds its "Draw UnderwaterFX" pass in exactly this slot: after the AA/sharpen passes,
 	// on the finished image, and before Gothic's own 2D UI/HUD phase — the HUD must stay sharp and untinted.
-	DrawUnderwaterEffects();
+	postFxGraph.AddPass( RG_PASS_NAME( "Underwater FX" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { DrawUnderwaterEffects(); };
+		} );
 
 	// Developer view of the motion-vector / normal G-buffer, over the finished image (before Gothic's 2D UI and
 	// the ImGui overlay composite, so both stay readable on top of it). No-op unless one of the shared
 	// DebugSettings.TAA.Display* flags is on. This is currently the ONLY consumer of either target — TAA, FSR3
 	// and XeGTAO are still to come — and therefore the only way to verify this whole feature on the GPU.
-	RenderMotionDebugOverlay();
+	postFxGraph.AddPass( RG_PASS_NAME( "Motion Debug Overlay" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& ) { RenderMotionDebugOverlay(); };
+		} );
+
+	postFxGraph.Compile();
+	postFxGraph.Execute( m_CmdList );
 
 	// (Debug/editor lines used to be flushed here; see the call site above RenderTAA.)
 
