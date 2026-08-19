@@ -2932,7 +2932,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
             zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
             if ( !model || !vi->VisualInfo || !vi->Vob->GetShowVisual()
-                || !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() ) {
+                || !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() ) {
                 continue;
             }
             vi->UpdateState();
@@ -3159,7 +3159,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             model->SetIsVisible( true );
             if ( !vi->VisualInfo )
                 continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
-            if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+            if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->GetIsReady() )
                 continue; // Still being built on a worker thread - don't touch its mesh data yet
             if ( !vi->Vob->GetShowVisual() )
                 continue;
@@ -3571,7 +3571,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         // when it was last in range. Falls back to that copy until the rest mesh is built.
                         MeshVisualInfo* drawVis = mvi;
                         if ( isMMS && mvi->RestVisual
-                            && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
+                            && mvi->RestVisual->GetIsReady() ) {
                             drawVis = mvi->RestVisual;
                         }
 
@@ -6040,6 +6040,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         VS_ExConstantBuffer_PerInstance cb;
 
         for ( auto const& vobInfo : rl ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - skip until Meshes/MeshesByTexture are safe to iterate.
+            if ( !vobInfo->VisualInfo->GetIsReady() ) continue;
+
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer( cb );
 
@@ -6437,6 +6441,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         GfxTexture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - skip until Meshes/MeshesByTexture are safe to iterate.
+            if ( !vobInfo->VisualInfo->GetIsReady() ) continue;
+
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer( cb );
             BindDynamicCBToVertexShader( 1, AllocateDynamicCB( &cb ) );
@@ -8777,6 +8785,10 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 
 /** Draws a VOB (used for inventory) */
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
+    // Still being filled in on a worker thread (GothicAPI::OnAddVob's async Extract3DSMeshFromVisual2Async)
+    // - skip until Meshes is safe to iterate. The item pops in a frame or two later instead.
+    if ( !vob->VisualInfo || !vob->VisualInfo->GetIsReady() ) return;
+
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
 
     // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.

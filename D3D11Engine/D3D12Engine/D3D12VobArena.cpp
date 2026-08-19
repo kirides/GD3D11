@@ -34,6 +34,7 @@ namespace {
 void D3D12VobArena::Reset() {
     std::lock_guard<std::mutex> lock( m_PendingMutex );
     m_Pending.clear();
+    m_NotYetReady.clear();
     m_Ranges.clear();
     m_Resident.clear();
     m_Dynamic.clear();
@@ -46,10 +47,19 @@ void D3D12VobArena::Reset() {
 
 
 void D3D12VobArena::QueueVisual( MeshVisualInfo* visual ) {
-    // Ready() false means a worker thread is still filling MeshesByTexture in (async node-visual
-    // extraction). Skipping is safe: the visual gets queued again the next time a vob referencing it is
-    // added, and until then it simply isn't drawn by the arena path.
-    if ( !visual || !visual->Ready.load( std::memory_order_acquire ) ) return;
+    if ( !visual ) return;
+
+    // A worker thread is still filling MeshesByTexture in (GothicAPI::OnAddVob's async
+    // Extract3DSMeshFromVisual2Async). Remember it for RetryNotYetReady() instead of relying on another
+    // vob sharing this visual to queue it again - a uniquely-referenced mesh (common during world load,
+    // where OnAddVob fires once per vob while extraction is still in flight) would otherwise never make it
+    // into the arena.
+    if ( !visual->GetIsReady() ) {
+        std::lock_guard<std::mutex> lock( m_PendingMutex );
+        if ( std::find( m_NotYetReady.begin(), m_NotYetReady.end(), visual ) == m_NotYetReady.end() )
+            m_NotYetReady.push_back( visual );
+        return;
+    }
 
     // Animated static VOBs (.MMS): their vertices are rewritten every frame, so the arena copy is only the
     // conversion pose and has to be refreshed per frame — see DynamicMeshes(). Only the VISUAL knows this;
@@ -68,6 +78,20 @@ void D3D12VobArena::QueueVisual( MeshVisualInfo* visual ) {
             m_Pending.push_back( { mi, dynamic } );
         }
     }
+}
+
+
+void D3D12VobArena::RetryNotYetReady() {
+    std::vector<MeshVisualInfo*> retry;
+    {
+        std::lock_guard<std::mutex> lock( m_PendingMutex );
+        if ( m_NotYetReady.empty() ) return;
+        retry.swap( m_NotYetReady );
+    }
+    // QueueVisual re-adds anything still not ready, so this list only ever holds visuals that were pending
+    // as of the LAST retry - no risk of looping on the same entry within one call.
+    for ( MeshVisualInfo* visual : retry )
+        QueueVisual( visual );
 }
 
 
@@ -177,6 +201,8 @@ bool D3D12VobArena::Reallocate( D3D12GraphicsEngine* engine ) {
 
 bool D3D12VobArena::Flush( D3D12GraphicsEngine* engine ) {
     if ( !engine ) return false;
+
+    RetryNotYetReady();
 
     std::vector<PendingMesh> pending;
     {

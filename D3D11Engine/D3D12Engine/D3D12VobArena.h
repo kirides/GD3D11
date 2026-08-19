@@ -63,8 +63,18 @@ public:
 
     /** Register every drawable sub-mesh of a static VOB visual. Cheap and idempotent: already-resident and
         already-pending sub-meshes are skipped, so calling it once per vob (i.e. many times per visual) is
-        fine. Safe to call from any thread. */
+        fine. Safe to call from any thread.
+
+        If 'visual' is still being filled in by a background extraction (GothicAPI::OnAddVob's async
+        Extract3DSMeshFromVisual2Async), this only remembers it for RetryNotYetReady() and returns - a
+        visual with exactly one VOB instance in the world would otherwise never get queued again, since
+        OnAddVob calls this exactly once per VOB. */
     void QueueVisual( MeshVisualInfo* visual );
+
+    /** Re-attempts QueueVisual() for every visual it deferred for not being Ready yet. Called once per
+        frame from Flush(), before the pending list is drained, so a mesh that finishes extraction between
+        two frames is queued (and therefore uploaded) without needing another VOB to reference it. */
+    void RetryNotYetReady();
 
     /** Upload everything queued since the last call, growing the buffers if needed. Main thread, inside an
         open frame. Returns false if the arena is unusable this frame (allocation failure) — the caller
@@ -146,8 +156,12 @@ private:
         MeshInfo* Mesh;
         bool Dynamic;
     };
-    std::mutex m_PendingMutex;             // guards m_Pending only; the rest is main-thread/Flush-only
+    std::mutex m_PendingMutex;             // guards m_Pending and m_NotYetReady; the rest is main-thread/Flush-only
     std::vector<PendingMesh> m_Pending;
+
+    // Visuals QueueVisual() saw while their background extraction was still running. Retried once per
+    // frame - see RetryNotYetReady().
+    std::vector<MeshVisualInfo*> m_NotYetReady;
 
     bool m_AllocFailed = false;            // logged once; stops us retrying a doomed allocation every frame
 };

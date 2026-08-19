@@ -799,6 +799,9 @@ void D3D12PointShadows::Prepare() {
 				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
 					MeshVisualInfo* visual = up.visual;
 					if ( !visual || visual->Instances.empty() ) continue;
+					// Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+					// Extract3DSMeshFromVisual2Async) - skip until MeshesByTexture is safe to iterate.
+					if ( !visual->GetIsReady() ) continue;
 					const float cullR = ps.range + visual->MeshSize * 0.5f;   // sphere test allows for VOB extent
 					const float cullRSq = cullR * cullR;
 
@@ -954,6 +957,9 @@ void D3D12PointShadows::Prepare() {
 					if ( hasExclusions && std::find( excludeVobs.begin(), excludeVobs.end(), vi->Vob ) != excludeVobs.end() )
 						continue;
 					MeshVisualInfo* visual = static_cast<MeshVisualInfo*>( vi->VisualInfo );
+					// Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+					// Extract3DSMeshFromVisual2Async) - skip until MeshesByTexture is safe to iterate.
+					if ( !visual->GetIsReady() ) continue;
 					const XMFLOAT3 pos = vi->Vob->GetPositionWorld();
 					const float cullR = ps.range + visual->MeshSize * 0.5f;
 					float dx = pos.x - ps.posWS.x, dy = pos.y - ps.posWS.y, dz = pos.z - ps.posWS.z;

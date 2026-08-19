@@ -245,6 +245,17 @@ struct BaseVisualInfo {
 
     /** Name of this visual */
     std::string VisualName;
+
+    /** False while a worker thread is still filling Meshes (and, on MeshVisualInfo, MeshesByTexture) in -
+        WorldConverter::ExtractNodeVisualAsync/Extract3DSMeshFromVisual2Async, AsyncVisualExtractor. Draw/
+        update sites must skip a visual entirely until this flips back to true - reading the containers
+        before that races the extraction. Synchronously extracted visuals (every other path) leave it at
+        true throughout. Use GetIsReady() to read it - the direct field is for the extraction code that
+        sets it. */
+    std::atomic<bool> Ready{ true };
+
+    /** See Ready. */
+    bool GetIsReady() const { return Ready.load( std::memory_order_acquire ); }
 };
 
 /** Holds the converted mesh of a VOB */
@@ -293,12 +304,6 @@ struct MeshVisualInfo : public BaseVisualInfo {
     bool NeedsAlphaTesting;
     size_t LastAniUpdateFrame;
 
-    /** False while a worker thread is still filling Meshes/MeshesByTexture/FullMesh in
-        (WorldConverter::ExtractNodeVisualAsync). Draw/update sites must skip this visual entirely until
-        it flips to true - reading the containers before that races the extraction. Synchronously
-        extracted visuals (every other path) leave it at true. */
-    std::atomic<bool> Ready{ true };
-
     /** SharedVisualRegistry bookkeeping; 0/null on visuals owned outright by their holder. SharedKey is
         the lookup key - unlike Visual it is never rewritten by a background extraction. Destroyed when
         SharedRefs (the number of NodeAttachments slots pointing here) hits zero. */
@@ -339,11 +344,6 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
 
     /** Submeshes of this visual */
     std::map<zCMaterial*, std::vector<std::unique_ptr<SkeletalMeshInfo>>> SkeletalMeshes;
-
-    /** False while an AsyncVisualExtractor job is still filling SkeletalMeshes/Meshes. Draw/update
-     *  code must skip vobs pointing at a not-yet-ready visual instead of touching the (possibly
-     *  still empty) mesh lists. */
-    std::atomic<bool> Ready{true};
 };
 
 struct BaseVobInfo {

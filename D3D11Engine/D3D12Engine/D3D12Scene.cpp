@@ -404,6 +404,10 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         || !m_Pipelines.Preview.PSO || !m_Pipelines.Preview.RootSig || !m_DepthBuffer || !m_DsvHeap )
         return;
 
+    // Still being filled in on a worker thread (GothicAPI::OnAddVob's async Extract3DSMeshFromVisual2Async)
+    // - skip until Meshes is safe to iterate. The item pops in a frame or two later instead.
+    if ( !vob->VisualInfo->GetIsReady() ) return;
+
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -1747,7 +1751,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 						WorldConverter::ExtractNodeVisualAsync( n, node, skel->NodeAttachments );
 						it = skel->NodeAttachments.find( n );
 					} else if ( !it->second.empty() && it->second[0]
-						&& it->second[0]->Ready.load( std::memory_order_acquire )
+						&& it->second[0]->GetIsReady()
 						&& it->second[0]->Visual != node->NodeVisual ) {
 						WorldConverter::ExtractNodeVisualAsync( n, node, skel->NodeAttachments );  // visual changed
 						it = skel->NodeAttachments.find( n );
@@ -1760,7 +1764,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 					for ( MeshVisualInfo* mvi : it->second ) {
 						if ( !mvi ) continue;
 						// Still being extracted on a worker — Meshes is being written right now, don't race it.
-						if ( !mvi->Ready.load( std::memory_order_acquire ) || !mvi->Visual ) continue;
+						if ( !mvi->GetIsReady() || !mvi->Visual ) continue;
 
 						// Texture animation + facial/bow morphing, same calls the lit attachment path makes.
 						// A ghost NPC's head is exactly this case, so skipping it would freeze its face.
@@ -1813,6 +1817,10 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 		}
 
 		if ( !info.normalVob || !info.normalVob->VisualInfo || !m_Pipelines.Ghost.PSO || !m_Pipelines.Ghost.RootSig ) continue;
+
+		// Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+		// Extract3DSMeshFromVisual2Async) - skip until Meshes is safe to iterate.
+		if ( !static_cast<MeshVisualInfo*>( info.normalVob->VisualInfo )->GetIsReady() ) continue;
 
 		VobInfo* vi = info.normalVob;
 		m_CmdList->SetPipelineState( m_Pipelines.Ghost.PSO.Get() );
@@ -3206,6 +3214,9 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
     for ( const FrameVobUpload& up : uploads ) {
         MeshVisualInfo* visual = up.visual;
         if ( !visual ) continue;
+        // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+        // Extract3DSMeshFromVisual2Async) - skip until MeshesByTexture is safe to iterate.
+        if ( !visual->GetIsReady() ) continue;
         const float minH = visual->BBox.Min.y;
         const float maxH = visual->BBox.Max.y;
         staged.clear();
@@ -4453,7 +4464,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
         if ( !model ) continue;
 
-        if ( !visual->Ready.load() ) continue;   // still being built on a worker thread (GothicAPI::LoadzCModelData)
+        if ( !visual->GetIsReady() ) continue;   // still being built on a worker thread (GothicAPI::LoadzCModelData)
 
         // Some skeletal vobs arrive with their base mesh not yet extracted (SkeletalMeshes empty but the model
         // does carry soft-skin geometry) — build it lazily. Interactive MOBs whose ONLY renderable content is a
@@ -4662,7 +4673,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     WorldConverter::ExtractNodeVisualAsync( n, node, nodeAttachments );
                     it = nodeAttachments.find( n );
                 } else if ( !it->second.empty() && it->second[0]
-                    && it->second[0]->Ready.load( std::memory_order_acquire )
+                    && it->second[0]->GetIsReady()
                     && it->second[0]->Visual != node->NodeVisual ) {
                     WorldConverter::ExtractNodeVisualAsync( n, node, nodeAttachments );  // visual changed
                     it = nodeAttachments.find( n );
@@ -4687,7 +4698,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     if ( !mvi ) continue;
                     // Still being extracted on a worker thread — Meshes/MeshesByTexture are being written
                     // to right now, so skip this attachment entirely for this frame rather than race them.
-                    if ( !mvi->Ready.load( std::memory_order_acquire ) || !mvi->Visual ) continue;
+                    if ( !mvi->GetIsReady() || !mvi->Visual ) continue;
                     const bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
                     // MMS attachments only MORPH within kMorphMeshMaxDistance; beyond it they render as their
                     // undeformed rest mesh and carry no Fatness/Scaling, mirroring D3D11's `isMMS &&
@@ -4723,7 +4734,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     // per head type, so they batch. Falls back while the rest mesh is still being built.
                     MeshVisualInfo* drawVis = mvi;
                     if ( isMMS && !morphActive && mvi->RestVisual
-                        && mvi->RestVisual->Ready.load( std::memory_order_acquire ) ) {
+                        && mvi->RestVisual->GetIsReady() ) {
                         drawVis = mvi->RestVisual;
                     }
                     const bool attBatchable = !isMMS || drawVis != mvi;
