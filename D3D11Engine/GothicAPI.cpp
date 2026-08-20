@@ -6492,7 +6492,9 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
             if ( emitter->GetVisShpType() == 5 ) {
                 if ( zCModel* model = emitter->GetVisShpModel() ) {
                     MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
-                    WorldConverter::ExtractProgMeshProtoFromModel( model, mi );
+                    // Same rationale as the prog-mesh branch below: don't hitch the frame a model-shaped
+                    // PFX burst spawns on.
+                    WorldConverter::ExtractProgMeshProtoFromModelAsync( model, mi );
                 } else if ( zCProgMeshProto* progMesh = emitter->GetVisShpProgMesh() ) {
                     MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     // Same rationale as GothicAPI::OnAddVob: spawning many PFX with a prog-mesh particle

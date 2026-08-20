@@ -94,6 +94,14 @@ public:
     /** Extracts a zCProgMeshProto from a zCModel */
     static void ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo );
 
+    /** Same as ExtractProgMeshProtoFromModel, but hands the expensive part (vertex unpacking, meshoptimizer,
+        buffer creation) for every node to a worker thread, same idea as ExtractNodeVisualAsync. The ZENGIN-
+        mutating part (UpdateAttachedVobs/UpdateMeshLibTexAniState/node->TrafoObjToCam) still runs here on
+        the game thread; only a snapshot of each node's resolved visual + transform crosses over. Sets
+        meshInfo->Ready false immediately and flips it true when the worker finishes - callers must not draw
+        from meshInfo until then. Falls back to the synchronous call when there is no worker pool. */
+    static void ExtractProgMeshProtoFromModelAsync( zCModel* model, MeshVisualInfo* meshInfo );
+
     /** Extracts a zCProgMeshProto from a zCMesh */
     static void ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo* meshInfo );
 

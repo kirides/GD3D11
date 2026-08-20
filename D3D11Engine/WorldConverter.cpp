@@ -1620,45 +1620,22 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMes
 }
 
 /** Extracts a zCProgMeshProto from a zCModel */
-void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo ) {
-    ZoneScoped;
-
-    XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
-    XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
-
-    std::list<std::vector<ExVertexStruct>*> vertexBuffers;
-    std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
-    std::list<MeshInfo*> meshInfos;
-
-    model->UpdateAttachedVobs();
-    model->UpdateMeshLibTexAniState();
-
-    const std::string_view visualName = model->GetModelName();
-    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
-    for ( int i = 0; i < nodeList->NumInArray; i++ ) {
-        zCModelNodeInst* node = nodeList->Array[i];
-        if ( !node->NodeVisual )
-            continue;
-
-        const char* ext = node->NodeVisual->GetFileExtension( 0 );
-
-        bool isMMS = strcmp( ext, ".MMS" ) == 0;
-        if ( !isMMS && strcmp( ext, ".3DS" ) != 0 )
-            continue;
-
-        zCProgMeshProto* visual = static_cast<zCProgMeshProto*>(node->NodeVisual);
-        if ( isMMS ) {
-            visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
-        }
+namespace {
+    /** Converts one node's submeshes (indices/vertices, meshopt optimization, buffer creation) and appends
+        the result into meshInfo/vertexBuffers/indexBuffers/meshInfos. Shared by ExtractProgMeshProtoFromModel
+        (main thread) and ExtractProgMeshProtoFromModelAsync's worker job - 'nodeTrafoObjToCam' is a snapshot
+        of node->TrafoObjToCam rather than the live node, since the async path may run this after the node
+        list has moved on (see ExtractProgMeshProtoFromModelAsync). Nothing in here touches ZENGIN state,
+        matching what Extract3DSMeshFromVisual2 (also worker-called) already relies on for CreateVertexBuffer/
+        GetRendererState/GetMaterialInfoFrom. */
+    void ConvertModelNodeSubmeshes( zCProgMeshProto* visual, const XMFLOAT4X4& nodeTrafoObjToCam,
+            const std::string& visualName, MeshVisualInfo* meshInfo,
+            std::list<std::vector<ExVertexStruct>*>& vertexBuffers,
+            std::list<std::vector<VERTEX_INDEX>*>& indexBuffers,
+            std::list<MeshInfo*>& meshInfos,
+            XMFLOAT3& bbmin, XMFLOAT3& bbmax ) {
         XMFLOAT3* posList = visual->GetPositionList()->Array;
-
-        // Calculate transform for this node
-        zCModelNodeInst* parent = node->ParentNode;
-        if ( parent ) {
-            XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
-        } else {
-            node->TrafoObjToCam = node->Trafo;
-        }
+        XMMATRIX nodeTrafo = XMMatrixTranspose( XMLoadFloat4x4( &nodeTrafoObjToCam ) );
 
         std::vector<ExVertexStruct> vertices;
         std::vector<VERTEX_INDEX> indices;
@@ -1685,7 +1662,6 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vertices.emplace_back();
 
                 ExVertexStruct& vx = vertices.back();
-                XMMATRIX nodeTrafo = XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) );
                 XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), nodeTrafo ) );
                 vx.TexCoord = wedge.texUV;
                 // The position bakes the node's bind-pose transform in (above); the normal must rotate by the SAME
@@ -1770,39 +1746,94 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
         }
     }
 
-    std::vector<ExVertexStruct> wrappedVertices;
-    std::vector<unsigned int> wrappedIndices;
-    std::vector<unsigned int> offsets;
+    /** Wraps up a MeshVisualInfo once every node's submeshes have been converted: builds the fat
+        vertex/index buffer offsets and the bounding box/Visual/VisualName fields. Shared tail of
+        ExtractProgMeshProtoFromModel and ExtractProgMeshProtoFromModelAsync's worker job. */
+    void FinishProgMeshProtoFromModel( MeshVisualInfo* meshInfo, zCVisual* visual, const std::string& visualName,
+            std::list<std::vector<ExVertexStruct>*>& vertexBuffers,
+            std::list<std::vector<VERTEX_INDEX>*>& indexBuffers,
+            std::list<MeshInfo*>& meshInfos,
+            XMFLOAT3 bbmin, XMFLOAT3 bbmax ) {
+        std::vector<ExVertexStruct> wrappedVertices;
+        std::vector<unsigned int> wrappedIndices;
+        std::vector<unsigned int> offsets;
 
-    if ( !vertexBuffers.empty() ) {
-        // Calculate fat vertexbuffer
-        WorldConverter::WrapVertexBuffers( vertexBuffers, indexBuffers, wrappedVertices, wrappedIndices, offsets );
+        if ( !vertexBuffers.empty() ) {
+            // Calculate fat vertexbuffer
+            WorldConverter::WrapVertexBuffers( vertexBuffers, indexBuffers, wrappedVertices, wrappedIndices, offsets );
 
-        // Propergate the offsets
-        int i = 0;
-        for ( auto const& it : meshInfos ) {
-            it->BaseIndexLocation = offsets[i++];
+            // Propergate the offsets
+            int i = 0;
+            for ( auto const& it : meshInfos ) {
+                it->BaseIndexLocation = offsets[i++];
+            }
+
+            // FullMesh's buffers are gone - see the note in Extract3DSMeshFromVisual2. Nothing ever bound
+            // them; only BaseIndexLocation above is actually consumed.
         }
 
-        // FullMesh's buffers are gone - see the note in Extract3DSMeshFromVisual2. Nothing ever bound
-        // them; only BaseIndexLocation above is actually consumed.
+        // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
+        // seeds would otherwise survive into MeshSize as an infinity, and MeshSize drives
+        // the small-vob/draw-distance and pointlight-shadow cull radii.
+        if ( vertexBuffers.empty() ) {
+            bbmin = XMFLOAT3( 0, 0, 0 );
+            bbmax = XMFLOAT3( 0, 0, 0 );
+        }
+
+        meshInfo->BBox.Min = bbmin;
+        meshInfo->BBox.Max = bbmax;
+        XMStoreFloat( &meshInfo->MeshSize, XMVector3Length( (XMLoadFloat3( &bbmin ) - XMLoadFloat3( &bbmax )) ) );
+        XMStoreFloat3( &meshInfo->MidPoint, 0.5f * (XMLoadFloat3( &bbmin ) + XMLoadFloat3( &bbmax )) );
+
+        meshInfo->Visual = visual;
+        meshInfo->VisualName = visualName;
+    }
+}
+
+void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
+    XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
+    XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+
+    std::list<std::vector<ExVertexStruct>*> vertexBuffers;
+    std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
+    std::list<MeshInfo*> meshInfos;
+
+    model->UpdateAttachedVobs();
+    model->UpdateMeshLibTexAniState();
+
+    const std::string visualName( model->GetModelName() );
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    for ( int i = 0; i < nodeList->NumInArray; i++ ) {
+        zCModelNodeInst* node = nodeList->Array[i];
+        if ( !node->NodeVisual )
+            continue;
+
+        const char* ext = node->NodeVisual->GetFileExtension( 0 );
+
+        bool isMMS = strcmp( ext, ".MMS" ) == 0;
+        if ( !isMMS && strcmp( ext, ".3DS" ) != 0 )
+            continue;
+
+        zCProgMeshProto* visual = static_cast<zCProgMeshProto*>(node->NodeVisual);
+        if ( isMMS ) {
+            visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
+        }
+
+        // Calculate transform for this node
+        zCModelNodeInst* parent = node->ParentNode;
+        if ( parent ) {
+            XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
+        } else {
+            node->TrafoObjToCam = node->Trafo;
+        }
+
+        ConvertModelNodeSubmeshes( visual, node->TrafoObjToCam, visualName, meshInfo,
+            vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
     }
 
-    // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
-    // seeds would otherwise survive into MeshSize as an infinity, and MeshSize drives
-    // the small-vob/draw-distance and pointlight-shadow cull radii.
-    if ( vertexBuffers.empty() ) {
-        bbmin = XMFLOAT3( 0, 0, 0 );
-        bbmax = XMFLOAT3( 0, 0, 0 );
-    }
-
-    meshInfo->BBox.Min = bbmin;
-    meshInfo->BBox.Max = bbmax;
-    XMStoreFloat( &meshInfo->MeshSize, XMVector3Length( (XMLoadFloat3( &bbmin ) - XMLoadFloat3( &bbmax )) ) );
-    XMStoreFloat3( &meshInfo->MidPoint, 0.5f * (XMLoadFloat3( &bbmin ) + XMLoadFloat3( &bbmax )) );
-
-    meshInfo->Visual = model;
-    meshInfo->VisualName = visualName;
+    FinishProgMeshProtoFromModel( meshInfo, model, visualName, vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
 }
 
 /** Extracts a zCProgMeshProto from a zCMesh */
@@ -2156,6 +2187,89 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
     std::scoped_lock lock( s_PendingNodeVisualsMutex );
     PruneFinishedNodeVisualsLocked();
     s_PendingNodeVisuals.emplace_back( mi, nodeVisual, std::move( task ) );
+}
+
+/** Same as ExtractProgMeshProtoFromModel, but hands the meshoptimizer/buffer-creation part to a worker
+    thread. See the header for the contract. */
+void WorldConverter::ExtractProgMeshProtoFromModelAsync( zCModel* model, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
+    if ( !Engine::WorkerThreadPool ) {
+        ExtractProgMeshProtoFromModel( model, meshInfo );
+        return;
+    }
+
+    model->UpdateAttachedVobs();
+    model->UpdateMeshLibTexAniState();
+
+    // Snapshot every eligible node's (visual, bind-pose transform) up front: node->TrafoObjToCam is
+    // ZENGIN state that must be computed here on the game thread, but reading it back out of the node
+    // later from a worker would race the animation system. The submesh conversion itself only reads
+    // the visual's own wedge/position arrays, which - like Extract3DSMeshFromVisual2's - are written
+    // once at load and safe to read off-thread.
+    struct ModelNodeMeshSource {
+        zCProgMeshProto* Visual;
+        XMFLOAT4X4 Trafo;
+    };
+    std::vector<ModelNodeMeshSource> sources;
+
+    const std::string visualName( model->GetModelName() );
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    for ( int i = 0; i < nodeList->NumInArray; i++ ) {
+        zCModelNodeInst* node = nodeList->Array[i];
+        if ( !node->NodeVisual )
+            continue;
+
+        const char* ext = node->NodeVisual->GetFileExtension( 0 );
+
+        bool isMMS = strcmp( ext, ".MMS" ) == 0;
+        if ( !isMMS && strcmp( ext, ".3DS" ) != 0 )
+            continue;
+
+        zCProgMeshProto* visual = static_cast<zCProgMeshProto*>(node->NodeVisual);
+        if ( isMMS ) {
+            visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
+        }
+
+        zCModelNodeInst* parent = node->ParentNode;
+        if ( parent ) {
+            XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
+        } else {
+            node->TrafoObjToCam = node->Trafo;
+        }
+
+        sources.push_back( { visual, node->TrafoObjToCam } );
+    }
+
+    meshInfo->Ready.store( false, std::memory_order_relaxed );
+
+    // Keep the model (and therefore every node visual it still owns) alive for the worker's duration.
+    zCObject_AddRef( model );
+
+    auto task = Engine::WorkerThreadPool->enqueue( [sources = std::move( sources ), meshInfo, visualName, model]
+            ( const std::stop_token& token ) {
+        // Unlike ExtractNodeVisualAsync's job, 'meshInfo' lives in a long-lived map (GothicAPI::
+        // ParticleEffectProgMeshes / StaticMeshVisuals) that only (re-)triggers extraction when no entry
+        // exists yet - see Extract3DSMeshFromVisual2Async for why cancellation must not skip the work.
+        XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
+        XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+
+        std::list<std::vector<ExVertexStruct>*> vertexBuffers;
+        std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
+        std::list<MeshInfo*> meshInfos;
+
+        for ( const auto& source : sources ) {
+            ConvertModelNodeSubmeshes( source.Visual, source.Trafo, visualName, meshInfo,
+                vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
+        }
+
+        FinishProgMeshProtoFromModel( meshInfo, model, visualName, vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
+        meshInfo->Ready.store( true, std::memory_order_release );
+    } );
+
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    PruneFinishedNodeVisualsLocked();
+    s_PendingNodeVisuals.emplace_back( meshInfo, static_cast<zCVisual*>( model ), std::move( task ) );
 }
 
 void WorldConverter::Extract3DSMeshFromVisual2Async( zCVisual* holdVisual, zCProgMeshProto* pm, MeshVisualInfo* meshInfo ) {
