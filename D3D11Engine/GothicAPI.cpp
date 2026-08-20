@@ -4565,6 +4565,12 @@ void GothicAPI::CollectVisibleVobs(
         const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
 
         for ( auto it : renderQueue.vobs ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - don't add an instance for it yet. DrawVOBsInstanced
+            // gates solely on Instances.empty(), so a not-ready visual pushed here would get iterated
+            // (MeshesByTexture/Meshes) on the render thread while the worker is still writing to it.
+            if ( !it->VisualInfo->GetIsReady() ) continue;
+
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
             vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;

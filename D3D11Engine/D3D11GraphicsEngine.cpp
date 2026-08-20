@@ -5853,18 +5853,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         //		 The current solution won't use the cache at all when there are
         // no vobs near!
         if ( worldMeshCache && !worldMeshCache->empty() ) {
-            for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
+            for ( const auto& meshInfoByKey : *worldMeshCache) {
                 bool isAlpha = false;
                 // Bind texture
-                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTextureSingle() ) {
+                if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle() ) {
                     // Check surface type
 
-                    if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
+                    if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
-                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
-                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
+                    if ( meshInfoByKey.first.Material->HasAlphaTest() || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel() ) {
+                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey.first.Material->GetAniTexture() : nullptr;
                         if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
                             void* engineTex = aniTex->GetSurface()->GetEngineTexture();
                             if ( lastTex != engineTex ) {
@@ -5895,7 +5895,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
 
                 // Draw from wrapped mesh
-                MeshInfo* mesh = meshInfoByKey->second;
+                MeshInfo* mesh = meshInfoByKey.second;
                 DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( mesh, isAlpha ),
                     GetShadowAwareIndexCount( mesh, isAlpha ) );
@@ -5914,27 +5914,26 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
-                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
+                    for ( const auto& meshInfoByKey : section->WorldMeshes) {
                         // Check surface type
-                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshInfoByKey->second, f ) ) {
+                        if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshInfoByKey.second, f ) ) {
                             continue;
                         }
 
                         bool isAlpha = false;
                         // Bind texture
-                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
-                            if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
+                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTexture() ) {
+                            if ( meshInfoByKey.first.Material->HasAlphaTest() || meshInfoByKey.first.Material->GetTexture()->HasAlphaChannel() ) {
                                 if ( alphaRef > 0.0f &&
-                                    meshInfoByKey->first.Material->GetTexture()->GetCacheState() ==
+                                    meshInfoByKey.first.Material->GetTexture()->GetCacheState() ==
                                     zRES_CACHED_IN ) {
-                                    void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                                    void* engineTex = meshInfoByKey.first.Material->GetTexture()->GetSurface()->GetEngineTexture();
                                     if ( lastTex != engineTex ) {
-                                        meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                        meshInfoByKey.first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                                         lastTex = engineTex;
                                     }
                                     ActivePS->Apply();
@@ -5962,13 +5961,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         }
 
                         // Draw from wrapped mesh
-                        MeshInfo* mesh = meshInfoByKey->second;
+                        MeshInfo* mesh = meshInfoByKey.second;
                         DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
                             GetShadowAwareIndexBuffer( mesh, isAlpha ),
                             GetShadowAwareIndexCount( mesh, isAlpha ) );
-
+                        
                         if ( worldMeshCache ) {
-                            worldMeshCache->push_back( *meshInfoByKey );
+                            // causes corrupted meshes
+                            // worldMeshCache->emplace_back( meshInfoByKey );
                         }
                     }
                 }
@@ -6214,7 +6214,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     auto rangeSquared = range * range;
     auto vRangeSquared = XMVectorReplicate( rangeSquared );
-    const float sectionRadius = std::max( 2.0f, (range / WORLD_SECTION_SIZE) + 1.5f );
 
     const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
     const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
@@ -6230,18 +6229,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         //		 The current solution won't use the cache at all when there are
         // no vobs near!
         if ( worldMeshCache && !worldMeshCache->empty() ) {
-            for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
+            for ( const auto& meshInfoByKey : *worldMeshCache) {
                 // Bind texture
                 bool isAlpha = false;
-                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTextureSingle() ) {
+                if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle() ) {
                     // Check surface type
 
-                    if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
+                    if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
-                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
-                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
+                    if ( meshInfoByKey.first.Material->HasAlphaTest() || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel() ) {
+                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey.first.Material->GetAniTexture() : nullptr;
                         if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
                             lastTex = aniTex->GetSurface()->GetEngineTexture();
                             aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
@@ -6269,7 +6268,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 }
 
                 // Draw from wrapped mesh
-                MeshInfo* mesh = meshInfoByKey->second;
+                MeshInfo* mesh = meshInfoByKey.second;
                 DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( mesh, isAlpha ),
                     GetShadowAwareIndexCount( mesh, isAlpha ),
@@ -6288,27 +6287,26 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo_Layered( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
-                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
+                    for ( const auto& meshInfoByKey : section->WorldMeshes ) {
                         // Check surface type
-                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshInfoByKey->second, f ) ) {
+                        if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshInfoByKey.second, f ) ) {
                             continue;
                         }
 
                         bool isAlpha = false;
                         // Bind texture
-                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
-                            if ( meshInfoByKey->first.Material ->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel()) {
+                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTexture() ) {
+                            if ( meshInfoByKey.first.Material ->HasAlphaTest() || meshInfoByKey.first.Material->GetTexture()->HasAlphaChannel()) {
                                 if ( alphaRef > 0.0f &&
-                                    meshInfoByKey->first.Material->GetTexture()->GetCacheState() ==
+                                    meshInfoByKey.first.Material->GetTexture()->GetCacheState() ==
                                     zRES_CACHED_IN ) {
 
-                                    lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                                    meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                    lastTex = meshInfoByKey.first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                                    meshInfoByKey.first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                                     ActivePS->Apply();
                                     isAlpha = true;
                                 } else
@@ -6334,14 +6332,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         }
 
                         // Draw from wrapped mesh
-                        MeshInfo* mesh = meshInfoByKey->second;
+                        MeshInfo* mesh = meshInfoByKey.second;
                         DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
                             GetShadowAwareIndexBuffer( mesh, isAlpha ),
                             GetShadowAwareIndexCount( mesh, isAlpha ),
                             6 );
-
+                        
                         if ( worldMeshCache ) {
-                            worldMeshCache->push_back( *meshInfoByKey );
+                            // causes corrupted meshes
+                            // worldMeshCache->emplace_back( meshInfoByKey );
                         }
                     }
                 }
@@ -6989,6 +6988,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         for ( auto& it : vobs ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - don't add an instance for it yet, same as the main pass.
+            if ( !it->VisualInfo->GetIsReady() ) continue;
+
             // process any vobs only visible in this cascade
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
@@ -9708,14 +9711,14 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     std::vector<std::tuple<zCTexture*, ParticleRenderInfo*, std::vector<ParticleInstanceInfo>*>> pvecAdd;
     std::vector<std::tuple<zCTexture*, ParticleRenderInfo*, std::vector<ParticleInstanceInfo>*>> pvecRest;
-    for ( auto&& textureParticle : particles ) {
+    for ( auto& textureParticle : particles ) {
         if ( textureParticle.second.empty() ) continue;
 
         ParticleRenderInfo* ri = &info[textureParticle.first];
         if ( ri->BlendMode == zRND_ALPHA_FUNC_ADD )
-            pvecAdd.push_back( std::make_tuple( textureParticle.first, ri, &textureParticle.second ) );
+            pvecAdd.emplace_back( textureParticle.first, ri, &textureParticle.second);
         else
-            pvecRest.push_back( std::make_tuple( textureParticle.first, ri, &textureParticle.second ) );
+            pvecRest.emplace_back( textureParticle.first, ri, &textureParticle.second);
     }
 
     ID3D11RenderTargetView* rtv[] = {
@@ -9830,7 +9833,7 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
     // Take out of shadowupdate queue
-    for ( auto&& it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
+    for ( auto it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
         if ( (*it)->Vob == vob ) {
             FrameShadowUpdateLights.erase( it );
             break;

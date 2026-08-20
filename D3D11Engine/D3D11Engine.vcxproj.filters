@@ -965,6 +965,7 @@
     <ClInclude Include="SharedVisualRegistry.h" />
     <ClInclude Include="MorphGpu.h" />
     <ClInclude Include="zCPathSearch.h" />
+    <ClInclude Include="MeshShadowIndexBuilder.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1404,7 +1405,6 @@
     <None Include="ddraw.def">
       <Filter>DLLMain</Filter>
     </None>
-    <None Include="packages.config" />
     <None Include="include\assimp\vector3.inl">
       <Filter>Librarys\Assimp</Filter>
     </None>

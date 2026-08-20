@@ -2171,13 +2171,13 @@ void WorldConverter::Extract3DSMeshFromVisual2Async( zCVisual* holdVisual, zCPro
     zCObject_AddRef( holdVisual );
 
     auto task = Engine::WorkerThreadPool->enqueue( [pm, meshInfo]( const std::stop_token& token ) {
-        if ( token.stop_requested() ) {
-            // World teardown / vob removed before a worker picked this up. 'meshInfo' is about to be
-            // deleted by the caller (which already waited for us via WaitForPendingNodeVisuals), so there
-            // is nothing left to fill in - just unblock that wait.
-            meshInfo->Ready.store( true, std::memory_order_release );
-            return;
-        }
+        // Unlike ExtractNodeVisualAsync's job, 'meshInfo' here is NOT about to be deleted by the caller -
+        // it lives in a long-lived map (StaticMeshVisuals / ParticleEffectProgMeshes) that OnAddVob /
+        // AddParticleEffect only (re-)triggers extraction for when no entry exists yet. Bailing out on
+        // cancellation and still marking Ready would leave a permanently hollow entry - nobody would ever
+        // retry it, since as far as the map is concerned this visual is already "loaded" (just with zero
+        // meshes). So extract unconditionally; a cancellation here only ever means "a world
+        // reset/clearAndFlush caught this job mid-queue", not "the result no longer matters".
         Extract3DSMeshFromVisual2( pm, meshInfo );
         meshInfo->Ready.store( true, std::memory_order_release );
     } );
