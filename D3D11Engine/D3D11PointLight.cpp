@@ -507,6 +507,9 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 
     LastUpdateColor = LightInfo->Vob->GetLightColor();
     LastUpdatePosition = vobPos;
+    // Was declared but never actually assigned anywhere in the codebase - always read back (0,0,0)
+    // regardless of whether a render actually happened, so it was not trustworthy debug signal.
+    LightInfo->LastRenderedPosition = vobPos;
     DrawnOnce = true;
 }
 

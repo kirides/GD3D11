@@ -417,6 +417,12 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         nearest->IsStaticShadowReady() ? 1 : 0, nearest->HasDynamicShadowOverlay() ? 1 : 0 );
     ImGui::Text( "Tiled slot %d (lowRes %d)   Legacy cube: %s", nearest->GetTiledSlot(),
         nearest->IsTiledSlotLowRes() ? 1 : 0, nearest->GetShadowCubeTexture() ? "yes" : "no" );
+    ImGui::Text( "IsPFXVobLight %d   IsStaticVobLight %d", nearestInfo->IsPFXVobLight ? 1 : 0,
+        nearestInfo->IsStaticVobLight ? 1 : 0 );
+    ImGui::Text( "LastRenderedPosition (%.1f, %.1f, %.1f)", nearestInfo->LastRenderedPosition.x,
+        nearestInfo->LastRenderedPosition.y, nearestInfo->LastRenderedPosition.z );
+    ImGui::SetItemTooltip( "Set by D3D11PointLight::RenderCubemap right after a real render - if this stays\n"
+        "(0,0,0) while DrawnOnce/StaticReady are true, the light is caching a bake that never actually ran." );
 
     if ( !nearest->HasAnyShadowMap() ) {
         ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
