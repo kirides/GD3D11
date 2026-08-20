@@ -6989,6 +6989,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         for ( auto& it : vobs ) {
+            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+            // Extract3DSMeshFromVisual2Async) - don't add an instance for it yet, same as the main pass.
+            if ( !it->VisualInfo->GetIsReady() ) continue;
+
             // process any vobs only visible in this cascade
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
