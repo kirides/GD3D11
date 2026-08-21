@@ -911,11 +911,20 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
-    // Release any resources of not visible lights
+    // Release resources of lights that have been out of view for a while now - NOT on the very first
+    // missing frame. A light that only blinks (zCVobLight::IsEnabled toggling for a flicker effect, or a
+    // one-frame frustum/visibility edge case) must keep its slot and baked depth across that blink: a
+    // PLS_STATIC_ONLY light's bake is meant to happen once and stick, but if every absent frame evicted it
+    // outright, a light that blinks even occasionally could never finish a bake that survives - it gets
+    // evicted mid-wait, wins a slot again on the next visible frame, and gets evicted again before that
+    // bake completes, so it lights unshadowed (bleeding through walls) forever instead of self-healing.
+    // Mirrors D3D12PointShadows' Slot::missingFrames retention in SelectShadowedLights.
+    constexpr int kPointLightSlotRetentionFrames = 120;
     for ( auto& it : Engine::GAPI->VobLightMap ) {
-        if ( it.second->LightShadowBuffers
-            && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame) ) {
-            if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
+        if ( !it.second->LightShadowBuffers ) continue;
+        if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
+            const bool visible = it.second->Vob->IsEnabled() && it.second->VisibleInFrame;
+            if ( pl->NoteAbsence( visible, kPointLightSlotRetentionFrames ) ) {
                 pl->ClearTiledSlot();
                 pl->ReleaseShadowMap();
             }

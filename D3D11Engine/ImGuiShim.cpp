@@ -419,6 +419,15 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         nearest->IsTiledSlotLowRes() ? 1 : 0, nearest->GetShadowCubeTexture() ? "yes" : "no" );
     ImGui::Text( "IsPFXVobLight %d   IsStaticVobLight %d", nearestInfo->IsPFXVobLight ? 1 : 0,
         nearestInfo->IsStaticVobLight ? 1 : 0 );
+    ImGui::Text( "Vob->IsEnabled %d   VisibleInFrame %d   MissingFrames %d", nearestInfo->Vob->IsEnabled() ? 1 : 0,
+        nearestInfo->VisibleInFrame ? 1 : 0, nearest->GetMissingFrames() );
+    ImGui::SetItemTooltip( "IsEnabled is zCVobLight's own on/off bit (isTurnedOn) - if this reads 0 while the\n"
+        "light visually looks lit, the light vob itself is disabled by game/script state and GD3D11\n"
+        "correctly skips it (both lighting and shadowing); the visible glow is coming from something\n"
+        "else (a PFX/flame mesh, an unrelated light). MissingFrames counts consecutive frames this\n"
+        "light has been absent (disabled or out of VisibleInFrame) since its shadow resources were\n"
+        "last held; it only releases its slot past the retention window in DrawPointlightShadows, so a\n"
+        "light that blinks on/off keeps its progress instead of restarting its bake every time." );
     ImGui::Text( "LastRenderedPosition (%.1f, %.1f, %.1f)", nearestInfo->LastRenderedPosition.x,
         nearestInfo->LastRenderedPosition.y, nearestInfo->LastRenderedPosition.z );
     ImGui::SetItemTooltip( "Set by D3D11PointLight::RenderCubemap right after a real render - if this stays\n"
@@ -428,9 +437,10 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
             "This light has NO shadow map/tiled slot at all - it lights unshadowed by design\n"
             "(no caster geometry was ever tested for it), not because of a bias/leak bug.\n"
-            "If this is the light causing the bleed you're chasing, look at why it never got a\n"
-            "slot: EnablePointlightShadows mode, tiled-slot budget/eviction, or DrawnOnce never\n"
-            "having fired for it yet." );
+            "If this is the light causing the bleed you're chasing, check Vob->IsEnabled above first -\n"
+            "a disabled light is correctly skipped, its glow is coming from something else. Otherwise\n"
+            "look at why it never got a slot: EnablePointlightShadows mode, tiled-slot budget/eviction,\n"
+            "or DrawnOnce never having fired for it yet." );
         ImGui::End();
         return;
     }
