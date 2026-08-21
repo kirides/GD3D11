@@ -709,11 +709,18 @@ XRESULT D3D11GraphicsEngine::Init() {
     hr = Device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS3, &options3, sizeof( options3 ) );
     if ( SUCCEEDED( hr ) ) {
         FeatureRTArrayIndexFromAnyShader = options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
-        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
         LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: VPAndRTArrayIndexFromAnyShaderFeedingRasterizer = " << (FeatureRTArrayIndexFromAnyShader ? "Supported" : "Unsupported");
     } else {
         LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
     }
+
+    // NVIDIA's D3D11 driver reports this cap bit as supported but doesn't actually honor
+    // SV_RenderTargetArrayIndex written from a VS (no GS in the pipeline): only cube face 0 gets
+    // drawn and the rest of the depth-array slices are left stale/garbage, corrupting point-light
+    // cube shadows. AMD and Intel implement it correctly. Distrust the cap bit on NVIDIA and always
+    // fall back to the geometry-shader cubemap path (GS_Cubemap.hlsl) there.
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering =
+        FeatureRTArrayIndexFromAnyShader && adpDesc.VendorId != 0x10DE;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
