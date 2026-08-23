@@ -1716,6 +1716,20 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "the per-instance near/far split comes from the cull compute shader when that\n"
             "is on, and from the CPU instance upload when it is off." );
 
+        ImGui::Checkbox( "Optimize meshes on load", &settings.EnableMeshOptimization );
+        ImGui::SetItemTooltip( "Reorder world-section and VOB geometry for GPU vertex-cache/fetch locality\n"
+            "when it is first converted. This is most of what makes a big world slow to load;\n"
+            "turning it off trades some runtime GPU cost for faster loading. Also gates shadow-\n"
+            "index and LOD building below, since both ride the same pass. A world/VOB already\n"
+            "optimized this session is remembered regardless, so this only affects the FIRST\n"
+            "time each one loads. Takes effect on the next world load." );
+        ImGui::BeginDisabled( !settings.EnableMeshOptimization );
+        ImGui::Checkbox( "Build shadow index buffers", &settings.EnableShadowIndexBuffers );
+        ImGui::SetItemTooltip( "Weld a separate, smaller index buffer for shadow passes. Off falls back to\n"
+            "the render index buffer for shadows (more vertex work in the shadow pass, no\n"
+            "visual change) and skips one buffer per sub-mesh. Takes effect on the next world load." );
+        ImGui::EndDisabled();
+
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {

@@ -24,6 +24,7 @@
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
+#include "MeshOptimizeCache.h"
 #include "SharedVisualRegistry.h"
 #include "AsyncVisualExtractor.h"
 #include "MorphBlend.h"
@@ -49,6 +50,45 @@ namespace {
             meshInfo->ShadowIndices.size() * sizeof( VERTEX_INDEX ),
             D3D11VertexBuffer::B_INDEXBUFFER,
             D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
+    /** Runs OptimizeFaces + OptimizeVertices for one sub-mesh, honoring RendererSettings.
+        EnableMeshOptimization/EnableShadowIndexBuffers and reusing a prior lookup's result for
+        byte-identical input this session (MeshOptimizeCache.h) - the sole call site for both.
+
+        Turning EnableMeshOptimization off leaves indices/vertices in their as-authored order (correct,
+        just worse GPU vertex-cache/fetch locality) and shadowIndices/lodIndices empty, which every
+        consumer already reads as "use the render buffer / no reduced level" - see
+        MeshShadowIndexBuilder.h and MeshLodBuilder.h. `lodIndices` is passed through as-is (null on
+        every D3D11 call site, matching LodIndices being D3D12-only - see WorldObjects.h). */
+    void OptimizeMeshBuffers( GfxVertexBuffer* vertexBuffer, std::vector<VERTEX_INDEX>& indices,
+        std::vector<ExVertexStruct>& vertices, std::vector<VERTEX_INDEX>* shadowIndices,
+        std::vector<VERTEX_INDEX>* lodIndices ) {
+        if ( shadowIndices ) {
+            shadowIndices->clear();
+        }
+        if ( lodIndices ) {
+            lodIndices->clear();
+        }
+
+        const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( !s.EnableMeshOptimization || indices.empty() || vertices.empty() ) {
+            return;
+        }
+
+        std::vector<VERTEX_INDEX>* const wantShadow = s.EnableShadowIndexBuffers ? shadowIndices : nullptr;
+
+        const uint64_t key = MeshOptimizeCache::Hash( indices, vertices, wantShadow != nullptr, lodIndices != nullptr );
+        if ( MeshOptimizeCache::TryGet( key, indices, vertices, wantShadow, lodIndices ) ) {
+            return;
+        }
+
+        vertexBuffer->OptimizeFaces( indices.data(), reinterpret_cast<byte*>(vertices.data()),
+            indices.size(), vertices.size(), sizeof( ExVertexStruct ) );
+        vertexBuffer->OptimizeVertices( indices.data(), reinterpret_cast<byte*>(vertices.data()),
+            indices.size(), vertices.size(), sizeof( ExVertexStruct ), wantShadow, lodIndices );
+
+        MeshOptimizeCache::Put( key, indices, vertices, wantShadow, lodIndices );
     }
 
     /** ZENGIN's zPMINDEX_NONE: terminator of a WedgeMap collapse chain. */
@@ -277,20 +317,8 @@ namespace {
         // because they move the whole ExVertexStruct stride, including Tangent).
         GenerateTangents( mesh->Vertices, mesh->Indices );
 
-        // Optimize faces
-        mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
-            reinterpret_cast<byte*>(&mesh->Vertices[0]),
-            mesh->Indices.size(),
-            mesh->Vertices.size(),
-            sizeof( ExVertexStruct ) );
-
-        // Then optimize vertices
-        mesh->MeshVertexBuffer->OptimizeVertices( &mesh->Indices[0],
-            reinterpret_cast<byte*>(&mesh->Vertices[0]),
-            mesh->Indices.size(),
-            mesh->Vertices.size(),
-            sizeof( ExVertexStruct ),
-            &mesh->ShadowIndices );
+        // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+        OptimizeMeshBuffers( mesh->MeshVertexBuffer.get(), mesh->Indices, mesh->Vertices, &mesh->ShadowIndices, nullptr );
 
         // Init and fill them
         mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -460,18 +488,9 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
 
-        // Optimize index and vertex locality before uploading immutable buffers.
-        it.second->MeshVertexBuffer->OptimizeFaces( it.second->Indices.data(),
-            reinterpret_cast<byte*>( it.second->Vertices.data() ),
-            it.second->Indices.size(),
-            it.second->Vertices.size(),
-            sizeof( ExVertexStruct ) );
-        it.second->MeshVertexBuffer->OptimizeVertices( it.second->Indices.data(),
-            reinterpret_cast<byte*>( it.second->Vertices.data() ),
-            it.second->Indices.size(),
-            it.second->Vertices.size(),
-            sizeof( ExVertexStruct ),
-            &it.second->ShadowIndices );
+        // Optimize index and vertex locality before uploading immutable buffers (optional).
+        OptimizeMeshBuffers( it.second->MeshVertexBuffer.get(), it.second->Indices, it.second->Vertices,
+            &it.second->ShadowIndices, nullptr );
 
         // Init and fill them
         it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -648,20 +667,9 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
 
-                // Optimize faces
-                it.second->MeshVertexBuffer->OptimizeFaces( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ) );
-
-                // Then optimize vertices
-                it.second->MeshVertexBuffer->OptimizeVertices( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ),
-                    &it.second->ShadowIndices );
+                // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+                OptimizeMeshBuffers( it.second->MeshVertexBuffer.get(), it.second->Indices, it.second->Vertices,
+                    &it.second->ShadowIndices, nullptr );
 
                 // Init and fill them
                 it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1439,18 +1447,8 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-        // Optimize static submesh ordering for better cache and vertex fetch locality.
-        mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
-            reinterpret_cast<byte*>( mi->Vertices.data() ),
-            mi->Indices.size(),
-            mi->Vertices.size(),
-            sizeof( ExVertexStruct ) );
-        mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
-            reinterpret_cast<byte*>( mi->Vertices.data() ),
-            mi->Indices.size(),
-            mi->Vertices.size(),
-            sizeof( ExVertexStruct ),
-            &mi->ShadowIndices );
+        // Optimize static submesh ordering for better cache and vertex fetch locality (optional).
+        OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
 
         // Init and fill it
         mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
@@ -1704,20 +1702,8 @@ namespace {
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-            // Optimize faces
-            mi->MeshVertexBuffer->OptimizeFaces( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ) );
-
-            // Then optimize vertices
-            mi->MeshVertexBuffer->OptimizeVertices( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ),
-                &mi->ShadowIndices );
+            // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1896,18 +1882,8 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-    // Optimize static mesh ordering for better cache and vertex fetch locality.
-    mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
-        reinterpret_cast<byte*>( mi->Vertices.data() ),
-        mi->Indices.size(),
-        mi->Vertices.size(),
-        sizeof( ExVertexStruct ) );
-    mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
-        reinterpret_cast<byte*>( mi->Vertices.data() ),
-        mi->Indices.size(),
-        mi->Vertices.size(),
-        sizeof( ExVertexStruct ),
-        &mi->ShadowIndices );
+    // Optimize static mesh ordering for better cache and vertex fetch locality (optional).
+    OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
 
     // Init and fill it
     mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
@@ -2504,20 +2480,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             // the backend closest to the 32-bit VA ceiling. Asking for no LOD skips the meshopt
             // simplification pass and leaves LodIndices empty, so nothing downstream allocates.
 
-            // Optimize faces
-            mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ) );
-
-            // Then optimize vertices
-            mi->MeshVertexBuffer->OptimizeVertices( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ),
-                &mi->ShadowIndices,
+            // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices,
                 Engine::IsD3D12Backend ? &mi->LodIndices : nullptr );
 
             // Init and fill it

@@ -1101,6 +1101,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Logger.h" />
     <ClInclude Include="MemoryTracker.h" />
     <ClInclude Include="MeshManager.h" />
+    <ClInclude Include="MeshOptimizeCache.h" />
     <ClInclude Include="MeshShadowIndexBuilder.h" />
     <ClInclude Include="MorphBlend.h" />
     <ClInclude Include="MorphGpu.h" />

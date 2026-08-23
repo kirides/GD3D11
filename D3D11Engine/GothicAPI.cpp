@@ -5898,6 +5898,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHorizonCulling", to_string_locale_independent( s.EnableHorizonCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableMeshOptimization", to_string_locale_independent( s.EnableMeshOptimization ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableShadowIndexBuffers", to_string_locale_independent( s.EnableShadowIndexBuffers ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PausedFpsLimit", to_string_locale_independent( s.PausedFpsLimit ).c_str(), ini.c_str() );
     
@@ -6083,6 +6085,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
         s.EnableHorizonCulling = GetPrivateProfileBoolA( "General", "EnableHorizonCulling", ds.EnableHorizonCulling, ini );
+        s.EnableMeshOptimization = GetPrivateProfileBoolA( "General", "EnableMeshOptimization", ds.EnableMeshOptimization, ini );
+        s.EnableShadowIndexBuffers = GetPrivateProfileBoolA( "General", "EnableShadowIndexBuffers", ds.EnableShadowIndexBuffers, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
         s.PausedFpsLimit = GetPrivateProfileIntA( "General", "PausedFpsLimit", ds.PausedFpsLimit, ini.c_str() );
         // Not optional: an unthrottled paused loop crashes drivers, so the ini can only pick a value
