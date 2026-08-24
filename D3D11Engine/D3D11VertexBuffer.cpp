@@ -187,7 +187,7 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     }
 
     // Check for unordered access again to create the UAV
-    if ( (EBindFlags & EBindFlags::B_UNORDERED_ACCESS) != 0 ) {
+    if ( (EBindFlags & EBindFlags::B_UNORDERED_ACCESS) != 0 && structuredByteSize > 0 ) {
         D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
         uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
         uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
