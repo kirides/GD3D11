@@ -443,6 +443,22 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
     const auto camPos = Engine::GAPI->GetCameraPositionXM();
 
+    // Mirrors D3D12 BuildFrameLightBuffer's post-selection range clamp (D3D12Scene.cpp): a light that
+    // ends up with no shadow cube shades unshadowed and bleeds through walls. Clamping its range to a
+    // small fraction keeps it lighting its own alcove instead of the next room - or, worse, the
+    // outside of the building it's sealed inside when the camera is outdoors and nothing can occlude
+    // it. Gated on IsStatic() OR IsIndoorVob, not IsStatic() alone: zCVobLight's "static" bit is
+    // Gothic's own IsStatic() (colour-animated fine, never repositioned), so a candle or brazier with
+    // a colour animation reads as non-static and would otherwise bleed through walls completely
+    // unshadowed - same failure mode as an atmospheric fill light. Outdoor dynamic lights (the
+    // player's torch, spell effects) are still exempt: open air has no walls to bleed through.
+    // Shrinking Range here (not just Color) also keeps the cluster cull from assigning the light to
+    // distant tiles it can no longer reach.
+    constexpr float kUnshadowedStaticScale = 0.35f;      // still lights its own alcove
+    constexpr float kIndoorSeenFromOutsideScale = 0.15f; // worst bleed case - clamp it much harder
+    const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
+    const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
+
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
@@ -470,6 +486,10 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
         float4 lightColor = float4( vob->GetLightColor() );
         float lightRange = vob->GetLightRange();
+        if ( !hasShadow && ( vob->IsStatic() || light->IsIndoorVob ) ) {
+            const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
+            lightRange *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
+        }
         float3 posWorld = vob->GetPositionWorld();
 
         // Distance fade
