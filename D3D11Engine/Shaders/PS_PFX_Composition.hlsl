@@ -115,8 +115,10 @@ float4 ComputeHeightFog( float2 texcoord )
 
 	// Starts darker (2.5) and doesn't drop as much at noon.
 	float darknessFactor = 2.5f; 
-	if (AC_LightPos.y > 0.0f) { 
-		darknessFactor -= (AC_LightPos.y * 0.8f); 
+	// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
+	[branch]
+	if (AC_LightPos.y > 0.0f) {
+		darknessFactor -= (AC_LightPos.y * 0.8f);
 	}
 	
 	// Never let the fog become a 100% solid wall of color.

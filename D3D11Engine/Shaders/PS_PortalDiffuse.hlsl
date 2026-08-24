@@ -50,6 +50,8 @@ float percentageFade = saturate((distFromCamera - completeFade) / (startFade - c
 
 //darken the portals depending on where the sun is in the sky
 float darknessFactor = 4.0f;
+// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
+[branch]
 if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 6; }
 else if (AC_LightPos.y > 0.05f) { darknessFactor = 7.5f - (1 + AC_LightPos.y) * 3; }
 

@@ -301,6 +301,8 @@ float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
 
     // darken / lighten foam based on the day / night cycle
     float colourRGB = clamp( SunHeight + 0.2, 0.1, 0.6 );
+    // SunHeight is a root-constant scalar (uniform for the whole draw), not per-pixel data.
+    [branch]
     if ( SunHeight <= 0.08 ) {
         colour *= float4( colourRGB, colourRGB, colourRGB + 0.1, 0.80 );   // add blue tint at night
     } else {
@@ -349,6 +351,8 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
 
     // darken the portals depending on where the sun is in the sky
     float darknessFactor = 4.0;
+    // SunHeight is a root-constant scalar (uniform for the whole draw), not per-pixel data.
+    [branch]
     if ( SunHeight <= 0.05 ) { darknessFactor += ( 1 - SunHeight ) * 6; }
     else                     { darknessFactor = 7.5 - ( 1 + SunHeight ) * 3; }
 
