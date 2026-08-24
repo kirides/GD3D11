@@ -56,6 +56,7 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
 
     float targetDepth = 0.0;
     float totalWeight = 0.0;
+    [unroll]
     for ( int i = 0; i < 13; i++ )
     {
         float2 uv = float2( 0.5, 0.5 ) + offsets[i];

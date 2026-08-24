@@ -189,7 +189,13 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         for ( uint i = gtid; i < v.InstanceCount; i += VOBCULL_GROUP_SIZE )
         {
             VobInstanceGpu inst = InInstances[v.InstanceBase + i];
-            if ( IsInstanceVisible( v, inst ) )
+
+            // NOTE: no early-out/continue on visibility -- every lane must reach the wave ops below with the
+            // same activity mask, so an invisible instance falls through with both predicates false instead
+            // of exiting the loop.
+            bool isFar = false;
+            const bool visible = IsInstanceVisible( v, inst );
+            if ( visible )
             {
                 // Bbox centre, not the origin: Gothic vob pivots are often off the mesh entirely (a door's
                 // hinge, a banner's mount point).
@@ -197,19 +203,31 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 const float3 centreWorld = mul( float4( centreLocal, 1.0 ), BuildWorldMatrix( inst ) ).xyz;
                 const float  dist  = distance(centreWorld, CullCamPosWS);
                 const float  splitDist = ( v.SplitMode == VOB_SPLIT_LOD ) ? LodDistance : 0.0;
-                const bool   isFar = ( splitDist > 0.0 ) && ( dist > splitDist );
+                isFar = ( splitDist > 0.0 ) && ( dist > splitDist );
+            }
+            const bool isNear = visible && !isFar;
+            const bool isFarVisible = visible && isFar;
 
-                uint slot;
-                if ( isFar )
-                {
-                    InterlockedAdd( gFarInGroup, 1, slot );
-                    OutInstances[v.InstanceBase + v.InstanceCount - 1 - slot] = inst;
-                }
-                else
-                {
-                    InterlockedAdd( gNearInGroup, 1, slot );
-                    OutInstances[v.InstanceBase + slot] = inst;
-                }
+            // One LDS atomic per wave instead of one per surviving instance: the wave reserves its whole run
+            // and each lane takes its slot from the prefix popcount. Wave-size agnostic (no ballot-word
+            // assumptions) -- mirrors LightCull.hlsl's Phase 1 compaction.
+            const uint nearHits = WaveActiveCountBits( isNear );
+            if ( nearHits != 0 )
+            {
+                uint nearBase = 0;
+                if ( WaveIsFirstLane() ) InterlockedAdd( gNearInGroup, nearHits, nearBase );
+                nearBase = WaveReadLaneFirst( nearBase );
+                if ( isNear ) OutInstances[v.InstanceBase + nearBase + WavePrefixCountBits( isNear )] = inst;
+            }
+
+            const uint farHits = WaveActiveCountBits( isFarVisible );
+            if ( farHits != 0 )
+            {
+                uint farBase = 0;
+                if ( WaveIsFirstLane() ) InterlockedAdd( gFarInGroup, farHits, farBase );
+                farBase = WaveReadLaneFirst( farBase );
+                if ( isFarVisible )
+                    OutInstances[v.InstanceBase + v.InstanceCount - 1 - ( farBase + WavePrefixCountBits( isFarVisible ) )] = inst;
             }
         }
     }

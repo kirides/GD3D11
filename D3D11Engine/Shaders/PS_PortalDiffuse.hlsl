@@ -39,7 +39,7 @@ PS_OUTPUT PSMain(PS_INPUT Input) : SV_TARGET
 	float distFromCamera = distance(Input.vViewPosition, Input.vPosition);
 
 //correct issue with transparency of forest portals for certain camera angles
-if (Input.vViewPosition.x > 0) { distFromCamera = distFromCamera + (Input.vViewPosition.x * saturate(Input.vViewPosition.x / 9000)); }
+if (Input.vViewPosition.x > 0) { distFromCamera = mad(Input.vViewPosition.x, saturate(Input.vViewPosition.x / 9000), distFromCamera); }
 
 //start / end distances for fading
 float startFade = 6500.0f;

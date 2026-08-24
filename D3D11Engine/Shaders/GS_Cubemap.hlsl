@@ -31,11 +31,13 @@ struct PS_INPUT
 [maxvertexcount(18)]
 void GSMain(triangle VS_OUTPUT input[3], inout TriangleStream<PS_INPUT> OutputStream)
 {
+    [unroll]
     for( int f = 0; f < 6; ++f )
     {
         // Compute screen coordinates
         PS_INPUT output;
         output.RTIndex = f;
+        [unroll]
         for( int v = 0; v < 3; v++ )
         {
             output.vPosition = mul( float4(input[v].vWorldPosition, 1), PCR_ViewProj[f] );

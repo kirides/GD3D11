@@ -61,7 +61,9 @@ void CSFold( uint3 dtid : SV_DispatchThreadID )
     // gather: every wedge of a position folds the same channels and arrives at the same result.
     const uint v = Indices[WedgeBase + wedge];
 
-    float3 acc = float3( 0.0f, 0.0f, 0.0f );
+    // precise: this fold must reproduce MorphBlend::Apply's exact sequential rounding (see the comment below) --
+    // fast-math reassociation across channels would silently drift the GPU result away from the CPU reference.
+    precise float3 acc = float3( 0.0f, 0.0f, 0.0f );
     for ( uint i = 0; i < ChannelCount; ++i )
     {
         const ChannelRecord c = Channels[ChannelFirst + i];

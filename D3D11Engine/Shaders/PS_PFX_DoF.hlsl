@@ -61,7 +61,9 @@ float2 GetSpiralSample( int index, int count )
 {
     float r = sqrt( ( float(index) + 0.5 ) / float(count) );
     float theta = float(index) * 2.39996323;
-    return float2( r * cos( theta ), r * sin( theta ) );
+    float sinT, cosT;
+    sincos( theta, sinT, cosT );
+    return float2( r * cosT, r * sinT );
 }
 
 float4 PSMain( PS_INPUT Input ) : SV_TARGET

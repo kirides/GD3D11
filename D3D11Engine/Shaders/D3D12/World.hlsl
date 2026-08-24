@@ -338,7 +338,7 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
     float distFromCamera = distance( i.vpos, float3( i.clip.xy, i.clip.z ) );
 
     // correct issue with transparency of forest portals for certain camera angles
-    if ( i.vpos.x > 0 ) { distFromCamera = distFromCamera + ( i.vpos.x * saturate(i.vpos.x / 9000) ); }
+    if ( i.vpos.x > 0 ) { distFromCamera = mad( i.vpos.x, saturate(i.vpos.x / 9000), distFromCamera ); }
 
     // start / end distances for fading
     float startFade = 6500.0;

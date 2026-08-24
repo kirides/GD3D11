@@ -33,7 +33,7 @@ VS_OUT VSMain( VS_IN i )
 
     int visIsQuadPoly = int( step( 10.0, float( i.type ) ) );
     int visOrientation = int( i.type ) - ( 10 * visIsQuadPoly );
-    float sizeScale = ( 0.5 * float( visIsQuadPoly ) ) + 0.5;
+    float sizeScale = mad( 0.5, float( visIsQuadPoly ), 0.5 );
 
     if ( visOrientation == 2 ) {
         rightVector = i.size;

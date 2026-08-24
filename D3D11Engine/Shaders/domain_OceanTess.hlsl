@@ -102,7 +102,7 @@ PS_INPUT DSMain(ConstantOutputType input, float3 uvwCoord : SV_DomainLocation, c
 	//float scale = 1/(2000.0f);
 	texCoord = (worldPosition.xz / 2048) + OS_UVOffset;
 	float3 displacementFFT = TX_Texture0.SampleLevel(SS_Linear, texCoord, 0).xzy;
-	float3 displacementRandom = TX_Texture0.SampleLevel(SS_Linear, 3 * texCoord + displacementFFT + (worldPosition.xz / 2048 * 0.666f), 0).xzy;
+	float3 displacementRandom = TX_Texture0.SampleLevel(SS_Linear, mad(3, texCoord, displacementFFT) + (worldPosition.xz / 2048 * 0.666f), 0).xzy;
 
 	float3 displacement = lerp(displacementFFT, displacementRandom, dispMod);
 

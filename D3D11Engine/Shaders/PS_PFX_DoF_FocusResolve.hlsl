@@ -62,6 +62,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
     float targetDepth = 0.0;
     float totalWeight = 0.0;
+    [unroll]
     for ( int i = 0; i < 13; i++ )
     {
         float2 uv = float2( 0.5, 0.5 ) + offsets[i];

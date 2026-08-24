@@ -88,6 +88,7 @@ void CSFocusResolve( uint3 DTid : SV_DispatchThreadID )
 
     float targetDepth = 0.0;
     float totalWeight = 0.0;
+    [unroll]
     for ( int i = 0; i < 13; i++ )
     {
         float2 uv = float2( 0.5, 0.5 ) + offsets[i];
@@ -124,7 +125,9 @@ float2 GetSpiralSample( int index, int count )
 {
     float r = sqrt( ( float(index) + 0.5 ) / float(count) );
     float theta = float(index) * 2.39996323;
-    return float2( r * cos( theta ), r * sin( theta ) );
+    float sinT, cosT;
+    sincos( theta, sinT, cosT );
+    return float2( r * cosT, r * sinT );
 }
 
 // Point-sample (nearest texel) the centre depth. This pass runs at half-res, so a half-res texel

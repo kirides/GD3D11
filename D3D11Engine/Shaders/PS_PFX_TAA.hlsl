@@ -159,8 +159,7 @@ void GatherNeighborhood(float2 texCoord, float2 pixelSize,
     // Weights: higher weight for cross pattern (direct neighbors)
     static const float weights[9] = { 0.5, 1.0, 0.5, 1.0, 1.5, 1.0, 0.5, 1.0, 0.5 };
     float totalWeight = 0.0;
-    int idx = 0;
-    
+
     [unroll]
     for (int y = -1; y <= 1; y++) {
         [unroll]
@@ -168,8 +167,10 @@ void GatherNeighborhood(float2 texCoord, float2 pixelSize,
             float2 offset = float2(x, y) * pixelSize;
             float3 neighbor = TX_Texture0.SampleLevel(SS_Linear, texCoord + offset, 0).rgb;
             float3 tonemapped = Tonemap(neighbor);
-            
-            float w = weights[idx++];
+
+            // Index derived directly from the unrolled loop variables (not a mutable counter) so it folds to
+            // a compile-time constant even without aggressive optimization.
+            float w = weights[(y + 1) * 3 + (x + 1)];
             m1 += tonemapped * w;
             m2 += tonemapped * tonemapped * w;
             totalWeight += w;
