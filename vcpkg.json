@@ -6,6 +6,7 @@
     "directxmath",
     "directxtk",
     "directx-headers",
-    "directx12-agility"
+    "directx12-agility",
+    "sqlite3"
   ]
 }

@@ -7,6 +7,7 @@
 #include "ImGuiShim.h"
 #include "D3D12Engine/D3D12Device.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
+#include "SqliteBlobStore.h"
 
 #include <algorithm>
 
@@ -115,6 +116,12 @@ namespace Engine {
     /** Called when the game is about to close */
     void OnShutDown() {
         LogInfo() << "Shutting down...";
+
+        // Explicit and ordered, ahead of the exit(0) below: closing the LAST connection to a WAL-mode
+        // SQLite database is what makes it checkpoint and delete its -wal/-shm files, and this is called
+        // from DllMain(DLL_PROCESS_DETACH) under the loader lock - not a place to bet that outcome on
+        // function-local statics' destructors still running cleanly. See SqliteBlobStore::CloseAll().
+        SqliteBlobStore::CloseAll();
 
         // TODO: remove this hack in the future, just a temporary workaround to fix crash on shutdown with the need to kill process via TaskManager
         // Just killing before GraphicsEngine is not enough.

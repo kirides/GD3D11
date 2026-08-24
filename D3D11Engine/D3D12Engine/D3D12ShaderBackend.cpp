@@ -16,6 +16,8 @@
 #include "../GothicAPI.h"
 #include "../zFILE_VDFS.h"
 #include "../ShaderCacheHash.h"
+#include "../SqliteBlobStore.h"
+#include "../ByteCursor.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -92,7 +94,6 @@ namespace {
     // Bump when the DXC argument list in CompileSource changes in a way that alters codegen.
     constexpr uint32_t kDxilCacheArgsRevision = 1;
     constexpr uint32_t kDxilCacheFormatVersion = 1;
-    const char* kDxilCacheDirRel = "\\system\\GD3D11\\shadercache\\D3D12\\";
 
     int g_CacheHits = 0;
     int g_CacheMisses = 0;
@@ -161,53 +162,34 @@ namespace {
         return HashBytes( &dxc, sizeof( dxc ), h );
     }
 
-    /** Absolute path of the cache file for `key`. Empty when the directory can't be made (read-only
-        install) — the caller then skips the cache entirely. */
-    std::string CacheFilePath( uint64_t key, bool createDir ) {
-        const std::string dir = Engine::GAPI->GetStartDirectory() + kDxilCacheDirRel;
-        if ( createDir ) {
-            // One level at a time; CreateDirectory has no "create parents" flag and both may be missing.
-            const std::string parent = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shadercache";
-            CreateDirectoryA( parent.c_str(), nullptr );
-            if ( !CreateDirectoryA( dir.c_str(), nullptr ) && GetLastError() != ERROR_ALREADY_EXISTS )
-                return "";
-        }
-        char name[32] = {};
-        sprintf_s( name, "%016llx.dxil", static_cast<unsigned long long>( key ) );
-        return dir + name;
-    }
-
-    template<typename T> bool ReadPod( std::ifstream& in, T& out ) {
-        return static_cast<bool>( in.read( reinterpret_cast<char*>( &out ), sizeof( T ) ) );
-    }
-    template<typename T> void WritePod( std::ofstream& out, const T& value ) {
-        out.write( reinterpret_cast<const char*>( &value ), sizeof( T ) );
+    SqliteBlobStore& GetCacheStore() {
+        // Magic-static: constructed once, on whichever thread compiles the first shader.
+        static SqliteBlobStore s_store( Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\d3d12_shaders.db)" );
+        return s_store;
     }
 
     /** Reads the entry, re-hashes every recorded #include and, if they all still match, hands back the
-        stored DXIL. Any inconsistency (including a truncated/corrupt file) is just a miss. */
+        stored DXIL. Any inconsistency (including a truncated/corrupt record) is just a miss. */
     bool TryLoadCachedBlob( uint64_t key, ID3DBlob** ppCode ) {
-        const std::string path = CacheFilePath( key, false );
-        if ( path.empty() ) return false;
-        std::ifstream in( path, std::ios::binary );
-        if ( !in ) return false;
+        std::vector<uint8_t> blob;
+        if ( !GetCacheStore().TryGet( key, blob ) || blob.size() < 4 ) return false;
+        if ( memcmp( blob.data(), "GDXC", 4 ) != 0 ) return false;
 
-        char magic[4] = {};
+        ByteCursor::Reader in( blob.data() + 4, blob.size() - 4 );
         uint32_t version = 0;
         uint64_t storedKey = 0;
         uint32_t depCount = 0;
-        if ( !in.read( magic, 4 ) || memcmp( magic, "GDXC", 4 ) != 0 ) return false;
-        if ( !ReadPod( in, version ) || version != kDxilCacheFormatVersion ) return false;
-        if ( !ReadPod( in, storedKey ) || storedKey != key ) return false;
-        if ( !ReadPod( in, depCount ) || depCount > 256 ) return false;
+        if ( !in.ReadPod( version ) || version != kDxilCacheFormatVersion ) return false;
+        if ( !in.ReadPod( storedKey ) || storedKey != key ) return false;
+        if ( !in.ReadPod( depCount ) || depCount > 256 ) return false;
 
         for ( uint32_t i = 0; i < depCount; ++i ) {
             uint32_t nameLen = 0;
             uint64_t storedHash = 0;
-            if ( !ReadPod( in, nameLen ) || nameLen == 0 || nameLen > 512 ) return false;
-            std::string name( nameLen, '\0' );
-            if ( !in.read( name.data(), nameLen ) ) return false;
-            if ( !ReadPod( in, storedHash ) ) return false;
+            if ( !in.ReadPod( nameLen ) || nameLen == 0 || nameLen > 512 ) return false;
+            std::string name;
+            if ( !in.ReadString( name, nameLen ) ) return false;
+            if ( !in.ReadPod( storedHash ) ) return false;
 
             std::string depSource;
             if ( !D3D12ShaderBackend::LoadShaderSource( name, depSource ) ) return false;   // include vanished
@@ -215,42 +197,34 @@ namespace {
         }
 
         uint32_t blobSize = 0;
-        if ( !ReadPod( in, blobSize ) || blobSize == 0 || blobSize > ( 64u << 20 ) ) return false;
+        if ( !in.ReadPod( blobSize ) || blobSize == 0 || blobSize > ( 64u << 20 ) || blobSize > in.Remaining() ) return false;
 
-        ComPtr<ID3DBlob> blob;
-        if ( FAILED( D3DCreateBlob( blobSize, blob.GetAddressOf() ) ) ) return false;
-        if ( !in.read( static_cast<char*>( blob->GetBufferPointer() ), blobSize ) ) return false;
-        *ppCode = blob.Detach();
+        ComPtr<ID3DBlob> code;
+        if ( FAILED( D3DCreateBlob( blobSize, code.GetAddressOf() ) ) ) return false;
+        if ( !in.ReadBytes( code->GetBufferPointer(), blobSize ) ) return false;
+        *ppCode = code.Detach();
         return true;
     }
 
-    /** Best-effort store (a missing cache only costs time). Writes to a temp file and renames, so a crash
-        mid-write can't leave a torn entry that later reads as valid. */
+    /** Best-effort store (a missing cache only costs time). */
     void StoreCachedBlob( uint64_t key, const ShaderDeps& deps, ID3DBlob* code ) {
         if ( !code || code->GetBufferSize() == 0 || deps.size() > 256 ) return;
-        const std::string path = CacheFilePath( key, true );
-        if ( path.empty() ) return;
-        const std::string tmp = path + ".tmp";
 
-        {
-            std::ofstream out( tmp, std::ios::binary | std::ios::trunc );
-            if ( !out ) return;
-            out.write( "GDXC", 4 );
-            WritePod( out, kDxilCacheFormatVersion );
-            WritePod( out, key );
-            WritePod( out, static_cast<uint32_t>( deps.size() ) );
-            for ( const auto& [name, hash] : deps ) {
-                WritePod( out, static_cast<uint32_t>( name.size() ) );
-                out.write( name.data(), static_cast<std::streamsize>( name.size() ) );
-                WritePod( out, hash );
-            }
-            WritePod( out, static_cast<uint32_t>( code->GetBufferSize() ) );
-            out.write( static_cast<const char*>( code->GetBufferPointer() ),
-                static_cast<std::streamsize>( code->GetBufferSize() ) );
-            if ( !out ) { out.close(); DeleteFileA( tmp.c_str() ); return; }
+        std::vector<uint8_t> blob;
+        blob.reserve( 32 + code->GetBufferSize() );
+        ByteCursor::AppendBytes( blob, "GDXC", 4 );
+        ByteCursor::AppendPod( blob, kDxilCacheFormatVersion );
+        ByteCursor::AppendPod( blob, key );
+        ByteCursor::AppendPod( blob, static_cast<uint32_t>( deps.size() ) );
+        for ( const auto& [name, hash] : deps ) {
+            ByteCursor::AppendPod( blob, static_cast<uint32_t>( name.size() ) );
+            ByteCursor::AppendString( blob, name );
+            ByteCursor::AppendPod( blob, hash );
         }
-        if ( !MoveFileExA( tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING ) )
-            DeleteFileA( tmp.c_str() );
+        ByteCursor::AppendPod( blob, static_cast<uint32_t>( code->GetBufferSize() ) );
+        ByteCursor::AppendBytes( blob, code->GetBufferPointer(), code->GetBufferSize() );
+
+        GetCacheStore().Put( key, blob.data(), blob.size() );
     }
 
     // Resolves #include directives inside D3D12 HLSL sources through the same VDFS+physical-fallback

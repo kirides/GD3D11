@@ -24,25 +24,28 @@
     In-memory tier bounded by the number of DISTINCT sub-meshes the session has ever converted - same
     growth shape as SharedVisualRegistry. Acceptable because an entry holds only small CPU-side index/
     vertex arrays, never a GPU buffer, so it does not touch the 32-bit VA budget the pooling rules in
-    CLAUDE.md are about. The on-disk tier is one small file per distinct sub-mesh ever seen, same shape as
-    the D3D11/D3D12 shader caches (ShaderCacheHash.h) it's modeled on - deleting the meshoptcache
-    directory is always safe, it just repays the CPU cost on the next load. kMeshCacheFormatVersion
-    exists for the same reason kDxbcCacheArgsRevision does in D3D11ShaderManager.cpp: bump it whenever a
-    change to MeshShadowIndexBuilder.h, MeshLodBuilder.h, this record layout, or the vendored
-    meshoptimizer version would make an old file's bytes stop matching what a fresh run produces - old
-    files are simply orphaned, never misread (the version is part of the validity check). */
+    CLAUDE.md are about. The on-disk tier is one row per distinct sub-mesh ever seen in a single SQLite
+    database (cache\meshes.db, via SqliteBlobStore) - tens of thousands of mostly-tiny entries is exactly
+    the shape a single DB beats a directory of loose files on (fewer file-system objects for the AV
+    scanner/NTFS to chew through during a load burst). Deleting cache\meshes.db is always safe, it just
+    repays the CPU cost on the next load. kFormatVersion below exists for the same reason
+    kDxbcCacheArgsRevision does in D3D11ShaderManager.cpp: bump it whenever a change to
+    MeshShadowIndexBuilder.h, MeshLodBuilder.h, this record layout, or the vendored meshoptimizer version
+    would make a previously-stored row's bytes stop matching what a fresh run produces today - old rows
+    are simply orphaned (dead weight, harmless), never misread, since the version is part of the record
+    and checked before anything else is trusted. */
 
 #include "VertexTypes.h"
 #include "Logger.h"
 #include "ShaderCacheHash.h"
+#include "SqliteBlobStore.h"
+#include "ByteCursor.h"
 #include "Engine.h"
 #include "GothicAPI.h"
 
 #include <atomic>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -84,91 +87,88 @@ namespace MeshOptimizeCache {
     }
 
     namespace Disk {
-        // Bump on any change that would make a previously-written file's bytes stop matching what a
-        // fresh OptimizeFaces/OptimizeVertices run produces today - see the header comment.
+        // Bump on any change that would make a previously-stored row's bytes stop matching what a fresh
+        // OptimizeFaces/OptimizeVertices run produces today - see the header comment.
         constexpr uint32_t kFormatVersion = 1;
-        constexpr uint32_t kMaxElements = 8u << 20;   // sanity cap against a corrupted/truncated file
+        constexpr uint32_t kMaxElements = 8u << 20;   // sanity cap against a corrupted/truncated record
 
-        inline std::string CacheFilePath( uint64_t key, bool createDir ) {
-            const std::string dir = Engine::GAPI->GetStartDirectory() + "\\" + ENGINE_BASE_DIR + "meshoptcache\\";
-            if ( createDir ) {
-                const std::string parent = Engine::GAPI->GetStartDirectory() + "\\" + ENGINE_BASE_DIR;
-                CreateDirectoryA( parent.c_str(), nullptr );
-                if ( !CreateDirectoryA( dir.c_str(), nullptr ) && GetLastError() != ERROR_ALREADY_EXISTS ) {
-                    return "";
-                }
-            }
-            char name[32] = {};
-            sprintf_s( name, "%016llx.meshopt", static_cast<unsigned long long>( key ) );
-            return dir + name;
+        inline SqliteBlobStore& GetStore() {
+            // Constructed on first use (magic-static, thread-safe) - by the time any mesh conversion
+            // runs, GetStartDirectory() is already valid.
+            static SqliteBlobStore s_store( Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\meshes.db)" );
+            return s_store;
         }
 
-        template<typename T> bool ReadPod( std::ifstream& in, T& out ) {
-            return static_cast<bool>( in.read( reinterpret_cast<char*>( &out ), sizeof( T ) ) );
+        template<typename T> void AppendPod( std::vector<uint8_t>& buf, const T& value ) {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>( &value );
+            buf.insert( buf.end(), p, p + sizeof( T ) );
         }
-        template<typename T> void WritePod( std::ofstream& out, const T& value ) {
-            out.write( reinterpret_cast<const char*>( &value ), sizeof( T ) );
-        }
-        template<typename T> bool ReadVector( std::ifstream& in, std::vector<T>& out, uint32_t count ) {
-            if ( count > kMaxElements ) return false;
-            out.resize( count );
-            return count == 0 || static_cast<bool>( in.read( reinterpret_cast<char*>( out.data() ),
-                static_cast<std::streamsize>( count ) * sizeof( T ) ) );
-        }
-        template<typename T> void WriteVector( std::ofstream& out, const std::vector<T>& v ) {
+        template<typename T> void AppendVector( std::vector<uint8_t>& buf, const std::vector<T>& v ) {
             if ( !v.empty() ) {
-                out.write( reinterpret_cast<const char*>( v.data() ),
-                    static_cast<std::streamsize>( v.size() * sizeof( T ) ) );
+                const uint8_t* p = reinterpret_cast<const uint8_t*>( v.data() );
+                buf.insert( buf.end(), p, p + v.size() * sizeof( T ) );
             }
         }
+
+        // Cursor over the blob TryGet hands back - the on-disk record layout is unchanged from the old
+        // per-file cache, just read from memory now instead of an ifstream.
+        struct Cursor {
+            const uint8_t* p;
+            const uint8_t* end;
+            template<typename T> bool ReadPod( T& out ) {
+                if ( static_cast<size_t>( end - p ) < sizeof( T ) ) return false;
+                memcpy( &out, p, sizeof( T ) );
+                p += sizeof( T );
+                return true;
+            }
+            template<typename T> bool ReadVector( std::vector<T>& out, uint32_t count ) {
+                if ( count > kMaxElements ) return false;
+                const size_t bytes = static_cast<size_t>( count ) * sizeof( T );
+                if ( static_cast<size_t>( end - p ) < bytes ) return false;
+                out.resize( count );
+                if ( bytes ) memcpy( out.data(), p, bytes );
+                p += bytes;
+                return true;
+            }
+        };
 
         inline bool TryLoad( uint64_t key, Entry& out ) {
-            const std::string path = CacheFilePath( key, false );
-            if ( path.empty() ) return false;
-            std::ifstream in( path, std::ios::binary );
-            if ( !in ) return false;
+            std::vector<uint8_t> blob;
+            if ( !GetStore().TryGet( key, blob ) || blob.size() < 4 ) return false;
+            if ( memcmp( blob.data(), "GMOC", 4 ) != 0 ) return false;
 
-            char magic[4] = {};
+            Cursor c{ blob.data() + 4, blob.data() + blob.size() };
             uint32_t version = 0;
             uint64_t storedKey = 0;
             uint32_t vertexCount = 0, indexCount = 0, shadowCount = 0, lodCount = 0;
-            if ( !in.read( magic, 4 ) || memcmp( magic, "GMOC", 4 ) != 0 ) return false;
-            if ( !ReadPod( in, version ) || version != kFormatVersion ) return false;
-            if ( !ReadPod( in, storedKey ) || storedKey != key ) return false;
-            if ( !ReadPod( in, vertexCount ) || !ReadPod( in, indexCount ) ||
-                !ReadPod( in, shadowCount ) || !ReadPod( in, lodCount ) ) return false;
+            if ( !c.ReadPod( version ) || version != kFormatVersion ) return false;
+            if ( !c.ReadPod( storedKey ) || storedKey != key ) return false;
+            if ( !c.ReadPod( vertexCount ) || !c.ReadPod( indexCount ) ||
+                !c.ReadPod( shadowCount ) || !c.ReadPod( lodCount ) ) return false;
 
-            return ReadVector( in, out.Vertices, vertexCount ) && ReadVector( in, out.Indices, indexCount ) &&
-                ReadVector( in, out.ShadowIndices, shadowCount ) && ReadVector( in, out.LodIndices, lodCount );
+            return c.ReadVector( out.Vertices, vertexCount ) && c.ReadVector( out.Indices, indexCount ) &&
+                c.ReadVector( out.ShadowIndices, shadowCount ) && c.ReadVector( out.LodIndices, lodCount );
         }
 
-        // Writes to a temp file and renames, so a crash (or another worker thread writing the same,
-        // byte-identical, content) mid-write can't leave a torn entry.
         inline void Store( uint64_t key, const Entry& e ) {
             if ( e.Indices.empty() || e.Vertices.empty() ) return;
-            const std::string path = CacheFilePath( key, true );
-            if ( path.empty() ) return;
-            const std::string tmp = path + ".tmp";
 
-            {
-                std::ofstream out( tmp, std::ios::binary | std::ios::trunc );
-                if ( !out ) return;
-                out.write( "GMOC", 4 );
-                WritePod( out, kFormatVersion );
-                WritePod( out, key );
-                WritePod( out, static_cast<uint32_t>( e.Vertices.size() ) );
-                WritePod( out, static_cast<uint32_t>( e.Indices.size() ) );
-                WritePod( out, static_cast<uint32_t>( e.ShadowIndices.size() ) );
-                WritePod( out, static_cast<uint32_t>( e.LodIndices.size() ) );
-                WriteVector( out, e.Vertices );
-                WriteVector( out, e.Indices );
-                WriteVector( out, e.ShadowIndices );
-                WriteVector( out, e.LodIndices );
-                if ( !out ) { out.close(); DeleteFileA( tmp.c_str() ); return; }
-            }
-            if ( !MoveFileExA( tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING ) ) {
-                DeleteFileA( tmp.c_str() );
-            }
+            std::vector<uint8_t> blob;
+            blob.reserve( 32 + e.Vertices.size() * sizeof( ExVertexStruct ) +
+                ( e.Indices.size() + e.ShadowIndices.size() + e.LodIndices.size() ) * sizeof( VERTEX_INDEX ) );
+            blob.insert( blob.end(), reinterpret_cast<const uint8_t*>( "GMOC" ), reinterpret_cast<const uint8_t*>( "GMOC" ) + 4 );
+            AppendPod( blob, kFormatVersion );
+            AppendPod( blob, key );
+            AppendPod( blob, static_cast<uint32_t>( e.Vertices.size() ) );
+            AppendPod( blob, static_cast<uint32_t>( e.Indices.size() ) );
+            AppendPod( blob, static_cast<uint32_t>( e.ShadowIndices.size() ) );
+            AppendPod( blob, static_cast<uint32_t>( e.LodIndices.size() ) );
+            AppendVector( blob, e.Vertices );
+            AppendVector( blob, e.Indices );
+            AppendVector( blob, e.ShadowIndices );
+            AppendVector( blob, e.LodIndices );
+
+            GetStore().Put( key, blob.data(), blob.size() );
         }
     }   // namespace Disk
 

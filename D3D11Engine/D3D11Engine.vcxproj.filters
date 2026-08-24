@@ -967,6 +967,7 @@
     <ClInclude Include="zCPathSearch.h" />
     <ClInclude Include="MeshShadowIndexBuilder.h" />
     <ClInclude Include="MeshOptimizeCache.h" />
+    <ClInclude Include="SqliteBlobStore.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1396,6 +1397,7 @@
     <ClCompile Include="MorphBlend.cpp" />
     <ClCompile Include="AsyncVisualExtractor.cpp" />
     <ClCompile Include="SharedVisualRegistry.cpp" />
+    <ClCompile Include="SqliteBlobStore.cpp" />
     <ClCompile Include="D3D12Engine\D3D12MorphFold.cpp" />
     <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
     <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
