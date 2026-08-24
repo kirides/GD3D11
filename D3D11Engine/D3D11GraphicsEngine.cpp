@@ -714,13 +714,11 @@ XRESULT D3D11GraphicsEngine::Init() {
         LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
     }
 
-    // NVIDIA's D3D11 driver reports this cap bit as supported but doesn't actually honor
-    // SV_RenderTargetArrayIndex written from a VS (no GS in the pipeline): only cube face 0 gets
-    // drawn and the rest of the depth-array slices are left stale/garbage, corrupting point-light
-    // cube shadows. AMD and Intel implement it correctly. Distrust the cap bit on NVIDIA and always
-    // fall back to the geometry-shader cubemap path (GS_Cubemap.hlsl) there.
-    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering =
-        FeatureRTArrayIndexFromAnyShader && adpDesc.VendorId != 0x10DE;
+    /*Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering =
+        FeatureRTArrayIndexFromAnyShader && adpDesc.VendorId != 0x10DE;*/
+
+    // TODO: Fix clustered lighting to work on NVidia as well. Something over there is broken and i don't know what.
+    // Engine::GAPI->GetRendererState().RendererSettings.EnableTiledLighting = adpDesc.VendorId == 0x1002; // only enable TiledLighting on AMD hardware for now.
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();

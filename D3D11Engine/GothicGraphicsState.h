@@ -834,7 +834,7 @@ struct GothicRendererSettings {
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
-        EnableTiledLighting = true;
+        EnableTiledLighting = false;
         RendererMode = RM_Deferred;
         GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
