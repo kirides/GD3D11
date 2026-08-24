@@ -167,6 +167,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
 	// Point lights, only when close enough
+	[branch]
 	if (pixelDistZ < 6000.0f) 
 	{
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);

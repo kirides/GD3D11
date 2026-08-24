@@ -121,7 +121,9 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
             float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
             float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
 
-            // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
+            // Apply shadow if this light has a shadow cubemap and contribution is non-negligible.
+            // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
+            [branch]
             if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
                 bool taaActive = JitterOffset.x != 0.0f || JitterOffset.y != 0.0f;
                 float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, TX_ShadowDynCubeArray, TX_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex, taaActive );

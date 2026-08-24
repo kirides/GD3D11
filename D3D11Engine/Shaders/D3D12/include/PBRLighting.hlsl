@@ -578,6 +578,8 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
     // brighten a room, not a physical source, so it must contribute diffuse only — a highlight from it reads as a
     // phantom lamp. Same suppression D3D11 does with light.Color.w.
     float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w );
+    // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
+    [branch]
     if ( L.ShadowCubeIndex >= 0 )
     {
         // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube

@@ -203,7 +203,9 @@ float3 FP_ComputePointLighting(
             float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
             float3 lighting = PLS_ComputePointLightLighting( diffuseColor, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
 
-            // Don't fetch shadows if the light contribution is effectively zero.
+            // Don't fetch shadows if the light contribution is effectively zero. [branch]: this guards a real
+            // cube-shadow sample, so forcing a branch instead of flattening avoids paying for it on every lane.
+            [branch]
             if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
             {
                 // SQ_FrameIndex is only ever incremented while camera jitter (TAA/FSR) is baked into the
