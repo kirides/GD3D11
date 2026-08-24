@@ -3526,7 +3526,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
         // Get texture
         zCTexture* texture = nullptr;
         if ( zCParticleEmitter* emitter = fx->GetEmitter() ) {
-            if ( emitter->GetVisShpType() == 5 && ParticleEffectProgMeshes.find(source) == ParticleEffectProgMeshes.end() ) {
+            if ( emitter->GetVisShpType() == 5 && !ParticleEffectProgMeshes.contains(source) ) {
                 AddParticleEffect( source );
             }
             if ( (texture = emitter->GetVisTexture( pfx )) != nullptr ) {

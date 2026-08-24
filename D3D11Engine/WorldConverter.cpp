@@ -511,9 +511,10 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
     // Check if we have this file cached
     bool loadedFromCache = false;
-    if ( Toolbox::FileExists( (file + ".mcache").c_str() ) ) {
+    std::string fileName = file + ".mcache";
+    if ( Toolbox::FileExists( fileName ) ) {
         // Load the meshfile, cached
-        if ( mesh->LoadMesh( (file + ".mcache").c_str(), worldScale ) == XR_SUCCESS ) {
+        if ( mesh->LoadMesh( fileName, worldScale ) == XR_SUCCESS ) {
             loadedFromCache = true;
         } else {
             // Incompatible/stale cache (e.g. vertex-format version bump): discard and rebuild.
@@ -611,7 +612,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             bbmax.y = bbmax.y < v[0]->Position.y ? v[0]->Position.y : bbmax.y;
             bbmax.z = bbmax.z < v[0]->Position.z ? v[0]->Position.z : bbmax.z;
 
-            if ( section.WorldMeshes.find( key ) == section.WorldMeshes.end() ) {
+            if (!section.WorldMeshes.contains( key ) ) {
                 key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Material );
 
                 section.WorldMeshes[key] = new WorldMeshInfo;
