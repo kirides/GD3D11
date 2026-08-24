@@ -66,8 +66,14 @@ namespace {
         UINT SsrMaxSteps;             // 0 => SSR off
         UINT SsrRefineSteps;
         UINT UseAtmosphere;           // 0 => skip ApplyAtmosphericScatteringGround (no GSky data)
+
+        // --- Raytraced reflection PoC (see EnsureWaterReflectionAS) ---
+        UINT TlasIndex;               // RAYTRACING_ACCELERATION_STRUCTURE SRV; 0xFFFFFFFF => RT path off
+        UINT WorldVbIndex;            // raw ByteAddressBuffer SRV over the same world VB the BLAS was built from
+        UINT WorldIbIndex;            // raw ByteAddressBuffer SRV over the same world IB (R32_UINT indices)
+        UINT _Pad0;                   // keeps the struct a multiple of 16 bytes
     };
-    static_assert( sizeof( WaterCBData ) == 192, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 208, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of both water copies. PIXEL_SHADER_RESOURCE (not the combined NON_PIXEL|PIXEL the fog
     // pass uses) because only the water PS ever reads them.
@@ -256,6 +262,215 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
 }
 
 
+namespace {
+    // One-time buffer alloc for the AS/scratch resources below: DEFAULT heap, UAV-capable (both the
+    // acceleration-structure result and its scratch buffer are written by the GPU build). AS result
+    // buffers must be created directly in RAYTRACING_ACCELERATION_STRUCTURE state per the DXR spec; that
+    // holds regardless of enhanced-barrier support, so this always goes through the legacy CreateResource
+    // (same as m_WaterCB above) rather than D3D12ResourceCreate::CreateTexture.
+    bool CreateAsBuffer( D3D12MA::Allocator* allocator, UINT64 sizeBytes, D3D12_RESOURCE_STATES state,
+        ComPtr<ID3D12Resource>& outRes, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) {
+        D3D12MA::ALLOCATION_DESC allocDesc = {};
+        allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = sizeBytes;
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+        if ( FAILED( allocator->CreateResource( &allocDesc, &desc, state, nullptr,
+            outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( outRes.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        outRes->SetName( name );
+        return true;
+    }
+
+    // Raw ByteAddressBuffer SRV over an existing static geometry buffer (world VB or IB), for the hit
+    // shader's vertex/index fetch in Water.hlsl. NumElements is in 4-byte units per D3D12_BUFFER_SRV_FLAG_RAW.
+    D3D12_SHADER_RESOURCE_VIEW_DESC RawBufferSrvDesc( UINT sizeInBytes ) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+        srv.Format = DXGI_FORMAT_R32_TYPELESS;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Buffer.NumElements = sizeInBytes / 4;
+        srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        return srv;
+    }
+}
+
+
+bool D3D12GraphicsEngine::EnsureWaterReflectionAS() {
+    if ( !m_WaterRaytracingSupported || !m_FrameOpen || !m_CmdList )
+        return false;
+
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() )
+        return false;
+
+    D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
+    D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
+    if ( !vb->GetResource() || !ib->GetResource() )
+        return false;
+
+    // Already built for this exact world mesh (the common case — every frame after the first).
+    if ( m_WaterAsBuilt && m_WaterAsBuiltFromVb == wm->GetMeshVertexBuffer() && m_WaterAsBuiltFromIb == wm->GetMeshIndexBuffer() )
+        return true;
+
+    ID3D12GraphicsCommandList4* cmdList4 = m_CmdList.List4();
+    ComPtr<ID3D12Device5> device5;
+    if ( !cmdList4 || FAILED( m_Device.GetDevice()->QueryInterface( IID_PPV_ARGS( device5.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: device reported raytracing Tier 1.1 but ID3D12GraphicsCommandList4/ID3D12Device5 "
+                      "are unavailable — water RT reflections disabled for this session.";
+        m_WaterRaytracingSupported = false;
+        return false;
+    }
+
+    const UINT vertexCount = vb->GetSizeInBytes() / sizeof( ExVertexStructGPU );
+    const UINT indexCount = ib->GetSizeInBytes() / sizeof( uint32_t );
+    if ( vertexCount == 0 || indexCount == 0 )
+        return false;
+
+    D3D12_RAYTRACING_GEOMETRY_DESC geometry = {};
+    geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+    // OPAQUE: alpha-tested/foliage world materials aren't in the wrapped mesh's water-relevant surfaces
+    // anyway, and skipping any-hit shading keeps this PoC to inline ray tracing's simplest path.
+    geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    geometry.Triangles.Transform3x4 = 0;
+    geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+    geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;   // ExVertexStructGPU::Position, offset 0
+    geometry.Triangles.IndexCount = indexCount;
+    geometry.Triangles.VertexCount = vertexCount;
+    geometry.Triangles.IndexBuffer = ib->GetGpuVirtualAddress();
+    geometry.Triangles.VertexBuffer.StartAddress = vb->GetGpuVirtualAddress();
+    geometry.Triangles.VertexBuffer.StrideInBytes = sizeof( ExVertexStructGPU );
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blasInputs = {};
+    blasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    blasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    blasInputs.NumDescs = 1;
+    blasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    blasInputs.pGeometryDescs = &geometry;
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blasPrebuild = {};
+    device5->GetRaytracingAccelerationStructurePrebuildInfo( &blasInputs, &blasPrebuild );
+    if ( blasPrebuild.ResultDataMaxSizeInBytes == 0 ) {
+        LogWarn() << "D3D12: GetRaytracingAccelerationStructurePrebuildInfo returned an empty BLAS — water RT reflections disabled.";
+        return false;
+    }
+
+    if ( !CreateAsBuffer( m_Allocator.Get(), blasPrebuild.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            m_WaterBlas, m_WaterBlasAlloc, L"WaterReflectionBLAS" )
+        || !CreateAsBuffer( m_Allocator.Get(), blasPrebuild.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            m_WaterBlasScratch, m_WaterBlasScratchAlloc, L"WaterReflectionBLASScratch" ) ) {
+        LogWarn() << "D3D12: failed to allocate the water reflection BLAS buffers.";
+        return false;
+    }
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blasBuild = {};
+    blasBuild.Inputs = blasInputs;
+    blasBuild.DestAccelerationStructureData = m_WaterBlas->GetGPUVirtualAddress();
+    blasBuild.ScratchAccelerationStructureData = m_WaterBlasScratch->GetGPUVirtualAddress();
+    cmdList4->BuildRaytracingAccelerationStructure( &blasBuild, 0, nullptr );
+    m_CmdList->UAVBarrier( m_WaterBlas.Get() );   // the TLAS build below reads the BLAS the line above just wrote
+
+    // --- TLAS: a single identity instance wrapping the BLAS above -------------------------------------
+    D3D12_RAYTRACING_INSTANCE_DESC instance = {};
+    instance.Transform[0][0] = instance.Transform[1][1] = instance.Transform[2][2] = 1.0f;
+    instance.InstanceMask = 0xFF;
+    instance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+    instance.AccelerationStructure = m_WaterBlas->GetGPUVirtualAddress();
+
+    {
+        D3D12MA::ALLOCATION_DESC uploadAlloc = {};
+        uploadAlloc.HeapType = DefaultUploadHeapType;
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = sizeof( D3D12_RAYTRACING_INSTANCE_DESC );
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            m_WaterTlasInstanceAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_WaterTlasInstanceBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: failed to allocate the water reflection TLAS instance buffer.";
+            return false;
+        }
+        m_WaterTlasInstanceBuffer->SetName( L"WaterReflectionTLASInstances" );
+        void* mapped = nullptr;
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( m_WaterTlasInstanceBuffer->Map( 0, &noRead, &mapped ) ) ) return false;
+        memcpy( mapped, &instance, sizeof( instance ) );
+        m_WaterTlasInstanceBuffer->Unmap( 0, nullptr );
+    }
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs = {};
+    tlasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    tlasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    tlasInputs.NumDescs = 1;
+    tlasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    tlasInputs.InstanceDescs = m_WaterTlasInstanceBuffer->GetGPUVirtualAddress();
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO tlasPrebuild = {};
+    device5->GetRaytracingAccelerationStructurePrebuildInfo( &tlasInputs, &tlasPrebuild );
+    if ( tlasPrebuild.ResultDataMaxSizeInBytes == 0 ) {
+        LogWarn() << "D3D12: GetRaytracingAccelerationStructurePrebuildInfo returned an empty TLAS — water RT reflections disabled.";
+        return false;
+    }
+
+    if ( !CreateAsBuffer( m_Allocator.Get(), tlasPrebuild.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            m_WaterTlas, m_WaterTlasAlloc, L"WaterReflectionTLAS" )
+        || !CreateAsBuffer( m_Allocator.Get(), tlasPrebuild.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            m_WaterTlasScratch, m_WaterTlasScratchAlloc, L"WaterReflectionTLASScratch" ) ) {
+        LogWarn() << "D3D12: failed to allocate the water reflection TLAS buffers.";
+        return false;
+    }
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tlasBuild = {};
+    tlasBuild.Inputs = tlasInputs;
+    tlasBuild.DestAccelerationStructureData = m_WaterTlas->GetGPUVirtualAddress();
+    tlasBuild.ScratchAccelerationStructureData = m_WaterTlasScratch->GetGPUVirtualAddress();
+    cmdList4->BuildRaytracingAccelerationStructure( &tlasBuild, 0, nullptr );
+    m_CmdList->UAVBarrier( m_WaterTlas.Get() );   // the water PS below must not TraceRayInline before this completes
+
+    // --- Bindless views: TLAS (as a raw SRV — resource must be null for this view dimension), plus the
+    // world VB/IB as raw ByteAddressBuffers so the PS can fetch a hit triangle's position/UV/color. ------
+    if ( m_WaterTlasSrvSlot == UINT_MAX ) m_WaterTlasSrvSlot = AllocateSrvSlot();
+    if ( m_WaterWorldVbSrvSlot == UINT_MAX ) m_WaterWorldVbSrvSlot = AllocateSrvSlot();
+    if ( m_WaterWorldIbSrvSlot == UINT_MAX ) m_WaterWorldIbSrvSlot = AllocateSrvSlot();
+    if ( m_WaterTlasSrvSlot == UINT_MAX || m_WaterWorldVbSrvSlot == UINT_MAX || m_WaterWorldIbSrvSlot == UINT_MAX ) {
+        LogWarn() << "D3D12: SRV heap exhausted allocating water RT reflection views.";
+        return false;
+    }
+
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_SHADER_RESOURCE_VIEW_DESC tlasSrv = {};
+    tlasSrv.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+    tlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    tlasSrv.RaytracingAccelerationStructure.Location = m_WaterTlas->GetGPUVirtualAddress();
+    device->CreateShaderResourceView( nullptr, &tlasSrv, GetSrvCpuHandle( m_WaterTlasSrvSlot ) );   // resource MUST be null here
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC vbSrv = RawBufferSrvDesc( vb->GetSizeInBytes() );
+    device->CreateShaderResourceView( vb->GetResource(), &vbSrv, GetSrvCpuHandle( m_WaterWorldVbSrvSlot ) );
+    D3D12_SHADER_RESOURCE_VIEW_DESC ibSrv = RawBufferSrvDesc( ib->GetSizeInBytes() );
+    device->CreateShaderResourceView( ib->GetResource(), &ibSrv, GetSrvCpuHandle( m_WaterWorldIbSrvSlot ) );
+
+    m_WaterAsBuiltFromVb = wm->GetMeshVertexBuffer();
+    m_WaterAsBuiltFromIb = wm->GetMeshIndexBuffer();
+    m_WaterAsBuilt = true;
+    LogInfo() << "D3D12: built the water reflection acceleration structure (" << vertexCount << " verts, "
+              << indexCount / 3 << " tris).";
+    return true;
+}
+
+
 void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
         return;
@@ -267,6 +482,16 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
     D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
     if ( !vb->GetResource() || !ib->GetResource() ) { g_FrameWaterSurfaces.clear(); return; }
+
+    // Raytraced reflection PoC: only built at all once the player opts into
+    // GothicRendererSettings::WATER_REFLECTION_RAYTRACED (players who never touch the setting pay no
+    // VRAM/build cost for it). Once opted in, lazily (re)builds the world BLAS/TLAS on the first water
+    // draw of a newly loaded world and no-ops on every later frame. Non-fatal — a build failure (or the
+    // player being on SCREENSPACE mode) just leaves rtReflectionsReady false, and the CB fill below falls
+    // back to the screen-space march for this frame.
+    const bool wantsRaytracedReflections =
+        Engine::GAPI->GetRendererState().RendererSettings.WaterReflectionMode == GothicRendererSettings::WATER_REFLECTION_RAYTRACED;
+    const bool rtReflectionsReady = wantsRaytracedReflections && EnsureWaterReflectionAS();
 
     // ViewProj — identical derivation to DrawWorldMesh (water verts are already world-space).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -383,14 +608,34 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.DistortionIndex = ( m_DistortionTexture && m_DistortionTexture->HasSRV() )
             ? m_DistortionTexture->GetSrvSlot() : m_BlackTexture->GetSrvSlot();
         cb.ReflectionCubeIndex = m_ReflectionCubeSrvSlot;   // UINT_MAX => shader skips the cube
-        SsrStepsForQuality( settings.WaterSSRQuality, cb.SsrMaxSteps, cb.SsrRefineSteps );
-        // Underwater the trace is invalid — it assumes the eye sits above the surface, so from below it
-        // marches up through the water body and mirrors the shoreline over the underwater view. 0 steps
-        // is the shader's "SSR off" path (Water.hlsl line 323), same effect as D3D11's RI_SSREnabled=0.
+
+        // Reflection mode: the two are DELIBERATELY exclusive, never blended. Combining SSR with the RT
+        // fallback (the previous behavior — RT only on an SSR miss) still let SSR's own grazing-angle
+        // artifacts through on every pixel it *did* resolve, since the screen-space march's silhouette/
+        // thickness heuristics get worse exactly at the shallow view angles reflections are most visible
+        // at. RAYTRACED mode now skips the march entirely (SsrMaxSteps=0) so every reflected pixel goes
+        // through the ray query instead, at the cost of RT's own limitations (single BLAS instance, no
+        // textures, one bounce — see TraceWaterReflectionRT's comment in Water.hlsl).
+        if ( rtReflectionsReady ) {
+            cb.SsrMaxSteps = 0;
+            cb.SsrRefineSteps = 0;
+            cb.TlasIndex = m_WaterTlasSrvSlot;
+        } else {
+            // Also the automatic fallback while RAYTRACED is selected but the AS hasn't finished building
+            // yet (first frame of a new world) or failed to build at all — cheap SSR beats a flat cube.
+            SsrStepsForQuality( settings.WaterSSRQuality, cb.SsrMaxSteps, cb.SsrRefineSteps );
+            cb.TlasIndex = 0xFFFFFFFFu;
+        }
+        // Underwater neither trace is valid — both assume the eye sits above the surface, so from below
+        // they march/cast up through the water body and mirror the shoreline over the underwater view.
+        // 0 SSR steps is the shader's "SSR off" path (Water.hlsl), same effect as D3D11's RI_SSREnabled=0.
         if ( Engine::GAPI->IsUnderWater() ) {
             cb.SsrMaxSteps = 0;
             cb.SsrRefineSteps = 0;
+            cb.TlasIndex = 0xFFFFFFFFu;
         }
+        cb.WorldVbIndex = m_WaterWorldVbSrvSlot;
+        cb.WorldIbIndex = m_WaterWorldIbSrvSlot;
 
         // GSky::RenderSky() refreshes the AC_* constants every frame (DrawSky runs before this), even though
         // D3D12 renders Gothic's fixed-function sky — same reasoning as RenderFogAndGodRays. Without them the

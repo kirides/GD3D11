@@ -78,13 +78,28 @@ public:
     void Attach( ID3D12GraphicsCommandList* list ) noexcept {
         InvalidateAll();
         m_List = list;
-        // New COM object -> any cached ID3D12GraphicsCommandList7 QueryInterface result is stale.
+        // New COM object -> any cached ID3D12GraphicsCommandList7/4 QueryInterface result is stale.
         m_List7Queried = false;
         m_List7.Reset();
+        m_List4Queried = false;
+        m_List4.Reset();
     }
 
     const Stats& GetStats() const noexcept { return m_Stats; }
     void ResetStats() noexcept { m_Stats.Reset(); }
+
+    // ---- Inline ray tracing support (BuildRaytracingAccelerationStructure) ------------------------
+    // Public (unlike List7(), which only D3D12CmdList's own barrier methods use internally): the water
+    // reflection AS builder (D3D12Water.cpp) records BuildRaytracingAccelerationStructure calls directly,
+    // so it needs the ID3D12GraphicsCommandList4 interface from outside this class. Queried lazily once
+    // per underlying list object, same pattern as List7().
+    ID3D12GraphicsCommandList4* List4() const noexcept {
+        if ( !m_List4Queried ) {
+            m_List4Queried = true;
+            m_List.As( &m_List4 );   // best-effort; leaves m_List4 null on a pre-DXR runtime
+        }
+        return m_List4.Get();
+    }
 
     // ---- Shadow control ------------------------------------------------------------------------
     /** Forget everything the wrapper believes about this list. Call after ANY code path records
@@ -514,6 +529,8 @@ private:
     // Queried lazily once per underlying list object (see Attach() for the invalidation).
     mutable Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> m_List7;
     mutable bool m_List7Queried = false;
+    mutable Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> m_List4;
+    mutable bool m_List4Queried = false;
 
     ID3D12GraphicsCommandList7* List7() const noexcept {
         if ( !m_List7Queried ) {

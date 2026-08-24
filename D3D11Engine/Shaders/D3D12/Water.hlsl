@@ -25,6 +25,11 @@
 //
 // Not ported: the SHD_WATERANI Gerstner wave displacement in VS_ExWater (vertex-level wave offset). The
 // surface is still geometrically flat; all the wave *shading* below comes from the distortion texture.
+//
+// D3D12-only addition (no D3D11 equivalent — D3D11 has no DXR path): when an SSR ray misses, TraceWater
+// ReflectionRT below fires one DXR 1.1 inline ray query (RayQuery/TraceRayInline) against a BLAS/TLAS built
+// from the world mesh, so off-screen geometry can still tint the reflection instead of always falling back
+// to the flat static sky cube. See that function's comment for the PoC-level scope of its shading.
 
 #include "include/AtmosphericScattering.hlsl"   // ApplyAtmosphericScatteringGround + the Atmosphere cbuffer (b1)
 #include "../include/MathHelpers.hlsl"
@@ -51,6 +56,12 @@ cbuffer WaterCB : register(b2)
     uint   SsrMaxSteps;          // 0 disables SSR entirely (WATER_SSR_DISABLED)
     uint   SsrRefineSteps;
     uint   UseAtmosphere;        // 0 when GSky had no atmosphere data this frame (skip scattering)
+
+    // --- Raytraced reflection PoC (D3D12GraphicsEngine::EnsureWaterReflectionAS) ---
+    uint   TlasIndex;            // RAYTRACING_ACCELERATION_STRUCTURE SRV over the world BLAS; 0xFFFFFFFF = RT path off
+    uint   WorldVbIndex;         // raw ByteAddressBuffer SRV, same world VB the BLAS was built from (ExVertexStructGPU, 36 B stride)
+    uint   WorldIbIndex;         // raw ByteAddressBuffer SRV, same world IB (R32_UINT)
+    uint   _Pad0;
 };
 
 Texture2D    tx  : register(t0);   // per-material diffuse (descriptor table — rebound per texture batch)
@@ -263,6 +274,101 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 }
 
 //--------------------------------------------------------------------------------------
+// Raytraced reflection — proof of concept for DXR 1.1 inline ray tracing (RayQuery/TraceRayInline).
+//
+// TraceWaterSSR above only ever sees what already made it onto the screen this frame; a reflection ray
+// that leaves the viewport, or one that never crosses the copied depth buffer at all (nothing between the
+// water and the horizon), has no on-screen data to find and falls straight back to the flat static sky
+// cube. This adds a third tier: fire ONE inline ray query against the BLAS/TLAS built from the wrapped
+// world mesh (D3D12GraphicsEngine::EnsureWaterReflectionAS) and, on a hit, shade it well enough to read as
+// an actual off-screen reflection rather than sky. Because it goes through RayQuery instead of the
+// DispatchRays pipeline there is no hit-group/shader-table setup at all — this function is the entire
+// "raytracing pipeline".
+//
+// Deliberately crude shading, consistent with this being a PoC: no shadows, no textures, one bounce, and
+// the hit color is the interpolated vertex-color tinted by the current sun/night factor and faded by hit
+// distance — not a real BRDF evaluation. Good enough to distinguish "cliff face" from "open sky" at the
+// water's edge, which is the whole point: SSR's miss case goes from "always the cube" to "usually right".
+//--------------------------------------------------------------------------------------
+float3 TraceWaterReflectionRT( float3 worldPos, float3 reflectDirWS, out float confidence )
+{
+    confidence = 0.0f;
+    if ( TlasIndex == 0xFFFFFFFFu )
+        return float3( 0.0f, 0.0f, 0.0f );
+
+    RaytracingAccelerationStructure tlas = ResourceDescriptorHeap[TlasIndex];
+
+    RayDesc ray;
+    ray.Origin = worldPos + reflectDirWS * 4.0f;   // push off the surface, same idea as SSR_START_BIAS
+    ray.Direction = reflectDirWS;
+    ray.TMin = 0.0f;
+    ray.TMax = 100000.0f;
+
+    // Every triangle in the BLAS is flagged OPAQUE at build time (EnsureWaterReflectionAS), so the query
+    // never needs an any-hit shader; SKIP_PROCEDURAL_PRIMITIVES is free since the BLAS holds only triangles.
+    // (There is no "RAY_FLAG_CULL_NONE" — no culling is just the absence of a cull flag, i.e. RAY_FLAG_NONE.)
+    RayQuery<RAY_FLAG_NONE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    q.TraceRayInline( tlas, RAY_FLAG_NONE, 0xFF, ray );
+    q.Proceed();
+
+    if ( q.CommittedStatus() != COMMITTED_TRIANGLE_HIT )
+        return float3( 0.0f, 0.0f, 0.0f );
+
+    // Fetch the hit triangle's 3 vertices (position + vertex color) straight out of the raw world VB/IB
+    // (bound bindlessly alongside the TLAS) and interpolate by the query's barycentrics — the cheapest
+    // possible stand-in for a real material fetch, since there is no hit-group/closest-hit shader to do it
+    // for us. The geometric (flat, non-interpolated) face normal then gives cheap Lambert shading instead
+    // of a flat unlit vertex-color wash.
+    ByteAddressBuffer worldIb = ResourceDescriptorHeap[WorldIbIndex];
+    ByteAddressBuffer worldVb = ResourceDescriptorHeap[WorldVbIndex];
+
+    const uint primBase = q.CommittedPrimitiveIndex() * 3u * 4u;   // R32_UINT indices, 3 per triangle
+    const uint3 idx = worldIb.Load3( primBase );
+
+    const uint kVertexStride   = 36u;   // ExVertexStructGPU (VertexTypes.h)
+    const uint kPositionOffset = 0u;    // float3
+    const uint kColorOffset    = 32u;   // DWORD diffuse, packed BGRA — same layout the DIFFUSE input element reads
+
+    float3 pos[3];
+    float3 col[3];
+    [unroll]
+    for ( uint i = 0; i < 3; ++i )
+    {
+        const uint base = idx[i] * kVertexStride;
+        pos[i] = asfloat( worldVb.Load3( base + kPositionOffset ) );
+        uint packed = worldVb.Load( base + kColorOffset );
+        col[i] = float3( ( packed >> 16 ) & 0xFF, ( packed >> 8 ) & 0xFF, packed & 0xFF ) / 255.0f;   // BGRA -> RGB
+    }
+
+    float3 bary;
+    bary.yz = q.CommittedTriangleBarycentrics();
+    bary.x = 1.0f - bary.y - bary.z;
+    float3 vcolor = col[0] * bary.x + col[1] * bary.y + col[2] * bary.z;
+
+    // Flip the face normal to face the incoming ray if the BLAS winding puts it the other way — the world
+    // mesh has no guaranteed consistent "outside" winding, and a backwards normal here would light every
+    // hit as though seen from behind it (flat black).
+    float3 faceNormal = normalize( cross( pos[1] - pos[0], pos[2] - pos[0] ) );
+    if ( dot( faceNormal, reflectDirWS ) > 0.0f )
+        faceNormal = -faceNormal;
+
+    // Cheap directional + ambient term using the same sun direction / day-night signal PSMain's own
+    // sun-spot term reads below (AC_LightPos), so RT hit shading brightens/dims in step with the rest of
+    // the scene instead of reading flat-lit at night and in full sun alike.
+    float3 sunDir = normalize( AC_LightPos.xyz );
+    float NdotL = saturate( dot( faceNormal, sunDir ) );
+    float3 ambient = lerp( float3( 0.05, 0.05, 0.07 ), float3( 0.16, 0.18, 0.22 ), saturate( AC_LightPos.y ) );
+    float3 sunColor = lerp( float3( 0.6, 0.3, 0.1 ), float3( 1.0, 0.95, 0.85 ), saturate( AC_LightPos.y ) );
+    float3 lighting = ambient + sunColor * NdotL;
+
+    // Confidence alone carries the distance fade: PSMain's lerp( reflection, rtColor, confidence ) already
+    // blends a far hit back towards the cube, so the color returned here must NOT also fade itself — doing
+    // both would darken a moderate-range hit twice (once here, once by the caller's own blend weight).
+    confidence = saturate( 1.0f - q.CommittedRayT() / 60000.0f );
+    return vcolor * lighting;
+}
+
+//--------------------------------------------------------------------------------------
 // Pixel Shader — line-for-line port of PS_Water.hlsl's PSMain.
 //--------------------------------------------------------------------------------------
 float4 PSMain( VS_OUT Input ) : SV_TARGET
@@ -320,17 +426,34 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
         reflection = reflectionCube.Sample( smp, reflect_vec ).xyz;
     }
 
+    // reflect_vec above is negated (reflect(-viewDirection,N)) for the cube lookup. The true
+    // eye-reflection direction, which marches UP into the scene, is reflect(viewDirection, N).
+    // Flatten the wave normal so reflection rays stay coherent (mirror-like) instead of scattering
+    // into many off-screen misses.
+    float3 ssrNormal = normalize( lerp( float3( 0.0f, 1.0f, 0.0f ), wavesFres, 0.5f ) );
+    float3 ssrDir = reflect( viewDirection, ssrNormal );
+
     float ssrConfidence = 0.0f;
     if ( SsrMaxSteps > 0 )
     {
-        // reflect_vec above is negated (reflect(-viewDirection,N)) for the cube lookup. The true
-        // eye-reflection direction, which marches UP into the scene, is reflect(viewDirection, N).
-        // Flatten the wave normal so reflection rays stay coherent (mirror-like) instead of scattering
-        // into many off-screen misses.
-        float3 ssrNormal = normalize( lerp( float3( 0.0f, 1.0f, 0.0f ), wavesFres, 0.5f ) );
-        float3 ssrDir = reflect( viewDirection, ssrNormal );
         float3 ssrColor = TraceWaterSSR( Input.wpos, ssrDir, ssrConfidence );
         reflection = lerp( reflection, ssrColor, saturate( ssrConfidence ) );
+    }
+
+    // Raytraced reflection PoC. SCREENSPACE and RAYTRACED modes are mutually exclusive by construction,
+    // never blended per-pixel: D3D12Water.cpp's CB fill zeroes SsrMaxSteps whenever RAYTRACED is active
+    // (and TlasIndex whenever it isn't), so ssrConfidence is unconditionally 0 in RT mode and this branch
+    // is the ONLY reflection source. That is deliberate — a per-pixel blend still let SSR's own
+    // grazing-angle smearing through on every pixel it did resolve, since the screen-space march's
+    // silhouette/thickness heuristics get worse exactly at the shallow view angles reflections are most
+    // visible at. The `ssrConfidence <= 0.0f` check below is therefore just "is RT mode active", not a
+    // per-pixel miss fallback.
+    if ( ssrConfidence <= 0.0f && TlasIndex != 0xFFFFFFFFu )
+    {
+        float rtConfidence = 0.0f;
+        float3 rtColor = TraceWaterReflectionRT( Input.wpos, ssrDir, rtConfidence );
+        reflection = lerp( reflection, rtColor, saturate( rtConfidence ) );
+        ssrConfidence = max( ssrConfidence, rtConfidence );   // feeds reflectAmount's confidence boost below
     }
 
     // Darken the scene, to make a wet surface

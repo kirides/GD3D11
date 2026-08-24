@@ -760,6 +760,14 @@ namespace
         if ( s.RendererMode != GothicRendererSettings::E_RendererMode::RM_ForwardPlus ) {
             s.MSAASamples = 1;
         }
+
+        // A config carried over from a D3D12+RT session onto D3D11 or an unsupported GPU/driver would
+        // otherwise silently no-op (the D3D12 water pass already falls back to SCREENSPACE by itself) —
+        // fix the setting itself here so the UI reflects what's actually happening.
+        if ( s.WaterReflectionMode == GothicRendererSettings::WATER_REFLECTION_RAYTRACED
+            && !Engine::GraphicsEngine->SupportsRaytracedWaterReflections() ) {
+            s.WaterReflectionMode = GothicRendererSettings::WATER_REFLECTION_SCREENSPACE;
+        }
     }
 }
 
@@ -1015,6 +1023,28 @@ void ImGuiShim::RenderSettingsWindowModern() {
                         }
                     }
 
+                    // D3D12-only: choose between the cheap screen-space march above and one DXR 1.1 inline
+                    // ray query per pixel against the world mesh. Grayed out where unsupported (D3D11, or a
+                    // GPU/driver below Raytracing Tier 1.1) -- FixupSettings() also clamps the underlying
+                    // setting back to SCREENSPACE so a config carried over from another machine can't get
+                    // stuck showing a control it can't act on.
+                    {
+                        const bool rtAvailable = Engine::GraphicsEngine->SupportsRaytracedWaterReflections();
+                        ImGui::BeginDisabled( !rtAvailable );
+                        static const char* reflectionModes[] = { "Screen-space (cheap)", "Ray traced" };
+                        int mode = settings.WaterReflectionMode;
+                        if ( ImGui::Combo( "Water Reflection Mode", &mode, reflectionModes, IM_ARRAYSIZE( reflectionModes ) ) ) {
+                            settings.WaterReflectionMode = (GothicRendererSettings::E_WaterReflectionMode)mode;
+                        }
+                        ImGui::EndDisabled();
+                        if ( !rtAvailable ) {
+                            ImGui::SetItemTooltip( "Requires the D3D12 backend and a GPU/driver reporting DXR Raytracing Tier 1.1." );
+                        } else if ( settings.WaterReflectionMode == GothicRendererSettings::WATER_REFLECTION_RAYTRACED ) {
+                            ImGui::SetItemTooltip( "Replaces the screen-space march above entirely: no grazing-angle smearing, "
+                                "but only reflects what the (crude, untextured) world BVH hits -- one bounce, vertex-color shaded." );
+                        }
+                    }
+
                     ImGui::TableNextColumn();
                     static std::vector<std::pair<int, std::string_view>> ssrPreviews = {
                         {s_currentTextureId++, "SSR_0_Disabled.jpg" },
@@ -1267,6 +1297,19 @@ void ImGuiShim::RenderSettingsWindow()
                 if ( ImGui::Combo( "Water Reflections (SSR)", &ssr, ssrLevels, IM_ARRAYSIZE( ssrLevels ) ) ) {
                     settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
                     shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                }
+            }
+            {
+                const bool rtAvailable = Engine::GraphicsEngine->SupportsRaytracedWaterReflections();
+                ImGui::BeginDisabled( !rtAvailable );
+                const char* reflectionModes[] = { "Screen-space (cheap)", "Ray traced" };
+                int mode = settings.WaterReflectionMode;
+                if ( ImGui::Combo( "Water Reflection Mode", &mode, reflectionModes, IM_ARRAYSIZE( reflectionModes ) ) ) {
+                    settings.WaterReflectionMode = (GothicRendererSettings::E_WaterReflectionMode)mode;
+                }
+                ImGui::EndDisabled();
+                if ( !rtAvailable ) {
+                    ImGui::SetItemTooltip( "Requires the D3D12 backend and a GPU/driver reporting DXR Raytracing Tier 1.1." );
                 }
             }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );

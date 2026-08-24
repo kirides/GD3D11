@@ -36,6 +36,13 @@ public:
         enhanced barriers are optional, never required, so this doesn't affect Init()'s success. */
     bool EnhancedBarriersSupported() const { return m_EnhancedBarriersSupported; }
 
+    /** True if the device reports D3D12_RAYTRACING_TIER_1_1 (DXR 1.1, required for inline ray tracing
+        via RayQuery/TraceRayInline — Tier 1.0 hardware can only run the DispatchRays pipeline, which
+        this backend does not use). Purely informational, like EnhancedBarriersSupported() above: a
+        device without it just never builds the water reflection acceleration structure and the water
+        shader stays on screen-space SSR only. */
+    bool SupportsInlineRaytracing() const { return m_RaytracingTier1_1Supported; }
+
     ID3D12Device*       GetDevice()      const { return m_Device.Get(); }
     ID3D12CommandQueue* GetDirectQueue() const { return m_DirectQueue.Get(); }
     ID3D12CommandQueue* GetCopyQueue()   const { return m_CopyQueue.Get(); }
@@ -50,4 +57,5 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandQueue>  m_CopyQueue;
     std::string m_DeviceDescription;
     bool m_EnhancedBarriersSupported = false;
+    bool m_RaytracingTier1_1Supported = false;
 };

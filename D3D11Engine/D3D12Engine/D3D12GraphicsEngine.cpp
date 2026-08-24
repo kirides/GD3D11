@@ -83,6 +83,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
+    m_WaterRaytracingSupported = m_Device.SupportsInlineRaytracing();
     if ( !CreateAllocators() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create allocators.";
         return XR_FAILED;

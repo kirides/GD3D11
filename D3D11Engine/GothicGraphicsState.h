@@ -672,6 +672,19 @@ struct GothicRendererSettings {
         WATER_SSR_HIGH     = 3,
     };
 
+    /** D3D12-only choice of how water resolves reflections that aren't the static sky cube.
+        SCREENSPACE is the cheap default (TraceWaterSSR marching the copied depth buffer, quality
+        controlled by WaterSSRQuality above) and runs on any D3D12 GPU. RAYTRACED replaces the
+        screen-space march entirely with one DXR 1.1 inline ray query per pixel against the world
+        BLAS/TLAS (EnsureWaterReflectionAS) — no screen-space input at all, so none of SSR's
+        grazing-angle smearing/thickness artifacts, but only available where
+        D3D12Device::SupportsInlineRaytracing() is true; the settings UI clamps back to
+        SCREENSPACE otherwise. D3D11 has no raytraced path and never reads this field. */
+    enum E_WaterReflectionMode {
+        WATER_REFLECTION_SCREENSPACE = 0,
+        WATER_REFLECTION_RAYTRACED   = 1,
+    };
+
     enum class TX_QUALITY : uint16_t {
         VeryLow = 128,
         Low = 256,
@@ -918,6 +931,7 @@ struct GothicRendererSettings {
         BinkVideoRunning = false;
         EnableWaterAnimation = false;
         WaterSSRQuality = WATER_SSR_MEDIUM;
+        WaterReflectionMode = WATER_REFLECTION_SCREENSPACE;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
@@ -1302,6 +1316,7 @@ struct GothicRendererSettings {
     bool BinkVideoRunning;
     bool EnableWaterAnimation;
     E_WaterSSRQuality WaterSSRQuality;
+    E_WaterReflectionMode WaterReflectionMode;
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

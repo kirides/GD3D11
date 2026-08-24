@@ -181,6 +181,18 @@ namespace {
         return true;
     }
 
+    // Tier 1.0 hardware can only run the DispatchRays pipeline (state objects + shader tables); inline ray
+    // tracing (RayQuery/TraceRayInline, what the water reflection PoC uses) needs DXR 1.1 == Tier 1.1.
+    bool DeviceSupportsRaytracingTier1_1( ID3D12Device* device, std::string* outReason ) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+        if ( FAILED( device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof( options5 ) ) )
+            || options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_1 ) {
+            if ( outReason ) *outReason = "the GPU/driver does not report D3D12_RAYTRACING_TIER_1_1";
+            return false;
+        }
+        return true;
+    }
+
     /** Returns true if the adapter supports a FL12_0 D3D12 device that can also do SM6.6 bindless
         (capability check only — the temporary device is dropped again). */
     bool AdapterSupportsD3D12( PFN_D3D12_CREATE_DEVICE createDevice, IDXGIAdapter1* adapter,
@@ -357,6 +369,14 @@ bool D3D12Device::Init() {
         LogInfo() << "D3D12: enhanced barriers supported.";
     } else {
         LogInfo() << "D3D12: enhanced barriers unavailable (" << barrierReason.c_str() << "); using legacy transitions.";
+    }
+
+    std::string raytracingReason;
+    m_RaytracingTier1_1Supported = DeviceSupportsRaytracingTier1_1( m_Device.Get(), &raytracingReason );
+    if ( m_RaytracingTier1_1Supported ) {
+        LogInfo() << "D3D12: inline ray tracing supported (Tier 1.1).";
+    } else {
+        LogInfo() << "D3D12: inline ray tracing unavailable (" << raytracingReason.c_str() << "); water reflections stay screen-space only.";
     }
 
     // Direct (graphics) queue

@@ -5943,6 +5943,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     
 
@@ -6190,6 +6191,10 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
+        // Clamped to the enum's range here; whether RAYTRACED is actually usable (D3D12 + Tier 1.1 GPU) is
+        // re-checked every frame in D3D12Water.cpp, so a config carried over to an unsupported GPU/backend
+        // just silently behaves as SCREENSPACE rather than failing to load.
+        s.WaterReflectionMode = static_cast<GothicRendererSettings::E_WaterReflectionMode>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterReflectionMode", ds.WaterReflectionMode, ini.c_str()), 0, 1));
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
 
         if ( GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini ) ) {

@@ -227,6 +227,12 @@ public:
         to show what was actually detected, since monitor metadata is often wrong or missing. */
     virtual bool GetHdrOutputInfo( float& maxNits, float& minNits, float& maxFullFrameNits ) const { return false; }
 
+    /** True if this backend can build/use the DXR 1.1 inline-ray-tracing water reflection path
+        (D3D12Device::SupportsInlineRaytracing() at Init()). Always false on D3D11, which has no
+        raytracing path at all. The settings UI uses this to gray out/clamp
+        GothicRendererSettings::WaterReflectionMode's RAYTRACED option on unsupported GPUs/backends. */
+    virtual bool SupportsRaytracedWaterReflections() const { return false; }
+
     /** Draws a screen fade effects */
     virtual XRESULT DrawScreenFade( void* camera ) { return XR_SUCCESS; }
     virtual void OnAddVob(VobInfo* vi) { }

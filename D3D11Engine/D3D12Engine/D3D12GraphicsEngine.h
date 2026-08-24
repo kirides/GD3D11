@@ -148,6 +148,8 @@ public:
         return true;
     }
 
+    bool SupportsRaytracedWaterReflections() const override { return m_WaterRaytracingSupported; }
+
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
     ID3D12Device* GetD3DDevice() const { return m_Device.GetDevice(); }
 
@@ -1700,6 +1702,47 @@ private:
 
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
+
+    // --- Water reflection acceleration structure (PoC: DXR 1.1 inline ray tracing, RayQuery/TraceRayInline) ---
+    //
+    // Screen-space reflections (TraceWaterSSR above) only see what is already on screen; a ray that leaves
+    // the viewport or that never crosses the depth buffer falls back to the flat static sky cube. This adds
+    // a THIRD tier: on an SSR miss, the water pixel shader fires one inline ray query against a BVH built
+    // from the wrapped world mesh (the same static VB/IB DrawWaterSurfaces already draws from), so a
+    // reflection of off-screen geometry — a cliff behind the camera, a tower past the shoreline — can still
+    // resolve instead of dropping straight to the cube.
+    //
+    // Deliberately minimal for a PoC: ONE BLAS over the whole static world mesh, ONE TLAS with a single
+    // identity instance, built lazily off the same VB/IB DrawWaterSurfaces binds (rebuilt only if that
+    // pointer pair changes, e.g. a new world loads) — no VOBs, no per-frame refit, no closest-hit shading
+    // pipeline. Hit shading in Water.hlsl reads the vertex color straight out of the raw VB/IB (also bound
+    // bindlessly here) rather than running a real material pass. Gated end-to-end on
+    // D3D12Device::SupportsInlineRaytracing(): a Tier-1.0-or-absent GPU just never gets m_WaterAsBuilt, and
+    // the shader's TlasIndex stays 0xFFFFFFFF (SSR/cube only, unchanged behavior).
+    bool m_WaterRaytracingSupported = false;   // cached D3D12Device::SupportsInlineRaytracing() at Init()
+    bool m_WaterAsBuilt = false;
+    const void* m_WaterAsBuiltFromVb = nullptr;   // GfxVertexBuffer* the current AS was built from
+    const void* m_WaterAsBuiltFromIb = nullptr;   // detects a world reload (new VB/IB pointers) -> rebuild
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterBlas;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterBlasAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterBlasScratch;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterBlasScratchAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterTlas;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterTlasAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterTlasScratch;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterTlasScratchAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterTlasInstanceBuffer;   // UPLOAD, one D3D12_RAYTRACING_INSTANCE_DESC
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterTlasInstanceAlloc;
+    UINT m_WaterTlasSrvSlot   = UINT_MAX;   // RAYTRACING_ACCELERATION_STRUCTURE SRV, bound via ResourceDescriptorHeap
+    UINT m_WaterWorldVbSrvSlot = UINT_MAX;  // raw ByteAddressBuffer SRV over the same world VB the BLAS was built from
+    UINT m_WaterWorldIbSrvSlot = UINT_MAX;  // raw ByteAddressBuffer SRV over the same world IB (R32_UINT indices)
+
+    // Builds/rebuilds the BLAS+TLAS above from GetWrappedWorldMesh() if needed. Records directly into
+    // m_CmdList (must be called with an open frame) rather than a separate one-off command list: this is a
+    // rare event (first water draw, or a new world), so serializing it with the rest of the frame's GPU
+    // work through the existing per-frame fence is simpler than standing up a dedicated upload path.
+    // No-op (returns the current m_WaterAsBuilt) if the world mesh hasn't changed since the last build.
+    bool EnsureWaterReflectionAS();
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT
