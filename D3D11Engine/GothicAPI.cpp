@@ -4617,6 +4617,7 @@ void GothicAPI::CollectVisibleVobs(
         renderQueue.lights.clear();
 
         const bool lightUpdateEnabled = RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+        const bool lightShadowsEnabled = RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY;
         for ( auto [distSq, vi] : lightWithDist ) {
             renderQueue.lights.push_back( vi );
             vi->VisibleInFrame = true;
@@ -4630,9 +4631,14 @@ void GothicAPI::CollectVisibleVobs(
                 if ( distSq < (lightRange * lightRange) )
                     vi->UpdateShadows = true;
             }
-            const bool pfxNeedsBake = vi->IsStaticVobLight && (!vi->LightShadowBuffers || !vi->LightShadowBuffers->IsShadowReady());
-            if ( pfxNeedsBake )
-                vi->UpdateShadows = true;
+            // not else!
+            if ( lightShadowsEnabled ) {
+                // just always update static lights, they should be pretty cheap. We limit them anyways.
+                if ( vi->IsStaticVobLight || !vi->IsPFXVobLight || vi->IsIndoorVob ) {
+                    vi->UpdateShadows = true;
+                }
+            }
+
         }
     }
 }
