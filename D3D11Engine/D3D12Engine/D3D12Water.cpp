@@ -26,6 +26,7 @@
 #include "D3D12VertexBuffer.h"
 #include "D3D12PipelineState.h"
 #include "D3D12RenderGraph.h"
+#include "D3D12VobArena.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"
@@ -33,6 +34,8 @@
 #include "../DDSFormat.h"
 #include "../WorldObjects.h"
 #include "../zCTexture.h"
+#include "../zCVob.h"
+#include "../oCVisFX.h"   // oCItem — excluded from the raytraced reflection AS, see AppendStaticVobInstances
 #include "../D3D7/MyDirectDrawSurface7.h"
 
 #include <fstream>
@@ -318,9 +321,17 @@ bool D3D12GraphicsEngine::EnsureWaterReflectionAS() {
     if ( !vb->GetResource() || !ib->GetResource() )
         return false;
 
-    // Already built for this exact world mesh (the common case — every frame after the first).
-    if ( m_WaterAsBuilt && m_WaterAsBuiltFromVb == wm->GetMeshVertexBuffer() && m_WaterAsBuiltFromIb == wm->GetMeshIndexBuffer() )
-        return true;
+    const bool worldMeshChanged = !m_WaterAsBuilt
+        || m_WaterAsBuiltFromVb != wm->GetMeshVertexBuffer() || m_WaterAsBuiltFromIb != wm->GetMeshIndexBuffer();
+    // The arena only becomes Ready() once at least one static-vob sub-mesh has actually been uploaded, so a
+    // world with none (or one whose Flush() hasn't run yet this frame) simply contributes nothing this call
+    // — retried automatically the next time DrawWaterSurfaces asks, same as worldMeshChanged's retry.
+    const bool vobArenaUsable = m_VobArena.Ready();
+    const bool vobArenaChanged = vobArenaUsable
+        && ( !m_WaterAsIncludesVobs || m_WaterAsVobArenaVb != m_VobArena.GetVertexBuffer() || m_WaterAsVobArenaIb != m_VobArena.GetIndexBuffer() );
+
+    if ( !worldMeshChanged && !vobArenaChanged )
+        return m_WaterAsBuilt;   // nothing changed since the last (successful or not) build
 
     ID3D12GraphicsCommandList4* cmdList4 = m_CmdList.List4();
     ComPtr<ID3D12Device5> device5;
@@ -331,90 +342,144 @@ bool D3D12GraphicsEngine::EnsureWaterReflectionAS() {
         return false;
     }
 
-    const UINT vertexCount = vb->GetSizeInBytes() / sizeof( ExVertexStructGPU );
-    const UINT indexCount = ib->GetSizeInBytes() / sizeof( uint32_t );
-    if ( vertexCount == 0 || indexCount == 0 )
-        return false;
+    // --- World mesh BLAS: only touched when its own VB/IB pointers change (a new world) ------------------
+    if ( worldMeshChanged ) {
+        const UINT vertexCount = vb->GetSizeInBytes() / sizeof( ExVertexStructGPU );
+        const UINT indexCount = ib->GetSizeInBytes() / sizeof( uint32_t );
+        if ( vertexCount == 0 || indexCount == 0 )
+            return false;
 
-    D3D12_RAYTRACING_GEOMETRY_DESC geometry = {};
-    geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    // OPAQUE: alpha-tested/foliage world materials aren't in the wrapped mesh's water-relevant surfaces
-    // anyway, and skipping any-hit shading keeps this PoC to inline ray tracing's simplest path.
-    geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-    geometry.Triangles.Transform3x4 = 0;
-    geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-    geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;   // ExVertexStructGPU::Position, offset 0
-    geometry.Triangles.IndexCount = indexCount;
-    geometry.Triangles.VertexCount = vertexCount;
-    geometry.Triangles.IndexBuffer = ib->GetGpuVirtualAddress();
-    geometry.Triangles.VertexBuffer.StartAddress = vb->GetGpuVirtualAddress();
-    geometry.Triangles.VertexBuffer.StrideInBytes = sizeof( ExVertexStructGPU );
+        D3D12_RAYTRACING_GEOMETRY_DESC geometry = {};
+        geometry.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+        // OPAQUE: alpha-tested/foliage world materials aren't in the wrapped mesh's water-relevant surfaces
+        // anyway, and skipping any-hit shading keeps this PoC to inline ray tracing's simplest path.
+        geometry.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+        geometry.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+        geometry.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;   // ExVertexStructGPU::Position, offset 0
+        geometry.Triangles.IndexCount = indexCount;
+        geometry.Triangles.VertexCount = vertexCount;
+        geometry.Triangles.IndexBuffer = ib->GetGpuVirtualAddress();
+        geometry.Triangles.VertexBuffer.StartAddress = vb->GetGpuVirtualAddress();
+        geometry.Triangles.VertexBuffer.StrideInBytes = sizeof( ExVertexStructGPU );
 
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blasInputs = {};
-    blasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    blasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-    blasInputs.NumDescs = 1;
-    blasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    blasInputs.pGeometryDescs = &geometry;
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blasInputs = {};
+        blasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        blasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        blasInputs.NumDescs = 1;
+        blasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        blasInputs.pGeometryDescs = &geometry;
 
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blasPrebuild = {};
-    device5->GetRaytracingAccelerationStructurePrebuildInfo( &blasInputs, &blasPrebuild );
-    if ( blasPrebuild.ResultDataMaxSizeInBytes == 0 ) {
-        LogWarn() << "D3D12: GetRaytracingAccelerationStructurePrebuildInfo returned an empty BLAS — water RT reflections disabled.";
-        return false;
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blasPrebuild = {};
+        device5->GetRaytracingAccelerationStructurePrebuildInfo( &blasInputs, &blasPrebuild );
+        if ( blasPrebuild.ResultDataMaxSizeInBytes == 0 ) {
+            LogWarn() << "D3D12: GetRaytracingAccelerationStructurePrebuildInfo returned an empty world-mesh BLAS — water RT reflections disabled.";
+            return false;
+        }
+
+        ComPtr<ID3D12Resource> scratch;
+        ComPtr<D3D12MA::Allocation> scratchAlloc;
+        ComPtr<ID3D12Resource> newBlas;
+        ComPtr<D3D12MA::Allocation> newBlasAlloc;
+        if ( !CreateAsBuffer( m_Allocator.Get(), blasPrebuild.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+                newBlas, newBlasAlloc, L"WaterReflectionBLAS" )
+            || !CreateAsBuffer( m_Allocator.Get(), blasPrebuild.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                scratch, scratchAlloc, L"WaterReflectionBLASScratch" ) ) {
+            LogWarn() << "D3D12: failed to allocate the water reflection world-mesh BLAS buffers.";
+            return false;
+        }
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blasBuild = {};
+        blasBuild.Inputs = blasInputs;
+        blasBuild.DestAccelerationStructureData = newBlas->GetGPUVirtualAddress();
+        blasBuild.ScratchAccelerationStructureData = scratch->GetGPUVirtualAddress();
+        cmdList4->BuildRaytracingAccelerationStructure( &blasBuild, 0, nullptr );
+        m_CmdList->UAVBarrier( newBlas.Get() );   // the TLAS build below reads the BLAS the line above just wrote
+
+        // The scratch buffer is only read while the build above executes on the GPU, so it needn't outlive
+        // this frame the way the BLAS result buffer does — but it IS still in-flight when this function
+        // returns, hence the deferred (not immediate) release. Ditto the OLD BLAS below: an in-flight
+        // earlier frame's water draw may still be tracing against a TLAS that references it.
+        QueueCleanupJob( [s = std::move( scratch ), a = std::move( scratchAlloc )]() {} );
+        if ( m_WaterBlas ) QueueCleanupJob( [b = std::move( m_WaterBlas ), a = std::move( m_WaterBlasAlloc )]() {} );
+        m_WaterBlas = std::move( newBlas );
+        m_WaterBlasAlloc = std::move( newBlasAlloc );
+
+        // World-mesh VB/IB raw views for the shader's hit-shading fetch (Water.hlsl). Allocated once —
+        // rebound to whatever m_WaterBlas currently is, so no need to recreate on a later worldMeshChanged.
+        if ( m_WaterWorldVbSrvSlot == UINT_MAX ) m_WaterWorldVbSrvSlot = AllocateSrvSlot();
+        if ( m_WaterWorldIbSrvSlot == UINT_MAX ) m_WaterWorldIbSrvSlot = AllocateSrvSlot();
+        if ( m_WaterWorldVbSrvSlot == UINT_MAX || m_WaterWorldIbSrvSlot == UINT_MAX ) {
+            LogWarn() << "D3D12: SRV heap exhausted allocating water RT world-mesh views.";
+            return false;
+        }
+        ID3D12Device* device = m_Device.GetDevice();
+        D3D12_SHADER_RESOURCE_VIEW_DESC vbSrv = RawBufferSrvDesc( vb->GetSizeInBytes() );
+        device->CreateShaderResourceView( vb->GetResource(), &vbSrv, GetSrvCpuHandle( m_WaterWorldVbSrvSlot ) );
+        D3D12_SHADER_RESOURCE_VIEW_DESC ibSrv = RawBufferSrvDesc( ib->GetSizeInBytes() );
+        device->CreateShaderResourceView( ib->GetResource(), &ibSrv, GetSrvCpuHandle( m_WaterWorldIbSrvSlot ) );
+
+        m_WaterAsBuiltFromVb = wm->GetMeshVertexBuffer();
+        m_WaterAsBuiltFromIb = wm->GetMeshIndexBuffer();
+        m_WaterAsBuilt = true;
+        LogInfo() << "D3D12: built the water reflection world-mesh BLAS (" << vertexCount << " verts, " << indexCount / 3 << " tris).";
     }
 
-    if ( !CreateAsBuffer( m_Allocator.Get(), blasPrebuild.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-            m_WaterBlas, m_WaterBlasAlloc, L"WaterReflectionBLAS" )
-        || !CreateAsBuffer( m_Allocator.Get(), blasPrebuild.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            m_WaterBlasScratch, m_WaterBlasScratchAlloc, L"WaterReflectionBLASScratch" ) ) {
-        LogWarn() << "D3D12: failed to allocate the water reflection BLAS buffers.";
-        return false;
+    // --- TLAS instances: the world mesh (identity) plus every eligible static VOB ------------------------
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> instances;
+    instances.reserve( 1 + m_WaterVobBlas.size() );
+
+    D3D12_RAYTRACING_INSTANCE_DESC worldInstance = {};
+    worldInstance.Transform[0][0] = worldInstance.Transform[1][1] = worldInstance.Transform[2][2] = 1.0f;
+    worldInstance.InstanceMask = 0xFF;
+    worldInstance.AccelerationStructure = m_WaterBlas->GetGPUVirtualAddress();
+    instances.push_back( worldInstance );
+
+    if ( vobArenaUsable ) {
+        AppendStaticVobInstances( device5.Get(), cmdList4, vobArenaChanged, instances );
+        m_WaterAsVobArenaVb = m_VobArena.GetVertexBuffer();
+        m_WaterAsVobArenaIb = m_VobArena.GetIndexBuffer();
+        m_WaterAsIncludesVobs = true;
     }
 
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blasBuild = {};
-    blasBuild.Inputs = blasInputs;
-    blasBuild.DestAccelerationStructureData = m_WaterBlas->GetGPUVirtualAddress();
-    blasBuild.ScratchAccelerationStructureData = m_WaterBlasScratch->GetGPUVirtualAddress();
-    cmdList4->BuildRaytracingAccelerationStructure( &blasBuild, 0, nullptr );
-    m_CmdList->UAVBarrier( m_WaterBlas.Get() );   // the TLAS build below reads the BLAS the line above just wrote
-
-    // --- TLAS: a single identity instance wrapping the BLAS above -------------------------------------
-    D3D12_RAYTRACING_INSTANCE_DESC instance = {};
-    instance.Transform[0][0] = instance.Transform[1][1] = instance.Transform[2][2] = 1.0f;
-    instance.InstanceMask = 0xFF;
-    instance.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-    instance.AccelerationStructure = m_WaterBlas->GetGPUVirtualAddress();
-
-    {
+    // --- (Re)build the instance buffer (grow-only) and the TLAS from `instances` --------------------------
+    if ( instances.size() > m_WaterTlasInstanceCapacity ) {
         D3D12MA::ALLOCATION_DESC uploadAlloc = {};
         uploadAlloc.HeapType = DefaultUploadHeapType;
         D3D12_RESOURCE_DESC desc = {};
         desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width = sizeof( D3D12_RAYTRACING_INSTANCE_DESC );
+        desc.Width = static_cast<UINT64>( instances.size() ) * sizeof( D3D12_RAYTRACING_INSTANCE_DESC );
         desc.Height = 1;
         desc.DepthOrArraySize = 1;
         desc.MipLevels = 1;
         desc.Format = DXGI_FORMAT_UNKNOWN;
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        ComPtr<ID3D12Resource> newInstanceBuffer;
+        ComPtr<D3D12MA::Allocation> newInstanceAlloc;
         if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_WaterTlasInstanceAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_WaterTlasInstanceBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+            newInstanceAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( newInstanceBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to allocate the water reflection TLAS instance buffer.";
-            return false;
+            return m_WaterAsBuilt;   // the world-mesh AS (if any) from a previous call is still usable
         }
-        m_WaterTlasInstanceBuffer->SetName( L"WaterReflectionTLASInstances" );
+        newInstanceBuffer->SetName( L"WaterReflectionTLASInstances" );
+        if ( m_WaterTlasInstanceBuffer ) QueueCleanupJob( [b = std::move( m_WaterTlasInstanceBuffer ), a = std::move( m_WaterTlasInstanceAlloc )]() {} );
+        m_WaterTlasInstanceBuffer = std::move( newInstanceBuffer );
+        m_WaterTlasInstanceAlloc = std::move( newInstanceAlloc );
+        m_WaterTlasInstanceCapacity = static_cast<UINT>( instances.size() );
+    }
+    {
         void* mapped = nullptr;
         D3D12_RANGE noRead = { 0, 0 };
-        if ( FAILED( m_WaterTlasInstanceBuffer->Map( 0, &noRead, &mapped ) ) ) return false;
-        memcpy( mapped, &instance, sizeof( instance ) );
+        if ( FAILED( m_WaterTlasInstanceBuffer->Map( 0, &noRead, &mapped ) ) ) return m_WaterAsBuilt;
+        memcpy( mapped, instances.data(), instances.size() * sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) );
         m_WaterTlasInstanceBuffer->Unmap( 0, nullptr );
     }
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs = {};
     tlasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
     tlasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-    tlasInputs.NumDescs = 1;
+    tlasInputs.NumDescs = static_cast<UINT>( instances.size() );
     tlasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     tlasInputs.InstanceDescs = m_WaterTlasInstanceBuffer->GetGPUVirtualAddress();
 
@@ -422,52 +487,169 @@ bool D3D12GraphicsEngine::EnsureWaterReflectionAS() {
     device5->GetRaytracingAccelerationStructurePrebuildInfo( &tlasInputs, &tlasPrebuild );
     if ( tlasPrebuild.ResultDataMaxSizeInBytes == 0 ) {
         LogWarn() << "D3D12: GetRaytracingAccelerationStructurePrebuildInfo returned an empty TLAS — water RT reflections disabled.";
-        return false;
+        return m_WaterAsBuilt;
     }
 
+    ComPtr<ID3D12Resource> tlasScratch;
+    ComPtr<D3D12MA::Allocation> tlasScratchAlloc;
+    ComPtr<ID3D12Resource> newTlas;
+    ComPtr<D3D12MA::Allocation> newTlasAlloc;
     if ( !CreateAsBuffer( m_Allocator.Get(), tlasPrebuild.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-            m_WaterTlas, m_WaterTlasAlloc, L"WaterReflectionTLAS" )
+            newTlas, newTlasAlloc, L"WaterReflectionTLAS" )
         || !CreateAsBuffer( m_Allocator.Get(), tlasPrebuild.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            m_WaterTlasScratch, m_WaterTlasScratchAlloc, L"WaterReflectionTLASScratch" ) ) {
+            tlasScratch, tlasScratchAlloc, L"WaterReflectionTLASScratch" ) ) {
         LogWarn() << "D3D12: failed to allocate the water reflection TLAS buffers.";
-        return false;
+        return m_WaterAsBuilt;
     }
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tlasBuild = {};
     tlasBuild.Inputs = tlasInputs;
-    tlasBuild.DestAccelerationStructureData = m_WaterTlas->GetGPUVirtualAddress();
-    tlasBuild.ScratchAccelerationStructureData = m_WaterTlasScratch->GetGPUVirtualAddress();
+    tlasBuild.DestAccelerationStructureData = newTlas->GetGPUVirtualAddress();
+    tlasBuild.ScratchAccelerationStructureData = tlasScratch->GetGPUVirtualAddress();
     cmdList4->BuildRaytracingAccelerationStructure( &tlasBuild, 0, nullptr );
-    m_CmdList->UAVBarrier( m_WaterTlas.Get() );   // the water PS below must not TraceRayInline before this completes
+    m_CmdList->UAVBarrier( newTlas.Get() );   // the water PS below must not TraceRayInline before this completes
 
-    // --- Bindless views: TLAS (as a raw SRV — resource must be null for this view dimension), plus the
-    // world VB/IB as raw ByteAddressBuffers so the PS can fetch a hit triangle's position/UV/color. ------
+    QueueCleanupJob( [s = std::move( tlasScratch ), a = std::move( tlasScratchAlloc )]() {} );
+    if ( m_WaterTlas ) QueueCleanupJob( [t = std::move( m_WaterTlas ), a = std::move( m_WaterTlasAlloc )]() {} );
+    m_WaterTlas = std::move( newTlas );
+    m_WaterTlasAlloc = std::move( newTlasAlloc );
+
+    // Bindless view: the TLAS as a raw SRV (resource must be null for this view dimension). Re-pointed at
+    // whatever m_WaterTlas currently is every time this section runs — the slot itself is allocated once.
     if ( m_WaterTlasSrvSlot == UINT_MAX ) m_WaterTlasSrvSlot = AllocateSrvSlot();
-    if ( m_WaterWorldVbSrvSlot == UINT_MAX ) m_WaterWorldVbSrvSlot = AllocateSrvSlot();
-    if ( m_WaterWorldIbSrvSlot == UINT_MAX ) m_WaterWorldIbSrvSlot = AllocateSrvSlot();
-    if ( m_WaterTlasSrvSlot == UINT_MAX || m_WaterWorldVbSrvSlot == UINT_MAX || m_WaterWorldIbSrvSlot == UINT_MAX ) {
-        LogWarn() << "D3D12: SRV heap exhausted allocating water RT reflection views.";
-        return false;
+    if ( m_WaterTlasSrvSlot == UINT_MAX ) {
+        LogWarn() << "D3D12: SRV heap exhausted allocating the water reflection TLAS view.";
+        return m_WaterAsBuilt;
     }
-
-    ID3D12Device* device = m_Device.GetDevice();
     D3D12_SHADER_RESOURCE_VIEW_DESC tlasSrv = {};
     tlasSrv.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
     tlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     tlasSrv.RaytracingAccelerationStructure.Location = m_WaterTlas->GetGPUVirtualAddress();
-    device->CreateShaderResourceView( nullptr, &tlasSrv, GetSrvCpuHandle( m_WaterTlasSrvSlot ) );   // resource MUST be null here
+    m_Device.GetDevice()->CreateShaderResourceView( nullptr, &tlasSrv, GetSrvCpuHandle( m_WaterTlasSrvSlot ) );   // resource MUST be null here
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC vbSrv = RawBufferSrvDesc( vb->GetSizeInBytes() );
-    device->CreateShaderResourceView( vb->GetResource(), &vbSrv, GetSrvCpuHandle( m_WaterWorldVbSrvSlot ) );
-    D3D12_SHADER_RESOURCE_VIEW_DESC ibSrv = RawBufferSrvDesc( ib->GetSizeInBytes() );
-    device->CreateShaderResourceView( ib->GetResource(), &ibSrv, GetSrvCpuHandle( m_WaterWorldIbSrvSlot ) );
-
-    m_WaterAsBuiltFromVb = wm->GetMeshVertexBuffer();
-    m_WaterAsBuiltFromIb = wm->GetMeshIndexBuffer();
-    m_WaterAsBuilt = true;
-    LogInfo() << "D3D12: built the water reflection acceleration structure (" << vertexCount << " verts, "
-              << indexCount / 3 << " tris).";
+    LogInfo() << "D3D12: (re)built the water reflection TLAS with " << instances.size() << " instance(s), "
+              << ( instances.size() - 1 ) << " of them static VOB placements.";
     return true;
+}
+
+
+void D3D12GraphicsEngine::AppendStaticVobInstances( ID3D12Device5* device5, ID3D12GraphicsCommandList4* cmdList4,
+    bool forceRebuildAll, std::vector<D3D12_RAYTRACING_INSTANCE_DESC>& outInstances ) {
+
+    if ( forceRebuildAll && !m_WaterVobBlas.empty() ) {
+        // The arena's VB/IB pointers changed (grew): every previously-built VOB BLAS baked in GPU addresses
+        // from the OLD arena buffer, now stale/freed. Defer-release exactly like EnsureWaterReflectionAS
+        // does for the world-mesh BLAS above — an in-flight earlier frame may still be tracing against a
+        // TLAS that references these.
+        for ( auto& [visual, entry] : m_WaterVobBlas ) {
+            QueueCleanupJob( [b = std::move( entry.Blas ), a = std::move( entry.BlasAlloc )]() {} );
+        }
+        m_WaterVobBlas.clear();
+    }
+
+    ID3D12Resource* arenaVb = m_VobArena.GetVertexBuffer();
+    ID3D12Resource* arenaIb = m_VobArena.GetIndexBuffer();
+    if ( !arenaVb || !arenaIb ) return;
+    const D3D12_GPU_VIRTUAL_ADDRESS arenaVbGpu = arenaVb->GetGPUVirtualAddress();
+    const D3D12_GPU_VIRTUAL_ADDRESS arenaIbGpu = arenaIb->GetGPUVirtualAddress();
+    const UINT vertexStride = D3D12VobArena::VertexStride();
+    constexpr UINT kArenaIndexStride = 2u;   // R16_UINT — matches BindVobArenaIA's index format
+
+    UINT visualsBuilt = 0, instancesAdded = 0;
+    for ( auto& [sx, row] : Engine::GAPI->GetWorldSections() ) {
+        for ( auto& [sy, section] : row ) {
+            for ( VobInfo* vi : section.Vobs ) {
+                if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
+                if ( !vi->Vob->GetFlags().StaticVob ) continue;   // movable/dynamic-flagged placement — excluded
+                if ( vi->Vob->As<oCItem>() ) continue;             // items — excluded per the feature request
+
+                MeshVisualInfo* visual = static_cast<MeshVisualInfo*>( vi->VisualInfo );
+                // OnAddVob only ever pushes .3DS/.MMS (MeshVisualInfo-backed) vobs into WorldSections[][].Vobs
+                // — see the class-header comment — so this static_cast is safe for every entry reached here.
+                if ( visual->MorphMeshVisual ) continue;             // animated .MMS — deforms every frame, not static
+                if ( visual->UnloadedSomething || visual->MeshesByTexture.empty() ) continue;
+
+                auto found = m_WaterVobBlas.find( visual );
+                if ( found == m_WaterVobBlas.end() ) {
+                    // Build this visual's BLAS once: one geometry per resident sub-mesh, pointing straight
+                    // into the arena's shared VB/IB (no copy). A visual with no sub-mesh resident yet is
+                    // simply skipped this pass — retried the next time an arena-pointer-changed rebuild
+                    // reaches here (RetryNotYetReady()/Flush() drive actual residency, this function only
+                    // reads it).
+                    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geoms;
+                    geoms.reserve( visual->MeshesByTexture.size() );
+                    for ( auto& [key, submeshes] : visual->MeshesByTexture ) {
+                        for ( MeshInfo* sub : submeshes ) {
+                            const D3D12VobArena::Range* range = m_VobArena.Find( sub );
+                            if ( !range || range->IndexCount == 0 || sub->Vertices.empty() ) continue;
+
+                            D3D12_RAYTRACING_GEOMETRY_DESC geo = {};
+                            geo.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                            geo.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+                            geo.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
+                            geo.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+                            geo.Triangles.IndexCount = range->IndexCount;
+                            geo.Triangles.VertexCount = static_cast<UINT>( sub->Vertices.size() );
+                            geo.Triangles.IndexBuffer = arenaIbGpu + static_cast<UINT64>( range->IndexStart ) * kArenaIndexStride;
+                            geo.Triangles.VertexBuffer.StartAddress = arenaVbGpu + static_cast<UINT64>( range->BaseVertex ) * vertexStride;
+                            geo.Triangles.VertexBuffer.StrideInBytes = vertexStride;
+                            geoms.push_back( geo );
+                        }
+                    }
+                    if ( geoms.empty() ) continue;
+
+                    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+                    inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+                    inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+                    inputs.NumDescs = static_cast<UINT>( geoms.size() );
+                    inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+                    inputs.pGeometryDescs = geoms.data();
+
+                    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild = {};
+                    device5->GetRaytracingAccelerationStructurePrebuildInfo( &inputs, &prebuild );
+                    if ( prebuild.ResultDataMaxSizeInBytes == 0 ) continue;
+
+                    WaterVobBlas entry;
+                    ComPtr<ID3D12Resource> scratch;
+                    ComPtr<D3D12MA::Allocation> scratchAlloc;
+                    if ( !CreateAsBuffer( m_Allocator.Get(), prebuild.ResultDataMaxSizeInBytes, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+                            entry.Blas, entry.BlasAlloc, L"WaterVobBLAS" )
+                        || !CreateAsBuffer( m_Allocator.Get(), prebuild.ScratchDataSizeInBytes, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                            scratch, scratchAlloc, L"WaterVobBLASScratch" ) ) {
+                        continue;   // non-fatal: this one visual just never reflects, everything else still does
+                    }
+
+                    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build = {};
+                    build.Inputs = inputs;
+                    build.DestAccelerationStructureData = entry.Blas->GetGPUVirtualAddress();
+                    build.ScratchAccelerationStructureData = scratch->GetGPUVirtualAddress();
+                    cmdList4->BuildRaytracingAccelerationStructure( &build, 0, nullptr );
+                    m_CmdList->UAVBarrier( entry.Blas.Get() );
+                    QueueCleanupJob( [s = std::move( scratch ), a = std::move( scratchAlloc )]() {} );
+
+                    found = m_WaterVobBlas.emplace( visual, std::move( entry ) ).first;
+                    ++visualsBuilt;
+                }
+
+                D3D12_RAYTRACING_INSTANCE_DESC instance = {};
+                XMFLOAT3X4 xform;
+                // vi->WorldMatrix is a DirectXMath row-vector matrix (v' = v*M, translation in row 4, same
+                // convention GetWorldMatrixXM() etc. use everywhere else in this backend). The instance
+                // desc's Transform is a row-major matrix for the OPPOSITE (column-vector, p' = M*p)
+                // convention, so it needs the transpose — not a straight memcpy of the upper 3 rows, which
+                // would silently drop the translation into the wrong place.
+                XMStoreFloat3x4( &xform, XMMatrixTranspose( XMLoadFloat4x4( &vi->WorldMatrix ) ) );
+                memcpy( instance.Transform, &xform, sizeof( instance.Transform ) );
+                instance.InstanceMask = 0xFF;
+                instance.AccelerationStructure = found->second.Blas->GetGPUVirtualAddress();
+                outInstances.push_back( instance );
+                ++instancesAdded;
+            }
+        }
+    }
+
+    LogInfo() << "D3D12: water reflection AS — " << visualsBuilt << " new static-VOB BLAS(es) built this pass, "
+              << instancesAdded << " static-VOB instance(s) added (" << m_WaterVobBlas.size() << " unique visuals resident).";
 }
 
 
