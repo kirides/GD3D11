@@ -119,12 +119,12 @@ void rainResponse(PS_INPUT input, float3 lightVector, float lightIntensity, floa
 		
         bool is_EpLp_angle_ccw = true;
         float hangle = 0;
-        float vangle = abs( (acos(dot(L,N)) * 180/PI) - 90 ); // 0 to 90
+        float vangle = abs( (acos(clamp(dot(L,N), -1.0, 1.0)) * 180/PI) - 90 ); // 0 to 90
         
         {
             float3 Lp = normalize( L - dot(L,N)*N );
             float3 Ep = normalize( E - dot(E,N)*N );
-            hangle = acos( dot(Ep,Lp) ) * 180/PI;  // 0 to 180
+            hangle = acos( clamp(dot(Ep,Lp), -1.0, 1.0) ) * 180/PI;  // 0 to 180
             hangle = (hangle-10)/20.0;           // -0.5 to 8.5
             is_EpLp_angle_ccw = dot( N, cross(Ep,Lp)) > 0;
         }
@@ -224,8 +224,8 @@ void rainResponse(PS_INPUT input, float3 lightVector, float lightIntensity, floa
 		//s = saturate(s) * 0.6f;
 		
         // Compute interpolated opacity using the s and t factors
-        float hOpacity1 = min(1.0f, lerp(col1,col2,s) * 1.0f);
-        float hOpacity2 = min(1.0f, lerp(col3,col4,s) * 1.0f);
+        float hOpacity1 = min(1.0f, lerp(col1,col2,s));
+        float hOpacity2 = min(1.0f, lerp(col3,col4,s));
 
 					
         opacity = lerp(hOpacity1,hOpacity2,t);

@@ -103,7 +103,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 	// Need worldspace normal for this
     wsNormal = mul(vsNormal, (float3x3) SQ_InvView).xyz;
 	
-    float2 groundDir = normalize(float2(0.1f, 0.1f) + saturate(cross(wsNormal, float3(0.0f, 1.0f, 0.0f)).xz));
+    float2 groundDir = normalize(float2(0.1f, 0.1f) + saturate(float3(-wsNormal.z, 0, wsNormal.x).xz));
 	
     const float scale = 1000.0f;
     float2 uv[4] =
@@ -188,7 +188,7 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
 	pixelWettnes *= 1.0f - (wDot2 * wDot2);
 
     // Rain mostly settles on upward-facing surfaces.
-    float surfaceExposure = saturate(dot(wsNormal, float3(0, 1, 0)));
+    float surfaceExposure = saturate(wsNormal.y);
     surfaceExposure *= surfaceExposure;
     pixelWettnes *= surfaceExposure;
     localWettness = pixelWettnes;
@@ -225,7 +225,7 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
     float spec3 = CalcBlinnPhongLighting(vsNormal, H_3);
 		
 	// power the reflection 
-    reflection = pow(reflection, 2.5f) * 1.0f;
+    reflection = pow(reflection, 2.5f);
     //reflection += fresnel * 0.1f;
 	
     reflection += pow(spec1, specPower) * 0.7f + pow(spec2, specPower) * 0.7f + pow(spec3, specPower) * 0.6f;
@@ -237,7 +237,7 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
 	
 	
 		// Scale the total amount of spec-lighting by the wetness factor and whether the scene is currently drying out or it's still raining
-    specAdd = reflection * pixelWettnes * lerp(0.08f, 0.10f, AC_RainFXWeight);
+    specAdd = reflection * pixelWettnes * mad(AC_RainFXWeight, 0.10f - 0.08f, 0.08f);
     diffuse = lerp(diffuse, wetPixel, pixelWettnes);
 }
 
@@ -334,7 +334,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float vl = saturate(vertLighting * 2);
 	float vertAO = lerp(vl * vl, 1.0f, 0.5f);
 
-    float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
+    float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow);
     
     // Screen-space AO: applied to indirect/ambient light only (not direct sun),
     // so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.

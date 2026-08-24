@@ -77,7 +77,7 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
 
     // Adaptive smoothing
     float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
-    float smoothing = lerp( 0.015, 0.20, saturate( relDiff * 2.0 ) );
+    float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     float newFocus = lerp( prevFocus, targetDepth, smoothing );
 

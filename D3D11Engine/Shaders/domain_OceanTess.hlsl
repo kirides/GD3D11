@@ -96,8 +96,8 @@ PS_INPUT DSMain(ConstantOutputType input, float3 uvwCoord : SV_DomainLocation, c
 	normalWS = uvwCoord.x * patch[0].vNormalWS + uvwCoord.y * patch[1].vNormalWS + uvwCoord.z * patch[2].vNormalWS;
 	
 	float3 localPos = (worldPosition - OPP_PatchPosition) / 2048;
-	float distance = length(OPP_LocalEye - localPos) * 0.0001f;
-	float dispMod = saturate((distance - 2000) * 0.0001f);
+	float eyeDistance = distance(OPP_LocalEye, localPos) * 0.0001f;
+	float dispMod = saturate((eyeDistance - 2000) * 0.0001f);
 	
 	//float scale = 1/(2000.0f);
 	texCoord = (worldPosition.xz / 2048) + OS_UVOffset;
@@ -107,7 +107,7 @@ PS_INPUT DSMain(ConstantOutputType input, float3 uvwCoord : SV_DomainLocation, c
 	float3 displacement = lerp(displacementFFT, displacementRandom, dispMod);
 
 						
-	float3 vHeight = 1.0f * displacement;
+	float3 vHeight = displacement;
 	worldPosition += vHeight;
 	
    /* vertexPosition.xyz += normalVS * (vHeight);

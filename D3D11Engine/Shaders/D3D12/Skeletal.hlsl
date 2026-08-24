@@ -134,7 +134,7 @@ VS_OUT VSMain( VS_IN i )
     o.wpos = worldPos;
     // skinnedNormal is in model space (bone-rotated); rotate into world by M_World (rigid + ~uniform scale).
     o.wnrm = mul( skinnedNormal, (float3x3)M_World );
-    o.fogDist = length( worldPos - CamPosWS );
+    o.fogDist = distance(worldPos, CamPosWS);
     return o;
 }
 
@@ -159,7 +159,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb *= lerp( 1.0, 0.8, wetness );
+    rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     rgb *= 1.0f + step( 1.5f, i.col.a );   // focus highlight

@@ -172,7 +172,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
 	}
 
-	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
+	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w);
 #if ALPHATEST == 1
 	output.vColor = float4(litPixel * focusBrightness, alphaCoverage);
 #else

@@ -357,9 +357,9 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     // horizontal water. Use the true geometric normal (not the wave-perturbed one) to detect this and
     // fade the reflection out.
     float waterfallFactor = 1.0f - saturate( abs( normalize( Input.wnrm ).y ) );
-    float reflectSuppress = lerp( 1.0f, 0.12f, waterfallFactor );
+    float reflectSuppress = mad(waterfallFactor, 0.12f - 1.0f, 1.0f);
 
-    float reflectAmount = saturate( lerp( 0.35f, 1.0f, reflectFresnel ) * lerp( 0.5f, 1.0f, saturate( ssrConfidence ) ) * reflectFresnel ) * reflectSuppress;
+    float reflectAmount = saturate( mad(reflectFresnel, 1.0f - 0.35f, 0.35f) * mad(saturate( ssrConfidence ), 1.0f - 0.5f, 0.5f) * reflectFresnel ) * reflectSuppress;
     color = lerp( color, reflection * lerp( 1.0f, diffuse, 0.6f ), reflectAmount );
 
     if ( UseAtmosphere != 0 )
@@ -371,7 +371,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
 
     float3 reflect_vecSmall = reflect( -viewDirection, normalize( distortionSmall.xzy * float3( 1, 10, 1 ) ) );
 
-    float cos_spec = clamp( dot( reflect_vecSmall, -AC_LightPos.xyz ), 0, 1 );
+    float cos_spec = saturate(dot( reflect_vecSmall, -AC_LightPos.xyz ));
     float sun_spot = pow( cos_spec, 500.0f ) * 0.5f;
     // Input.col is the packed R8G8B8A8 vertex DWORD; D3D11's vDiffuse.y is the GREEN channel, which the
     // BGRA-ordered DWORD puts in .g here as well — no swizzle needed for this one component.

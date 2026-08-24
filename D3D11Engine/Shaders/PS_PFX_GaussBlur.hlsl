@@ -33,7 +33,7 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {	
-	float4 color = DoBlurPass(B_PixelSize, Input.vTexcoord, TX_Texture0, SS_Linear, B_BlurSize * 1.0f);
+	float4 color = DoBlurPass(B_PixelSize, Input.vTexcoord, TX_Texture0, SS_Linear, B_BlurSize);
 
 	return color * B_ColorMod;
 }

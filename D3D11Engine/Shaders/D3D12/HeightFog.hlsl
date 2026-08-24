@@ -84,7 +84,7 @@ float ComputeVolumetricFog( float3 cameraToWorldPos, float3 posOriginal )
 {
     float cVolFogHeightDensityAtViewer = exp( -HF_HeightFalloff );
 
-    float lenOrig = length( posOriginal - HF_CameraPosition );
+    float lenOrig = distance(posOriginal, HF_CameraPosition);
     float len = length( cameraToWorldPos );
     float fogInt = len * cVolFogHeightDensityAtViewer;
     const float cSlopeThreshold = 0.01;

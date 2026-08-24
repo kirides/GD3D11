@@ -103,7 +103,7 @@ VS_OUT VSMain( VS_IN i )
     // scale (DecalSize * 2, y negated) doesn't rotate that axis, so transforming it by the 3x3 is exact up to
     // sign — and the sign is resolved per pixel below, since decals draw with CULL_NONE.
     o.wnrm  = mul( float3( 0.0, 0.0, 1.0 ), (float3x3)i.iworld );
-    o.fogDist = length( worldPos - CamPosWS );
+    o.fogDist = distance(worldPos, CamPosWS);
     return o;
 }
 

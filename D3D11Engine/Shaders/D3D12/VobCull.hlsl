@@ -138,8 +138,8 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     Texture2D<float> hiz = ResourceDescriptorHeap[HiZIndex];
 
     float2 hizSize = float2( HiZWidth, HiZHeight );
-    float2 p0 = clamp( uvMin, 0.0, 1.0 ) * hizSize;
-    float2 p1 = clamp( uvMax, 0.0, 1.0 ) * hizSize;
+    float2 p0 = saturate(uvMin) * hizSize;
+    float2 p1 = saturate(uvMax) * hizSize;
 
     // Pick the level where the box's footprint spans at most 2x2 texels, so four taps cover it completely.
     float2 extent = max( p1 - p0, 1e-4 );
@@ -195,7 +195,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 // hinge, a banner's mount point).
                 const float3 centreLocal = ( v.BBoxMin + v.BBoxMax ) * 0.5;
                 const float3 centreWorld = mul( float4( centreLocal, 1.0 ), BuildWorldMatrix( inst ) ).xyz;
-                const float  dist  = length( centreWorld - CullCamPosWS );
+                const float  dist  = distance(centreWorld, CullCamPosWS);
                 const float  splitDist = ( v.SplitMode == VOB_SPLIT_LOD ) ? LodDistance : 0.0;
                 const bool   isFar = ( splitDist > 0.0 ) && ( dist > splitDist );
 
@@ -217,7 +217,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
     GroupMemoryBarrierWithGroupSync();
     if ( gtid == 0 && visualIdx < VisualCount )
     {
-        VisibleCounts[visualIdx * 2u + 0u] = gNearInGroup;   // CSPatchArgs indexes (visualIdx * 2 + bucket)
+        VisibleCounts[visualIdx * 2u] = gNearInGroup;   // CSPatchArgs indexes (visualIdx * 2 + bucket)
         VisibleCounts[visualIdx * 2u + 1u] = gFarInGroup;
     }
 }

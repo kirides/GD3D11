@@ -418,7 +418,7 @@ fp16_t4 BicubicSampling5( fp32_t2 inHistoryST )
     const fp16_t2 s0 = w1 + w2;
     const fp32_t2 f0 = w2 / ( w1 + w2 );
     const fp32_t2 m0 = uv + f0 * rcpResolution;
-    const fp32_t2 tc0 = uv - 1.0f * rcpResolution;
+    const fp32_t2 tc0 = uv - rcpResolution;
     const fp32_t2 tc3 = uv + 2.0f * rcpResolution;
 
     const fp16_t4 A = fp16_t4( HistoryTex.SampleLevel( MinMagLinearMipPointClamp, fp32_t2( m0.x, tc0.y ), 0 ) );

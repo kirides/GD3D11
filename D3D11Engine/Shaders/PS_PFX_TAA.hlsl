@@ -129,9 +129,9 @@ float3 SampleHistoryCatmullRom(float2 uv) {
     float2 tc12 = (centerPosition + offset12) * invTexSize;
     
     // Clamp to valid UV range to prevent sampling outside texture
-    tc0 = clamp(tc0, 0.0, 1.0);
-    tc3 = clamp(tc3, 0.0, 1.0);
-    tc12 = clamp(tc12, 0.0, 1.0);
+    tc0 = saturate(tc0);
+    tc3 = saturate(tc3);
+    tc12 = saturate(tc12);
     
     // Sample using bilinear filtering
     float3 result = float3(0, 0, 0);
@@ -232,7 +232,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Adaptive gamma based on velocity
     // Tighter clipping for fast motion and at all types of edges
     float velocityFactor = saturate(velocityLengthPixels * 0.1);
-    float gamma = lerp(1.5, 0.75, velocityFactor);   
+    float gamma = mad(velocityFactor, 0.75 - 1.5, 1.5);   
     
     // Variance-based clipping bounds in tonemapped space
     float3 clipMin = m1 - gamma * sigma;
@@ -259,7 +259,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     clampedHistory = TonemapInvert(clampedHistory);
     
     // Calculate how much history was clipped (for adaptive blending)
-    float clipDistance = length(tonemappedHistory - YCoCg_RGB(clampedHistoryYCoCg));
+    float clipDistance = distance(tonemappedHistory, YCoCg_RGB(clampedHistoryYCoCg));
     float clipAmount = saturate(clipDistance * 5.0);
     
     if (offScreen) {

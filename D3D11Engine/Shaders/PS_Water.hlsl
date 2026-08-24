@@ -317,9 +317,9 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// the shader still treats it like flat, horizontal water. Use the true geometric
 	// normal (not the wave-perturbed one) to detect this and fade the reflection out.
 	float waterfallFactor = 1.0f - saturate(abs(normalize(Input.vNormalWS).y));
-	float reflectSuppress = lerp(1.0f, 0.12f, waterfallFactor);
+	float reflectSuppress = mad(waterfallFactor, 0.12f - 1.0f, 1.0f);
 
-	float reflectAmount = saturate(lerp(0.35f, 1.0f, reflectFresnel) * lerp(0.5f, 1.0f, saturate(ssrConfidence)) * reflectFresnel) * reflectSuppress;
+	float reflectAmount = saturate(mad(reflectFresnel, 1.0f - 0.35f, 0.35f) * mad(saturate(ssrConfidence), 1.0f - 0.5f, 0.5f) * reflectFresnel) * reflectSuppress;
 	color = lerp(color, reflection * lerp(1.0f, diffuse, 0.6f), reflectAmount);
 	
 	color.rgb = ApplyAtmosphericScatteringGround(Input.vWorldPosition, color.rgb);
@@ -330,7 +330,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	float3 reflect_vecSmall = reflect(-viewDirection, normalize(distortionSmall.xzy * float3(1,10,1)));
 	
-	float cos_spec = clamp(dot(reflect_vecSmall, -AC_LightPos.xyz * float3(1,1,1)), 0, 1);
+	float cos_spec = saturate(dot(reflect_vecSmall, -AC_LightPos.xyz * float3(1,1,1)));
 	float sun_spot = pow(cos_spec, 500.0f) * 0.5f;
 	color.rgb += lerp(sunColor * sun_spot, float3(0.0f, 0.0f, 0.0f), step(step(0.0f, AC_LightPos.y) * Input.vDiffuse.y, 0.5f));
 

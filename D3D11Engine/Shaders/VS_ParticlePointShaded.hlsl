@@ -120,7 +120,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     Output.vWorldPosition = position;
     
     float rand = (staticInfo.drawMode >> 16 & 0xFFFF);
-    if (rand > pow(PGS_RainFxWeight, 3.0f) * 0xFFFF)
+    if (rand > PGS_RainFxWeight * PGS_RainFxWeight * PGS_RainFxWeight * 0xFFFF)
         Output.vPosition = float4(0.0f, 0.0f, 0.0f, -1.0f);
     
     return Output;
