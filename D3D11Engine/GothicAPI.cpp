@@ -3051,14 +3051,18 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                     for ( auto const& itm : mvi->Meshes ) {
                         // no texture binding for shadowmap
+                        zCTexture* aniTex = nullptr;
+                        if ( !itm.first || !(aniTex = itm.first->GetAniTexture()) ) {
+                            continue;
+                        }
 
-                        if ( lastTex != itm.first->GetAniTexture() ) {
-                            if ( itm.first->GetAniTexture()->GetCacheState() != zRES_CACHED_IN ) {
+                        if ( lastTex != aniTex ) {
+                            if ( aniTex->GetCacheState() != zRES_CACHED_IN ) {
                                 continue;
                             }
-                            if ( itm.first->HasAlphaTest() || itm.first->GetAniTexture()->HasAlphaChannel() ) {
-                                itm.first->GetAniTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                lastTex = itm.first->GetAniTexture();
+                            if ( itm.first->HasAlphaTest() || aniTex->HasAlphaChannel() ) {
+                                aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                lastTex = aniTex;
                             } else if ( isCube ) {
                                 g->GetWhiteTexture()->BindToPixelShader( 0 );
                                 lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
