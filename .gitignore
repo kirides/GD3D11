@@ -254,6 +254,9 @@ ModelManifest.xml
 /PreviewBuilds/
 redist*/
 !/blobs/**/*.obj
+# Downloaded by CI from NuGet (Microsoft.Direct3D.DXC), not committed
+/blobs/libs/dxcompiler.dll
+/blobs/libs/dxil.dll
 /Gothic1-GD3D11-*
 /Gothic2-GD3D11-*
 /Launcher/Launcher/Launcher.vcxproj.FileListAbsolute.txt
