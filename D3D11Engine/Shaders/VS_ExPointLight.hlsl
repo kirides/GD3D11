@@ -47,7 +47,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
 	
-	float3 positionWorld = (Input.vPosition * PL_Range) + PL_PositionWorld;
+	float3 positionWorld = mad(Input.vPosition, PL_Range, PL_PositionWorld);
 	
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);	
 	return Output;

@@ -129,9 +129,9 @@ float3 SampleHistoryCatmullRom(float2 uv) {
     float2 tc12 = (centerPosition + offset12) * invTexSize;
     
     // Clamp to valid UV range to prevent sampling outside texture
-    tc0 = clamp(tc0, 0.0, 1.0);
-    tc3 = clamp(tc3, 0.0, 1.0);
-    tc12 = clamp(tc12, 0.0, 1.0);
+    tc0 = saturate(tc0);
+    tc3 = saturate(tc3);
+    tc12 = saturate(tc12);
     
     // Sample using bilinear filtering
     float3 result = float3(0, 0, 0);
@@ -159,8 +159,7 @@ void GatherNeighborhood(float2 texCoord, float2 pixelSize,
     // Weights: higher weight for cross pattern (direct neighbors)
     static const float weights[9] = { 0.5, 1.0, 0.5, 1.0, 1.5, 1.0, 0.5, 1.0, 0.5 };
     float totalWeight = 0.0;
-    int idx = 0;
-    
+
     [unroll]
     for (int y = -1; y <= 1; y++) {
         [unroll]
@@ -168,8 +167,10 @@ void GatherNeighborhood(float2 texCoord, float2 pixelSize,
             float2 offset = float2(x, y) * pixelSize;
             float3 neighbor = TX_Texture0.SampleLevel(SS_Linear, texCoord + offset, 0).rgb;
             float3 tonemapped = Tonemap(neighbor);
-            
-            float w = weights[idx++];
+
+            // Index derived directly from the unrolled loop variables (not a mutable counter) so it folds to
+            // a compile-time constant even without aggressive optimization.
+            float w = weights[(y + 1) * 3 + (x + 1)];
             m1 += tonemapped * w;
             m2 += tonemapped * tonemapped * w;
             totalWeight += w;
@@ -232,7 +233,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Adaptive gamma based on velocity
     // Tighter clipping for fast motion and at all types of edges
     float velocityFactor = saturate(velocityLengthPixels * 0.1);
-    float gamma = lerp(1.5, 0.75, velocityFactor);   
+    float gamma = mad(velocityFactor, 0.75 - 1.5, 1.5);   
     
     // Variance-based clipping bounds in tonemapped space
     float3 clipMin = m1 - gamma * sigma;
@@ -259,7 +260,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     clampedHistory = TonemapInvert(clampedHistory);
     
     // Calculate how much history was clipped (for adaptive blending)
-    float clipDistance = length(tonemappedHistory - YCoCg_RGB(clampedHistoryYCoCg));
+    float clipDistance = distance(tonemappedHistory, YCoCg_RGB(clampedHistoryYCoCg));
     float clipAmount = saturate(clipDistance * 5.0);
     
     if (offScreen) {

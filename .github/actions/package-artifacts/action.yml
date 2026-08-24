@@ -83,6 +83,38 @@ runs:
           $zip.Dispose()
         }
 
+    - name: Fetch D3D12 DXC runtime (dxcompiler/dxil)
+      shell: pwsh
+      env:
+        DXC_VERSION: '1.9.2607.13'
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $version = $env:DXC_VERSION
+        $relDir = "${{ steps.calc-path.outputs.release-dir }}"
+        $targetDir = "$relDir"
+        $nupkg = Join-Path ([System.IO.Path]::GetTempPath()) "microsoft.direct3d.dxc.$version.nupkg"
+
+        Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.DXC/$version" -OutFile $nupkg
+
+        New-Item -Path $targetDir -ItemType Directory -Force | Out-Null
+
+        # The .nupkg is a plain zip; pull only the x86 runtime DLLs out of it.
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $nupkg))
+        try {
+          foreach ($name in @("dxcompiler.dll", "dxil.dll")) {
+            $entryPath = "build/native/bin/x86/$name"
+            $entry = $zip.Entries | Where-Object { $_.FullName -ieq $entryPath }
+            if (-not $entry) { throw "Entry '$entryPath' not found in $nupkg" }
+            $dest = Join-Path $targetDir $name
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $dest, $true)
+            Write-Host "Extracted $($entry.FullName) -> $dest"
+          }
+        } finally {
+          $zip.Dispose()
+        }
+
     - name: Upload debug artifact (with PDBs)
       id: artifact-upload-debug
       uses: actions/upload-artifact@v7

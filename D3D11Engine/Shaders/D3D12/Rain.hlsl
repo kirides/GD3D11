@@ -129,7 +129,7 @@ PS_INPUT VSMain( uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID )
     // Fades particle count in/out with weather strength (matches D3D11's drawMode-upper-bits threshold):
     // a degenerate clip-space position (w = -1) drops the particle entirely instead of drawing it dim.
     const uint rand = (uint)(stat.drawMode) >> 16 & 0xFFFF;
-    if ( (float)rand > pow( RainFxWeight, 3.0f ) * 0xFFFF )
+    if ( (float)rand > RainFxWeight * RainFxWeight * RainFxWeight * 0xFFFF )
         o.vPosition = float4( 0.0f, 0.0f, 0.0f, -1.0f );
 
     return o;
@@ -195,12 +195,12 @@ float4 RainResponse( Texture2DArray texArray, uint type, float2 vTexcoord,
 
         bool is_EpLp_angle_ccw = true;
         float hangle = 0.0f;
-        float vangle = abs( (acos( dot( L, N ) ) * 180.0f / 3.14159265f) - 90.0f );
+        float vangle = abs( (acos( clamp(dot( L, N ), -1.0, 1.0) ) * 180.0f / 3.14159265f) - 90.0f );
 
         {
             float3 Lp = normalize( L - dot( L, N ) * N );
             float3 Ep = normalize( E - dot( E, N ) * N );
-            hangle = acos( dot( Ep, Lp ) ) * 180.0f / 3.14159265f;
+            hangle = acos( clamp(dot( Ep, Lp ), -1.0, 1.0) ) * 180.0f / 3.14159265f;
             hangle = (hangle - 10.0f) / 20.0f;
             is_EpLp_angle_ccw = dot( N, cross( Ep, Lp ) ) > 0.0f;
         }

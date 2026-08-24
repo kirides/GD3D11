@@ -128,7 +128,7 @@ VS_OUT VSMain( VS_IN i )
     o.col = i.icolor;
     o.wpos = worldPos;
     o.wnrm = mul( i.nrm, (float3x3)i.iworld );
-    o.fogDist = length( worldPos - CamPosWS );
+    o.fogDist = distance(worldPos, CamPosWS);
     o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
 }
@@ -154,7 +154,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb *= lerp( 1.0, 0.8, wetness );
+    rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     rgb *= 1.0f + step( 1.5f, i.focus );   // focus highlight
@@ -211,7 +211,7 @@ VS_OUT VSMainAttach( VS_IN i )
     o.col = i.icolor;
     o.wpos = worldPos;
     o.wnrm = mul( i.nrm, (float3x3)i.iworld );
-    o.fogDist = length( worldPos - CamPosWS );
+    o.fogDist = distance(worldPos, CamPosWS);
     o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
 }
@@ -253,7 +253,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb *= lerp( 1.0, 0.8, wetness );
+    rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     rgb *= 1.0f + step( 1.5f, i.focus );   // focus highlight

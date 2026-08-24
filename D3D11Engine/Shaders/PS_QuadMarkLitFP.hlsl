@@ -35,6 +35,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
 	float shadow = 1.0f;
 #if SHD_ENABLE
+	// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
+	[branch]
 	if (AC_LightPos.y > 0)
 	{
 		float shadowNoL = saturate(dot(wsNormal, SQ_LightDirectionWS));

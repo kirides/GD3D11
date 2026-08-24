@@ -54,21 +54,23 @@ float gerWave(inout Wave w, float2 d, float amplitude, float2 pos, float speed, 
 {
     float x = dot(d, pos) * frequency + M_TotalTime * 0.001 * speed;
     float a = amplitude;
+    float sinX, cosX;
+    sincos(x, sinX, cosX);
 
     w.binormal += float3(
-        -d.x * d.y * (a * sin(x)),
-               d.y * (a * cos(x)),
-        -d.y * d.y * (a * sin(x))
+        -d.x * d.y * (a * sinX),
+               d.y * (a * cosX),
+        -d.y * d.y * (a * sinX)
         ) * frequency;
     w.tangent += float3(
-        -d.x * d.x * (a * sin(x)),
-        +d.x * (a * cos(x)),
-        -d.x * d.y * (a * sin(x))
+        -d.x * d.x * (a * sinX),
+        +d.x * (a * cosX),
+        -d.x * d.y * (a * sinX)
         ) * frequency;
-    w.offset += float3(d.x * (a * cos(x)),
-                         (a * sin(x)),
-                   d.y * (a * cos(x)));
-    return a * cos(x);
+    w.offset += float3(d.x * (a * cosX),
+                         (a * sinX),
+                   d.y * (a * cosX));
+    return a * cosX;
 }
 
 Wave wave(float3 pos, float minLength, const float waveSpeed, const float amplitude)
@@ -100,7 +102,9 @@ Wave wave(float3 pos, float minLength, const float waveSpeed, const float amplit
         if (freq * minLength > 2.0)
             continue;
 
-        float2 dir = float2(cos(iter), sin(iter));
+        float sinIter, cosIter;
+        sincos(iter, sinIter, cosIter);
+        float2 dir = float2(cosIter, sinIter);
         float res = gerWave(w, dir, weight * amplitude / wsum, pos.xz, speed * waveSpeed, freq);
 
         pos.xz += res * weight * dir * dragMult;

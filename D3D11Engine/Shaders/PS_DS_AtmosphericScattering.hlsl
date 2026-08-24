@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
 #include "DepthReconstruction.h"
+#include <include/MathHelpers.hlsl>
 
 #include <AtmosphericScattering.h>
 
@@ -103,7 +104,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 	// Need worldspace normal for this
     wsNormal = mul(vsNormal, (float3x3) SQ_InvView).xyz;
 	
-    float2 groundDir = normalize(float2(0.1f, 0.1f) + saturate(cross(wsNormal, float3(0.0f, 1.0f, 0.0f)).xz));
+    float2 groundDir = normalize(float2(0.1f, 0.1f) + saturate(float3(-wsNormal.z, 0, wsNormal.x).xz));
 	
     const float scale = 1000.0f;
     float2 uv[4] =
@@ -152,6 +153,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
     const float distWeight = 0.9f;
 	
 	// Sample the distortion-texture for all 3 axis
+    [unroll]
     for (int i = 0; i < 3; i++)
     {
 		// Add to normal
@@ -188,7 +190,7 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
 	pixelWettnes *= 1.0f - (wDot2 * wDot2);
 
     // Rain mostly settles on upward-facing surfaces.
-    float surfaceExposure = saturate(dot(wsNormal, float3(0, 1, 0)));
+    float surfaceExposure = saturate(wsNormal.y);
     surfaceExposure *= surfaceExposure;
     pixelWettnes *= surfaceExposure;
     localWettness = pixelWettnes;
@@ -225,7 +227,7 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
     float spec3 = CalcBlinnPhongLighting(vsNormal, H_3);
 		
 	// power the reflection 
-    reflection = pow(reflection, 2.5f) * 1.0f;
+    reflection = pow(reflection, 2.5f);
     //reflection += fresnel * 0.1f;
 	
     reflection += pow(spec1, specPower) * 0.7f + pow(spec2, specPower) * 0.7f + pow(spec3, specPower) * 0.6f;
@@ -237,7 +239,7 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
 	
 	
 		// Scale the total amount of spec-lighting by the wetness factor and whether the scene is currently drying out or it's still raining
-    specAdd = reflection * pixelWettnes * lerp(0.08f, 0.10f, AC_RainFXWeight);
+    specAdd = reflection * pixelWettnes * mad(AC_RainFXWeight, 0.10f - 0.08f, 0.08f);
     diffuse = lerp(diffuse, wetPixel, pixelWettnes);
 }
 
@@ -251,33 +253,37 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// Look up the diffuse color
     float4 diffuse = TX_Diffuse.Sample(SS_Linear, uv);
-    float vertLighting = diffuse.a;
 	
 	// Sample depth first to detect sky pixels (reversed-Z: sky has depth == 0.0)
     float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
-    if (!(expDepth > 0.0f))
+    [branch]
+    if (!(expDepth > 0.0f)) {
         // Sky pixel — no geometry was written, just return the diffuse (sky) color
         return float4(diffuse.rgb, 1);
+    }
 	
 	// Get the second GBuffer
     float2 gb2 = TX_Nrm.Sample(SS_Linear, uv).xy;
-	
-	// Decode the view-space normal from octahedral R16G16_SNORM
-    float3 normal = DecodeNormalGBuffer(gb2);
-	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-	// Negative specIntensity signals a focused VOB (encoded in PS_Diffuse GBuffer fill).
-	bool focused = gb3.x < 0.0f;
-    float specIntensity = focused ? (-gb3.x - 0.001f) : gb3.x;
-    float specPower = gb3.y;
 	
 	// Reconstruct VS World Position from depth
     float3 vsPosition = VSPositionFromDepth(expDepth, uv);
     float3 wsPosition = mul(float4(vsPosition, 1), SQ_InvView).xyz;
     float3 V = normalize(-vsPosition);
 	
+    float vertLighting = diffuse.a;
 	float shadow = vertLighting;
+
+    // before accessing the sampled data, do some other compute work. // https://github.com/NelCit/shader-clippy/blob/main/docs/rules/sample-use-no-interleave.md
+	// Decode the view-space normal from octahedral R16G16_SNORM
+    float3 normal = DecodeNormalGBuffer(gb2);
+	
+	// Negative specIntensity signals a focused VOB (encoded in PS_Diffuse GBuffer fill).
+	bool focused = gb3.x < 0.0f;
+    float specIntensity = focused ? (-gb3.x - 0.001f) : gb3.x;
+    float specPower = gb3.y;
+	
 #if SHD_ENABLE
 	// CSM: Use soft cascaded shadow map with configurable softness
     float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
@@ -319,7 +325,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
     float3 H = normalize(SQ_LightDirectionVS + V);
     float spec = CalcBlinnPhongLighting(normal, H);
-    float specMod = pow(dot(float3(0.333f, 0.333f, 0.333f), diffuse.rgb), 2);
+    float specMod = kPow2(dot(float3(0.333f, 0.333f, 0.333f), diffuse.rgb));
     
     
 	
@@ -334,7 +340,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float vl = saturate(vertLighting * 2);
 	float vertAO = lerp(vl * vl, 1.0f, 0.5f);
 
-    float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
+    float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow);
     
     // Screen-space AO: applied to indirect/ambient light only (not direct sun),
     // so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.

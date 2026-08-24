@@ -244,7 +244,13 @@ void ShaderRegistry::Build() {
         list.push_back( {"MAX_CSM_CASCADES",     TO_LITERAL(MAX_CSM_CASCADES)} );
         list.push_back( {"NUM_CSM_CASCADES",     sNums[std::clamp<size_t>(s.NumShadowCascades, 1, MAX_CSM_CASCADES)]} );
         list.push_back( {"CSM_PCF_LIMIT",        sNums[std::clamp<size_t>(s.ShadowCascadePCFLimit, 0, MAX_CSM_CASCADES)]} );
-        list.push_back( {"SHADOW_ATLAS",         (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) ? "1" : "0"} );
+        const bool useShadowAtlas = FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas;
+        list.push_back( {"SHADOW_ATLAS",         useShadowAtlas ? "1" : "0"} );
+        // GatherCmp: 4 independent raw comparisons per instruction instead of 1 blended one from
+        // SampleCmpLevelZero, at the same tap/bandwidth cost. Only wired up for the Texture2DArray
+        // path (FL11+, no atlas) - TextureCubeArray has no Gather Offset and the atlas path isn't
+        // worth a second code path for a debug-only fallback.
+        list.push_back( {"SHD_GATHER_PCF",       (!useShadowAtlas && s.ShadowFilterMode >= GothicRendererSettings::SHADOW_FILTER_SIMPLE) ? "1" : "0"} );
         list.push_back( {"FP_USE_SHADOW_MASK",   s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? "1" : "0"} );
         // If we have TAA we reduce the number of samples for shadow filtering to save performance, since TAA will help smooth out the results. If we don't have TAA, we need to afford more samples to get better quality.
         list.push_back( {"SHD_BLUE_NOISE",       isTaaEnabled ? "1" : "0"} );

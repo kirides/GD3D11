@@ -214,9 +214,6 @@ HS_ControlPointOutput HSMain(
     const uint NextCPID = uCPID < 2 ? uCPID + 1 : 0; // (uCPID + 1) % 3 
     const uint AdditionalData = 3 + 2 * uCPID; 
     const uint NextAdditionalData = AdditionalData + 1; 
-	const uint DomEdge[3][2] = {{9, 10}, {11, 12}, {13, 14}};
-	const uint DomVert[3] = {15, 16, 17};
-	
     float3 myCP, otherCP; 
      
     // Copies first. 
@@ -230,9 +227,14 @@ HS_ControlPointOutput HSMain(
 						I[NextCPID].f2TexCoord2.y == I[NextAdditionalData].f2TexCoord2.y;*/
 	
 	
-		O.f2DomVertUV	= I[DomVert[uCPID]].f2TexCoord;
-		O.f2DomEdgeUV[0] = I[DomEdge[uCPID][1]].f2TexCoord;
-		O.f2DomEdgeUV[1] = I[DomEdge[uCPID][0]].f2TexCoord;
+		// uCPID is SV_OutputControlPointID (fixed at 0..2): a per-lane constant select instead of a dynamically
+		// indexed array keeps DomVert/DomEdge out of scratch memory.
+		const uint domVert = ( uCPID == 0 ) ? 15 : ( ( uCPID == 1 ) ? 16 : 17 );
+		const uint domEdge0 = ( uCPID == 0 ) ? 9  : ( ( uCPID == 1 ) ? 11 : 13 );
+		const uint domEdge1 = ( uCPID == 0 ) ? 10 : ( ( uCPID == 1 ) ? 12 : 14 );
+		O.f2DomVertUV	= I[domVert].f2TexCoord;
+		O.f2DomEdgeUV[0] = I[domEdge1].f2TexCoord;
+		O.f2DomEdgeUV[1] = I[domEdge0].f2TexCoord;
 	
 	
 	float dispScale = 25.0f;
@@ -345,6 +347,7 @@ HS_ConstantOutput HS_Constant(
     O.fTessFactor[1] = I[2].fOppositeEdgeLOD * factor; 
     O.fTessFactor[2] = I[0].fOppositeEdgeLOD * factor; 
      
+	[unroll]
 	for(int i=0;i<3;i++)
 	{
 		O.fTessFactor[i] = SmoothEdgeLod(O.fTessFactor[i]);

@@ -56,6 +56,7 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
 
     float targetDepth = 0.0;
     float totalWeight = 0.0;
+    [unroll]
     for ( int i = 0; i < 13; i++ )
     {
         float2 uv = float2( 0.5, 0.5 ) + offsets[i];
@@ -77,7 +78,7 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
 
     // Adaptive smoothing
     float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
-    float smoothing = lerp( 0.015, 0.20, saturate( relDiff * 2.0 ) );
+    float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     float newFocus = lerp( prevFocus, targetDepth, smoothing );
 

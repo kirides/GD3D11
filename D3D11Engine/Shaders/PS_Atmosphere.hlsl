@@ -107,6 +107,8 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	// by the height-interpolated planet colour. Whatever frame the moon material currently holds is what got
 	// bound - the material's texture animation is how Gothic varies the moon from night to night, so there is
 	// deliberately no phase logic here.
+	// Moon_Color.a is a cbuffer scalar (frame-uniform), not per-pixel data.
+	[branch]
 	if ( Moon_Color.a > 0.0f )
 	{
 		// Pixel -> sprite UV, counter-rotated by Moon_RotationAngle to apply the parallactic tilt.

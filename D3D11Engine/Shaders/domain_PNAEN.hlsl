@@ -77,7 +77,7 @@ PS_INPUT DSMain(ConstantOutputType input, float3 uvwCoord : SV_DomainLocation, c
 	
 	float scale = (1/1500.0f) * MI_TextureScale;
 	float tex = GetTriPlanarTexture(Texture, Texture, Texture, Sampler,
-										scale * 1.0f, 
+										scale, 
 										worldPosition, 
 										normalWS).a * 2 - 1;
 										

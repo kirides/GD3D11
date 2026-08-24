@@ -1,0 +1,46 @@
+[shader]
+include-directories = [
+    "Shaders",
+    "Shaders/include",
+    "Shaders/D3D12",
+    "Shaders/D3D12/include",
+    "Shaders/ASSAO",
+    "Shaders/FidelityFX",
+    "Shaders/FidelityFX/cas",
+    "Shaders/FidelityFX/fsr1",
+]
+
+[rules]
+# == vs float needs a hand-picked epsilon per call site; not safe to auto-rewrite.
+compare-equal-float = "allow"
+
+# Matches the literal substring "discard" even inside comments (false hits on PS_Water.hlsl,
+# D3D12/DepthPrepass.hlsl); line attribution is unreliable too.
+discard-then-work = "allow"
+
+# Every ResourceDescriptorHeap[...] index here comes from a root-constant scalar set per
+# draw/dispatch, so it's provably wave-uniform by construction (verified D3D12/CameraVelocity.hlsl,
+# D3D12/XeGTAO.hlsl). Re-enable if a genuinely per-lane-varying heap index shows up.
+wave-active-all-equal-precheck = "allow"
+
+# Cbuffers declared via shared headers (AtmosphericScattering.h, FixedFunctionPipeline.h, ...) are
+# included by many entry points that each use only a subset of fields by design; per-TU analysis
+# flags the rest as dead even though sibling shaders read them. Not safe to trim.
+unused-cbuffer-field = "allow"
+
+# These four assume a D3D12 root-signature/bindless model that doesn't exist for the D3D11 SM5.0
+# shaders at the top of this tree (ignores --target-profile; one even fired on a comment). Re-enabled
+# below scoped to D3D12/ only, where the concept applies -- but D3D12 hits still need checking against
+# the real root signature in D3D12Engine/*.cpp before acting on them.
+descriptor-heap-no-non-uniform-marker = "allow"
+cbuffer-large-fits-rootcbv-not-table = "allow"
+cbuffer-fits-rootconstants = "allow"
+static-sampler-when-dynamic-used = "allow"
+
+[[overrides]]
+path = "D3D12/**"
+[overrides.rules]
+descriptor-heap-no-non-uniform-marker = "warn"
+cbuffer-large-fits-rootcbv-not-table = "warn"
+cbuffer-fits-rootconstants = "warn"
+static-sampler-when-dynamic-used = "warn"

@@ -5,6 +5,7 @@
 #include <FFFog.h>
 #include <DS_Defines.h>
 #include <DepthReconstruction.h>
+#include <include/MathHelpers.hlsl>
 
 static const float DIST_SMALL_SPEED = -0.01f;
 static const float DIST_SMALL_AMOUNT = 0.01f;
@@ -291,14 +292,14 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 #endif
 	
 	// Darken the scene, to make a wet surface
-	float f = 1-saturate(pow(1-shallowDepth, 8.0f) + clamp(pow(distortionSmall.y, 2), 0.5f, 1.0f));
+	float f = 1-saturate(pow(1-shallowDepth, 8.0f) + clamp(kPow2(distortionSmall.y), 0.5f, 1.0f));
 
 	float3 sceneWet = lerp(sceneClean, sceneClean * 0.01f, f); // Darken border-scene
 	scene = lerp(scene, scene * float3(4, 0.2f, 0.1f) * 0.05f, f); // Darken distorted scene
 	
 	float pxDistance = Input.vTexcoord2.y;
 	scene = lerp(scene, diffuse, 0.73f * max(pow(fresnel,8.0f), 0.5f));
-	float3 color = lerp(scene, sceneClean, pow(saturate(pxDistance / 35000.0f), 4.0f));
+	float3 color = lerp(scene, sceneClean, kPow4(saturate(pxDistance / 35000.0f)));
 	color = lerp(color, sceneWet, (1-shallowDepth));
 
 	// Reflection compositing.
@@ -310,16 +311,16 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// blend entirely, or the water reads as a flat mirror regardless of how you're
 	// looking at it.
 	float NdotV = saturate(dot(-viewDirection, wavesFres));
-	float reflectFresnel = pow(1.0f - NdotV, 3.0f);
+	float reflectFresnel = kPow3(1.0f - NdotV);
 
 	// Waterfalls (surface normal pointing mostly sideways rather than up) get a
 	// strong, distracting reflection because the geometry is nearly vertical while
 	// the shader still treats it like flat, horizontal water. Use the true geometric
 	// normal (not the wave-perturbed one) to detect this and fade the reflection out.
 	float waterfallFactor = 1.0f - saturate(abs(normalize(Input.vNormalWS).y));
-	float reflectSuppress = lerp(1.0f, 0.12f, waterfallFactor);
+	float reflectSuppress = mad(waterfallFactor, 0.12f - 1.0f, 1.0f);
 
-	float reflectAmount = saturate(lerp(0.35f, 1.0f, reflectFresnel) * lerp(0.5f, 1.0f, saturate(ssrConfidence)) * reflectFresnel) * reflectSuppress;
+	float reflectAmount = saturate(mad(reflectFresnel, 1.0f - 0.35f, 0.35f) * mad(saturate(ssrConfidence), 1.0f - 0.5f, 0.5f) * reflectFresnel) * reflectSuppress;
 	color = lerp(color, reflection * lerp(1.0f, diffuse, 0.6f), reflectAmount);
 	
 	color.rgb = ApplyAtmosphericScatteringGround(Input.vWorldPosition, color.rgb);
@@ -330,7 +331,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	float3 reflect_vecSmall = reflect(-viewDirection, normalize(distortionSmall.xzy * float3(1,10,1)));
 	
-	float cos_spec = clamp(dot(reflect_vecSmall, -AC_LightPos.xyz * float3(1,1,1)), 0, 1);
+	float cos_spec = saturate(dot(reflect_vecSmall, -AC_LightPos.xyz * float3(1,1,1)));
 	float sun_spot = pow(cos_spec, 500.0f) * 0.5f;
 	color.rgb += lerp(sunColor * sun_spot, float3(0.0f, 0.0f, 0.0f), step(step(0.0f, AC_LightPos.y) * Input.vDiffuse.y, 0.5f));
 

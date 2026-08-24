@@ -130,7 +130,7 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( wpos, 1.0 ), ViewProj );
     o.uv = i.uv;
     o.wpos = wpos;
-    o.fogDist = length( wpos - CamPosWS );
+    o.fogDist = distance(wpos, CamPosWS);
     return o;
 }
 

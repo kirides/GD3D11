@@ -62,6 +62,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
     float targetDepth = 0.0;
     float totalWeight = 0.0;
+    [unroll]
     for ( int i = 0; i < 13; i++ )
     {
         float2 uv = float2( 0.5, 0.5 ) + offsets[i];
@@ -81,7 +82,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     // Adaptive smoothing: large focus jumps converge faster to avoid sluggish response,
     // small changes (view bobbing) are heavily damped for stability
     float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
-    float smoothing = lerp( 0.015, 0.20, saturate( relDiff * 2.0 ) );
+    float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     float newFocus = lerp( prevFocus, targetDepth, smoothing );
 

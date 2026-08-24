@@ -16,6 +16,7 @@ struct PS_INPUT
 void GSMain(triangle VS_OUTPUT input[3], inout LineStream<PS_INPUT> OutputStream)
 {
     PS_INPUT outputVert = (PS_INPUT)0;
+    [unroll]
     for(int i = 0; i < 3; i++)
     {
         outputVert.vPosition = mul(float4(mul(float4(input[i].vPosition.xyz, 1.f), M_World).xyz, 1.0f), frame.M_ViewProj);

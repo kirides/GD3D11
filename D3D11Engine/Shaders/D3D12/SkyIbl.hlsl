@@ -136,7 +136,9 @@ float3 ImportanceSampleGGX( float2 xi, float3 N, float roughness )
     float cosTheta = sqrt( ( 1.0 - xi.y ) / max( 1.0 + ( a * a - 1.0 ) * xi.y, 1e-6 ) );
     float sinTheta = sqrt( saturate( 1.0 - cosTheta * cosTheta ) );
 
-    float3 h = float3( sinTheta * cos( phi ), sinTheta * sin( phi ), cosTheta );
+    float sinPhi, cosPhi;
+    sincos( phi, sinPhi, cosPhi );
+    float3 h = float3( sinTheta * cosPhi, sinTheta * sinPhi, cosTheta );
 
     float3 up = abs( N.z ) < 0.999 ? float3( 0, 0, 1 ) : float3( 1, 0, 0 );
     float3 tx = normalize( cross( up, N ) );

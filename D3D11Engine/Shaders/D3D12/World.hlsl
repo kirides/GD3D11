@@ -119,7 +119,7 @@ VS_OUT VSMain( VS_IN i )
     o.wpos = i.pos;                          // world verts are already world-space
     o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
     o.wtan = DecodeTangent( i.tan );         // already world-space, same basis as wnrm
-    o.fogDist = length( i.pos - CamPosWS );
+    o.fogDist = distance(i.pos, CamPosWS);
     return o;
 }
 
@@ -160,7 +160,7 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
     o.wnrm = normalize( wnrm );
     o.wtan = float4( 0, 0, 0, 0 );   // no packed tangent on this CPU-side vertex — PerturbNormal falls back
                                       // to the derivative frame here, same as D3D11's untangented quad marks.
-    o.fogDist = length( wpos - CamPosWS );
+    o.fogDist = distance(wpos, CamPosWS);
     return o;
 }
 
@@ -187,7 +187,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb *= lerp( 1.0, 0.8, wetness );   // D3D11 dims the SUN light color 20% where the surface is wet
+    rgb *= mad(wetness, 0.8 - 1.0, 1.0);   // D3D11 dims the SUN light color 20% where the surface is wet
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     // Additive wet sheen (D3D11's specWet, boosted where the sun actually reaches: specWet += specWet * shadow).
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
@@ -301,6 +301,8 @@ float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
 
     // darken / lighten foam based on the day / night cycle
     float colourRGB = clamp( SunHeight + 0.2, 0.1, 0.6 );
+    // SunHeight is a root-constant scalar (uniform for the whole draw), not per-pixel data.
+    [branch]
     if ( SunHeight <= 0.08 ) {
         colour *= float4( colourRGB, colourRGB, colourRGB + 0.1, 0.80 );   // add blue tint at night
     } else {
@@ -338,17 +340,19 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
     float distFromCamera = distance( i.vpos, float3( i.clip.xy, i.clip.z ) );
 
     // correct issue with transparency of forest portals for certain camera angles
-    if ( i.vpos.x > 0 ) { distFromCamera = distFromCamera + ( i.vpos.x * clamp( i.vpos.x / 9000, 0, 1 ) ); }
+    if ( i.vpos.x > 0 ) { distFromCamera = mad( i.vpos.x, saturate(i.vpos.x / 9000), distFromCamera ); }
 
     // start / end distances for fading
     float startFade = 6500.0;
     float completeFade = 5500.0;
 
     // how much to fade the object by
-    float percentageFade = clamp( ( distFromCamera - completeFade ) / ( startFade - completeFade ), 0, 1 );
+    float percentageFade = saturate(( distFromCamera - completeFade ) / ( startFade - completeFade ));
 
     // darken the portals depending on where the sun is in the sky
     float darknessFactor = 4.0;
+    // SunHeight is a root-constant scalar (uniform for the whole draw), not per-pixel data.
+    [branch]
     if ( SunHeight <= 0.05 ) { darknessFactor += ( 1 - SunHeight ) * 6; }
     else                     { darknessFactor = 7.5 - ( 1 + SunHeight ) * 3; }
 

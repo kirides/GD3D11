@@ -27,6 +27,7 @@
 // surface is still geometrically flat; all the wave *shading* below comes from the distortion texture.
 
 #include "include/AtmosphericScattering.hlsl"   // ApplyAtmosphericScatteringGround + the Atmosphere cbuffer (b1)
+#include "../include/MathHelpers.hlsl"
 
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // root constants, VS only
 
@@ -333,14 +334,14 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     }
 
     // Darken the scene, to make a wet surface
-    float f = 1 - saturate( pow( 1 - shallowDepth, 8.0f ) + clamp( pow( distortionSmall.y, 2 ), 0.5f, 1.0f ) );
+    float f = 1 - saturate( pow( 1 - shallowDepth, 8.0f ) + clamp( kPow2(distortionSmall.y), 0.5f, 1.0f ) );
 
     float3 sceneWet = lerp( sceneClean, sceneClean * 0.01f, f );                       // Darken border-scene
     scene = lerp( scene, scene * float3( 4, 0.2f, 0.1f ) * 0.05f, f );                 // Darken distorted scene
 
     float pxDistance = Input.vz.y;
     scene = lerp( scene, diffuse, 0.73f * max( pow( fresnel, 8.0f ), 0.5f ) );
-    float3 color = lerp( scene, sceneClean, pow( saturate( pxDistance / 35000.0f ), 4.0f ) );
+    float3 color = lerp( scene, sceneClean, kPow4(saturate( pxDistance / 35000.0f )) );
     color = lerp( color, sceneWet, ( 1 - shallowDepth ) );
 
     // Reflection compositing.
@@ -350,16 +351,16 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     // geometry vs the static cube, chosen above) and gives it a modest boost — it must not override the
     // angle-based blend entirely, or the water reads as a flat mirror regardless of the viewing angle.
     float NdotV = saturate( dot( -viewDirection, wavesFres ) );
-    float reflectFresnel = pow( 1.0f - NdotV, 3.0f );
+    float reflectFresnel = kPow3(1.0f - NdotV);
 
     // Waterfalls (surface normal pointing mostly sideways rather than up) get a strong, distracting
     // reflection because the geometry is nearly vertical while the shader still treats it like flat,
     // horizontal water. Use the true geometric normal (not the wave-perturbed one) to detect this and
     // fade the reflection out.
     float waterfallFactor = 1.0f - saturate( abs( normalize( Input.wnrm ).y ) );
-    float reflectSuppress = lerp( 1.0f, 0.12f, waterfallFactor );
+    float reflectSuppress = mad(waterfallFactor, 0.12f - 1.0f, 1.0f);
 
-    float reflectAmount = saturate( lerp( 0.35f, 1.0f, reflectFresnel ) * lerp( 0.5f, 1.0f, saturate( ssrConfidence ) ) * reflectFresnel ) * reflectSuppress;
+    float reflectAmount = saturate( mad(reflectFresnel, 1.0f - 0.35f, 0.35f) * mad(saturate( ssrConfidence ), 1.0f - 0.5f, 0.5f) * reflectFresnel ) * reflectSuppress;
     color = lerp( color, reflection * lerp( 1.0f, diffuse, 0.6f ), reflectAmount );
 
     if ( UseAtmosphere != 0 )
@@ -371,7 +372,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
 
     float3 reflect_vecSmall = reflect( -viewDirection, normalize( distortionSmall.xzy * float3( 1, 10, 1 ) ) );
 
-    float cos_spec = clamp( dot( reflect_vecSmall, -AC_LightPos.xyz ), 0, 1 );
+    float cos_spec = saturate(dot( reflect_vecSmall, -AC_LightPos.xyz ));
     float sun_spot = pow( cos_spec, 500.0f ) * 0.5f;
     // Input.col is the packed R8G8B8A8 vertex DWORD; D3D11's vDiffuse.y is the GREEN channel, which the
     // BGRA-ordered DWORD puts in .g here as well — no swizzle needed for this one component.

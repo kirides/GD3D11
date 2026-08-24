@@ -32,6 +32,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 
 	//darken / lighten foam based on the day / night cycle
 	float colourRGB = clamp(AC_LightPos.y+0.2f, 0.1f, 0.6f);
+	// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
+	[branch]
 	if (AC_LightPos.y <= 0.08f) {
 		colour *= float4(colourRGB, colourRGB, colourRGB+0.1f, 0.80f); //add blue tint at night
 	}

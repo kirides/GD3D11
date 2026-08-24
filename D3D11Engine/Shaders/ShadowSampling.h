@@ -94,6 +94,30 @@ float SampleShadowMapLevel(float2 cascadeUV, int cascadeIndex)
 }
 #endif
 
+#ifndef SHD_GATHER_PCF
+#define SHD_GATHER_PCF 0
+#endif
+
+//--------------------------------------------------------------------------------------
+// PCF tap helper: GatherCmp returns the 4 raw, unfiltered comparisons from the same 2x2
+// texel footprint SampleCmpLevelZero would blend into one value - same fetch cost, 4
+// independent samples instead of 1. Only wired up for the Texture2DArray path (SHADOW_ATLAS=0,
+// gated by ShaderRegistry to also require FL11+): TextureCubeArray has no Gather Offset, and
+// this file's SHADOW_ATLAS branch never defines SHD_GATHER_PCF.
+//--------------------------------------------------------------------------------------
+#if SHD_GATHER_PCF
+float SampleShadowMapCmpTap(float2 cascadeUV, int cascadeIndex, float depth)
+{
+    float4 taps = TX_ShadowmapArray.GatherCmp(SS_Comp, float3(cascadeUV, (float)cascadeIndex), depth);
+    return dot(taps, 0.25f);
+}
+#else
+float SampleShadowMapCmpTap(float2 cascadeUV, int cascadeIndex, float depth)
+{
+    return SampleShadowMapCmp(cascadeUV, cascadeIndex, depth);
+}
+#endif
+
 //--------------------------------------------------------------------------------------
 // Single 32-tap Poisson disk used for all sampling quality levels.
 // Near-cascade PCF/PCSS: full 32 taps (mask & 31).
@@ -391,7 +415,7 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
                     int sampleIdx = (startIdx + i * 9) & 31;
                     float2 offset = RotatePoisson(g_PoissonDisk32[sampleIdx], rotSC) * finalRadius;
 
-                    sum += SampleShadowMapCmp(
+                    sum += SampleShadowMapCmpTap(
                         projectedTexCoords.xy + offset, cascadeIndex,
                         zReceiver);
                 }
@@ -406,7 +430,7 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
                 {
                     int sampleIdx = (startIdx + i * 5) & 15;
                     float2 offset = RotatePoisson(g_PoissonDisk32[sampleIdx], rotSC) * finalRadius;
-                    sum += SampleShadowMapCmp(
+                    sum += SampleShadowMapCmpTap(
                         projectedTexCoords.xy + offset, cascadeIndex,
                         zReceiver);
                 }
@@ -426,7 +450,7 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
     {
         int sampleIdx = (startIdx + i * 5) & 15;
         float2 offset = RotatePoisson(g_PoissonDisk32[sampleIdx], rotSC) * filterRadius;
-        sum += SampleShadowMapCmp(
+        sum += SampleShadowMapCmpTap(
             projectedTexCoords.xy + offset, cascadeIndex,
             vShadowSamplingPos.z - bias);
     }
@@ -445,7 +469,7 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
         {
             int sampleIdx = (startIdx + i * 5) & 15;
             float2 offset = RotatePoisson(g_PoissonDisk32[sampleIdx], rotSC) * filterRadius;
-            sum += SampleShadowMapCmp(
+            sum += SampleShadowMapCmpTap(
                 projectedTexCoords.xy + offset, cascadeIndex,
                 vShadowSamplingPos.z - bias);
         }
@@ -463,7 +487,7 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
         {
             int sampleIdx = (startIdx + i * 3) & 7;
             float2 offset = RotatePoisson(g_PoissonDisk32[sampleIdx], rotSC) * filterRadius;
-            sum += SampleShadowMapCmp(
+            sum += SampleShadowMapCmpTap(
                 projectedTexCoords.xy + offset, cascadeIndex,
                 vShadowSamplingPos.z - bias);
         }

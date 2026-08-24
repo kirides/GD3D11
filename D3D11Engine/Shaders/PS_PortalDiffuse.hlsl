@@ -39,17 +39,19 @@ PS_OUTPUT PSMain(PS_INPUT Input) : SV_TARGET
 	float distFromCamera = distance(Input.vViewPosition, Input.vPosition);
 
 //correct issue with transparency of forest portals for certain camera angles
-if (Input.vViewPosition.x > 0) { distFromCamera = distFromCamera + (Input.vViewPosition.x * clamp(Input.vViewPosition.x / 9000, 0, 1)); }
+if (Input.vViewPosition.x > 0) { distFromCamera = mad(Input.vViewPosition.x, saturate(Input.vViewPosition.x / 9000), distFromCamera); }
 
 //start / end distances for fading
 float startFade = 6500.0f;
 float completeFade = 5500.0f;
 
 //how much to fade the object by
-float percentageFade = clamp((distFromCamera - completeFade) / (startFade - completeFade), 0, 1);
+float percentageFade = saturate((distFromCamera - completeFade) / (startFade - completeFade));
 
 //darken the portals depending on where the sun is in the sky
 float darknessFactor = 4.0f;
+// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
+[branch]
 if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 6; }
 else if (AC_LightPos.y > 0.05f) { darknessFactor = 7.5f - (1 + AC_LightPos.y) * 3; }
 

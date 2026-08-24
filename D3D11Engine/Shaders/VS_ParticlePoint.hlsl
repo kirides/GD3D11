@@ -26,7 +26,7 @@ struct VS_INPUT
 	float3 vPosition : POSITION;
 	float4 vDiffuse : DIFFUSE;
     float3 vSize : SIZE;
-    unsigned int type : TYPE;
+    uint type : TYPE;
     float3 vVelocity : VELOCITY;
 };
 
@@ -64,7 +64,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     
     int visIsQuadPoly = int(step(10.0, float(Input.type)));
     int visOrientation = Input.type - (10 * visIsQuadPoly);
-    float sizeScale = (0.5 * float(visIsQuadPoly)) + 0.5;
+    float sizeScale = mad(0.5, float(visIsQuadPoly), 0.5);
     if (visOrientation == 2)
     {
         rightVector = Input.vSize;

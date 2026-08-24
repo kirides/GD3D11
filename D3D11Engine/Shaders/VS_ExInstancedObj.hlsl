@@ -95,7 +95,7 @@ float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float
     float heightFactor = pow(adjustedHeight, 2.6f);
     
     // Main wave
-    float mainWave = sin(timeSec * 1.0 + heightNorm * 3.0 + instancePhase) * 0.8;
+    float mainWave = sin(timeSec + heightNorm * 3.0 + instancePhase) * 0.8;
     
     // Second wave
     float secondaryWave = cos(timeSec * 0.7 + heightNorm * 5.0 + instancePhase * 1.5) * 0.80;

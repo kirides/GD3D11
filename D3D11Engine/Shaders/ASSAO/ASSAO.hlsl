@@ -473,7 +473,7 @@ void PrepareDepthMip( const float4 inPos/*, const float2 inUV*/, int mipLevel, o
     float dummyUnused1;
     float dummyUnused2;
     float falloffCalcMulSq, falloffCalcAdd;
- 
+
     [unroll]
     for( int i = 0; i < 4; i++ )
     {

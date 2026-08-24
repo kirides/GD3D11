@@ -84,7 +84,7 @@ float ComputeVolumetricFog( float3 cameraToWorldPos, float3 posOriginal )
 {
     float cVolFogHeightDensityAtViewer = exp( -HF_HeightFalloff );
 
-    float lenOrig = length( posOriginal - HF_CameraPosition );
+    float lenOrig = distance(posOriginal, HF_CameraPosition);
     float len = length( cameraToWorldPos );
     float fogInt = len * cVolFogHeightDensityAtViewer;
     const float cSlopeThreshold = 0.01;
@@ -120,6 +120,8 @@ float4 ComputeHeightFog( float2 texcoord )
     color = lerp( color, nightFogColor, nightTimeBlend );
 
     float darknessFactor = 2.5f;
+    // AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
+    [branch]
     if ( AC_LightPos.y > 0.0f ) {
         darknessFactor -= ( AC_LightPos.y * 0.8f );
     }
