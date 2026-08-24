@@ -26,7 +26,7 @@ struct VS_INPUT
 	float3 vPosition : POSITION;
 	float4 vDiffuse : DIFFUSE;
     float3 vSize : SIZE;
-    unsigned int type : TYPE;
+    uint type : TYPE;
     float3 vVelocity : VELOCITY;
 };
 

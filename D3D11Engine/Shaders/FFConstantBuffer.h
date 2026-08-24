@@ -44,7 +44,7 @@ cbuffer FFPipelineConstantBuffer : register( b0 )
 	float FF_AlphaRef;
 
 	/** Graphical Switches (Takes GSWITCH_*) */
-	unsigned int FF_GSwitches;
+	uint FF_GSwitches;
 	float2 ggs_Pad3;
 	
 	TextureStage FF_Stages[2];
