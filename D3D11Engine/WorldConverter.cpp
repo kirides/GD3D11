@@ -629,7 +629,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     if ( !missingTextures.empty() ) {
         std::string ms = "\nMissing materials for custom-mesh:\n";
 
-        for ( auto it = missingTextures.begin(); it != missingTextures.end(); it++ ) {
+        for ( auto it = missingTextures.begin(); it != missingTextures.end(); ++it ) {
             ms += "\t" + (*it) + "\n";
         }
 
