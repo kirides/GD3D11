@@ -5939,7 +5939,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             Frustum f;
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections = {};
-            Engine::GAPI->CollectVisibleSections( sections, &f, true );
+            Engine::GAPI->CollectVisibleSections( sections, &f, true );            
             for ( auto* section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -6002,7 +6002,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         
                         if ( worldMeshCache ) {
                             // causes corrupted meshes
-                            // worldMeshCache->emplace_back( meshInfoByKey );
+                            worldMeshCache->emplace_back( meshInfoByKey );
                         }
                     }
                 }
@@ -6374,7 +6374,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         
                         if ( worldMeshCache ) {
                             // causes corrupted meshes
-                            // worldMeshCache->emplace_back( meshInfoByKey );
+                            worldMeshCache->emplace_back( meshInfoByKey );
                         }
                     }
                 }

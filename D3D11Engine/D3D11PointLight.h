@@ -156,7 +156,6 @@ protected:
     std::list<VobInfo*> VobCache;
     std::list<SkeletalVobInfo*> SkeletalVobCache;
     std::vector<std::pair<MeshKey, MeshInfo*>> WorldMeshCache;
-    bool WorldCacheInvalid;
 
     VobLightInfo* LightInfo;
     DepthStencilHandle m_DepthCubemap;

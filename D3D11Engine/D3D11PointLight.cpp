@@ -80,7 +80,6 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 
     m_DepthCubemap = nullptr;
     m_StaticDepthCubemap = nullptr;
-    WorldCacheInvalid = true;
 
     StartReInit();
 
@@ -103,10 +102,6 @@ D3D11PointLight::~D3D11PointLight() {
 
     ClearTiledSlot();
     ReleaseShadowMap();
-
-    for ( auto& [k, mesh] : WorldMeshCache ) {
-        SAFE_DELETE( mesh )
-    }
 }
 
 void D3D11PointLight::AcquireShadowMap( DepthStencilPool* pool, int resolution ) {
@@ -269,12 +264,7 @@ void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
 void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
     D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
     const float range = LightInfo->Vob->GetLightRange();
-
-    auto wc = &WorldMeshCache;
-    if ( WorldCacheInvalid ) {
-        wc = nullptr;
-    }
-
+    
     // PFX-driven lights (candles/torches/campfires - oCVisualFX-owned rather than a static level light) can
     // be parented anywhere in the vob tree, including onto NPCs/the player. GetHasOriginVob's self-exclusion
     // below only walks the oCItem-origin chain, so a PFX light whose origin ISN'T an item has no reliable way
@@ -292,14 +282,14 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
     }
 
     if ( RequiresNvidiaTiledShadowFaceFallback && IsTiledArrayTarget( target ) ) {
-        RenderShadowCubeFacePasses( target, clearDepth, staticCasterMask, &VobCache, &SkeletalVobCache, wc,
+        RenderShadowCubeFacePasses( target, clearDepth, staticCasterMask, &VobCache, &SkeletalVobCache, &WorldMeshCache,
             excludeSelf ? &excludeVobsToExclude : nullptr );
     } else if ( excludeSelf ) {
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
-            &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask, excludeVobsToExclude );
+            &VobCache, &SkeletalVobCache, &WorldMeshCache, clearDepth, staticCasterMask, excludeVobsToExclude );
     } else {
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
-            &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask );
+            &VobCache, &SkeletalVobCache, &WorldMeshCache, clearDepth, staticCasterMask );
     }
 
     if ( excludeSelf ) {
@@ -347,23 +337,7 @@ void D3D11PointLight::InitResources() {
         InitDone = true;
         return;
     }
-
-    //Engine::GAPI->EnterResourceCriticalSection();
-
-    // Generate worldmesh cache if we aren't a dynamically added light
-    if ( !DynamicLight ) {
-        WorldConverter::WorldMeshCollectPolyRange( LightInfo->Vob->GetPositionWorld(), LightInfo->Vob->GetLightRange(), Engine::GAPI->GetWorldSections(), WorldMeshCache );
-        std::ranges::sort(WorldMeshCache, []( const auto& a, const auto& b ) {
-            return std::tie(a.first.Material, a.first.Texture) < std::tie(b.first.Material, b.first.Texture);
-        });
-        WorldCacheInvalid = false;
-    } else {
-        WorldCacheInvalid = true;
-    }
-
     InitDone = true;
-
-    //Engine::GAPI->LeaveResourceCriticalSection();
 }
 
 /** Returns if this light is inited already */
@@ -459,7 +433,6 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
         SkeletalVobCache.clear();
 
         // Invalidate worldcache
-        WorldCacheInvalid = true;
         m_StaticShadowReady = false;
         m_HasDynamicOverlay = false;
     }
@@ -678,44 +651,11 @@ void D3D11PointLight::Invalidate() {
     m_HasDynamicOverlay = false;
     VobCache.clear();
     SkeletalVobCache.clear();
-    WorldCacheInvalid = true;
+    WorldMeshCache.clear();
 }
 
 void D3D11PointLight::StartReInit() {
-    if ( !WorldCacheInvalid ) {
-        return;
-    }
-
-    if ( !DynamicLight ) {
-        // cancel() only sets the stop flag for a job that hasn't started reading it yet - it can't
-        // interrupt one that's already inside InitResources(). If that job is still running when we
-        // get called again (e.g. AcquireShadowMap re-evaluating resolution every frame, or a nearby
-        // vob move invalidating the cache again before the previous refresh landed), enqueuing another
-        // one here would race a second InitResources() against the first on the same WorldMeshCache/
-        // VobCache/SkeletalVobCache vectors - unsynchronized concurrent mutation, real heap corruption,
-        // not just staleness. Let the in-flight job finish; WorldCacheInvalid stays true until it does,
-        // so the next StartReInit() call (from wherever) will pick up the invalidation then.
-        if ( m_PendingInit.future.valid()
-            && m_PendingInit.future.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready ) {
-            return;
-        }
-
-        InitDone = false;
-
-        // Add to queue
-        m_PendingInit.cancel( ); // Cancel any pending init first, we only care about the latest one
-        m_PendingInit = Engine::WorkerThreadPool->enqueue( [this] (const std::stop_token& token)
-        {
-            if (token.stop_requested()) {
-                InitDone = true;
-                return;
-            }
-            InitResources();
-        } );
-
-    } else {
-        InitResources();
-    }
+    InitResources();
 }
 
 bool D3D11PointLight::IsTiledArrayTarget( const RenderToDepthStencilBuffer& target ) const {
