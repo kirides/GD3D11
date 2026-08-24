@@ -48,6 +48,8 @@
 #include "zCView.h"
 
 // TODO: REMOVE THIS!
+#include <ranges>
+
 #include "D3D11GraphicsEngine.h"
 #include "D3D11PipelineStateCache.h"
 #include "MeshManager.h"
@@ -1967,9 +1969,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     }
 
     // Check every extension
-    for ( unsigned int i = 0; i < extv.size(); i++ ) {
-        std::string& ext = extv[i];
-
+    for (auto& ext : extv) {
         // Delete according to the type
         if ( ext == ".3DS" ) {
             // Clear the visual from all vobs (TODO: This may be slow!)
@@ -2397,9 +2397,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
         PolyStripVisuals.insert( reinterpret_cast<zCPolyStrip*>(vob->GetVisual()) );
     }
 
-    for ( unsigned int i = 0; i < extv.size(); i++ ) {
-        std::string ext = extv[i];
-
+    for (auto ext : extv) {
         if ( ext == ".3DS" || ext == ".MMS" ) {
             zCProgMeshProto* pm;
             if ( ext == ".3DS" )
@@ -3679,10 +3677,10 @@ void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
     vx[5].Color = vx[1].Color;
     vx[4].Color = vx[2].Color;
 
-    for ( int i = 0; i < 6; i++ ) {
-        vx[i].Position.x += pos.x;
-        vx[i].Position.y += pos.y;
-        vx[i].Position.z += pos.z;
+    for (auto& i : vx) {
+        i.Position.x += pos.x;
+        i.Position.y += pos.y;
+        i.Position.z += pos.z;
     }
 
     vxb->UpdateBuffer( vx );
@@ -3900,39 +3898,39 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 
     int numProcessed = 0;
     for ( auto const& bit : hitSections ) {
-        for ( auto it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
+        for (auto& worldMesh : bit.first->WorldMeshes) {
             float u, v, t;
 
             // Positions come from the slim CPU copy the world mesh keeps instead of the full vertices.
-            const std::vector<WorldVertexCPU>& verts = it->second->CpuVertices;
+            const std::vector<WorldVertexCPU>& verts = worldMesh.second->CpuVertices;
             if ( verts.empty() ) {
                 continue;
             }
 
-            for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( verts[it->second->Indices[i]].Position,
-                    verts[it->second->Indices[i + 1]].Position,
-                    verts[it->second->Indices[i + 2]].Position,
+            for ( unsigned int i = 0; i < worldMesh.second->Indices.size(); i += 3 ) {
+                if ( Toolbox::IntersectTri( verts[worldMesh.second->Indices[i]].Position,
+                    verts[worldMesh.second->Indices[i + 1]].Position,
+                    verts[worldMesh.second->Indices[i + 2]].Position,
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
 
                         if ( hitTriangle ) {
-                            hitTriangle[0] = verts[it->second->Indices[i]].Position;
-                            hitTriangle[1] = verts[it->second->Indices[i + 1]].Position;
-                            hitTriangle[2] = verts[it->second->Indices[i + 2]].Position;
+                            hitTriangle[0] = verts[worldMesh.second->Indices[i]].Position;
+                            hitTriangle[1] = verts[worldMesh.second->Indices[i + 1]].Position;
+                            hitTriangle[2] = verts[worldMesh.second->Indices[i + 2]].Position;
                         }
 
                         if ( hitMesh ) {
-                            *hitMesh = it->second;
+                            *hitMesh = worldMesh.second;
                         }
 
                         if ( hitMaterial ) {
-                            *hitMaterial = it->first.Material;
+                            *hitMaterial = worldMesh.first.Material;
                         }
 
-                        if ( hitTextureName && it->first.Material && it->first.Material->GetTextureSingle() )
-                            *hitTextureName = it->first.Material->GetTextureSingle()->GetNameWithoutExt();
+                        if ( hitTextureName && worldMesh.first.Material && worldMesh.first.Material->GetTextureSingle() )
+                            *hitTextureName = worldMesh.first.Material->GetTextureSingle()->GetNameWithoutExt();
                     }
                 }
             }
@@ -5629,9 +5627,9 @@ void GothicAPI::ApplySuppressedSectionTextures() {
             if (auto mat = mit->first.Material ) {
                 if ( auto tx = mat->GetTextureSingle()) {
                     auto txName = tx->GetNameWithoutExtView();
-                    for ( unsigned int i = 0; i < it.second.size(); i++ ) {
+                    for (const auto& i : it.second) {
                         // Is this the texture we are looking for?
-                        if ( txName == it.second[i] ) {
+                        if ( txName == i) {
                             // Yes, move it to the suppressed map
                             section->SuppressedMeshes[mit->first] = mit->second;
                             mit = section->WorldMeshes.erase( mit );
@@ -6667,10 +6665,8 @@ void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
         std::vector<WorldMeshSectionInfo*> sections;
         GetIntersectingSections( base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max, sections );
 
-        for ( size_t i = 0; i < sections.size(); i++ ) {
-            for ( size_t p = 0; p < sections[i]->SectionPolygons.size(); p++ ) {
-                zCPolygon* poly = sections[i]->SectionPolygons[p];
-
+        for (auto& section : sections) {
+            for (auto poly : section->SectionPolygons) {
                 if ( !poly->GetMaterial() || // Skip stuff with alpha-channel or not set material
                     poly->GetMaterial()->HasAlphaTest() )
                     continue;
@@ -6697,10 +6693,8 @@ void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
 
 /** Returns the sections intersecting the given boundingboxes */
 void GothicAPI::GetIntersectingSections( const XMFLOAT3& min, const XMFLOAT3& max, std::vector<WorldMeshSectionInfo*>& sections ) {
-    for ( std::map<int, std::map<int, WorldMeshSectionInfo>>::iterator itx = Engine::GAPI->GetWorldSections().begin(); itx != Engine::GAPI->GetWorldSections().end(); itx++ ) {
-        for ( std::map<int, WorldMeshSectionInfo>::iterator ity = itx->second.begin(); ity != itx->second.end(); ity++ ) {
-            WorldMeshSectionInfo& section = ity->second;
-
+    for (auto& valx : Engine::GAPI->GetWorldSections() | std::views::values) {
+        for (auto& section : valx | std::views::values) {
             if ( Toolbox::AABBsOverlapping( section.BoundingBox.Min, section.BoundingBox.Max, min, max ) ) {
                 sections.push_back( &section );
             }
@@ -6710,28 +6704,26 @@ void GothicAPI::GetIntersectingSections( const XMFLOAT3& min, const XMFLOAT3& ma
 
 /** Generates zCPolygons for the loaded sections */
 void GothicAPI::CreatezCPolygonsForSections() {
-    for ( std::map<int, std::map<int, WorldMeshSectionInfo>>::iterator itx = Engine::GAPI->GetWorldSections().begin(); itx != Engine::GAPI->GetWorldSections().end(); itx++ ) {
-        for ( std::map<int, WorldMeshSectionInfo>::iterator ity = itx->second.begin(); ity != itx->second.end(); ity++ ) {
-            WorldMeshSectionInfo& section = ity->second;
-
-            for ( auto it = section.WorldMeshes.begin(); it != section.WorldMeshes.end(); ++it ) {
-                if ( !it->first.Material ||
-                    it->first.Material->HasAlphaTest() )
+    for (auto& sectionsX : Engine::GAPI->GetWorldSections() | std::views::values) {
+        for (auto& section : sectionsX | std::views::values) {
+            for ( auto& [first, second] : section.WorldMeshes) {
+                if ( !first.Material ||
+                    first.Material->HasAlphaTest() )
                     continue;
 
-                it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
+                first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
                 // The world mesh only keeps WorldVertexCPU now, so rebuild the full vertices this wants.
                 // Per-vertex normals come out zero; zCPolygon::CalcNormal() still derives the polygon plane
                 // from the positions, which is what the BSP/collision side of this path uses.
-                std::vector<ExVertexStruct> rebuilt( it->second->CpuVertices.size() );
-                for ( size_t v = 0; v < it->second->CpuVertices.size(); ++v ) {
-                    rebuilt[v].Position = it->second->CpuVertices[v].Position;
-                    rebuilt[v].TexCoord = it->second->CpuVertices[v].TexCoord;
-                    rebuilt[v].TexCoord2 = it->second->CpuVertices[v].TexCoord2;
+                std::vector<ExVertexStruct> rebuilt( second->CpuVertices.size() );
+                for ( size_t v = 0; v < second->CpuVertices.size(); ++v ) {
+                    rebuilt[v].Position = second->CpuVertices[v].Position;
+                    rebuilt[v].TexCoord = second->CpuVertices[v].TexCoord;
+                    rebuilt[v].TexCoord2 = second->CpuVertices[v].TexCoord2;
                 }
 
-                WorldConverter::ConvertExVerticesTozCPolygons( rebuilt, it->second->Indices, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( rebuilt, second->Indices, first.Material, section.SectionPolygons );
             }
         }
     }
