@@ -196,14 +196,22 @@ struct RenderToDepthStencilBuffer {
     ~RenderToDepthStencilBuffer() {
     }
 
-    /** Wraps pre-existing resources without allocating — used for views into a shared TextureCubeArray */
+    /** Wraps pre-existing resources without allocating — used for views into a shared TextureCubeArray.
+        faceDSVs, if given, is 6 single-slice (ArraySize=1) DSVs windowed onto the same 6-slice range as dsv -
+        the NVIDIA layered-rendering fallback (see RequiresNvidiaTiledShadowFaceFallback) renders each face
+        through its own single-slice view instead of relying on SV_RenderTargetArrayIndex routing into dsv's
+        multi-slice window, which NVIDIA's D3D11 driver mis-handles when FirstArraySlice != 0. */
     RenderToDepthStencilBuffer(
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsv,
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv,
-        UINT SizeX, UINT SizeY )
+        UINT SizeX, UINT SizeY,
+        const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>* faceDSVs = nullptr )
         : Texture( std::move( texture ) ), DepthStencilView( std::move( dsv ) ),
           ShaderResView( std::move( srv ) ), SizeX( SizeX ), SizeY( SizeY ) {
+        if ( faceDSVs ) {
+            for ( int i = 0; i < 6; ++i ) CubeMapDSVs[i] = faceDSVs[i];
+        }
     }
 
     /** Creates the render-to-texture buffers */

@@ -14,6 +14,8 @@
 
 const float LIGHT_COLORCHANGE_POS_MOD = 0.1f;
 
+extern bool RequiresNvidiaTiledShadowFaceFallback;
+
 namespace
 {
     std::unordered_set<const zCVob*> vobsToExclude = {};
@@ -280,14 +282,24 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
         ? SHADOW_CASTER_WORLD // static light? only draw world mesh.
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
-    if ( GetHasOriginVob( LightInfo ) ) {
-        SetupVobsToExclude(LightInfo);
+    const bool excludeSelf = GetHasOriginVob( LightInfo );
+    if ( excludeSelf ) {
+        SetupVobsToExclude( LightInfo );
+    }
+
+    if ( RequiresNvidiaTiledShadowFaceFallback && IsTiledArrayTarget( target ) ) {
+        RenderShadowCubeFacePasses( target, clearDepth, staticCasterMask, &VobCache, &SkeletalVobCache, wc,
+            excludeSelf ? &excludeVobsToExclude : nullptr );
+    } else if ( excludeSelf ) {
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask, excludeVobsToExclude );
-        vobsToExclude.clear();
     } else {
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask );
+    }
+
+    if ( excludeSelf ) {
+        vobsToExclude.clear();
     }
 }
 
@@ -296,14 +308,25 @@ void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& targ
     const float range = LightInfo->Vob->GetLightRange();
 
     const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
-    if ( GetHasOriginVob( LightInfo ) ) {
-        SetupVobsToExclude(LightInfo);
+
+    const bool excludeSelf = GetHasOriginVob( LightInfo );
+    if ( excludeSelf ) {
+        SetupVobsToExclude( LightInfo );
+    }
+
+    if ( RequiresNvidiaTiledShadowFaceFallback && IsTiledArrayTarget( target ) ) {
+        RenderShadowCubeFacePasses( target, clearDepth, animatedCasterMask, nullptr, nullptr, nullptr,
+            excludeSelf ? &excludeVobsToExclude : nullptr );
+    } else if ( excludeSelf ) {
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             nullptr, nullptr, nullptr, clearDepth, animatedCasterMask, excludeVobsToExclude );
-        vobsToExclude.clear();
     } else {
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             nullptr, nullptr, nullptr, clearDepth, animatedCasterMask );
+    }
+
+    if ( excludeSelf ) {
+        vobsToExclude.clear();
     }
 }
 
@@ -479,6 +502,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 
     XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, zNear, zFar );
     proj = XMMatrixTranspose( proj );
+    XMStoreFloat4x4( &CubeMapProjMatrix, proj );
 
     // Setup near/far-planes. We need linear viewspace depth for the cubic shadowmaps.
     Engine::GAPI->GetRendererState().GraphicsState.FF_zNear = zNear;
@@ -599,16 +623,25 @@ void D3D11PointLight::RenderFullCubemap() {
         // See RenderStaticShadowPass: PFX lights are restricted to world-mesh casters only.
         const unsigned int casterMask = LightInfo->IsPFXVobLight ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
 
-        if ( GetHasOriginVob( LightInfo ) ) {
-            SetupVobsToExclude(LightInfo);
+        const bool excludeSelf = GetHasOriginVob( LightInfo );
+        if ( excludeSelf ) {
+            SetupVobsToExclude( LightInfo );
+        }
 
+        if ( RequiresNvidiaTiledShadowFaceFallback && IsTiledArrayTarget( *activeTarget ) ) {
+            RenderShadowCubeFacePasses( *activeTarget, true, casterMask, &VobCache, &SkeletalVobCache, wc,
+                excludeSelf ? &excludeVobsToExclude : nullptr );
+        } else if ( excludeSelf ) {
             engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
                 nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, casterMask,
                 excludeVobsToExclude);
-            vobsToExclude.clear();
         } else {
             engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
                 nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, casterMask );
+        }
+
+        if ( excludeSelf ) {
+            vobsToExclude.clear();
         }
     }
 }
@@ -666,44 +699,54 @@ void D3D11PointLight::StartReInit() {
     }
 }
 
-/** Renders the scene with the given view-proj-matrices */
-void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, UINT faceIdx ) {
-    if ( !IsReady() )
-        return;
+bool D3D11PointLight::IsTiledArrayTarget( const RenderToDepthStencilBuffer& target ) const {
+    if ( m_TiledSlotIndex < 0 || !m_TiledOwner ) {
+        return false;
+    }
+    if ( &target == m_TiledDepthTarget ) {
+        return true;
+    }
+    // GetDynSlotTarget lazily creates the dynamic-overlay array on first call - harmless here since a
+    // RenderAnimatedShadowPass call into it always precedes/follows this check within the same update.
+    return &target == m_TiledOwner->GetDynSlotTarget( m_TiledSlotIndex );
+}
 
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
-    auto lightPos = LightInfo->Vob->GetPositionWorldXM();
-    float range = LightInfo->Vob->GetLightRange();
-    
-    CameraReplacement cr;
-    XMStoreFloat3( &cr.PositionReplacement, lightPos );
-    cr.ProjectionReplacement = proj;
-    cr.ViewReplacement = view;
-    Frustum f;
-    f.BuildCubemapFace( lightPos, range, faceIdx );
-    cr.frustum = f;
+/** NVIDIA fallback: renders each of the 6 faces through its own single-slice DSV instead of one
+    layered/instanced draw routed by SV_RenderTargetArrayIndex into target's multi-slice window - see
+    RequiresNvidiaTiledShadowFaceFallback. */
+void D3D11PointLight::RenderShadowCubeFacePasses(
+    RenderToDepthStencilBuffer& target, bool clearDepth, unsigned int casterMask,
+    std::list<VobInfo*>* renderedVobs, std::list<SkeletalVobInfo*>* renderedMobs,
+    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
+    const std::move_only_function<bool(const zCVob*) const>* ignoreVob ) {
 
-    // Replace gothics camera
-    Engine::GAPI->SetCameraReplacementPtr( &cr );
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = engine->RecordGraphicsEvent( GE_NAME( "RenderFullCubemap->RenderShadowCubeFacePasses" ) );
 
-    if ( engine->GetDummyCubeRT() ) {
-        const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
-        engine->GetContext()->ClearRenderTargetView( engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ).Get(), clearColor );
+    const auto lightPos = LightInfo->Vob->GetPositionWorldXM();
+    const float range = LightInfo->Vob->GetLightRange();
+
+    for ( UINT face = 0; face < 6; ++face ) {
+        CameraReplacement cr;
+        XMStoreFloat3( &cr.PositionReplacement, lightPos );
+        cr.ViewReplacement = CubeMapViewMatrices[face];
+        cr.ProjectionReplacement = CubeMapProjMatrix;
+        Frustum f;
+        f.BuildCubemapFace( lightPos, range, face );
+        cr.frustum = f;
+
+        Engine::GAPI->SetCameraReplacementPtr( &cr );
+
+        ID3D11DepthStencilView* faceDsv = target.GetDSVCubemapFace( face ).Get();
+        if ( ignoreVob ) {
+            engine->RenderShadowCube( lightPos, range, target, faceDsv, nullptr, false, LightInfo->IsIndoorVob, false,
+                renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask, *ignoreVob );
+        } else {
+            engine->RenderShadowCube( lightPos, range, target, faceDsv, nullptr, false, LightInfo->IsIndoorVob, false,
+                renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask );
+        }
     }
 
-    // Disable shadows for NPCs
-    // TODO: Only for the player himself, because his shadows look ugly when using a torch
-    //bool oldDrawSkel = Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes;
-    //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = false;
-
-    // Draw cubemap face
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = engine->GetDummyCubeRT() != nullptr ? engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ) : nullptr;
-    auto _ = engine->RecordGraphicsEvent( GE_NAME( "RenderFullCubemap->RenderCubemapFace" ) );
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, m_DepthCubemap->GetDSVCubemapFace( faceIdx ).Get(), debugRTV.Get(), false );
-
-    //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
-
-    // Reset settings
     Engine::GAPI->SetCameraReplacementPtr( nullptr );
 }
 

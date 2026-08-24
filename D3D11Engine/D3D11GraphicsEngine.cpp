@@ -88,6 +88,15 @@ bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
 
+// NVIDIA's native D3D11 driver mis-routes SV_RenderTargetArrayIndex writes (from GS_Cubemap.hlsl or
+// VS_ExLayered.hlsl) when the bound DSV/RTV is a non-zero-offset window (FirstArraySlice > 0) into a larger
+// Texture2DArray/TextureCubeArray resource - only the window's own base slice ever receives geometry, so a
+// point light rendered into any slot but 0 of the shared tiled shadow cube array (D3D11TiledDeferredShading)
+// only gets one of its six faces. DXVK (Vulkan image views are always correctly scoped to their base array
+// layer) and AMD/Intel's native drivers implement this correctly, so the fallback is gated to real NVIDIA
+// hardware only - see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
+bool RequiresNvidiaTiledShadowFaceFallback = false;
+
 VS_ExConstantBuffer_Wind g_windBuffer;
 
 typedef void( __cdecl* PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT )(ID3D11DeviceContext* context, unsigned int drawCount,
@@ -717,8 +726,13 @@ XRESULT D3D11GraphicsEngine::Init() {
     /*Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering =
         FeatureRTArrayIndexFromAnyShader && adpDesc.VendorId != 0x10DE;*/
 
-    // TODO: Fix clustered lighting to work on NVidia as well. Something over there is broken and i don't know what.
-    // Engine::GAPI->GetRendererState().RendererSettings.EnableTiledLighting = adpDesc.VendorId == 0x1002; // only enable TiledLighting on AMD hardware for now.
+    // Root cause of the old "clustered lighting is broken on NVidia" issue: point-light shadows rendered into
+    // the shared tiled cube array (EnableTiledLighting) use a DSV windowed onto a sub-range (FirstArraySlice =
+    // slot*6) of a much larger array resource. NVIDIA's driver mis-routes the layered/SV_RenderTargetArrayIndex
+    // writes in that case; see RequiresNvidiaTiledShadowFaceFallback's declaration for the full story. Gate the
+    // per-face fallback to real NVIDIA hardware only - DXVK and AMD/Intel already render this correctly and
+    // shouldn't pay the extra draw-call cost.
+    RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();

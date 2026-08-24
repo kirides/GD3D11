@@ -92,10 +92,21 @@ void D3D11TiledDeferredShading::EnsureShadowArray() {
 
         LE(m_device->CreateDepthStencilView( m_ShadowCubeArray.Get(), &dsvDesc, m_SlotDSVs[slot].ReleaseAndGetAddressOf() ));
 
+        // Single-slice (ArraySize=1) DSV per face - the NVIDIA layered-rendering fallback (see
+        // RequiresNvidiaTiledShadowFaceFallback) binds these one at a time instead of relying on
+        // SV_RenderTargetArrayIndex to route into the multi-slice view above.
+        std::array<ComPtr<ID3D11DepthStencilView>, 6> faceDSVs;
+        D3D11_DEPTH_STENCIL_VIEW_DESC faceDsvDesc = dsvDesc;
+        faceDsvDesc.Texture2DArray.ArraySize = 1;
+        for ( uint32_t face = 0; face < 6; face++ ) {
+            faceDsvDesc.Texture2DArray.FirstArraySlice = slot * 6 + face;
+            LE(m_device->CreateDepthStencilView( m_ShadowCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() ));
+        }
+
         // View wrapper for RenderShadowCube() interface (uses GetSizeX() and GetDepthStencilView())
         m_SlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowCubeArray, m_SlotDSVs[slot], nullptr,
-            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE );
+            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE, faceDSVs.data() );
     }
 }
 
@@ -154,9 +165,17 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
 
         LE(m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() ));
 
+        std::array<ComPtr<ID3D11DepthStencilView>, 6> faceDSVs;
+        D3D11_DEPTH_STENCIL_VIEW_DESC faceDsvDesc = dsvDesc;
+        faceDsvDesc.Texture2DArray.ArraySize = 1;
+        for ( uint32_t face = 0; face < 6; face++ ) {
+            faceDsvDesc.Texture2DArray.FirstArraySlice = slot * 6 + face;
+            LE(m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() ));
+        }
+
         m_SlotDynViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowDynCubeArray, m_SlotDynDSVs[slot], nullptr,
-            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE );
+            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE, faceDSVs.data() );
     }
 }
 
@@ -206,9 +225,17 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
 
         LE(m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &dsvDesc, m_StaticSlotDSVs[slot].ReleaseAndGetAddressOf() ));
 
+        std::array<ComPtr<ID3D11DepthStencilView>, 6> faceDSVs;
+        D3D11_DEPTH_STENCIL_VIEW_DESC faceDsvDesc = dsvDesc;
+        faceDsvDesc.Texture2DArray.ArraySize = 1;
+        for ( uint32_t face = 0; face < 6; face++ ) {
+            faceDsvDesc.Texture2DArray.FirstArraySlice = slot * 6 + face;
+            LE(m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() ));
+        }
+
         m_StaticSlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowStaticCubeArray, m_StaticSlotDSVs[slot], nullptr,
-            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE );
+            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data() );
     }
 }
 
