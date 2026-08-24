@@ -1806,13 +1806,15 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
 
             // Set layered shader
             graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayered );
-        } else {
+        } else if (!graphicsEngine->IsCubeFaceFallbackActive()) {
             // Set cubemap shader
             graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
             graphicsEngine->GetActiveGS()->Apply();
             activeFace = targetCube.GetDepthStencilView().Get();
 
             graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCube );
+        } else {
+            graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
         }
     }
 

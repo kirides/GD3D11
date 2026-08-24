@@ -751,6 +751,12 @@ void D3D11PointLight::RenderShadowCubeFacePasses(
     XMStoreFloat3( &cr.PositionReplacement, lightPos );
     cr.ProjectionReplacement = CubeMapProjMatrix;
 
+    // See D3D11GraphicsEngine::SetCubeFaceFallbackActive(): this path draws each face as an ordinary
+    // single-view pass with no geometry shader bound, so skeletal-NPC draws must not pick VS_ExSkeletalCube/
+    // VS_ExNodeCube (they output world-space position only and rely on GS_Cubemap to produce SV_Position) -
+    // without this flag they'd render nothing at all for the whole duration of this fallback.
+    engine->SetCubeFaceFallbackActive( true );
+
     for ( UINT face = 0; face < 6; ++face ) {
         cr.ViewReplacement = CubeMapViewMatrices[face];
         Engine::GAPI->SetCameraReplacementPtr( &cr );
@@ -765,6 +771,7 @@ void D3D11PointLight::RenderShadowCubeFacePasses(
         }
     }
 
+    engine->SetCubeFaceFallbackActive( false );
     Engine::GAPI->SetCameraReplacementPtr( nullptr );
 }
 
