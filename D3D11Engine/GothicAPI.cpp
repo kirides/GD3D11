@@ -6986,10 +6986,19 @@ static void CollectLeafVobs(
 
         const bool dropStaticLights = Engine::GAPI->GetRendererState().RendererSettings.DisableStaticPointlights;
 
+        // Portal culling for ambient lights: IsStatic() (== IsStaticVobLight) marks ZenGin's
+        // pre-placed atmospheric fills - they never move, so a room no chain of active portals
+        // reaches this frame is safe to skip outright; it picks back up the instant a door opens.
+        // Dynamic/PFX lights (torches, spell effects, the player's own light) are NOT gated here:
+        // they can be carried across sectors and their range test below already bounds the cost.
+        const bool leafPortalVisible = !ctx.portalCuller || ctx.portalCuller->IsLeafVisible( *base );
+
         for ( int i = 0; i < numLights; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
             if ( dropStaticLights && vob->IsStatic() ) continue;
+
+            if ( !leafPortalVisible && vob->IsStatic() ) continue;
 
             // Range test first - it needs nothing but the zCVobLight, and keeping it ahead of the
             // resolve below preserves the original rule that an out-of-range light never causes a
