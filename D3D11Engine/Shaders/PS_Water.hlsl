@@ -5,6 +5,7 @@
 #include <FFFog.h>
 #include <DS_Defines.h>
 #include <DepthReconstruction.h>
+#include <include/MathHelpers.hlsl>
 
 static const float DIST_SMALL_SPEED = -0.01f;
 static const float DIST_SMALL_AMOUNT = 0.01f;
@@ -291,15 +292,14 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 #endif
 	
 	// Darken the scene, to make a wet surface
-	float f = 1-saturate(pow(1-shallowDepth, 8.0f) + clamp(distortionSmall.y * distortionSmall.y, 0.5f, 1.0f));
+	float f = 1-saturate(pow(1-shallowDepth, 8.0f) + clamp(kPow2(distortionSmall.y), 0.5f, 1.0f));
 
 	float3 sceneWet = lerp(sceneClean, sceneClean * 0.01f, f); // Darken border-scene
 	scene = lerp(scene, scene * float3(4, 0.2f, 0.1f) * 0.05f, f); // Darken distorted scene
 	
 	float pxDistance = Input.vTexcoord2.y;
 	scene = lerp(scene, diffuse, 0.73f * max(pow(fresnel,8.0f), 0.5f));
-	float distanceFadeSq = saturate(pxDistance / 35000.0f); distanceFadeSq *= distanceFadeSq;
-	float3 color = lerp(scene, sceneClean, distanceFadeSq * distanceFadeSq);
+	float3 color = lerp(scene, sceneClean, kPow4(saturate(pxDistance / 35000.0f)));
 	color = lerp(color, sceneWet, (1-shallowDepth));
 
 	// Reflection compositing.
@@ -311,8 +311,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// blend entirely, or the water reads as a flat mirror regardless of how you're
 	// looking at it.
 	float NdotV = saturate(dot(-viewDirection, wavesFres));
-	float oneMinusNdotV = 1.0f - NdotV;
-	float reflectFresnel = oneMinusNdotV * oneMinusNdotV * oneMinusNdotV;
+	float reflectFresnel = kPow3(1.0f - NdotV);
 
 	// Waterfalls (surface normal pointing mostly sideways rather than up) get a
 	// strong, distracting reflection because the geometry is nearly vertical while

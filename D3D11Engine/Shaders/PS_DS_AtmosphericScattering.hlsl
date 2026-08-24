@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
 #include "DepthReconstruction.h"
+#include <include/MathHelpers.hlsl>
 
 #include <AtmosphericScattering.h>
 
@@ -324,8 +325,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
     float3 H = normalize(SQ_LightDirectionVS + V);
     float spec = CalcBlinnPhongLighting(normal, H);
-    float lumaForSpecMod = dot(float3(0.333f, 0.333f, 0.333f), diffuse.rgb);
-    float specMod = lumaForSpecMod * lumaForSpecMod;
+    float specMod = kPow2(dot(float3(0.333f, 0.333f, 0.333f), diffuse.rgb));
     
     
 	

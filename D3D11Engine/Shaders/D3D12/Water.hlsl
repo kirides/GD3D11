@@ -27,6 +27,7 @@
 // surface is still geometrically flat; all the wave *shading* below comes from the distortion texture.
 
 #include "include/AtmosphericScattering.hlsl"   // ApplyAtmosphericScatteringGround + the Atmosphere cbuffer (b1)
+#include "../include/MathHelpers.hlsl"
 
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // root constants, VS only
 
@@ -333,15 +334,14 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     }
 
     // Darken the scene, to make a wet surface
-    float f = 1 - saturate( pow( 1 - shallowDepth, 8.0f ) + clamp( distortionSmall.y * distortionSmall.y, 0.5f, 1.0f ) );
+    float f = 1 - saturate( pow( 1 - shallowDepth, 8.0f ) + clamp( kPow2(distortionSmall.y), 0.5f, 1.0f ) );
 
     float3 sceneWet = lerp( sceneClean, sceneClean * 0.01f, f );                       // Darken border-scene
     scene = lerp( scene, scene * float3( 4, 0.2f, 0.1f ) * 0.05f, f );                 // Darken distorted scene
 
     float pxDistance = Input.vz.y;
     scene = lerp( scene, diffuse, 0.73f * max( pow( fresnel, 8.0f ), 0.5f ) );
-    float distanceFadeSq = saturate( pxDistance / 35000.0f ); distanceFadeSq *= distanceFadeSq;
-    float3 color = lerp( scene, sceneClean, distanceFadeSq * distanceFadeSq );
+    float3 color = lerp( scene, sceneClean, kPow4(saturate( pxDistance / 35000.0f )) );
     color = lerp( color, sceneWet, ( 1 - shallowDepth ) );
 
     // Reflection compositing.
@@ -351,8 +351,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     // geometry vs the static cube, chosen above) and gives it a modest boost — it must not override the
     // angle-based blend entirely, or the water reads as a flat mirror regardless of the viewing angle.
     float NdotV = saturate( dot( -viewDirection, wavesFres ) );
-    float oneMinusNdotV = 1.0f - NdotV;
-    float reflectFresnel = oneMinusNdotV * oneMinusNdotV * oneMinusNdotV;
+    float reflectFresnel = kPow3(1.0f - NdotV);
 
     // Waterfalls (surface normal pointing mostly sideways rather than up) get a strong, distracting
     // reflection because the geometry is nearly vertical while the shader still treats it like flat,
