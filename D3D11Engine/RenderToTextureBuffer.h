@@ -334,7 +334,7 @@ struct RenderToDepthStencilBuffer {
     UINT GetSizeY() const { return SizeY; }
     UINT GetSampleCount() const { return SampleCount; }
 
-    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> GetDSVCubemapFace( UINT i ) { return CubeMapDSVs[i].Get(); }
+    const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetDSVCubemapFace( UINT i ) { return CubeMapDSVs[i]; }
 
     //void SetTexture( Microsoft::WRL::ComPtr<ID3D11Texture2D> tx ) { Texture = tx.Get(); }
     //void SetShaderResView( Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv ) { ShaderResView = srv.Get(); }

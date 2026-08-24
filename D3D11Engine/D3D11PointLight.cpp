@@ -253,7 +253,7 @@ void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
 
     ID3D11Texture2D* srcTexture = m_StaticDepthCubemap->GetTexture().Get();
     ID3D11Texture2D* dstTexture = target->GetTexture().Get();
-    auto context = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext();
+    auto context = AsD3D11Engine(Engine::GraphicsEngine)->GetContext();
     if ( !srcTexture || !dstTexture || !context ) {
         return;
     }
@@ -267,7 +267,7 @@ void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
 }
 
 void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
     const float range = LightInfo->Vob->GetLightRange();
 
     auto wc = &WorldMeshCache;
@@ -282,9 +282,8 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
     // draw a huge shadow from the player all around (see SetupVobsToExclude's comment). Restricting these to
     // world-mesh-only casters sidesteps that class of bug entirely instead of needing a more general fix, at
     // the cost of PFX lights never getting VOB/NPC shadows.
-    const unsigned int staticCasterMask = LightInfo->IsPFXVobLight ? SHADOW_CASTER_WORLD
-        : LightInfo->IsStaticVobLight
-        ? SHADOW_CASTER_WORLD // static light? only draw world mesh.
+    const unsigned int staticCasterMask = (LightInfo->IsPFXVobLight || LightInfo->IsStaticVobLight) 
+        ? SHADOW_CASTER_WORLD
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
     const bool excludeSelf = GetHasOriginVob( LightInfo );
@@ -309,7 +308,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
 }
 
 void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
     const float range = LightInfo->Vob->GetLightRange();
 
     const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
@@ -449,7 +448,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 
     //if (!GetAsyncKeyState('X'))
     //	return;
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
+    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine); // TODO: Remove and use newer system!
 
     XMFLOAT3 vobPos = LightInfo->Vob->GetPositionWorld();
     const bool moved = !PositionEqualEps(LastUpdatePosition, vobPos);
@@ -555,7 +554,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 void D3D11PointLight::RenderFullCubemap() {
     if ( !IsReady() )
         return;
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
+    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine); // TODO: Remove and use newer system!
     auto _ = engine->RecordGraphicsEvent( GE_NAME("RenderFullCubemap->RenderFullCubemap") );
 
     RenderToDepthStencilBuffer* activeTarget = GetActiveShadowTarget();
@@ -629,6 +628,10 @@ void D3D11PointLight::RenderFullCubemap() {
     }
 
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
+        ReleaseStaticAsideShadowMap();
+        m_StaticShadowReady = false;
+        m_HasDynamicOverlay = false;
+        
         // Unlike every other mode, FULL never reuses the world-mesh candidate-list cache: it always re-collects
         // and redraws the whole scene fresh (see NeedsUpdate()'s PLS_FULL branch - this runs every frame), which
         // is the entire point of the "no caching shortcuts" escape hatch.
@@ -736,24 +739,23 @@ void D3D11PointLight::RenderShadowCubeFacePasses(
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     const std::move_only_function<bool(const zCVob*) const>* ignoreVob ) {
 
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
     auto _ = engine->RecordGraphicsEvent( GE_NAME( "RenderFullCubemap->RenderShadowCubeFacePasses" ) );
 
     const auto lightPos = LightInfo->Vob->GetPositionWorldXM();
     const float range = LightInfo->Vob->GetLightRange();
+    Frustum f;
+    f.BuildCubemapFace( lightPos, range, 0 ); // cubemap frustum is a sphere. not per face.
+    CameraReplacement cr;
+    cr.frustum = f;
+    XMStoreFloat3( &cr.PositionReplacement, lightPos );
+    cr.ProjectionReplacement = CubeMapProjMatrix;
 
     for ( UINT face = 0; face < 6; ++face ) {
-        CameraReplacement cr;
-        XMStoreFloat3( &cr.PositionReplacement, lightPos );
         cr.ViewReplacement = CubeMapViewMatrices[face];
-        cr.ProjectionReplacement = CubeMapProjMatrix;
-        Frustum f;
-        f.BuildCubemapFace( lightPos, range, face );
-        cr.frustum = f;
-
         Engine::GAPI->SetCameraReplacementPtr( &cr );
 
-        ID3D11DepthStencilView* faceDsv = target.GetDSVCubemapFace( face ).Get();
+        const auto& faceDsv = target.GetDSVCubemapFace( face );
         if ( ignoreVob ) {
             engine->RenderShadowCube( lightPos, range, target, faceDsv, nullptr, false, LightInfo->IsIndoorVob, false,
                 renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask, *ignoreVob );
@@ -771,7 +773,7 @@ void D3D11PointLight::OnRenderLight() {
     if ( !IsReady() || !m_DepthCubemap)
         return;
 
-    m_DepthCubemap->BindToPixelShader( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext(), 3 );
+    m_DepthCubemap->BindToPixelShader( AsD3D11Engine(Engine::GraphicsEngine)->GetContext(), 3 );
 }
 
 /** Called when a vob got removed from the world */

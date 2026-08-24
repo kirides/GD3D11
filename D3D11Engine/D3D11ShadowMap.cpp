@@ -1771,8 +1771,9 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
 /** Renders the shadowmaps for a pointlight */
 void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     FXMVECTOR position, float range,
-    const RenderToDepthStencilBuffer& targetCube, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> face,
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
+    const RenderToDepthStencilBuffer& targetCube,
+    const ComPtr<ID3D11DepthStencilView>& face,
+    const ComPtr<ID3D11RenderTargetView>& debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
@@ -1796,19 +1797,20 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     vp.Height = static_cast<float>(targetCube.GetSizeX());
     m_context->RSSetViewports( 1, &vp );
 
+    ID3D11DepthStencilView*  activeFace = face.Get();
     bool useLayeredPath = false;
-    if ( !face.Get() ) {
+    if ( !activeFace ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering ) {
             useLayeredPath = true;
-            face = targetCube.GetDepthStencilView().Get();
+            activeFace = targetCube.GetDepthStencilView().Get();
 
             // Set layered shader
             graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayered );
         } else {
             // Set cubemap shader
             graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
-            graphicsEngine->GetActiveGS().get()->Apply();
-            face = targetCube.GetDepthStencilView().Get();
+            graphicsEngine->GetActiveGS()->Apply();
+            activeFace = targetCube.GetDepthStencilView().Get();
 
             graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCube );
         }
@@ -1818,24 +1820,24 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     D3D11ENGINE_RENDER_STAGE oldStage = graphicsEngine->GetRenderingStage();
     graphicsEngine->SetRenderingStage( DES_SHADOWMAP_CUBE );
 
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-    m_context->PSSetShaderResources( 3, 1, srv.GetAddressOf() );
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    m_context->PSSetShaderResources( 3, 1, &nullSrv );
 
     if ( !debugRTV.Get() ) {
-        m_context->OMSetRenderTargets( 0, nullptr, face.Get() );
+        m_context->OMSetRenderTargets( 0, nullptr, activeFace );
 
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled =
             true;  // Should be false, but needs to be true for SV_Depth to work
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
     } else {
-        m_context->OMSetRenderTargets( 1, debugRTV.GetAddressOf(), face.Get() );
+        m_context->OMSetRenderTargets( 1, debugRTV.GetAddressOf(), activeFace );
 
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
 
     if ( clearDepth ) {
-        m_context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+        m_context->ClearDepthStencilView( activeFace, D3D11_CLEAR_DEPTH, 1.0f, 0 );
     }
 
     // Draw the world mesh without textures

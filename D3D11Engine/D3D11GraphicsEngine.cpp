@@ -4766,8 +4766,20 @@ void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
 
 void D3D11GraphicsEngine::PreparePerFrameConstantBuffer(VS_ExConstantBuffer_PerFrame& cb)
 {
-    auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    auto& proj = Engine::GAPI->GetProjectionMatrix();
+    if ( auto replacement = Engine::GAPI->GetCameraReplacementPtr() ) {
+        const auto& view = replacement->ViewReplacement;
+        const auto& proj = replacement->ProjectionReplacement;
+
+        cb.View = view;
+        cb.Projection = proj;
+        XMStoreFloat4x4( &cb.ViewProj, XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &view ) ) );
+        cb.PrevViewProj 
+            = cb.UnjitteredViewProj 
+            = cb.ViewProj;
+        return;
+    }
+    const auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const auto& proj = Engine::GAPI->GetProjectionMatrix();
 
     cb.View = view;
     cb.Projection = proj;
@@ -8700,8 +8712,8 @@ BaseLineRenderer* D3D11GraphicsEngine::GetLineRenderer() {
 /** Renders the shadowmaps for a pointlight */
 void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     FXMVECTOR position, float range,
-    const RenderToDepthStencilBuffer& targetCube, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> face,
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
+    const RenderToDepthStencilBuffer& targetCube, const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& face,
+    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
