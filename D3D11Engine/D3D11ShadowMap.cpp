@@ -1813,9 +1813,10 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
             activeFace = targetCube.GetDepthStencilView().Get();
 
             graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCube );
-        } else {
-            graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
         }
+    }
+    if (graphicsEngine->IsCubeFaceFallbackActive()) {
+        graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
     }
 
     // Set the rendering stage
