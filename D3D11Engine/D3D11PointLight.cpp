@@ -173,7 +173,12 @@ void D3D11PointLight::ClearTiledSlot() {
 
 int D3D11PointLight::GetCurrentShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
-    if ( mode > 1 ) {
+    // Only PLS_UPDATE_DYNAMIC downgrades a static-flagged light to PLS_STATIC_ONLY (its round-robin dynamic
+    // overlay would be wasted on something that never animates). PLS_FULL must NOT be downgraded here: it's
+    // the "no caching shortcuts, ever" escape hatch (see the ImGui tooltip: "use if you encounter visual
+    // bugs"), and forcing it to PLS_STATIC_ONLY silently turned it into a permanent one-time bake for every
+    // static/indoor light - the exact "FULL doesn't re-render the static portion" bug this guards against.
+    if ( mode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
         if ( LightInfo->IsStaticVobLight ) {
             return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
         }
@@ -401,6 +406,15 @@ bool D3D11PointLight::NeedsUpdate() {
         return moved || !m_StaticShadowReady || NotYetDrawn();
     }
 
+    if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
+        // PLS_FULL is the brute-force "no caching shortcuts" mode - every other branch above only re-renders
+        // on a real trigger (moved / not-yet-baked). Without this, a perfectly stationary light (most static/
+        // indoor ones) would never be considered to need an update once DrawnOnce latched, and RenderFullCubemap's
+        // PLS_FULL branch (which always draws the full, uncached scene) would simply never get invoked again -
+        // making FULL behave exactly like PLS_STATIC_ONLY for anything that doesn't move.
+        return true;
+    }
+
     return moved || NotYetDrawn();
 }
 
@@ -615,13 +629,15 @@ void D3D11PointLight::RenderFullCubemap() {
     }
 
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
-        auto wc = &WorldMeshCache;
-        if ( WorldCacheInvalid ) {
-            wc = nullptr;
-        }
+        // Unlike every other mode, FULL never reuses the world-mesh candidate-list cache: it always re-collects
+        // and redraws the whole scene fresh (see NeedsUpdate()'s PLS_FULL branch - this runs every frame), which
+        // is the entire point of the "no caching shortcuts" escape hatch.
+        std::vector<std::pair<MeshKey, MeshInfo*>>* wc = nullptr;
 
-        // See RenderStaticShadowPass: PFX lights are restricted to world-mesh casters only.
-        const unsigned int casterMask = LightInfo->IsPFXVobLight ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
+        // See RenderStaticShadowPass: PFX lights, and lights the level marked static, are restricted to
+        // world-mesh casters only - FULL must keep that restriction so a formerly PLS_STATIC_ONLY light's
+        // caster set doesn't suddenly grow VOB/mob/animated shadows it never had before.
+        const unsigned int casterMask = (LightInfo->IsPFXVobLight || LightInfo->IsStaticVobLight) ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
 
         const bool excludeSelf = GetHasOriginVob( LightInfo );
         if ( excludeSelf ) {
@@ -764,8 +780,8 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
     //Engine::GAPI->EnterResourceCriticalSection();
 
     // See if we have this vob registered
-    if ( std::find( VobCache.begin(), VobCache.end(), vob ) != VobCache.end()
-        || std::find( SkeletalVobCache.begin(), SkeletalVobCache.end(), vob ) != SkeletalVobCache.end() ) {
+    if ( std::ranges::contains(VobCache, vob )
+        || std::ranges::contains(SkeletalVobCache, vob ) ) {
         // Clear cache, if so
         VobCache.clear();
         SkeletalVobCache.clear();
