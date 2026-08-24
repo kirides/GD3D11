@@ -8,6 +8,10 @@
 #include "ImGuiEditorView.h"
 #include "MorphGpu.h"
 #include "zCParser.h"
+#include "D3D11PointLight.h"
+#include "BaseLineRenderer.h"
+#include "WorldObjects.h"
+#include "zCVobLight.h"
 #include <sstream>
 #include <map>
 #include <vector>
@@ -266,6 +270,8 @@ void ImGuiShim::BuildFrameUI()
         m_EditorView->Render();
     }
 
+    RenderPointLightShadowDebugWindow();
+
     if ( memcmp( &oldSettings, &Engine::GAPI->GetRendererState().RendererSettings, sizeof( GothicRendererSettings ) ) != 0 ) {
         if ( oldSettings.GraphicsPreset == Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset ) {
             Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
@@ -288,6 +294,203 @@ void ImGuiShim::CallEndFrameScript()
     if ( m_endFrameFn != -1 ) {
         zCParser::GetParser()->CallFunc( m_endFrameFn );
     }
+}
+
+namespace {
+    // Three orthogonal great-circles (XY/XZ/YZ) - a cheap wireframe approximation of a sphere, good enough
+    // to eyeball a light's range/position against the surrounding geometry.
+    void AddDebugWireSphere( BaseLineRenderer* lr, const XMFLOAT3& center, float radius, const XMFLOAT4& color, int segments = 32 ) {
+        if ( !lr || radius <= 0.0f ) {
+            return;
+        }
+        for ( int plane = 0; plane < 3; ++plane ) {
+            XMFLOAT3 prev{};
+            for ( int i = 0; i <= segments; ++i ) {
+                float t = (XM_2PI * static_cast<float>(i)) / static_cast<float>(segments);
+                float c = radius * cosf( t );
+                float s = radius * sinf( t );
+                XMFLOAT3 p;
+                switch ( plane ) {
+                case 0: p = XMFLOAT3( center.x + c, center.y + s, center.z ); break; // XY
+                case 1: p = XMFLOAT3( center.x + c, center.y, center.z + s ); break; // XZ
+                default: p = XMFLOAT3( center.x, center.y + c, center.z + s ); break; // YZ
+                }
+                if ( i > 0 ) {
+                    lr->AddLine( LineVertex( prev, color ), LineVertex( p, color ) );
+                }
+                prev = p;
+            }
+        }
+    }
+
+    // Kept alive across frames purely so ComPtr::Reset() releases the previous frame's SRVs before we
+    // create new ones - these are debug-only, rebuilt every frame the window is open, never bound anywhere
+    // else, so there's no lifetime hazard in just recreating them.
+    std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 6> s_pointLightDebugFaceSRVs;
+
+    void RebuildPointLightDebugFaceSRVs( const Microsoft::WRL::ComPtr<ID3D11Device1>& device, ID3D11Texture2D* tex, UINT baseSlice ) {
+        for ( UINT face = 0; face < 6; ++face ) {
+            D3D11_SHADER_RESOURCE_VIEW_DESC desc = {};
+            desc.Format = DXGI_FORMAT_R16_UNORM;
+            desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+            desc.Texture2DArray.MostDetailedMip = 0;
+            desc.Texture2DArray.MipLevels = 1;
+            desc.Texture2DArray.FirstArraySlice = baseSlice + face;
+            desc.Texture2DArray.ArraySize = 1;
+            s_pointLightDebugFaceSRVs[face].Reset();
+            device->CreateShaderResourceView( tex, &desc, s_pointLightDebugFaceSRVs[face].ReleaseAndGetAddressOf() );
+        }
+    }
+}
+
+/** Debug-only visualization to help diagnose point-light shadow bugs (light bleed/self-occlusion) without
+    guessing blind: draws every active light's range as a wireframe sphere (color-coded by shadow state) and
+    shows the raw shadow-cube depth faces for whichever light is nearest the camera, unfolded as a cross. */
+void ImGuiShim::RenderPointLightShadowDebugWindow() {
+    if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
+        return; // Point-light cube visualization only implemented for the D3D11 backend so far.
+    }
+
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( !settings.DebugSettings.PointLightDebug.Enabled ) {
+        return;
+    }
+
+    BaseLineRenderer* lr = Engine::GraphicsEngine->GetLineRenderer();
+    const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+
+    D3D11PointLight* nearest = nullptr;
+    VobLightInfo* nearestInfo = nullptr;
+    float nearestDistSq = std::numeric_limits<float>::max();
+
+    for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {
+        VobLightInfo* info = vobLightPair.second;
+        if ( !info || !info->Vob || !info->LightShadowBuffers ) {
+            continue;
+        }
+        auto* pl = static_cast<D3D11PointLight*>( info->LightShadowBuffers.get() );
+        const bool hasMap = pl->HasAnyShadowMap();
+
+        const XMFLOAT3 pos = info->Vob->GetPositionWorld();
+        const float range = info->Vob->GetLightRange();
+
+        // Color-codes shadow readiness so a glance shows which lights actually have valid depth data:
+        // red = NO shadow map at all (this light can't cast any shadow - unshadowed/full bleed by design,
+        // not a bias bug), yellow = has a map but the static pass hasn't baked yet, green = static-ready.
+        const XMFLOAT4 color = !hasMap ? XMFLOAT4( 1.0f, 0.2f, 0.2f, 1.0f )
+            : pl->IsStaticShadowReady() ? XMFLOAT4( 0.2f, 1.0f, 0.2f, 1.0f )
+                                         : XMFLOAT4( 1.0f, 1.0f, 0.2f, 1.0f );
+        AddDebugWireSphere( lr, pos, range, color );
+
+        // Nearest-to-camera regardless of shadow-map state: a light without a map is exactly the kind of
+        // thing we need to be able to select and report on, not skip past in favor of a farther light that
+        // happens to have one.
+        const float dx = pos.x - camPos.x, dy = pos.y - camPos.y, dz = pos.z - camPos.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
+        if ( distSq < nearestDistSq ) {
+            nearestDistSq = distSq;
+            nearest = pl;
+            nearestInfo = info;
+        }
+    }
+
+    ImGui::SetNextWindowSize( ImVec2( 620, 620 ), ImGuiCond_FirstUseEver );
+    if ( !ImGui::Begin( "Point Light Shadow Debug" ) ) {
+        ImGui::End();
+        return;
+    }
+
+    if ( !nearest || !nearestInfo ) {
+        ImGui::TextUnformatted( "No point light with an allocated shadow map found nearby." );
+        ImGui::End();
+        return;
+    }
+
+    const XMFLOAT3 pos = nearestInfo->Vob->GetPositionWorld();
+    const float range = nearestInfo->Vob->GetLightRange();
+    const float dist = sqrtf( nearestDistSq );
+
+    ImGui::Text( "Nearest light: pos (%.1f, %.1f, %.1f)  range %.1f  dist-to-cam %.1f", pos.x, pos.y, pos.z, range, dist );
+    ImGui::Text( "zNear %.4f   zFar %.1f", nearest->GetDebugZNear(), nearest->GetDebugZFar() );
+    ImGui::Text( "Resolution %d   DrawnOnce %d   StaticReady %d   DynOverlay %d",
+        nearest->GetShadowMapResolution(), nearest->NotYetDrawn() ? 0 : 1,
+        nearest->IsStaticShadowReady() ? 1 : 0, nearest->HasDynamicShadowOverlay() ? 1 : 0 );
+    ImGui::Text( "Tiled slot %d (lowRes %d)   Legacy cube: %s", nearest->GetTiledSlot(),
+        nearest->IsTiledSlotLowRes() ? 1 : 0, nearest->GetShadowCubeTexture() ? "yes" : "no" );
+    ImGui::Text( "IsPFXVobLight %d   IsStaticVobLight %d", nearestInfo->IsPFXVobLight ? 1 : 0,
+        nearestInfo->IsStaticVobLight ? 1 : 0 );
+    ImGui::Text( "Vob->IsEnabled %d   VisibleInFrame %d   MissingFrames %d", nearestInfo->Vob->IsEnabled() ? 1 : 0,
+        nearestInfo->VisibleInFrame ? 1 : 0, nearest->GetMissingFrames() );
+    ImGui::SetItemTooltip( "IsEnabled is zCVobLight's own on/off bit (isTurnedOn) - if this reads 0 while the\n"
+        "light visually looks lit, the light vob itself is disabled by game/script state and GD3D11\n"
+        "correctly skips it (both lighting and shadowing); the visible glow is coming from something\n"
+        "else (a PFX/flame mesh, an unrelated light). MissingFrames counts consecutive frames this\n"
+        "light has been absent (disabled or out of VisibleInFrame) since its shadow resources were\n"
+        "last held; it only releases its slot past the retention window in DrawPointlightShadows, so a\n"
+        "light that blinks on/off keeps its progress instead of restarting its bake every time." );
+    ImGui::Text( "LastRenderedPosition (%.1f, %.1f, %.1f)", nearestInfo->LastRenderedPosition.x,
+        nearestInfo->LastRenderedPosition.y, nearestInfo->LastRenderedPosition.z );
+    ImGui::SetItemTooltip( "Set by D3D11PointLight::RenderCubemap right after a real render - if this stays\n"
+        "(0,0,0) while DrawnOnce/StaticReady are true, the light is caching a bake that never actually ran." );
+
+    if ( !nearest->HasAnyShadowMap() ) {
+        ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
+            "This light has NO shadow map/tiled slot at all - it lights unshadowed by design\n"
+            "(no caster geometry was ever tested for it), not because of a bias/leak bug.\n"
+            "If this is the light causing the bleed you're chasing, check Vob->IsEnabled above first -\n"
+            "a disabled light is correctly skipped, its glow is coming from something else. Otherwise\n"
+            "look at why it never got a slot: EnablePointlightShadows mode, tiled-slot budget/eviction,\n"
+            "or DrawnOnce never having fired for it yet." );
+        ImGui::End();
+        return;
+    }
+
+    ID3D11Texture2D* cubeTex = nearest->GetShadowCubeTexture();
+    UINT baseSlice = 0;
+    if ( !cubeTex ) {
+        cubeTex = nearest->GetTiledShadowCubeTexture();
+        const int tiledBase = nearest->GetTiledFaceBaseSlice();
+        baseSlice = tiledBase >= 0 ? static_cast<UINT>(tiledBase) : 0;
+    }
+
+    if ( !cubeTex ) {
+        ImGui::TextUnformatted( "No cube texture available for this light yet (not rendered this session)." );
+        ImGui::End();
+        return;
+    }
+
+    const auto& device = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice();
+    RebuildPointLightDebugFaceSRVs( device, cubeTex, baseSlice );
+
+    // Cube faces laid out as an unfolded cross, matching D3D's cubemap face order (+X,-X,+Y,-Y,+Z,-Z).
+    //        [ +Y ]
+    // [ -X ] [ +Z ] [ +X ] [ -Z ]
+    //        [ -Y ]
+    const ImVec2 sz( 110.0f, 110.0f );
+    const char* faceNames[6] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+
+    auto imgAt = [&]( int face ) {
+        if ( s_pointLightDebugFaceSRVs[face] ) {
+            ImGui::Image( (ImTextureID)(intptr_t)s_pointLightDebugFaceSRVs[face].Get(), sz );
+        } else {
+            ImGui::Dummy( sz );
+        }
+        ImGui::SetItemTooltip( "Face %s - raw stored linear distance (white = far/unoccluded, black = near/occluded)", faceNames[face] );
+    };
+
+    ImGui::Dummy( sz ); ImGui::SameLine();
+    imgAt( 2 ); // +Y
+
+    imgAt( 1 ); ImGui::SameLine(); // -X
+    imgAt( 4 ); ImGui::SameLine(); // +Z
+    imgAt( 0 ); ImGui::SameLine(); // +X
+    imgAt( 5 );                    // -Z
+
+    ImGui::Dummy( sz ); ImGui::SameLine();
+    imgAt( 3 ); // -Y
+
+    ImGui::TextUnformatted( "White = unoccluded/far (linear distance/zFar close to 1.0), black = near/occluded." );
+    ImGui::End();
 }
 
 void ImGuiShim::RenderLoop()
@@ -1513,6 +1716,20 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "the per-instance near/far split comes from the cull compute shader when that\n"
             "is on, and from the CPU instance upload when it is off." );
 
+        ImGui::Checkbox( "Optimize meshes on load", &settings.EnableMeshOptimization );
+        ImGui::SetItemTooltip( "Reorder world-section and VOB geometry for GPU vertex-cache/fetch locality\n"
+            "when it is first converted. This is most of what makes a big world slow to load;\n"
+            "turning it off trades some runtime GPU cost for faster loading. Also gates shadow-\n"
+            "index and LOD building below, since both ride the same pass. A world/VOB already\n"
+            "optimized this session is remembered regardless, so this only affects the FIRST\n"
+            "time each one loads. Takes effect on the next world load." );
+        ImGui::BeginDisabled( !settings.EnableMeshOptimization );
+        ImGui::Checkbox( "Build shadow index buffers", &settings.EnableShadowIndexBuffers );
+        ImGui::SetItemTooltip( "Weld a separate, smaller index buffer for shadow passes. Off falls back to\n"
+            "the render index buffer for shadows (more vertex work in the shadow pass, no\n"
+            "visual change) and skips one buffer per sub-mesh. Takes effect on the next world load." );
+        ImGui::EndDisabled();
+
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
@@ -1892,6 +2109,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             }
 
             if (ImGui::BeginTabItem("Shadows", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("Point light shadow debug (D3D11)", &settings.DebugSettings.PointLightDebug.Enabled );
+                ImGui::SetItemTooltip("Draws a wireframe range-sphere at every active point light and opens a window\n"
+                                      "showing stats + the raw shadow-cube faces for whichever light is nearest the camera.");
+
                 ImGui::Checkbox("Lazy update", &settings.DebugSettings.ShadowCascades.LazyCascadeUpdate );
                 ImGui::SetItemTooltip("Update last cascades less frequently to improve performance, may cause uneven frametimes");
 

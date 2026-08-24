@@ -24,6 +24,7 @@
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
+#include "MeshOptimizeCache.h"
 #include "SharedVisualRegistry.h"
 #include "AsyncVisualExtractor.h"
 #include "MorphBlend.h"
@@ -49,6 +50,45 @@ namespace {
             meshInfo->ShadowIndices.size() * sizeof( VERTEX_INDEX ),
             D3D11VertexBuffer::B_INDEXBUFFER,
             D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
+    /** Runs OptimizeFaces + OptimizeVertices for one sub-mesh, honoring RendererSettings.
+        EnableMeshOptimization/EnableShadowIndexBuffers and reusing a prior lookup's result for
+        byte-identical input this session (MeshOptimizeCache.h) - the sole call site for both.
+
+        Turning EnableMeshOptimization off leaves indices/vertices in their as-authored order (correct,
+        just worse GPU vertex-cache/fetch locality) and shadowIndices/lodIndices empty, which every
+        consumer already reads as "use the render buffer / no reduced level" - see
+        MeshShadowIndexBuilder.h and MeshLodBuilder.h. `lodIndices` is passed through as-is (null on
+        every D3D11 call site, matching LodIndices being D3D12-only - see WorldObjects.h). */
+    void OptimizeMeshBuffers( GfxVertexBuffer* vertexBuffer, std::vector<VERTEX_INDEX>& indices,
+        std::vector<ExVertexStruct>& vertices, std::vector<VERTEX_INDEX>* shadowIndices,
+        std::vector<VERTEX_INDEX>* lodIndices ) {
+        if ( shadowIndices ) {
+            shadowIndices->clear();
+        }
+        if ( lodIndices ) {
+            lodIndices->clear();
+        }
+
+        const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( !s.EnableMeshOptimization || indices.empty() || vertices.empty() ) {
+            return;
+        }
+
+        std::vector<VERTEX_INDEX>* const wantShadow = s.EnableShadowIndexBuffers ? shadowIndices : nullptr;
+
+        const uint64_t key = MeshOptimizeCache::Hash( indices, vertices, wantShadow != nullptr, lodIndices != nullptr );
+        if ( MeshOptimizeCache::TryGet( key, indices, vertices, wantShadow, lodIndices ) ) {
+            return;
+        }
+
+        vertexBuffer->OptimizeFaces( indices.data(), reinterpret_cast<byte*>(vertices.data()),
+            indices.size(), vertices.size(), sizeof( ExVertexStruct ) );
+        vertexBuffer->OptimizeVertices( indices.data(), reinterpret_cast<byte*>(vertices.data()),
+            indices.size(), vertices.size(), sizeof( ExVertexStruct ), wantShadow, lodIndices );
+
+        MeshOptimizeCache::Put( key, indices, vertices, wantShadow, lodIndices );
     }
 
     /** ZENGIN's zPMINDEX_NONE: terminator of a WedgeMap collapse chain. */
@@ -277,20 +317,8 @@ namespace {
         // because they move the whole ExVertexStruct stride, including Tangent).
         GenerateTangents( mesh->Vertices, mesh->Indices );
 
-        // Optimize faces
-        mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
-            reinterpret_cast<byte*>(&mesh->Vertices[0]),
-            mesh->Indices.size(),
-            mesh->Vertices.size(),
-            sizeof( ExVertexStruct ) );
-
-        // Then optimize vertices
-        mesh->MeshVertexBuffer->OptimizeVertices( &mesh->Indices[0],
-            reinterpret_cast<byte*>(&mesh->Vertices[0]),
-            mesh->Indices.size(),
-            mesh->Vertices.size(),
-            sizeof( ExVertexStruct ),
-            &mesh->ShadowIndices );
+        // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+        OptimizeMeshBuffers( mesh->MeshVertexBuffer.get(), mesh->Indices, mesh->Vertices, &mesh->ShadowIndices, nullptr );
 
         // Init and fill them
         mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -460,18 +488,9 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
 
-        // Optimize index and vertex locality before uploading immutable buffers.
-        it.second->MeshVertexBuffer->OptimizeFaces( it.second->Indices.data(),
-            reinterpret_cast<byte*>( it.second->Vertices.data() ),
-            it.second->Indices.size(),
-            it.second->Vertices.size(),
-            sizeof( ExVertexStruct ) );
-        it.second->MeshVertexBuffer->OptimizeVertices( it.second->Indices.data(),
-            reinterpret_cast<byte*>( it.second->Vertices.data() ),
-            it.second->Indices.size(),
-            it.second->Vertices.size(),
-            sizeof( ExVertexStruct ),
-            &it.second->ShadowIndices );
+        // Optimize index and vertex locality before uploading immutable buffers (optional).
+        OptimizeMeshBuffers( it.second->MeshVertexBuffer.get(), it.second->Indices, it.second->Vertices,
+            &it.second->ShadowIndices, nullptr );
 
         // Init and fill them
         it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -492,9 +511,10 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
     // Check if we have this file cached
     bool loadedFromCache = false;
-    if ( Toolbox::FileExists( (file + ".mcache").c_str() ) ) {
+    std::string fileName = file + ".mcache";
+    if ( Toolbox::FileExists( fileName ) ) {
         // Load the meshfile, cached
-        if ( mesh->LoadMesh( (file + ".mcache").c_str(), worldScale ) == XR_SUCCESS ) {
+        if ( mesh->LoadMesh( fileName, worldScale ) == XR_SUCCESS ) {
             loadedFromCache = true;
         } else {
             // Incompatible/stale cache (e.g. vertex-format version bump): discard and rebuild.
@@ -592,7 +612,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             bbmax.y = bbmax.y < v[0]->Position.y ? v[0]->Position.y : bbmax.y;
             bbmax.z = bbmax.z < v[0]->Position.z ? v[0]->Position.z : bbmax.z;
 
-            if ( section.WorldMeshes.find( key ) == section.WorldMeshes.end() ) {
+            if (!section.WorldMeshes.contains( key ) ) {
                 key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Material );
 
                 section.WorldMeshes[key] = new WorldMeshInfo;
@@ -609,7 +629,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     if ( !missingTextures.empty() ) {
         std::string ms = "\nMissing materials for custom-mesh:\n";
 
-        for ( auto it = missingTextures.begin(); it != missingTextures.end(); it++ ) {
+        for ( auto it = missingTextures.begin(); it != missingTextures.end(); ++it ) {
             ms += "\t" + (*it) + "\n";
         }
 
@@ -648,20 +668,9 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
 
-                // Optimize faces
-                it.second->MeshVertexBuffer->OptimizeFaces( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ) );
-
-                // Then optimize vertices
-                it.second->MeshVertexBuffer->OptimizeVertices( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ),
-                    &it.second->ShadowIndices );
+                // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+                OptimizeMeshBuffers( it.second->MeshVertexBuffer.get(), it.second->Indices, it.second->Vertices,
+                    &it.second->ShadowIndices, nullptr );
 
                 // Init and fill them
                 it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1439,18 +1448,8 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-        // Optimize static submesh ordering for better cache and vertex fetch locality.
-        mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
-            reinterpret_cast<byte*>( mi->Vertices.data() ),
-            mi->Indices.size(),
-            mi->Vertices.size(),
-            sizeof( ExVertexStruct ) );
-        mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
-            reinterpret_cast<byte*>( mi->Vertices.data() ),
-            mi->Indices.size(),
-            mi->Vertices.size(),
-            sizeof( ExVertexStruct ),
-            &mi->ShadowIndices );
+        // Optimize static submesh ordering for better cache and vertex fetch locality (optional).
+        OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
 
         // Init and fill it
         mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
@@ -1620,45 +1619,22 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMes
 }
 
 /** Extracts a zCProgMeshProto from a zCModel */
-void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo ) {
-    ZoneScoped;
-
-    XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
-    XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
-
-    std::list<std::vector<ExVertexStruct>*> vertexBuffers;
-    std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
-    std::list<MeshInfo*> meshInfos;
-
-    model->UpdateAttachedVobs();
-    model->UpdateMeshLibTexAniState();
-
-    const std::string_view visualName = model->GetModelName();
-    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
-    for ( int i = 0; i < nodeList->NumInArray; i++ ) {
-        zCModelNodeInst* node = nodeList->Array[i];
-        if ( !node->NodeVisual )
-            continue;
-
-        const char* ext = node->NodeVisual->GetFileExtension( 0 );
-
-        bool isMMS = strcmp( ext, ".MMS" ) == 0;
-        if ( !isMMS && strcmp( ext, ".3DS" ) != 0 )
-            continue;
-
-        zCProgMeshProto* visual = static_cast<zCProgMeshProto*>(node->NodeVisual);
-        if ( isMMS ) {
-            visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
-        }
+namespace {
+    /** Converts one node's submeshes (indices/vertices, meshopt optimization, buffer creation) and appends
+        the result into meshInfo/vertexBuffers/indexBuffers/meshInfos. Shared by ExtractProgMeshProtoFromModel
+        (main thread) and ExtractProgMeshProtoFromModelAsync's worker job - 'nodeTrafoObjToCam' is a snapshot
+        of node->TrafoObjToCam rather than the live node, since the async path may run this after the node
+        list has moved on (see ExtractProgMeshProtoFromModelAsync). Nothing in here touches ZENGIN state,
+        matching what Extract3DSMeshFromVisual2 (also worker-called) already relies on for CreateVertexBuffer/
+        GetRendererState/GetMaterialInfoFrom. */
+    void ConvertModelNodeSubmeshes( zCProgMeshProto* visual, const XMFLOAT4X4& nodeTrafoObjToCam,
+            const std::string& visualName, MeshVisualInfo* meshInfo,
+            std::list<std::vector<ExVertexStruct>*>& vertexBuffers,
+            std::list<std::vector<VERTEX_INDEX>*>& indexBuffers,
+            std::list<MeshInfo*>& meshInfos,
+            XMFLOAT3& bbmin, XMFLOAT3& bbmax ) {
         XMFLOAT3* posList = visual->GetPositionList()->Array;
-
-        // Calculate transform for this node
-        zCModelNodeInst* parent = node->ParentNode;
-        if ( parent ) {
-            XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
-        } else {
-            node->TrafoObjToCam = node->Trafo;
-        }
+        XMMATRIX nodeTrafo = XMMatrixTranspose( XMLoadFloat4x4( &nodeTrafoObjToCam ) );
 
         std::vector<ExVertexStruct> vertices;
         std::vector<VERTEX_INDEX> indices;
@@ -1685,7 +1661,6 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vertices.emplace_back();
 
                 ExVertexStruct& vx = vertices.back();
-                XMMATRIX nodeTrafo = XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) );
                 XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), nodeTrafo ) );
                 vx.TexCoord = wedge.texUV;
                 // The position bakes the node's bind-pose transform in (above); the normal must rotate by the SAME
@@ -1728,20 +1703,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-            // Optimize faces
-            mi->MeshVertexBuffer->OptimizeFaces( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ) );
-
-            // Then optimize vertices
-            mi->MeshVertexBuffer->OptimizeVertices( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ),
-                &mi->ShadowIndices );
+            // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1770,39 +1733,94 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
         }
     }
 
-    std::vector<ExVertexStruct> wrappedVertices;
-    std::vector<unsigned int> wrappedIndices;
-    std::vector<unsigned int> offsets;
+    /** Wraps up a MeshVisualInfo once every node's submeshes have been converted: builds the fat
+        vertex/index buffer offsets and the bounding box/Visual/VisualName fields. Shared tail of
+        ExtractProgMeshProtoFromModel and ExtractProgMeshProtoFromModelAsync's worker job. */
+    void FinishProgMeshProtoFromModel( MeshVisualInfo* meshInfo, zCVisual* visual, const std::string& visualName,
+            std::list<std::vector<ExVertexStruct>*>& vertexBuffers,
+            std::list<std::vector<VERTEX_INDEX>*>& indexBuffers,
+            std::list<MeshInfo*>& meshInfos,
+            XMFLOAT3 bbmin, XMFLOAT3 bbmax ) {
+        std::vector<ExVertexStruct> wrappedVertices;
+        std::vector<unsigned int> wrappedIndices;
+        std::vector<unsigned int> offsets;
 
-    if ( !vertexBuffers.empty() ) {
-        // Calculate fat vertexbuffer
-        WorldConverter::WrapVertexBuffers( vertexBuffers, indexBuffers, wrappedVertices, wrappedIndices, offsets );
+        if ( !vertexBuffers.empty() ) {
+            // Calculate fat vertexbuffer
+            WorldConverter::WrapVertexBuffers( vertexBuffers, indexBuffers, wrappedVertices, wrappedIndices, offsets );
 
-        // Propergate the offsets
-        int i = 0;
-        for ( auto const& it : meshInfos ) {
-            it->BaseIndexLocation = offsets[i++];
+            // Propergate the offsets
+            int i = 0;
+            for ( auto const& it : meshInfos ) {
+                it->BaseIndexLocation = offsets[i++];
+            }
+
+            // FullMesh's buffers are gone - see the note in Extract3DSMeshFromVisual2. Nothing ever bound
+            // them; only BaseIndexLocation above is actually consumed.
         }
 
-        // FullMesh's buffers are gone - see the note in Extract3DSMeshFromVisual2. Nothing ever bound
-        // them; only BaseIndexLocation above is actually consumed.
+        // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
+        // seeds would otherwise survive into MeshSize as an infinity, and MeshSize drives
+        // the small-vob/draw-distance and pointlight-shadow cull radii.
+        if ( vertexBuffers.empty() ) {
+            bbmin = XMFLOAT3( 0, 0, 0 );
+            bbmax = XMFLOAT3( 0, 0, 0 );
+        }
+
+        meshInfo->BBox.Min = bbmin;
+        meshInfo->BBox.Max = bbmax;
+        XMStoreFloat( &meshInfo->MeshSize, XMVector3Length( (XMLoadFloat3( &bbmin ) - XMLoadFloat3( &bbmax )) ) );
+        XMStoreFloat3( &meshInfo->MidPoint, 0.5f * (XMLoadFloat3( &bbmin ) + XMLoadFloat3( &bbmax )) );
+
+        meshInfo->Visual = visual;
+        meshInfo->VisualName = visualName;
+    }
+}
+
+void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
+    XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
+    XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+
+    std::list<std::vector<ExVertexStruct>*> vertexBuffers;
+    std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
+    std::list<MeshInfo*> meshInfos;
+
+    model->UpdateAttachedVobs();
+    model->UpdateMeshLibTexAniState();
+
+    const std::string visualName( model->GetModelName() );
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    for ( int i = 0; i < nodeList->NumInArray; i++ ) {
+        zCModelNodeInst* node = nodeList->Array[i];
+        if ( !node->NodeVisual )
+            continue;
+
+        const char* ext = node->NodeVisual->GetFileExtension( 0 );
+
+        bool isMMS = strcmp( ext, ".MMS" ) == 0;
+        if ( !isMMS && strcmp( ext, ".3DS" ) != 0 )
+            continue;
+
+        zCProgMeshProto* visual = static_cast<zCProgMeshProto*>(node->NodeVisual);
+        if ( isMMS ) {
+            visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
+        }
+
+        // Calculate transform for this node
+        zCModelNodeInst* parent = node->ParentNode;
+        if ( parent ) {
+            XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
+        } else {
+            node->TrafoObjToCam = node->Trafo;
+        }
+
+        ConvertModelNodeSubmeshes( visual, node->TrafoObjToCam, visualName, meshInfo,
+            vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
     }
 
-    // No usable node visual at all: leave a degenerate-but-finite box. The ±FLT_MAX
-    // seeds would otherwise survive into MeshSize as an infinity, and MeshSize drives
-    // the small-vob/draw-distance and pointlight-shadow cull radii.
-    if ( vertexBuffers.empty() ) {
-        bbmin = XMFLOAT3( 0, 0, 0 );
-        bbmax = XMFLOAT3( 0, 0, 0 );
-    }
-
-    meshInfo->BBox.Min = bbmin;
-    meshInfo->BBox.Max = bbmax;
-    XMStoreFloat( &meshInfo->MeshSize, XMVector3Length( (XMLoadFloat3( &bbmin ) - XMLoadFloat3( &bbmax )) ) );
-    XMStoreFloat3( &meshInfo->MidPoint, 0.5f * (XMLoadFloat3( &bbmin ) + XMLoadFloat3( &bbmax )) );
-
-    meshInfo->Visual = model;
-    meshInfo->VisualName = visualName;
+    FinishProgMeshProtoFromModel( meshInfo, model, visualName, vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
 }
 
 /** Extracts a zCProgMeshProto from a zCMesh */
@@ -1865,18 +1883,8 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-    // Optimize static mesh ordering for better cache and vertex fetch locality.
-    mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
-        reinterpret_cast<byte*>( mi->Vertices.data() ),
-        mi->Indices.size(),
-        mi->Vertices.size(),
-        sizeof( ExVertexStruct ) );
-    mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
-        reinterpret_cast<byte*>( mi->Vertices.data() ),
-        mi->Indices.size(),
-        mi->Vertices.size(),
-        sizeof( ExVertexStruct ),
-        &mi->ShadowIndices );
+    // Optimize static mesh ordering for better cache and vertex fetch locality (optional).
+    OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
 
     // Init and fill it
     mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
@@ -2158,6 +2166,89 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
     s_PendingNodeVisuals.emplace_back( mi, nodeVisual, std::move( task ) );
 }
 
+/** Same as ExtractProgMeshProtoFromModel, but hands the meshoptimizer/buffer-creation part to a worker
+    thread. See the header for the contract. */
+void WorldConverter::ExtractProgMeshProtoFromModelAsync( zCModel* model, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
+    if ( !Engine::WorkerThreadPool ) {
+        ExtractProgMeshProtoFromModel( model, meshInfo );
+        return;
+    }
+
+    model->UpdateAttachedVobs();
+    model->UpdateMeshLibTexAniState();
+
+    // Snapshot every eligible node's (visual, bind-pose transform) up front: node->TrafoObjToCam is
+    // ZENGIN state that must be computed here on the game thread, but reading it back out of the node
+    // later from a worker would race the animation system. The submesh conversion itself only reads
+    // the visual's own wedge/position arrays, which - like Extract3DSMeshFromVisual2's - are written
+    // once at load and safe to read off-thread.
+    struct ModelNodeMeshSource {
+        zCProgMeshProto* Visual;
+        XMFLOAT4X4 Trafo;
+    };
+    std::vector<ModelNodeMeshSource> sources;
+
+    const std::string visualName( model->GetModelName() );
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    for ( int i = 0; i < nodeList->NumInArray; i++ ) {
+        zCModelNodeInst* node = nodeList->Array[i];
+        if ( !node->NodeVisual )
+            continue;
+
+        const char* ext = node->NodeVisual->GetFileExtension( 0 );
+
+        bool isMMS = strcmp( ext, ".MMS" ) == 0;
+        if ( !isMMS && strcmp( ext, ".3DS" ) != 0 )
+            continue;
+
+        zCProgMeshProto* visual = static_cast<zCProgMeshProto*>(node->NodeVisual);
+        if ( isMMS ) {
+            visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
+        }
+
+        zCModelNodeInst* parent = node->ParentNode;
+        if ( parent ) {
+            XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
+        } else {
+            node->TrafoObjToCam = node->Trafo;
+        }
+
+        sources.push_back( { visual, node->TrafoObjToCam } );
+    }
+
+    meshInfo->Ready.store( false, std::memory_order_relaxed );
+
+    // Keep the model (and therefore every node visual it still owns) alive for the worker's duration.
+    zCObject_AddRef( model );
+
+    auto task = Engine::WorkerThreadPool->enqueue( [sources = std::move( sources ), meshInfo, visualName, model]
+            ( const std::stop_token& token ) {
+        // Unlike ExtractNodeVisualAsync's job, 'meshInfo' lives in a long-lived map (GothicAPI::
+        // ParticleEffectProgMeshes / StaticMeshVisuals) that only (re-)triggers extraction when no entry
+        // exists yet - see Extract3DSMeshFromVisual2Async for why cancellation must not skip the work.
+        XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
+        XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+
+        std::list<std::vector<ExVertexStruct>*> vertexBuffers;
+        std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
+        std::list<MeshInfo*> meshInfos;
+
+        for ( const auto& source : sources ) {
+            ConvertModelNodeSubmeshes( source.Visual, source.Trafo, visualName, meshInfo,
+                vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
+        }
+
+        FinishProgMeshProtoFromModel( meshInfo, model, visualName, vertexBuffers, indexBuffers, meshInfos, bbmin, bbmax );
+        meshInfo->Ready.store( true, std::memory_order_release );
+    } );
+
+    std::scoped_lock lock( s_PendingNodeVisualsMutex );
+    PruneFinishedNodeVisualsLocked();
+    s_PendingNodeVisuals.emplace_back( meshInfo, static_cast<zCVisual*>( model ), std::move( task ) );
+}
+
 void WorldConverter::Extract3DSMeshFromVisual2Async( zCVisual* holdVisual, zCProgMeshProto* pm, MeshVisualInfo* meshInfo ) {
     ZoneScoped;
 
@@ -2390,20 +2481,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             // the backend closest to the 32-bit VA ceiling. Asking for no LOD skips the meshopt
             // simplification pass and leaves LodIndices empty, so nothing downstream allocates.
 
-            // Optimize faces
-            mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ) );
-
-            // Then optimize vertices
-            mi->MeshVertexBuffer->OptimizeVertices( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
-                mi->Indices.size(),
-                mi->Vertices.size(),
-                sizeof( ExVertexStruct ),
-                &mi->ShadowIndices,
+            // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
+            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices,
                 Engine::IsD3D12Backend ? &mi->LodIndices : nullptr );
 
             // Init and fill it

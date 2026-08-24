@@ -1092,17 +1092,21 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// each winner's ShadowCubeIndex back into the GPU light struct. See D3D12PointShadows.h.
 	m_PointShadows.SelectShadowedLights( dst, count, s_lightKeys );
 
-	// ---- Range clamp for static lights that ended up WITHOUT a cube --------------------------------------
+	// ---- Range clamp for lights that ended up WITHOUT a cube ----------------------------------------------
 	// Runs after selection because only now is "did this light get a cube" known. Shrinking Range shrinks the
 	// light's whole sphere, so the tiled cull stops assigning it to distant tiles too — the bleed and its
-	// culling cost go away together. Dynamic lights are never clamped: they are few, they get the full-res
-	// tier, and a moving light that suddenly changed radius would be far more noticeable than a static one.
+	// culling cost go away together. Outdoor dynamic lights are never clamped: they are few, get the full-res
+	// tier, and open air has no walls to bleed through. INDOOR lights DO get clamped even when isStatic() is
+	// false: zCVobLight's "static" bit is Gothic's own IsStatic() (color-animated fine, never repositioned),
+	// so a candle or brazier with a colour animation reads as non-static and would otherwise bleed through
+	// walls completely unshadowed for as long as it never wins a cube - same failure mode as an atmospheric
+	// fill light, just reached through a different flag.
 	// s_cands is parallel to dst[] for i < count (the fill loop walks it in order and only ever breaks).
 	constexpr float kUnshadowedStaticScale = 0.35f;        // still lights its own alcove; can't reach the next room
 	constexpr float kIndoorSeenFromOutsideScale = 0.15f;   // the worst bleed case — clamp it much harder
 	for ( UINT i = 0; i < count; ++i ) {
 		if ( dst[i].ShadowCubeIndex >= 0 ) continue;   // shadowed: correctly occluded, leave it alone
-		if ( !s_cands[i].isStatic ) continue;
+		if ( !s_cands[i].isStatic && !s_cands[i].isIndoor ) continue;
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.
 		const bool leakingOutdoors = s_cands[i].isIndoor && !cameraIndoors;

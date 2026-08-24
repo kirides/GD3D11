@@ -826,6 +826,8 @@ struct GothicRendererSettings {
         DoZPrepass = false;
         SortRenderQueue = false;
         DrawThreaded = false;
+        EnableMeshOptimization = true;
+        EnableShadowIndexBuffers = true;
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
@@ -1107,6 +1109,18 @@ struct GothicRendererSettings {
     bool EnableHorizonCulling;
     bool SortRenderQueue;
     bool DrawThreaded;
+    /** Run meshoptimizer's vertex-cache/fetch reorder (+ face reorder) on world sections and VOB
+        sub-meshes at load time. This is most of what makes big worlds slow to load; off leaves geometry
+        in its as-authored order (correct, just worse GPU vertex-cache/fetch locality at runtime). Also
+        gates shadow-index welding and LOD simplification, both byproducts of the same pass - see
+        EnableShadowIndexBuffers. A world/VOB set already optimized this session is memoized regardless
+        (MeshOptimizeCache.h), so this only controls whether the FIRST load in a session pays for it. */
+    bool EnableMeshOptimization;
+    /** Build the separate welded shadow index buffer (MeshShadowIndexBuilder.h) when
+        EnableMeshOptimization is on. Off falls back to the render index buffer for shadow passes
+        (slightly more shadow-map vertex work, no alpha-test capability loss - see
+        MeshShadowIndexBuilder.h) in exchange for skipping the weld and one buffer per sub-mesh. */
+    bool EnableShadowIndexBuffers;
     EPointLightShadowMode EnablePointlightShadows;
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
@@ -1355,6 +1369,12 @@ struct GothicRendererSettings {
             bool GenerateAONormalsFromDepth; // Forward+: build smooth normals from depth for SAO/ASSAO
             bool ForceFeatureLevel10;
         } FeatureSet;
+        struct {
+            // Draws a wireframe range-sphere at every active point light and opens an ImGui window with
+            // stats + the raw shadow-cube faces (unwrapped as a cross) for whichever light is nearest the
+            // camera. See ImGuiShim::RenderPointLightShadowDebugWindow.
+            bool Enabled;
+        } PointLightDebug;
     } DebugSettings;
 
     bool GetIsTAAEnabled() const {

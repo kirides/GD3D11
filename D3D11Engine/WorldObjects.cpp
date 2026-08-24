@@ -109,7 +109,7 @@ SkeletalMeshInfo::~SkeletalMeshInfo() {
 
 /** Clears the cache for the given progmesh */
 void SectionInstanceCache::ClearCacheForStatic( MeshVisualInfo* pm ) {
-    if ( InstanceCache.find( pm ) != InstanceCache.end() ) {
+    if ( InstanceCache.contains( pm ) ) {
         InstanceCache[pm].reset();
         InstanceCacheData[pm].clear();
     }

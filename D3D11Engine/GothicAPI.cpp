@@ -48,6 +48,8 @@
 #include "zCView.h"
 
 // TODO: REMOVE THIS!
+#include <ranges>
+
 #include "D3D11GraphicsEngine.h"
 #include "D3D11PipelineStateCache.h"
 #include "MeshManager.h"
@@ -1967,9 +1969,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     }
 
     // Check every extension
-    for ( unsigned int i = 0; i < extv.size(); i++ ) {
-        std::string& ext = extv[i];
-
+    for (auto& ext : extv) {
         // Delete according to the type
         if ( ext == ".3DS" ) {
             // Clear the visual from all vobs (TODO: This may be slow!)
@@ -2397,9 +2397,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
         PolyStripVisuals.insert( reinterpret_cast<zCPolyStrip*>(vob->GetVisual()) );
     }
 
-    for ( unsigned int i = 0; i < extv.size(); i++ ) {
-        std::string ext = extv[i];
-
+    for (auto ext : extv) {
         if ( ext == ".3DS" || ext == ".MMS" ) {
             zCProgMeshProto* pm;
             if ( ext == ".3DS" )
@@ -3053,14 +3051,18 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                     for ( auto const& itm : mvi->Meshes ) {
                         // no texture binding for shadowmap
+                        zCTexture* aniTex = nullptr;
+                        if ( !itm.first || !(aniTex = itm.first->GetAniTexture()) ) {
+                            continue;
+                        }
 
-                        if ( lastTex != itm.first->GetAniTexture() ) {
-                            if ( itm.first->GetAniTexture()->GetCacheState() != zRES_CACHED_IN ) {
+                        if ( lastTex != aniTex ) {
+                            if ( aniTex->GetCacheState() != zRES_CACHED_IN ) {
                                 continue;
                             }
-                            if ( itm.first->HasAlphaTest() || itm.first->GetAniTexture()->HasAlphaChannel() ) {
-                                itm.first->GetAniTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                lastTex = itm.first->GetAniTexture();
+                            if ( itm.first->HasAlphaTest() || aniTex->HasAlphaChannel() ) {
+                                aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                lastTex = aniTex;
                             } else if ( isCube ) {
                                 g->GetWhiteTexture()->BindToPixelShader( 0 );
                                 lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
@@ -3526,7 +3528,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
         // Get texture
         zCTexture* texture = nullptr;
         if ( zCParticleEmitter* emitter = fx->GetEmitter() ) {
-            if ( emitter->GetVisShpType() == 5 && ParticleEffectProgMeshes.find(source) == ParticleEffectProgMeshes.end() ) {
+            if ( emitter->GetVisShpType() == 5 && !ParticleEffectProgMeshes.contains(source) ) {
                 AddParticleEffect( source );
             }
             if ( (texture = emitter->GetVisTexture( pfx )) != nullptr ) {
@@ -3679,10 +3681,10 @@ void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
     vx[5].Color = vx[1].Color;
     vx[4].Color = vx[2].Color;
 
-    for ( int i = 0; i < 6; i++ ) {
-        vx[i].Position.x += pos.x;
-        vx[i].Position.y += pos.y;
-        vx[i].Position.z += pos.z;
+    for (auto& i : vx) {
+        i.Position.x += pos.x;
+        i.Position.y += pos.y;
+        i.Position.z += pos.z;
     }
 
     vxb->UpdateBuffer( vx );
@@ -3900,39 +3902,39 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 
     int numProcessed = 0;
     for ( auto const& bit : hitSections ) {
-        for ( auto it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
+        for (auto& worldMesh : bit.first->WorldMeshes) {
             float u, v, t;
 
             // Positions come from the slim CPU copy the world mesh keeps instead of the full vertices.
-            const std::vector<WorldVertexCPU>& verts = it->second->CpuVertices;
+            const std::vector<WorldVertexCPU>& verts = worldMesh.second->CpuVertices;
             if ( verts.empty() ) {
                 continue;
             }
 
-            for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( verts[it->second->Indices[i]].Position,
-                    verts[it->second->Indices[i + 1]].Position,
-                    verts[it->second->Indices[i + 2]].Position,
+            for ( unsigned int i = 0; i < worldMesh.second->Indices.size(); i += 3 ) {
+                if ( Toolbox::IntersectTri( verts[worldMesh.second->Indices[i]].Position,
+                    verts[worldMesh.second->Indices[i + 1]].Position,
+                    verts[worldMesh.second->Indices[i + 2]].Position,
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
 
                         if ( hitTriangle ) {
-                            hitTriangle[0] = verts[it->second->Indices[i]].Position;
-                            hitTriangle[1] = verts[it->second->Indices[i + 1]].Position;
-                            hitTriangle[2] = verts[it->second->Indices[i + 2]].Position;
+                            hitTriangle[0] = verts[worldMesh.second->Indices[i]].Position;
+                            hitTriangle[1] = verts[worldMesh.second->Indices[i + 1]].Position;
+                            hitTriangle[2] = verts[worldMesh.second->Indices[i + 2]].Position;
                         }
 
                         if ( hitMesh ) {
-                            *hitMesh = it->second;
+                            *hitMesh = worldMesh.second;
                         }
 
                         if ( hitMaterial ) {
-                            *hitMaterial = it->first.Material;
+                            *hitMaterial = worldMesh.first.Material;
                         }
 
-                        if ( hitTextureName && it->first.Material && it->first.Material->GetTextureSingle() )
-                            *hitTextureName = it->first.Material->GetTextureSingle()->GetNameWithoutExt();
+                        if ( hitTextureName && worldMesh.first.Material && worldMesh.first.Material->GetTextureSingle() )
+                            *hitTextureName = worldMesh.first.Material->GetTextureSingle()->GetNameWithoutExt();
                     }
                 }
             }
@@ -4619,20 +4621,28 @@ void GothicAPI::CollectVisibleVobs(
         renderQueue.lights.clear();
 
         const bool lightUpdateEnabled = RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+        const bool lightShadowsEnabled = RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY;
         for ( auto [distSq, vi] : lightWithDist ) {
             renderQueue.lights.push_back( vi );
             vi->VisibleInFrame = true;
 
-            // Update the lights shadows if: Light is dynamic or full shadow-updates are set
-            if ( !vi->IsPFXVobLight ) {
-                // TODO: should things like "light-spell" also cast shadows?
-                // i mean, we make torches cast them, why not also spells?
-                if ( lightUpdateEnabled && !vi->Vob->IsStatic() ) {
-                    const float lightRange = vi->Vob->GetLightRange();
-                    if ( lightRange > minDynamicUpdateLightRange && distSq < (lightRange * lightRange) )
-                        vi->UpdateShadows = true;
+            if ( lightUpdateEnabled ) {
+                // things like candles MUST also draw shadow cubes, otherwise they shine through walls.
+                const float lightRange = vi->Vob->GetLightRange();
+
+                // force light update for static/pfx lights, well anyone who hasent managed to get its shadow at least once
+                // otherwise we get ugly light bleeding from stuff like torches or spellFx
+                if ( distSq < (lightRange * lightRange) )
+                    vi->UpdateShadows = true;
+            }
+            // not else!
+            if ( lightShadowsEnabled ) {
+                // just always update static lights, they should be pretty cheap. We limit them anyways.
+                if ( vi->IsStaticVobLight || !vi->IsPFXVobLight || vi->IsIndoorVob ) {
+                    vi->UpdateShadows = true;
                 }
             }
+
         }
     }
 }
@@ -5224,6 +5234,22 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 VobLightInfo* vi = new VobLightInfo;
                 vi->Vob = vob;
                 VobLightMap[vob] = vi;
+                if ( vob->IsIndoorVob() ) {
+                    vi->IsIndoorVob = true;
+                }
+
+                if ( zCVob* parent = vob->GetVobParent(); parent ) {
+                    if ( auto visFx = parent->As<oCVisualFX>() ) {
+                        bool isPfx = true;
+                        if (auto origin = visFx->GetOrigin()) {
+                            // any PFX that stems from an ITEM should be counted as simple light.
+                            isPfx = !origin->As<oCItem>();
+                        }
+                        vi->IsPFXVobLight = isPfx;
+                    }
+                }
+                
+                vi->IsStaticVobLight = vob->GetLightInfoFlags().isStatic;
 
                 float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
                 if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY
@@ -5234,9 +5260,6 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                     vi->LightShadowBuffers.reset(bpl);
                 }
 
-                if ( vob->IsIndoorVob() ) {
-                    vi->IsIndoorVob = true;
-                }
 
                 bvi.Lights.push_back( vi );
             } else {
@@ -5614,9 +5637,9 @@ void GothicAPI::ApplySuppressedSectionTextures() {
             if (auto mat = mit->first.Material ) {
                 if ( auto tx = mat->GetTextureSingle()) {
                     auto txName = tx->GetNameWithoutExtView();
-                    for ( unsigned int i = 0; i < it.second.size(); i++ ) {
+                    for (const auto& i : it.second) {
                         // Is this the texture we are looking for?
-                        if ( txName == it.second[i] ) {
+                        if ( txName == i) {
                             // Yes, move it to the suppressed map
                             section->SuppressedMeshes[mit->first] = mit->second;
                             mit = section->WorldMeshes.erase( mit );
@@ -5883,6 +5906,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHorizonCulling", to_string_locale_independent( s.EnableHorizonCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableMeshOptimization", to_string_locale_independent( s.EnableMeshOptimization ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableShadowIndexBuffers", to_string_locale_independent( s.EnableShadowIndexBuffers ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PausedFpsLimit", to_string_locale_independent( s.PausedFpsLimit ).c_str(), ini.c_str() );
     
@@ -6068,6 +6093,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
         s.EnableHorizonCulling = GetPrivateProfileBoolA( "General", "EnableHorizonCulling", ds.EnableHorizonCulling, ini );
+        s.EnableMeshOptimization = GetPrivateProfileBoolA( "General", "EnableMeshOptimization", ds.EnableMeshOptimization, ini );
+        s.EnableShadowIndexBuffers = GetPrivateProfileBoolA( "General", "EnableShadowIndexBuffers", ds.EnableShadowIndexBuffers, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
         s.PausedFpsLimit = GetPrivateProfileIntA( "General", "PausedFpsLimit", ds.PausedFpsLimit, ini.c_str() );
         // Not optional: an unthrottled paused loop crashes drivers, so the ini can only pick a value
@@ -6477,7 +6504,9 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
             if ( emitter->GetVisShpType() == 5 ) {
                 if ( zCModel* model = emitter->GetVisShpModel() ) {
                     MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
-                    WorldConverter::ExtractProgMeshProtoFromModel( model, mi );
+                    // Same rationale as the prog-mesh branch below: don't hitch the frame a model-shaped
+                    // PFX burst spawns on.
+                    WorldConverter::ExtractProgMeshProtoFromModelAsync( model, mi );
                 } else if ( zCProgMeshProto* progMesh = emitter->GetVisShpProgMesh() ) {
                     MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     // Same rationale as GothicAPI::OnAddVob: spawning many PFX with a prog-mesh particle
@@ -6646,10 +6675,8 @@ void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
         std::vector<WorldMeshSectionInfo*> sections;
         GetIntersectingSections( base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max, sections );
 
-        for ( size_t i = 0; i < sections.size(); i++ ) {
-            for ( size_t p = 0; p < sections[i]->SectionPolygons.size(); p++ ) {
-                zCPolygon* poly = sections[i]->SectionPolygons[p];
-
+        for (auto& section : sections) {
+            for (auto poly : section->SectionPolygons) {
                 if ( !poly->GetMaterial() || // Skip stuff with alpha-channel or not set material
                     poly->GetMaterial()->HasAlphaTest() )
                     continue;
@@ -6676,10 +6703,8 @@ void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
 
 /** Returns the sections intersecting the given boundingboxes */
 void GothicAPI::GetIntersectingSections( const XMFLOAT3& min, const XMFLOAT3& max, std::vector<WorldMeshSectionInfo*>& sections ) {
-    for ( std::map<int, std::map<int, WorldMeshSectionInfo>>::iterator itx = Engine::GAPI->GetWorldSections().begin(); itx != Engine::GAPI->GetWorldSections().end(); itx++ ) {
-        for ( std::map<int, WorldMeshSectionInfo>::iterator ity = itx->second.begin(); ity != itx->second.end(); ity++ ) {
-            WorldMeshSectionInfo& section = ity->second;
-
+    for (auto& valx : Engine::GAPI->GetWorldSections() | std::views::values) {
+        for (auto& section : valx | std::views::values) {
             if ( Toolbox::AABBsOverlapping( section.BoundingBox.Min, section.BoundingBox.Max, min, max ) ) {
                 sections.push_back( &section );
             }
@@ -6689,28 +6714,26 @@ void GothicAPI::GetIntersectingSections( const XMFLOAT3& min, const XMFLOAT3& ma
 
 /** Generates zCPolygons for the loaded sections */
 void GothicAPI::CreatezCPolygonsForSections() {
-    for ( std::map<int, std::map<int, WorldMeshSectionInfo>>::iterator itx = Engine::GAPI->GetWorldSections().begin(); itx != Engine::GAPI->GetWorldSections().end(); itx++ ) {
-        for ( std::map<int, WorldMeshSectionInfo>::iterator ity = itx->second.begin(); ity != itx->second.end(); ity++ ) {
-            WorldMeshSectionInfo& section = ity->second;
-
-            for ( auto it = section.WorldMeshes.begin(); it != section.WorldMeshes.end(); ++it ) {
-                if ( !it->first.Material ||
-                    it->first.Material->HasAlphaTest() )
+    for (auto& sectionsX : Engine::GAPI->GetWorldSections() | std::views::values) {
+        for (auto& section : sectionsX | std::views::values) {
+            for ( auto& [first, second] : section.WorldMeshes) {
+                if ( !first.Material ||
+                    first.Material->HasAlphaTest() )
                     continue;
 
-                it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
+                first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
                 // The world mesh only keeps WorldVertexCPU now, so rebuild the full vertices this wants.
                 // Per-vertex normals come out zero; zCPolygon::CalcNormal() still derives the polygon plane
                 // from the positions, which is what the BSP/collision side of this path uses.
-                std::vector<ExVertexStruct> rebuilt( it->second->CpuVertices.size() );
-                for ( size_t v = 0; v < it->second->CpuVertices.size(); ++v ) {
-                    rebuilt[v].Position = it->second->CpuVertices[v].Position;
-                    rebuilt[v].TexCoord = it->second->CpuVertices[v].TexCoord;
-                    rebuilt[v].TexCoord2 = it->second->CpuVertices[v].TexCoord2;
+                std::vector<ExVertexStruct> rebuilt( second->CpuVertices.size() );
+                for ( size_t v = 0; v < second->CpuVertices.size(); ++v ) {
+                    rebuilt[v].Position = second->CpuVertices[v].Position;
+                    rebuilt[v].TexCoord = second->CpuVertices[v].TexCoord;
+                    rebuilt[v].TexCoord2 = second->CpuVertices[v].TexCoord2;
                 }
 
-                WorldConverter::ConvertExVerticesTozCPolygons( rebuilt, it->second->Indices, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( rebuilt, second->Indices, first.Material, section.SectionPolygons );
             }
         }
     }
@@ -6967,10 +6990,19 @@ static void CollectLeafVobs(
 
         const bool dropStaticLights = Engine::GAPI->GetRendererState().RendererSettings.DisableStaticPointlights;
 
+        // Portal culling for ambient lights: IsStatic() (== IsStaticVobLight) marks ZenGin's
+        // pre-placed atmospheric fills - they never move, so a room no chain of active portals
+        // reaches this frame is safe to skip outright; it picks back up the instant a door opens.
+        // Dynamic/PFX lights (torches, spell effects, the player's own light) are NOT gated here:
+        // they can be carried across sectors and their range test below already bounds the cost.
+        const bool leafPortalVisible = !ctx.portalCuller || ctx.portalCuller->IsLeafVisible( *base );
+
         for ( int i = 0; i < numLights; i++ ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
             if ( dropStaticLights && vob->IsStatic() ) continue;
+
+            if ( !leafPortalVisible && vob->IsStatic() ) continue;
 
             // Range test first - it needs nothing but the zCVobLight, and keeping it ahead of the
             // resolve below preserves the original rule that an out-of-range light never causes a
@@ -7012,11 +7044,18 @@ static void CollectLeafVobs(
                     }
 
                     nvi->IsPFXVobLight = PFXVobLight;
-                    nvi->UpdateShadows = !PFXVobLight;
+                    nvi->UpdateShadows = true;
                     vit = VobLightMap.emplace( vob, nvi ).first;
 
-                    // Create shadow-buffers for these lights since it was dynamically added to the world
-                    if ( !nvi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                    // Create shadow-buffers for these lights since it was dynamically added to the world.
+                    // PFX lights (candles/torches/campfires) get one too - they used to be excluded here
+                    // outright because their origin can be anywhere in the vob tree (including NPCs/the
+                    // player) with no reliable way to self-exclude it, which caused huge phantom shadows.
+                    // D3D11PointLight now sidesteps that by restricting PFX casters to world mesh only (see
+                    // RenderStaticShadowPass), so they can safely get shadows instead of none at all - the
+                    // previous exclusion meant candles/torches never cast any shadow and their light bled
+                    // straight through walls.
+                    if ( rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
                         BaseShadowedPointLight* bpl = nullptr;
                         Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, nvi, true ); // Also flag as dynamic
                         nvi->LightShadowBuffers.reset(bpl);
@@ -7036,13 +7075,14 @@ static void CollectLeafVobs(
             // it skips could not have rejected the light either.
             if ( !visitor->Visit( vi ) ) continue;
 
-            BoundingSphere lightSphere;
-            lightSphere.Center = vob->GetPositionWorld();
-            lightSphere.Radius = lightRange;
 
             // Cull any lights that are not visible even though they are in range
-            if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) )
-                continue;
+            if ( clipResult != ContainmentType::CONTAINS) {
+                BoundingSphere lightSphere;
+                lightSphere.Center = vob->GetPositionWorld();
+                lightSphere.Radius = lightRange;
+                if ( !ctx.frustum.Intersects( lightSphere ) ) continue;
+            }
 
             ctx.queue->PushLightVob( vi );
         }

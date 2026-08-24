@@ -88,6 +88,11 @@ private:
     void RenderAdvancedSettingsWindow();
     void RenderAdvancedColumn2(GothicRendererSettings& settings, GothicAPI* gapi);
 
+    /** Debug-only: draws a wireframe range-sphere at every active point light and shows the raw
+        shadow-cube faces for whichever one is nearest the camera. Gated on
+        DebugSettings.PointLightDebug.Enabled; D3D11 backend only. */
+    void RenderPointLightShadowDebugWindow();
+
     /** Backend-agnostic per-frame UI construction (settings/editor windows + script hooks).
         Called between ImGui::NewFrame() and ImGui::Render() by both backend render loops. */
     void BuildFrameUI();

@@ -49,7 +49,7 @@ static void SetupVobsToExclude(const VobLightInfo* LightInfo)
     CollectVobTreeToExclude(LightInfo->Vob);
 }
 
-static bool GetHasOriginVob( VobLightInfo* info ) {
+static bool GetHasOriginVob( VobLightInfo* info ) {    
     if ( !info->IsPFXVobLight ) {
         zCVob* vob = info->Vob;
         while ( auto parent = vob->GetVobParent() ) {
@@ -172,7 +172,7 @@ void D3D11PointLight::ClearTiledSlot() {
 int D3D11PointLight::GetCurrentShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
     if ( mode > 1 ) {
-        if ( LightInfo->Vob->GetLightInfoFlags().isStatic ) {
+        if ( LightInfo->IsStaticVobLight ) {
             return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
         }
     }
@@ -268,7 +268,15 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
         wc = nullptr;
     }
 
-    const unsigned int staticCasterMask = LightInfo->Vob->GetLightInfoFlags().isStatic
+    // PFX-driven lights (candles/torches/campfires - oCVisualFX-owned rather than a static level light) can
+    // be parented anywhere in the vob tree, including onto NPCs/the player. GetHasOriginVob's self-exclusion
+    // below only walks the oCItem-origin chain, so a PFX light whose origin ISN'T an item has no reliable way
+    // to exclude its own carrier from the caster set - that's what used to make e.g. a belt-mounted light
+    // draw a huge shadow from the player all around (see SetupVobsToExclude's comment). Restricting these to
+    // world-mesh-only casters sidesteps that class of bug entirely instead of needing a more general fix, at
+    // the cost of PFX lights never getting VOB/NPC shadows.
+    const unsigned int staticCasterMask = LightInfo->IsPFXVobLight ? SHADOW_CASTER_WORLD
+        : LightInfo->IsStaticVobLight
         ? SHADOW_CASTER_WORLD // static light? only draw world mesh.
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
@@ -466,6 +474,8 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     // Create the projection matrix
     float zNear = 15.0f;
     float zFar = LightInfo->Vob->GetLightRange()*2.0f;
+    m_DebugLastZNear = zNear;
+    m_DebugLastZFar = zFar;
 
     XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, zNear, zFar );
     proj = XMMatrixTranspose( proj );
@@ -497,6 +507,9 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 
     LastUpdateColor = LightInfo->Vob->GetLightColor();
     LastUpdatePosition = vobPos;
+    // Was declared but never actually assigned anywhere in the codebase - always read back (0,0,0)
+    // regardless of whether a render actually happened, so it was not trustworthy debug signal.
+    LightInfo->LastRenderedPosition = vobPos;
     DrawnOnce = true;
 }
 
@@ -539,9 +552,15 @@ void D3D11PointLight::RenderFullCubemap() {
                     m_StaticShadowReady = true;
                 }
 
-                // Clear: the overlay must hold ONLY this update's movers, never the previous one's.
-                RenderAnimatedShadowPass( *dynTarget, true );
-                m_HasDynamicOverlay = true;
+                // PFX lights are restricted to world-mesh casters only (see RenderStaticShadowPass) - there
+                // is nothing animated to put in the overlay, and this shared array slot may still hold a
+                // DIFFERENT light's stale movers from whichever light last held it. Leave m_HasDynamicOverlay
+                // false so the shader never composites against that leftover data.
+                if ( !LightInfo->IsPFXVobLight ) {
+                    // Clear: the overlay must hold ONLY this update's movers, never the previous one's.
+                    RenderAnimatedShadowPass( *dynTarget, true );
+                    m_HasDynamicOverlay = true;
+                }
                 return;
             }
             // Overlay array unavailable - fall through to the composited single-cube path below.
@@ -564,26 +583,32 @@ void D3D11PointLight::RenderFullCubemap() {
             CopyStaticAsideToActiveTarget();
         }
 
-        RenderAnimatedShadowPass( *activeTarget, false );
+        // See the PLS_UPDATE_DYNAMIC/tiled branch above: PFX lights have no animated casters to add.
+        if ( !LightInfo->IsPFXVobLight ) {
+            RenderAnimatedShadowPass( *activeTarget, false );
+        }
         return;
     }
-    
+
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
         auto wc = &WorldMeshCache;
         if ( WorldCacheInvalid ) {
             wc = nullptr;
         }
 
+        // See RenderStaticShadowPass: PFX lights are restricted to world-mesh casters only.
+        const unsigned int casterMask = LightInfo->IsPFXVobLight ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
+
         if ( GetHasOriginVob( LightInfo ) ) {
             SetupVobsToExclude(LightInfo);
 
             engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
-                nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, SHADOW_CASTER_ALL,
+                nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, casterMask,
                 excludeVobsToExclude);
             vobsToExclude.clear();
         } else {
             engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
-                nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, SHADOW_CASTER_ALL );
+                nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, casterMask );
         }
     }
 }

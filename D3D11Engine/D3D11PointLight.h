@@ -52,6 +52,10 @@ public:
         return m_StaticShadowReady;
     }
 
+    bool IsShadowReady() const override {
+        return m_StaticShadowReady;
+    }
+
     /** True when this light's tiled slot in the dynamic-overlay cube array holds a valid, already-rendered set
         of moving casters. Drives SHADOW_CUBE_HAS_DYNAMIC, i.e. whether the shader takes the second sample.
         Only PLS_UPDATE_DYNAMIC ever refreshes that overlay, so the mode is re-checked here rather than trusted
@@ -76,6 +80,32 @@ public:
 
     void AcquireShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseShadowMap();
+
+    /** Called once per frame from DrawPointlightShadows for every light that currently owns shadow
+        resources. Tracks consecutive absent frames (light disabled, or dropped out of VisibleInFrame) and
+        returns true only once that streak exceeds retentionFrames - the caller should release the slot/
+        shadow map then, not on the very first absent frame. A light that merely blinks (zCVobLight
+        IsEnabled toggling for a flicker effect, or a one-frame frustum/visibility edge case) never crosses
+        the threshold and keeps its slot and baked depth. Without this, a PLS_STATIC_ONLY light that blinks
+        even occasionally can never finish a bake that STICKS: it gets evicted the instant it goes briefly
+        absent, so by the time it wins a slot again the next blink has already wiped the previous progress -
+        it lights unshadowed (bleeding through walls) forever. Mirrors D3D12PointShadows' Slot::missingFrames
+        retention in SelectShadowedLights. */
+    bool NoteAbsence( bool visibleThisFrame, int retentionFrames ) {
+        if ( visibleThisFrame ) {
+            m_MissingFrames = 0;
+            return false;
+        }
+        return ++m_MissingFrames > retentionFrames;
+    }
+    int GetMissingFrames() const { return m_MissingFrames; }
+
+    // Debug-visualization accessors (see ImGuiShim::RenderPointLightShadowDebugWindow).
+    VobLightInfo* GetLightInfo() const { return LightInfo; }
+    ID3D11Texture2D* GetTiledShadowCubeTexture() const { return m_TiledDepthTarget ? m_TiledDepthTarget->GetTexture().Get() : nullptr; }
+    int GetTiledFaceBaseSlice() const { return m_TiledSlotIndex >= 0 ? m_TiledSlotIndex * 6 : -1; }
+    float GetDebugZNear() const { return m_DebugLastZNear; }
+    float GetDebugZFar() const { return m_DebugLastZFar; }
 
     // Tiled deferred slot management (renders directly into a shared TextureCubeArray). `lowRes` selects
     // which of the two independent slot pools this came from - see WantsStaticOnlySlot().
@@ -126,6 +156,10 @@ protected:
         overlay that still holds another light's (or a stale) depth. */
     bool m_HasDynamicOverlay = false;
     int m_LastShadowMode = -1;
+    float m_DebugLastZNear = 0.0f;
+    float m_DebugLastZFar = 0.0f;
+    // Consecutive frames this light has been absent (disabled/out of VisibleInFrame) - see NoteAbsence().
+    int m_MissingFrames = 0;
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;

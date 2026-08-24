@@ -293,7 +293,7 @@ namespace ImCurveEdit
 
          for (size_t p = 0; p < ptCount; p++)
          {
-            const int drawState = DrawPoint(draw_list, pointToRange(pts[p]), viewSize, offset, (selection.find({ int(c), int(p) }) != selection.end() && movingCurve == -1 && !scrollingV));
+            const int drawState = DrawPoint(draw_list, pointToRange(pts[p]), viewSize, offset, (selection.contains({ int(c), int(p) }) && movingCurve == -1 && !scrollingV));
             if (drawState && movingCurve == -1 && !selectingQuad)
             {
                overCurveOrPoint = true;
@@ -301,7 +301,7 @@ namespace ImCurveEdit
                overCurve = -1;
                if (drawState == 2)
                {
-                  if (!io.KeyShift && selection.find({ int(c), int(p) }) == selection.end())
+                  if (!io.KeyShift && !selection.contains({ int(c), int(p) }))
                      selection.clear();
                   selection.insert({ int(c), int(p) });
                }
