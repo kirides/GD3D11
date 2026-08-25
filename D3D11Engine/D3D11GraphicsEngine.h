@@ -460,8 +460,8 @@ public:
 
     void StoreVobPreviousTransforms();
 
-    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
-        return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );
+    GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) override {
+        return GraphicsEventRecord( m_UserDefinedAnnotation.Get(), region );
     }
 
 private:

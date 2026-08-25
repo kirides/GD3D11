@@ -978,7 +978,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D7\MyDirect3DVertexBuffer7.h" />
     <ClInclude Include="D3D7\MyDirectDraw.h" />
     <ClInclude Include="D3D7\MyDirectDrawSurface7.h" />
-    <ClInclude Include="D3DGraphicsEventRecord.h" />
     <ClInclude Include="Detours\detours.h" />
     <ClInclude Include="Detours\detver.h" />
     <ClInclude Include="EditorLinePrimitive.h" />
@@ -1819,6 +1818,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GMesh.cpp" />
     <ClCompile Include="GMeshSimple.cpp" />
     <ClCompile Include="GothicAPI.cpp" />
+    <ClCompile Include="GraphicsEventRecord.cpp" />
     <ClCompile Include="GothicExternals.cpp" />
     <ClCompile Include="GothicGraphicsState.cpp" />
     <ClCompile Include="GraphicsShader.cpp" />
