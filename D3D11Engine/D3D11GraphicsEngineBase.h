@@ -1,6 +1,5 @@
 #pragma once
 #include "BaseGraphicsEngine.h"
-#include "D3DGraphicsEventRecord.h"
 #include <dxgi1_5.h>
 #include <cassert>
 
@@ -124,8 +123,8 @@ public:
 
     ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
-    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
-        return std::make_unique<GraphicsEventRecord>();
+    GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) override {
+        return GraphicsEventRecord{};
     }
     
     virtual ConstantBufferPool* GetConstantBufferPool() PURE;

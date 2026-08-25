@@ -88,6 +88,15 @@ bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
 
+// NVIDIA's native D3D11 driver mis-routes SV_RenderTargetArrayIndex writes (from GS_Cubemap.hlsl or
+// VS_ExLayered.hlsl) when the bound DSV/RTV is a non-zero-offset window (FirstArraySlice > 0) into a larger
+// Texture2DArray/TextureCubeArray resource - only the window's own base slice ever receives geometry, so a
+// point light rendered into any slot but 0 of the shared tiled shadow cube array (D3D11TiledDeferredShading)
+// only gets one of its six faces. DXVK (Vulkan image views are always correctly scoped to their base array
+// layer) and AMD/Intel's native drivers implement this correctly, so the fallback is gated to real NVIDIA
+// hardware only - see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
+bool RequiresNvidiaTiledShadowFaceFallback = false;
+
 VS_ExConstantBuffer_Wind g_windBuffer;
 
 typedef void( __cdecl* PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT )(ID3D11DeviceContext* context, unsigned int drawCount,
@@ -714,11 +723,15 @@ XRESULT D3D11GraphicsEngine::Init() {
         LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
     }
 
-    /*Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering =
-        FeatureRTArrayIndexFromAnyShader && adpDesc.VendorId != 0x10DE;*/
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
 
-    // TODO: Fix clustered lighting to work on NVidia as well. Something over there is broken and i don't know what.
-    // Engine::GAPI->GetRendererState().RendererSettings.EnableTiledLighting = adpDesc.VendorId == 0x1002; // only enable TiledLighting on AMD hardware for now.
+    // Root cause of the old "clustered lighting is broken on NVidia" issue: point-light shadows rendered into
+    // the shared tiled cube array (EnableTiledLighting) use a DSV windowed onto a sub-range (FirstArraySlice =
+    // slot*6) of a much larger array resource. NVIDIA's driver mis-routes the layered/SV_RenderTargetArrayIndex
+    // writes in that case; see RequiresNvidiaTiledShadowFaceFallback's declaration for the full story. Gate the
+    // per-face fallback to real NVIDIA hardware only - DXVK and AMD/Intel already render this correctly and
+    // shouldn't pay the extra draw-call cost.
+    RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
@@ -2545,8 +2558,10 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
+    // NVIDIA per-face fallback (IsCubeFaceFallbackActive) never binds GS_Cubemap, so it needs
+    // VS_ExSkeletalLinDepth's PS_LinDepth-compatible output layout instead of VS_ExSkeletalCube's.
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
+        SetActiveVertexShader( IsCubeFaceFallbackActive() ? VShaderID::VS_ExSkeletalLinDepth : VShaderID::VS_ExSkeletalCube );
     } else {
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
@@ -4752,8 +4767,20 @@ void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
 
 void D3D11GraphicsEngine::PreparePerFrameConstantBuffer(VS_ExConstantBuffer_PerFrame& cb)
 {
-    auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    auto& proj = Engine::GAPI->GetProjectionMatrix();
+    if ( auto replacement = Engine::GAPI->GetCameraReplacementPtr() ) {
+        const auto& view = replacement->ViewReplacement;
+        const auto& proj = replacement->ProjectionReplacement;
+
+        cb.View = view;
+        cb.Projection = proj;
+        XMStoreFloat4x4( &cb.ViewProj, XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &view ) ) );
+        cb.PrevViewProj 
+            = cb.UnjitteredViewProj 
+            = cb.ViewProj;
+        return;
+    }
+    const auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const auto& proj = Engine::GAPI->GetProjectionMatrix();
 
     cb.View = view;
     cb.Projection = proj;
@@ -5910,7 +5937,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             Frustum f;
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections = {};
-            Engine::GAPI->CollectVisibleSections( sections, &f, true );
+            Engine::GAPI->CollectVisibleSections( sections, &f, true );            
             for ( auto* section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -5973,7 +6000,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         
                         if ( worldMeshCache ) {
                             // causes corrupted meshes
-                            // worldMeshCache->emplace_back( meshInfoByKey );
+                            worldMeshCache->emplace_back( meshInfoByKey );
                         }
                     }
                 }
@@ -6345,7 +6372,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         
                         if ( worldMeshCache ) {
                             // causes corrupted meshes
-                            // worldMeshCache->emplace_back( meshInfoByKey );
+                            worldMeshCache->emplace_back( meshInfoByKey );
                         }
                     }
                 }
@@ -8686,8 +8713,8 @@ BaseLineRenderer* D3D11GraphicsEngine::GetLineRenderer() {
 /** Renders the shadowmaps for a pointlight */
 void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     FXMVECTOR position, float range,
-    const RenderToDepthStencilBuffer& targetCube, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> face,
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
+    const RenderToDepthStencilBuffer& targetCube, const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& face,
+    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,

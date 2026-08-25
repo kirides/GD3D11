@@ -759,9 +759,6 @@
     <ClInclude Include="D3D11ShadowAtlas.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
-    <ClInclude Include="D3DGraphicsEventRecord.h">
-      <Filter>Engine\D3D11</Filter>
-    </ClInclude>
     <ClInclude Include="GraphicsEventRecord.h">
       <Filter>Engine</Filter>
     </ClInclude>
@@ -985,6 +982,9 @@
     </ClCompile>
     <ClCompile Include="GothicAPI.cpp">
       <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="GraphicsEventRecord.cpp">
+      <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp">
       <Filter>D3D7</Filter>

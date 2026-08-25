@@ -44,6 +44,12 @@ public:
     /** Called when a vob got removed from the world */
     void OnVobRemovedFromWorld( BaseVobInfo* vob ) override;
 
+    /** Drops the cached bake so the next RenderCubemap re-renders from scratch, even for a PLS_STATIC_ONLY
+        light that would otherwise consider itself already done. For A/B-testing RequiresNvidiaTiledShadowFaceFallback
+        live (ImGuiShim's "Force re-bake" button) - RenderCubemap(forceUpdate=true) alone isn't enough for that
+        case, since it returns early on an already-ready static bake before ever consulting forceUpdate. */
+    void ForceRebake() { Invalidate(); }
+
     bool HasAnyShadowMap() const {
         return HasShadowMap(0) || HasShadowMap(1) || m_StaticDepthCubemap != nullptr;
     }
@@ -125,12 +131,24 @@ protected:
     void RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
     void RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
 
+    /** True if target is one of this light's slots in a shared tiled shadow cube array (DSV windowed onto a
+        sub-range of a larger resource) rather than its own self-contained DepthStencilPool cube - see
+        RequiresNvidiaTiledShadowFaceFallback. */
+    bool IsTiledArrayTarget( const RenderToDepthStencilBuffer& target ) const;
+
+    /** NVIDIA fallback for IsTiledArrayTarget() targets: renders each of the 6 faces through its own
+        single-slice DSV (RenderToDepthStencilBuffer::GetDSVCubemapFace) instead of one layered/instanced draw
+        routed by SV_RenderTargetArrayIndex - see RequiresNvidiaTiledShadowFaceFallback. Mirrors the
+        (renderedVobs/renderedMobs/worldMeshCache/ignoreVob) contract of BaseGraphicsEngine::RenderShadowCube. */
+    void RenderShadowCubeFacePasses(
+        RenderToDepthStencilBuffer& target, bool clearDepth, unsigned int casterMask,
+        std::list<VobInfo*>* renderedVobs, std::list<SkeletalVobInfo*>* renderedMobs,
+        std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
+        const std::move_only_function<bool(const zCVob*) const>* ignoreVob );
+
     bool IsReady();
     void Invalidate();
     void StartReInit();
-
-    /** Renders the scene with the given view-proj-matrices */
-    void RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, UINT faceIdx );
 
     /** Renders all cubemap faces at once, using the geometry shader */
     void RenderFullCubemap();
@@ -138,13 +156,15 @@ protected:
     std::list<VobInfo*> VobCache;
     std::list<SkeletalVobInfo*> SkeletalVobCache;
     std::vector<std::pair<MeshKey, MeshInfo*>> WorldMeshCache;
-    bool WorldCacheInvalid;
 
     VobLightInfo* LightInfo;
     DepthStencilHandle m_DepthCubemap;
     DepthStencilHandle m_StaticDepthCubemap;
     int m_CurrentResolution = 0; // Track current LOD size
     XMFLOAT4X4 CubeMapViewMatrices[6];
+    // Set alongside CubeMapViewMatrices in RenderCubemap() - RenderShadowCubeFacePasses' per-face
+    // CameraReplacement needs the same projection every face shares.
+    XMFLOAT4X4 CubeMapProjMatrix;
     XMFLOAT3 LastUpdatePosition;
     DWORD LastUpdateColor;
     bool DynamicLight;
@@ -166,5 +186,4 @@ protected:
     bool m_TiledSlotLowRes = false; // which of the two independent slot pools m_TiledSlotIndex indexes into
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;
-    TaskHandle<void> m_PendingInit;
 };

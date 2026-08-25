@@ -37,6 +37,11 @@ enum class VShaderID : size_t {
     VS_ExPacked,
     VS_ExPackedCube,
     VS_ExPackedLayered,
+    // Depth-only variants for the NVIDIA per-face cube-shadow fallback; match GS_Cubemap.hlsl's PS_INPUT
+    // layout so they link against PS_LinDepth without a register mismatch.
+    VS_ExLinDepth,
+    VS_ExNodeLinDepth,
+    VS_ExSkeletalLinDepth,
     COUNT
 };
 

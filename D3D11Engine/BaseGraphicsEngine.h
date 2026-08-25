@@ -365,7 +365,7 @@ public:
 
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
-    virtual std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) { return std::make_unique<GraphicsEventRecord>(); }
+    virtual GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) { return GraphicsEventRecord{}; }
 
     // --- Window management shared by every backend (owns the OS window handle + common OS-level
     //     policy: startup activation, style/mode switching, focus/cursor-clip, display-mode caching). ---

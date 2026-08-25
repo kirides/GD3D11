@@ -385,6 +385,19 @@ void ShaderRegistry::Build() {
             } ) );
     }
 
+    // Always compiled - the NVIDIA fallback is a runtime driver check, not the compile-time branch above.
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLinDepth>( "VS_ExLinDepth.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
+
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLinDepth>( "VS_ExNodeLinDepth.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
+
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLinDepth>( "VS_ExSkeletalLinDepth.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
+        } ) );
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeInstanced>( "VS_ExNodeInstanced.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced ) );
 

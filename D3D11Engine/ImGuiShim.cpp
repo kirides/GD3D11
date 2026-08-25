@@ -37,6 +37,7 @@ namespace ImGui {
 #if defined(BUILD_GOTHIC_1_CLASSIC)
 extern bool haveWindAnimations;
 #endif
+extern bool RequiresNvidiaTiledShadowFaceFallback;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
 extern float* ShadowMapLambda;
@@ -2112,6 +2113,34 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Point light shadow debug (D3D11)", &settings.DebugSettings.PointLightDebug.Enabled );
                 ImGui::SetItemTooltip("Draws a wireframe range-sphere at every active point light and opens a window\n"
                                       "showing stats + the raw shadow-cube faces for whichever light is nearest the camera.");
+
+                if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
+                    ImGui::Checkbox( "NVIDIA tiled shadow face-fallback", &RequiresNvidiaTiledShadowFaceFallback );
+                    ImGui::SetItemTooltip(
+                        "Auto-detected from the GPU vendor at startup (on = real NVIDIA D3D11 driver, DXVK excluded).\n"
+                        "Overriding it here is for A/B testing: with Use Tiled Lighting on, force it OFF to reproduce\n"
+                        "the bug (a point light's shadow only correct in one of its 6 cube directions on NVIDIA), or\n"
+                        "force it ON to verify the fix - on AMD/Intel/DXVK the batched path was never broken, so\n"
+                        "forcing this on there should look identical, just slower.\n"
+                        "Existing bakes are cached, so toggling this alone won't visibly change anything until a\n"
+                        "light re-renders - use the button below, or watch the raw cube faces in the point light\n"
+                        "shadow debug window above." );
+
+                    if ( ImGui::Button( "Force re-bake all point light shadows" ) ) {
+                        for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {
+                            VobLightInfo* info = vobLightPair.second;
+                            if ( !info || !info->LightShadowBuffers ) {
+                                continue;
+                            }
+                            if ( auto* pl = dynamic_cast<D3D11PointLight*>( info->LightShadowBuffers.get() ) ) {
+                                pl->ForceRebake();
+                            }
+                        }
+                    }
+                    ImGui::SetItemTooltip( "Drops every point light's cached shadow bake so they all re-render on the\n"
+                        "next frame they're visible - use after flipping the fallback checkbox above to force an\n"
+                        "immediate, comparable re-bake instead of waiting for lights to move or fall out of range." );
+                }
 
                 ImGui::Checkbox("Lazy update", &settings.DebugSettings.ShadowCascades.LazyCascadeUpdate );
                 ImGui::SetItemTooltip("Update last cascades less frequently to improve performance, may cause uneven frametimes");

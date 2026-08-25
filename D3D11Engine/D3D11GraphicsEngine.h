@@ -312,8 +312,8 @@ public:
     void XM_CALLCONV RenderShadowCube( FXMVECTOR position,
         float range,
         const RenderToDepthStencilBuffer& targetCube,
-        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> face,
-        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV,
+        const ComPtr<ID3D11DepthStencilView>& face,
+        const ComPtr<ID3D11RenderTargetView>& debugRTV,
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
@@ -336,6 +336,17 @@ public:
 
     /** Returns the current rendering stage */
     D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
+
+    /** True while D3D11PointLight::RenderShadowCubeFacePasses is issuing its per-face draws (the
+        RequiresNvidiaTiledShadowFaceFallback workaround). GetRenderingStage() alone reads DES_SHADOWMAP_CUBE
+        in both this path AND the normal GS_Cubemap/VS_ExLayered path, but this fallback never binds a
+        geometry shader - it draws each face as an ordinary single-view pass into a single-slice DSV. Shader
+        selection sites that pick a *Cube-suffixed vertex shader (VS_ExSkeletalCube, VS_ExNodeCube - they
+        output world-space position and rely on GS_Cubemap to produce SV_Position per face) must check this
+        too, or that GS-less draw call rasterizes nothing at all. See DrawSkeletalMesh / GothicAPI::
+        DrawSkeletalMeshVob. */
+    void SetCubeFaceFallbackActive( bool active ) { CubeFaceFallbackActive = active; }
+    bool IsCubeFaceFallbackActive() const { return CubeFaceFallbackActive; }
 
     /** Reloads shaders */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All) override;
@@ -449,8 +460,8 @@ public:
 
     void StoreVobPreviousTransforms();
 
-    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
-        return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );
+    GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) override {
+        return GraphicsEventRecord( m_UserDefinedAnnotation.Get(), region );
     }
 
 private:
@@ -549,6 +560,9 @@ protected:
 
     /** The current rendering stage */
     D3D11ENGINE_RENDER_STAGE RenderingStage;
+
+    /** See SetCubeFaceFallbackActive(). */
+    bool CubeFaceFallbackActive = false;
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;
