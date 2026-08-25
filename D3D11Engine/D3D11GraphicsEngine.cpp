@@ -723,8 +723,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
     }
 
-    /*Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering =
-        FeatureRTArrayIndexFromAnyShader && adpDesc.VendorId != 0x10DE;*/
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
 
     // Root cause of the old "clustered lighting is broken on NVidia" issue: point-light shadows rendered into
     // the shared tiled cube array (EnableTiledLighting) use a DSV windowed onto a sub-range (FirstArraySlice =
