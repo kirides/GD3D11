@@ -2889,12 +2889,10 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         }
     }
 
-    // VS_ExNodeCube outputs world-space position only and relies on GS_Cubemap to produce SV_Position per
-    // face - the NVIDIA per-face fallback (see D3D11GraphicsEngine::SetCubeFaceFallbackActive()) never binds
-    // that GS, so node attachments (weapons, armor) must keep using the ordinary VS_ExNode even while
-    // GetRenderingStage() reads DES_SHADOWMAP_CUBE.
-    if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE && !g->IsCubeFaceFallbackActive() )
-        g->SetActiveVertexShader( VShaderID::VS_ExNodeCube );
+    // NVIDIA per-face fallback never binds GS_Cubemap, so node attachments need VS_ExNodeLinDepth's
+    // PS_LinDepth-compatible output layout instead of VS_ExNodeCube's.
+    if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
+        g->SetActiveVertexShader( g->IsCubeFaceFallbackActive() ? VShaderID::VS_ExNodeLinDepth : VShaderID::VS_ExNodeCube );
     else
         g->SetActiveVertexShader( VShaderID::VS_ExNode );
 

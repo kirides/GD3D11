@@ -7,10 +7,8 @@
 #include "Engine.h"
 #include "D3D11PfxRenderer.h"
 #include "zCVobLight.h"
-#include "BaseLineRenderer.h"
 #include "oCVisFX.h"
 #include "WorldConverter.h"
-#include "ThreadPool.h"
 
 const float LIGHT_COLORCHANGE_POS_MOD = 0.1f;
 
@@ -51,21 +49,30 @@ static void SetupVobsToExclude(const VobLightInfo* LightInfo)
     CollectVobTreeToExclude(LightInfo->Vob);
 }
 
-static bool GetHasOriginVob( VobLightInfo* info ) {    
+static const zCVob* GetOriginVob( VobLightInfo* info ) {
+    if (Engine::GAPI->GetRendererState().RendererSettings.AllowSelfShadowingPointlights) {
+        return nullptr;
+    }
     if ( !info->IsPFXVobLight ) {
+        thread_local std::unordered_set<const zCVob*> seen{};
+        seen.clear();
+
         zCVob* vob = info->Vob;
-        while ( auto parent = vob->GetVobParent() ) {
-            if ( auto visFx = parent->As<oCVisualFX>() ) {
-                if ( auto origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) {
-                    return true;
-                }
-            } else if ( parent->As<oCItem>() ) {
-                return true;
+        while ( vob ) {
+            if (!seen.emplace(vob).second) {
+                break;
             }
-            vob = parent;
+            if ( auto visFx = vob->As<oCVisualFX>() ) {
+                if ( auto origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) {
+                    return origin;
+                }
+            } else if ( vob->As<oCItem>() ) {
+                return vob;
+            }
+            vob = vob->GetVobParent();
         }
     }
-    return false;
+    return nullptr;
 }
 
 D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
@@ -84,22 +91,9 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     StartReInit();
 
     DrawnOnce = false;
-    m_PendingInit = {};
 }
 
 D3D11PointLight::~D3D11PointLight() {
-    // Make sure we are out of the init-queue
-    m_PendingInit.cancel( ); // ensure any pending job is cancelled such that we get to InitDone state
-
-    if ( m_PendingInit.future.valid() ) {
-        
-        for ( size_t i = 0; i < 3; ++i) {
-            LogInfo() << "Waiting for pending init to finish before destroying light... Attempt " << (i+1);
-            m_PendingInit.future.wait_for( std::chrono::milliseconds(100) );
-        }
-        m_PendingInit.future.wait();
-    }
-
     ClearTiledSlot();
     ReleaseShadowMap();
 }
@@ -266,7 +260,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
     const float range = LightInfo->Vob->GetLightRange();
     
     // PFX-driven lights (candles/torches/campfires - oCVisualFX-owned rather than a static level light) can
-    // be parented anywhere in the vob tree, including onto NPCs/the player. GetHasOriginVob's self-exclusion
+    // be parented anywhere in the vob tree, including onto NPCs/the player. GetOriginVob's self-exclusion
     // below only walks the oCItem-origin chain, so a PFX light whose origin ISN'T an item has no reliable way
     // to exclude its own carrier from the caster set - that's what used to make e.g. a belt-mounted light
     // draw a huge shadow from the player all around (see SetupVobsToExclude's comment). Restricting these to
@@ -276,7 +270,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
         ? SHADOW_CASTER_WORLD
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
-    const bool excludeSelf = GetHasOriginVob( LightInfo );
+    const bool excludeSelf = GetOriginVob( LightInfo ) != nullptr;
     if ( excludeSelf ) {
         SetupVobsToExclude( LightInfo );
     }
@@ -303,7 +297,7 @@ void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& targ
 
     const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
 
-    const bool excludeSelf = GetHasOriginVob( LightInfo );
+    const bool excludeSelf = GetOriginVob( LightInfo ) != nullptr;
     if ( excludeSelf ) {
         SetupVobsToExclude( LightInfo );
     }
@@ -332,7 +326,7 @@ bool D3D11PointLight::NotYetDrawn() {
 /** Initializes the resources of this light */
 void D3D11PointLight::InitResources() {
     InitDone = false;
-    if (!LightInfo || !LightInfo->Vob) {
+    if ( !LightInfo || !LightInfo->Vob ) {
         // Light got removed before we could init, just return
         InitDone = true;
         return;
@@ -369,7 +363,7 @@ bool D3D11PointLight::NeedsUpdate() {
         return shadowMode > 0;
     }
 
-    const bool moved = !PositionEqualEps(LastUpdatePosition,  LightInfo->Vob->GetPositionWorld());
+    const bool moved = !PositionEqualEps( LastUpdatePosition, LightInfo->Vob->GetPositionWorld() );
 
     if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
         return moved || !m_StaticShadowReady || NotYetDrawn();
@@ -422,10 +416,10 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 
     //if (!GetAsyncKeyState('X'))
     //	return;
-    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine); // TODO: Remove and use newer system!
+    D3D11GraphicsEngine* engine = AsD3D11Engine( Engine::GraphicsEngine ); // TODO: Remove and use newer system!
 
     XMFLOAT3 vobPos = LightInfo->Vob->GetPositionWorld();
-    const bool moved = !PositionEqualEps(LastUpdatePosition, vobPos);
+    const bool moved = !PositionEqualEps( LastUpdatePosition, vobPos );
 
     if ( moved ) {
         // Position changed, refresh our caches
@@ -482,7 +476,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 
     // Create the projection matrix
     float zNear = 15.0f;
-    float zFar = LightInfo->Vob->GetLightRange()*2.0f;
+    float zFar = LightInfo->Vob->GetLightRange() * 2.0f;
     m_DebugLastZNear = zNear;
     m_DebugLastZFar = zFar;
 
@@ -527,8 +521,8 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
 void D3D11PointLight::RenderFullCubemap() {
     if ( !IsReady() )
         return;
-    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine); // TODO: Remove and use newer system!
-    auto _ = engine->RecordGraphicsEvent( GE_NAME("RenderFullCubemap->RenderFullCubemap") );
+    D3D11GraphicsEngine* engine = AsD3D11Engine( Engine::GraphicsEngine ); // TODO: Remove and use newer system!
+    auto _ = engine->RecordGraphicsEvent( GE_NAME( "RenderFullCubemap->RenderFullCubemap" ) );
 
     RenderToDepthStencilBuffer* activeTarget = GetActiveShadowTarget();
     if ( !activeTarget ) {
@@ -579,7 +573,7 @@ void D3D11PointLight::RenderFullCubemap() {
         DepthStencilPool* dsPool = engine->GetPfxRenderer()->GetDepthStencilPool();
         AcquireStaticAsideShadowMap( dsPool, m_CurrentResolution );
 
-        if ( !m_StaticShadowReady) {
+        if ( !m_StaticShadowReady ) {
             if ( m_StaticDepthCubemap ) {
                 RenderStaticShadowPass( *m_StaticDepthCubemap, true );
                 m_StaticShadowReady = true;
@@ -604,7 +598,7 @@ void D3D11PointLight::RenderFullCubemap() {
         ReleaseStaticAsideShadowMap();
         m_StaticShadowReady = false;
         m_HasDynamicOverlay = false;
-        
+
         // Unlike every other mode, FULL never reuses the world-mesh candidate-list cache: it always re-collects
         // and redraws the whole scene fresh (see NeedsUpdate()'s PLS_FULL branch - this runs every frame), which
         // is the entire point of the "no caching shortcuts" escape hatch.
@@ -615,7 +609,7 @@ void D3D11PointLight::RenderFullCubemap() {
         // caster set doesn't suddenly grow VOB/mob/animated shadows it never had before.
         const unsigned int casterMask = (LightInfo->IsPFXVobLight || LightInfo->IsStaticVobLight) ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
 
-        const bool excludeSelf = GetHasOriginVob( LightInfo );
+        const bool excludeSelf = GetOriginVob( LightInfo ) != nullptr;
         if ( excludeSelf ) {
             SetupVobsToExclude( LightInfo );
         }

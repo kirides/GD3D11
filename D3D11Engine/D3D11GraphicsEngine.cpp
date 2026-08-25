@@ -2559,11 +2559,10 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
-    // VS_ExSkeletalCube outputs world-space position only and relies on GS_Cubemap to produce SV_Position per
-    // face - the NVIDIA per-face fallback (see SetCubeFaceFallbackActive()) never binds that GS, so it must
-    // keep using the ordinary VS_ExSkeletal even while GetRenderingStage() reads DES_SHADOWMAP_CUBE.
-    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE && !IsCubeFaceFallbackActive() ) {
-        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
+    // NVIDIA per-face fallback (IsCubeFaceFallbackActive) never binds GS_Cubemap, so it needs
+    // VS_ExSkeletalLinDepth's PS_LinDepth-compatible output layout instead of VS_ExSkeletalCube's.
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+        SetActiveVertexShader( IsCubeFaceFallbackActive() ? VShaderID::VS_ExSkeletalLinDepth : VShaderID::VS_ExSkeletalCube );
     } else {
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }

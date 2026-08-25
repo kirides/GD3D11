@@ -186,5 +186,4 @@ protected:
     bool m_TiledSlotLowRes = false; // which of the two independent slot pools m_TiledSlotIndex indexes into
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;
-    TaskHandle<void> m_PendingInit;
 };

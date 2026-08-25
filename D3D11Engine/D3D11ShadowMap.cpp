@@ -1816,7 +1816,8 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
         }
     }
     if (graphicsEngine->IsCubeFaceFallbackActive()) {
-        graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
+        // VS_Ex's extra outputs shift SV_POSITION's register vs. what PS_LinDepth expects; VS_ExLinDepth matches.
+        graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLinDepth );
     }
 
     // Set the rendering stage
