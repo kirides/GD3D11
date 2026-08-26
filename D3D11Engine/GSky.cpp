@@ -62,7 +62,7 @@ XRESULT GSky::InitSky() {
     SkyPlaneVertices[0].Color = color.ToDWORD();
 
     // 1
-    FXMVECTOR xm_displacement = XMLoadFloat2( &displacement );
+    XMVECTOR xm_displacement = XMLoadFloat2( &displacement );
     XMFLOAT2 SkyPlaneVertices1;
     XMStoreFloat2( &SkyPlaneVertices1, (XMVectorSet( scale, 0, 0, 0 ) + xm_displacement) );
     SkyPlaneVertices[1].TexCoord = SkyPlaneVertices1;

@@ -9634,7 +9634,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    FXMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+    XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
     int lastBlend = zRND_ALPHA_FUNC_NONE;
     auto vfxRadiusSq = state.RendererSettings.VisualFXDrawRadius * state.RendererSettings.VisualFXDrawRadius;
     auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);

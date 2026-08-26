@@ -947,7 +947,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     const XMVECTOR cameraPositionXm = Engine::GAPI->GetCameraPositionXM();
     XMFLOAT3 cameraPosition;
     XMStoreFloat3( &cameraPosition, cameraPositionXm );
-    FXMVECTOR vPlayerPosition =
+    XMVECTOR vPlayerPosition =
         Engine::GAPI->GetPlayerVob() != nullptr
         ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM()
         : xmFltMax;

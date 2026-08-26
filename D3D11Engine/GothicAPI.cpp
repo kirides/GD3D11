@@ -1664,7 +1664,7 @@ void GothicAPI::CalcFlashMeshes() {
     
     auto vVfxRangeSq = XMVectorReplicate(RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius);
 
-    FXMVECTOR camPos = GetCameraPositionXM();
+    XMVECTOR camPos = GetCameraPositionXM();
     static std::vector<zCPolyStrip*> polyStrips; polyStrips.clear();
     for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
         zCFlash* flash = it->first;
@@ -1784,7 +1784,7 @@ void GothicAPI::CalcFlashMeshes() {
 void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
     ZoneScopedN( "GothicAPI::GetVisibleParticleEffectsList" );
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
-        FXMVECTOR camPos = GetCameraPositionXM();
+        XMVECTOR camPos = GetCameraPositionXM();
 
         auto sceneCam = reinterpret_cast<zCCamera*>(oCGame::GetGame()->_zCSession_camera);
         if ( !sceneCam ) {
@@ -1833,7 +1833,7 @@ static bool DecalSortcmpFunc( const std::pair<zCVob*, float>& a, const std::pair
 /** Gets a list of visible decals */
 void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
     ZoneScopedN( "GothicAPI::GetVisibleDecalList" );
-    FXMVECTOR camPos = GetCameraPositionXM();
+    XMVECTOR camPos = GetCameraPositionXM();
     static std::vector<std::pair<zCVob*, float>> decalDistances; // Static to get around reallocations
 
     float vVfxRangeSq = RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius;
@@ -7422,7 +7422,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
         ZoneValue( bspVobVisitor.GetSeenLights() );
     }
 
-    FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
+    XMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
     const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
     const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
     const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
