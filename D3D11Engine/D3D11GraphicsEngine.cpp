@@ -5319,26 +5319,37 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     };
     updatePSBuffers();
 
-    static std::vector<WorldMeshSectionInfo*> renderList;
     if ( !m_FrameGeometryCache.worldMeshBuilt ) {
-        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true );
+        // Cluster-granularity frustum for the main view - CollectVisibleMeshRanges has no "current
+        // camera" fallback like CollectVisibleSections(nullptr, ...) used to rely on, so build it
+        // explicitly (same construction D3D11ShadowMap.cpp uses for its own player frustum).
+        Frustum mainFrustum = Frustum::AlwaysContainingFrustum();
+        if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+            const auto& camView = cam->trafoView; // Column-Major, needs Transpose for DxMath
+            const auto& camProj = cam->trafoProjection; // Row-Major, does not need transpose.
+            mainFrustum.BuildPerspective(
+                XMMatrixTranspose( XMLoadFloat4x4( &camView ) ),
+                XMLoadFloat4x4( &camProj ) );
+        }
+        Engine::GAPI->CollectVisibleMeshRanges( mainFrustum, true, m_FrameGeometryCache.visibleMeshRanges );
+
         m_FrameGeometryCache.worldMeshBuilt = true;
     }
-    renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
+    const std::vector<MeshDrawRange>& visibleMeshRanges = m_FrameGeometryCache.visibleMeshRanges;
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
     BindWrappedWorldMeshPacked( meshInfo );
 
-    struct WorldMeshKey {
-        zCTexture* Texture;
-        zCMaterial* Material;
-        MaterialInfo* Info;
+    // Main world geometry, built below entirely from visibleMeshRanges (cluster granularity).
+    // Water/portal/waterfall/alpha-blended meshes are peeled off into their own systems, which draw
+    // the whole WorldMeshInfo* rather than a sub-range - see handledWholeMeshes below.
+    struct WorldMeshDrawEntry {
+        MeshDrawRange Range;
         int AlphaLevel; // 0 = opaque, 1 = alpha test, 2 = alpha texture
         float DistanceSq;
-        //zCLightmap* Lightmap;
     };
 
-    static std::vector<std::pair<WorldMeshKey, MeshInfo*>> meshList;
+    static std::vector<WorldMeshDrawEntry> meshList;
     meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
 
@@ -5354,89 +5365,88 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeBuildMeshList = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::BuildMeshList" ) );
         const XMVECTOR cameraPosition = Engine::GAPI->GetCameraPositionXM();
 
-        static std::vector<WorldMeshSectionInfo*> alphaBlendedThings;
-        alphaBlendedThings.clear();
-        alphaBlendedThings.reserve( 200 );
+        // Water/portal/waterfall/alpha-blended meshes are drawn whole (FrameWaterSurfaces /
+        // TransparencyQueue take a MeshInfo*, not a sub-range) - a big one can still surface as
+        // several disjoint ranges here (culling can hide a middle chunk and keep both ends), so guard
+        // against queuing the same MeshInfo* more than once, which would double-blend it.
+        static std::unordered_set<MeshInfo*> handledWholeMeshes;
+        handledWholeMeshes.clear();
 
-        for ( auto const& renderItem : renderList ) {
-            for ( auto const& worldMesh : renderItem->WorldMeshes ) {
-                if ( worldMesh.first.Material ) {
-                    zCTexture* matTex = worldMesh.first.Material->GetTextureSingle();
-                    if ( !matTex ) continue;
+        for ( const MeshDrawRange& range : visibleMeshRanges ) {
+            if ( !range.Key.Material ) continue;
+            zCTexture* matTex = range.Key.Material->GetTextureSingle();
+            if ( !matTex ) continue;
 
-                    // Check surface type
-                    if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Water ) {
-                        if ( !isZPrepass ) {
-                            FrameWaterSurfaces[matTex].push_back( worldMesh.second );
-                        }
-                        continue;
-                    }
-
-                    const float distanceSq = ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition );
-
-                    if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
-                        if ( !isZPrepass ) {
-                            transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Portal,
-                                worldMesh.first, worldMesh.second );
-                        }
-                        continue;
-                    } else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
-                        if ( !isZPrepass ) {
-                            transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Waterfall,
-                                worldMesh.first, worldMesh.second );
-                        }
-                        continue;
-                    }
-
-                    // Check for alphablending
-                    if ( (worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
-                        worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
-                        // || (worldMesh.first.Material->GetEnvMapEnabled())
-                        ) {
-                        if ( !isZPrepass ) {
-                            transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Normal,
-                                worldMesh.first, worldMesh.second );
-                        }
-                        continue;
-                    } else {
-
-                        // Don't skip the mesh if the texture is still streaming in (async load) - it
-                        // gets drawn with a black placeholder below instead, so it doesn't flash the
-                        // clear-color background. HasAlphaChannel() reads texture header metadata,
-                        // available independent of the GPU upload having completed.
-                        int alphaLevel = 0;
-                        if ( matTex && matTex->HasAlphaChannel() ) {
-                            alphaLevel = 2;
-                        } else if ( worldMesh.first.Material && worldMesh.first.Material->HasAlphaTest() ) {
-                            alphaLevel = 1;
-                        }
-
-                        WorldMeshKey key = {
-                            matTex,
-                            worldMesh.first.Material,
-                            worldMesh.first.Info,
-                            alphaLevel,
-                            distanceSq,
-                        };
-
-                        // Create a new pair using the animated texture
-                        meshList.emplace_back( key, worldMesh.second );
-                    }
+            // Check surface type
+            const MaterialInfo::EMaterialType matType = range.Key.Info->MaterialType;
+            if ( matType == MaterialInfo::MT_Water ) {
+                if ( !isZPrepass && handledWholeMeshes.insert( range.Mesh ).second ) {
+                    FrameWaterSurfaces[matTex].push_back( range.Mesh );
                 }
+                continue;
             }
-        }
 
+            const float distanceSq = ComputeWorldMeshDistanceSqFromCamera(
+                nullptr, static_cast<const WorldMeshInfo*>( range.Mesh ), cameraPosition );
+
+            if ( matType == MaterialInfo::MT_Portal ) {
+                if ( !isZPrepass && handledWholeMeshes.insert( range.Mesh ).second ) {
+                    transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Portal,
+                        range.Key, range.Mesh );
+                }
+                continue;
+            } else if ( matType == MaterialInfo::MT_WaterfallFoam ) {
+                if ( !isZPrepass && handledWholeMeshes.insert( range.Mesh ).second ) {
+                    transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Waterfall,
+                        range.Key, range.Mesh );
+                }
+                continue;
+            }
+
+            // Check for alphablending
+            if ( (range.Key.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                range.Key.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                // || (range.Key.Material->GetEnvMapEnabled())
+                ) {
+                if ( !isZPrepass && handledWholeMeshes.insert( range.Mesh ).second ) {
+                    transparencyQueue.AddWorldMesh( distanceSq, EWorldTransparencyVariant::Normal,
+                        range.Key, range.Mesh );
+                }
+                continue;
+            }
+
+            // Remaining (opaque / alpha-tested) geometry keeps cluster granularity.
+            //
+            // Don't skip the mesh if the texture is still streaming in (async load) - it gets drawn
+            // with a black placeholder below instead, so it doesn't flash the clear-color background.
+            // HasAlphaChannel() reads texture header metadata, available independent of the GPU
+            // upload having completed - GetCacheState()/CacheIn() are for the draw loops below, not
+            // this classification pass.
+            int alphaLevel = 0;
+            if ( matTex->HasAlphaChannel() ) {
+                alphaLevel = 2;
+            } else if ( range.Key.Material->HasAlphaTest() ) {
+                alphaLevel = 1;
+            }
+
+            // Create a new key using the animated texture
+            MeshKey key = range.Key;
+            key.Texture = matTex;
+
+            meshList.push_back( { { range.Mesh, key, range.IndexOffset, range.IndexCount }, alphaLevel, distanceSq } );
+        }
     }
-    auto CompareMesh = []( std::pair<WorldMeshKey, MeshInfo*>& a, std::pair<WorldMeshKey, MeshInfo*>& b ) -> bool {
-        if ( a.first.AlphaLevel != b.first.AlphaLevel )
-            return a.first.AlphaLevel < b.first.AlphaLevel;
-        if ( a.first.DistanceSq < b.first.DistanceSq )
+    auto CompareMesh = []( const WorldMeshDrawEntry& a, const WorldMeshDrawEntry& b ) -> bool {
+        if ( a.AlphaLevel != b.AlphaLevel )
+            return a.AlphaLevel < b.AlphaLevel;
+        if ( a.DistanceSq < b.DistanceSq )
             return true;
-        if ( a.first.DistanceSq > b.first.DistanceSq )
+        if ( a.DistanceSq > b.DistanceSq )
             return false;
-        if ( a.first.Texture != b.first.Texture )
-            return a.first.Texture < b.first.Texture;
-        return a.second->BaseIndexLocation < b.second->BaseIndexLocation;
+        if ( a.Range.Key.Texture != b.Range.Key.Texture )
+            return a.Range.Key.Texture < b.Range.Key.Texture;
+        return (a.Range.Mesh->BaseIndexLocation + a.Range.IndexOffset) <
+            (b.Range.Mesh->BaseIndexLocation + b.Range.IndexOffset);
     };
     std::sort( meshList.begin(), meshList.end(), CompareMesh );
 
@@ -5448,15 +5458,15 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         D3D11PipelineStateCache::SetPixelShader( GetContext().Get(), nullptr );
 
         auto isAlphaMesh = []( const auto& mesh ) {
-            zCTexture* texture = mesh.first.Texture;
-            return texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest());
+            zCTexture* texture = mesh.Range.Key.Texture;
+            return texture->HasAlphaChannel() || (mesh.Range.Key.Material && mesh.Range.Key.Material->HasAlphaTest());
         };
         auto isSkipped = []( const auto& mesh ) {
-            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
+            const auto alphaFunc = mesh.Range.Key.Material->GetAlphaFunc();
             const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
             // Skip blended meshes (rendered in the main pass) and water (not pre-rendered).
-            return isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255
-                || mesh.first.Info->MaterialType == MaterialInfo::MT_Water;
+            return isBlend || zColor( mesh.Range.Key.Material->GetColor() ).bgra.alpha < 255
+                || mesh.Range.Key.Info->MaterialType == MaterialInfo::MT_Water;
         };
 
         // Opaque geometry is depth-only (null PS) and needs only Position, so feed the slim
@@ -5472,10 +5482,11 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         }
 
         for ( auto const& mesh : meshList ) {
-            if ( mesh.first.Texture == nullptr ) continue;
+            if ( mesh.Range.Key.Texture == nullptr ) continue;
             if ( isSkipped( mesh ) || isAlphaMesh( mesh ) ) continue;
 
-            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
+            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.Range.IndexCount,
+                mesh.Range.Mesh->BaseIndexLocation + mesh.Range.IndexOffset );
         }
 
         // Alpha-tested geometry: restore the packed full stream + VS_ExPacked (also restores state
@@ -5488,7 +5499,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
         for ( auto const& mesh : meshList ) {
             zCTexture* texture;
-            if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
+            if ( ( texture = mesh.Range.Key.Texture ) == nullptr ) continue;
             if ( isSkipped( mesh ) || !isAlphaMesh( mesh ) ) continue;
 
             if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
@@ -5501,13 +5512,14 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             }
 
             // Get the right shader for it
-            if ( BindShaderForTexture( mesh.first.Texture, false,
+            if ( BindShaderForTexture( mesh.Range.Key.Texture, false,
                 zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                 // shader changed? update buffers.
                 updatePSBuffers();
             }
 
-            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
+            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.Range.IndexCount,
+                mesh.Range.Mesh->BaseIndexLocation + mesh.Range.IndexOffset );
         }
         if ( isZPrepass ) {
             return XR_SUCCESS;
@@ -5542,16 +5554,16 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         for ( size_t i = 0; i < numMeshes; i++ ) {
             auto const& mesh = meshList[i];
 
-            if ( mesh.first.Texture != bound &&
+            if ( mesh.Range.Key.Texture != bound &&
                 Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
-                MyDirectDrawSurface7* surface = mesh.first.Texture->GetSurface();
+                MyDirectDrawSurface7* surface = mesh.Range.Key.Texture->GetSurface();
                 ID3D11ShaderResourceView* srv[3];
-                MaterialInfo* info = mesh.first.Info;
+                MaterialInfo* info = mesh.Range.Key.Info;
 
                 // Get diffuse and normalmap. If the texture is still streaming in (async load),
                 // draw with a black placeholder instead of whatever happens to be bound in slot 0,
                 // so it doesn't flash the clear-color background.
-                const bool diffuseReady = mesh.first.Texture->CacheIn( 0.6f ) == zRES_CACHED_IN && surface;
+                const bool diffuseReady = mesh.Range.Key.Texture->CacheIn( 0.6f ) == zRES_CACHED_IN && surface;
                 srv[0] = diffuseReady ? GetSrvFromGfx( surface->GetEngineTexture() ) : GetSrvFromGfx( BlackTexture.get() );
                 srv[1] = diffuseReady ? GetSrvFromGfx( surface->GetNormalmap() ) : nullptr;
                 srv[2] = diffuseReady ? GetSrvFromGfx( surface->GetFxMap() ) : nullptr;
@@ -5567,7 +5579,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 GetContext()->PSSetShaderResources( 0, 3, srv );
 
                 // Get the right shader for it
-                if ( BindShaderForTexture( mesh.first.Texture, false,
+                if ( BindShaderForTexture( mesh.Range.Key.Texture, false,
                     zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                     // shader changed? update buffers.
                     updatePSBuffers();
@@ -5590,18 +5602,16 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 }
                 m_LastMaterialInfo = info;
 
-                UINT firstConstant = materialInfoBufferAllocation.offsetInBytes / 16;
-                UINT numConstants = materialInfoBufferAllocation.sizeInBytes / 16; // aligned size
-
                 if ( lastMatCbAllocation != materialInfoBufferAllocation ) {
                     DynamicConstantBufferPool->BindPS(materialInfoBuffer, materialInfoBufferAllocation);
                     lastMatCbAllocation = materialInfoBufferAllocation;
                 }
-                bound = mesh.first.Texture;
+                bound = mesh.Range.Key.Texture;
             }
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
-                DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
+                DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.Range.IndexCount,
+                    mesh.Range.Mesh->BaseIndexLocation + mesh.Range.IndexOffset );
             }
         }
     }

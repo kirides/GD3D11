@@ -680,7 +680,9 @@ private:
         bool skeletalBonesUploaded = false; ///< FL11 packed skeletal bone buffers uploaded for main/z-prepass reuse
         bool nodeAttachmentInstancesUploaded = false; ///< Node-attachment instance buffer uploaded for main/z-prepass reuse
 
-        std::vector<WorldMeshSectionInfo*> visibleSections;
+        // Cluster-granularity ranges over the main-view frustum (see GothicAPI::CollectVisibleMeshRanges),
+        // reused by both the Z-prepass and lit-geometry DrawWorldMesh calls each frame.
+        std::vector<MeshDrawRange> visibleMeshRanges;
         std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs;
         std::vector<CachedWorldMeshDraw> sortedDepthWorldMeshes;
         D3D11IndirectBuffer*           MainWorldIndirectArgsBuffer = nullptr;
@@ -703,7 +705,7 @@ private:
             vobWindMetadataPrepared = false;
             skeletalBonesUploaded = false;
             nodeAttachmentInstancesUploaded = false;
-            visibleSections.clear();
+            visibleMeshRanges.clear();
             drawIndirectArgs.clear();
             sortedDepthWorldMeshes.clear();
             MainWorldIndirectArgsBuffer = nullptr;
