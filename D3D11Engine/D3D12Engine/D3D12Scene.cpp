@@ -2863,15 +2863,17 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 continue;
             }            
 
-            // Sort key for every transparency bucket below: distance to the mesh's own bbox center, falling
-            // back to the section's (ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
+            // Sort key for every transparency bucket below: distance to the closest point on the mesh's
+            // own bbox, falling back to the section's (ComputeWorldMeshDistanceSqFromCamera in
+            // D3D11GraphicsEngine.cpp). Not the box center - a large section/mesh can have its center
+            // far away while one of its edges sits right in front of the player.
             auto transparencyDistanceSq = [&]() -> float {
                 const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
-                const XMFLOAT3 center( ( bounds->Min.x + bounds->Max.x ) * 0.5f,
-                                       ( bounds->Min.y + bounds->Max.y ) * 0.5f,
-                                       ( bounds->Min.z + bounds->Max.z ) * 0.5f );
+                const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );
+                const XMVECTOR boundsMax = XMLoadFloat3( &bounds->Max );
+                const XMVECTOR closestPoint = XMVectorClamp( transparencyCamPos, boundsMin, boundsMax );
                 float distanceSq = 0.0f;
-                XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - transparencyCamPos ) );
+                XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - transparencyCamPos ) );
                 return distanceSq;
             };
 

@@ -4941,11 +4941,11 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
 
     ZoneScopedN( "GothicAPI::CollectVisibleMeshRanges" );
 
-    INT2 camSection = {};
-    int sectionViewDist = 0;
+    XMFLOAT3 camPos = {};
+    float sectionViewDistWorld = 0.0f;
     if ( useSectionRadiusFilter ) {
-        camSection = WorldConverter::GetSectionOfPos( Engine::GAPI->GetCameraPosition() );
-        sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
+        camPos = Engine::GAPI->GetCameraPosition();
+        sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
     }
 
     // Raw surviving clusters, gathered per-mesh so the merge pass below only ever compares ranges
@@ -4963,10 +4963,16 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
             }
 
             if ( useSectionRadiusFilter ) {
-                const XMFLOAT3& c = ref.Bounds.Center;
-                const INT2 clusterSection = WorldConverter::GetSectionOfPos( float3( c.x, c.y, c.z ) );
-                if ( abs( clusterSection.x - camSection.x ) >= sectionViewDist ) return;
-                if ( abs( clusterSection.y - camSection.y ) >= sectionViewDist ) return;
+                // Distance to the closest point on the cluster's own AABB, not a section-grid lookup
+                // of its center - a cluster's extents can reach into the visible radius (or a further
+                // section) even though the center itself quantizes into a section outside it.
+                const XMFLOAT3 boundsMin( ref.Bounds.Center.x - ref.Bounds.Extents.x,
+                    ref.Bounds.Center.y - ref.Bounds.Extents.y,
+                    ref.Bounds.Center.z - ref.Bounds.Extents.z );
+                const XMFLOAT3 boundsMax( ref.Bounds.Center.x + ref.Bounds.Extents.x,
+                    ref.Bounds.Center.y + ref.Bounds.Extents.y,
+                    ref.Bounds.Center.z + ref.Bounds.Extents.z );
+                if ( Toolbox::ComputePointAABBDistance( camPos, boundsMin, boundsMax ) >= sectionViewDistWorld ) return;
             }
 
             MeshDrawRange range;

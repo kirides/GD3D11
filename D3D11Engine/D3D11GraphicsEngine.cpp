@@ -230,13 +230,6 @@ namespace
         return sortKeyBase | (texPtr << 16);
     }
 
-    XMFLOAT3 GetBoundingBoxCenter( const zTBBox3D& bbox ) {
-        return XMFLOAT3(
-            (bbox.Min.x + bbox.Max.x) * 0.5f,
-            (bbox.Min.y + bbox.Max.y) * 0.5f,
-            (bbox.Min.z + bbox.Max.z) * 0.5f );
-    }
-
     float ComputeWorldMeshDistanceSqFromCamera(
         const WorldMeshSectionInfo* section,
         const WorldMeshInfo* mesh,
@@ -252,9 +245,16 @@ namespace
             return 0.0f;
         }
 
-        const XMFLOAT3 center = GetBoundingBoxCenter( *sourceBounds );
+        // Distance to the closest point on the box, not its center - a large section/mesh can have
+        // its center far behind the camera while one of its edges sits right in front of the player,
+        // which would otherwise misclassify it as distant (bad bucket/sort order, wrong painter's-order
+        // for transparents).
+        const XMVECTOR boundsMin = XMLoadFloat3( &sourceBounds->Min );
+        const XMVECTOR boundsMax = XMLoadFloat3( &sourceBounds->Max );
+        const XMVECTOR closestPoint = XMVectorClamp( cameraPosition, boundsMin, boundsMax );
+
         float distanceSq = 0.0f;
-        XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - cameraPosition ) );
+        XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - cameraPosition ) );
         return distanceSq;
     }
 
