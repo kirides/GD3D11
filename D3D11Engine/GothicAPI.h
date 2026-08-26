@@ -4,7 +4,6 @@
 #include "AlignedAllocator.h"
 #include "Frustum.h"
 #include "BspPortalCuller.h"
-#include "HorizonCuller.h"
 #include "SpatialBVH.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
@@ -48,10 +47,6 @@ struct RndCullContext {
         camera pass sets it: shadow passes must keep collecting casters in rooms the player cannot
         see into, and it is solved for the player camera anyway. */
     const class BspPortalCuller* portalCuller = nullptr;
-
-    /** Ghost-occluder horizon cull for this pass, or null to not use it. Main camera pass only: the
-        horizon is rasterized for the player's view, so a shadow cascade must not test against it. */
-    const class HorizonCuller* horizon = nullptr;
 
     /** Drop static VOBs whose BaseVisualInfo::MeshSize (bounding-box diagonal) is below this, in world
         units. 0 = keep everything, which is what every main-view pass wants. Set only by the shadow
@@ -742,9 +737,6 @@ public:
     /** Draws the AABB for the BSP-Tree using the line renderer*/
     void DebugDrawBSPTree();
 
-    /** Outlines the world's ghost occluders. Gated by RendererSettings::DrawWorldOccluders. */
-    void DebugDrawOccluders( const Frustum& frustum );
-
     /** Recursive helper function to draw the BSP-Tree */
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
@@ -776,14 +768,10 @@ public:
 
     void CollectVisibleVobs( const RndCullContext& ctx );
 
-    /** Collects visible sections from the current camera perspective.
-        `horizon` opts into the ghost-occluder cull and must stay null for every pass that is not the
-        player's view - it is an explicit parameter rather than a member read precisely so a shadow or
-        rain frustum cannot silently inherit the player's skyline. */
+    /** Collects visible sections from the current camera perspective. */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
         const Frustum* queryFrustum = nullptr,
-        bool useSectionRadiusFilter = true,
-        const HorizonCuller* horizon = nullptr );
+        bool useSectionRadiusFilter = true );
 
     /** Returns whether a world mesh intersects the given frustum (true when no bounds are available). */
     bool IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const;
@@ -796,7 +784,6 @@ public:
         uses for its indirect draws), so callers get a handful of ranges to draw, not one per cluster. */
     void CollectVisibleMeshRanges( const Frustum& frustum,
         bool useSectionRadiusFilter,
-        const HorizonCuller* horizon,
         std::vector<MeshDrawRange>& outRanges );
 
     /** Builds our BspTreeVobMap */
@@ -805,10 +792,6 @@ public:
     /** Sector/portal visibility, rebuilt on every world load. Inactive on worlds without portals. */
     BspPortalCuller& GetPortalCuller() { return PortalCuller; }
     const BspPortalCuller& GetPortalCuller() const { return PortalCuller; }
-
-    /** Ghost-occluder horizon, rebuilt once per frame for the player camera. */
-    HorizonCuller& GetHorizonCuller() { return Horizon; }
-    const HorizonCuller& GetHorizonCuller() const { return Horizon; }
 
     /** True when the view is fully enclosed by sectors, so the sun cascades need not be rendered and
         are cleared to "shadowed" instead. Reads the solve the main camera pass ran this frame, so call
@@ -1075,8 +1058,7 @@ private:
     void ClearWorldSectionBVH();
     void QueryWorldSectionBVH( const Frustum& frustum,
         std::vector<WorldMeshSectionInfo*>& sections,
-        bool useSectionRadiusFilter,
-        const HorizonCuller* horizon = nullptr ) const;
+        bool useSectionRadiusFilter ) const;
     bool UseWorldSectionBVH() const;
 
     /** One leaf primitive of the world-mesh CLUSTER BVH: either one WorldMeshInfo::Clusters[]
@@ -1230,10 +1212,6 @@ public:
     BspLeafLinearCache LeafLinearCache;
 private:
     BspPortalCuller PortalCuller;
-    HorizonCuller Horizon;
-
-    /** One-shot guard for DebugDrawOccluders' line-budget message. */
-    bool OccluderDebugBudgetLogged = false;
 
     gtl::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 

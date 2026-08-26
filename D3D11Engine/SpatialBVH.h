@@ -7,7 +7,10 @@
 #include <numeric>
 #include <functional>
 #include "Frustum.h"
-#include "HorizonCuller.h"
+
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
 
 /** Generic top-down median-split BVH builder + iterative frustum-query walker.
  *
@@ -52,6 +55,53 @@ namespace detail {
         DirectX::BoundingBox::CreateMerged( out, a, b );
         return out;
     }
+
+#if defined(__AVX2__)
+    /** Batch-tests up to 8 node AABBs against the frustum's 6 cached planes with 8-wide AVX2+FMA,
+     *  mirroring the n-vertex test in GothicAPI::CollectVisibleVobsWithLeafCache. Returns a bitmask
+     *  where bit i set means node i is rejected (fully outside at least one plane); only bits
+     *  [0, count) are meaningful - unused lanes are zero-padded and never rejected, but the caller
+     *  must not read their bits. Requires a plane-cached Frustum (see Frustum::UsesPlaneFrustum). */
+    inline int RejectMaskAVX2( const Node* const* nodes, int count,
+        const std::array<DirectX::XMFLOAT4, 6>& planes ) {
+        alignas( 32 ) float minX[8]{}, minY[8]{}, minZ[8]{}, maxX[8]{}, maxY[8]{}, maxZ[8]{};
+        for ( int i = 0; i < count; ++i ) {
+            const DirectX::BoundingBox& b = nodes[i]->Bounds;
+            minX[i] = b.Center.x - b.Extents.x;
+            maxX[i] = b.Center.x + b.Extents.x;
+            minY[i] = b.Center.y - b.Extents.y;
+            maxY[i] = b.Center.y + b.Extents.y;
+            minZ[i] = b.Center.z - b.Extents.z;
+            maxZ[i] = b.Center.z + b.Extents.z;
+        }
+
+        const __m256 vMinX = _mm256_load_ps( minX ), vMaxX = _mm256_load_ps( maxX );
+        const __m256 vMinY = _mm256_load_ps( minY ), vMaxY = _mm256_load_ps( maxY );
+        const __m256 vMinZ = _mm256_load_ps( minZ ), vMaxZ = _mm256_load_ps( maxZ );
+        const __m256 vZero = _mm256_setzero_ps();
+
+        __m256 vOutside = vZero;
+        for ( int p = 0; p < 6; ++p ) {
+            const __m256 pnx = _mm256_set1_ps( planes[p].x );
+            const __m256 pny = _mm256_set1_ps( planes[p].y );
+            const __m256 pnz = _mm256_set1_ps( planes[p].z );
+            const __m256 pd  = _mm256_set1_ps( planes[p].w );
+
+            // n-vertex (blendv_ps(a,b,mask): sign-bit 0 -> a, 1 -> b), same convention as
+            // Frustum::RejectedByCachedPlanes: dot(n, nearCorner) + d > 0 means fully outside.
+            const __m256 vNX = _mm256_blendv_ps( vMinX, vMaxX, pnx );
+            const __m256 vNY = _mm256_blendv_ps( vMinY, vMaxY, pny );
+            const __m256 vNZ = _mm256_blendv_ps( vMinZ, vMaxZ, pnz );
+
+            const __m256 vDot = _mm256_fmadd_ps( pnx, vNX,
+                                _mm256_fmadd_ps( pny, vNY,
+                                _mm256_fmadd_ps( pnz, vNZ, pd ) ) );
+            vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vDot, vZero, _CMP_GT_OQ ) );
+        }
+
+        return _mm256_movemask_ps( vOutside );
+    }
+#endif // __AVX2__
 }
 
 /** Builds a BVH over `primitives` (consumed by value/move). A node becomes a leaf once it holds
@@ -133,13 +183,10 @@ BuildResult<Primitive> Build( std::vector<Primitive> primitives, uint32_t leafSi
 }
 
 /** Iterative stack-based frustum query. Calls `visitor(const Primitive&)` for every leaf primitive
- *  whose node survived both the frustum test and, if given, the horizon test. Rejecting an interior
- *  node drops its whole subtree in one test - that's where a real tree earns its keep over a flat
- *  scan. `horizon`, if non-null, is checked once per interior/leaf node (never per-primitive) since
- *  it's already conservative at node granularity. */
+ *  whose node survived the frustum test. Rejecting an interior node drops its whole subtree in one
+ *  test - that's where a real tree earns its keep over a flat scan. */
 template<typename Primitive, typename Visitor>
-void Query( const BuildResult<Primitive>& tree, const Frustum& frustum, Visitor&& visitor,
-    const HorizonCuller* horizon = nullptr ) {
+void Query( const BuildResult<Primitive>& tree, const Frustum& frustum, Visitor&& visitor ) {
     if ( !tree.IsValid() ) {
         return;
     }
@@ -148,6 +195,44 @@ void Query( const BuildResult<Primitive>& tree, const Frustum& frustum, Visitor&
     stack.clear();
     stack.push_back( 0 );
 
+#if defined(__AVX2__)
+    // Batched path: pop up to 8 pending nodes at a time and reject them in one AVX2+FMA test
+    // instead of 8 separate scalar Frustum::Intersects calls. Only usable when the frustum has 6
+    // cached planes to test against (see Frustum::UsesPlaneFrustum).
+    if ( frustum.UsesPlaneFrustum() ) {
+        const auto& planes = frustum.GetPlanes();
+        const Node* batchNodes[8];
+
+        while ( !stack.empty() ) {
+            int count = 0;
+            while ( count < 8 && !stack.empty() ) {
+                batchNodes[count++] = &tree.Nodes[stack.back()];
+                stack.pop_back();
+            }
+
+            const int rejectMask = detail::RejectMaskAVX2( batchNodes, count, planes );
+
+            for ( int lane = 0; lane < count; ++lane ) {
+                if ( rejectMask & (1 << lane) ) {
+                    continue;
+                }
+
+                const Node& node = *batchNodes[lane];
+                if ( node.IsLeaf() ) {
+                    const uint32_t leafEnd = node.LeafStart + node.LeafCount;
+                    for ( uint32_t i = node.LeafStart; i < leafEnd; ++i ) {
+                        visitor( tree.Leaves[i] );
+                    }
+                } else {
+                    stack.push_back( node.LeftChild );
+                    stack.push_back( node.RightChild );
+                }
+            }
+        }
+        return;
+    }
+#endif // __AVX2__
+
     while ( !stack.empty() ) {
         const uint32_t nodeIndex = stack.back();
         stack.pop_back();
@@ -155,18 +240,6 @@ void Query( const BuildResult<Primitive>& tree, const Frustum& frustum, Visitor&
         const Node& node = tree.Nodes[nodeIndex];
         if ( !frustum.Intersects( node.Bounds ) ) {
             continue;
-        }
-
-        if ( horizon ) {
-            const DirectX::XMFLOAT3 nodeMin( node.Bounds.Center.x - node.Bounds.Extents.x,
-                                              node.Bounds.Center.y - node.Bounds.Extents.y,
-                                              node.Bounds.Center.z - node.Bounds.Extents.z );
-            const DirectX::XMFLOAT3 nodeMax( node.Bounds.Center.x + node.Bounds.Extents.x,
-                                              node.Bounds.Center.y + node.Bounds.Extents.y,
-                                              node.Bounds.Center.z + node.Bounds.Extents.z );
-            if ( !horizon->IsBoxVisible( nodeMin, nodeMax ) ) {
-                continue;
-            }
         }
 
         if ( node.IsLeaf() ) {

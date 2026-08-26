@@ -2824,10 +2824,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     static std::vector<WorldMeshSectionInfo*> sections;
     sections.clear();
-    // Player view: opt into the ghost-occluder horizon cull (the shadow/rain section collects must not).
-    const HorizonCuller& horizon = Engine::GAPI->GetHorizonCuller();
-    Engine::GAPI->CollectVisibleSections( sections, nullptr, true,
-        horizon.IsActive() ? &horizon : nullptr );
+    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
 
     WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;

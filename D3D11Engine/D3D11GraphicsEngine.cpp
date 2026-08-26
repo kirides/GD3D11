@@ -5321,10 +5321,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     static std::vector<WorldMeshSectionInfo*> renderList;
     if ( !m_FrameGeometryCache.worldMeshBuilt ) {
-        // Player view: opt into the ghost-occluder horizon cull (shadow/rain collects must not).
-        const HorizonCuller& horizon = Engine::GAPI->GetHorizonCuller();
-        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true,
-            horizon.IsActive() ? &horizon : nullptr );
+        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true );
         m_FrameGeometryCache.worldMeshBuilt = true;
     }
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
@@ -5954,7 +5951,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 // Finer-grained than `sections`: only the triangle clusters actually within `f`,
                 // not every material bucket of every section `f`'s bounds happen to touch.
                 std::vector<MeshDrawRange> ranges;
-                Engine::GAPI->CollectVisibleMeshRanges( f, true, nullptr, ranges );
+                Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );
 
                 for ( const MeshDrawRange& r : ranges ) {
                     // Check surface type
@@ -6330,8 +6327,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 // Finer-grained than `sections`: only the triangle clusters actually within `f`,
                 // not every material bucket of every section `f`'s bounds happen to touch.
                 std::vector<MeshDrawRange> ranges;
-                Engine::GAPI->CollectVisibleMeshRanges( f, true, nullptr, ranges );
-
+                Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );                
                 for ( const MeshDrawRange& r : ranges ) {
                     // Check surface type
                     if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
