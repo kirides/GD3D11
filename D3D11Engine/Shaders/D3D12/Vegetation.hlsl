@@ -97,7 +97,15 @@ struct VS_IN
     float2   uv     : TEXCOORD0;
     float4x4 iworld : INSTANCE_WORLD_MATRIX;   // already transposed on upload (GVegetationBox::InitSpotsRandom)
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; float fogDist : TEXCOORD2; };
+// `clip` is `precise`: VSMain/VSDepth/VSDepthGBuf are three separately-compiled entry points that all feed the
+// same textual `mul(GrassWorldPos(...), ViewProj)` into SV_POSITION, but nothing guarantees a compiler schedules
+// that expression bit-identically across them — VSDepthGBuf in particular does substantially more surrounding
+// work (a second GrassWorldPos evaluation for the previous frame, two extra clip transforms), which was enough
+// to shift its rounding and fail the lit pass's GREATER_EQUAL depth test on wind-swayed vertices, i.e. grass
+// blades getting depth-clipped, but only when TAA/FSR3/GTAO route the prepass through VSDepthGBuf. `precise`
+// pins the FP evaluation order back to what the HLSL literally says, which is Microsoft's documented fix for
+// exactly this z-prepass-vs-main-pass mismatch.
+struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; float fogDist : TEXCOORD2; };
 
 // The instanced blade's swayed world position. Shared by every grass VS — the lit pass, the depth prepass and
 // the CSM caster — because a blade that lands at a different position in the prepass than in the color pass
@@ -186,7 +194,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // Same wind sway as VSMain (see the header comment there) so the shadow silhouette doesn't lag the swaying
 // blades — mirrors D3D11's VS_GrassInstancedShadow.hlsl. Reuses VS_IN/Grass.RootSig (b0 = the cascade's
 // view-proj instead of the camera's, b1 = the same GrassCB).
-struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
+struct VS_DEPTH_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 
 VS_DEPTH_OUT VSDepth( VS_IN i )
 {
@@ -216,7 +224,7 @@ void PSShadowClip( VS_DEPTH_OUT i )
 
 struct VS_DEPTH_GBUF_OUT
 {
-    float4 clip     : SV_POSITION;
+    precise float4 clip : SV_POSITION;   // see VS_OUT's `clip` for why this must be precise
     float2 uv       : TEXCOORD0;
     float3 wpos     : TEXCOORD1;
     float4 currClip : TEXCOORD2;
