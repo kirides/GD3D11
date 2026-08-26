@@ -4759,11 +4759,11 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
     nodeStack.clear();
     nodeStack.push_back( 0 );
 
-    INT2 camSection = {};
-    int sectionViewDist = 0;
+    XMFLOAT3 camPos = {};
+    float sectionViewDistWorld = 0.0f;
     if ( useSectionRadiusFilter ) {
-        camSection = WorldConverter::GetSectionOfPos( Engine::GAPI->GetCameraPosition() );
-        sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
+        camPos = Engine::GAPI->GetCameraPosition();
+        sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
     }
 
     while ( !nodeStack.empty() ) {
@@ -4783,11 +4783,13 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
                     continue;
                 }
 
+                // Distance to the closest point on the section's real bounding box, not its nominal
+                // grid address - WorldCoordinates is assigned per-triangle by centroid (see
+                // WorldConverter::CreateSection*), so a section's actual geometry can reach well past
+                // its own grid cell and into one much closer to the camera. Mirrors the
+                // drawSectionIntersections path in CollectVisibleSections below.
                 if ( useSectionRadiusFilter ) {
-                    if ( abs( section->WorldCoordinates.x - camSection.x ) >= sectionViewDist ) {
-                        continue;
-                    }
-                    if ( abs( section->WorldCoordinates.y - camSection.y ) >= sectionViewDist ) {
+                    if ( Toolbox::ComputePointAABBDistance( camPos, section->BoundingBox.Min, section->BoundingBox.Max ) >= sectionViewDistWorld ) {
                         continue;
                     }
                 }

@@ -93,11 +93,11 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	FORWARD_PLUS_PS_OUTPUT output;
 
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-
+	
+#if ALPHATEST == 1
 	// clip but only use z approximation
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
 
-#if ALPHATEST == 1
 	float alphaCoverage = DoAlphaTestCoverage(color.a);
 #endif
 
