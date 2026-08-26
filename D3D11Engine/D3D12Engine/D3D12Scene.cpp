@@ -1944,6 +1944,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	// prepass depth for grass the lit pass then never draws — that would punch grass-shaped AO holes into the
 	// terrain behind it.
 	const float cullRadius = std::min( settings.OutdoorSmallVobDrawRadius, kVegetationPrepassRange );
+	const float cullRadiusSq = cullRadius * cullRadius;
 	const GrassCBData gcb = MakeGrassConstants();
 	// The PS only alpha-clips against t0, so t1/the fog CB/the lights/the shadow CB/the AO CB all stay unbound —
 	// D3D12 requires only the root parameters a bound shader statically references to be set.
@@ -1957,7 +1958,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 
 		XMFLOAT3 bbMin, bbMax;
 		box->GetBoundingBox( &bbMin, &bbMax );
-		if ( Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax ) > cullRadius ) continue;
+		if ( Toolbox::ComputePointAABBDistanceSq( camPos, bbMin, bbMax ) > cullRadiusSq ) continue;
 		if ( !playerFrustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
 
 		GMeshSimple* mesh = box->GetVegetationMesh();
@@ -2038,6 +2039,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	const float drawRadius = settings.OutdoorSmallVobDrawRadius;
+	const float drawRadiusSq = drawRadius * drawRadius;
 	const FogConstants fog = MakeFogConstants();
 
 	const GrassCBData gcb = MakeGrassConstants();
@@ -2056,7 +2058,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 		XMFLOAT3 bbMin, bbMax;
 		box->GetBoundingBox( &bbMin, &bbMax );
 
-		if ( Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax ) > drawRadius ) continue;
+		if ( Toolbox::ComputePointAABBDistanceSq( camPos, bbMin, bbMax ) > drawRadiusSq ) continue;
 		if ( !playerFrustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
 
 		GMeshSimple* mesh = box->GetVegetationMesh();

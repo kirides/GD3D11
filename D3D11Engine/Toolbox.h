@@ -186,6 +186,10 @@ namespace Toolbox {
     /** Computes the distance of a point to an AABB */
     float ComputePointAABBDistance( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max );
 
+    /** Computes the squared distance of a point to an AABB - cheaper than ComputePointAABBDistance
+        for threshold comparisons, since it skips the (approximate) sqrt entirely. */
+    float ComputePointAABBDistanceSq( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max );
+
     /** Returns whether the given file exists */
     bool FileExists( const std::string& file );
 

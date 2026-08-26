@@ -129,6 +129,13 @@ namespace Toolbox {
         return _mm_cvtss_f32( _mm_rcp_ss( _mm_rsqrt_ss( _mm_set_ss( dx * dx + dz * dz ) ) ) );
     }
 
+    /** Computes the squared Distance of a point to an AABB */
+    float ComputePointAABBDistanceSq( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max ) {
+        const float dx = std::max( std::max( min.x - p.x, 0.0f ), p.x - max.x );
+        const float dz = std::max( std::max( min.z - p.z, 0.0f ), p.z - max.z );
+        return dx * dx + dz * dz;
+    }
+
     /** Computes the Normal of a triangle */
     XMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 ) {
         XMVECTOR Normal = XMVector3Normalize( XMVector3Cross( (XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 )), (XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 )) ) );

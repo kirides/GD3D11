@@ -4760,10 +4760,11 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
     nodeStack.push_back( 0 );
 
     XMFLOAT3 camPos = {};
-    float sectionViewDistWorld = 0.0f;
+    float sectionViewDistWorldSq = 0.0f;
     if ( useSectionRadiusFilter ) {
         camPos = Engine::GAPI->GetCameraPosition();
-        sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        const float sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        sectionViewDistWorldSq = sectionViewDistWorld * sectionViewDistWorld;
     }
 
     while ( !nodeStack.empty() ) {
@@ -4787,9 +4788,10 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
                 // grid address - WorldCoordinates is assigned per-triangle by centroid (see
                 // WorldConverter::CreateSection*), so a section's actual geometry can reach well past
                 // its own grid cell and into one much closer to the camera. Mirrors the
-                // drawSectionIntersections path in CollectVisibleSections below.
+                // drawSectionIntersections path in CollectVisibleSections below. Squared distance -
+                // this is only ever compared against a threshold, so skip the (approximate) sqrt.
                 if ( useSectionRadiusFilter ) {
-                    if ( Toolbox::ComputePointAABBDistance( camPos, section->BoundingBox.Min, section->BoundingBox.Max ) >= sectionViewDistWorld ) {
+                    if ( Toolbox::ComputePointAABBDistanceSq( camPos, section->BoundingBox.Min, section->BoundingBox.Max ) >= sectionViewDistWorldSq ) {
                         continue;
                     }
                 }
@@ -4886,12 +4888,13 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
         }
 
         const float sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        const float sectionViewDistSq = sectionViewDist * sectionViewDist;
         for ( auto& itx : WorldSections ) {
             for ( auto& ity : itx.second ) {
                 WorldMeshSectionInfo& section = ity.second;
 
-                float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
-                if ( dist < sectionViewDist ) {
+                float distSq = Toolbox::ComputePointAABBDistanceSq( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
+                if ( distSq < sectionViewDistSq ) {
                     if ( !sectionInFrustum( section ) )
                         continue;
 
@@ -4944,10 +4947,11 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
     ZoneScopedN( "GothicAPI::CollectVisibleMeshRanges" );
 
     XMFLOAT3 camPos = {};
-    float sectionViewDistWorld = 0.0f;
+    float sectionViewDistWorldSq = 0.0f;
     if ( useSectionRadiusFilter ) {
         camPos = Engine::GAPI->GetCameraPosition();
-        sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        const float sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        sectionViewDistWorldSq = sectionViewDistWorld * sectionViewDistWorld;
     }
 
     // Raw surviving clusters, gathered per-mesh so the merge pass below only ever compares ranges
@@ -4974,7 +4978,7 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
                 const XMFLOAT3 boundsMax( ref.Bounds.Center.x + ref.Bounds.Extents.x,
                     ref.Bounds.Center.y + ref.Bounds.Extents.y,
                     ref.Bounds.Center.z + ref.Bounds.Extents.z );
-                if ( Toolbox::ComputePointAABBDistance( camPos, boundsMin, boundsMax ) >= sectionViewDistWorld ) return;
+                if ( Toolbox::ComputePointAABBDistanceSq( camPos, boundsMin, boundsMax ) >= sectionViewDistWorldSq ) return;
             }
 
             MeshDrawRange range;
@@ -7141,7 +7145,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     DirectX::ContainmentType inheritedContainment,
     float yMaxWorld
 ) {
-    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorDistSq = ctx.drawDistancesSq.OutdoorVobs;
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
@@ -7159,9 +7163,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         nodeYMax = std::max( nodeYMax, base->OriginalNode->BBox3D.Max.y );
         nodeBox.Max.y = nodeYMax;
 
-        float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
+        float distSq = Toolbox::ComputePointAABBDistanceSq( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
         ContainmentType clipResult = inheritedContainment;
-        if ( dist < vobOutdoorDist ) {
+        if ( distSq < vobOutdoorDistSq ) {
             if ( skipVobFrustumCull ) {
                 clipResult = ContainmentType::INTERSECTS;
             } else if ( !enableOcclusionCulling ) {
@@ -7193,7 +7197,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         }
 
         if ( base->OriginalNode->IsLeaf() ) {
-            CollectLeafVobs( base, dist * dist, ctx, clipResult, visitor );
+            CollectLeafVobs( base, distSq, ctx, clipResult, visitor );
             return;
         } else {
             zCBspNode* node = static_cast<zCBspNode*>(base->OriginalNode);

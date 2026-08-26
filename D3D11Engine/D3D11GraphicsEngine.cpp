@@ -7346,10 +7346,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         if ( !Engine::GAPI->GetVegetationBoxes().empty()) {
             const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+            const float drawRadiusSq = drawRadius * drawRadius;
             const XMFLOAT3 camPos = fPosition;
-            
+
             bool inView = false;
-            
+
             XMFLOAT3 bbMin, bbMax;
             DirectX::BoundingBox aabb;
             GrassConstantBuffer gcb;
@@ -7357,8 +7358,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             for ( auto const& vegetationBox : Engine::GAPI->GetVegetationBoxes() ) {
                 vegetationBox->GetBoundingBox( &bbMin, &bbMax );
 
-                const float dist = Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax );
-                if ( dist > drawRadius )
+                const float distSq = Toolbox::ComputePointAABBDistanceSq( camPos, bbMin, bbMax );
+                if ( distSq > drawRadiusSq )
                     continue;
 
                 if ( enableCulling ) {
@@ -7399,6 +7400,7 @@ void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetation
         
         const auto& camPos = Engine::GAPI->GetCameraPosition();
         const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+        const float drawRadiusSq = drawRadius * drawRadius;
 
         bool inView = false;
         XMFLOAT3 bbMin, bbMax;
@@ -7407,8 +7409,8 @@ void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetation
         for ( auto const& vegetationBox : vegetationBoxes ) {
             vegetationBox->GetBoundingBox( &bbMin, &bbMax );
 
-            float dist = Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax );
-            if ( dist > drawRadius )
+            float distSq = Toolbox::ComputePointAABBDistanceSq( camPos, bbMin, bbMax );
+            if ( distSq > drawRadiusSq )
                 continue;
             
             zTBBox3D box{ bbMin, bbMax };
