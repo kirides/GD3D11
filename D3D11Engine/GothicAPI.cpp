@@ -6885,6 +6885,14 @@ bool GothicAPI::IsSnowingWeather() {
 
 /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
 float GothicAPI::GetSceneWetness() {
+    // Called many times per frame (once per material/texture in the PS-selection hot loops), so only
+    // recompute this once per frame - re-running it on every call meant recomputing the branch below
+    // (plus, before this cache existed, a QueryPerformanceCounter round trip via Toolbox::timeSinceStartMs)
+    // for every single draw call.
+    if ( SceneWetnessFrame == FrameNumber )
+        return SceneWetness;
+    SceneWetnessFrame = FrameNumber;
+
     // Snow drives the same particle-fx weight as rain (see GetRainFXWeight), but snow must not wet the
     // ground - no darkening, no ripples, no wet specular. Only our own manual override still counts here,
     // so the wetness slider keeps working while it snows. Note this decays through the branch below
@@ -6892,14 +6900,15 @@ float GothicAPI::GetSceneWetness() {
     float rain = IsSnowingWeather()
         ? RendererState.RendererSettings.RainSceneWettness
         : GetRainFXWeight();
-    static DWORD s_rainStopTime = Toolbox::timeSinceStartMs();
+    // Use the game's own clock (no syscall) rather than Toolbox::timeSinceStartMs (QueryPerformanceCounter).
+    static DWORD s_rainStopTime = GetTotalTimeDW();
 
     if ( rain >= SceneWetness ) {
         SceneWetness = rain; // Rain is starting or still going
-        s_rainStopTime = Toolbox::timeSinceStartMs(); // Just querry this until we fall into the else-branch some time
+        s_rainStopTime = GetTotalTimeDW(); // Just querry this until we fall into the else-branch some time
     } else {
         // Rain has just stopped, get time of how long the rain isn't going anymore
-        DWORD rainStoppedFor = Toolbox::timeSinceStartMs() - s_rainStopTime;
+        DWORD rainStoppedFor = GetTotalTimeDW() - s_rainStopTime;
 
         // Get ratio between duration and that time. This value is near 1 when we almost reached the duration
         float ratio = rainStoppedFor / static_cast<float>(SCENE_WETNESS_DURATION_MS);

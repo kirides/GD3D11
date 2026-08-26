@@ -1282,6 +1282,11 @@ private:
     /** The overall wetness of the current scene */
     float SceneWetness;
 
+    /** GetFrameNumber() value SceneWetness was last computed for. GetSceneWetness() is called many
+        times per frame (once per material/texture in the PS-selection hot loops), so it caches its
+        result for the frame instead of recomputing it on every call. */
+    size_t SceneWetnessFrame = static_cast<size_t>( -1 );
+
     /** Internal list of futures, so they can run until they are finished */
     std::vector<std::future<void>> FutureList;
 
