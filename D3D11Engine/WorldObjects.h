@@ -144,6 +144,19 @@ struct MeshInfo {
     uint16_t meshId;
 };
 
+/** A spatially-coherent, contiguous range of triangles within a WorldMeshInfo's index buffer -
+ *  the leaf granularity of the world-mesh cluster BVH (see SpatialBVH.h / GothicAPI's
+ *  WorldMeshClusterBVH). IndexOffset/IndexCount index into BOTH MeshInfo::Indices and
+ *  MeshInfo::ShadowIndices: the clustering permutation runs before shadow-index derivation
+ *  (WorldConverter::BuildWorldMeshBuffers), and meshopt_generateShadowIndexBuffer produces one
+ *  welded output index per input index in the same position, so the same [offset,count) range is
+ *  valid against either buffer. */
+struct MeshCluster {
+    zTBBox3D Bounds;
+    uint32_t IndexOffset = 0;
+    uint32_t IndexCount = 0;
+};
+
 /** World mesh with precomputed object-space bounds for fast culling. */
 struct WorldMeshInfo : public MeshInfo {
     WorldMeshInfo() {
@@ -158,6 +171,12 @@ struct WorldMeshInfo : public MeshInfo {
     // Offset in wrapped world mesh
     unsigned int BaseShadowIndexLocation;
 
+    /** Spatial partition of this mesh's triangles, built once at world-load time (see
+        WorldConverter::BuildWorldMeshBuffers). Empty for meshes too small to bother clustering (the
+        whole mesh is then its own effective range) or when clustering hasn't run - callers must
+        treat an empty list as "draw the whole mesh", not "draw nothing". */
+    std::vector<MeshCluster> Clusters;
+
     /** Replaces MeshInfo::Vertices, which is dropped once the GPU buffers and the wrapped mesh have been
         built. Empty until ShrinkCpuVertices() runs, and on any mesh that never went through it - hence the
         fallback in GetCpuVertices(). */
@@ -170,6 +189,19 @@ struct WorldMeshInfo : public MeshInfo {
     /** Builds CpuVertices and frees Vertices (capacity included). Call only after the vertex buffer is
         uploaded AND the wrapped world mesh has been assembled - WrapVertexBuffers reads Vertices. */
     void ShrinkCpuVertices();
+};
+
+/** One draw's worth of a mesh's index buffer: either a single MeshCluster's range (world meshes
+    only - see MeshCluster's comment), or the whole mesh (IndexOffset=0, IndexCount=Indices.size()).
+    `Mesh` is the base MeshInfo type - not every producer of a MeshDrawRange has a WorldMeshInfo on
+    hand, and every draw-time consumer (GetMeshVertexBuffer/GetShadowAwareIndexBuffer/Count) only
+    needs the base class anyway. A strict superset of the old "whole MeshInfo" world-mesh cache
+    entry (MeshKey + MeshInfo*), so it doubles as that cache's element type. */
+struct MeshDrawRange {
+    MeshInfo* Mesh = nullptr;
+    MeshKey Key{};
+    uint32_t IndexOffset = 0;
+    uint32_t IndexCount = 0;
 };
 
 struct QuadMarkInfo {
@@ -414,7 +446,7 @@ struct VobInfo : public BaseVobInfo {
 
     /** BSP-Node this is stored in */
     std::vector<BspInfo*> ParentBSPNodes;
-    
+
     // index into the engines respective visual instancing lookup.
     // Used to implement bucket gather for main geometry as well as shadow cascades.
     int16_t VisualIndex;

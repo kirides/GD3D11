@@ -5,6 +5,7 @@
 #include "Frustum.h"
 #include "BspPortalCuller.h"
 #include "HorizonCuller.h"
+#include "SpatialBVH.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
 #include "zCTree.h"
@@ -787,6 +788,17 @@ public:
     /** Returns whether a world mesh intersects the given frustum (true when no bounds are available). */
     bool IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const;
 
+    /** Finer-grained sibling of CollectVisibleSections: queries the world-mesh CLUSTER BVH (built
+        alongside the section BVH, see BuildWorldMeshClusterBVH) instead of section bounding boxes, so
+        a small-range query (a point light's cube face) only pulls in the triangles actually near it
+        instead of every section its bounds happen to touch. Adjacent surviving clusters belonging to
+        the same mesh are fused into one range (same rule D3D12's CoalesceWorldDepthCommands already
+        uses for its indirect draws), so callers get a handful of ranges to draw, not one per cluster. */
+    void CollectVisibleMeshRanges( const Frustum& frustum,
+        bool useSectionRadiusFilter,
+        const HorizonCuller* horizon,
+        std::vector<MeshDrawRange>& outRanges );
+
     /** Builds our BspTreeVobMap */
     void BuildBspVobMapCache();
 
@@ -1067,6 +1079,26 @@ private:
         const HorizonCuller* horizon = nullptr ) const;
     bool UseWorldSectionBVH() const;
 
+    /** One leaf primitive of the world-mesh CLUSTER BVH: either one WorldMeshInfo::Clusters[]
+        entry, or - for a mesh too small to have been clustered at all (see
+        WORLD_MESH_CLUSTER_MIN_TRIANGLES) - the whole mesh, marked by ClusterIndex ==
+        WHOLE_MESH_CLUSTER. Built and queried alongside, but independently of, the section-level BVH
+        above so CollectVisibleSections' existing callers are untouched by this. */
+    struct WorldMeshClusterRef {
+        static constexpr uint32_t WHOLE_MESH_CLUSTER = UINT32_MAX;
+
+        DirectX::BoundingBox Bounds{};
+        DirectX::XMFLOAT3 Center{};
+        WorldMeshInfo* Mesh = nullptr;
+        MeshKey Key{};
+        uint32_t ClusterIndex = WHOLE_MESH_CLUSTER;
+    };
+
+    /** Gathers every WorldMeshInfo's clusters across every section into one global tree. Called from
+        BuildWorldSectionBVH/ClearWorldSectionBVH so there's a single build/clear call site for both
+        trees; independent storage/lifetime otherwise. */
+    void BuildWorldMeshClusterBVH();
+
     /** Collects polygons in the given AABB */
     void CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, std::vector<zCPolygon*>& list );
 
@@ -1110,6 +1142,7 @@ private:
     std::vector<WorldSectionBVHNode> WorldSectionBVHNodes;
     std::vector<WorldMeshSectionInfo*> WorldSectionBVHSections;
     bool WorldSectionBVHValid = false;
+    SpatialBVH::BuildResult<WorldMeshClusterRef> WorldMeshClusterTree;
     MeshInfo* WrappedWorldMesh;
 
     /** List of vobs with skeletal meshes (Having a zCModel-Visual) */

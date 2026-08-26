@@ -161,7 +161,7 @@ public:
         bool noNPCs = false,
         std::list<VobInfo*>* renderedVobs = nullptr, 
         std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
-        std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+        std::vector<MeshDrawRange>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = 0xFFFFFFFFu,
         const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );

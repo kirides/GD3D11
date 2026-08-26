@@ -4745,12 +4745,67 @@ void GothicAPI::BuildWorldSectionBVH() {
 
     buildRecursive( buildRecursive, 0, static_cast<uint32_t>(primitiveIndices.size()) );
     WorldSectionBVHValid = !WorldSectionBVHNodes.empty();
+
+    BuildWorldMeshClusterBVH();
 }
 
 void GothicAPI::ClearWorldSectionBVH() {
     WorldSectionBVHValid = false;
     WorldSectionBVHNodes.clear();
     WorldSectionBVHSections.clear();
+    WorldMeshClusterTree = {};
+}
+
+/** Companion to BuildWorldSectionBVH: same idea (flatten primitives, hand them to the shared
+    SpatialBVH builder), but at cluster granularity - see WorldMeshClusterRef. Independent tree,
+    independent storage; CollectVisibleSections/QueryWorldSectionBVH above are untouched by this. */
+void GothicAPI::BuildWorldMeshClusterBVH() {
+    std::vector<WorldMeshClusterRef> primitives;
+    primitives.reserve( 8192 );
+
+    for ( auto& [_, byY] : WorldSections ) {
+        for ( auto& [__, section] : byY ) {
+            if ( !IsValidSectionBounds( section.BoundingBox ) ) {
+                continue;
+            }
+
+            for ( auto& [key, mesh] : section.WorldMeshes ) {
+                if ( !mesh ) {
+                    continue;
+                }
+
+                if ( mesh->Clusters.empty() ) {
+                    // Never clustered (too small - see WORLD_MESH_CLUSTER_MIN_TRIANGLES in
+                    // WorldConverter.cpp): the whole mesh is its own one implicit range.
+                    WorldMeshClusterRef ref;
+                    ref.Bounds = Frustum::BBoxFromzTBBox3D( mesh->HasBoundingBox ? mesh->BoundingBox : section.BoundingBox );
+                    ref.Center = ref.Bounds.Center;
+                    ref.Mesh = mesh;
+                    ref.Key = key;
+                    ref.ClusterIndex = WorldMeshClusterRef::WHOLE_MESH_CLUSTER;
+                    primitives.push_back( ref );
+                    continue;
+                }
+
+                for ( uint32_t i = 0; i < static_cast<uint32_t>(mesh->Clusters.size()); ++i ) {
+                    const MeshCluster& cluster = mesh->Clusters[i];
+                    WorldMeshClusterRef ref;
+                    ref.Bounds = Frustum::BBoxFromzTBBox3D( cluster.Bounds );
+                    ref.Center = ref.Bounds.Center;
+                    ref.Mesh = mesh;
+                    ref.Key = key;
+                    ref.ClusterIndex = i;
+                    primitives.push_back( ref );
+                }
+            }
+        }
+    }
+
+    if ( primitives.empty() ) {
+        return;
+    }
+
+    WorldMeshClusterTree = SpatialBVH::Build( std::move( primitives ), WORLD_SECTION_BVH_LEAF_SIZE );
 }
 
 bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const {
@@ -4963,6 +5018,88 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
                 }
             }
         }
+    }
+}
+
+/** Finer-grained sibling of CollectVisibleSections - see its declaration in GothicAPI.h. */
+void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
+    bool useSectionRadiusFilter,
+    const HorizonCuller* horizon,
+    std::vector<MeshDrawRange>& outRanges ) {
+    if ( !WorldMeshClusterTree.IsValid() ) {
+        return;
+    }
+
+    ZoneScopedN( "GothicAPI::CollectVisibleMeshRanges" );
+
+    INT2 camSection = {};
+    int sectionViewDist = 0;
+    if ( useSectionRadiusFilter ) {
+        camSection = WorldConverter::GetSectionOfPos( Engine::GAPI->GetCameraPosition() );
+        sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
+    }
+
+    // Raw surviving clusters, gathered per-mesh so the merge pass below only ever compares ranges
+    // that came from the SAME index buffer - merging across meshes/materials would draw the wrong
+    // triangles.
+    static thread_local std::map<WorldMeshInfo*, std::vector<MeshDrawRange>> byMesh;
+    for ( auto& [mesh, ranges] : byMesh ) {
+        ranges.clear();
+    }
+
+    SpatialBVH::Query( WorldMeshClusterTree, frustum,
+        [&]( const WorldMeshClusterRef& ref ) {
+            if ( !ref.Mesh ) {
+                return;
+            }
+
+            if ( useSectionRadiusFilter ) {
+                const XMFLOAT3& c = ref.Bounds.Center;
+                const INT2 clusterSection = WorldConverter::GetSectionOfPos( float3( c.x, c.y, c.z ) );
+                if ( abs( clusterSection.x - camSection.x ) >= sectionViewDist ) return;
+                if ( abs( clusterSection.y - camSection.y ) >= sectionViewDist ) return;
+            }
+
+            MeshDrawRange range;
+            range.Mesh = ref.Mesh;
+            range.Key = ref.Key;
+            if ( ref.ClusterIndex == WorldMeshClusterRef::WHOLE_MESH_CLUSTER ) {
+                range.IndexOffset = 0;
+                range.IndexCount = static_cast<uint32_t>(ref.Mesh->Indices.size());
+            } else {
+                const MeshCluster& cluster = ref.Mesh->Clusters[ref.ClusterIndex];
+                range.IndexOffset = cluster.IndexOffset;
+                range.IndexCount = cluster.IndexCount;
+            }
+
+            byMesh[ref.Mesh].push_back( range );
+        },
+        horizon );
+
+    // Merge exactly-adjacent ranges per mesh (same rule as D3D12's CoalesceWorldDepthCommands):
+    // clusters were sorted into contiguous, non-overlapping index-buffer order when they were built
+    // (see ClusterWorldMeshTriangles), so sorting surviving ranges back into that order and fusing
+    // touching ones recovers long runs cheaply instead of one draw per tiny cluster.
+    for ( auto& [mesh, ranges] : byMesh ) {
+        if ( ranges.empty() ) {
+            continue;
+        }
+
+        std::sort( ranges.begin(), ranges.end(), []( const MeshDrawRange& a, const MeshDrawRange& b ) {
+            return a.IndexOffset < b.IndexOffset;
+        } );
+
+        MeshDrawRange run = ranges[0];
+        for ( size_t i = 1; i < ranges.size(); ++i ) {
+            const MeshDrawRange& next = ranges[i];
+            if ( run.IndexOffset + run.IndexCount == next.IndexOffset ) {
+                run.IndexCount += next.IndexCount;
+            } else {
+                outRanges.push_back( run );
+                run = next;
+            }
+        }
+        outRanges.push_back( run );
     }
 }
 

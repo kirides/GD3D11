@@ -602,7 +602,7 @@ void D3D11PointLight::RenderFullCubemap() {
         // Unlike every other mode, FULL never reuses the world-mesh candidate-list cache: it always re-collects
         // and redraws the whole scene fresh (see NeedsUpdate()'s PLS_FULL branch - this runs every frame), which
         // is the entire point of the "no caching shortcuts" escape hatch.
-        std::vector<std::pair<MeshKey, MeshInfo*>>* wc = nullptr;
+        std::vector<MeshDrawRange>* wc = nullptr;
 
         // See RenderStaticShadowPass: PFX lights, and lights the level marked static, are restricted to
         // world-mesh casters only - FULL must keep that restriction so a formerly PLS_STATIC_ONLY light's
@@ -670,7 +670,7 @@ bool D3D11PointLight::IsTiledArrayTarget( const RenderToDepthStencilBuffer& targ
 void D3D11PointLight::RenderShadowCubeFacePasses(
     RenderToDepthStencilBuffer& target, bool clearDepth, unsigned int casterMask,
     std::list<VobInfo*>* renderedVobs, std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
+    std::vector<MeshDrawRange>* worldMeshCache,
     const std::move_only_function<bool(const zCVob*) const>* ignoreVob ) {
 
     D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);

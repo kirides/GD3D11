@@ -984,6 +984,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Engine.h" />
     <ClInclude Include="BspPortalCuller.h" />
     <ClInclude Include="HorizonCuller.h" />
+    <ClInclude Include="SpatialBVH.h" />
     <ClInclude Include="Frustum.h" />
     <ClInclude Include="GFSDK_SSAO.h" />
     <ClInclude Include="GInventory.h" />

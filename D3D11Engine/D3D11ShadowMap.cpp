@@ -1776,7 +1776,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     const ComPtr<ID3D11RenderTargetView>& debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
+    std::vector<MeshDrawRange>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask,
     const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {

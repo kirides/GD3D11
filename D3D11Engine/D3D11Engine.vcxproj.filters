@@ -957,6 +957,7 @@
     </ClInclude>
     <ClInclude Include="BspPortalCuller.h" />
     <ClInclude Include="HorizonCuller.h" />
+    <ClInclude Include="SpatialBVH.h" />
     <ClInclude Include="MorphBlend.h" />
     <ClInclude Include="AsyncVisualExtractor.h" />
     <ClInclude Include="SharedVisualRegistry.h" />

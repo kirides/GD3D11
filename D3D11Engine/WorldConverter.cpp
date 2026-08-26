@@ -23,6 +23,7 @@
 #include "D3D7\MyDirectDrawSurface7.h"
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
+#include "SpatialBVH.h"
 #include "MeshManager.h"
 #include "MeshOptimizeCache.h"
 #include "SharedVisualRegistry.h"
@@ -289,6 +290,100 @@ namespace {
 
     void RepairZeroLengthVertexNormals( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices );
 
+    /** Target triangle count per cluster leaf. Small enough that a point light's range doesn't drag
+        in much more geometry than it needs, large enough that the world-mesh cluster BVH (built by
+        flattening every mesh's clusters into one global tree, see GothicAPI::BuildWorldSectionBVH)
+        stays a few thousand leaves for a whole level, not hundreds of thousands. */
+    constexpr uint32_t WORLD_MESH_CLUSTER_TARGET_TRIANGLES = 128;
+
+    /** Meshes at or below this triangle count aren't worth clustering - the whole mesh already IS a
+        reasonably tight range, and a one-leaf "cluster BVH" would just be overhead. Left with an
+        empty Clusters list, which callers already have to treat as "draw the whole mesh". */
+    constexpr uint32_t WORLD_MESH_CLUSTER_MIN_TRIANGLES = WORLD_MESH_CLUSTER_TARGET_TRIANGLES * 2;
+
+    struct TriangleClusterPrimitive {
+        DirectX::BoundingBox Bounds{};
+        DirectX::XMFLOAT3 Center{};
+        VERTEX_INDEX I0 = 0, I1 = 0, I2 = 0;
+    };
+
+    /** Spatially reorders `mesh`'s triangles (a pure permutation - vertex count/content untouched)
+        so that nearby triangles land in contiguous index-buffer ranges, and records those ranges as
+        `mesh->Clusters`. Must run AFTER OptimizeMeshBuffers and BEFORE GPU buffer Init()/shadow-index
+        derivation: meshopt_generateShadowIndexBuffer (MeshShadowIndexBuilder.h) produces one welded
+        output index per input index in the SAME position, so as long as this permutation is the last
+        thing to touch `Indices`, the shadow index buffer inherits identical, still-valid cluster
+        ranges for free - no separate cluster set needed for shadow vs. main draws. */
+    void ClusterWorldMeshTriangles( WorldMeshInfo* mesh ) {
+        const size_t numTris = mesh->Indices.size() / 3;
+        if ( numTris <= WORLD_MESH_CLUSTER_MIN_TRIANGLES ) {
+            return; // Whole mesh stays one implicit range - see WORLD_MESH_CLUSTER_MIN_TRIANGLES.
+        }
+
+        std::vector<TriangleClusterPrimitive> tris;
+        tris.reserve( numTris );
+        for ( size_t t = 0; t < numTris; ++t ) {
+            TriangleClusterPrimitive p;
+            p.I0 = mesh->Indices[t * 3 + 0];
+            p.I1 = mesh->Indices[t * 3 + 1];
+            p.I2 = mesh->Indices[t * 3 + 2];
+
+            const XMFLOAT3& v0 = mesh->Vertices[p.I0].Position;
+            const XMFLOAT3& v1 = mesh->Vertices[p.I1].Position;
+            const XMFLOAT3& v2 = mesh->Vertices[p.I2].Position;
+
+            const XMFLOAT3 bbMin( std::min( { v0.x, v1.x, v2.x } ), std::min( { v0.y, v1.y, v2.y } ), std::min( { v0.z, v1.z, v2.z } ) );
+            const XMFLOAT3 bbMax( std::max( { v0.x, v1.x, v2.x } ), std::max( { v0.y, v1.y, v2.y } ), std::max( { v0.z, v1.z, v2.z } ) );
+            p.Bounds.Center = XMFLOAT3( (bbMin.x + bbMax.x) * 0.5f, (bbMin.y + bbMax.y) * 0.5f, (bbMin.z + bbMax.z) * 0.5f );
+            p.Bounds.Extents = XMFLOAT3( (bbMax.x - bbMin.x) * 0.5f, (bbMax.y - bbMin.y) * 0.5f, (bbMax.z - bbMin.z) * 0.5f );
+            p.Center = XMFLOAT3( (v0.x + v1.x + v2.x) / 3.0f, (v0.y + v1.y + v2.y) / 3.0f, (v0.z + v1.z + v2.z) / 3.0f );
+            tris.push_back( p );
+        }
+
+        // The internal split tree is a build-time throwaway here - only the final leaf grouping
+        // (a permutation of Indices) and each leaf's own bounds/range are kept.
+        SpatialBVH::BuildResult<TriangleClusterPrimitive> tree =
+            SpatialBVH::Build( std::move( tris ), WORLD_MESH_CLUSTER_TARGET_TRIANGLES );
+        if ( !tree.IsValid() ) {
+            return;
+        }
+
+        std::vector<VERTEX_INDEX> reordered;
+        reordered.reserve( mesh->Indices.size() );
+        for ( const TriangleClusterPrimitive& p : tree.Leaves ) {
+            reordered.push_back( p.I0 );
+            reordered.push_back( p.I1 );
+            reordered.push_back( p.I2 );
+        }
+        mesh->Indices = std::move( reordered );
+
+        mesh->Clusters.clear();
+        mesh->Clusters.reserve( tree.Nodes.size() );
+        for ( const SpatialBVH::Node& node : tree.Nodes ) {
+            if ( !node.IsLeaf() ) {
+                continue;
+            }
+
+            MeshCluster cluster;
+            cluster.Bounds.Min = XMFLOAT3( node.Bounds.Center.x - node.Bounds.Extents.x,
+                                            node.Bounds.Center.y - node.Bounds.Extents.y,
+                                            node.Bounds.Center.z - node.Bounds.Extents.z );
+            cluster.Bounds.Max = XMFLOAT3( node.Bounds.Center.x + node.Bounds.Extents.x,
+                                            node.Bounds.Center.y + node.Bounds.Extents.y,
+                                            node.Bounds.Center.z + node.Bounds.Extents.z );
+            // Leaf ranges are in triangle units (one TriangleClusterPrimitive per triangle);
+            // Indices/ShadowIndices count in index units, 3 per triangle.
+            cluster.IndexOffset = node.LeafStart * 3;
+            cluster.IndexCount = node.LeafCount * 3;
+            mesh->Clusters.push_back( cluster );
+        }
+        // Leaf nodes are discovered in Nodes' preorder (parent-before-children), not LeafStart
+        // order - sort so consumers can assume ranges tile [0, Indices.size()) contiguously and
+        // merge adjacent ones without an extra pass.
+        std::sort( mesh->Clusters.begin(), mesh->Clusters.end(),
+            []( const MeshCluster& a, const MeshCluster& b ) { return a.IndexOffset < b.IndexOffset; } );
+    }
+
     void BuildWorldMeshBuffers( WorldMeshInfo* mesh ) {
         ZoneScoped;
         std::vector<ExVertexStruct> indexedVertices;
@@ -319,6 +414,12 @@ namespace {
 
         // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
         OptimizeMeshBuffers( mesh->MeshVertexBuffer.get(), mesh->Indices, mesh->Vertices, &mesh->ShadowIndices, nullptr );
+
+        // Spatially cluster the (now final) triangle order so a point light or any other tight-range
+        // query can draw a sub-range of this mesh instead of the whole thing. Must run after
+        // OptimizeMeshBuffers and before shadow-index derivation/GPU upload below - see
+        // ClusterWorldMeshTriangles's comment.
+        ClusterWorldMeshTriangles( mesh );
 
         // Init and fill them
         mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -384,8 +485,8 @@ namespace {
 }
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
-void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, 
-    std::vector<std::pair<MeshKey, MeshInfo*>>& outMeshes ) {
+void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections,
+    std::vector<MeshDrawRange>& outMeshes ) {
     ZoneScoped;
 
     INT2 s = GetSectionOfPos( position );
@@ -395,7 +496,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     opaqueKey.Texture = nullptr;
 
     MeshInfo* opaqueMesh = new MeshInfo;
-    outMeshes.emplace_back(opaqueKey, opaqueMesh);
+    outMeshes.push_back( MeshDrawRange{ opaqueMesh, opaqueKey, 0, 0 } );
 
     XMVECTOR xmPosition = XMLoadFloat3( &position );
 
@@ -415,15 +516,15 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
                     // Create new mesh-part for alphatested surfaces
                     if ( it.first.Texture && it.first.Texture->HasAlphaChannel() ) {
-                        for (auto [key, msh] : outMeshes) {
-                            if (it.first == key) {
-                                m = msh;
+                        for ( const MeshDrawRange& range : outMeshes ) {
+                            if ( it.first == range.Key ) {
+                                m = range.Mesh;
                                 break;
                             }
                         }
                         if ( m == nullptr ) {
                             m = new MeshInfo;
-                            outMeshes.emplace_back(it.first, m);
+                            outMeshes.push_back( MeshDrawRange{ m, it.first, 0, 0 } );
                         }
                     } else {
                         // Just use the same mesh for opaque surfaces
@@ -466,10 +567,10 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
     // Index all meshes
     for ( size_t i = 0; i < outMeshes.size(); ) {
-        auto it = outMeshes[i];
+        MeshDrawRange it = outMeshes[i];
 
-        if ( it.second->Vertices.empty() ) {
-            delete it.second;
+        if ( it.Mesh->Vertices.empty() ) {
+            delete it.Mesh;
             if ( i != outMeshes.size() - 1 ) {
                 outMeshes[i] = std::move( outMeshes.back() );
             }
@@ -479,24 +580,30 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
         std::vector<VERTEX_INDEX> indices;
         std::vector<ExVertexStruct> vertices;
-        IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), vertices, indices );
+        IndexVertices( &it.Mesh->Vertices[0], it.Mesh->Vertices.size(), vertices, indices );
 
-        it.second->Vertices = std::move( vertices );
-        it.second->Indices = std::move( indices );
+        it.Mesh->Vertices = std::move( vertices );
+        it.Mesh->Indices = std::move( indices );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( it.Mesh->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( it.Mesh->MeshIndexBuffer );
 
         // Optimize index and vertex locality before uploading immutable buffers (optional).
-        OptimizeMeshBuffers( it.second->MeshVertexBuffer.get(), it.second->Indices, it.second->Vertices,
-            &it.second->ShadowIndices, nullptr );
+        OptimizeMeshBuffers( it.Mesh->MeshVertexBuffer.get(), it.Mesh->Indices, it.Mesh->Vertices,
+            &it.Mesh->ShadowIndices, nullptr );
 
         // Init and fill them
-        it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        CreateShadowIndexBuffer( it.second );
-        
+        it.Mesh->MeshVertexBuffer->Init( &it.Mesh->Vertices[0], it.Mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        it.Mesh->MeshIndexBuffer->Init( &it.Mesh->Indices[0], it.Mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        CreateShadowIndexBuffer( it.Mesh );
+
+        // outMeshes[i] now describes the WHOLE freshly-built mesh - keep IndexCount in sync so a
+        // caller reading MeshDrawRange (rather than reaching into Mesh->Indices directly) still
+        // gets the right count. IndexOffset stays 0: this function always builds one full range,
+        // never a sub-range.
+        outMeshes[i].IndexCount = static_cast<uint32_t>(it.Mesh->Indices.size());
+
         ++i;
     }
 }

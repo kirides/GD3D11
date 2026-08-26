@@ -143,7 +143,7 @@ protected:
     void RenderShadowCubeFacePasses(
         RenderToDepthStencilBuffer& target, bool clearDepth, unsigned int casterMask,
         std::list<VobInfo*>* renderedVobs, std::list<SkeletalVobInfo*>* renderedMobs,
-        std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
+        std::vector<MeshDrawRange>* worldMeshCache,
         const std::move_only_function<bool(const zCVob*) const>* ignoreVob );
 
     bool IsReady();
@@ -155,7 +155,7 @@ protected:
 
     std::list<VobInfo*> VobCache;
     std::list<SkeletalVobInfo*> SkeletalVobCache;
-    std::vector<std::pair<MeshKey, MeshInfo*>> WorldMeshCache;
+    std::vector<MeshDrawRange> WorldMeshCache;
 
     VobLightInfo* LightInfo;
     DepthStencilHandle m_DepthCubemap;

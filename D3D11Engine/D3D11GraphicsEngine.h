@@ -269,7 +269,7 @@ public:
                                       bool cullFront = true,
                                       bool indoor = false,
                                       bool noNPCs = false,
-                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
                                       unsigned int casterMask = SHADOW_CASTER_ALL,
                                       const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
@@ -277,7 +277,7 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL,
         const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
 
@@ -317,7 +317,7 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = SHADOW_CASTER_ALL,
         const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr);
