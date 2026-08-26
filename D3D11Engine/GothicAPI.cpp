@@ -1848,7 +1848,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
         }
 
         if ( it->GetVisual() && it->GetShowVisual() ) {
-            decalDistances.push_back( std::make_pair( it, dist ) );
+            decalDistances.emplace_back( it, dist);
         }
     }
 
@@ -3895,7 +3895,7 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
             float t = 0;
             if ( Toolbox::PositionInsideBox( origin, section.BoundingBox.Min, section.BoundingBox.Max ) || Toolbox::IntersectBox( section.BoundingBox.Min, section.BoundingBox.Max, origin, dir, t ) ) {
                 if ( t < maxSections * WORLD_SECTION_SIZE )
-                    hitSections.push_back( std::make_pair( &section, t ) );
+                    hitSections.emplace_back( &section, t);
             }
         }
     }
