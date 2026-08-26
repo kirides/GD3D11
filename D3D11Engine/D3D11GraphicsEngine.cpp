@@ -5436,19 +5436,33 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             meshList.push_back( { { range.Mesh, key, range.IndexOffset, range.IndexCount }, alphaLevel, distanceSq } );
         }
     }
-    auto CompareMesh = []( const WorldMeshDrawEntry& a, const WorldMeshDrawEntry& b ) -> bool {
+    constexpr float closeDistanceSq = 10000.0f * 10000.0f;
+    const auto CompareMesh = []( const WorldMeshDrawEntry& a, const WorldMeshDrawEntry& b ) -> bool {
         if ( a.AlphaLevel != b.AlphaLevel )
             return a.AlphaLevel < b.AlphaLevel;
-        if ( a.DistanceSq < b.DistanceSq )
-            return true;
-        if ( a.DistanceSq > b.DistanceSq )
-            return false;
+        
+        const bool aIsClose = a.DistanceSq <= closeDistanceSq;
+        const bool bIsClose = b.DistanceSq <= closeDistanceSq;
+
+        if (aIsClose != bIsClose)
+            return aIsClose;
+        
+        if (aIsClose) {
+            if (a.DistanceSq != b.DistanceSq)
+                return a.DistanceSq < b.DistanceSq;
+        }
+
         if ( a.Range.Key.Texture != b.Range.Key.Texture )
             return a.Range.Key.Texture < b.Range.Key.Texture;
-        return (a.Range.Mesh->BaseIndexLocation + a.Range.IndexOffset) <
-            (b.Range.Mesh->BaseIndexLocation + b.Range.IndexOffset);
+        
+        if (a.DistanceSq != b.DistanceSq)
+            return a.DistanceSq < b.DistanceSq;
+
+        const auto aOffset = a.Range.Mesh->BaseIndexLocation + a.Range.IndexOffset;
+        const auto bOffset = b.Range.Mesh->BaseIndexLocation + b.Range.IndexOffset;
+        return aOffset < bOffset;
     };
-    std::sort( meshList.begin(), meshList.end(), CompareMesh );
+    std::ranges::sort(meshList, CompareMesh );
 
     // Draw depth only
     if ( (Engine::GAPI->GetRendererState().RendererSettings.DoZPrepass && Engine::GAPI->GetRendererState().RendererSettings.RendererMode == GothicRendererSettings::RM_Deferred )
@@ -5545,12 +5559,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::OpaqueSubmission" ) );
 
         const size_t numMeshes = meshList.size();
-        std::vector<UINT> materialInfoCbOffsets( numMeshes );
 
         ConstantBufferAllocation INVALID_MATERIAL = PerObjectMaterialInfoPooledBuffer->Allocate( &defInfo.buffer, sizeof( defInfo.buffer ) );
         ConstantBufferAllocation lastMatCbAllocation = INVALID_MATERIAL;
 
         const auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
+        
         for ( size_t i = 0; i < numMeshes; i++ ) {
             auto const& mesh = meshList[i];
 
