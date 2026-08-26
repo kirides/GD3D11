@@ -349,7 +349,7 @@ namespace {
         }
 
         std::vector<VERTEX_INDEX> reordered;
-        reordered.reserve( mesh->Indices.size() );
+        reordered.reserve( tree.Leaves.size() * 3 );
         for ( const TriangleClusterPrimitive& p : tree.Leaves ) {
             reordered.push_back( p.I0 );
             reordered.push_back( p.I1 );

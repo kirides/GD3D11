@@ -177,6 +177,7 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
     }
 
     std::vector<XMFLOAT3> trisInside;
+    trisInside.reserve(mesh->Indices.size() * 3);
     for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
         XMFLOAT3 tri[3];
 
