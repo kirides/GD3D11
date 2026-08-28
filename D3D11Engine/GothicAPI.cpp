@@ -4518,7 +4518,9 @@ void GothicAPI::CollectVisibleVobs(
                 vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
                 ProcessVobAnimation( it->Vob, aniMode, vii );
             }
-            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
+            MeshVisualInfo* mvi = reinterpret_cast<MeshVisualInfo*>(it->VisualInfo);
+            mvi->Instances.push_back( vii );
+            mvi->InstanceVobs.push_back( it->Vob );
         }
 
         if ( renderQueue.transparent.size() ) {

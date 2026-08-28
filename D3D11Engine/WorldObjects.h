@@ -314,6 +314,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
     /** Starts a new frame for this mesh */
     void StartNewFrame() {
         Instances.clear();
+        InstanceVobs.clear();
     }
 
     std::map<MeshKey, std::vector<MeshInfo*>, cmpMeshKey> MeshesByTexture;
@@ -323,6 +324,11 @@ struct MeshVisualInfo : public BaseVisualInfo {
 
     //zCProgMeshProto* Visual;
     std::vector<VobInstanceInfo> Instances;
+    // Parallel to Instances (same index, always pushed together) - the source vob for each instance. CPU-only
+    // bookkeeping, never uploaded to the GPU (unlike VobInstanceInfo, whose layout is shader-visible), kept
+    // around so per-light self-shadow exclusion (D3D12PointShadows::BuildExcludeList) can identify which
+    // instanced static-VOB slot belongs to the light's own owner chain.
+    std::vector<const zCVob*> InstanceVobs;
     unsigned int StartInstanceNum;
     
     /** Full mesh of this */

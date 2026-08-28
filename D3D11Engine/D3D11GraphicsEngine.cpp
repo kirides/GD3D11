@@ -7064,7 +7064,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 GothicAPI::ProcessVobAnimation( it->Vob, aniMode, vii );
             }
 
-            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
+            MeshVisualInfo* mvi = reinterpret_cast<MeshVisualInfo*>(it->VisualInfo);
+            mvi->Instances.push_back( vii );
+            mvi->InstanceVobs.push_back( it->Vob );
         }
 
         TracyD3D11ZoneNX( "Shadows::DrawVOBs" );
