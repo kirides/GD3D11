@@ -122,12 +122,14 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
 }
 
 void D3D12GraphicsEngine::UploadAoScreenConstants() {
-    // The screen-space AO block of the shared shadow CB: 1/screen-size, which the lit pixel shaders multiply
-    // SV_Position by to get the mask UV. Written UNCONDITIONALLY every frame (AO on or off) — a frame that
-    // skipped it would sample through whatever resolution happened to be current when it was last written.
+    // The screen-space AO + opaque-SSR-reprojection block of the shared shadow CB: 1/screen-size (which the
+    // lit pixel shaders multiply SV_Position by to get the mask UV) plus the previous-frame color/depth
+    // indices + view-proj the SSR march reprojects through (see the AoScreenCBData header comment). Written
+    // UNCONDITIONALLY every frame (AO/SSR on or off) — a frame that skipped it would sample through whatever
+    // resolution/history happened to be current when it was last written.
     // The writers of m_ShadowCB must tile exactly: D3D12ShadowMap::Prepare owns [0, kWetnessCbOffset),
-    // UploadWetnessConstants [kWetnessCbOffset, kAoReprojCbOffset), this the next 80 bytes (of which only the
-    // first 8 are live) and UploadSkyIblConstants the rest. The CB is 512 bytes.
+    // UploadWetnessConstants [kWetnessCbOffset, kAoReprojCbOffset), this the next 80 bytes, and
+    // UploadSkyIblConstants the rest. The CB is 512 bytes.
     static_assert( kWetnessCbOffset + sizeof( WetnessCBData ) == kAoReprojCbOffset,
         "the AO screen block must start right after the wetness block" );
     static_assert( sizeof( AoScreenCBData ) <= kAoReprojCbReservedBytes, "AO screen block overflows its slot" );
@@ -136,6 +138,22 @@ void D3D12GraphicsEngine::UploadAoScreenConstants() {
     AoScreenCBData cb = {};
     cb.InvResX = m_Resolution.x > 0 ? 1.0f / static_cast<float>( m_Resolution.x ) : 0.0f;
     cb.InvResY = m_Resolution.y > 0 ? 1.0f / static_cast<float>( m_Resolution.y ) : 0.0f;
+
+    // Opaque SSR: MaxSteps == 0 (the default when history isn't ready or the setting is Disabled) is the
+    // shader's whole "don't bother" gate, so every early-out below just leaves the step counts at 0 rather
+    // than skipping the memcpy — a partially-written CB is worse than a correctly-zeroed one.
+    UINT maxSteps = 0, refineSteps = 0;
+    if ( m_SsrHistoryValid && m_SsrPrevColorSrvSlot != UINT_MAX && m_SsrPrevDepthSrvSlot != UINT_MAX ) {
+        auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        SsrStepsForQuality( settings.OpaqueSSRQuality, maxSteps, refineSteps );
+    }
+    if ( maxSteps > 0 && maxSteps <= 0xFFu && refineSteps <= 0xFFu
+        && m_SsrPrevColorSrvSlot <= kSsrIndexMask && m_SsrPrevDepthSrvSlot <= kSsrIndexMask ) {
+        cb.SsrPrevColorIndex = m_SsrPrevColorSrvSlot | ( maxSteps << kSsrStepsShift );
+        cb.SsrPrevDepthIndex = m_SsrPrevDepthSrvSlot | ( refineSteps << kSsrStepsShift );
+        cb.SsrPrevViewProj = m_PrevViewProjUnjittered;
+    }
+
     memcpy( m_ShadowCBMapped[m_FrameIndex] + kAoReprojCbOffset, &cb, sizeof( cb ) );
 }
 

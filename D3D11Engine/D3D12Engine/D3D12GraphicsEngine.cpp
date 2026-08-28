@@ -1727,6 +1727,7 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     m_AppliedAoResolution = Engine::GAPI->GetRendererState().RendererSettings.AoResolution;
     CreateMotionResources( renderSize ); // motion-vector + normal G-buffer; prepass falls back to depth-only
     CreateTaaResources( renderSize );    // also drops the history, which any resolution change invalidates
+    CreateSsrHistoryResources( renderSize ); // opaque-SSR previous-frame color+depth; see D3D12Ssr.cpp
     // DoF textures are built lazily (~20 MB of VA, off by default), so only re-size them if they exist.
     // Clearing the attempted flag lets a previous failure retry.
     m_DoFCreateAttempted = false;

@@ -44,14 +44,16 @@ cbuffer ShadowCB : register(b4)
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
-    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
-    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
-    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
-    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
-    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
-    float2   AoInvRes;          float2 _aopad0;
-    float4   _aoReserved[4];
+    // --- Screen-space AO / opaque-SSR-reprojection block, 80 bytes, written by UploadAoScreenConstants
+    // (kAoReprojCbOffset). AoInvRes: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask
+    // UV with. SsrPrevColorIndex/SsrPrevDepthIndex + SsrPrevViewProj: the previous-frame opaque scene
+    // color/depth (D3D12Ssr.cpp's m_SsrPrevColor/m_SsrPrevDepth) and the view-proj to reproject into their
+    // UV space — see PBRLighting.hlsl's opaque-SSR march and D3D12_SSR_WET_SURFACES_PLAN.md. Each index's
+    // low 24 bits are the bindless SRV slot, top 8 bits the step count for that pass (MaxSteps/RefineSteps);
+    // MaxSteps == 0 means SSR is off. Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl — the
+    // sky-IBL tail below relies on this block staying exactly 80 bytes (kSkyIblCbOffset = 432).
+    float2   AoInvRes;          uint SsrPrevColorIndex; uint SsrPrevDepthIndex;
+    float4x4 SsrPrevViewProj;
     // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
     // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
     // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.

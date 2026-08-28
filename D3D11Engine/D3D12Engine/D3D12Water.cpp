@@ -73,15 +73,8 @@ namespace {
     // pass uses) because only the water PS ever reads them.
     constexpr D3D12_RESOURCE_STATES kWaterCopyReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-    // D3D11's SSR_QUALITY permutation table (PS_Water.hlsl lines 72-81), as runtime loop bounds.
-    void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps ) {
-        switch ( quality ) {
-        case GothicRendererSettings::WATER_SSR_LOW:    maxSteps = 12; refineSteps = 4; break;
-        case GothicRendererSettings::WATER_SSR_MEDIUM: maxSteps = 24; refineSteps = 5; break;
-        case GothicRendererSettings::WATER_SSR_HIGH:   maxSteps = 48; refineSteps = 6; break;
-        default:                                       maxSteps = 0;  refineSteps = 0; break;
-        }
-    }
+    // D3D11's SSR_QUALITY permutation table (PS_Water.hlsl lines 72-81), as runtime loop bounds. Shared
+    // with opaque-surface SSR (D3D12AO.cpp) via D3D12EngineCommon.h's SsrStepsForQuality.
 
     // DDS_HEADER.dwCaps2 bits (the cubemap flags live outside DDSFormat.h's pixel-format tables).
     constexpr uint32_t kDdsCaps2Cubemap = 0x00000200;

@@ -1312,13 +1312,33 @@ private:
     // in this frame's screen space and needs no reprojection. In exchange RenderSSAO round-trips the depth
     // buffer DEPTH_WRITE <-> NON_PIXEL_SHADER_RESOURCE and serialises against the prepass, as BuildHiZ does.
     //
-    // 80 bytes of the shared shadow CB, between the wetness block and the sky-IBL tail. Only the leading float2
-    // is live (1/screen-size, to turn SV_Position into a mask UV); the rest is the hole the old reprojection
-    // constants left, kept because five HLSL cbuffer layouts bake in the offsets after it.
+    // 80 bytes of the shared shadow CB, between the wetness block and the sky-IBL tail. Originally just the
+    // leading float2 (1/screen-size, to turn SV_Position into a mask UV) plus an unused hole left by an old
+    // AO-mask reprojection scheme — now that hole is reused for the OPAQUE-SURFACE SSR reprojection inputs
+    // (see D3D12_SSR_WET_SURFACES_PLAN.md / D3D12Ssr.cpp): it needed exactly "a previous-frame view-proj +
+    // a depth index", which is precisely what this slot was originally sized for. Packing:
+    //   SsrPrevColorIndex/SsrPrevDepthIndex: low 24 bits = bindless SRV heap slot (kSsrIndexMask), top 8
+    //     bits = step count (kSsrStepsShift) — MaxSteps rides the color index, RefineSteps the depth index,
+    //     mirroring the ORM-slot packing convention in PBRLighting.hlsl's SampleOrm. MaxSteps == 0 means
+    //     "SSR off" (matches D3D12Water.cpp's WaterCBData::SsrMaxSteps convention) and is the only bit the
+    //     shader needs to check before doing any of the rest of the march.
+    //   SsrPrevViewProj: previous frame's UNJITTERED view-projection (same source as MotionCB's
+    //     PrevViewProj, D3D12Motion.cpp's m_PrevViewProjUnjittered) — reprojects a world position marched
+    //     in THIS frame into the UV space of m_SsrPrevColor/m_SsrPrevDepth.
+    // Five HLSL cbuffer layouts (World/Vob/Skeletal/Vegetation/Decal) bake in the offsets after this block,
+    // so its total size must stay 80 bytes even as its contents change.
     static constexpr UINT kAoReprojCbOffset = 352;
     static constexpr UINT kAoReprojCbReservedBytes = 80;
-    struct AoScreenCBData { float InvResX; float InvResY; float _pad[2]; };
-    void UploadAoScreenConstants();           // publishes AoInvRes into the shadow CB (unconditional, every frame)
+    static constexpr UINT kSsrIndexMask = 0x00FFFFFFu;
+    static constexpr UINT kSsrStepsShift = 24;
+    struct AoScreenCBData {
+        float InvResX; float InvResY;
+        UINT SsrPrevColorIndex;   // low 24 bits: SRV slot; top 8 bits: SsrMaxSteps (0 = disabled)
+        UINT SsrPrevDepthIndex;   // low 24 bits: SRV slot; top 8 bits: SsrRefineSteps
+        DirectX::XMFLOAT4X4 SsrPrevViewProj;
+    };
+    static_assert( sizeof( AoScreenCBData ) == 80, "AoScreenCBData must fill its 80-byte shadow-CB slot exactly" );
+    void UploadAoScreenConstants();           // publishes AoInvRes + the SSR reprojection block into the shadow CB (unconditional, every frame)
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
     void RenderSSAO();                        // the AO entry point: publishes the AO constants, then runs XeGTAO or simple SSAO
     void RenderSimpleSSAO();                  // main estimate -> separable blur (Shaders/D3D12/SSAO.hlsl)
@@ -1695,6 +1715,36 @@ private:
 
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
+
+    // ---- Opaque-surface SSR temporal history (D3D12Ssr.cpp) ----
+    // Reflecting on-screen OPAQUE geometry from inside the Forward+ lit pass has a chicken-and-egg problem:
+    // the pass shading pixel P cannot see the finished color/depth of pixels the GPU hasn't rasterized yet
+    // THIS frame. D3D12Water.cpp dodges this by running AFTER the opaque pass and reading a same-frame copy,
+    // but that trick only works for a surface (water) that is itself drawn after everything it reflects —
+    // it cannot make opaque geometry reflect other opaque geometry within one pass.
+    //
+    // The standard fix for a forward renderer with no G-buffer is TEMPORAL SSR: march against the PREVIOUS
+    // frame's finished opaque color+depth (reprojected with the camera-history matrices already tracked for
+    // motion vectors, m_PrevViewProjUnjittered/m_CurViewProjUnjittered — see D3D12Motion.cpp), at the cost of
+    // a one-frame lag. Single buffer, not ping-ponged: mirrors D3D12Taa.cpp's m_TaaPrevDepth reasoning
+    // exactly — this frame's consumer (a future SSR march in World.hlsl/Vob.hlsl/Skeletal.hlsl) reads it
+    // EARLY in the frame and CaptureSsrOpaqueHistory overwrites it LATER in the same frame, after opaque
+    // geometry is final; since the whole frame executes in submission order on one direct queue, that read
+    // always happens-before that write, so no second buffer is needed to avoid a cross-frame race.
+    //
+    // This increment only builds the capture — nothing reads these buffers yet. See
+    // D3D12_SSR_WET_SURFACES_PLAN.md (repo root) for the marcher this feeds next.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevColor;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SsrPrevColorAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevDepth;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SsrPrevDepthAlloc;
+    static constexpr D3D12_RESOURCE_STATES kSsrPrevReadState =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    UINT m_SsrPrevColorSrvSlot = UINT_MAX;
+    UINT m_SsrPrevDepthSrvSlot = UINT_MAX;
+    bool m_SsrHistoryValid = false;   // false until the first CaptureSsrOpaqueHistory() has run this world/resize
+    bool CreateSsrHistoryResources( INT2 size );   // (re)builds the two persistent history textures + their SRVs
+    void CaptureSsrOpaqueHistory();                // copies the finished opaque scene color+depth; post-opaque/pre-water
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT

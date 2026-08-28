@@ -219,6 +219,20 @@ inline bool GetSkipDefaultHeapCopyAfterUpload() {
     return DefaultUploadHeapType == D3D12_HEAP_TYPE_GPU_UPLOAD;
 }
 
+// Screen-space reflection step-count tiers, shared by water (D3D12Water.cpp) and opaque-surface SSR
+// (D3D12AO.cpp's UploadAoScreenConstants — see D3D12_SSR_WET_SURFACES_PLAN.md). `quality` is
+// GothicRendererSettings::E_WaterSSRQuality (0=Disabled/1=Low/2=Medium/3=High) passed as a plain int, to
+// avoid pulling GothicGraphicsState.h into this widely-included header — both callers already have the
+// real enum type in scope and pass it in, implicitly converted.
+inline void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps ) {
+    switch ( quality ) {
+    case 1: maxSteps = 12; refineSteps = 4; break;   // WATER_SSR_LOW
+    case 2: maxSteps = 24; refineSteps = 5; break;   // WATER_SSR_MEDIUM
+    case 3: maxSteps = 48; refineSteps = 6; break;   // WATER_SSR_HIGH
+    default: maxSteps = 0; refineSteps = 0; break;   // WATER_SSR_DISABLED
+    }
+}
+
 // HDR scene-color format: the 3D passes accumulate lighting here in linear-ish FLOAT (values may
 // exceed 1.0), then the tonemap resolve writes the swapchain. Shared by the engine-core target
 // creation and the post-FX (bloom/luminance) passes that sample it.

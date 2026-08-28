@@ -1270,6 +1270,17 @@ void ImGuiShim::RenderSettingsWindow()
                     shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
                 }
             }
+            // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
+            // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime
+            // loop-bound uniform, same as WaterSSRQuality's own D3D12 path (see D3D12Water.cpp).
+            if ( Engine::GraphicsEngine && Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
+                const char* opaqueSsrLevels[] = { "Disabled", "Low", "Medium", "High" };
+                int opaqueSsr = settings.OpaqueSSRQuality;
+                if ( ImGui::Combo( "Wet Surface Reflections (SSR)", &opaqueSsr, opaqueSsrLevels, IM_ARRAYSIZE( opaqueSsrLevels ) ) ) {
+                    settings.OpaqueSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)opaqueSsr;
+                }
+                ImGui::SetItemTooltip( "Temporal screen-space reflections on wet/glossy ground and metal. One frame of lag; D3D12 only." );
+            }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
             ImGui::SetItemTooltip( "This option draws every world chunk that intersect with GD3D11 world draw distance." );

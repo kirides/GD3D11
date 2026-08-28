@@ -924,6 +924,7 @@ struct GothicRendererSettings {
         BinkVideoRunning = false;
         EnableWaterAnimation = false;
         WaterSSRQuality = WATER_SSR_MEDIUM;
+        OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
@@ -1304,6 +1305,10 @@ struct GothicRendererSettings {
     bool BinkVideoRunning;
     bool EnableWaterAnimation;
     E_WaterSSRQuality WaterSSRQuality;
+    // D3D12 only: temporal SSR on opaque wet/glossy surfaces (D3D12Ssr.cpp's history + the Forward+ PS
+    // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —
+    // same quality/cost tradeoff, different geometry class. See D3D12_SSR_WET_SURFACES_PLAN.md.
+    E_WaterSSRQuality OpaqueSSRQuality;
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

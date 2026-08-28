@@ -5977,6 +5977,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     
 
@@ -6223,6 +6224,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
+        s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
 
         if ( GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini ) ) {

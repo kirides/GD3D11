@@ -2412,6 +2412,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawDecalList( decals, true );
 	}
 
+	// Opaque scene is now final (world/skeletal/VOBs/vegetation/opaque decals) — snapshot it for NEXT frame's
+	// SSR march before water/transparents draw over it. See D3D12Ssr.cpp.
+	CaptureSsrOpaqueHistory();
+
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 

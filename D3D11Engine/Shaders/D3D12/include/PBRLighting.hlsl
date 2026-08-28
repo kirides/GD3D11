@@ -23,6 +23,11 @@
 // signature changes — LightCB already had a spare 4th root constant in every one of these shaders.
 // (HLSL globals are visible by name across the whole translation unit regardless of #include position, but
 // they must be DECLARED — i.e. appear earlier in the file — before this header's functions reference them.)
+//
+// EvaluateOpaqueSSR (below) additionally needs: `uint SsrPrevColorIndex; uint SsrPrevDepthIndex;
+// float4x4 SsrPrevViewProj;` in ShadowCB's screen-space-AO block (see World.hlsl's cbuffer for the exact
+// layout) and `SamplerState smpAoClamp` declared before this include — the same sampler
+// include/ScreenSpaceAO.hlsl already requires, reused rather than adding a second clamp sampler.
 
 // De-lights diffuse textures by lifting baked shadows and softening baked highlights
 float3 DelightDiffuse( float3 linearAlbedo )
@@ -634,4 +639,169 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     // ForwardPlusLighting.hlsl / CS_TiledShading.hlsl MAX-blend mode) to avoid overexposure where many
     // point lights overlap.
     return LimitLightIntensity != 0 ? maxLit : total;
+}
+
+// --- Opaque-surface screen-space reflections (TEMPORAL) ------------------------------------------------
+// Marches THIS frame's world-space reflection ray and samples the PREVIOUS frame's captured opaque scene
+// (D3D12Ssr.cpp's m_SsrPrevColor/m_SsrPrevDepth, reached bindlessly via SsrPrevColorIndex/SsrPrevDepthIndex),
+// reprojected through SsrPrevViewProj. See D3D12_SSR_WET_SURFACES_PLAN.md for why this is temporal rather
+// than same-frame: Forward+ has no per-pixel roughness G-buffer, and same-frame opaque-reflecting-opaque is
+// a chicken-and-egg problem no G-buffer addition solves cheaply.
+//
+// Algorithm mirrors Water.hlsl's TraceWaterSSR (uniform march + binary-search refine, front->behind
+// crossing test, thickness-gated hit) with one structural difference: Water marches in VIEW space against
+// an explicit View matrix; this has no previous-frame VIEW matrix available, only the combined
+// SsrPrevViewProj, so it marches in WORLD space and compares LINEARIZED HARDWARE DEPTH at each sample
+// instead (SsrLinearizeDepth, same reversed-Z formula ComputeZSlice above already uses).
+//
+// APPROXIMATION: ProjA/ProjB are THIS frame's projection terms, applied to linearize depth that was
+// captured under the PREVIOUS frame's projection. Gothic's FOV/near/far do not change frame-to-frame during
+// normal play (only via a settings change, which already invalidates the whole history through
+// m_SsrHistoryValid), so reusing them is safe in practice — if that assumption ever breaks, the fix is a
+// second uploaded ProjA/ProjB pair for the previous frame, not re-deriving one here.
+//
+// COMPOSITING NOTE (revisit before calling this feature finished): the call site adds this result on top of
+// ComputeSunLightingPBR's output as a confidence-weighted sheen — the same additive shape Wetness.hlsl's
+// `sheen` already uses — rather than precisely replacing EvaluateSkyIBL's specular term inside
+// ComputeSunLightingPBR. That is a deliberate simplification for this increment (it needs no change to
+// ComputeSunLightingPBR's signature) and is not perfectly energy-conserving: a very smooth, very reflective
+// surface could show both the sky-IBL specular AND this term. Acceptable for first light because the
+// roughness gate below (0.35) already limits it to a small slice of materials; tighten by subtracting an
+// estimate of the IBL specular this replaces if double-brightening is visible on the maintainer's GPU test.
+//
+// CALL-SITE WEIGHT MUST BE PBR_FresnelSchlick, NOT AN AD HOC CURVE. The first GPU test (2026-08-28)
+// shipped with `lerp(0.2, 1.0, pow(1-NdotV,2))` as the reflectance weight — 5-25x more energy than a real
+// dielectric's ~0.04 normal-incidence reflectance — and produced white-blowout patches on roof ridges. This
+// is TEMPORAL SSR: the sampled history already contains last frame's SSR contribution, so any per-generation
+// gain above what the surface would really reflect compounds every frame instead of settling. Always weight
+// the returned color by `PBR_FresnelSchlick(saturate(dot(N,V)), F0)` where
+// `F0 = lerp(float3(0.04,0.04,0.04), albedo, metallic)` — the same F0 the direct-lighting term already
+// uses — never a hand-tuned curve, however plausible it looks in isolation on one frame.
+// Must match D3D12GraphicsEngine.h's kSsrIndexMask/kSsrStepsShift exactly (the CPU side packs, this unpacks).
+static const uint  kSsrIndexMask = 0x00FFFFFFu;
+static const uint  kSsrStepsShift = 24;
+static const float kSsrOpaqueRoughnessGate = 0.35;
+static const float SSR_OPAQUE_THICKNESS    = 150.0;   // world units — see Wetness.hlsl's ~100 units/metre note
+static const float SSR_OPAQUE_START_BIAS   = 8.0;
+// Minimum world-space travel before a crossing may be ACCEPTED as a hit (it is still tracked/refined below
+// this distance, just not returned). Thin/convex geometry — roof ridges and eaves above all — puts the
+// reflection ray's very first step back within its own silhouette at close range: `origin` sits only
+// SSR_OPAQUE_START_BIAS off the true surface, so a ray that grazes back toward the same ridge can register a
+// "hit" against itself within a few world units. Confidence there is maximal (near-zero travelled -> no
+// distance fade, on-screen UV -> no edge fade) and the sampled color is the pixel's OWN recent history, which
+// is a 1:1 feedback loop with no damping — exactly what produced the white-blowout patches seen on roof
+// ridges in the first GPU test. Requiring real travel before a hit counts breaks that direct self-feedback.
+static const float SSR_OPAQUE_MIN_HIT_DISTANCE = 60.0;
+// Hard safety cap on ANY single sample fed back into next frame's history, independent of the energy model
+// at the call site. Temporal SSR reads a buffer that already contains last frame's SSR contribution, so any
+// per-generation gain above 1.0 compounds; this is the backstop against a future change accidentally
+// reintroducing runaway brightness the way the original ad hoc (non-physical) Fresnel weight did.
+static const float SSR_OPAQUE_MAX_LUMINANCE = 4.0;
+// FIXED step length, deliberately NOT `SSR_OPAQUE_MAX_DISTANCE / maxSteps` the way Water.hlsl's
+// TraceWaterSSR scales its water-reflection quality tiers. Water's target is a flat, distant sky/ocean
+// reflection, where a coarser step at low quality is a pure fidelity tradeoff. Architectural reflections
+// are close-range: at Low quality's 12 steps, `3000/12 = 250` world units per step is bigger than the
+// ENTIRE near-field self-intersection guard above (60-120 units) — the ray's first step jumps straight past
+// it, so the guard did nothing at Low/Medium and coarse steps could also bracket the wrong surface on thin
+// geometry (a roof ridge) instead of just losing fidelity. Quality must instead control how FAR the ray
+// reaches (maxSteps * this fixed length), never how coarsely it samples.
+static const float SSR_OPAQUE_STEP_LENGTH = 40.0;
+
+float SsrLinearizeDepth( float raw ) { return ProjB / max( raw - ProjA, 1e-8 ); }
+
+bool SsrProjectToPrevUV( float3 posWS, out float2 uv, out float rawDepth )
+{
+    float4 clip = mul( float4( posWS, 1.0 ), SsrPrevViewProj );
+    if ( clip.w <= 0.0 ) { uv = float2( 0.0, 0.0 ); rawDepth = 0.0; return false; }
+    uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5;
+    rawDepth = clip.z / clip.w;
+    return true;
+}
+
+// Returns the reflected color and, via `confidence` ([0,1], 0 on any miss/gate/disocclusion), how much of
+// it the caller should blend in. A 0 confidence must be indistinguishable from SSR never having run.
+float3 EvaluateOpaqueSSR( float3 wpos, float3 N, float3 V, float roughness, out float confidence )
+{
+    confidence = 0.0;
+    uint maxSteps = SsrPrevColorIndex >> kSsrStepsShift;
+    if ( maxSteps == 0 || roughness > kSsrOpaqueRoughnessGate ) return float3( 0.0, 0.0, 0.0 );
+    uint refineSteps = SsrPrevDepthIndex >> kSsrStepsShift;
+    uint colorIdx = SsrPrevColorIndex & kSsrIndexMask;
+    uint depthIdx = SsrPrevDepthIndex & kSsrIndexMask;
+    Texture2D<float> prevDepthTex = ResourceDescriptorHeap[depthIdx];
+
+    float3 R = reflect( -V, N );
+    float3 origin = wpos + N * SSR_OPAQUE_START_BIAS;
+    const float stepLen = SSR_OPAQUE_STEP_LENGTH;
+    // Effective reach for this quality tier — Low/Medium/High trade MAX DISTANCE, never step coarseness.
+    const float maxDistance = stepLen * (float)maxSteps;
+
+    float2 prevUV; float rawAtOrigin;
+    if ( !SsrProjectToPrevUV( origin, prevUV, rawAtOrigin ) ) return float3( 0.0, 0.0, 0.0 );
+    float prevLinPos = SsrLinearizeDepth( rawAtOrigin );
+    float prevLinScene = SsrLinearizeDepth( prevDepthTex.SampleLevel( smpAoClamp, prevUV, 0 ) );
+    float prevDelta = prevLinPos - prevLinScene;
+
+    float3 curPos = origin;
+    float travelled = SSR_OPAQUE_START_BIAS;
+
+    [loop]
+    for ( uint i = 0; i < maxSteps; ++i )
+    {
+        curPos += R * stepLen;
+        travelled += stepLen;
+
+        float2 uv; float rawPos;
+        if ( !SsrProjectToPrevUV( curPos, uv, rawPos ) ) return float3( 0.0, 0.0, 0.0 );
+        if ( any( uv < 0.0 ) || any( uv > 1.0 ) ) return float3( 0.0, 0.0, 0.0 );
+
+        float linPos = SsrLinearizeDepth( rawPos );
+        float linScene = SsrLinearizeDepth( prevDepthTex.SampleLevel( smpAoClamp, uv, 0 ) );
+        float curDelta = linPos - linScene;
+
+        // Front -> behind crossing (same guard as Water.hlsl's TraceWaterSSR): only accept it if the scene
+        // surface sits at or behind where the ray was still in front, so a screen-space silhouette (the
+        // player's own shadowed depth, say) cannot fake a hit by teleporting the scene depth nearer. The
+        // travelled >= MIN_HIT_DISTANCE guard additionally rejects a self-intersection against the surface
+        // the ray started on — see SSR_OPAQUE_MIN_HIT_DISTANCE's header comment.
+        if ( prevDelta < 0.0 && curDelta >= 0.0 && linScene >= prevLinPos - SSR_OPAQUE_THICKNESS
+            && travelled >= SSR_OPAQUE_MIN_HIT_DISTANCE )
+        {
+            float3 lo = curPos - R * stepLen;
+            float3 hi = curPos;
+            float2 hitUV = uv;
+            float hitGap = curDelta;
+            [loop]
+            for ( uint j = 0; j < refineSteps; ++j )
+            {
+                float3 mid = ( lo + hi ) * 0.5;
+                float2 midUV; float midRaw;
+                if ( !SsrProjectToPrevUV( mid, midUV, midRaw ) ) break;
+                float midGap = SsrLinearizeDepth( midRaw ) - SsrLinearizeDepth( prevDepthTex.SampleLevel( smpAoClamp, midUV, 0 ) );
+                if ( midGap >= 0.0 ) { hi = mid; hitUV = midUV; hitGap = midGap; }
+                else                 { lo = mid; }
+            }
+
+            if ( hitGap < SSR_OPAQUE_THICKNESS )
+            {
+                float2 edge = smoothstep( 0.0, 0.02, hitUV ) * smoothstep( 0.0, 0.02, 1.0 - hitUV );
+                float distFade = saturate( 1.0 - travelled / maxDistance );
+                // Near-field fade in from MIN_HIT_DISTANCE rather than a hard on/off, so the guard above
+                // doesn't trade a feedback blowup for a visible confidence cliff at its threshold.
+                float nearFade = smoothstep( SSR_OPAQUE_MIN_HIT_DISTANCE, SSR_OPAQUE_MIN_HIT_DISTANCE * 2.0, travelled );
+                confidence = edge.x * edge.y * distFade * nearFade;
+                Texture2D prevColorTex = ResourceDescriptorHeap[colorIdx];
+                float3 hitColor = prevColorTex.SampleLevel( smpAoClamp, hitUV, 0 ).rgb;
+                // Safety clamp (see SSR_OPAQUE_MAX_LUMINANCE) — bounds per-generation feedback gain
+                // regardless of what energy weight the call site applies.
+                float hitLum = dot( hitColor, float3( 0.3333, 0.3333, 0.3333 ) );
+                if ( hitLum > SSR_OPAQUE_MAX_LUMINANCE ) hitColor *= SSR_OPAQUE_MAX_LUMINANCE / hitLum;
+                return hitColor;
+            }
+        }
+
+        prevDelta = curDelta;
+        prevLinPos = linPos;
+    }
+    return float3( 0.0, 0.0, 0.0 );
 }

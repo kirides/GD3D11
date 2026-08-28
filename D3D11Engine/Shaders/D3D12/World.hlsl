@@ -41,14 +41,16 @@ cbuffer ShadowCB : register(b3)
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
-    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
-    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
-    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
-    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
-    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
-    float2   AoInvRes;          float2 _aopad0;
-    float4   _aoReserved[4];
+    // --- Screen-space AO / opaque-SSR-reprojection block, 80 bytes, written by UploadAoScreenConstants
+    // (kAoReprojCbOffset). AoInvRes: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask
+    // UV with. SsrPrevColorIndex/SsrPrevDepthIndex + SsrPrevViewProj: the previous-frame opaque scene
+    // color/depth (D3D12Ssr.cpp's m_SsrPrevColor/m_SsrPrevDepth) and the view-proj to reproject into their
+    // UV space — see PBRLighting.hlsl's opaque-SSR march and D3D12_SSR_WET_SURFACES_PLAN.md. Each index's
+    // low 24 bits are the bindless SRV slot, top 8 bits the step count for that pass (MaxSteps/RefineSteps);
+    // MaxSteps == 0 means SSR is off. Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl — the
+    // sky-IBL tail below relies on this block staying exactly 80 bytes (kSkyIblCbOffset = 432).
+    float2   AoInvRes;          uint SsrPrevColorIndex; uint SsrPrevDepthIndex;
+    float4x4 SsrPrevViewProj;
     // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
     // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
     // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
@@ -191,6 +193,17 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     // Additive wet sheen (D3D11's specWet, boosted where the sun actually reaches: specWet += specWet * shadow).
     rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // Opaque-surface SSR (temporal, D3D12 only) — additive, physically-weighted reflection sheen; 0
+    // confidence on any miss reproduces today's output exactly. The weight MUST be PBR_FresnelSchlick, not
+    // an ad hoc curve — see PBRLighting.hlsl's EvaluateOpaqueSSR header comment for why (a stronger weight
+    // shipped and fed back into runaway brightness on the first GPU test).
+    {
+        float ssrConfidence;
+        float3 ssrColor = EvaluateOpaqueSSR( i.wpos, N, V, orm.g, ssrConfidence );
+        float3 ssrF0 = lerp( float3( 0.04, 0.04, 0.04 ), albedo, orm.b );
+        float3 ssrFresnel = PBR_FresnelSchlick( saturate( dot( N, V ) ), ssrF0 );
+        rgb += ssrColor * ssrConfidence * ssrFresnel;
+    }
     // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
