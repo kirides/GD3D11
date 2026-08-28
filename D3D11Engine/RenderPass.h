@@ -3,11 +3,9 @@
 #include <vector>
 #include <functional>
 #include "RGTextureDesc.h"
+#include "widenarrow.h"
 
-struct RGPassName {
-    const wchar_t* wide;
-    const char* narrow;
-};
+typedef WideNarrowChars RGPassName;
 
 #define RG_PASS_NAME(nameLiteral) RGPassName{ L##nameLiteral, nameLiteral }
 

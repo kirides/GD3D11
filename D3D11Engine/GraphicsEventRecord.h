@@ -1,13 +1,13 @@
 #pragma once
+#include "widenarrow.h"
 
 struct ID3DUserDefinedAnnotation;
-struct GraphicsEventName;
 
 class GraphicsEventRecord {
 public:
     GraphicsEventRecord() = default;
 
-    GraphicsEventRecord( ID3DUserDefinedAnnotation* userAnnotation, GraphicsEventName region );
+    GraphicsEventRecord( ID3DUserDefinedAnnotation* userAnnotation, WideNarrowChars region );
 
     ~GraphicsEventRecord() {
         End();

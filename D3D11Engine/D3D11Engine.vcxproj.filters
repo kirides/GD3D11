@@ -965,6 +965,7 @@
     <ClInclude Include="MeshShadowIndexBuilder.h" />
     <ClInclude Include="MeshOptimizeCache.h" />
     <ClInclude Include="SqliteBlobStore.h" />
+    <ClInclude Include="widenarrow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

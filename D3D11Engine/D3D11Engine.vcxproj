@@ -1145,6 +1145,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="vendor\D3D12MemoryAllocator\include\D3D12MemAlloc.h" />
     <ClInclude Include="vendor\D3D12MemoryAllocator\src\Common.h" />
     <ClInclude Include="VersionCheck.h" />
+    <ClInclude Include="widenarrow.h" />
     <ClInclude Include="WidgetContainer.h" />
     <ClInclude Include="Widget_TransRot.h" />
     <ClInclude Include="win32ClipboardWrapper.h" />
