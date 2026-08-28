@@ -1336,50 +1336,26 @@ private:
     // whole consumer side — the bindless fetch in include/ScreenSpaceAO.hlsl — is untouched and the two
     // implementations are interchangeable.
     //
-    // Four private intermediates, all recreated on resize alongside m_AOMask:
+    // Only ONE private intermediate is a persistent member any more:
     //   m_GtaoWorkingDepth  R32_FLOAT with 5 MIPs — view-space depth pyramid built by the prefilter pass. FP32
     //                       rather than Intel's default R16_FLOAT because Gothic's view depths run past fp16's
     //                       65504 ceiling near the horizon (see the header of Shaders/D3D12/XeGTAO.hlsl).
-    //   m_GtaoNormals       R32_UINT — view-space normals packed R11G11B10_UNORM, reconstructed from the depth.
-    //                       FALLBACK ONLY: when the prepass normal G-buffer (m_NormalBuffer) is available
-    //                       RenderGTAO skips this dispatch and feeds XeGTAO the real shading normals instead
-    //                       (LoadNormal in XeGTAO.hlsl decodes + rotates them into view space).
-    //   m_GtaoEdges         R8_UNORM — packed depth edges the denoiser weights by.
-    //   m_GtaoAOTerm[2]     R8_UINT — the working AO term, ping-ponged across denoise passes. The final pass
-    //                       writes m_AOMask through m_AOMaskUintUavSlot instead.
-    // All four rest in UNORDERED_ACCESS between frames, like the bloom pyramid and the AO mask.
+    //                       Recreated on resize like the AO mask; rests in UNORDERED_ACCESS between frames.
+    // The rest of the chain — reconstructed normals (FALLBACK ONLY: skipped whenever the prepass normal
+    // G-buffer m_NormalBuffer is available), packed depth edges, the two AO-term ping-pong buffers, and (Half
+    // AO-resolution mode only) a pre-downsampled half-res depth — are fully written and consumed within one
+    // RenderGTAO() call, so they are D3D12RenderGraph-managed transients acquired fresh every call instead
+    // (see RenderGTAO's own header comment) — no persistent resource, no heap slot, no resize hook for any of
+    // them. m_GtaoWorkingDepth can't follow: it needs a 5-level MIP chain with a per-mip UAV, which the
+    // render-graph's RGTextureDesc/D3D12RenderTarget/D3D12AliasedTextureArena only support single-mip.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoWorkingDepth;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoWorkingDepthAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoNormals;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoNormalsAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoEdges;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoEdgesAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoAOTerm[2];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoAOTermAlloc[2];
     static constexpr UINT kGtaoDepthMipLevels = 5;   // must match XE_GTAO_DEPTH_MIP_LEVELS (hard-coded to 5)
     UINT m_GtaoWorkingDepthSrvSlot = UINT_MAX;                   // full MIP chain, read by the main pass
     UINT m_GtaoWorkingDepthUavSlot[kGtaoDepthMipLevels] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
-    UINT m_GtaoNormalsSrvSlot = UINT_MAX;
-    UINT m_GtaoNormalsUavSlot = UINT_MAX;
-    UINT m_GtaoEdgesSrvSlot = UINT_MAX;
-    UINT m_GtaoEdgesUavSlot = UINT_MAX;
-    UINT m_GtaoAOTermSrvSlot[2] = { UINT_MAX, UINT_MAX };
-    UINT m_GtaoAOTermUavSlot[2] = { UINT_MAX, UINT_MAX };
-    // Fifth intermediate, only allocated when RendererSettings.AoResolution == Half: a nearest-neighbour 2x
-    // decimation of m_DepthBuffer (R32_FLOAT, reversed-Z NDC depth — same encoding as the raw depth it copies
-    // from) at m_AoResourceSize. XeGTAO's own prefilter/normals passes cannot be pointed at m_DepthBuffer
-    // directly and asked to produce a half-res mip0: Intel's algorithm ties consts.ViewportSize to the RAW
-    // depth's own resolution (XeGTAO_PrefilterDepths16x16 reads a 2x2 block per dispatch thread), so getting a
-    // half-res working-depth chain means feeding it an already-half-res "raw" depth. See RenderGTAO and
-    // Shaders/D3D12/XeGTAO.hlsl's CSDownsampleDepth (a GD3D11 addition, not part of Intel's vendored files).
-    // Unused (and not created) in Full mode — RawDepthIndex points straight at m_DepthSrvSlot instead.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoHalfDepth;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoHalfDepthAlloc;
-    UINT m_GtaoHalfDepthSrvSlot = UINT_MAX;
-    UINT m_GtaoHalfDepthUavSlot = UINT_MAX;
     bool m_GtaoResourcesReady = false;
     UINT m_GtaoFrameNumber = 0;                // drives the temporal noise rotation; only advances while TAA is on
-    bool CreateGtaoResources( INT2 size );     // (re)builds the four/five intermediates + their persistent heap slots
+    bool CreateGtaoResources( INT2 size );     // (re)builds m_GtaoWorkingDepth + its persistent heap slots
     bool IsGtaoEnabled() const;                // AoMode == AO_ASSAO and every resource/PSO it needs exists
     void RenderGTAO();                         // prefilter -> (normals) -> GTAO integral -> N denoise passes
 

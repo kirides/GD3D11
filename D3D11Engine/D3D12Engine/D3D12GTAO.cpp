@@ -26,6 +26,7 @@
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12ResourceCreate.h"
+#include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -113,12 +114,19 @@ namespace {
     constexpr float kDenoiseEnabledBeta = 1.2f;
 }
 
-/** (Re)creates the four private intermediates and their persistent heap slots. Called from the same resize path
-    as CreateAOResources — which owns m_AOMask, the output this pass shares with the simple SSAO path, so this
-    must run AFTER it. Heap slots persist across recreations; only resources and views are rebuilt. */
+/** (Re)creates m_GtaoWorkingDepth (the 5-level view-space depth pyramid) and its persistent heap slots.
+    Called from the same resize path as CreateAOResources — which owns m_AOMask, the output this pass shares
+    with the simple SSAO path, so this must run AFTER it.
+
+    This is now the ONLY XeGTAO intermediate built here. Normals, edges, both AO-term ping-pong buffers and
+    (in Half mode) the pre-downsampled half-res depth are single-mip, single-UAV textures fully written and
+    consumed within one RenderGTAO() call, so they are D3D12RenderGraph-managed transients acquired fresh
+    every call instead — see RenderGTAO. No explicit creation, no resize hook, no readiness flag for them any
+    more. m_GtaoWorkingDepth can't follow: it needs a 5-level MIP chain with a per-mip UAV, and RGTextureDesc /
+    D3D12RenderTarget / D3D12AliasedTextureArena only support single-mip textures — extending them to would
+    touch every other consumer (DoF, bloom, god rays, underwater, SMAA), so it stays on this manual path. */
 bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     m_GtaoResourcesReady = false;
-    // The working-depth pyramid is a fixed 5 levels (XE_GTAO_DEPTH_MIP_LEVELS is hard-coded upstream), and
     // CreateResource rejects a MipLevels the dimensions can't support — so refuse anything under 16x16 here
     // rather than letting the allocation fail and log a scary warning at a resolution nobody plays at.
     if ( size.x < 16 || size.y < 16 ) return false;
@@ -130,108 +138,51 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    auto makeTex = [&]( ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc,
-        DXGI_FORMAT format, UINT mips, const wchar_t* name ) -> bool {
-            D3D12_RESOURCE_DESC dd = {};
-            dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            dd.Width = static_cast<UINT64>( size.x );
-            dd.Height = static_cast<UINT>( size.y );
-            dd.DepthOrArraySize = 1;
-            dd.MipLevels = static_cast<UINT16>( mips );
-            dd.Format = format;
-            dd.SampleDesc.Count = 1;
-            dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-            dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: failed to create an XeGTAO texture (" << size.x << "x" << size.y << ").";
-                return false;
-            }
-            out->SetName( name );
-            return true;
-        };
-
     // R32_FLOAT, not Intel's default R16_FLOAT — see the note in the engine header: Gothic's view depths run
     // past fp16's 65504 ceiling near the horizon, and FP32 keeps every element type a plain `float`, which is
     // what makes the bindless fetches in the shader trivial.
-    if ( !makeTex( m_GtaoWorkingDepth, m_GtaoWorkingDepthAlloc, DXGI_FORMAT_R32_FLOAT, kGtaoDepthMipLevels, L"GtaoWorkingDepth" ) )
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = static_cast<UINT64>( size.x );
+    dd.Height = static_cast<UINT>( size.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = static_cast<UINT16>( kGtaoDepthMipLevels );
+    dd.Format = DXGI_FORMAT_R32_FLOAT;
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr, m_GtaoWorkingDepthAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_GtaoWorkingDepth.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the XeGTAO working-depth pyramid (" << size.x << "x" << size.y << ").";
         return false;
-    if ( !makeTex( m_GtaoNormals, m_GtaoNormalsAlloc, DXGI_FORMAT_R32_UINT, 1, L"GtaoNormals" ) )
-        return false;
-    if ( !makeTex( m_GtaoEdges, m_GtaoEdgesAlloc, DXGI_FORMAT_R8_UNORM, 1, L"GtaoEdges" ) )
-        return false;
-    if ( !makeTex( m_GtaoAOTerm[0], m_GtaoAOTermAlloc[0], DXGI_FORMAT_R8_UINT, 1, L"GtaoAOTerm0" )
-        || !makeTex( m_GtaoAOTerm[1], m_GtaoAOTermAlloc[1], DXGI_FORMAT_R8_UINT, 1, L"GtaoAOTerm1" ) )
-        return false;
+    }
+    m_GtaoWorkingDepth->SetName( L"GtaoWorkingDepth" );
 
     auto ensureSlot = [&]( UINT& slot ) -> bool {
         if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
         return slot != UINT_MAX;
         };
-    if ( !ensureSlot( m_GtaoWorkingDepthSrvSlot ) || !ensureSlot( m_GtaoNormalsSrvSlot )
-        || !ensureSlot( m_GtaoNormalsUavSlot ) || !ensureSlot( m_GtaoEdgesSrvSlot )
-        || !ensureSlot( m_GtaoEdgesUavSlot ) )
-        return false;
+    if ( !ensureSlot( m_GtaoWorkingDepthSrvSlot ) ) return false;
     for ( UINT m = 0; m < kGtaoDepthMipLevels; ++m ) {
         if ( !ensureSlot( m_GtaoWorkingDepthUavSlot[m] ) ) return false;
     }
-    for ( UINT i = 0; i < 2; ++i ) {
-        if ( !ensureSlot( m_GtaoAOTermSrvSlot[i] ) || !ensureSlot( m_GtaoAOTermUavSlot[i] ) ) return false;
-    }
 
-    // Working depth: one SRV over the WHOLE chain (the main pass samples explicit MIP levels through it) plus
-    // one UAV per level, because the prefilter writes all five in a single dispatch.
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-        srv.Format = DXGI_FORMAT_R32_FLOAT;
-        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv.Texture2D.MipLevels = kGtaoDepthMipLevels;
-        device->CreateShaderResourceView( m_GtaoWorkingDepth.Get(), &srv, GetSrvCpuHandle( m_GtaoWorkingDepthSrvSlot ) );
+    // One SRV over the WHOLE chain (the main pass samples explicit MIP levels through it) plus one UAV per
+    // level, because the prefilter writes all five in a single dispatch.
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = DXGI_FORMAT_R32_FLOAT;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = kGtaoDepthMipLevels;
+    device->CreateShaderResourceView( m_GtaoWorkingDepth.Get(), &srv, GetSrvCpuHandle( m_GtaoWorkingDepthSrvSlot ) );
 
-        for ( UINT m = 0; m < kGtaoDepthMipLevels; ++m ) {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-            uav.Format = DXGI_FORMAT_R32_FLOAT;
-            uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            uav.Texture2D.MipSlice = m;
-            device->CreateUnorderedAccessView( m_GtaoWorkingDepth.Get(), nullptr, &uav,
-                GetSrvCpuHandle( m_GtaoWorkingDepthUavSlot[m] ) );
-        }
-    }
-
-    auto makeViews = [&]( ID3D12Resource* res, DXGI_FORMAT format, UINT srvSlot, UINT uavSlot ) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
-        srv.Format = format;
-        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv.Texture2D.MipLevels = 1;
-        device->CreateShaderResourceView( res, &srv, GetSrvCpuHandle( srvSlot ) );
-
+    for ( UINT m = 0; m < kGtaoDepthMipLevels; ++m ) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
-        uav.Format = format;
+        uav.Format = DXGI_FORMAT_R32_FLOAT;
         uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        device->CreateUnorderedAccessView( res, nullptr, &uav, GetSrvCpuHandle( uavSlot ) );
-        };
-
-    makeViews( m_GtaoNormals.Get(), DXGI_FORMAT_R32_UINT, m_GtaoNormalsSrvSlot, m_GtaoNormalsUavSlot );
-    makeViews( m_GtaoEdges.Get(), DXGI_FORMAT_R8_UNORM, m_GtaoEdgesSrvSlot, m_GtaoEdgesUavSlot );
-    for ( UINT i = 0; i < 2; ++i )
-        makeViews( m_GtaoAOTerm[i].Get(), DXGI_FORMAT_R8_UINT, m_GtaoAOTermSrvSlot[i], m_GtaoAOTermUavSlot[i] );
-
-    // Fifth intermediate, only needed when RendererSettings.AoResolution == Half — see the header comment on
-    // m_GtaoHalfDepth. Torn down (not merely left stale) when switching back to Full so toggling the setting
-    // doesn't leak the allocation; the heap slots themselves are kept, like every other GTAO slot here, so a
-    // later switch back to Half needs no fresh SRV/UAV allocation.
-    const bool needHalfDepth = Engine::GAPI->GetRendererState().RendererSettings.AoResolution == AoResolutionScale::Half;
-    if ( needHalfDepth ) {
-        if ( !makeTex( m_GtaoHalfDepth, m_GtaoHalfDepthAlloc, DXGI_FORMAT_R32_FLOAT, 1, L"GtaoHalfDepth" ) )
-            return false;
-        if ( !ensureSlot( m_GtaoHalfDepthSrvSlot ) || !ensureSlot( m_GtaoHalfDepthUavSlot ) )
-            return false;
-        makeViews( m_GtaoHalfDepth.Get(), DXGI_FORMAT_R32_FLOAT, m_GtaoHalfDepthSrvSlot, m_GtaoHalfDepthUavSlot );
-    } else {
-        m_GtaoHalfDepth.Reset();
-        m_GtaoHalfDepthAlloc.Reset();
+        uav.Texture2D.MipSlice = m;
+        device->CreateUnorderedAccessView( m_GtaoWorkingDepth.Get(), nullptr, &uav,
+            GetSrvCpuHandle( m_GtaoWorkingDepthUavSlot[m] ) );
     }
 
     m_GtaoResourcesReady = true;
@@ -239,7 +190,9 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
 }
 
 /** XeGTAO is the selected AO mode and everything it needs exists. Shares m_AOMask and the depth-prepass depth
-    with the simple SSAO path, so it depends on that path's resources being ready too. */
+    with the simple SSAO path, so it depends on that path's resources being ready too. The five graph-managed
+    scratch textures (see RenderGTAO) need no readiness check here — a failed Acquire() just makes that one
+    pass's callback no-op for the frame, the same fallback shape as DoF/god-rays' own graph resources. */
 bool D3D12GraphicsEngine::IsGtaoEnabled() const {
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.AoMode != AOMode::AO_ASSAO ) return false;
@@ -248,16 +201,26 @@ bool D3D12GraphicsEngine::IsGtaoEnabled() const {
     if ( m_AOMaskUintUavSlot == UINT_MAX ) return false;
     const auto& p = m_Pipelines.Gtao;
     if ( !p.RootSig || !p.PrefilterPSO || !p.NormalsPSO || !p.DenoisePSO || !p.DenoiseLastPSO ) return false;
-    if ( settings.AoResolution == AoResolutionScale::Half ) {
-        if ( !m_GtaoHalfDepth || m_GtaoHalfDepthSrvSlot == UINT_MAX || m_GtaoHalfDepthUavSlot == UINT_MAX ) return false;
-        if ( !p.DownsamplePSO ) return false;
-    }
+    if ( settings.AoResolution == AoResolutionScale::Half && !p.DownsamplePSO ) return false;
     const int quality = std::clamp( settings.GtaoSettings.QualityLevel, 0, 3 );
     return p.MainPSO[quality] != nullptr;
 }
 
 /** The full chain. Caller (RenderSSAO) has already defaulted m_ActiveAOMaskSrvSlot to the white "no occlusion" texture and
-    verified IsGtaoEnabled(). */
+    verified IsGtaoEnabled().
+
+    RENDER-GRAPH USE (mirrors D3D12DoF.cpp's; see D3D12RenderGraph.h / D3D12AliasedTextureArena.h). Normals,
+    edges, both AO-term ping-pong buffers and the Half-mode downsampled depth are PURELY transient within one
+    call of this function — written, read, then dead — so they are acquired from a LOCAL D3D12RenderGraph
+    built right here rather than held as members. Local, not the shared postFxGraph: that graph is built much
+    later in the frame, near the tonemap (D3D12Scene.cpp's OnStartWorldRendering), long after AO has already
+    run off the depth prepass. Compile()+Execute() both happen before this function returns (same as
+    D3D12Water.cpp's local waterGraph) — UNLIKE D3D12DoF.cpp's passes, which run later from a different
+    function and so must std::shared_ptr their cross-pass state, every pass callback below can capture this
+    function's stack locals by plain value and stay safe. They are NOT resized/recreated explicitly on a
+    resolution or AoResolution change either: since they are asked for at the CURRENT width/height every call,
+    a change just makes next frame's CreateTexture() ask for a different size, which the graph handles the
+    same way it handles any other description change. */
 void D3D12GraphicsEngine::RenderGTAO() {
     if ( !m_FrameOpen || !m_CmdList ) return;
 
@@ -273,15 +236,15 @@ void D3D12GraphicsEngine::RenderGTAO() {
 
     // m_AoResourceSize, NOT m_Resolution: every stage below (prefilter through denoise) dispatches and sizes
     // its constants off this. It equals m_Resolution in Full mode; halved in Half mode — see
-    // D3D12GraphicsEngine::GetAoTargetResolution and m_GtaoHalfDepth's header comment for why Half additionally
-    // needs its own pre-downsampled "raw depth" rather than just pointing consts.ViewportSize at m_DepthSrvSlot.
+    // D3D12GraphicsEngine::GetAoTargetResolution. Half mode additionally needs its own pre-downsampled "raw
+    // depth" (see the "GTAO Downsample" pass below) rather than just pointing consts.ViewportSize at
+    // m_DepthSrvSlot: Intel's algorithm ties consts.ViewportSize to the resolution of the RAW depth it is
+    // handed (XeGTAO_PrefilterDepths16x16 reads a 2x2 block per dispatch thread), so a half-res working-depth
+    // chain needs an already-half-res "raw" depth feeding it.
     const UINT width = static_cast<UINT>( m_AoResourceSize.x );
     const UINT height = static_cast<UINT>( m_AoResourceSize.y );
     const bool halfRes = settings.AoResolution == AoResolutionScale::Half;
-    // The raw-depth SOURCE every stage below reads: the native depth buffer in Full mode, or this frame's
-    // freshly-downsampled m_GtaoHalfDepth in Half mode (written by the CSDownsampleDepth dispatch further
-    // down, before anything here consumes it).
-    const UINT rawDepthSrvSlot = halfRes ? m_GtaoHalfDepthSrvSlot : m_DepthSrvSlot;
+    constexpr uint32_t kRgNeedsUav = 1u;   // D3D12RenderGraph's transient-texture flag convention (bit 0 = UAV)
 
     // --- Constants -------------------------------------------------------------------------------------------
     // This frame's projection — the one the depth prepass below was rasterized with. (Its _13/_23 carry the TAA
@@ -356,11 +319,12 @@ void D3D12GraphicsEngine::RenderGTAO() {
     common.NormalsAreGBuffer = gbufNormals ? 1u : 0u;
     common.ViewMatrix = viewM;
 
-    // --- Barriers --------------------------------------------------------------------------------------------
-    // Every private intermediate rests in UNORDERED_ACCESS. The depth buffer comes out of the prepass in
-    // DEPTH_WRITE and has to be flipped to a shader-read state (and back, at the bottom); the normal G-buffer
-    // comes out of it in RENDER_TARGET and gets the same treatment, since FillCameraVelocity at the end of the
-    // frame is what normally moves it and still expects to find it there.
+    // --- Barriers for the resources that stay OUTSIDE the graph -----------------------------------------------
+    // The depth buffer comes out of the prepass in DEPTH_WRITE and has to be flipped to a shader-read state
+    // (and back, at the bottom); the normal G-buffer comes out of it in RENDER_TARGET and gets the same
+    // treatment, since FillCameraVelocity at the end of the frame is what normally moves it and still expects
+    // to find it there. m_GtaoWorkingDepth rests in UNORDERED_ACCESS between frames and needs no "before" flip
+    // here — the Prefilter pass below writes it via UAV directly, same as it always did.
     BeginAoDepthRead();
     if ( gbufNormals ) {
         m_CmdList->TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
@@ -371,119 +335,204 @@ void D3D12GraphicsEngine::RenderGTAO() {
         m_AOMaskInPixelState = false;
     }
 
-    auto toRead = [&]( ID3D12Resource* res ) {
-        m_CmdList->TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        };
-    auto toWrite = [&]( ID3D12Resource* res ) {
-        m_CmdList->TransitionBarrier( res, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        };
+    // --- The graph-managed scratch chain -------------------------------------------------------------------
+    // See this function's own header comment for why this is a LOCAL, synchronous graph. Root signature + the
+    // b0 GTAOConstants block are bound once here (unchanged from before); each pass rebinds it too, matching
+    // D3D12DoF.cpp's defensive style, even though nothing else is interleaved between this and Execute().
+    m_CmdList->SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 24, &cb, 0 );
+
+    D3D12RenderGraph gtaoGraph( &m_AliasArena );
 
     // --- 0. Half-resolution downsample (Half mode only; GD3D11 addition, not part of Intel's XeGTAO sample —
-    //        see m_GtaoHalfDepth's header comment for why the rest of the chain can't just be pointed at
-    //        m_DepthSrvSlot with a halved ViewportSize). Writes m_GtaoHalfDepth from the native depth buffer
-    //        BeginAoDepthRead() just made readable; every stage below then reads THIS (rawDepthSrvSlot)
-    //        instead of the native depth in Half mode.
+    //        see the width/height comment above for why the rest of the chain can't just be pointed at
+    //        m_DepthSrvSlot with a halved ViewportSize).
+    RGResourceHandle halfDepthHandle = RG_INVALID_HANDLE;
     if ( halfRes ) {
-        GtaoBindings b = common;
-        b.RawDepthIndex = m_DepthSrvSlot;         // native-res source — the ONE stage that reads it directly
-        b.Out0Index = m_GtaoHalfDepthUavSlot;
-        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
-        m_CmdList->SetPipelineState( m_Pipelines.Gtao.DownsamplePSO.Get() );
-        m_CmdList->Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
-        toRead( m_GtaoHalfDepth.Get() );          // UAV write -> SRV read for every stage below
+        gtaoGraph.AddPass( RG_PASS_NAME( "GTAO Downsample" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            halfDepthHandle = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R32_FLOAT ),
+                L"GtaoHalfDepth", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            pass.m_executeCallback = [this, common, width, height, halfDepthHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* halfDepth = g.GetPhysicalTexture( halfDepthHandle );
+                if ( !halfDepth ) return;   // arena exhausted (logged once by it) — every pass below sees a null too and no-ops
+                GtaoBindings b = common;
+                b.RawDepthIndex = m_DepthSrvSlot;   // native-res source — the ONE stage that reads it directly
+                b.Out0Index = halfDepth->GetUavSlot();
+                cmdList.SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
+                cmdList.SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
+                cmdList.SetPipelineState( m_Pipelines.Gtao.DownsamplePSO.Get() );
+                cmdList.Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
+                };
+            } );
     }
 
     // --- 1. Prefilter depths ---------------------------------------------------------------------------------
-    // 8x8 threads, each handling a 2x2 block: one group covers 16x16 pixels.
-    {
-        GtaoBindings b = common;
-        b.RawDepthIndex = rawDepthSrvSlot;
-        b.Out0Index = m_GtaoWorkingDepthUavSlot[0];
-        b.Out1Index = m_GtaoWorkingDepthUavSlot[1];
-        b.Out2Index = m_GtaoWorkingDepthUavSlot[2];
-        b.Out3Index = m_GtaoWorkingDepthUavSlot[3];
-        b.Out4Index = m_GtaoWorkingDepthUavSlot[4];
-        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
-        m_CmdList->SetPipelineState( m_Pipelines.Gtao.PrefilterPSO.Get() );
-        m_CmdList->Dispatch( ( width + 15 ) / 16, ( height + 15 ) / 16, 1 );
-    }
+    // 8x8 threads, each handling a 2x2 block: one group covers 16x16 pixels. Writes m_GtaoWorkingDepth, which
+    // is NOT graph-tracked (see CreateGtaoResources), so this pass declares no Write() of its own — only the
+    // Read() of the graph-owned half-depth in Half mode. A pass with reads but no writes is never dead-pass-
+    // eliminated (Execute()'s check only fires when m_writes is non-empty), same as DoF's Prepare/Restore.
+    gtaoGraph.AddPass( RG_PASS_NAME( "GTAO Prefilter" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        if ( halfRes ) builder.Read( halfDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        pass.m_executeCallback = [this, common, width, height, halfRes, halfDepthHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            GtaoBindings b = common;
+            if ( halfRes ) {
+                D3D12RenderTarget* halfDepth = g.GetPhysicalTexture( halfDepthHandle );
+                if ( !halfDepth ) return;
+                b.RawDepthIndex = halfDepth->GetSrvSlot();
+            } else {
+                b.RawDepthIndex = m_DepthSrvSlot;
+            }
+            b.Out0Index = m_GtaoWorkingDepthUavSlot[0];
+            b.Out1Index = m_GtaoWorkingDepthUavSlot[1];
+            b.Out2Index = m_GtaoWorkingDepthUavSlot[2];
+            b.Out3Index = m_GtaoWorkingDepthUavSlot[3];
+            b.Out4Index = m_GtaoWorkingDepthUavSlot[4];
+            cmdList.SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
+            cmdList.SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
+            cmdList.SetPipelineState( m_Pipelines.Gtao.PrefilterPSO.Get() );
+            cmdList.Dispatch( ( width + 15 ) / 16, ( height + 15 ) / 16, 1 );
+            };
+        } );
 
     // --- 2. Normals ------------------------------------------------------------------------------------------
     // Only when there is no prepass G-buffer to take them from: that one already holds this frame's real
     // shading normals for every prepass writer, so reconstructing worse ones from depth would be pure cost.
     // (Also the path Half mode always takes — see gbufNormals' comment above.)
+    RGResourceHandle normalsHandle = RG_INVALID_HANDLE;
     if ( !gbufNormals ) {
-        GtaoBindings b = common;
-        b.RawDepthIndex = rawDepthSrvSlot;
-        b.Out0Index = m_GtaoNormalsUavSlot;
-        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
-        m_CmdList->SetPipelineState( m_Pipelines.Gtao.NormalsPSO.Get() );
-        m_CmdList->Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
+        gtaoGraph.AddPass( RG_PASS_NAME( "GTAO Normals" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            if ( halfRes ) builder.Read( halfDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            normalsHandle = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R32_UINT ),
+                L"GtaoNormals", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            pass.m_executeCallback = [this, common, width, height, halfRes, halfDepthHandle, normalsHandle]
+                ( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* normals = g.GetPhysicalTexture( normalsHandle );
+                if ( !normals ) return;
+                GtaoBindings b = common;
+                if ( halfRes ) {
+                    D3D12RenderTarget* halfDepth = g.GetPhysicalTexture( halfDepthHandle );
+                    if ( !halfDepth ) return;
+                    b.RawDepthIndex = halfDepth->GetSrvSlot();
+                } else {
+                    b.RawDepthIndex = m_DepthSrvSlot;
+                }
+                b.Out0Index = normals->GetUavSlot();
+                cmdList.SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
+                cmdList.SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
+                cmdList.SetPipelineState( m_Pipelines.Gtao.NormalsPSO.Get() );
+                cmdList.Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
+                };
+            } );
     }
 
     // --- 3. The GTAO integral --------------------------------------------------------------------------------
-    toRead( m_GtaoWorkingDepth.Get() );
-    if ( !gbufNormals ) toRead( m_GtaoNormals.Get() );
-    {
-        GtaoBindings b = common;
-        b.WorkingDepthIndex = m_GtaoWorkingDepthSrvSlot;
-        b.NormalsIndex = gbufNormals ? m_NormalSrvSlot : m_GtaoNormalsSrvSlot;
-        b.Out0Index = m_GtaoAOTermUavSlot[0];
-        b.Out1Index = m_GtaoEdgesUavSlot;
-        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
-        m_CmdList->SetPipelineState( m_Pipelines.Gtao.MainPSO[quality].Get() );
-        m_CmdList->Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
-    }
+    RGResourceHandle aoTerm0Handle = RG_INVALID_HANDLE;
+    RGResourceHandle edgesHandle = RG_INVALID_HANDLE;
+    gtaoGraph.AddPass( RG_PASS_NAME( "GTAO Integral" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+        if ( !gbufNormals ) builder.Read( normalsHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        aoTerm0Handle = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R8_UINT ),
+            L"GtaoAOTerm0", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        edgesHandle = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R8_UNORM ),
+            L"GtaoEdges", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        pass.m_executeCallback = [this, common, width, height, quality, gbufNormals, normalsHandle, aoTerm0Handle, edgesHandle]
+            ( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            D3D12RenderTarget* aoTerm0 = g.GetPhysicalTexture( aoTerm0Handle );
+            D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
+            if ( !aoTerm0 || !edges ) return;
+            // m_GtaoWorkingDepth is NOT graph-tracked; Prefilter left it in UNORDERED_ACCESS, so flip it to
+            // shader-read right before this pass samples it (mirrors the old manual toRead() call exactly).
+            cmdList.TransitionBarrier( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            GtaoBindings b = common;
+            b.WorkingDepthIndex = m_GtaoWorkingDepthSrvSlot;
+            if ( gbufNormals ) {
+                b.NormalsIndex = m_NormalSrvSlot;
+            } else {
+                D3D12RenderTarget* normals = g.GetPhysicalTexture( normalsHandle );
+                if ( !normals ) return;
+                b.NormalsIndex = normals->GetSrvSlot();
+            }
+            b.Out0Index = aoTerm0->GetUavSlot();
+            b.Out1Index = edges->GetUavSlot();
+            cmdList.SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
+            cmdList.SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
+            cmdList.SetPipelineState( m_Pipelines.Gtao.MainPSO[quality].Get() );
+            cmdList.Dispatch( ( width + 7 ) / 8, ( height + 7 ) / 8, 1 );
+            };
+        } );
 
     // --- 4. Denoise ------------------------------------------------------------------------------------------
-    // Ping-pong between the two working AO terms; the last pass writes m_AOMask through its R8_UINT alias.
-    // Each thread handles 2 horizontal pixels, hence the doubled X divisor.
-    toRead( m_GtaoAOTerm[0].Get() );
-    toRead( m_GtaoEdges.Get() );
-    int srcTerm = 0;   // the only working term currently in a shader-read state
-    for ( int pass = 0; pass < denoisePassCount; ++pass ) {
-        const bool lastPass = ( pass == denoisePassCount - 1 );
-        const int dstTerm = 1 - srcTerm;
+    // Ping-pong between the two working AO terms; the last pass writes m_AOMask (external — the graph never
+    // owned it) through its R8_UINT alias. Each thread handles 2 horizontal pixels, hence the doubled X
+    // divisor. aoTermHandle[0] always exists already (the Integral pass above); aoTermHandle[1] is created
+    // lazily the first time a non-last iteration needs to write it — denoisePassCount maxes at 3, so that is
+    // at most once, but the check is written to hold for any count.
+    RGResourceHandle aoTermHandle[2] = { aoTerm0Handle, RG_INVALID_HANDLE };
+    int srcTerm = 0;
+    for ( int denoiseIdx = 0; denoiseIdx < denoisePassCount; ++denoiseIdx ) {
+        const bool lastPass = ( denoiseIdx == denoisePassCount - 1 );
+        const int curSrc = srcTerm;
+        const int curDst = 1 - srcTerm;   // only meaningful when !lastPass
 
-        GtaoBindings b = common;
-        b.AOTermIndex = m_GtaoAOTermSrvSlot[srcTerm];
-        b.EdgesIndex = m_GtaoEdgesSrvSlot;
-        b.Out0Index = lastPass ? m_AOMaskUintUavSlot : m_GtaoAOTermUavSlot[dstTerm];
-        m_CmdList->SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
-        m_CmdList->SetPipelineState( ( lastPass ? m_Pipelines.Gtao.DenoiseLastPSO : m_Pipelines.Gtao.DenoisePSO ).Get() );
-        m_CmdList->Dispatch( ( width + 15 ) / 16, ( height + 7 ) / 8, 1 );
+        gtaoGraph.AddPass( RG_PASS_NAME( "GTAO Denoise" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            builder.Read( aoTermHandle[curSrc], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            builder.Read( edgesHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            const RGResourceHandle srcHandle = aoTermHandle[curSrc];
+            RGResourceHandle dstHandle = RG_INVALID_HANDLE;
+            if ( !lastPass ) {
+                if ( aoTermHandle[curDst] == RG_INVALID_HANDLE ) {
+                    aoTermHandle[curDst] = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R8_UINT ),
+                        L"GtaoAOTerm1", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                } else {
+                    builder.Write( aoTermHandle[curDst], D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                }
+                dstHandle = aoTermHandle[curDst];
+            } else {
+                // Writes m_AOMask, which the graph doesn't track as a Write — without this, Execute()'s
+                // dead-pass elimination would see a pass whose only real output is invisible to it and skip
+                // the callback entirely (see D3D12DoF.cpp's Composite pass for the identical situation).
+                builder.MarkExternalEffect();
+            }
+            pass.m_executeCallback = [this, common, width, height, lastPass, srcHandle, dstHandle, edgesHandle]
+                ( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* src = g.GetPhysicalTexture( srcHandle );
+                D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
+                if ( !src || !edges ) return;
+                GtaoBindings b = common;
+                b.AOTermIndex = src->GetSrvSlot();
+                b.EdgesIndex = edges->GetSrvSlot();
+                if ( lastPass ) {
+                    b.Out0Index = m_AOMaskUintUavSlot;
+                } else {
+                    D3D12RenderTarget* dst = g.GetPhysicalTexture( dstHandle );
+                    if ( !dst ) return;
+                    b.Out0Index = dst->GetUavSlot();
+                }
+                cmdList.SetComputeRootSignature( m_Pipelines.Gtao.RootSig.Get() );
+                cmdList.SetComputeRoot32BitConstants( 1, kGtaoBindingConstants, &b, 0 );
+                cmdList.SetPipelineState( ( lastPass ? m_Pipelines.Gtao.DenoiseLastPSO : m_Pipelines.Gtao.DenoisePSO ).Get() );
+                cmdList.Dispatch( ( width + 15 ) / 16, ( height + 7 ) / 8, 1 );
+                };
+            } );
 
-        if ( !lastPass ) {
-            // Hand off: the freshly written term becomes next pass's source, the consumed one goes back to
-            // its rest state so the swap leaves exactly one term readable — the invariant srcTerm relies on.
-            toRead( m_GtaoAOTerm[dstTerm].Get() );
-            toWrite( m_GtaoAOTerm[srcTerm].Get() );
-            srcTerm = dstTerm;
-        }
+        if ( !lastPass ) srcTerm = curDst;
     }
 
-    // --- Rest states -----------------------------------------------------------------------------------------
-    // m_AOMask readable for the lit geometry passes' bindless fetch; every private intermediate back to
-    // UNORDERED_ACCESS, the depth buffer back to DEPTH_WRITE and the normal G-buffer back to RENDER_TARGET —
+    gtaoGraph.Compile();
+    gtaoGraph.Execute( m_CmdList );
+
+    // --- Rest states for the resources that stayed OUTSIDE the graph ------------------------------------------
+    // m_AOMask readable for the lit geometry passes' bindless fetch; m_GtaoWorkingDepth back to
+    // UNORDERED_ACCESS; the depth buffer back to DEPTH_WRITE and the normal G-buffer back to RENDER_TARGET —
     // which is what the next barrier on each asserts as its "before" state. Skipping any of these produces a
-    // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible artifact.
+    // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible artifact. Every graph-owned
+    // resource needs none of this — Execute() already left each in whatever state its last declared usage
+    // was, and next frame's first Read()/Write() on that same name picks up from there automatically.
     {
-        D3D12ResourceTransition post[6] = {
+        D3D12ResourceTransition post[2] = {
             { m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
             { m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-            { m_GtaoEdges.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-            { m_GtaoAOTerm[srcTerm].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-            {},   // m_GtaoNormals, only when the reconstruction path actually ran (see below)
-            {},   // m_GtaoHalfDepth, only in Half mode (see below)
         };
-        UINT postCount = 4;
-        if ( !gbufNormals ) {
-            post[postCount++] = { m_GtaoNormals.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
-        }
-        if ( halfRes ) {
-            post[postCount++] = { m_GtaoHalfDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
-        }
-        m_CmdList->TransitionBarriers( post, postCount );
+        m_CmdList->TransitionBarriers( post, 2 );
     }
     if ( gbufNormals ) {
         m_CmdList->TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
