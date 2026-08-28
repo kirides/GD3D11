@@ -41,6 +41,21 @@ public:
     // imported. Exempts the pass from dead-pass elimination unconditionally.
     void MarkExternalEffect();
 
+    // Declare a transition of a resource the graph does NOT own (never ImportResource()'d or
+    // CreateTexture()'d — e.g. the depth buffer, m_SceneColor, or one of GTAO's manually-managed
+    // intermediates), folded into the SAME TransitionPassResources() batch as this pass's own Read()/
+    // Write() transitions, before its callback runs. The graph has never tracked external resource state:
+    // `before` is exactly as much the caller's responsibility as it was for the standalone
+    // TransitionBarrier() call this replaces — this only changes WHERE the call happens.
+    void TransitionExternal( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+
+    // Same as TransitionExternal(), but fires in its own batched call immediately AFTER this pass's
+    // callback returns — for a transition that must wait until the pass's GPU work has actually been
+    // recorded (e.g. a UAV written by the pass's own dispatch, flipped to shader-read only once that write
+    // is known to be in the command stream). Skipped entirely when the pass is dead-pass-eliminated, same
+    // as the callback itself.
+    void TransitionExternalAfter( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+
 private:
     D3D12RenderGraph& m_graph;
     D3D12RenderPass& m_pass;
@@ -134,6 +149,9 @@ private:
 
     void AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList );
     void TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
+    /** Issues pass.m_postTransitions (see D3D12RGBuilder::TransitionExternalAfter), batched into one call,
+        immediately after the pass's callback returns. No call at all when m_postTransitions is empty. */
+    void TransitionPostPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
 };
 
 template<typename SetupFunc>

@@ -38,6 +38,14 @@ void D3D12RGBuilder::MarkExternalEffect() {
     m_pass.m_hasExternalSideEffect = true;
 }
 
+void D3D12RGBuilder::TransitionExternal( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
+    m_pass.m_preTransitions.push_back( { resource, before, after } );
+}
+
+void D3D12RGBuilder::TransitionExternalAfter( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
+    m_pass.m_postTransitions.push_back( { resource, before, after } );
+}
+
 RGResourceHandle D3D12RenderGraph::ImportResource( const std::wstring& name, D3D12RenderTarget* externalTarget ) {
     uint32_t index = m_nextHandle++;
 
@@ -152,6 +160,7 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
             ZoneName( pass->m_name.narrow, strlen( pass->m_name.narrow ) );
             TransitionPassResources( *pass, cmdList );
             pass->m_executeCallback( *this, cmdList );
+            TransitionPostPassResources( *pass, cmdList );
         }
     }
 }
@@ -170,28 +179,57 @@ void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex, D3D12CmdList&
     }
 }
 
+namespace {
+    // Shared per-pass batch cap for D3D12RenderGraph's automatic pre/post transition calls: every pass
+    // converted so far touches at most a couple of resources. A pass with more just takes an extra
+    // TransitionBarriers() call rather than losing a transition — see PushTransition's overflow branch.
+    constexpr UINT kMaxTransitionsPerBatch = 16;
+
+    // Appends `t` to the batch[count]/count scratch pair (sized kMaxTransitionsPerBatch, local to a single
+    // TransitionPassResources/TransitionPostPassResources call), or — once that array is full — issues an
+    // individual TransitionBarrier() for it right away rather than dropping it. Shared by both call sites so
+    // the overflow behavior can't drift between them.
+    void PushTransition( D3D12CmdList& cmdList, D3D12ResourceTransition* batch, UINT& count, const D3D12ResourceTransition& t ) {
+        if ( count < kMaxTransitionsPerBatch ) {
+            batch[count++] = t;
+        } else {
+            cmdList.TransitionBarrier( t.Resource, t.Before, t.After, t.Subresource, t.SyncBefore, t.SyncAfter );
+        }
+    }
+}
+
 void D3D12RenderGraph::TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList ) {
-    // Generous per-pass cap: every pass converted so far touches at most a couple of graph resources.
-    // Passes with more just take an extra TransitionBarriers() call rather than losing a transition.
-    constexpr UINT kMaxPerPass = 16;
-    D3D12ResourceTransition transitions[kMaxPerPass];
+    D3D12ResourceTransition transitions[kMaxTransitionsPerBatch];
     UINT n = 0;
 
     auto consider = [&]( const RGResourceUsage& usage ) {
         if ( D3D12IsExternalHandle( usage.Handle ) ) return;   // not graph-tracked; caller manages state manually
         D3D12RenderTarget* tex = GetPhysicalTexture( usage.Handle );
         if ( !tex || tex->State == usage.State ) return;       // absent (skipped resource) or already there
-        if ( n < kMaxPerPass ) {
-            transitions[n++] = { tex->GetResource(), tex->State, usage.State };
-        } else {
-            // Fall back to an individual call past the batch cap rather than dropping the transition.
-            cmdList.TransitionBarrier( tex->GetResource(), tex->State, usage.State );
-        }
+        PushTransition( cmdList, transitions, n, { tex->GetResource(), tex->State, usage.State } );
         tex->State = usage.State;
         };
 
     for ( const RGResourceUsage& write : pass.m_writes ) consider( write );
     for ( const RGResourceUsage& read : pass.m_reads ) consider( read );
 
+    // Non-graph-tracked transitions folded into this same batch (D3D12RGBuilder::TransitionExternal) — skip
+    // true no-ops exactly like the tex->State check above; `Before` stays the caller's responsibility.
+    for ( const D3D12ResourceTransition& ext : pass.m_preTransitions ) {
+        if ( ext.Before == ext.After ) continue;
+        PushTransition( cmdList, transitions, n, ext );
+    }
+
+    if ( n > 0 ) cmdList.TransitionBarriers( transitions, n );
+}
+
+void D3D12RenderGraph::TransitionPostPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList ) {
+    if ( pass.m_postTransitions.empty() ) return;
+    D3D12ResourceTransition transitions[kMaxTransitionsPerBatch];
+    UINT n = 0;
+    for ( const D3D12ResourceTransition& ext : pass.m_postTransitions ) {
+        if ( ext.Before == ext.After ) continue;
+        PushTransition( cmdList, transitions, n, ext );
+    }
     if ( n > 0 ) cmdList.TransitionBarriers( transitions, n );
 }

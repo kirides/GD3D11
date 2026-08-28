@@ -434,14 +434,16 @@ void D3D12GraphicsEngine::RenderGTAO() {
             L"GtaoAOTerm0", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         edgesHandle = builder.CreateTexture( { width, height, static_cast<int>( DXGI_FORMAT_R8_UNORM ),
             L"GtaoEdges", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        // m_GtaoWorkingDepth is NOT graph-tracked; Prefilter left it in UNORDERED_ACCESS, so flip it to
+        // shader-read here — folded into the SAME batched TransitionBarriers() call as the Read()/
+        // CreateTexture() declarations above instead of a separate mid-callback TransitionBarrier (mirrors
+        // the old manual toRead() call exactly, just issued one call earlier).
+        builder.TransitionExternal( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         pass.m_executeCallback = [this, common, width, height, quality, gbufNormals, normalsHandle, aoTerm0Handle, edgesHandle]
             ( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
             D3D12RenderTarget* aoTerm0 = g.GetPhysicalTexture( aoTerm0Handle );
             D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
             if ( !aoTerm0 || !edges ) return;
-            // m_GtaoWorkingDepth is NOT graph-tracked; Prefilter left it in UNORDERED_ACCESS, so flip it to
-            // shader-read right before this pass samples it (mirrors the old manual toRead() call exactly).
-            cmdList.TransitionBarrier( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
             GtaoBindings b = common;
             b.WorkingDepthIndex = m_GtaoWorkingDepthSrvSlot;
             if ( gbufNormals ) {
@@ -491,6 +493,11 @@ void D3D12GraphicsEngine::RenderGTAO() {
                 // dead-pass elimination would see a pass whose only real output is invisible to it and skip
                 // the callback entirely (see D3D12DoF.cpp's Composite pass for the identical situation).
                 builder.MarkExternalEffect();
+                // m_AOMask's UAV -> PIXEL_SHADER_RESOURCE flip must wait until THIS pass's dispatch has
+                // actually written it, so it can't be a pre-pass transition — TransitionExternalAfter fires
+                // right after the callback below returns, in its own one-call batch, instead of standing
+                // apart in RenderGTAO's end-of-function "Rest states" block.
+                builder.TransitionExternalAfter( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
             }
             pass.m_executeCallback = [this, common, width, height, lastPass, srcHandle, dstHandle, edgesHandle]
                 ( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
@@ -521,19 +528,15 @@ void D3D12GraphicsEngine::RenderGTAO() {
     gtaoGraph.Execute( m_CmdList );
 
     // --- Rest states for the resources that stayed OUTSIDE the graph ------------------------------------------
-    // m_AOMask readable for the lit geometry passes' bindless fetch; m_GtaoWorkingDepth back to
-    // UNORDERED_ACCESS; the depth buffer back to DEPTH_WRITE and the normal G-buffer back to RENDER_TARGET —
-    // which is what the next barrier on each asserts as its "before" state. Skipping any of these produces a
-    // GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible artifact. Every graph-owned
-    // resource needs none of this — Execute() already left each in whatever state its last declared usage
-    // was, and next frame's first Read()/Write() on that same name picks up from there automatically.
-    {
-        D3D12ResourceTransition post[2] = {
-            { m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-            { m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-        };
-        m_CmdList->TransitionBarriers( post, 2 );
-    }
+    // m_GtaoWorkingDepth back to UNORDERED_ACCESS; the depth buffer back to DEPTH_WRITE and the normal
+    // G-buffer back to RENDER_TARGET — which is what the next barrier on each asserts as its "before" state.
+    // m_AOMask's UAV -> PIXEL_SHADER_RESOURCE flip now rides on the last "GTAO Denoise" pass itself
+    // (TransitionExternalAfter, see the denoise loop above) rather than standing apart here. Skipping any of
+    // what remains produces a GPU-validation RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH rather than a visible
+    // artifact. Every graph-owned resource needs none of this — Execute() already left each in whatever
+    // state its last declared usage was, and next frame's first Read()/Write() on that same name picks up
+    // from there automatically.
+    m_CmdList->TransitionBarrier( m_GtaoWorkingDepth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
     if ( gbufNormals ) {
         m_CmdList->TransitionBarrier( m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
     }
