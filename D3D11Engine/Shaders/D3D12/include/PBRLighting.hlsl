@@ -313,7 +313,18 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     float3 H = normalize( V + L );
     float NdotH = saturate( dot( N, H ) );
     float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
+    // PBR_DistributionGGX/PBR_GeometrySchlickGGX both take PERCEPTUAL roughness and do their own internal
+    // a=roughness*roughness conversion (matching the standard Karis/Epic GGX helper shape they're written
+    // as) — do NOT square here first. This used to read `PBR_SafeRoughness(roughness*roughness)`, which fed
+    // an already-squared alpha into functions that square it AGAIN, producing an effective a2==roughness^8
+    // instead of roughness^4. That over-tightened the NDF so severely that any roughness below ~0.8 or so
+    // collapsed the specular lobe to a near-invisible pinpoint (surface reads as flat diffuse, since only
+    // the roughness-independent diffuse term remains visible), while roughness near 1.0 stayed wide enough
+    // to actually show up — i.e. RAISING roughness looked GLOSSIER and lowering it looked MORE diffuse,
+    // backwards from every other roughness convention in this file (EvaluateSkyIBL, EnvBRDFApprox,
+    // ComputeSpecularOcclusion all correctly take perceptual roughness untouched). Reported 2026-08-28 by
+    // the maintainer testing the DefaultMaterialRoughness debug slider.
+    float  cr = PBR_SafeRoughness( roughness );
     float  cm = saturate( metallic );
     float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
     float  D = PBR_DistributionGGX( NdotH, cr );
