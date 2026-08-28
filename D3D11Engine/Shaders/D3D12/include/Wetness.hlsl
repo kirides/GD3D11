@@ -153,21 +153,78 @@ float3 ApplyRainNormalDeformation( float3 wsNormal, float3 wsPosition )
     return normalize( n );
 }
 
-// Applies scene wetness at one fragment. N / albedo / roughness are modified in place; `sheen` returns
-// D3D11's specAdd (the additive wet shine), which the caller adds AFTER lighting so it isn't scaled by
-// N.L. Returns localWettness [0,1] — 0 means "nothing was changed", which callers use to skip the
-// remaining wetness work. Call with the UNPERTURBED-by-wetness normal and BEFORE the sun shadow lookup,
-// matching D3D11 (it computes `shadow` from the G-buffer normal, then deforms).
-float ApplySceneWetness( float3 wpos, float3 V, inout float3 N, inout float3 albedo,
-                         inout float roughness, out float sheen )
+// Puddles: localized pooled water on FLAT ground, distinct from the generic wet-surface sheen every
+// exposed pixel gets above. Without this, a pitched roof and a flat street get the SAME roughness dip
+// (0.10) because ApplySceneWetness's only directionality test is "faces up at all" — a 30-degree roof
+// pitch passes that easily. Real puddles only form on near-horizontal surfaces, so PUDDLE_FLATNESS_MIN is a
+// much stricter dot(N,up) threshold than the generic wetness exposure test above.
+//
+// The mask itself reuses the already-bound rain distortion texture (distortion2.dds, DistortionIndex) as a
+// noise field — sampled PLANAR in world XZ and read STATICALLY (no RainTime scroll): a puddle's SHAPE
+// shouldn't animate, only the ripple normal already handles the animated part. Thresholding that noise
+// against the current wetness level is what makes puddles GROW as rain accumulates (SceneWetness rising
+// drives the threshold down, so more of the noise field clears it) and shrink as the ground dries, instead
+// of a fixed blob pattern that pops in at full size the moment it starts raining.
+//
+// TWO octaves, not one: this texture's own large-scale use elsewhere in this file (ApplyRainNormalDeformation
+// samples it at roughly a 3300-10000 world-unit tile, for smooth WAVE features) is exactly what a single
+// puddle-scale sample must NOT reuse — at that tile size the field barely varies across a normal courtyard,
+// so thresholding it just draws the one edge of a near-linear gradient stretched across the whole visible
+// area: a puddle that reads as a straight 1-2 meter-wide line, not a pool. PUDDLE_NOISE_WORLD_SCALE is a
+// puddle-appropriate few-metre tile so multiple blobs fit in a courtyard; PUDDLE_DETAIL_WORLD_SCALE is a
+// smaller second sample multiplied in purely to break the blob's perimeter into something irregular.
+static const float PUDDLE_FLATNESS_MIN = 0.92;           // dot(N,up); excludes pitched roofs, keeps flat ground/rooftops
+static const float PUDDLE_NOISE_WORLD_SCALE  = 400.0;    // world units per tile — puddle-placement scale (~4 m)
+static const float PUDDLE_DETAIL_WORLD_SCALE = 120.0;    // world units per tile — perimeter-irregularity scale (~1.2 m)
+
+// Returns puddle intensity [0,1] at this fragment: 0 = ordinary wet surface, 1 = fully pooled/mirror-flat.
+// `geomN` must be the UNPERTURBED geometric normal (before ApplyRainNormalDeformation's ripple), or a
+// rippled wall normal could transiently point "up" and read as flat.
+float ComputePuddleMask( float3 geomN, float3 wsPosition, float wetness )
 {
-    sheen = 0.0;
+    float flatness = saturate( ( dot( geomN, float3( 0, 1, 0 ) ) - PUDDLE_FLATNESS_MIN ) / ( 1.0 - PUDDLE_FLATNESS_MIN ) );
+    if ( flatness <= 0.0 ) return 0.0;
+
+    Texture2D distTex = ResourceDescriptorHeap[DistortionIndex];
+    float placement = distTex.SampleLevel( smp, wsPosition.xz / PUDDLE_NOISE_WORLD_SCALE, 0 ).r;
+    // Offset the second sample's UV origin so it isn't just a scaled copy of the same pattern (which would
+    // still line up into bands at some scale ratios) — an arbitrary irrational-ish shift is enough.
+    float detail = distTex.SampleLevel( smp, wsPosition.xz / PUDDLE_DETAIL_WORLD_SCALE + 17.31, 0 ).g;
+    float noise = placement * 0.7 + detail * 0.3;
+
+    // Higher wetness lowers the threshold the noise has to clear, so puddles spread as rain persists. The
+    // 0.08 half-width keeps the pooled/dry boundary from being a hard, aliased edge.
+    float threshold = lerp( 0.85, 0.35, saturate( wetness ) );
+    float pooled = smoothstep( threshold - 0.08, threshold + 0.08, noise );
+    return pooled * flatness;
+}
+
+// Applies scene wetness at one fragment. N / albedo / roughness are modified in place. Returns
+// localWettness [0,1] — 0 means "nothing was changed", which callers use to skip the remaining wetness
+// work. Call with the UNPERTURBED-by-wetness normal and BEFORE the sun shadow lookup, matching D3D11 (it
+// computes `shadow` from the G-buffer normal, then deforms).
+//
+// NO STYLIZED SHEEN HERE (deliberate D3D12 divergence from D3D11, decided 2026-08-28). D3D11's
+// PS_DS_AtmosphericScattering.hlsl adds three fixed-direction "sparkle" highlights on top of this
+// (`l1 = normalize(0,0.5,-1)`, etc. — literal constants, never SunDirWS or any real light/reflection
+// direction). It reads as a decorative hack because it is one: those directions don't track the sun, the
+// camera, or the environment, so the highlight they produce sits in a fixed relationship to the world/view
+// regardless of actual lighting conditions — reported by the maintainer as "random specular highlights that
+// stay in one place" and correctly identified as looking wrong. D3D12 already has a CORRECT alternative for
+// exactly this ("wet ground should look shinier"): the roughness dip a few lines below feeds directly into
+// ComputeSunLightingPBR's Cook-Torrance sun term (PBRLighting.hlsl), which DOES respond properly to the
+// real sun direction, view angle and roughness, and puddled pixels (near-mirror roughness) additionally get
+// EvaluateOpaqueSSR's real environment reflection. Porting the fixed-direction sheen would only add fake,
+// redundant energy on top of lighting that is already physically correct.
+float ApplySceneWetness( float3 wpos, inout float3 N, inout float3 albedo, inout float roughness )
+{
     if ( SceneWetness <= 0.0 || RainShadowIndex == 0xffffffff || DistortionIndex == 0xffffffff )
         return 0.0;   // not raining / drying done, or the rain map / distortion2.dds never loaded
 
     float wetness = SampleRainReach( wpos ) * SceneWetness;
     if ( wetness < 0.001 ) return 0.0;   // matches D3D11's pixelWettnes cutoff
 
+    float3 geomN = N;   // captured before ApplyRainNormalDeformation ripples it — see ComputePuddleMask's requirement
     float3 wetNormal = ApplyRainNormalDeformation( N, wpos );
 
     // Downward-facing surfaces (undersides, ceilings) stay dry; upward-facing ones collect the most
@@ -179,29 +236,28 @@ float ApplySceneWetness( float3 wpos, float3 V, inout float3 N, inout float3 alb
     wetness *= exposure * exposure;
     if ( wetness <= 0.0 ) return 0.0;
 
-    // Only ripple while it is actually RAINING (RainFxWeight), not while the ground is drying out.
-    N = normalize( lerp( N, wetNormal, RainFxWeight * wetness * 0.5 ) );
+    // Puddles: a stricter, flat-ground-only pool on top of the generic wet-surface sheen above. See
+    // ComputePuddleMask's header comment for why this needs its own (much tighter) flatness test.
+    float puddle = ComputePuddleMask( geomN, wpos, wetness );
+
+    // Only ripple while it is actually RAINING (RainFxWeight), not while the ground is drying out. Pooled
+    // water stays closer to a flat mirror than a rippling wet wall, so puddle pixels get less of the
+    // tri-planar ripple deformation blended in.
+    N = normalize( lerp( N, wetNormal, RainFxWeight * wetness * 0.5 * ( 1.0 - puddle * 0.8 ) ) );
 
     // PBR stand-in for D3D11's "specPower -> 150, specIntensity -> 0": water is smooth, so pull
-    // roughness toward glossy and let Cook-Torrance tighten the existing highlights.
-    roughness = lerp( roughness, 0.10, wetness );
+    // roughness toward glossy and let Cook-Torrance tighten the existing highlights. Puddle pixels go all
+    // the way to near-mirror (0.02) instead of the generic wet-surface floor (0.10) — this is also what
+    // clears EvaluateOpaqueSSR's roughness gate (PBRLighting.hlsl), so a puddle shows an actual reflection
+    // of its surroundings rather than just the fixed-direction sheen below.
+    float targetRoughness = lerp( 0.10, 0.02, puddle );
+    roughness = lerp( roughness, targetRoughness, wetness );
 
-    // Desaturate + darken (D3D11's wetPixel).
+    // Desaturate + darken (D3D11's wetPixel) — pooled water darkens further still, matching how a puddle
+    // reads visually darker/more reflective than a merely damp surface under overcast rain light.
     float lum = dot( albedo, float3( 0.3333, 0.3333, 0.3333 ) );
-    albedo = lerp( albedo, lerp( lum.xxx, albedo, 0.75 ) * 0.75, wetness );
+    float darkenAmount = lerp( 0.75, 0.55, puddle );
+    albedo = lerp( albedo, lerp( lum.xxx, albedo, darkenAmount ) * darkenAmount, wetness );
 
-    // The three fixed-direction sheen highlights. D3D11 builds l1 already in view space and rotates
-    // l2/l3 world->view; here all three are world-space (the effect is a stylized sheen, not a
-    // physical reflection, so the absolute directions only set where the shine sits on the ground).
-    const float specPower = 150.0;
-    float3 l1 = normalize( float3(  0.0,   0.5,  -1.0   ) );
-    float3 l2 = normalize( float3( -0.333, 0.533, 0.333 ) );
-    float3 l3 = normalize( float3(  0.0,   0.566, -0.666 ) );
-    float s1 = saturate( dot( N, normalize( l1 + V ) ) );
-    float s2 = saturate( dot( N, normalize( l2 + V ) ) );
-    float s3 = saturate( dot( N, normalize( l3 + V ) ) );
-    float reflection = pow( s1, specPower ) * 0.7 + pow( s2, specPower ) * 0.7 + pow( s3, specPower ) * 0.6;
-
-    sheen = reflection * wetness * lerp( 0.08, 0.10, RainFxWeight );
     return wetness;
 }

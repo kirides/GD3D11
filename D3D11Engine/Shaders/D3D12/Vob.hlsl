@@ -152,13 +152,12 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetSheen;
-    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
+    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
-    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {
@@ -260,13 +259,12 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetSheen;
-    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
+    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
-    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {

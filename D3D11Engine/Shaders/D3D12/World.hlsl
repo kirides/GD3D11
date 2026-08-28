@@ -185,14 +185,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // Scene wetness (rain). Deliberately AFTER the cascade lookup: D3D11 also samples the sun shadow with
     // the undeformed normal and only then runs ApplySceneWettness. Perturbs N/albedo/roughness in place.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetSheen;
-    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
+    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);   // D3D11 dims the SUN light color 20% where the surface is wet
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
-    // Additive wet sheen (D3D11's specWet, boosted where the sun actually reaches: specWet += specWet * shadow).
-    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // No fixed-direction wet sheen here — see ApplySceneWetness's header comment for why D3D12 drops that
+    // D3D11 hack in favor of the real Cook-Torrance sun specular (already fed by the roughness dip above)
+    // plus the opaque-surface SSR below.
     // Opaque-surface SSR (temporal, D3D12 only) — additive, physically-weighted reflection sheen; 0
     // confidence on any miss reproduces today's output exactly. The weight MUST be PBR_FresnelSchlick, not
     // an ad hoc curve — see PBRLighting.hlsl's EvaluateOpaqueSSR header comment for why (a stronger weight
