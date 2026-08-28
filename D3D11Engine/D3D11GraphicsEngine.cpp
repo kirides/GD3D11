@@ -4260,12 +4260,26 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
+    // Water has to draw (and depth-write its z-prepass) before the particle pass below: particles
+    // never write depth, so if they drew first the water blend pass would have no depth info about
+    // them and would always composite over them, even when a particle (e.g. a held fireball) is
+    // actually closer to the camera than the water surface and should occlude it instead.
+    graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+            DrawWaterSurfaces();
+        };
+    });
+
     graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = GetResolution();
 
         auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
         auto particleDistortionHandle = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"PfxDistortion" });
-        
+
         builder.Write( particleColorHandle );
         builder.Write( particleDistortionHandle );
         builder.Read( particleColorHandle );
@@ -4285,16 +4299,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 Engine::GAPI->GetFrameParticleInfo(),
                 graph.GetPhysicalTexture( particleColorHandle ),
                 graph.GetPhysicalTexture( particleDistortionHandle ) );
-        };
-    });
-    
-    graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this](const RenderGraph&) {
-            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-            DrawWaterSurfaces();
         };
     });
     
