@@ -2420,14 +2420,15 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// or alpha surfaces get pasted onto an already-fogged scene and never fog themselves. Must run every frame
 	// - it drains the per-kind lists.
 	CollectTransparencyQueue();
-	DrawTransparencyQueue();
-
-	// Billboarded PFX, depth-tested but not depth-writing. Not queue content yet, same as D3D11.
+	
+    // Billboarded PFX, depth-tested but not depth-writing. Not queue content yet, same as D3D11.
 	{
 		DX_ZONE( m_CmdList.Get(), "Draw particles" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particles" );
 		DrawParticleEffects();
 	}
+    
+	DrawTransparencyQueue();
 
 	// Rain/snow (D3D12 rain parity, step 2): unlit placeholder billboards, always "wet" — see
 	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.

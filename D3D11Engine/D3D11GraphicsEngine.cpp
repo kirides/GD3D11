@@ -4271,6 +4271,35 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
+    graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
+        auto size = GetResolution();
+
+        auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
+        auto particleDistortionHandle = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"PfxDistortion" });
+        
+        builder.Write( particleColorHandle );
+        builder.Write( particleDistortionHandle );
+        builder.Read( particleColorHandle );
+        builder.Read( particleDistortionHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
+
+            // GothicAPI collects this frame's particles (backend-neutral) and draws the prog-meshes.
+            Engine::GAPI->ResetRenderStates();
+            Engine::GAPI->DrawParticlesSimple();
+
+            // The two refraction targets are engine-owned (render-graph physical textures); draw the
+            // collected particle instances into them directly instead of routing them through GothicAPI.
+            DrawFrameParticles(
+                Engine::GAPI->GetFrameParticles(),
+                Engine::GAPI->GetFrameParticleInfo(),
+                graph.GetPhysicalTexture( particleColorHandle ),
+                graph.GetPhysicalTexture( particleDistortionHandle ) );
+        };
+    });
+    
     graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
@@ -4468,35 +4497,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // NOTE: Depth of Field, Bloom and HDR/Tonemapping are Post-processing "B" effects and now run
     // AFTER upscaling (at presentation resolution) — see the relocated passes near the end of this
     // function, after the upscaling pass.
-
-    graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        auto size = GetResolution();
-
-        auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
-        auto particleDistortionHandle = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"PfxDistortion" });
-        
-        builder.Write( particleColorHandle );
-        builder.Write( particleDistortionHandle );
-        builder.Read( particleColorHandle );
-        builder.Read( particleDistortionHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this, particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
-
-            // GothicAPI collects this frame's particles (backend-neutral) and draws the prog-meshes.
-            Engine::GAPI->ResetRenderStates();
-            Engine::GAPI->DrawParticlesSimple();
-
-            // The two refraction targets are engine-owned (render-graph physical textures); draw the
-            // collected particle instances into them directly instead of routing them through GothicAPI.
-            DrawFrameParticles(
-                Engine::GAPI->GetFrameParticles(),
-                Engine::GAPI->GetFrameParticleInfo(),
-                graph.GetPhysicalTexture( particleColorHandle ),
-                graph.GetPhysicalTexture( particleDistortionHandle ) );
-        };
-    });
 
     // Draw debug lines
     graph.AddPass( RG_PASS_NAME("Draw Debug Lines"), [&]( RGBuilder& builder, RenderPass& pass ) {
