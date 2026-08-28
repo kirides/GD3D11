@@ -516,6 +516,14 @@ enum class AOMode : int {
     AO_ASSAO = 3,
 };
 
+// D3D12 only: resolution the AO compute chain (simple SSAO or XeGTAO) runs at, relative to the render
+// resolution. D3D11's AO modes are untouched. The lit shaders need no changes to consume a lower-res
+// mask - include/ScreenSpaceAO.hlsl already samples it through a bilinear CLAMP upsample.
+enum class AoResolutionScale : int {
+    Full = 0,
+    Half = 1,
+};
+
 struct SAOSettings {
     SAOSettings() {
         Radius = 1.5f;
@@ -815,7 +823,6 @@ struct GothicRendererSettings {
         EnablePortalCulling = true;
         PortalCullingNearRadius = 1500.0f;
         EnablePortalShadowSkip = false;
-        EnableHorizonCulling = false;
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
@@ -839,7 +846,6 @@ struct GothicRendererSettings {
         GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
         DrawSectionIntersections = true;
-        DrawWorldOccluders = false;
 
         EnableGodRays = true;
 
@@ -1104,9 +1110,6 @@ struct GothicRendererSettings {
         "shadowed" instead. Requires EnablePortalCulling; see BspPortalCuller::IsOutdoorVisible.
         Off by default: a false "enclosed" verdict drops every sun shadow, which is very visible. */
     bool EnablePortalShadowSkip;
-    /** Cull world sections, VOBs and MOBs against the ghost-occluder horizon - ZenGin's outdoor
-        "behind the mountain" test. Main camera pass only; see HorizonCuller. */
-    bool EnableHorizonCulling;
     bool SortRenderQueue;
     bool DrawThreaded;
     /** Run meshoptimizer's vertex-cache/fetch reorder (+ face reorder) on world sections and VOB
@@ -1131,8 +1134,6 @@ struct GothicRendererSettings {
     /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
     int MSAASamples;
     bool DrawSectionIntersections;
-    /** Debug: outline the world's ghost-occluder polys (see WorldOccluders) in the line renderer. */
-    bool DrawWorldOccluders;
 
     int MaxNumFaces;
 
@@ -1250,6 +1251,7 @@ struct GothicRendererSettings {
     ASSAO_Settings AssaoSettings;
     GTAOSettings GtaoSettings;   // D3D12's AO_ASSAO implementation — see the struct comment
     AOMode AoMode;
+    AoResolutionScale AoResolution = AoResolutionScale::Full;   // D3D12 only — see the enum's comment
 
     bool FixViewFrustum;
 

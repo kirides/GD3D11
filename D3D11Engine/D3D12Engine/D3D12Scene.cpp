@@ -1944,6 +1944,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	// prepass depth for grass the lit pass then never draws — that would punch grass-shaped AO holes into the
 	// terrain behind it.
 	const float cullRadius = std::min( settings.OutdoorSmallVobDrawRadius, kVegetationPrepassRange );
+	const float cullRadiusSq = cullRadius * cullRadius;
 	const GrassCBData gcb = MakeGrassConstants();
 	// The PS only alpha-clips against t0, so t1/the fog CB/the lights/the shadow CB/the AO CB all stay unbound —
 	// D3D12 requires only the root parameters a bound shader statically references to be set.
@@ -1957,7 +1958,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 
 		XMFLOAT3 bbMin, bbMax;
 		box->GetBoundingBox( &bbMin, &bbMax );
-		if ( Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax ) > cullRadius ) continue;
+		if ( Toolbox::ComputePointAABBDistanceSq( camPos, bbMin, bbMax ) > cullRadiusSq ) continue;
 		if ( !playerFrustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
 
 		GMeshSimple* mesh = box->GetVegetationMesh();
@@ -2038,6 +2039,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	const float drawRadius = settings.OutdoorSmallVobDrawRadius;
+	const float drawRadiusSq = drawRadius * drawRadius;
 	const FogConstants fog = MakeFogConstants();
 
 	const GrassCBData gcb = MakeGrassConstants();
@@ -2056,7 +2058,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 		XMFLOAT3 bbMin, bbMax;
 		box->GetBoundingBox( &bbMin, &bbMax );
 
-		if ( Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax ) > drawRadius ) continue;
+		if ( Toolbox::ComputePointAABBDistanceSq( camPos, bbMin, bbMax ) > drawRadiusSq ) continue;
 		if ( !playerFrustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
 
 		GMeshSimple* mesh = box->GetVegetationMesh();
@@ -2418,14 +2420,15 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// or alpha surfaces get pasted onto an already-fogged scene and never fog themselves. Must run every frame
 	// - it drains the per-kind lists.
 	CollectTransparencyQueue();
-	DrawTransparencyQueue();
-
-	// Billboarded PFX, depth-tested but not depth-writing. Not queue content yet, same as D3D11.
+	
+    // Billboarded PFX, depth-tested but not depth-writing. Not queue content yet, same as D3D11.
 	{
 		DX_ZONE( m_CmdList.Get(), "Draw particles" );
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particles" );
 		DrawParticleEffects();
 	}
+    
+	DrawTransparencyQueue();
 
 	// Rain/snow (D3D12 rain parity, step 2): unlit placeholder billboards, always "wet" — see
 	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.
@@ -2824,10 +2827,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     static std::vector<WorldMeshSectionInfo*> sections;
     sections.clear();
-    // Player view: opt into the ghost-occluder horizon cull (the shadow/rain section collects must not).
-    const HorizonCuller& horizon = Engine::GAPI->GetHorizonCuller();
-    Engine::GAPI->CollectVisibleSections( sections, nullptr, true,
-        horizon.IsActive() ? &horizon : nullptr );
+    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
 
     WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;
@@ -2866,15 +2866,15 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 continue;
             }            
 
-            // Sort key for every transparency bucket below: distance to the mesh's own bbox center, falling
-            // back to the section's (ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
+            // Sort key for every transparency bucket below: closest point on the mesh's own bbox, not
+            // its center (see ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
             auto transparencyDistanceSq = [&]() -> float {
                 const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
-                const XMFLOAT3 center( ( bounds->Min.x + bounds->Max.x ) * 0.5f,
-                                       ( bounds->Min.y + bounds->Max.y ) * 0.5f,
-                                       ( bounds->Min.z + bounds->Max.z ) * 0.5f );
+                const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );
+                const XMVECTOR boundsMax = XMLoadFloat3( &bounds->Max );
+                const XMVECTOR closestPoint = XMVectorClamp( transparencyCamPos, boundsMin, boundsMax );
                 float distanceSq = 0.0f;
-                XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - transparencyCamPos ) );
+                XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - transparencyCamPos ) );
                 return distanceSq;
             };
 
@@ -2920,7 +2920,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             uint32_t normalIdx  = 0xFFFFFFFFu;
             uint32_t ormIdx     = GetDefaultOrmSrvSlot();
             float normalStrength = 1.0f;
-            if (auto info = Engine::GAPI->GetMaterialInfoFrom(meshKey.Material)) {
+
+            if (auto info = meshKey.Info) {
                 normalStrength = info->buffer.NormalmapStrength;
             }
             

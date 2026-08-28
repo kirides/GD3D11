@@ -268,6 +268,9 @@ public:
     // Non-fatal — RenderGTAO() guards on the PSOs and falls back to the simple SSAO path.
     struct GtaoPipeline {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        // Nearest-neighbour 2x depth decimation, used only when AoResolution == Half - see D3D12GTAO.cpp.
+        Microsoft::WRL::ComPtr<ID3DBlob>            DownsampleCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DownsamplePSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            PrefilterCsBlob;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> PrefilterPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            NormalsCsBlob;

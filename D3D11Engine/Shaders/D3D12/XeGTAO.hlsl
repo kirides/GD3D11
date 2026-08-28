@@ -130,6 +130,26 @@ lpfloat2 SpatioTemporalNoise( uint2 pixCoord, uint temporalIndex )
     return lpfloat2( frac( 0.5 + index * float2( 0.75487766624669276005, 0.5698402909980532659114 ) ) );
 }
 
+// --- Pass 0 (Half AO-resolution mode only; not part of Intel's XeGTAO sample) --------------------------------
+// Nearest-neighbour 2x decimation of the native depth into g_Out0Index, which the rest of the chain then
+// treats as "the" raw depth. Point-sampled rather than min/max/averaged since the prefilter pass immediately
+// re-derives its own MIP chain from this anyway; a thin sub-2px occluder can be missed as a result.
+[numthreads( 8, 8, 1 )]
+void CSDownsampleDepth( uint2 dispatchThreadID : SV_DispatchThreadID )
+{
+    if ( dispatchThreadID.x >= (uint)g_GTAOConsts.ViewportSize.x || dispatchThreadID.y >= (uint)g_GTAOConsts.ViewportSize.y )
+        return;
+
+    Texture2D<float>   srcRawDepth  = ResourceDescriptorHeap[g_RawDepthIndex];
+    RWTexture2D<float>  outHalfDepth = ResourceDescriptorHeap[g_Out0Index];
+
+    uint2 srcDim;
+    srcRawDepth.GetDimensions( srcDim.x, srcDim.y );
+    const uint2 srcCoord = min( dispatchThreadID * 2u, srcDim - 1u );
+
+    outHalfDepth[dispatchThreadID] = srcRawDepth.Load( int3( srcCoord, 0 ) );
+}
+
 // --- Pass 1: raw NDC depth -> view-space depth + 4 MIPs -------------------------------------------------------
 // 8x8 threads, each handling a 2x2 block, so one group covers 16x16 pixels: dispatch (w+15)/16, (h+15)/16.
 [numthreads( 8, 8, 1 )]

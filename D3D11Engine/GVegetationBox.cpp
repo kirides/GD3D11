@@ -177,6 +177,7 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
     }
 
     std::vector<XMFLOAT3> trisInside;
+    trisInside.reserve(mesh->Indices.size() * 3);
     for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
         XMFLOAT3 tri[3];
 
@@ -524,7 +525,7 @@ void GVegetationBox::RemoveVegetationAt( const XMFLOAT3& position, float range )
 
     // Remove everything in range
     for ( std::list<XMFLOAT4X4>::iterator it = s.begin(); it != s.end();) {
-        FXMVECTOR spot = XMVectorSet( it->_14, it->_24, it->_34, 0 );
+        XMVECTOR spot = XMVectorSet( it->_14, it->_24, it->_34, 0 );
 
         float d;
         XMStoreFloat( &d, XMVector3Length( spot - XMLoadFloat3( &position ) ) );
@@ -629,9 +630,9 @@ void GVegetationBox::SaveToFILE( FILE* f, int version ) {
     // Save vegetation array itself
     std::vector<XMFLOAT4> spots;
     for ( unsigned int i = 0; i < VegetationSpots.size(); i++ ) {
-        //FXMVECTOR m0 = XMVectorSet(VegetationSpots[i]._11, VegetationSpots[i]._21, VegetationSpots[i]._31, 0);
-        FXMVECTOR m1 = XMVectorSet( VegetationSpots[i]._12, VegetationSpots[i]._22, VegetationSpots[i]._32, 0 );
-        //FXMVECTOR m2 = XMVectorSet(VegetationSpots[i]._13, VegetationSpots[i]._23, VegetationSpots[i]._33, 0);
+        //XMVECTOR m0 = XMVectorSet(VegetationSpots[i]._11, VegetationSpots[i]._21, VegetationSpots[i]._31, 0);
+        XMVECTOR m1 = XMVectorSet( VegetationSpots[i]._12, VegetationSpots[i]._22, VegetationSpots[i]._32, 0 );
+        //XMVECTOR m2 = XMVectorSet(VegetationSpots[i]._13, VegetationSpots[i]._23, VegetationSpots[i]._33, 0);
         XMFLOAT4 spot = XMFLOAT4( VegetationSpots[i]._14, VegetationSpots[i]._24, VegetationSpots[i]._34, XMVectorGetX( XMVector3Length( m1 ) ) );
 
         spots.push_back( spot );

@@ -105,7 +105,7 @@ void RenderGraph::Execute()
 
         // Only execute if it provides a meaningful side-effect/write
         if ( !isPassDead && pass->m_executeCallback ) {
-            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( { pass->m_name.wide, pass->m_name.narrow } );
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( pass->m_name );
             ZoneScoped;
             ZoneName( pass->m_name.narrow, strlen( pass->m_name.narrow ) );
             pass->m_executeCallback( *this );

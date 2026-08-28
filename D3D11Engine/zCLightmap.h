@@ -10,7 +10,7 @@ class zCLightmap {
 public:
 
     XMFLOAT2 GetLightmapUV( const XMFLOAT3& worldPos ) {
-        FXMVECTOR q = XMLoadFloat3( &worldPos ) - XMLoadFloat3( &LightmapOrigin );
+        XMVECTOR q = XMLoadFloat3( &worldPos ) - XMLoadFloat3( &LightmapOrigin );
 
         XMFLOAT2 lightmap;
         lightmap.x = XMVectorGetX( XMVector3Dot( q, XMLoadFloat3( &LightmapUVRight ) ) );

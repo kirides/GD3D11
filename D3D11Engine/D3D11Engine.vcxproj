@@ -983,7 +983,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="EditorLinePrimitive.h" />
     <ClInclude Include="Engine.h" />
     <ClInclude Include="BspPortalCuller.h" />
-    <ClInclude Include="HorizonCuller.h" />
+    <ClInclude Include="SpatialBVH.h" />
     <ClInclude Include="Frustum.h" />
     <ClInclude Include="GFSDK_SSAO.h" />
     <ClInclude Include="GInventory.h" />
@@ -1145,6 +1145,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="vendor\D3D12MemoryAllocator\include\D3D12MemAlloc.h" />
     <ClInclude Include="vendor\D3D12MemoryAllocator\src\Common.h" />
     <ClInclude Include="VersionCheck.h" />
+    <ClInclude Include="widenarrow.h" />
     <ClInclude Include="WidgetContainer.h" />
     <ClInclude Include="Widget_TransRot.h" />
     <ClInclude Include="win32ClipboardWrapper.h" />
@@ -1264,7 +1265,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
     <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
     <ClCompile Include="BspPortalCuller.cpp" />
-    <ClCompile Include="HorizonCuller.cpp" />
     <ClCompile Include="ShaderRegistry.cpp" />
     <ClCompile Include="TransparencyQueue.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">

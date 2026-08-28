@@ -162,11 +162,8 @@ void D3D11PointLight::ClearTiledSlot() {
 
 int D3D11PointLight::GetCurrentShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
-    // Only PLS_UPDATE_DYNAMIC downgrades a static-flagged light to PLS_STATIC_ONLY (its round-robin dynamic
-    // overlay would be wasted on something that never animates). PLS_FULL must NOT be downgraded here: it's
-    // the "no caching shortcuts, ever" escape hatch (see the ImGui tooltip: "use if you encounter visual
-    // bugs"), and forcing it to PLS_STATIC_ONLY silently turned it into a permanent one-time bake for every
-    // static/indoor light - the exact "FULL doesn't re-render the static portion" bug this guards against.
+    // Only PLS_UPDATE_DYNAMIC downgrades a static-flagged light to PLS_STATIC_ONLY; PLS_FULL must stay FULL
+    // (it's the no-caching-shortcuts escape hatch, and downgrading it would make it never re-render).
     if ( mode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
         if ( LightInfo->IsStaticVobLight ) {
             return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
@@ -374,11 +371,7 @@ bool D3D11PointLight::NeedsUpdate() {
     }
 
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
-        // PLS_FULL is the brute-force "no caching shortcuts" mode - every other branch above only re-renders
-        // on a real trigger (moved / not-yet-baked). Without this, a perfectly stationary light (most static/
-        // indoor ones) would never be considered to need an update once DrawnOnce latched, and RenderFullCubemap's
-        // PLS_FULL branch (which always draws the full, uncached scene) would simply never get invoked again -
-        // making FULL behave exactly like PLS_STATIC_ONLY for anything that doesn't move.
+        // PLS_FULL always re-renders, even for a stationary light, since it never latches DrawnOnce.
         return true;
     }
 
@@ -599,14 +592,10 @@ void D3D11PointLight::RenderFullCubemap() {
         m_StaticShadowReady = false;
         m_HasDynamicOverlay = false;
 
-        // Unlike every other mode, FULL never reuses the world-mesh candidate-list cache: it always re-collects
-        // and redraws the whole scene fresh (see NeedsUpdate()'s PLS_FULL branch - this runs every frame), which
-        // is the entire point of the "no caching shortcuts" escape hatch.
-        std::vector<std::pair<MeshKey, MeshInfo*>>* wc = nullptr;
+        // FULL never reuses the world-mesh candidate cache - it always re-collects the whole scene fresh.
+        std::vector<MeshDrawRange>* wc = nullptr;
 
-        // See RenderStaticShadowPass: PFX lights, and lights the level marked static, are restricted to
-        // world-mesh casters only - FULL must keep that restriction so a formerly PLS_STATIC_ONLY light's
-        // caster set doesn't suddenly grow VOB/mob/animated shadows it never had before.
+        // Keep RenderStaticShadowPass's world-only restriction for PFX/static lights.
         const unsigned int casterMask = (LightInfo->IsPFXVobLight || LightInfo->IsStaticVobLight) ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
 
         const bool excludeSelf = GetOriginVob( LightInfo ) != nullptr;
@@ -659,18 +648,13 @@ bool D3D11PointLight::IsTiledArrayTarget( const RenderToDepthStencilBuffer& targ
     if ( &target == m_TiledDepthTarget ) {
         return true;
     }
-    // GetDynSlotTarget lazily creates the dynamic-overlay array on first call - harmless here since a
-    // RenderAnimatedShadowPass call into it always precedes/follows this check within the same update.
     return &target == m_TiledOwner->GetDynSlotTarget( m_TiledSlotIndex );
 }
 
-/** NVIDIA fallback: renders each of the 6 faces through its own single-slice DSV instead of one
-    layered/instanced draw routed by SV_RenderTargetArrayIndex into target's multi-slice window - see
-    RequiresNvidiaTiledShadowFaceFallback. */
 void D3D11PointLight::RenderShadowCubeFacePasses(
     RenderToDepthStencilBuffer& target, bool clearDepth, unsigned int casterMask,
     std::list<VobInfo*>* renderedVobs, std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
+    std::vector<MeshDrawRange>* worldMeshCache,
     const std::move_only_function<bool(const zCVob*) const>* ignoreVob ) {
 
     D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
@@ -685,10 +669,7 @@ void D3D11PointLight::RenderShadowCubeFacePasses(
     XMStoreFloat3( &cr.PositionReplacement, lightPos );
     cr.ProjectionReplacement = CubeMapProjMatrix;
 
-    // See D3D11GraphicsEngine::SetCubeFaceFallbackActive(): this path draws each face as an ordinary
-    // single-view pass with no geometry shader bound, so skeletal-NPC draws must not pick VS_ExSkeletalCube/
-    // VS_ExNodeCube (they output world-space position only and rely on GS_Cubemap to produce SV_Position) -
-    // without this flag they'd render nothing at all for the whole duration of this fallback.
+    // No GS bound on this path, so skeletal draws must skip VS_ExSkeletalCube/VS_ExNodeCube (GS-dependent).
     engine->SetCubeFaceFallbackActive( true );
 
     for ( UINT face = 0; face < 6; ++face ) {

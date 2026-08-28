@@ -7,6 +7,7 @@
 #include "GfxVertexBuffer.h"
 #include "GfxTexture.h"
 #include "fpslimiter.h"
+#include "widenarrow.h"
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
@@ -31,10 +32,7 @@ inline bool g_MainLoopFramePacingInstalled = false;
     reach. Wrap-around is harmless - only "did it change since the last frame" is ever asked. */
 inline unsigned int g_MainLoopFrameTick = 0;
 
-struct GraphicsEventName {
-    const wchar_t* wide;
-    const char* narrow;
-};
+typedef WideNarrowChars GraphicsEventName;
 
 #define GE_NAME(nameLiteral) GraphicsEventName{ L##nameLiteral, nameLiteral }
 

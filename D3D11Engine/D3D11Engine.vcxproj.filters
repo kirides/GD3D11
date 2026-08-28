@@ -956,7 +956,7 @@
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
     <ClInclude Include="BspPortalCuller.h" />
-    <ClInclude Include="HorizonCuller.h" />
+    <ClInclude Include="SpatialBVH.h" />
     <ClInclude Include="MorphBlend.h" />
     <ClInclude Include="AsyncVisualExtractor.h" />
     <ClInclude Include="SharedVisualRegistry.h" />
@@ -965,6 +965,7 @@
     <ClInclude Include="MeshShadowIndexBuilder.h" />
     <ClInclude Include="MeshOptimizeCache.h" />
     <ClInclude Include="SqliteBlobStore.h" />
+    <ClInclude Include="widenarrow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1392,7 +1393,6 @@
     <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
     <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
     <ClCompile Include="BspPortalCuller.cpp" />
-    <ClCompile Include="HorizonCuller.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
     <ClCompile Include="MorphBlend.cpp" />
     <ClCompile Include="AsyncVisualExtractor.cpp" />

@@ -4,6 +4,7 @@
 #include <vector>
 #include "../RenderPass.h"    // reuse RGPassName / RG_PASS_NAME — both fully backend-neutral
 #include "../RGTextureDesc.h"
+#include "D3D12Barrier.h"      // D3D12ResourceTransition
 
 class D3D12RenderGraph;
 class D3D12CmdList;
@@ -35,6 +36,12 @@ public:
     RGPassName m_name;
     std::vector<RGResourceUsage> m_reads;   // Sources
     std::vector<RGResourceUsage> m_writes;  // Sinks
+
+    // Non-graph-tracked (external) transitions folded into the graph's batched barrier calls - see
+    // D3D12RGBuilder::TransitionExternal()/TransitionExternalAfter(). Pre fires with m_reads/m_writes
+    // before the callback; post fires immediately after it returns.
+    std::vector<D3D12ResourceTransition> m_preTransitions;
+    std::vector<D3D12ResourceTransition> m_postTransitions;
 
     // Set via D3D12RGBuilder::MarkExternalEffect() by a pass whose execute callback affects something the
     // graph doesn't track as a Write — e.g. copying a graph-managed transient texture onto an externally-

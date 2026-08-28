@@ -1664,7 +1664,7 @@ void GothicAPI::CalcFlashMeshes() {
     
     auto vVfxRangeSq = XMVectorReplicate(RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius);
 
-    FXMVECTOR camPos = GetCameraPositionXM();
+    XMVECTOR camPos = GetCameraPositionXM();
     static std::vector<zCPolyStrip*> polyStrips; polyStrips.clear();
     for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
         zCFlash* flash = it->first;
@@ -1784,7 +1784,7 @@ void GothicAPI::CalcFlashMeshes() {
 void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
     ZoneScopedN( "GothicAPI::GetVisibleParticleEffectsList" );
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
-        FXMVECTOR camPos = GetCameraPositionXM();
+        XMVECTOR camPos = GetCameraPositionXM();
 
         auto sceneCam = reinterpret_cast<zCCamera*>(oCGame::GetGame()->_zCSession_camera);
         if ( !sceneCam ) {
@@ -1833,7 +1833,7 @@ static bool DecalSortcmpFunc( const std::pair<zCVob*, float>& a, const std::pair
 /** Gets a list of visible decals */
 void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
     ZoneScopedN( "GothicAPI::GetVisibleDecalList" );
-    FXMVECTOR camPos = GetCameraPositionXM();
+    XMVECTOR camPos = GetCameraPositionXM();
     static std::vector<std::pair<zCVob*, float>> decalDistances; // Static to get around reallocations
 
     float vVfxRangeSq = RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius;
@@ -1848,7 +1848,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
         }
 
         if ( it->GetVisual() && it->GetShowVisual() ) {
-            decalDistances.push_back( std::make_pair( it, dist ) );
+            decalDistances.emplace_back( it, dist);
         }
     }
 
@@ -3895,7 +3895,7 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
             float t = 0;
             if ( Toolbox::PositionInsideBox( origin, section.BoundingBox.Min, section.BoundingBox.Max ) || Toolbox::IntersectBox( section.BoundingBox.Min, section.BoundingBox.Max, origin, dir, t ) ) {
                 if ( t < maxSections * WORLD_SECTION_SIZE )
-                    hitSections.push_back( std::make_pair( &section, t ) );
+                    hitSections.emplace_back( &section, t);
             }
         }
     }
@@ -4367,55 +4367,6 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
     }
 }
 
-/** Outlines the world's ghost occluders (WorldOccluders) so their placement can be eyeballed before
-    anything culls against them. Frustum- and distance-limited: a world ships up to ~2500 of them and
-    feeding every one to the line renderer every frame would swamp it. */
-void GothicAPI::DebugDrawOccluders( const Frustum& frustum ) {
-    if ( !LoadedWorldInfo || LoadedWorldInfo->Occluders.IsEmpty() )
-        return;
-
-    const WorldOccluders& occ = LoadedWorldInfo->Occluders;
-    BaseLineRenderer* lines = Engine::GraphicsEngine->GetLineRenderer();
-    if ( !lines )
-        return;
-
-    const XMVECTOR camPos = GetCameraPositionXM();
-    const float maxDist = 20000.0f;   // 200m - beyond that the outlines are unreadable anyway
-    const size_t maxDrawn = 400;      // line-renderer budget; overflow is logged once below
-
-    size_t drawn = 0;
-    size_t skippedForBudget = 0;
-    for ( const WorldOccluders::Entry& e : occ.Entries ) {
-        float distSq;
-        XMStoreFloat( &distSq, XMVector3LengthSq( XMLoadFloat3( &e.Center ) - camPos ) );
-        if ( distSq > (maxDist + e.Radius) * (maxDist + e.Radius) )
-            continue;
-        if ( !frustum.Intersects( zTBBox3D{
-                XMFLOAT3( e.Center.x - e.Radius, e.Center.y - e.Radius, e.Center.z - e.Radius ),
-                XMFLOAT3( e.Center.x + e.Radius, e.Center.y + e.Radius, e.Center.z + e.Radius ) } ) )
-            continue;
-
-        if ( drawn >= maxDrawn ) { skippedForBudget++; continue; }
-
-        // Green near, red far - makes it obvious which ones actually bound the current view.
-        const float t = std::min( 1.0f, std::sqrtf( distSq ) / maxDist );
-        const XMFLOAT4 color( t, 1.0f - t, 0.2f, 1.0f );
-
-        for ( uint32_t v = 0; v < e.NumVerts; v++ ) {
-            const XMFLOAT3& a = occ.Verts[e.VertexOffset + v];
-            const XMFLOAT3& b = occ.Verts[e.VertexOffset + ((v + 1) % e.NumVerts)];
-            lines->AddLine( LineVertex( a, color ), LineVertex( b, color ) );
-        }
-        drawn++;
-    }
-
-    if ( skippedForBudget && !OccluderDebugBudgetLogged ) {
-        LogInfo() << "DrawWorldOccluders: showing " << maxDrawn << " of " << (drawn + skippedForBudget)
-            << " in-view occluders (line budget)";
-        OccluderDebugBudgetLogged = true;
-    }
-}
-
 /** Draws the AABB for the BSP-Tree using the line renderer*/
 void GothicAPI::DebugDrawBSPTree() {
     zCBspTree* tree = LoadedWorldInfo->BspTree;
@@ -4440,8 +4391,6 @@ void GothicAPI::CollectVisibleVobs(
     Frustum frustum = Frustum::AlwaysContainingFrustum();
     bool haveCameraMatrices = false;
     XMMATRIX worldToClip = XMMatrixIdentity();
-    // Kept alongside worldToClip so the horizon cull can measure depth in the SAME camera's space.
-    XMMATRIX cameraView = XMMatrixIdentity();
     if ( auto cam = GetSceneCamera() ) {
         cam->Activate();
 
@@ -4453,7 +4402,6 @@ void GothicAPI::CollectVisibleVobs(
         frustum.BuildPerspective( viewM, projM );
 
         worldToClip = XMMatrixMultiply( viewM, projM );
-        cameraView = viewM;
         haveCameraMatrices = true;
     }
 
@@ -4500,26 +4448,6 @@ void GothicAPI::CollectVisibleVobs(
         oCGame* game = oCGame::GetGame();
         PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
         ctx.portalCuller = &PortalCuller;
-    }
-
-    // Rasterize the ghost-occluder horizon for THIS camera, then hand it to the collect. Main camera
-    // pass only - a shadow cascade has its own frustum and must not test against the player's skyline.
-    Horizon.SetEnabled( RendererState.RendererSettings.EnableHorizonCulling );
-    if ( haveCameraMatrices && LoadedWorldInfo && !LoadedWorldInfo->Occluders.IsEmpty() ) {
-        const INT2 res = Engine::GraphicsEngine->GetResolution();
-        // viewM, NOT GetViewMatrixXM(): worldToClip is viewM*projM from this zCCamera and the horizon
-        // compares depths in that camera's space, while TransformView is pass-dependent (the shadow
-        // cascades overwrite it through SetCameraReplacementPtr).
-        Horizon.Build( LoadedWorldInfo->Occluders, worldToClip, cameraView, ctx.cameraPosition,
-            frustum, res.x, res.y );
-        if ( Horizon.IsActive() )
-            ctx.horizon = &Horizon;
-    } else {
-        Horizon.Invalidate();
-    }
-
-    if ( RendererState.RendererSettings.DrawWorldOccluders ) {
-        DebugDrawOccluders( frustum );
     }
 
     CollectVisibleVobs( ctx );
@@ -4590,7 +4518,9 @@ void GothicAPI::CollectVisibleVobs(
                 vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
                 ProcessVobAnimation( it->Vob, aniMode, vii );
             }
-            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
+            MeshVisualInfo* mvi = reinterpret_cast<MeshVisualInfo*>(it->VisualInfo);
+            mvi->Instances.push_back( vii );
+            mvi->InstanceVobs.push_back( it->Vob );
         }
 
         if ( renderQueue.transparent.size() ) {
@@ -4745,12 +4675,67 @@ void GothicAPI::BuildWorldSectionBVH() {
 
     buildRecursive( buildRecursive, 0, static_cast<uint32_t>(primitiveIndices.size()) );
     WorldSectionBVHValid = !WorldSectionBVHNodes.empty();
+
+    BuildWorldMeshClusterBVH();
 }
 
 void GothicAPI::ClearWorldSectionBVH() {
     WorldSectionBVHValid = false;
     WorldSectionBVHNodes.clear();
     WorldSectionBVHSections.clear();
+    WorldMeshClusterTree = {};
+}
+
+/** Companion to BuildWorldSectionBVH: same idea (flatten primitives, hand them to the shared
+    SpatialBVH builder), but at cluster granularity - see WorldMeshClusterRef. Independent tree,
+    independent storage; CollectVisibleSections/QueryWorldSectionBVH above are untouched by this. */
+void GothicAPI::BuildWorldMeshClusterBVH() {
+    std::vector<WorldMeshClusterRef> primitives;
+    primitives.reserve( 8192 );
+
+    for ( auto& [_, byY] : WorldSections ) {
+        for ( auto& [__, section] : byY ) {
+            if ( !IsValidSectionBounds( section.BoundingBox ) ) {
+                continue;
+            }
+
+            for ( auto& [key, mesh] : section.WorldMeshes ) {
+                if ( !mesh ) {
+                    continue;
+                }
+
+                if ( mesh->Clusters.empty() ) {
+                    // Never clustered (too small - see WORLD_MESH_CLUSTER_MIN_TRIANGLES in
+                    // WorldConverter.cpp): the whole mesh is its own one implicit range.
+                    WorldMeshClusterRef ref;
+                    ref.Bounds = Frustum::BBoxFromzTBBox3D( mesh->HasBoundingBox ? mesh->BoundingBox : section.BoundingBox );
+                    ref.Center = ref.Bounds.Center;
+                    ref.Mesh = mesh;
+                    ref.Key = key;
+                    ref.ClusterIndex = WorldMeshClusterRef::WHOLE_MESH_CLUSTER;
+                    primitives.push_back( ref );
+                    continue;
+                }
+
+                for ( uint32_t i = 0; i < static_cast<uint32_t>(mesh->Clusters.size()); ++i ) {
+                    const MeshCluster& cluster = mesh->Clusters[i];
+                    WorldMeshClusterRef ref;
+                    ref.Bounds = Frustum::BBoxFromzTBBox3D( cluster.Bounds );
+                    ref.Center = ref.Bounds.Center;
+                    ref.Mesh = mesh;
+                    ref.Key = key;
+                    ref.ClusterIndex = i;
+                    primitives.push_back( ref );
+                }
+            }
+        }
+    }
+
+    if ( primitives.empty() ) {
+        return;
+    }
+
+    WorldMeshClusterTree = SpatialBVH::Build( std::move( primitives ), WORLD_SECTION_BVH_LEAF_SIZE );
 }
 
 bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const {
@@ -4767,8 +4752,7 @@ bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Fr
 
 void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
     std::vector<WorldMeshSectionInfo*>& sections,
-    bool useSectionRadiusFilter,
-    const HorizonCuller* horizon ) const {
+    bool useSectionRadiusFilter ) const {
     if ( !WorldSectionBVHValid || WorldSectionBVHNodes.empty() ) {
         return;
     }
@@ -4777,11 +4761,12 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
     nodeStack.clear();
     nodeStack.push_back( 0 );
 
-    INT2 camSection = {};
-    int sectionViewDist = 0;
+    XMFLOAT3 camPos = {};
+    float sectionViewDistWorldSq = 0.0f;
     if ( useSectionRadiusFilter ) {
-        camSection = WorldConverter::GetSectionOfPos( Engine::GAPI->GetCameraPosition() );
-        sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
+        camPos = Engine::GAPI->GetCameraPosition();
+        const float sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        sectionViewDistWorldSq = sectionViewDistWorld * sectionViewDistWorld;
     }
 
     while ( !nodeStack.empty() ) {
@@ -4792,19 +4777,6 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
         if ( !frustum.Intersects( node.Bounds ) ) {
             continue;
         }
-        // Horizon on the BVH node itself: rejecting an interior node drops its whole subtree of
-        // sections in one test, which is where this pays best.
-        if ( horizon ) {
-            const XMFLOAT3 nodeMin( node.Bounds.Center.x - node.Bounds.Extents.x,
-                                    node.Bounds.Center.y - node.Bounds.Extents.y,
-                                    node.Bounds.Center.z - node.Bounds.Extents.z );
-            const XMFLOAT3 nodeMax( node.Bounds.Center.x + node.Bounds.Extents.x,
-                                    node.Bounds.Center.y + node.Bounds.Extents.y,
-                                    node.Bounds.Center.z + node.Bounds.Extents.z );
-            if ( !horizon->IsBoxVisible( nodeMin, nodeMax ) ) {
-                continue;
-            }
-        }
 
         if ( node.IsLeaf() ) {
             const uint32_t leafEnd = node.LeafStart + node.LeafCount;
@@ -4814,11 +4786,10 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
                     continue;
                 }
 
+                // Closest point on the section's real bounding box, not its nominal grid address - a
+                // section's geometry can reach well past its own grid cell.
                 if ( useSectionRadiusFilter ) {
-                    if ( abs( section->WorldCoordinates.x - camSection.x ) >= sectionViewDist ) {
-                        continue;
-                    }
-                    if ( abs( section->WorldCoordinates.y - camSection.y ) >= sectionViewDist ) {
+                    if ( Toolbox::ComputePointAABBDistanceSq( camPos, section->BoundingBox.Min, section->BoundingBox.Max ) >= sectionViewDistWorldSq ) {
                         continue;
                     }
                 }
@@ -4851,8 +4822,7 @@ void GothicAPI::UpdateShouldBlockGameInput( ) {
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
     const Frustum* queryFrustum,
-    bool useSectionRadiusFilter,
-    const HorizonCuller* horizon ) {
+    bool useSectionRadiusFilter ) {
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
@@ -4872,9 +4842,6 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             return false;
         }
 
-        if ( horizon && !horizon->IsBoxVisible( section.BoundingBox.Min, section.BoundingBox.Max ) ) {
-            return false;
-        }
         return true;
     };
 
@@ -4901,7 +4868,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             activeFrustum = &generatedFrustum;
         }
 
-        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter, horizon );
+        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter );
         return;
     }
 
@@ -4919,12 +4886,13 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
         }
 
         const float sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        const float sectionViewDistSq = sectionViewDist * sectionViewDist;
         for ( auto& itx : WorldSections ) {
             for ( auto& ity : itx.second ) {
                 WorldMeshSectionInfo& section = ity.second;
 
-                float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
-                if ( dist < sectionViewDist ) {
+                float distSq = Toolbox::ComputePointAABBDistanceSq( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
+                if ( distSq < sectionViewDistSq ) {
                     if ( !sectionInFrustum( section ) )
                         continue;
 
@@ -4963,6 +4931,87 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
                 }
             }
         }
+    }
+}
+
+/** Finer-grained sibling of CollectVisibleSections - see its declaration in GothicAPI.h. */
+void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
+    bool useSectionRadiusFilter,
+    std::vector<MeshDrawRange>& outRanges ) {
+    if ( !WorldMeshClusterTree.IsValid() ) {
+        return;
+    }
+
+    ZoneScopedN( "GothicAPI::CollectVisibleMeshRanges" );
+
+    XMFLOAT3 camPos = {};
+    float sectionViewDistWorldSq = 0.0f;
+    if ( useSectionRadiusFilter ) {
+        camPos = Engine::GAPI->GetCameraPosition();
+        const float sectionViewDistWorld = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+        sectionViewDistWorldSq = sectionViewDistWorld * sectionViewDistWorld;
+    }
+
+    // Gathered per-mesh so the merge pass below never compares ranges from different index buffers.
+    static thread_local std::map<WorldMeshInfo*, std::vector<MeshDrawRange>> byMesh;
+    for ( auto& [mesh, ranges] : byMesh ) {
+        ranges.clear();
+    }
+
+    SpatialBVH::Query( WorldMeshClusterTree, frustum,
+        [&]( const WorldMeshClusterRef& ref ) {
+            if ( !ref.Mesh ) {
+                return;
+            }
+
+            if ( useSectionRadiusFilter ) {
+                // Closest point on the cluster's own AABB, not a section-grid lookup of its center.
+                const XMFLOAT3 boundsMin( ref.Bounds.Center.x - ref.Bounds.Extents.x,
+                    ref.Bounds.Center.y - ref.Bounds.Extents.y,
+                    ref.Bounds.Center.z - ref.Bounds.Extents.z );
+                const XMFLOAT3 boundsMax( ref.Bounds.Center.x + ref.Bounds.Extents.x,
+                    ref.Bounds.Center.y + ref.Bounds.Extents.y,
+                    ref.Bounds.Center.z + ref.Bounds.Extents.z );
+                if ( Toolbox::ComputePointAABBDistanceSq( camPos, boundsMin, boundsMax ) >= sectionViewDistWorldSq ) return;
+            }
+
+            MeshDrawRange range;
+            range.Mesh = ref.Mesh;
+            range.Key = ref.Key;
+            if ( ref.ClusterIndex == WorldMeshClusterRef::WHOLE_MESH_CLUSTER ) {
+                range.IndexOffset = 0;
+                range.IndexCount = static_cast<uint32_t>(ref.Mesh->Indices.size());
+            } else {
+                const MeshCluster& cluster = ref.Mesh->Clusters[ref.ClusterIndex];
+                range.IndexOffset = cluster.IndexOffset;
+                range.IndexCount = cluster.IndexCount;
+            }
+
+            byMesh[ref.Mesh].push_back( range );
+        } );
+
+    // Merge exactly-adjacent ranges per mesh (clusters are contiguous in index-buffer order - see
+    // ClusterWorldMeshTriangles), same rule as D3D12's CoalesceWorldDepthCommands.
+    for ( auto& [mesh, ranges] : byMesh ) {
+        if ( ranges.empty() ) {
+            continue;
+        }
+
+        std::ranges::sort(ranges, []( const MeshDrawRange& a, const MeshDrawRange& b ) {
+            return a.IndexOffset < b.IndexOffset;
+        } );
+
+        MeshDrawRange run = ranges[0];
+        for ( size_t i = 1; i < ranges.size(); ++i ) {
+            const MeshDrawRange& next = ranges[i];
+            if ( run.IndexOffset + run.IndexCount == next.IndexOffset ) {
+                run.IndexCount += next.IndexCount;
+            } else {
+                outRanges.push_back( run );
+                run = next;
+            }
+        }
+        outRanges.push_back( run );
     }
 }
 
@@ -5064,7 +5113,6 @@ static void CVVH_AddNotDrawnVobToList(
     // Hoisted out of the loop: with a CONTAINS leaf the per-vob box test is provably redundant
     // (see CollectVisibleVobsWithLeafCache), so the whole branch collapses to a constant here.
     const bool needFrustumTest = cullingEnabled && bspContainment != ContainmentType::CONTAINS;
-    const HorizonCuller* horizon = ctx.horizon;
     const float minVobSize = ctx.minVobSize;
 
     for ( const LeafVobEntry& entry : source ) {
@@ -5089,13 +5137,6 @@ static void CVVH_AddNotDrawnVobToList(
         // Gothic's heap, so the reject path stays off a second allocation entirely.
         if ( needFrustumTest && !ctx.frustum.Intersects( it->LastRenderBBox ) ) {
             continue;
-        }
-        // Horizon: hidden behind an occluder, so nothing below is built - no instance upload, no indirect
-        // command, no CacheIn. After the frustum test, which is much cheaper.
-        if ( horizon ) {
-            const zTBBox3D& hb = it->LastRenderBBox;
-            if ( !horizon->IsBoxVisible( hb.Min, hb.Max ) )
-                continue;
         }
         if ( portalLeaf ) {
             const zTBBox3D& bb = it->LastRenderBBox;
@@ -5138,13 +5179,6 @@ static void CVVH_AddNotDrawnVobToList(
 
         if ( needFrustumTest && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
-        }
-        // Horizon: static MOBs draw per-mesh rather than indirect, so a rejection saves a whole draw plus
-        // its material binds.
-        if ( ctx.horizon ) {
-            const zTBBox3D bb = it->Vob->GetBBox();
-            if ( !ctx.horizon->IsBoxVisible( bb.Min, bb.Max ) )
-                continue;
         }
 
         ctx.queue->PushSkeletalVob( it );
@@ -5890,7 +5924,6 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "CompressBackBuffer", to_string_locale_independent( s.CompressBackBuffer ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AnimateStaticVobs", to_string_locale_independent( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", to_string_locale_independent( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "DrawWorldOccluders", to_string_locale_independent( s.DrawWorldOccluders ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", to_string_locale_independent( s.SunLightStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SortedTransparency", to_string_locale_independent( s.SortedTransparency ? TRUE : FALSE ).c_str(), ini.c_str() );
 #ifdef BUILD_GOTHIC_1_08k
@@ -5907,7 +5940,6 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnablePortalCulling", to_string_locale_independent( s.EnablePortalCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PortalCullingNearRadius", float_to_string( s.PortalCullingNearRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableHorizonCulling", to_string_locale_independent( s.EnableHorizonCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableMeshOptimization", to_string_locale_independent( s.EnableMeshOptimization ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableShadowIndexBuffers", to_string_locale_independent( s.EnableShadowIndexBuffers ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
@@ -5989,6 +6021,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "HBAO", "SsaoStepCount", to_string_locale_independent( s.HbaoSettings.SsaoStepCount ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "AO", "Mode", to_string_locale_independent( static_cast<int>(s.AoMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "AO", "ResolutionScale", to_string_locale_independent( static_cast<int>(s.AoResolution) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "Radius", to_string_locale_independent( s.SaoSettings.Radius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "Bias", to_string_locale_independent( s.SaoSettings.Bias ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "Intensity", to_string_locale_independent( s.SaoSettings.Intensity ).c_str(), ini.c_str() );
@@ -6077,7 +6110,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.CompressBackBuffer = GetPrivateProfileBoolA( "General", "CompressBackBuffer", ds.CompressBackBuffer, ini );
         s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", ds.AnimateStaticVobs, ini );
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
-        s.DrawWorldOccluders = GetPrivateProfileBoolA( "General", "DrawWorldOccluders", ds.DrawWorldOccluders, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
         s.SortedTransparency = GetPrivateProfileBoolA( "General", "SortedTransparency", ds.SortedTransparency, ini );
 #ifdef BUILD_GOTHIC_1_08k
@@ -6094,7 +6126,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnablePortalCulling = GetPrivateProfileBoolA( "General", "EnablePortalCulling", ds.EnablePortalCulling, ini );
         s.PortalCullingNearRadius = GetPrivateProfileFloatA( "General", "PortalCullingNearRadius", ds.PortalCullingNearRadius, ini );
         s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
-        s.EnableHorizonCulling = GetPrivateProfileBoolA( "General", "EnableHorizonCulling", ds.EnableHorizonCulling, ini );
         s.EnableMeshOptimization = GetPrivateProfileBoolA( "General", "EnableMeshOptimization", ds.EnableMeshOptimization, ini );
         s.EnableShadowIndexBuffers = GetPrivateProfileBoolA( "General", "EnableShadowIndexBuffers", ds.EnableShadowIndexBuffers, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
@@ -6215,6 +6246,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Migrate legacy HBAO Enabled setting to AoMode
         int defaultAoMode = static_cast<int>(s.HbaoSettings.Enabled ? AOMode::AO_HBAO : AOMode::AO_NONE);
         s.AoMode = static_cast<AOMode>(GetPrivateProfileIntA( "AO", "Mode", defaultAoMode, ini.c_str() ));
+        // Clamp any garbage/future ini value down to a known enumerator rather than storing it verbatim.
+        s.AoResolution = ( static_cast<AoResolutionScale>(GetPrivateProfileIntA( "AO", "ResolutionScale", static_cast<int>(ds.AoResolution), ini.c_str() )) == AoResolutionScale::Half )
+            ? AoResolutionScale::Half : AoResolutionScale::Full;
 
         const SAOSettings& defaultSAOSettings = ds.SaoSettings;
         s.SaoSettings.Radius = GetPrivateProfileFloatA( "SAO", "Radius", defaultSAOSettings.Radius, ini );
@@ -6859,6 +6893,11 @@ bool GothicAPI::IsSnowingWeather() {
 
 /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
 float GothicAPI::GetSceneWetness() {
+    // Called once per material/texture in the PS-selection hot loops, so cache per-frame.
+    if ( SceneWetnessFrame == FrameNumber )
+        return SceneWetness;
+    SceneWetnessFrame = FrameNumber;
+
     // Snow drives the same particle-fx weight as rain (see GetRainFXWeight), but snow must not wet the
     // ground - no darkening, no ripples, no wet specular. Only our own manual override still counts here,
     // so the wetness slider keeps working while it snows. Note this decays through the branch below
@@ -6866,14 +6905,15 @@ float GothicAPI::GetSceneWetness() {
     float rain = IsSnowingWeather()
         ? RendererState.RendererSettings.RainSceneWettness
         : GetRainFXWeight();
-    static DWORD s_rainStopTime = Toolbox::timeSinceStartMs();
+    // Use the game's own clock (no syscall) rather than Toolbox::timeSinceStartMs (QueryPerformanceCounter).
+    static DWORD s_rainStopTime = GetTotalTimeDW();
 
     if ( rain >= SceneWetness ) {
         SceneWetness = rain; // Rain is starting or still going
-        s_rainStopTime = Toolbox::timeSinceStartMs(); // Just querry this until we fall into the else-branch some time
+        s_rainStopTime = GetTotalTimeDW(); // Just querry this until we fall into the else-branch some time
     } else {
         // Rain has just stopped, get time of how long the rain isn't going anymore
-        DWORD rainStoppedFor = Toolbox::timeSinceStartMs() - s_rainStopTime;
+        DWORD rainStoppedFor = GetTotalTimeDW() - s_rainStopTime;
 
         // Get ratio between duration and that time. This value is near 1 when we almost reached the duration
         float ratio = rainStoppedFor / static_cast<float>(SCENE_WETNESS_DURATION_MS);
@@ -7098,7 +7138,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     DirectX::ContainmentType inheritedContainment,
     float yMaxWorld
 ) {
-    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorDistSq = ctx.drawDistancesSq.OutdoorVobs;
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
@@ -7116,9 +7156,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         nodeYMax = std::max( nodeYMax, base->OriginalNode->BBox3D.Max.y );
         nodeBox.Max.y = nodeYMax;
 
-        float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
+        float distSq = Toolbox::ComputePointAABBDistanceSq( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
         ContainmentType clipResult = inheritedContainment;
-        if ( dist < vobOutdoorDist ) {
+        if ( distSq < vobOutdoorDistSq ) {
             if ( skipVobFrustumCull ) {
                 clipResult = ContainmentType::INTERSECTS;
             } else if ( !enableOcclusionCulling ) {
@@ -7150,7 +7190,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         }
 
         if ( base->OriginalNode->IsLeaf() ) {
-            CollectLeafVobs( base, dist * dist, ctx, clipResult, visitor );
+            CollectLeafVobs( base, distSq, ctx, clipResult, visitor );
             return;
         } else {
             zCBspNode* node = static_cast<zCBspNode*>(base->OriginalNode);
@@ -7375,7 +7415,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
         ZoneValue( bspVobVisitor.GetSeenLights() );
     }
 
-    FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
+    XMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
     const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
     const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
     const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;

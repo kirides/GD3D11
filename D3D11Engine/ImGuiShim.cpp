@@ -2195,35 +2195,6 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
 
                 ImGui::Separator();
-                if ( ImGui::Checkbox( "Horizon culling (occluders)", &settings.EnableHorizonCulling ) ) {
-                    Engine::GAPI->GetHorizonCuller().SetEnabled( settings.EnableHorizonCulling );
-                }
-                ImGui::SetItemTooltip( "Cull sections, VOBs and MOBs behind the world's ghost occluders." );
-                {
-                    const auto& hs = Engine::GAPI->GetHorizonCuller().GetStats();
-                    if ( hs.OccludersTotal == 0 ) {
-                        ImGui::TextDisabled( "world ships no occluders" );
-                    } else {
-                        const int tested = hs.BoxesTested.load( std::memory_order_relaxed );
-                        const int rejected = hs.BoxesRejected.load( std::memory_order_relaxed );
-                        ImGui::Text( "occluders: %d/%d in view (%d too near)", hs.OccludersRasterized,
-                            hs.OccludersTotal, hs.OccludersTooNear );
-                        ImGui::Text( "boxes: %d rejected / %d tested (%.0f%%)", rejected, tested,
-                            tested ? (100.0f * rejected / tested) : 0.0f );
-                        // A large negative skyline top means something projected off to infinity and
-                        // the horizon should not be trusted.
-                        if ( hs.HorizonTop < -1000.0f ) {
-                            ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
-                                "skyline top %.0f px - degenerate projection!", hs.HorizonTop );
-                        } else {
-                            ImGui::Text( "skyline top: %.0f px", hs.HorizonTop );
-                        }
-                    }
-                }
-                ImGui::Checkbox( "Draw World Occluders", &settings.DrawWorldOccluders );
-                ImGui::SetItemTooltip( "Outline the world's ghost occluders. Green = near, red = far." );
-
-                ImGui::Separator();
                 auto& portalCuller = Engine::GAPI->GetPortalCuller();
                 if ( ImGui::Checkbox( "Portal culling", &settings.EnablePortalCulling ) ) {
                     portalCuller.SetEnabled( settings.EnablePortalCulling );
@@ -2459,6 +2430,21 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     ImGui::EndCombo();
                 }
                 ImGui::SetItemTooltip( "Changing this will reload shaders." );
+
+                // D3D12 only; rebuild happens next frame in ApplyPendingAoResolutionChange.
+                if ( settings.AoMode != AOMode::AO_NONE
+                    && settings.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+                    static std::vector<std::pair<const char*, AoResolutionScale>> aoResolutions = {
+                        { "Full", AoResolutionScale::Full },
+                        { "Half", AoResolutionScale::Half },
+                    };
+                    if ( ImComboBox( "AO Resolution", aoResolutions, &settings.AoResolution ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Runs ambient occlusion at a fraction of the render resolution, then upsamples\n"
+                        "it back onto the scene. AO is low-frequency and tolerates this well.\n"
+                        "Half is roughly 4x cheaper than Full." );
+                }
 
                 if ( settings.AoMode == AOMode::AO_HBAO ) {
                     ImGui::SeparatorText( "HBAO+ Settings" );

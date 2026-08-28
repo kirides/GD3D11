@@ -539,7 +539,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         if ( lightColor.x <= 0.0f && lightColor.y <= 0.0f && lightColor.z <= 0.0f )
             continue;
 
-        FXMVECTOR posWorldVec = XMLoadFloat3( &posWorld );
+        XMVECTOR posWorldVec = XMLoadFloat3( &posWorld );
         XMFLOAT3 posView;
         XMStoreFloat3( &posView, XMVector3TransformCoord( posWorldVec, view ) );
 

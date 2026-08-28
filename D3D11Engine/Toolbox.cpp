@@ -129,6 +129,13 @@ namespace Toolbox {
         return _mm_cvtss_f32( _mm_rcp_ss( _mm_rsqrt_ss( _mm_set_ss( dx * dx + dz * dz ) ) ) );
     }
 
+    /** Computes the squared Distance of a point to an AABB */
+    float ComputePointAABBDistanceSq( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max ) {
+        const float dx = std::max( std::max( min.x - p.x, 0.0f ), p.x - max.x );
+        const float dz = std::max( std::max( min.z - p.z, 0.0f ), p.z - max.z );
+        return dx * dx + dz * dz;
+    }
+
     /** Computes the Normal of a triangle */
     XMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 ) {
         XMVECTOR Normal = XMVector3Normalize( XMVector3Cross( (XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 )), (XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 )) ) );
@@ -139,18 +146,18 @@ namespace Toolbox {
     /** Does a ray vs aabb test */
     bool IntersectTri( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& origin, const XMFLOAT3& direction, float& u, float& v, float& t ) {
         const float EPSILON = 0.00001f;
-        FXMVECTOR edge1 = XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 );
-        FXMVECTOR edge2 = XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 );
-        FXMVECTOR pvec = XMVector3Cross( XMLoadFloat3( &direction ), edge2 );
+        XMVECTOR edge1 = XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 );
+        XMVECTOR edge2 = XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 );
+        XMVECTOR pvec = XMVector3Cross( XMLoadFloat3( &direction ), edge2 );
         float det;
         XMStoreFloat( &det, XMVector3Dot( edge1, pvec ) );
         if ( det > -EPSILON && det < EPSILON ) return false;
 
         float invDet = 1 / det;
-        FXMVECTOR tvec = XMLoadFloat3( &origin ) - XMLoadFloat3( &v0 );
+        XMVECTOR tvec = XMLoadFloat3( &origin ) - XMLoadFloat3( &v0 );
         XMStoreFloat( &u, XMVector3Dot( tvec, pvec ) * invDet );
         if ( u < 0 || u > 1 ) return false;
-        FXMVECTOR qvec = XMVector3Cross( tvec, edge1 );
+        XMVECTOR qvec = XMVector3Cross( tvec, edge1 );
 
         XMStoreFloat( &v, XMVector3Dot( XMLoadFloat3( &direction ), qvec ) * invDet );
         if ( v < 0 || u + v > 1 ) return false;

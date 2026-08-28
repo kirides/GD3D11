@@ -269,7 +269,7 @@ public:
                                       bool cullFront = true,
                                       bool indoor = false,
                                       bool noNPCs = false,
-                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
                                       unsigned int casterMask = SHADOW_CASTER_ALL,
                                       const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
@@ -277,7 +277,7 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL,
         const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
 
@@ -317,7 +317,7 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = SHADOW_CASTER_ALL,
         const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr);
@@ -337,14 +337,8 @@ public:
     /** Returns the current rendering stage */
     D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
 
-    /** True while D3D11PointLight::RenderShadowCubeFacePasses is issuing its per-face draws (the
-        RequiresNvidiaTiledShadowFaceFallback workaround). GetRenderingStage() alone reads DES_SHADOWMAP_CUBE
-        in both this path AND the normal GS_Cubemap/VS_ExLayered path, but this fallback never binds a
-        geometry shader - it draws each face as an ordinary single-view pass into a single-slice DSV. Shader
-        selection sites that pick a *Cube-suffixed vertex shader (VS_ExSkeletalCube, VS_ExNodeCube - they
-        output world-space position and rely on GS_Cubemap to produce SV_Position per face) must check this
-        too, or that GS-less draw call rasterizes nothing at all. See DrawSkeletalMesh / GothicAPI::
-        DrawSkeletalMeshVob. */
+    /** True while the NVIDIA per-face shadow fallback is drawing (no GS bound); shader-selection sites
+        must skip the *Cube-suffixed (GS-dependent) vertex shaders while this is set. */
     void SetCubeFaceFallbackActive( bool active ) { CubeFaceFallbackActive = active; }
     bool IsCubeFaceFallbackActive() const { return CubeFaceFallbackActive; }
 
@@ -680,7 +674,9 @@ private:
         bool skeletalBonesUploaded = false; ///< FL11 packed skeletal bone buffers uploaded for main/z-prepass reuse
         bool nodeAttachmentInstancesUploaded = false; ///< Node-attachment instance buffer uploaded for main/z-prepass reuse
 
-        std::vector<WorldMeshSectionInfo*> visibleSections;
+        // Cluster-granularity ranges over the main-view frustum (see GothicAPI::CollectVisibleMeshRanges),
+        // reused by both the Z-prepass and lit-geometry DrawWorldMesh calls each frame.
+        std::vector<MeshDrawRange> visibleMeshRanges;
         std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs;
         std::vector<CachedWorldMeshDraw> sortedDepthWorldMeshes;
         D3D11IndirectBuffer*           MainWorldIndirectArgsBuffer = nullptr;
@@ -703,7 +699,7 @@ private:
             vobWindMetadataPrepared = false;
             skeletalBonesUploaded = false;
             nodeAttachmentInstancesUploaded = false;
-            visibleSections.clear();
+            visibleMeshRanges.clear();
             drawIndirectArgs.clear();
             sortedDepthWorldMeshes.clear();
             MainWorldIndirectArgsBuffer = nullptr;

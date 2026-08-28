@@ -41,6 +41,16 @@ public:
     // imported. Exempts the pass from dead-pass elimination unconditionally.
     void MarkExternalEffect();
 
+    // Declare a transition of a resource the graph does NOT own (e.g. the depth buffer, m_SceneColor),
+    // folded into this pass's own TransitionPassResources() batch, before its callback runs. As with
+    // Read()/Write(), `before` stays the caller's responsibility.
+    void TransitionExternal( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+
+    // Same as TransitionExternal(), but fires immediately AFTER this pass's callback returns — for a
+    // transition that must wait until the pass's GPU work is actually recorded (e.g. a UAV the pass
+    // itself wrote, flipped to shader-read).
+    void TransitionExternalAfter( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+
 private:
     D3D12RenderGraph& m_graph;
     D3D12RenderPass& m_pass;
@@ -134,6 +144,9 @@ private:
 
     void AllocateResourcesForPass( size_t passIndex, D3D12CmdList& cmdList );
     void TransitionPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
+    /** Issues pass.m_postTransitions (see D3D12RGBuilder::TransitionExternalAfter) immediately after
+        the pass's callback returns. */
+    void TransitionPostPassResources( const D3D12RenderPass& pass, D3D12CmdList& cmdList );
 };
 
 template<typename SetupFunc>

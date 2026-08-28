@@ -1665,6 +1665,14 @@ float D3D12GraphicsEngine::ComputeMipLodBias( INT2 renderSize, INT2 displaySize 
 }
 
 
+/** See the header comment. */
+INT2 D3D12GraphicsEngine::GetAoTargetResolution( INT2 renderSize ) {
+    if ( Engine::GAPI->GetRendererState().RendererSettings.AoResolution != AoResolutionScale::Half )
+        return renderSize;
+    return INT2{ std::max( 1, renderSize.x / 2 ), std::max( 1, renderSize.y / 2 ) };
+}
+
+
 /** Re-bakes `newBias` into every root signature's static aniso sampler. A static sampler lives in the root
     signature blob and a PSO binds its root signature at creation, so this is a full rebuild through the
     shader hot-reload path (backup + rollback included) — seconds, not milliseconds, hence the debounce in
@@ -1712,8 +1720,11 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     if ( !CreateDepthBuffer( renderSize ) ) return false;
     if ( !CreateSceneColorTarget( renderSize ) ) return false;
     CreateBloomResources( renderSize );
-    CreateAOResources( renderSize );
-    CreateGtaoResources( renderSize );   // must follow CreateAOResources: XeGTAO writes ITS m_AOMask
+    const INT2 aoSize = GetAoTargetResolution( renderSize );
+    CreateAOResources( aoSize );
+    CreateGtaoResources( aoSize );   // must follow CreateAOResources: XeGTAO writes ITS m_AOMask
+    m_AoResourceSize = aoSize;
+    m_AppliedAoResolution = Engine::GAPI->GetRendererState().RendererSettings.AoResolution;
     CreateMotionResources( renderSize ); // motion-vector + normal G-buffer; prepass falls back to depth-only
     CreateTaaResources( renderSize );    // also drops the history, which any resolution change invalidates
     // DoF textures are built lazily (~20 MB of VA, off by default), so only re-size them if they exist.
@@ -1907,6 +1918,9 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     // Same spot, same reasoning, for a render-scale change (ImGui slider / ini).
     ApplyPendingResolutionScale();
+
+    // Same spot, same reasoning, for an AO-resolution change (ImGui combo / ini).
+    ApplyPendingAoResolutionChange();
 
     // Same spot, same reasoning, for a pending shader hot-reload request (ReloadShaders only records it —
     // see ApplyPendingShaderReload's comment for the GPU-flush + rollback-on-failure this does).
@@ -2785,6 +2799,27 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
         << m_Resolution.x << "x" << m_Resolution.y
         << " (display " << m_BackbufferResolution.x << "x" << m_BackbufferResolution.y
         << "), texture mip bias " << m_AppliedMipLodBias << ".";
+}
+
+
+/** Picks up an ImGui/ini change to RendererSettings.AoResolution. Rebuilds only the AO resources at
+    the new target size - no debounce needed, it's a discrete combo box, not a per-drag-frame slider. */
+void D3D12GraphicsEngine::ApplyPendingAoResolutionChange() {
+    if ( !m_SwapChainReady ) return;
+    const AoResolutionScale requested = Engine::GAPI->GetRendererState().RendererSettings.AoResolution;
+    if ( requested == m_AppliedAoResolution ) return;
+
+    WaitForGpuIdle();   // the AO targets below are still referenced by up to kBackBufferCount in-flight frames
+    const INT2 aoSize = GetAoTargetResolution( m_Resolution );
+    if ( !CreateAOResources( aoSize ) ) {
+        LogWarn() << "D3D12GraphicsEngine: failed to rebuild the SSAO targets at " << aoSize.x << "x" << aoSize.y
+            << " for an AO resolution change.";
+    }
+    CreateGtaoResources( aoSize );   // must follow CreateAOResources: XeGTAO writes ITS m_AOMask; non-fatal
+    m_AoResourceSize = aoSize;
+    m_AppliedAoResolution = requested;
+    LogInfo() << "D3D12 AO resolution -> " << ( requested == AoResolutionScale::Half ? "Half" : "Full" )
+        << " (" << aoSize.x << "x" << aoSize.y << ").";
 }
 
 

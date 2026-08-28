@@ -565,7 +565,7 @@ void ImGuiEditorView::DoVegetationPlacement() {
         Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(minAABB, maxAABB, brushColor);
 
         // Visualize triangle
-        FXMVECTOR nrm = Toolbox::ComputeNormal(hitTri[0], hitTri[1], hitTri[2]);
+        XMVECTOR nrm = Toolbox::ComputeNormal(hitTri[0], hitTri[1], hitTri[2]);
         XMFLOAT3 hitTri0_XMFLOAT3;
         XMFLOAT3 hitTri1_XMFLOAT3;
         XMFLOAT3 hitTri2_XMFLOAT3;
@@ -1219,9 +1219,9 @@ void ImGuiEditorView::OnDelete() {
         auto vpos = [&](size_t idx) -> const float3& {
             return slim ? (*slim)[idx].Position : Selection.SelectedMesh->Vertices[idx].Position;
         };
-        FXMVECTOR Position0 = XMVectorSet(vpos(0).x, vpos(0).y, vpos(0).z, 0);
-        FXMVECTOR Position1 = XMVectorSet(vpos(1).x, vpos(1).y, vpos(1).z, 0);
-        FXMVECTOR Position2 = XMVectorSet(vpos(2).x, vpos(2).y, vpos(2).z, 0);
+        XMVECTOR Position0 = XMVectorSet(vpos(0).x, vpos(0).y, vpos(0).z, 0);
+        XMVECTOR Position1 = XMVectorSet(vpos(1).x, vpos(1).y, vpos(1).z, 0);
+        XMVECTOR Position2 = XMVectorSet(vpos(2).x, vpos(2).y, vpos(2).z, 0);
         XMFLOAT3 avgPos;
         XMStoreFloat3(&avgPos, (Position0 + Position1 + Position2) / 3.0f);
 

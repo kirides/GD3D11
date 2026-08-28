@@ -23,6 +23,7 @@
 #include "D3D7\MyDirectDrawSurface7.h"
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
+#include "SpatialBVH.h"
 #include "MeshManager.h"
 #include "MeshOptimizeCache.h"
 #include "SharedVisualRegistry.h"
@@ -289,6 +290,93 @@ namespace {
 
     void RepairZeroLengthVertexNormals( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices );
 
+    /** Target triangle count per cluster leaf - tight enough for point-light range queries, coarse
+        enough to keep the global cluster BVH leaf count reasonable for a whole level. */
+    constexpr uint32_t WORLD_MESH_CLUSTER_TARGET_TRIANGLES = 128;
+
+    /** Meshes at or below this triangle count are left unclustered (empty Clusters list = "draw whole
+        mesh") - a one-leaf "cluster BVH" would just be overhead. */
+    constexpr uint32_t WORLD_MESH_CLUSTER_MIN_TRIANGLES = WORLD_MESH_CLUSTER_TARGET_TRIANGLES * 2;
+
+    struct TriangleClusterPrimitive {
+        DirectX::BoundingBox Bounds{};
+        DirectX::XMFLOAT3 Center{};
+        VERTEX_INDEX I0 = 0, I1 = 0, I2 = 0;
+    };
+
+    /** Spatially reorders `mesh`'s triangles (pure index permutation) into contiguous clusters,
+        recorded as `mesh->Clusters`. Must run AFTER OptimizeMeshBuffers and BEFORE shadow-index
+        derivation, so the shadow index buffer (position-preserving) inherits the same valid ranges. */
+    void ClusterWorldMeshTriangles( WorldMeshInfo* mesh ) {
+        const size_t numTris = mesh->Indices.size() / 3;
+        if ( numTris <= WORLD_MESH_CLUSTER_MIN_TRIANGLES ) {
+            return; // Whole mesh stays one implicit range - see WORLD_MESH_CLUSTER_MIN_TRIANGLES.
+        }
+
+        std::vector<TriangleClusterPrimitive> tris;
+        tris.reserve( numTris );
+        for ( size_t t = 0; t < numTris; ++t ) {
+            TriangleClusterPrimitive p;
+            p.I0 = mesh->Indices[t * 3 + 0];
+            p.I1 = mesh->Indices[t * 3 + 1];
+            p.I2 = mesh->Indices[t * 3 + 2];
+
+            const XMFLOAT3& v0 = mesh->Vertices[p.I0].Position;
+            const XMFLOAT3& v1 = mesh->Vertices[p.I1].Position;
+            const XMFLOAT3& v2 = mesh->Vertices[p.I2].Position;
+
+            const XMFLOAT3 bbMin( std::min( { v0.x, v1.x, v2.x } ), std::min( { v0.y, v1.y, v2.y } ), std::min( { v0.z, v1.z, v2.z } ) );
+            const XMFLOAT3 bbMax( std::max( { v0.x, v1.x, v2.x } ), std::max( { v0.y, v1.y, v2.y } ), std::max( { v0.z, v1.z, v2.z } ) );
+            p.Bounds.Center = XMFLOAT3( (bbMin.x + bbMax.x) * 0.5f, (bbMin.y + bbMax.y) * 0.5f, (bbMin.z + bbMax.z) * 0.5f );
+            p.Bounds.Extents = XMFLOAT3( (bbMax.x - bbMin.x) * 0.5f, (bbMax.y - bbMin.y) * 0.5f, (bbMax.z - bbMin.z) * 0.5f );
+            p.Center = XMFLOAT3( (v0.x + v1.x + v2.x) / 3.0f, (v0.y + v1.y + v2.y) / 3.0f, (v0.z + v1.z + v2.z) / 3.0f );
+            tris.push_back( p );
+        }
+
+        // The internal split tree is a build-time throwaway here - only the final leaf grouping
+        // (a permutation of Indices) and each leaf's own bounds/range are kept.
+        SpatialBVH::BuildResult<TriangleClusterPrimitive> tree =
+            SpatialBVH::Build( std::move( tris ), WORLD_MESH_CLUSTER_TARGET_TRIANGLES );
+        if ( !tree.IsValid() ) {
+            return;
+        }
+
+        std::vector<VERTEX_INDEX> reordered;
+        reordered.reserve( tree.Leaves.size() * 3 );
+        for ( const TriangleClusterPrimitive& p : tree.Leaves ) {
+            reordered.push_back( p.I0 );
+            reordered.push_back( p.I1 );
+            reordered.push_back( p.I2 );
+        }
+        mesh->Indices = std::move( reordered );
+
+        mesh->Clusters.clear();
+        mesh->Clusters.reserve( tree.Nodes.size() );
+        for ( const SpatialBVH::Node& node : tree.Nodes ) {
+            if ( !node.IsLeaf() ) {
+                continue;
+            }
+
+            MeshCluster cluster;
+            cluster.Bounds.Min = XMFLOAT3( node.Bounds.Center.x - node.Bounds.Extents.x,
+                                            node.Bounds.Center.y - node.Bounds.Extents.y,
+                                            node.Bounds.Center.z - node.Bounds.Extents.z );
+            cluster.Bounds.Max = XMFLOAT3( node.Bounds.Center.x + node.Bounds.Extents.x,
+                                            node.Bounds.Center.y + node.Bounds.Extents.y,
+                                            node.Bounds.Center.z + node.Bounds.Extents.z );
+            // Leaf ranges are in triangle units (one TriangleClusterPrimitive per triangle);
+            // Indices/ShadowIndices count in index units, 3 per triangle.
+            cluster.IndexOffset = node.LeafStart * 3;
+            cluster.IndexCount = node.LeafCount * 3;
+            mesh->Clusters.push_back( cluster );
+        }
+        // Leaf nodes are discovered in Nodes' preorder (parent-before-children), not LeafStart
+        // order - sort so consumers can assume ranges tile [0, Indices.size()) contiguously and
+        // merge adjacent ones without an extra pass.
+        std::sort( mesh->Clusters.begin(), mesh->Clusters.end(),
+            []( const MeshCluster& a, const MeshCluster& b ) { return a.IndexOffset < b.IndexOffset; } );
+    }
+
     void BuildWorldMeshBuffers( WorldMeshInfo* mesh ) {
         ZoneScoped;
         std::vector<ExVertexStruct> indexedVertices;
@@ -319,6 +407,10 @@ namespace {
 
         // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
         OptimizeMeshBuffers( mesh->MeshVertexBuffer.get(), mesh->Indices, mesh->Vertices, &mesh->ShadowIndices, nullptr );
+
+        // Must run after OptimizeMeshBuffers and before shadow-index derivation below - see
+        // ClusterWorldMeshTriangles's comment.
+        ClusterWorldMeshTriangles( mesh );
 
         // Init and fill them
         mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -384,8 +476,8 @@ namespace {
 }
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
-void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, 
-    std::vector<std::pair<MeshKey, MeshInfo*>>& outMeshes ) {
+void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections,
+    std::vector<MeshDrawRange>& outMeshes ) {
     ZoneScoped;
 
     INT2 s = GetSectionOfPos( position );
@@ -395,7 +487,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     opaqueKey.Texture = nullptr;
 
     MeshInfo* opaqueMesh = new MeshInfo;
-    outMeshes.emplace_back(opaqueKey, opaqueMesh);
+    outMeshes.push_back( MeshDrawRange{ opaqueMesh, opaqueKey, 0, 0 } );
 
     XMVECTOR xmPosition = XMLoadFloat3( &position );
 
@@ -415,15 +507,15 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
                     // Create new mesh-part for alphatested surfaces
                     if ( it.first.Texture && it.first.Texture->HasAlphaChannel() ) {
-                        for (auto [key, msh] : outMeshes) {
-                            if (it.first == key) {
-                                m = msh;
+                        for ( const MeshDrawRange& range : outMeshes ) {
+                            if ( it.first == range.Key ) {
+                                m = range.Mesh;
                                 break;
                             }
                         }
                         if ( m == nullptr ) {
                             m = new MeshInfo;
-                            outMeshes.emplace_back(it.first, m);
+                            outMeshes.push_back( MeshDrawRange{ m, it.first, 0, 0 } );
                         }
                     } else {
                         // Just use the same mesh for opaque surfaces
@@ -466,10 +558,10 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
     // Index all meshes
     for ( size_t i = 0; i < outMeshes.size(); ) {
-        auto it = outMeshes[i];
+        MeshDrawRange it = outMeshes[i];
 
-        if ( it.second->Vertices.empty() ) {
-            delete it.second;
+        if ( it.Mesh->Vertices.empty() ) {
+            delete it.Mesh;
             if ( i != outMeshes.size() - 1 ) {
                 outMeshes[i] = std::move( outMeshes.back() );
             }
@@ -479,24 +571,27 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
         std::vector<VERTEX_INDEX> indices;
         std::vector<ExVertexStruct> vertices;
-        IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), vertices, indices );
+        IndexVertices( &it.Mesh->Vertices[0], it.Mesh->Vertices.size(), vertices, indices );
 
-        it.second->Vertices = std::move( vertices );
-        it.second->Indices = std::move( indices );
+        it.Mesh->Vertices = std::move( vertices );
+        it.Mesh->Indices = std::move( indices );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( it.Mesh->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( it.Mesh->MeshIndexBuffer );
 
         // Optimize index and vertex locality before uploading immutable buffers (optional).
-        OptimizeMeshBuffers( it.second->MeshVertexBuffer.get(), it.second->Indices, it.second->Vertices,
-            &it.second->ShadowIndices, nullptr );
+        OptimizeMeshBuffers( it.Mesh->MeshVertexBuffer.get(), it.Mesh->Indices, it.Mesh->Vertices,
+            &it.Mesh->ShadowIndices, nullptr );
 
         // Init and fill them
-        it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        CreateShadowIndexBuffer( it.second );
-        
+        it.Mesh->MeshVertexBuffer->Init( &it.Mesh->Vertices[0], it.Mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        it.Mesh->MeshIndexBuffer->Init( &it.Mesh->Indices[0], it.Mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        CreateShadowIndexBuffer( it.Mesh );
+
+        // Keep IndexCount in sync for callers reading MeshDrawRange directly.
+        outMeshes[i].IndexCount = static_cast<uint32_t>(it.Mesh->Indices.size());
+
         ++i;
     }
 }
@@ -805,126 +900,6 @@ static bool IsPortalMaterial( std::string_view matName )
         || matName.starts_with( "PI:" ));
 }
 
-/** One-shot census of the world's occluder polys, logged at the end of ConvertWorldMesh: how many
- *  occluders exist and how big they are, which is what decides whether horizon culling is worth
- *  anything in a given world. Size is the world-space AABB diagonal in metres (100 units = 1m). */
-struct OccluderSurvey {
-    int Total = 0;
-    int Occluder = 0;          // flags.occluder - what ScanHorizon actually gates on
-    int GhostOccluder = 0;     // ...of which are occluder-only, never drawn
-    int GhostNotOccluder = 0;  // ghost without the occluder flag: dropped AND useless for the horizon
-    int Portals = 0;           // ghost occluders are portal polys in ZenGin; verify that holds here
-
-    /** Occluder size histogram, bucketed by AABB diagonal: <1m, <5m, <15m, <50m, >=50m. */
-    int SizeBuckets[5] = {};
-    /** Same, restricted to ghost occluders. */
-    int GhostSizeBuckets[5] = {};
-    float LargestDiagonal = 0.0f;
-
-    static int BucketOf( float metres ) {
-        if ( metres < 1.0f ) return 0;
-        if ( metres < 5.0f ) return 1;
-        if ( metres < 15.0f ) return 2;
-        if ( metres < 50.0f ) return 3;
-        return 4;
-    }
-
-    void Account( zCPolygon* poly ) {
-        if ( !poly ) return;
-        Total++;
-
-        const PolyFlags* flags = poly->GetPolyFlags();
-        const bool isOccluder = flags->Occluder != 0;
-        const bool isGhost = flags->GhostOccluder != 0;
-
-        if ( isGhost && poly->IsPortal() ) Portals++;
-        if ( isGhost && !isOccluder ) GhostNotOccluder++;
-        if ( !isOccluder ) return;
-
-        Occluder++;
-
-        // World-space AABB of the poly -> diagonal, as a stand-in for "how much screen can this cover".
-        const uint8_t numVerts = poly->GetNumPolyVertices();
-        zCVertex** verts = poly->getVertices();
-        if ( numVerts < 3 || !verts ) return;
-
-        float3 bbMin( FLT_MAX, FLT_MAX, FLT_MAX );
-        float3 bbMax( -FLT_MAX, -FLT_MAX, -FLT_MAX );
-        for ( uint8_t v = 0; v < numVerts; v++ ) {
-            if ( !verts[v] ) return;
-            const float3& p = verts[v]->Position;
-            bbMin.x = std::min( bbMin.x, p.x ); bbMax.x = std::max( bbMax.x, p.x );
-            bbMin.y = std::min( bbMin.y, p.y ); bbMax.y = std::max( bbMax.y, p.y );
-            bbMin.z = std::min( bbMin.z, p.z ); bbMax.z = std::max( bbMax.z, p.z );
-        }
-        const float dx = bbMax.x - bbMin.x, dy = bbMax.y - bbMin.y, dz = bbMax.z - bbMin.z;
-        const float metres = std::sqrt( dx * dx + dy * dy + dz * dz ) / 100.0f;
-
-        const int bucket = BucketOf( metres );
-        SizeBuckets[bucket]++;
-        if ( isGhost ) {
-            GhostOccluder++;
-            GhostSizeBuckets[bucket]++;
-        }
-        LargestDiagonal = std::max( LargestDiagonal, metres );
-    }
-
-    // Not named Log(): LogInfo() is a macro expanding to Log(...), which would resolve to the member.
-    void LogSummary() const {
-        LogInfo() << "OccluderSurvey: " << Occluder << " occluder polys of " << Total
-            << " (" << GhostOccluder << " ghost/never-drawn, " << Portals << " of those portals"
-            << (GhostNotOccluder ? ", " + std::to_string( GhostNotOccluder ) + " ghost WITHOUT occluder flag" : "")
-            << "), largest " << LargestDiagonal << "m";
-        if ( Occluder == 0 ) {
-            LogInfo() << "OccluderSurvey: no occluders - horizon culling would do nothing in this world";
-            return;
-        }
-        LogInfo() << "OccluderSurvey: occluder sizes  <1m:" << SizeBuckets[0] << "  <5m:" << SizeBuckets[1]
-            << "  <15m:" << SizeBuckets[2] << "  <50m:" << SizeBuckets[3] << "  >=50m:" << SizeBuckets[4];
-        LogInfo() << "OccluderSurvey: ghost only      <1m:" << GhostSizeBuckets[0] << "  <5m:" << GhostSizeBuckets[1]
-            << "  <15m:" << GhostSizeBuckets[2] << "  <50m:" << GhostSizeBuckets[3] << "  >=50m:" << GhostSizeBuckets[4];
-    }
-};
-
-/** Appends one ghost-occluder poly to the world's occluder set. Degenerate polys are skipped: a
-    zero-area occluder cannot darken a horizon column and would only cost a projection. */
-static void CollectGhostOccluder( WorldOccluders& out, zCPolygon* poly ) {
-    const uint32_t numVerts = poly->GetNumPolyVertices();
-    zCVertex** verts = poly->getVertices();
-    if ( numVerts < 3 || !verts ) return;
-
-    const uint32_t firstVertex = static_cast<uint32_t>( out.Verts.size() );
-
-    float3 bbMin( FLT_MAX, FLT_MAX, FLT_MAX );
-    float3 bbMax( -FLT_MAX, -FLT_MAX, -FLT_MAX );
-    for ( uint32_t v = 0; v < numVerts; v++ ) {
-        if ( !verts[v] ) {
-            out.Verts.resize( firstVertex );   // partial poly - roll back
-            return;
-        }
-        const float3& p = verts[v]->Position;
-        out.Verts.push_back( XMFLOAT3( p.x, p.y, p.z ) );
-        bbMin.x = std::min( bbMin.x, p.x ); bbMax.x = std::max( bbMax.x, p.x );
-        bbMin.y = std::min( bbMin.y, p.y ); bbMax.y = std::max( bbMax.y, p.y );
-        bbMin.z = std::min( bbMin.z, p.z ); bbMax.z = std::max( bbMax.z, p.z );
-    }
-
-    WorldOccluders::Entry entry = {};
-    entry.VertexOffset = firstVertex;
-    entry.NumVerts = numVerts;
-    entry.Center = XMFLOAT3( ( bbMin.x + bbMax.x ) * 0.5f, ( bbMin.y + bbMax.y ) * 0.5f,
-                             ( bbMin.z + bbMax.z ) * 0.5f );
-    const float dx = bbMax.x - bbMin.x, dy = bbMax.y - bbMin.y, dz = bbMax.z - bbMin.z;
-    entry.Radius = std::sqrt( dx * dx + dy * dy + dz * dz ) * 0.5f;
-
-    if ( entry.Radius < 1.0f ) {   // < 2cm across
-        out.Verts.resize( firstVertex );
-        return;
-    }
-
-    out.Entries.push_back( entry );
-}
-
 /** Converts the worldmesh into a more usable format */
 HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPolygons, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh, bool indoorLocation ) {
     ZoneScoped;
@@ -941,20 +916,12 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         return it->second;
     };
 
-    // Occlusion-culling survey (see OccluderSurvey). ZenGin's outdoor renderer rasterizes every poly with
-    // the Occluder flag into a 1D horizon buffer (zBsp.cpp ScanHorizon) and rejects bboxes below it;
-    // GhostOccluders are the occluder-only subset the loop below throws away.
-    OccluderSurvey survey = {};
-
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
-        survey.Account( poly );
-
-        // Never drawn, but they are the world's authored occlusion geometry: keep a copy for the horizon
-        // cull before dropping them from the render mesh.
+        // Ghost occluders are portal polys marked occluder-only, never drawn - drop them from the
+        // render mesh.
         if ( poly->GetPolyFlags()->GhostOccluder ) {
-            if ( info ) CollectGhostOccluder( info->Occluders, poly );
             continue;
         }
 
@@ -1176,14 +1143,6 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     LogInfo() << "Worldmesh: " << allMeshes.size() << " meshes, " << totalWorldVertices
         << " vertices (" << (totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)
         << " MB CPU-side), " << totalWorldIndices << " indices";
-
-    survey.LogSummary();
-    if ( info && !info->Occluders.IsEmpty() ) {
-        LogInfo() << "Occluders: kept " << info->Occluders.Entries.size() << " ghost occluders ("
-            << (info->Occluders.Verts.size() * sizeof( XMFLOAT3 )
-                + info->Occluders.Entries.size() * sizeof( WorldOccluders::Entry )) / 1024
-            << " KB)";
-    }
 
     std::vector<ExVertexStruct> wrappedVertices;
     std::vector<unsigned int> wrappedIndices;

@@ -12,6 +12,7 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 #include "D3D12TracyDebug.h"
+#include "../widenarrow.h"
 #include "../ConstantBufferStructs.h"   // VobInstanceInfo — held by value in FrameAttachDraw
 
 class zCTexture;
@@ -276,6 +277,11 @@ inline thread_local UINT g_CurrentRecordingOpIndex = 0;
 #define SetMarkerStr(x) SetMarker(x, std::sizeof(x))
 
 struct DXMarker {
+    DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const WideNarrowChars& text ) :
+        DXMarker( commandList.Get(), text.wide, text.len_wide )
+    {
+    }
+
     DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const wchar_t* text ) :
         DXMarker( commandList.Get(), text )
     {
@@ -283,7 +289,7 @@ struct DXMarker {
 
     template<UINT TTextLen>
     inline static DXMarker Create( ID3D12GraphicsCommandList* commandList, const wchar_t( &text )[TTextLen] ) {
-        return DXMarker( commandList, text, TTextLen );
+        return DXMarker( commandList, text, TTextLen - 1 );
     }
 
     // Raw-pointer overload: the MT shadow-cascade recorder (PrepareSunShadows / RecordShadowCascade) is handed a

@@ -135,7 +135,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_Color.y *= lightFactor;
         plcb.PL_Color.z *= lightFactor;
 
-        FXMVECTOR Pl_PositionWorld = XMLoadFloat3( &plcb.Pl_PositionWorld );
+        XMVECTOR Pl_PositionWorld = XMLoadFloat3( &plcb.Pl_PositionWorld );
         XMStoreFloat3( &plcb.Pl_PositionView,
             XMVector3TransformCoord( Pl_PositionWorld, view ) );
 

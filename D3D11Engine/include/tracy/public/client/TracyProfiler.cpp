@@ -1472,7 +1472,7 @@ static std::atomic<ThreadNameData*> init_order(104) s_threadNameDataInstance( nu
 std::atomic<ThreadNameData*>& s_threadNameData = s_threadNameDataInstance;
 
 #  ifdef TRACY_ON_DEMAND
-thread_local LuaZoneState init_order(104) s_luaZoneState { 0, false };
+thread_local LuaZoneState init_order(104) s_luaZoneState;
 #  endif
 
 static Profiler init_order(105) s_profiler;
@@ -3980,7 +3980,14 @@ bool Profiler::HandleServerQuery()
         break;
 #endif
     case ServerQuerySourceCode:
+#ifdef TRACY_HAS_CALLSTACK
         QueueSourceCodeQuery( uint32_t( ptr ) );
+#else
+        TRACY_ASSERT( m_queryData );
+        HandleSourceCodeQuery( m_queryData, m_queryImage, uint32_t( ptr ) );
+        m_queryData = nullptr;
+        m_queryImage = nullptr;
+#endif
         break;
     case ServerQueryDataTransfer:
         if( m_queryData )

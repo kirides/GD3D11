@@ -261,6 +261,12 @@ private:
     void CreateDisplayResolutionTargets( INT2 displaySize );           // post-tonemap targets, all non-fatal
     void ApplyPendingResolutionScale();
 
+    // --- AO resolution scaling (RendererSettings.AoResolution, D3D12 only) -----------------------------------
+    // `renderSize` halved when AoResolution == Half, unchanged otherwise. Feeds CreateAOResources and
+    // CreateGtaoResources - see D3D12AO.cpp/D3D12GTAO.cpp.
+    static INT2 GetAoTargetResolution( INT2 renderSize );
+    void ApplyPendingAoResolutionChange();   // picks up an ImGui/ini change to AoResolution, from OnBeginFrame
+
     // --- Real HDR display output (ST.2084 scanout) ---------------------------------------------------------
     // Decided once at Init from RendererSettings.HDR_Monitor + what DXGI reports about the adapter's outputs;
     // fixed for the process lifetime, because the display-buffer format is baked into every display-space PSO.
@@ -613,6 +619,9 @@ private:
     int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)
     int   m_ResolutionScaleStableFrames = 0;
     static constexpr int kResolutionScaleDebounceFrames = 6;
+    // Last RendererSettings.AoResolution the AO resources were built for. No debounce needed (unlike
+    // ResolutionScalePercent) - it's a discrete combo box, not a per-drag-frame slider.
+    AoResolutionScale m_AppliedAoResolution = AoResolutionScale::Full;
     float m_AppliedMipLodBias = 0.0f;   // see D3D12RootLayout::SetAnisoMipLodBias
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
@@ -1295,6 +1304,9 @@ private:
     // leaves it PIXEL_SHADER_RESOURCE for the lit passes. Toggling AO off skips RenderSSAO entirely, so the
     // flag is what tells the next run whether to flip it back.
     bool m_AOMaskInPixelState = false;
+    // The size the AO resources were actually built at (GetAoTargetResolution). Both AO implementations
+    // dispatch against THIS, not m_Resolution - see RenderSimpleSSAO/RenderGTAO.
+    INT2 m_AoResourceSize = {};
     // --- The AO depth source ---------------------------------------------------------------------------------
     // THIS frame's m_DepthBuffer, read after the Forward+ depth prepass and before any lit pass, so the mask is
     // in this frame's screen space and needs no reprojection. In exchange RenderSSAO round-trips the depth
@@ -1311,7 +1323,8 @@ private:
     void RenderSSAO();                        // the AO entry point: publishes the AO constants, then runs XeGTAO or simple SSAO
     void RenderSimpleSSAO();                  // main estimate -> separable blur (Shaders/D3D12/SSAO.hlsl)
     void BeginAoDepthRead();                  // m_DepthBuffer DEPTH_WRITE -> NON_PIXEL_SHADER_RESOURCE
-    void EndAoDepthRead();                    // ...and straight back (both AO implementations bracket with these)
+    void EndAoDepthRead();                    // ...and straight back. RenderSimpleSSAO brackets with both;
+                                               // RenderGTAO batches its own depth transitions instead (D3D12GTAO.cpp).
 
     // ---- Intel XeGTAO (D3D12GTAO.cpp) ----------------------------------------------------------------------
     // Ground-truth ambient occlusion; this is what AOMode::AO_ASSAO selects on D3D12 (D3D11 keeps its own ASSAO
@@ -1319,38 +1332,20 @@ private:
     // whole consumer side — the bindless fetch in include/ScreenSpaceAO.hlsl — is untouched and the two
     // implementations are interchangeable.
     //
-    // Four private intermediates, all recreated on resize alongside m_AOMask:
-    //   m_GtaoWorkingDepth  R32_FLOAT with 5 MIPs — view-space depth pyramid built by the prefilter pass. FP32
-    //                       rather than Intel's default R16_FLOAT because Gothic's view depths run past fp16's
-    //                       65504 ceiling near the horizon (see the header of Shaders/D3D12/XeGTAO.hlsl).
-    //   m_GtaoNormals       R32_UINT — view-space normals packed R11G11B10_UNORM, reconstructed from the depth.
-    //                       FALLBACK ONLY: when the prepass normal G-buffer (m_NormalBuffer) is available
-    //                       RenderGTAO skips this dispatch and feeds XeGTAO the real shading normals instead
-    //                       (LoadNormal in XeGTAO.hlsl decodes + rotates them into view space).
-    //   m_GtaoEdges         R8_UNORM — packed depth edges the denoiser weights by.
-    //   m_GtaoAOTerm[2]     R8_UINT — the working AO term, ping-ponged across denoise passes. The final pass
-    //                       writes m_AOMask through m_AOMaskUintUavSlot instead.
-    // All four rest in UNORDERED_ACCESS between frames, like the bloom pyramid and the AO mask.
+    // Only ONE private intermediate is a persistent member: m_GtaoWorkingDepth (R32_FLOAT, 5 MIPs, view-
+    // space depth pyramid; FP32 not Intel's default R16_FLOAT because Gothic's view depths exceed fp16's
+    // 65504 ceiling near the horizon). Everything else - reconstructed normals, packed depth edges, the
+    // AO-term ping-pong buffers, and the Half-mode downsampled depth - is a D3D12RenderGraph transient
+    // acquired fresh every RenderGTAO() call instead. m_GtaoWorkingDepth can't follow: it needs a per-mip
+    // UAV 5-level MIP chain, which the render-graph's texture types only support single-mip.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoWorkingDepth;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoWorkingDepthAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoNormals;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoNormalsAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoEdges;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoEdgesAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoAOTerm[2];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoAOTermAlloc[2];
     static constexpr UINT kGtaoDepthMipLevels = 5;   // must match XE_GTAO_DEPTH_MIP_LEVELS (hard-coded to 5)
     UINT m_GtaoWorkingDepthSrvSlot = UINT_MAX;                   // full MIP chain, read by the main pass
     UINT m_GtaoWorkingDepthUavSlot[kGtaoDepthMipLevels] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
-    UINT m_GtaoNormalsSrvSlot = UINT_MAX;
-    UINT m_GtaoNormalsUavSlot = UINT_MAX;
-    UINT m_GtaoEdgesSrvSlot = UINT_MAX;
-    UINT m_GtaoEdgesUavSlot = UINT_MAX;
-    UINT m_GtaoAOTermSrvSlot[2] = { UINT_MAX, UINT_MAX };
-    UINT m_GtaoAOTermUavSlot[2] = { UINT_MAX, UINT_MAX };
     bool m_GtaoResourcesReady = false;
     UINT m_GtaoFrameNumber = 0;                // drives the temporal noise rotation; only advances while TAA is on
-    bool CreateGtaoResources( INT2 size );     // (re)builds the four intermediates + their persistent heap slots
+    bool CreateGtaoResources( INT2 size );     // (re)builds m_GtaoWorkingDepth + its persistent heap slots
     bool IsGtaoEnabled() const;                // AoMode == AO_ASSAO and every resource/PSO it needs exists
     void RenderGTAO();                         // prefilter -> (normals) -> GTAO integral -> N denoise passes
 

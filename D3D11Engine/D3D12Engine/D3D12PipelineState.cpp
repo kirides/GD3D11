@@ -3157,7 +3157,8 @@ bool D3D12PipelineState::CreateGtao() {
     // Intel's quality tiers, in GTAOSettings::QualityLevel order.
     static const char* const kMainEntries[4] = { "CSGTAOLow", "CSGTAOMedium", "CSGTAOHigh", "CSGTAOUltra" };
 
-    if ( !makePass( "CSPrefilterDepths16x16", Gtao.PrefilterCsBlob.ReleaseAndGetAddressOf(), Gtao.PrefilterPSO.ReleaseAndGetAddressOf() )
+    if ( !makePass( "CSDownsampleDepth", Gtao.DownsampleCsBlob.ReleaseAndGetAddressOf(), Gtao.DownsamplePSO.ReleaseAndGetAddressOf() )
+        || !makePass( "CSPrefilterDepths16x16", Gtao.PrefilterCsBlob.ReleaseAndGetAddressOf(), Gtao.PrefilterPSO.ReleaseAndGetAddressOf() )
         || !makePass( "CSGenerateNormals", Gtao.NormalsCsBlob.ReleaseAndGetAddressOf(), Gtao.NormalsPSO.ReleaseAndGetAddressOf() )
         || !makePass( "CSDenoisePass", Gtao.DenoiseCsBlob.ReleaseAndGetAddressOf(), Gtao.DenoisePSO.ReleaseAndGetAddressOf() )
         || !makePass( "CSDenoiseLastPass", Gtao.DenoiseLastCsBlob.ReleaseAndGetAddressOf(), Gtao.DenoiseLastPSO.ReleaseAndGetAddressOf() ) ) {

@@ -1143,12 +1143,13 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 	// so there is no per-instance CPU cost here like the VOB/skeletal culling has. ---
 	g_GrassBoxes[c].clear();
 	if ( m_CasterGrassPSO && m_E->m_Pipelines.Grass.RootSig ) {
+		const float grassDrawRadiusSq = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
 		for ( GVegetationBox* box : Engine::GAPI->GetVegetationBoxes() ) {
 			if ( !box || box->GetSpotCount() == 0 ) continue;
 			XMFLOAT3 bbMin, bbMax;
 			box->GetBoundingBox( &bbMin, &bbMax );
 
-            if ( Toolbox::ComputePointAABBDistance( ctx.cameraPosition, bbMin, bbMax ) > ctx.drawDistances.OutdoorVobsSmall ) continue;
+            if ( Toolbox::ComputePointAABBDistanceSq( ctx.cameraPosition, bbMin, bbMax ) > grassDrawRadiusSq ) continue;
 			if ( !frustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
 
 			g_GrassBoxes[c].push_back( box );
