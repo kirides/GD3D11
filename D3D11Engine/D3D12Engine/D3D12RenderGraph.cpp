@@ -155,9 +155,9 @@ void D3D12RenderGraph::Execute( D3D12CmdList& cmdList ) {
         }
 
         if ( !isPassDead && pass->m_executeCallback ) {
-            DXMarker marker( cmdList.Get(), pass->m_name.wide );
+            DXMarker marker( cmdList.Get(), pass->m_name );
             ZoneScoped;
-            ZoneName( pass->m_name.narrow, strlen( pass->m_name.narrow ) );
+            ZoneName( pass->m_name.narrow, pass->m_name.len_narrow );
             TransitionPassResources( *pass, cmdList );
             pass->m_executeCallback( *this, cmdList );
             TransitionPostPassResources( *pass, cmdList );

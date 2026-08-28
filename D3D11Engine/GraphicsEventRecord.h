@@ -7,7 +7,7 @@ class GraphicsEventRecord {
 public:
     GraphicsEventRecord() = default;
 
-    GraphicsEventRecord( ID3DUserDefinedAnnotation* userAnnotation, WideNarrowChars region );
+    GraphicsEventRecord( ID3DUserDefinedAnnotation* userAnnotation, const WideNarrowChars& region );
 
     ~GraphicsEventRecord() {
         End();
