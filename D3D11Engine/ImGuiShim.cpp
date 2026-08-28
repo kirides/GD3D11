@@ -2431,6 +2431,22 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 }
                 ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
+                // D3D12 only, and shared by both of its AO implementations (simple SSAO and XeGTAO) — the
+                // resource rebuild happens next frame in D3D12GraphicsEngine::ApplyPendingAoResolutionChange.
+                if ( settings.AoMode != AOMode::AO_NONE
+                    && settings.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+                    static std::vector<std::pair<const char*, AoResolutionScale>> aoResolutions = {
+                        { "Full", AoResolutionScale::Full },
+                        { "Half", AoResolutionScale::Half },
+                    };
+                    if ( ImComboBox( "AO Resolution", aoResolutions, &settings.AoResolution ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Runs ambient occlusion at a fraction of the render resolution, then upsamples\n"
+                        "it back onto the scene. AO is low-frequency and tolerates this well.\n"
+                        "Half is roughly 4x cheaper than Full." );
+                }
+
                 if ( settings.AoMode == AOMode::AO_HBAO ) {
                     ImGui::SeparatorText( "HBAO+ Settings" );
                     ImGui::DragFloat( "Radius", &settings.HbaoSettings.Radius, 0.01f );

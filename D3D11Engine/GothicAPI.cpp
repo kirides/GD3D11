@@ -6029,6 +6029,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "HBAO", "SsaoStepCount", to_string_locale_independent( s.HbaoSettings.SsaoStepCount ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "AO", "Mode", to_string_locale_independent( static_cast<int>(s.AoMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "AO", "ResolutionScale", to_string_locale_independent( static_cast<int>(s.AoResolution) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "Radius", to_string_locale_independent( s.SaoSettings.Radius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "Bias", to_string_locale_independent( s.SaoSettings.Bias ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SAO", "Intensity", to_string_locale_independent( s.SaoSettings.Intensity ).c_str(), ini.c_str() );
@@ -6253,6 +6254,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Migrate legacy HBAO Enabled setting to AoMode
         int defaultAoMode = static_cast<int>(s.HbaoSettings.Enabled ? AOMode::AO_HBAO : AOMode::AO_NONE);
         s.AoMode = static_cast<AOMode>(GetPrivateProfileIntA( "AO", "Mode", defaultAoMode, ini.c_str() ));
+        // Clamp any garbage/future ini value down to a known enumerator rather than storing it verbatim.
+        s.AoResolution = ( static_cast<AoResolutionScale>(GetPrivateProfileIntA( "AO", "ResolutionScale", static_cast<int>(ds.AoResolution), ini.c_str() )) == AoResolutionScale::Half )
+            ? AoResolutionScale::Half : AoResolutionScale::Full;
 
         const SAOSettings& defaultSAOSettings = ds.SaoSettings;
         s.SaoSettings.Radius = GetPrivateProfileFloatA( "SAO", "Radius", defaultSAOSettings.Radius, ini );

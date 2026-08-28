@@ -191,8 +191,12 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     // This frame's projection — the same one the prepass depth below was rasterized with. Its _13/_23 carry the
     // TAA jitter, which none of the terms used here read.
     const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
-    const UINT gx = ( static_cast<UINT>( m_Resolution.x ) + 7 ) / 8;
-    const UINT gy = ( static_cast<UINT>( m_Resolution.y ) + 7 ) / 8;
+    // m_AoResourceSize, NOT m_Resolution: m_AOMask/m_AOBlurTemp are built at GetAoTargetResolution(), which is
+    // m_Resolution halved when RendererSettings.AoResolution == Half (see D3D12GraphicsEngine.cpp). The DEPTH
+    // input stays full-res regardless — the shader samples it via normalized UV, so reading it at this coarser
+    // stride is exactly the intended "AO at half res" decimation, not a mismatch.
+    const UINT gx = ( static_cast<UINT>( m_AoResourceSize.x ) + 7 ) / 8;
+    const UINT gy = ( static_cast<UINT>( m_AoResourceSize.y ) + 7 ) / 8;
 
     BeginAoDepthRead();
 
@@ -211,7 +215,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     } cb = {
         projM._11, projM._22, projM._33, projM._43,
         sao.Radius, sao.Bias, sao.Intensity, sao.NumSamples,
-        1.0f / m_Resolution.x, 1.0f / m_Resolution.y, 0.0f, 0.0f
+        1.0f / m_AoResourceSize.x, 1.0f / m_AoResourceSize.y, 0.0f, 0.0f
     };
 
     m_CmdList->SetPipelineState( m_Pipelines.AO.MainPSO.Get() );
@@ -237,7 +241,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
 
     // --- Blur pass 1 (horizontal): m_AOMask -> m_AOBlurTemp ---
     {
-        BlurCB blurCb = { 1.0f / m_Resolution.x, 1.0f / m_Resolution.y, 1.0f, 0.0f, projM._33, projM._43, sao.BlurSharpness, 0.0f };
+        BlurCB blurCb = { 1.0f / m_AoResourceSize.x, 1.0f / m_AoResourceSize.y, 1.0f, 0.0f, projM._33, projM._43, sao.BlurSharpness, 0.0f };
         m_CmdList->SetComputeRoot32BitConstants( 0, 8, &blurCb, 0 );
         m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_AOBlurHPairSlot ) );   // t0=AOMask, t1=depth
         m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_AOBlurTempUavSlot ) );
@@ -252,7 +256,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
 
     // --- Blur pass 2 (vertical): m_AOBlurTemp -> m_AOMask (final) ---
     {
-        BlurCB blurCb = { 1.0f / m_Resolution.x, 1.0f / m_Resolution.y, 0.0f, 1.0f, projM._33, projM._43, sao.BlurSharpness, 0.0f };
+        BlurCB blurCb = { 1.0f / m_AoResourceSize.x, 1.0f / m_AoResourceSize.y, 0.0f, 1.0f, projM._33, projM._43, sao.BlurSharpness, 0.0f };
         m_CmdList->SetComputeRoot32BitConstants( 0, 8, &blurCb, 0 );
         m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_AOBlurVPairSlot ) );   // t0=AOBlurTemp, t1=depth
         m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_AOMaskUavSlot ) );

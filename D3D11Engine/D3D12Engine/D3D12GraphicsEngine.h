@@ -261,6 +261,14 @@ private:
     void CreateDisplayResolutionTargets( INT2 displaySize );           // post-tonemap targets, all non-fatal
     void ApplyPendingResolutionScale();
 
+    // --- AO resolution scaling (RendererSettings.AoResolution, D3D12 only) -----------------------------------
+    // `renderSize`, halved (each axis, floored, minimum 1) when AoResolution == Half; `renderSize` unchanged
+    // otherwise. Feeds both CreateAOResources and CreateGtaoResources — see D3D12AO.cpp/D3D12GTAO.cpp. Takes
+    // the size explicitly (not implicitly m_Resolution) because CreateRenderResolutionTargets' caller decides
+    // when m_Resolution itself is updated relative to this call.
+    static INT2 GetAoTargetResolution( INT2 renderSize );
+    void ApplyPendingAoResolutionChange();   // picks up an ImGui/ini change to AoResolution, from OnBeginFrame
+
     // --- Real HDR display output (ST.2084 scanout) ---------------------------------------------------------
     // Decided once at Init from RendererSettings.HDR_Monitor + what DXGI reports about the adapter's outputs;
     // fixed for the process lifetime, because the display-buffer format is baked into every display-space PSO.
@@ -613,6 +621,10 @@ private:
     int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)
     int   m_ResolutionScaleStableFrames = 0;
     static constexpr int kResolutionScaleDebounceFrames = 6;
+    // Last RendererSettings.AoResolution the AO resources (m_AOMask/m_AOBlurTemp/the XeGTAO intermediates)
+    // were built for. No debounce needed here (unlike ResolutionScalePercent): it's a discrete combo box,
+    // not a per-drag-frame slider, so the ImGui callback only ever reports one settled value at a time.
+    AoResolutionScale m_AppliedAoResolution = AoResolutionScale::Full;
     float m_AppliedMipLodBias = 0.0f;   // see D3D12RootLayout::SetAnisoMipLodBias
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
     // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
@@ -1295,6 +1307,11 @@ private:
     // leaves it PIXEL_SHADER_RESOURCE for the lit passes. Toggling AO off skips RenderSSAO entirely, so the
     // flag is what tells the next run whether to flip it back.
     bool m_AOMaskInPixelState = false;
+    // The size m_AOMask/m_AOBlurTemp (and, when XeGTAO is active, its own intermediates) were actually built
+    // at — GetAoTargetResolution() at the time of the last successful CreateAOResources/CreateGtaoResources.
+    // Equal to m_Resolution when RendererSettings.AoResolution is Full; halved when it's Half. Both AO
+    // implementations dispatch against THIS, not m_Resolution — see RenderSimpleSSAO/RenderGTAO.
+    INT2 m_AoResourceSize = {};
     // --- The AO depth source ---------------------------------------------------------------------------------
     // THIS frame's m_DepthBuffer, read after the Forward+ depth prepass and before any lit pass, so the mask is
     // in this frame's screen space and needs no reprojection. In exchange RenderSSAO round-trips the depth
@@ -1348,9 +1365,21 @@ private:
     UINT m_GtaoEdgesUavSlot = UINT_MAX;
     UINT m_GtaoAOTermSrvSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_GtaoAOTermUavSlot[2] = { UINT_MAX, UINT_MAX };
+    // Fifth intermediate, only allocated when RendererSettings.AoResolution == Half: a nearest-neighbour 2x
+    // decimation of m_DepthBuffer (R32_FLOAT, reversed-Z NDC depth — same encoding as the raw depth it copies
+    // from) at m_AoResourceSize. XeGTAO's own prefilter/normals passes cannot be pointed at m_DepthBuffer
+    // directly and asked to produce a half-res mip0: Intel's algorithm ties consts.ViewportSize to the RAW
+    // depth's own resolution (XeGTAO_PrefilterDepths16x16 reads a 2x2 block per dispatch thread), so getting a
+    // half-res working-depth chain means feeding it an already-half-res "raw" depth. See RenderGTAO and
+    // Shaders/D3D12/XeGTAO.hlsl's CSDownsampleDepth (a GD3D11 addition, not part of Intel's vendored files).
+    // Unused (and not created) in Full mode — RawDepthIndex points straight at m_DepthSrvSlot instead.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoHalfDepth;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoHalfDepthAlloc;
+    UINT m_GtaoHalfDepthSrvSlot = UINT_MAX;
+    UINT m_GtaoHalfDepthUavSlot = UINT_MAX;
     bool m_GtaoResourcesReady = false;
     UINT m_GtaoFrameNumber = 0;                // drives the temporal noise rotation; only advances while TAA is on
-    bool CreateGtaoResources( INT2 size );     // (re)builds the four intermediates + their persistent heap slots
+    bool CreateGtaoResources( INT2 size );     // (re)builds the four/five intermediates + their persistent heap slots
     bool IsGtaoEnabled() const;                // AoMode == AO_ASSAO and every resource/PSO it needs exists
     void RenderGTAO();                         // prefilter -> (normals) -> GTAO integral -> N denoise passes
 
