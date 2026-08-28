@@ -42,7 +42,16 @@ void PSShadowClip( VS_OUT i )
 // World-mesh vertices are STATIC and already world-space, so the previous position is the current position: all
 // of the resulting velocity is camera motion, and it is EXACT (not the depth-reprojection approximation that
 // FillCameraVelocity falls back to for pixels no prepass draw covered). The packed normal at offset 12 is
-// already octahedral world-space, so it is passed through untouched — no decode/re-encode round trip.
+// already octahedral world-space, but it is decoded per-vertex and re-encoded per-pixel here (NOT passed through
+// raw) — see the warning on DecodeOctNormalMV below. This used to interpolate the raw encoded pair straight
+// across the triangle as a bandwidth "optimization"; that is only valid when a triangle's vertices share the
+// same octahedron hemisphere (sign of decoded z). A big flat wall is typically 1-2 huge triangles, and any
+// vertex near a corner/edge whose (smoothed) normal straddles the hemisphere fold relative to its triangle-mates
+// sends the linear interpolation of the RAW pair straight through the fold discontinuity — producing garbage
+// across the whole (large) triangle interior, which renders as solid black once XeGTAO/the debug view decode
+// it. normalize() on decode cannot fix this: it only rescales an already-wrong interpolated point. Decoding to
+// a real float3 first and interpolating THAT (matching Vob.hlsl's VSDepthGBuf/MakeGBufOut) has no such
+// discontinuity, at the cost of a few extra ALU ops — no extra bandwidth.
 #include "include/MotionVectors.hlsl"
 
 struct VS_GBUF_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; };
@@ -50,7 +59,7 @@ struct VS_GBUF_OUT
 {
     float4 clip     : SV_POSITION;
     float2 uv       : TEXCOORD0;
-    float2 octNrm   : TEXCOORD1;   // already-encoded octahedral normal, straight from the vertex
+    float3 wnrm     : TEXCOORD1;   // decoded world-space normal, interpolated as a plain vector
     float4 currClip : TEXCOORD2;
     float4 prevClip : TEXCOORD3;
 };
@@ -60,7 +69,7 @@ VS_GBUF_OUT VSWorldGBuf( VS_GBUF_IN i )
     VS_GBUF_OUT o;
     o.clip     = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv       = i.uv;
-    o.octNrm   = i.nrm;
+    o.wnrm     = DecodeOctNormalMV( i.nrm );
     o.currClip = mul( float4( i.pos, 1.0 ), UnjitteredViewProj );
     o.prevClip = mul( float4( i.pos, 1.0 ), PrevViewProj );   // static geometry: same world position last frame
     return o;
@@ -72,6 +81,6 @@ GBUF_OUT PSClipGBuf( VS_GBUF_OUT i )
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );   // identical cutout to PSClip — same depth, same coverage
     GBUF_OUT o;
     o.velocity = CalculateVelocity( i.currClip, i.prevClip );
-    o.normal   = i.octNrm;   // interpolating an octahedral pair is fine; XeGTAO renormalizes on decode
+    o.normal   = EncodeOctNormal( normalize( i.wnrm ) );
     return o;
 }
