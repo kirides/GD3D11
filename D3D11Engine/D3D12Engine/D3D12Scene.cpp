@@ -2920,7 +2920,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             uint32_t normalIdx  = 0xFFFFFFFFu;
             uint32_t ormIdx     = GetDefaultOrmSrvSlot();
             float normalStrength = 1.0f;
-            if (auto info = Engine::GAPI->GetMaterialInfoFrom(meshKey.Material)) {
+
+            if (auto info = meshKey.Info) {
                 normalStrength = info->buffer.NormalmapStrength;
             }
             
