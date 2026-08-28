@@ -391,14 +391,21 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 
 	DX_ZONE( m_CmdList.Get(), "Dynamic Exposure (luminance reduce+adapt)" );
 
-	if ( !m_SceneColorInPixelState ) {
-		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-		m_SceneColorInPixelState = true;
+	// Scene color's flip (conditional on entry state) and the luminance buffer's flip never depend on each
+	// other, so they're issued as one batched Barrier() call instead of two — same GPU-visible effect, one
+	// fewer driver call. OMSetRenderTargets doesn't care whether it runs before or after either transition.
+	{
+		D3D12ResourceTransition entry[2];
+		UINT n = 0;
+		if ( !m_SceneColorInPixelState ) {
+			entry[n++] = { m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+			m_SceneColorInPixelState = true;
+		}
+		entry[n++] = { m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+		m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		m_CmdList->TransitionBarriers( entry, n );
 	}
 	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-
-	m_CmdList->TransitionBarrier( m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
 	// --- Level 1: reduce scene color -> per-group partial sums ---
 	struct LumReduceCB { UINT Width, Height, NumGroupsX, _pad; };
@@ -411,11 +418,13 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
 
 	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
-	m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
-	m_SceneColorInPixelState = false;
-
 	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV barrier.
-	m_CmdList->TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+	// Neither depends on the other, so batch them into one Barrier() call instead of two.
+	m_CmdList->TransitionBarriers( {
+		{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+		{ m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+	} );
+	m_SceneColorInPixelState = false;
 
 	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
 	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float Tau; };

@@ -236,16 +236,23 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
             maskHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
                 static_cast<int>( kSceneColorFormat ), L"GodRayMask", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
+            // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV. Not
+            // graph-tracked (m_SceneColor is a plain member), so declared via TransitionExternal rather than a
+            // manual mid-callback TransitionBarrier — this folds it into the SAME batched Barrier() call as
+            // maskHandle's own UNORDERED_ACCESS transition above, instead of a second standalone one. Evaluated
+            // here (setup time) rather than inside the callback: setup lambdas across one graph run in the exact
+            // order AddPass was called, matching the callbacks' own relative order one-to-one (see
+            // D3D12RenderGraph.h's class comment / D3D12Scene.cpp's single postFxGraph.Execute() call), so
+            // reading/flipping the flag here is equivalent to doing it at execute time.
+            if ( !m_SceneColorInPixelState ) {
+                builder.TransitionExternal( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+                m_SceneColorInPixelState = true;
+            }
+
             pass.m_executeCallback = [this, gx, gy, maskHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
                 D3D12RenderTarget* mask = g.GetPhysicalTexture( maskHandle );
                 if ( !mask ) return;
 
-                // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV.
-                // Not graph-tracked (m_SceneColor is a plain member), so still transitioned manually.
-                if ( !m_SceneColorInPixelState ) {
-                    cmdList.TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-                    m_SceneColorInPixelState = true;
-                }
                 cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
                 GodRayMaskConsts maskConsts = { m_SceneColorSrvSlot, m_DepthSrvSlot, mask->GetUavSlot(), 0 };
