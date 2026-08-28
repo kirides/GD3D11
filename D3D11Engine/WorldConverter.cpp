@@ -290,15 +290,12 @@ namespace {
 
     void RepairZeroLengthVertexNormals( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices );
 
-    /** Target triangle count per cluster leaf. Small enough that a point light's range doesn't drag
-        in much more geometry than it needs, large enough that the world-mesh cluster BVH (built by
-        flattening every mesh's clusters into one global tree, see GothicAPI::BuildWorldSectionBVH)
-        stays a few thousand leaves for a whole level, not hundreds of thousands. */
+    /** Target triangle count per cluster leaf - tight enough for point-light range queries, coarse
+        enough to keep the global cluster BVH leaf count reasonable for a whole level. */
     constexpr uint32_t WORLD_MESH_CLUSTER_TARGET_TRIANGLES = 128;
 
-    /** Meshes at or below this triangle count aren't worth clustering - the whole mesh already IS a
-        reasonably tight range, and a one-leaf "cluster BVH" would just be overhead. Left with an
-        empty Clusters list, which callers already have to treat as "draw the whole mesh". */
+    /** Meshes at or below this triangle count are left unclustered (empty Clusters list = "draw whole
+        mesh") - a one-leaf "cluster BVH" would just be overhead. */
     constexpr uint32_t WORLD_MESH_CLUSTER_MIN_TRIANGLES = WORLD_MESH_CLUSTER_TARGET_TRIANGLES * 2;
 
     struct TriangleClusterPrimitive {
@@ -307,13 +304,9 @@ namespace {
         VERTEX_INDEX I0 = 0, I1 = 0, I2 = 0;
     };
 
-    /** Spatially reorders `mesh`'s triangles (a pure permutation - vertex count/content untouched)
-        so that nearby triangles land in contiguous index-buffer ranges, and records those ranges as
-        `mesh->Clusters`. Must run AFTER OptimizeMeshBuffers and BEFORE GPU buffer Init()/shadow-index
-        derivation: meshopt_generateShadowIndexBuffer (MeshShadowIndexBuilder.h) produces one welded
-        output index per input index in the SAME position, so as long as this permutation is the last
-        thing to touch `Indices`, the shadow index buffer inherits identical, still-valid cluster
-        ranges for free - no separate cluster set needed for shadow vs. main draws. */
+    /** Spatially reorders `mesh`'s triangles (pure index permutation) into contiguous clusters,
+        recorded as `mesh->Clusters`. Must run AFTER OptimizeMeshBuffers and BEFORE shadow-index
+        derivation, so the shadow index buffer (position-preserving) inherits the same valid ranges. */
     void ClusterWorldMeshTriangles( WorldMeshInfo* mesh ) {
         const size_t numTris = mesh->Indices.size() / 3;
         if ( numTris <= WORLD_MESH_CLUSTER_MIN_TRIANGLES ) {
@@ -415,9 +408,7 @@ namespace {
         // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
         OptimizeMeshBuffers( mesh->MeshVertexBuffer.get(), mesh->Indices, mesh->Vertices, &mesh->ShadowIndices, nullptr );
 
-        // Spatially cluster the (now final) triangle order so a point light or any other tight-range
-        // query can draw a sub-range of this mesh instead of the whole thing. Must run after
-        // OptimizeMeshBuffers and before shadow-index derivation/GPU upload below - see
+        // Must run after OptimizeMeshBuffers and before shadow-index derivation below - see
         // ClusterWorldMeshTriangles's comment.
         ClusterWorldMeshTriangles( mesh );
 
@@ -598,10 +589,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         it.Mesh->MeshIndexBuffer->Init( &it.Mesh->Indices[0], it.Mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( it.Mesh );
 
-        // outMeshes[i] now describes the WHOLE freshly-built mesh - keep IndexCount in sync so a
-        // caller reading MeshDrawRange (rather than reaching into Mesh->Indices directly) still
-        // gets the right count. IndexOffset stays 0: this function always builds one full range,
-        // never a sub-range.
+        // Keep IndexCount in sync for callers reading MeshDrawRange directly.
         outMeshes[i].IndexCount = static_cast<uint32_t>(it.Mesh->Indices.size());
 
         ++i;

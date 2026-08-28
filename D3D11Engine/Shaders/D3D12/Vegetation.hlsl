@@ -97,14 +97,9 @@ struct VS_IN
     float2   uv     : TEXCOORD0;
     float4x4 iworld : INSTANCE_WORLD_MATRIX;   // already transposed on upload (GVegetationBox::InitSpotsRandom)
 };
-// `clip` is `precise`: VSMain/VSDepth/VSDepthGBuf are three separately-compiled entry points that all feed the
-// same textual `mul(GrassWorldPos(...), ViewProj)` into SV_POSITION, but nothing guarantees a compiler schedules
-// that expression bit-identically across them — VSDepthGBuf in particular does substantially more surrounding
-// work (a second GrassWorldPos evaluation for the previous frame, two extra clip transforms), which was enough
-// to shift its rounding and fail the lit pass's GREATER_EQUAL depth test on wind-swayed vertices, i.e. grass
-// blades getting depth-clipped, but only when TAA/FSR3/GTAO route the prepass through VSDepthGBuf. `precise`
-// pins the FP evaluation order back to what the HLSL literally says, which is Microsoft's documented fix for
-// exactly this z-prepass-vs-main-pass mismatch.
+// `clip` is `precise`: VSMain/VSDepth/VSDepthGBuf independently compute the same `mul(GrassWorldPos(...),
+// ViewProj)`, but nothing guarantees bit-identical FP rounding across separately-compiled entry points -
+// without `precise`, wind-swayed grass could fail the lit pass's GREATER_EQUAL depth test and get clipped.
 struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 wpos : TEXCOORD1; float fogDist : TEXCOORD2; };
 
 // The instanced blade's swayed world position. Shared by every grass VS — the lit pass, the depth prepass and

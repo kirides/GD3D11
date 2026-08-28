@@ -49,8 +49,7 @@ public:
     virtual ~WorldConverter();
 
     /** Collects all world-polys in the specific range. Drops all materials that have no alphablending.
-        Currently unused (see the comment at its call site's removal, commit 48854964) - kept
-        compiling per this codebase's convention for dead world-load paths, not invested in further. */
+        Currently unused - kept compiling per this codebase's convention for dead world-load paths. */
     static void WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::vector<MeshDrawRange>& outMeshes );
 
     /** Converts the worldmesh into a more usable format */

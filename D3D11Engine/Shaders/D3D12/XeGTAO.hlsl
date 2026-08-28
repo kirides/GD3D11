@@ -130,16 +130,10 @@ lpfloat2 SpatioTemporalNoise( uint2 pixCoord, uint temporalIndex )
     return lpfloat2( frac( 0.5 + index * float2( 0.75487766624669276005, 0.5698402909980532659114 ) ) );
 }
 
-// --- Pass 0 (GD3D11 addition, not part of Intel's XeGTAO sample): half-resolution raw depth --------------------
-// Only dispatched when RendererSettings.AoResolution == Half (D3D12GTAO.cpp's RenderGTAO). Nearest-neighbour 2x
-// decimation of the native depth buffer into g_Out0Index, which the REST of the chain (starting with
-// CSPrefilterDepths16x16 below) then treats as "the" raw depth — g_GTAOConsts.ViewportSize/RawDepthIndex are
-// simply pointed at this pass's output instead of the real depth buffer for every following dispatch. This is
-// the simplest possible downsample (point-sample the top-left texel of each 2x2 block, not a min/max/average):
-// the prefilter pass immediately re-derives its own MIP chain from whatever this writes, so a fancier reduction
-// here would just be filtered again one step later. Trade accepted: a thin foreground occluder narrower than 2
-// native pixels can be missed — the same trade the simple SSAO path (Shaders/D3D12/SSAO.hlsl) makes implicitly
-// by sampling depth at its own, coarser texel stride when it runs at half resolution.
+// --- Pass 0 (Half AO-resolution mode only; not part of Intel's XeGTAO sample) --------------------------------
+// Nearest-neighbour 2x decimation of the native depth into g_Out0Index, which the rest of the chain then
+// treats as "the" raw depth. Point-sampled rather than min/max/averaged since the prefilter pass immediately
+// re-derives its own MIP chain from this anyway; a thin sub-2px occluder can be missed as a result.
 [numthreads( 8, 8, 1 )]
 void CSDownsampleDepth( uint2 dispatchThreadID : SV_DispatchThreadID )
 {

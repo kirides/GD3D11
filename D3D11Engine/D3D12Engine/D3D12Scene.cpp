@@ -2866,10 +2866,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 continue;
             }            
 
-            // Sort key for every transparency bucket below: distance to the closest point on the mesh's
-            // own bbox, falling back to the section's (ComputeWorldMeshDistanceSqFromCamera in
-            // D3D11GraphicsEngine.cpp). Not the box center - a large section/mesh can have its center
-            // far away while one of its edges sits right in front of the player.
+            // Sort key for every transparency bucket below: closest point on the mesh's own bbox, not
+            // its center (see ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
             auto transparencyDistanceSq = [&]() -> float {
                 const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
                 const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );

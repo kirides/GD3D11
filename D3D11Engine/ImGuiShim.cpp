@@ -2431,8 +2431,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 }
                 ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
-                // D3D12 only, and shared by both of its AO implementations (simple SSAO and XeGTAO) — the
-                // resource rebuild happens next frame in D3D12GraphicsEngine::ApplyPendingAoResolutionChange.
+                // D3D12 only; rebuild happens next frame in ApplyPendingAoResolutionChange.
                 if ( settings.AoMode != AOMode::AO_NONE
                     && settings.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
                     static std::vector<std::pair<const char*, AoResolutionScale>> aoResolutions = {

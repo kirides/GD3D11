@@ -1665,9 +1665,7 @@ float D3D12GraphicsEngine::ComputeMipLodBias( INT2 renderSize, INT2 displaySize 
 }
 
 
-/** See the header comment. Both AO implementations (RenderSimpleSSAO/RenderGTAO) and the include/
-    ScreenSpaceAO.hlsl consumer side are resolution-agnostic by construction — see AoResolutionScale's
-    comment in GothicGraphicsState.h — so halving this one value is the entire cost/quality lever. */
+/** See the header comment. */
 INT2 D3D12GraphicsEngine::GetAoTargetResolution( INT2 renderSize ) {
     if ( Engine::GAPI->GetRendererState().RendererSettings.AoResolution != AoResolutionScale::Half )
         return renderSize;
@@ -2804,13 +2802,8 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
 }
 
 
-/** Picks up an ImGui/ini change to RendererSettings.AoResolution, from the top of OnBeginFrame — same slot
-    and reasoning as ApplyPendingResolutionScale, minus the debounce: this is a discrete combo box, not a
-    per-drag-frame slider, so there is only ever one settled value to react to. Rebuilds ONLY the AO
-    resources (m_AOMask/m_AOBlurTemp + XeGTAO's intermediates) at the new target size — everything else
-    CreateRenderResolutionTargets touches (FSR3, depth, scene color, bloom, motion, TAA, DoF, HiZ) is
-    untouched by this setting, so calling the whole function would be wasted work for what is otherwise a
-    small resource swap. */
+/** Picks up an ImGui/ini change to RendererSettings.AoResolution. Rebuilds only the AO resources at
+    the new target size - no debounce needed, it's a discrete combo box, not a per-drag-frame slider. */
 void D3D12GraphicsEngine::ApplyPendingAoResolutionChange() {
     if ( !m_SwapChainReady ) return;
     const AoResolutionScale requested = Engine::GAPI->GetRendererState().RendererSettings.AoResolution;

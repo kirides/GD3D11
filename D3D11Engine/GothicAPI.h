@@ -776,12 +776,9 @@ public:
     /** Returns whether a world mesh intersects the given frustum (true when no bounds are available). */
     bool IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const;
 
-    /** Finer-grained sibling of CollectVisibleSections: queries the world-mesh CLUSTER BVH (built
-        alongside the section BVH, see BuildWorldMeshClusterBVH) instead of section bounding boxes, so
-        a small-range query (a point light's cube face) only pulls in the triangles actually near it
-        instead of every section its bounds happen to touch. Adjacent surviving clusters belonging to
-        the same mesh are fused into one range (same rule D3D12's CoalesceWorldDepthCommands already
-        uses for its indirect draws), so callers get a handful of ranges to draw, not one per cluster. */
+    /** Finer-grained sibling of CollectVisibleSections: queries the world-mesh CLUSTER BVH (see
+        BuildWorldMeshClusterBVH) instead of section bounding boxes, and fuses adjacent surviving
+        clusters into a handful of draw ranges instead of one per cluster. */
     void CollectVisibleMeshRanges( const Frustum& frustum,
         bool useSectionRadiusFilter,
         std::vector<MeshDrawRange>& outRanges );
@@ -1061,11 +1058,9 @@ private:
         bool useSectionRadiusFilter ) const;
     bool UseWorldSectionBVH() const;
 
-    /** One leaf primitive of the world-mesh CLUSTER BVH: either one WorldMeshInfo::Clusters[]
-        entry, or - for a mesh too small to have been clustered at all (see
-        WORLD_MESH_CLUSTER_MIN_TRIANGLES) - the whole mesh, marked by ClusterIndex ==
-        WHOLE_MESH_CLUSTER. Built and queried alongside, but independently of, the section-level BVH
-        above so CollectVisibleSections' existing callers are untouched by this. */
+    /** One leaf of the world-mesh CLUSTER BVH: a WorldMeshInfo::Clusters[] entry, or - for a mesh too
+        small to have been clustered (see WORLD_MESH_CLUSTER_MIN_TRIANGLES) - the whole mesh, marked by
+        ClusterIndex == WHOLE_MESH_CLUSTER. */
     struct WorldMeshClusterRef {
         static constexpr uint32_t WHOLE_MESH_CLUSTER = UINT32_MAX;
 
@@ -1076,9 +1071,7 @@ private:
         uint32_t ClusterIndex = WHOLE_MESH_CLUSTER;
     };
 
-    /** Gathers every WorldMeshInfo's clusters across every section into one global tree. Called from
-        BuildWorldSectionBVH/ClearWorldSectionBVH so there's a single build/clear call site for both
-        trees; independent storage/lifetime otherwise. */
+    /** Gathers every WorldMeshInfo's clusters across every section into one global tree. */
     void BuildWorldMeshClusterBVH();
 
     /** Collects polygons in the given AABB */
@@ -1282,9 +1275,7 @@ private:
     /** The overall wetness of the current scene */
     float SceneWetness;
 
-    /** GetFrameNumber() value SceneWetness was last computed for. GetSceneWetness() is called many
-        times per frame (once per material/texture in the PS-selection hot loops), so it caches its
-        result for the frame instead of recomputing it on every call. */
+    /** GetFrameNumber() value SceneWetness was last computed for - caches the per-frame result. */
     size_t SceneWetnessFrame = static_cast<size_t>( -1 );
 
     /** Internal list of futures, so they can run until they are finished */

@@ -1,11 +1,7 @@
 //--------------------------------------------------------------------------------------
 // Depth-only vertex shader for the NVIDIA per-face cube-shadow fallback (no GS/layered indexing -
-// see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses).
-//
-// Same transform as VS_Ex.hlsl, but the output struct is trimmed to exactly what PS_LinDepth reads
-// (TEXCOORD0,1,2,4,5,SV_POSITION), matching GS_Cubemap.hlsl's PS_INPUT layout. VS_Ex's extra tangent/
-// motion-vector outputs shift SV_POSITION to a different hardware register than PS_LinDepth expects,
-// which the debug layer reports as a VS-PS linkage error (world mesh/VOBs silently not drawing).
+// see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses). Same
+// transform as VS_Ex.hlsl, but trimmed to match PS_LinDepth's expected input register layout.
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"

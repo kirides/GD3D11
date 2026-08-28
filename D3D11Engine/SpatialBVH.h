@@ -14,11 +14,6 @@
 
 /** Generic top-down median-split BVH builder + iterative frustum-query walker.
  *
- *  Originally written once inline for GothicAPI::BuildWorldSectionBVH/QueryWorldSectionBVH (the
- *  world-mesh-section BVH shipped in PR #354) and pulled out here so the same, already
- *  production-proven algorithm can be reused for the finer-grained world-mesh-cluster BVH without
- *  copy-pasting a second spatial partitioner.
- *
  *  A `Primitive` only needs to expose:
  *      DirectX::BoundingBox Bounds;
  *      DirectX::XMFLOAT3    Center;
@@ -57,11 +52,9 @@ namespace detail {
     }
 
 #if defined(__AVX2__)
-    /** Batch-tests up to 8 node AABBs against the frustum's 6 cached planes with 8-wide AVX2+FMA,
-     *  mirroring the n-vertex test in GothicAPI::CollectVisibleVobsWithLeafCache. Returns a bitmask
-     *  where bit i set means node i is rejected (fully outside at least one plane); only bits
-     *  [0, count) are meaningful - unused lanes are zero-padded and never rejected, but the caller
-     *  must not read their bits. Requires a plane-cached Frustum (see Frustum::UsesPlaneFrustum). */
+    /** Batch-tests up to 8 node AABBs against the frustum's 6 cached planes with 8-wide AVX2+FMA.
+     *  Returns a bitmask where bit i set means node i is rejected; only bits [0, count) are
+     *  meaningful. Requires a plane-cached Frustum (see Frustum::UsesPlaneFrustum). */
     inline int RejectMaskAVX2( const Node* const* nodes, int count,
         const std::array<DirectX::XMFLOAT4, 6>& planes ) {
         alignas( 32 ) float minX[8]{}, minY[8]{}, minZ[8]{}, maxX[8]{}, maxY[8]{}, maxZ[8]{};
@@ -87,8 +80,7 @@ namespace detail {
             const __m256 pnz = _mm256_set1_ps( planes[p].z );
             const __m256 pd  = _mm256_set1_ps( planes[p].w );
 
-            // n-vertex (blendv_ps(a,b,mask): sign-bit 0 -> a, 1 -> b), same convention as
-            // Frustum::RejectedByCachedPlanes: dot(n, nearCorner) + d > 0 means fully outside.
+            // n-vertex selection, same convention as Frustum::RejectedByCachedPlanes.
             const __m256 vNX = _mm256_blendv_ps( vMinX, vMaxX, pnx );
             const __m256 vNY = _mm256_blendv_ps( vMinY, vMaxY, pny );
             const __m256 vNZ = _mm256_blendv_ps( vMinZ, vMaxZ, pnz );
@@ -168,9 +160,7 @@ BuildResult<Primitive> Build( std::vector<Primitive> primitives, uint32_t leafSi
                 return detail::AxisValue( primitives[a].Center, axis ) < detail::AxisValue( primitives[b].Center, axis );
             } );
 
-        // Recurse AFTER partitioning both halves - result.Nodes may reallocate on the child calls,
-        // so the parent's node reference above must not be held across them (it isn't; we re-index
-        // by nodeIndex instead of keeping a reference).
+        // Recurse AFTER partitioning: result.Nodes may reallocate on the child calls.
         const uint32_t left = buildRecursive( begin, mid );
         const uint32_t right = buildRecursive( mid, end );
         result.Nodes[nodeIndex].LeftChild = left;
@@ -196,9 +186,7 @@ void Query( const BuildResult<Primitive>& tree, const Frustum& frustum, Visitor&
     stack.push_back( 0 );
 
 #if defined(__AVX2__)
-    // Batched path: pop up to 8 pending nodes at a time and reject them in one AVX2+FMA test
-    // instead of 8 separate scalar Frustum::Intersects calls. Only usable when the frustum has 6
-    // cached planes to test against (see Frustum::UsesPlaneFrustum).
+    // Batched path: reject up to 8 pending nodes at a time with one AVX2+FMA test.
     if ( frustum.UsesPlaneFrustum() ) {
         const auto& planes = frustum.GetPlanes();
         const Node* batchNodes[8];

@@ -44,10 +44,8 @@ public:
     /** Called when a vob got removed from the world */
     void OnVobRemovedFromWorld( BaseVobInfo* vob ) override;
 
-    /** Drops the cached bake so the next RenderCubemap re-renders from scratch, even for a PLS_STATIC_ONLY
-        light that would otherwise consider itself already done. For A/B-testing RequiresNvidiaTiledShadowFaceFallback
-        live (ImGuiShim's "Force re-bake" button) - RenderCubemap(forceUpdate=true) alone isn't enough for that
-        case, since it returns early on an already-ready static bake before ever consulting forceUpdate. */
+    /** Drops the cached bake so the next RenderCubemap re-renders from scratch, even for an
+        already-ready PLS_STATIC_ONLY light (forceUpdate alone doesn't cover that case). */
     void ForceRebake() { Invalidate(); }
 
     bool HasAnyShadowMap() const {
@@ -131,15 +129,13 @@ protected:
     void RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
     void RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
 
-    /** True if target is one of this light's slots in a shared tiled shadow cube array (DSV windowed onto a
-        sub-range of a larger resource) rather than its own self-contained DepthStencilPool cube - see
-        RequiresNvidiaTiledShadowFaceFallback. */
+    /** True if target is a window into a shared tiled shadow cube array rather than its own
+        self-contained cube - see RequiresNvidiaTiledShadowFaceFallback. */
     bool IsTiledArrayTarget( const RenderToDepthStencilBuffer& target ) const;
 
-    /** NVIDIA fallback for IsTiledArrayTarget() targets: renders each of the 6 faces through its own
-        single-slice DSV (RenderToDepthStencilBuffer::GetDSVCubemapFace) instead of one layered/instanced draw
-        routed by SV_RenderTargetArrayIndex - see RequiresNvidiaTiledShadowFaceFallback. Mirrors the
-        (renderedVobs/renderedMobs/worldMeshCache/ignoreVob) contract of BaseGraphicsEngine::RenderShadowCube. */
+    /** NVIDIA driver bug workaround for IsTiledArrayTarget() targets: renders each of the 6 faces through
+        its own single-slice DSV instead of one layered draw routed by SV_RenderTargetArrayIndex - see
+        RequiresNvidiaTiledShadowFaceFallback. */
     void RenderShadowCubeFacePasses(
         RenderToDepthStencilBuffer& target, bool clearDepth, unsigned int casterMask,
         std::list<VobInfo*>* renderedVobs, std::list<SkeletalVobInfo*>* renderedMobs,

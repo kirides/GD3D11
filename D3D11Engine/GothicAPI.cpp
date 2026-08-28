@@ -4786,12 +4786,8 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
                     continue;
                 }
 
-                // Distance to the closest point on the section's real bounding box, not its nominal
-                // grid address - WorldCoordinates is assigned per-triangle by centroid (see
-                // WorldConverter::CreateSection*), so a section's actual geometry can reach well past
-                // its own grid cell and into one much closer to the camera. Mirrors the
-                // drawSectionIntersections path in CollectVisibleSections below. Squared distance -
-                // this is only ever compared against a threshold, so skip the (approximate) sqrt.
+                // Closest point on the section's real bounding box, not its nominal grid address - a
+                // section's geometry can reach well past its own grid cell.
                 if ( useSectionRadiusFilter ) {
                     if ( Toolbox::ComputePointAABBDistanceSq( camPos, section->BoundingBox.Min, section->BoundingBox.Max ) >= sectionViewDistWorldSq ) {
                         continue;
@@ -4956,9 +4952,7 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
         sectionViewDistWorldSq = sectionViewDistWorld * sectionViewDistWorld;
     }
 
-    // Raw surviving clusters, gathered per-mesh so the merge pass below only ever compares ranges
-    // that came from the SAME index buffer - merging across meshes/materials would draw the wrong
-    // triangles.
+    // Gathered per-mesh so the merge pass below never compares ranges from different index buffers.
     static thread_local std::map<WorldMeshInfo*, std::vector<MeshDrawRange>> byMesh;
     for ( auto& [mesh, ranges] : byMesh ) {
         ranges.clear();
@@ -4971,9 +4965,7 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
             }
 
             if ( useSectionRadiusFilter ) {
-                // Distance to the closest point on the cluster's own AABB, not a section-grid lookup
-                // of its center - a cluster's extents can reach into the visible radius (or a further
-                // section) even though the center itself quantizes into a section outside it.
+                // Closest point on the cluster's own AABB, not a section-grid lookup of its center.
                 const XMFLOAT3 boundsMin( ref.Bounds.Center.x - ref.Bounds.Extents.x,
                     ref.Bounds.Center.y - ref.Bounds.Extents.y,
                     ref.Bounds.Center.z - ref.Bounds.Extents.z );
@@ -4998,10 +4990,8 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
             byMesh[ref.Mesh].push_back( range );
         } );
 
-    // Merge exactly-adjacent ranges per mesh (same rule as D3D12's CoalesceWorldDepthCommands):
-    // clusters were sorted into contiguous, non-overlapping index-buffer order when they were built
-    // (see ClusterWorldMeshTriangles), so sorting surviving ranges back into that order and fusing
-    // touching ones recovers long runs cheaply instead of one draw per tiny cluster.
+    // Merge exactly-adjacent ranges per mesh (clusters are contiguous in index-buffer order - see
+    // ClusterWorldMeshTriangles), same rule as D3D12's CoalesceWorldDepthCommands.
     for ( auto& [mesh, ranges] : byMesh ) {
         if ( ranges.empty() ) {
             continue;
@@ -6903,10 +6893,7 @@ bool GothicAPI::IsSnowingWeather() {
 
 /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
 float GothicAPI::GetSceneWetness() {
-    // Called many times per frame (once per material/texture in the PS-selection hot loops), so only
-    // recompute this once per frame - re-running it on every call meant recomputing the branch below
-    // (plus, before this cache existed, a QueryPerformanceCounter round trip via Toolbox::timeSinceStartMs)
-    // for every single draw call.
+    // Called once per material/texture in the PS-selection hot loops, so cache per-frame.
     if ( SceneWetnessFrame == FrameNumber )
         return SceneWetness;
     SceneWetnessFrame = FrameNumber;

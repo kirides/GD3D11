@@ -391,9 +391,7 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 
 	DX_ZONE( m_CmdList.Get(), "Dynamic Exposure (luminance reduce+adapt)" );
 
-	// Scene color's flip (conditional on entry state) and the luminance buffer's flip never depend on each
-	// other, so they're issued as one batched Barrier() call instead of two — same GPU-visible effect, one
-	// fewer driver call. OMSetRenderTargets doesn't care whether it runs before or after either transition.
+	// Batch both flips into one Barrier() call instead of two - neither depends on the other.
 	{
 		D3D12ResourceTransition entry[2];
 		UINT n = 0;
@@ -418,8 +416,8 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
 
 	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
-	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV barrier.
-	// Neither depends on the other, so batch them into one Barrier() call instead of two.
+	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV
+	// barrier. Batched with the scene-color flip since neither depends on the other.
 	m_CmdList->TransitionBarriers( {
 		{ m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
 		{ m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },

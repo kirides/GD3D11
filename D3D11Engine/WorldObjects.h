@@ -144,13 +144,9 @@ struct MeshInfo {
     uint16_t meshId;
 };
 
-/** A spatially-coherent, contiguous range of triangles within a WorldMeshInfo's index buffer -
- *  the leaf granularity of the world-mesh cluster BVH (see SpatialBVH.h / GothicAPI's
- *  WorldMeshClusterBVH). IndexOffset/IndexCount index into BOTH MeshInfo::Indices and
- *  MeshInfo::ShadowIndices: the clustering permutation runs before shadow-index derivation
- *  (WorldConverter::BuildWorldMeshBuffers), and meshopt_generateShadowIndexBuffer produces one
- *  welded output index per input index in the same position, so the same [offset,count) range is
- *  valid against either buffer. */
+/** A spatially-coherent, contiguous triangle range within a WorldMeshInfo's index buffer - the leaf
+ *  granularity of the world-mesh cluster BVH (see SpatialBVH.h). Valid against both Indices and
+ *  ShadowIndices: clustering runs before shadow-index derivation, which preserves index position. */
 struct MeshCluster {
     zTBBox3D Bounds;
     uint32_t IndexOffset = 0;
@@ -171,10 +167,8 @@ struct WorldMeshInfo : public MeshInfo {
     // Offset in wrapped world mesh
     unsigned int BaseShadowIndexLocation;
 
-    /** Spatial partition of this mesh's triangles, built once at world-load time (see
-        WorldConverter::BuildWorldMeshBuffers). Empty for meshes too small to bother clustering (the
-        whole mesh is then its own effective range) or when clustering hasn't run - callers must
-        treat an empty list as "draw the whole mesh", not "draw nothing". */
+    /** Spatial partition of this mesh's triangles (see WorldConverter::ClusterWorldMeshTriangles).
+        Empty means "draw the whole mesh", not "draw nothing". */
     std::vector<MeshCluster> Clusters;
 
     /** Replaces MeshInfo::Vertices, which is dropped once the GPU buffers and the wrapped mesh have been
@@ -191,12 +185,8 @@ struct WorldMeshInfo : public MeshInfo {
     void ShrinkCpuVertices();
 };
 
-/** One draw's worth of a mesh's index buffer: either a single MeshCluster's range (world meshes
-    only - see MeshCluster's comment), or the whole mesh (IndexOffset=0, IndexCount=Indices.size()).
-    `Mesh` is the base MeshInfo type - not every producer of a MeshDrawRange has a WorldMeshInfo on
-    hand, and every draw-time consumer (GetMeshVertexBuffer/GetShadowAwareIndexBuffer/Count) only
-    needs the base class anyway. A strict superset of the old "whole MeshInfo" world-mesh cache
-    entry (MeshKey + MeshInfo*), so it doubles as that cache's element type. */
+/** One draw's worth of a mesh's index buffer: either a single MeshCluster's range, or the whole
+    mesh (IndexOffset=0, IndexCount=Indices.size()). */
 struct MeshDrawRange {
     MeshInfo* Mesh = nullptr;
     MeshKey Key{};
@@ -324,10 +314,8 @@ struct MeshVisualInfo : public BaseVisualInfo {
 
     //zCProgMeshProto* Visual;
     std::vector<VobInstanceInfo> Instances;
-    // Parallel to Instances (same index, always pushed together) - the source vob for each instance. CPU-only
-    // bookkeeping, never uploaded to the GPU (unlike VobInstanceInfo, whose layout is shader-visible), kept
-    // around so per-light self-shadow exclusion (D3D12PointShadows::BuildExcludeList) can identify which
-    // instanced static-VOB slot belongs to the light's own owner chain.
+    // Parallel to Instances (same index) - source vob for each instance, CPU-only. Used by
+    // D3D12PointShadows::BuildExcludeList for per-light self-shadow exclusion.
     std::vector<const zCVob*> InstanceVobs;
     unsigned int StartInstanceNum;
     

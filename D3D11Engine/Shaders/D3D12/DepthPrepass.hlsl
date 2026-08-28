@@ -42,16 +42,10 @@ void PSShadowClip( VS_OUT i )
 // World-mesh vertices are STATIC and already world-space, so the previous position is the current position: all
 // of the resulting velocity is camera motion, and it is EXACT (not the depth-reprojection approximation that
 // FillCameraVelocity falls back to for pixels no prepass draw covered). The packed normal at offset 12 is
-// already octahedral world-space, but it is decoded per-vertex and re-encoded per-pixel here (NOT passed through
-// raw) — see the warning on DecodeOctNormalMV below. This used to interpolate the raw encoded pair straight
-// across the triangle as a bandwidth "optimization"; that is only valid when a triangle's vertices share the
-// same octahedron hemisphere (sign of decoded z). A big flat wall is typically 1-2 huge triangles, and any
-// vertex near a corner/edge whose (smoothed) normal straddles the hemisphere fold relative to its triangle-mates
-// sends the linear interpolation of the RAW pair straight through the fold discontinuity — producing garbage
-// across the whole (large) triangle interior, which renders as solid black once XeGTAO/the debug view decode
-// it. normalize() on decode cannot fix this: it only rescales an already-wrong interpolated point. Decoding to
-// a real float3 first and interpolating THAT (matching Vob.hlsl's VSDepthGBuf/MakeGBufOut) has no such
-// discontinuity, at the cost of a few extra ALU ops — no extra bandwidth.
+// already octahedral world-space, but it is decoded per-vertex and re-encoded per-pixel here (NOT passed
+// through raw): interpolating the raw encoded pair across a triangle is only valid when its vertices share
+// the same octahedron hemisphere, and a large flat wall's few huge triangles can straddle that fold,
+// producing solid-black garbage. Decoding to a real float3 and interpolating that avoids the discontinuity.
 #include "include/MotionVectors.hlsl"
 
 struct VS_GBUF_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; };

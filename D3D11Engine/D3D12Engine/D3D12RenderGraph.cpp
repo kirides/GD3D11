@@ -180,15 +180,9 @@ void D3D12RenderGraph::AllocateResourcesForPass( size_t passIndex, D3D12CmdList&
 }
 
 namespace {
-    // Shared per-pass batch cap for D3D12RenderGraph's automatic pre/post transition calls: every pass
-    // converted so far touches at most a couple of resources. A pass with more just takes an extra
-    // TransitionBarriers() call rather than losing a transition — see PushTransition's overflow branch.
     constexpr UINT kMaxTransitionsPerBatch = 16;
 
-    // Appends `t` to the batch[count]/count scratch pair (sized kMaxTransitionsPerBatch, local to a single
-    // TransitionPassResources/TransitionPostPassResources call), or — once that array is full — issues an
-    // individual TransitionBarrier() for it right away rather than dropping it. Shared by both call sites so
-    // the overflow behavior can't drift between them.
+    // Appends to the batch, or issues an individual TransitionBarrier() once it's full.
     void PushTransition( D3D12CmdList& cmdList, D3D12ResourceTransition* batch, UINT& count, const D3D12ResourceTransition& t ) {
         if ( count < kMaxTransitionsPerBatch ) {
             batch[count++] = t;

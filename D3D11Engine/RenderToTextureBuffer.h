@@ -197,10 +197,8 @@ struct RenderToDepthStencilBuffer {
     }
 
     /** Wraps pre-existing resources without allocating — used for views into a shared TextureCubeArray.
-        faceDSVs, if given, is 6 single-slice (ArraySize=1) DSVs windowed onto the same 6-slice range as dsv -
-        the NVIDIA layered-rendering fallback (see RequiresNvidiaTiledShadowFaceFallback) renders each face
-        through its own single-slice view instead of relying on SV_RenderTargetArrayIndex routing into dsv's
-        multi-slice window, which NVIDIA's D3D11 driver mis-handles when FirstArraySlice != 0. */
+        faceDSVs, if given, is 6 single-slice DSVs for the NVIDIA per-face fallback (see
+        RequiresNvidiaTiledShadowFaceFallback) windowed onto the same 6-slice range as dsv. */
     RenderToDepthStencilBuffer(
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsv,

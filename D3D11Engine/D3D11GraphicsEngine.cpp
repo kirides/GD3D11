@@ -88,13 +88,10 @@ bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
 
-// NVIDIA's native D3D11 driver mis-routes SV_RenderTargetArrayIndex writes (from GS_Cubemap.hlsl or
-// VS_ExLayered.hlsl) when the bound DSV/RTV is a non-zero-offset window (FirstArraySlice > 0) into a larger
-// Texture2DArray/TextureCubeArray resource - only the window's own base slice ever receives geometry, so a
-// point light rendered into any slot but 0 of the shared tiled shadow cube array (D3D11TiledDeferredShading)
-// only gets one of its six faces. DXVK (Vulkan image views are always correctly scoped to their base array
-// layer) and AMD/Intel's native drivers implement this correctly, so the fallback is gated to real NVIDIA
-// hardware only - see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
+// NVIDIA driver bug: a DSV windowed onto a non-zero-offset sub-range of a larger Texture2DArray/
+// TextureCubeArray mis-routes SV_RenderTargetArrayIndex writes, so a point light in any slot but 0 of
+// the shared tiled shadow cube array only gets one of its six faces. DXVK/AMD/Intel are unaffected -
+// see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
 bool RequiresNvidiaTiledShadowFaceFallback = false;
 
 VS_ExConstantBuffer_Wind g_windBuffer;
@@ -245,10 +242,8 @@ namespace
             return 0.0f;
         }
 
-        // Distance to the closest point on the box, not its center - a large section/mesh can have
-        // its center far behind the camera while one of its edges sits right in front of the player,
-        // which would otherwise misclassify it as distant (bad bucket/sort order, wrong painter's-order
-        // for transparents).
+        // Closest point on the box, not its center - a large mesh's center can be far behind the camera
+        // while an edge is right in front, which would misclassify it as distant.
         const XMVECTOR boundsMin = XMLoadFloat3( &sourceBounds->Min );
         const XMVECTOR boundsMax = XMLoadFloat3( &sourceBounds->Max );
         const XMVECTOR closestPoint = XMVectorClamp( cameraPosition, boundsMin, boundsMax );
@@ -725,12 +720,6 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
 
-    // Root cause of the old "clustered lighting is broken on NVidia" issue: point-light shadows rendered into
-    // the shared tiled cube array (EnableTiledLighting) use a DSV windowed onto a sub-range (FirstArraySlice =
-    // slot*6) of a much larger array resource. NVIDIA's driver mis-routes the layered/SV_RenderTargetArrayIndex
-    // writes in that case; see RequiresNvidiaTiledShadowFaceFallback's declaration for the full story. Gate the
-    // per-face fallback to real NVIDIA hardware only - DXVK and AMD/Intel already render this correctly and
-    // shouldn't pay the extra draw-call cost.
     RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
 
     LogInfo() << "Creating ShaderManager";
@@ -4286,7 +4275,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         pass.m_executeCallback = [this, particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
 
-            // GothicAPI collects this frame's particles (backend-neutral) and draws the prog-meshes.
             Engine::GAPI->ResetRenderStates();
             Engine::GAPI->DrawParticlesSimple();
 
@@ -5320,9 +5308,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     updatePSBuffers();
 
     if ( !m_FrameGeometryCache.worldMeshBuilt ) {
-        // Cluster-granularity frustum for the main view - CollectVisibleMeshRanges has no "current
-        // camera" fallback like CollectVisibleSections(nullptr, ...) used to rely on, so build it
-        // explicitly (same construction D3D11ShadowMap.cpp uses for its own player frustum).
+        // CollectVisibleMeshRanges has no "current camera" fallback, so build the frustum explicitly.
         Frustum mainFrustum = Frustum::AlwaysContainingFrustum();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
             const auto& camView = cam->trafoView; // Column-Major, needs Transpose for DxMath
@@ -5340,9 +5326,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
     BindWrappedWorldMeshPacked( meshInfo );
 
-    // Main world geometry, built below entirely from visibleMeshRanges (cluster granularity).
-    // Water/portal/waterfall/alpha-blended meshes are peeled off into their own systems, which draw
-    // the whole WorldMeshInfo* rather than a sub-range - see handledWholeMeshes below.
+    // Water/portal/waterfall/alpha-blended meshes are peeled off into their own systems (whole
+    // WorldMeshInfo*, not a sub-range) - see handledWholeMeshes below.
     struct WorldMeshDrawEntry {
         MeshDrawRange Range;
         int AlphaLevel; // 0 = opaque, 1 = alpha test, 2 = alpha texture
@@ -5365,10 +5350,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeBuildMeshList = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::BuildMeshList" ) );
         const XMVECTOR cameraPosition = Engine::GAPI->GetCameraPositionXM();
 
-        // Water/portal/waterfall/alpha-blended meshes are drawn whole (FrameWaterSurfaces /
-        // TransparencyQueue take a MeshInfo*, not a sub-range) - a big one can still surface as
-        // several disjoint ranges here (culling can hide a middle chunk and keep both ends), so guard
-        // against queuing the same MeshInfo* more than once, which would double-blend it.
+        // A big whole-mesh entry can surface as several disjoint ranges here; guard against queuing
+        // the same MeshInfo* twice, which would double-blend it.
         static std::unordered_set<MeshInfo*> handledWholeMeshes;
         handledWholeMeshes.clear();
 
@@ -5377,7 +5360,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             zCTexture* matTex = range.Key.Material->GetTextureSingle();
             if ( !matTex ) continue;
 
-            // Check surface type
             const MaterialInfo::EMaterialType matType = range.Key.Info->MaterialType;
             if ( matType == MaterialInfo::MT_Water ) {
                 if ( !isZPrepass && handledWholeMeshes.insert( range.Mesh ).second ) {
@@ -5403,7 +5385,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 continue;
             }
 
-            // Check for alphablending
             if ( (range.Key.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
                 range.Key.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
                 // || (range.Key.Material->GetEnvMapEnabled())
@@ -5415,13 +5396,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 continue;
             }
 
-            // Remaining (opaque / alpha-tested) geometry keeps cluster granularity.
-            //
-            // Don't skip the mesh if the texture is still streaming in (async load) - it gets drawn
-            // with a black placeholder below instead, so it doesn't flash the clear-color background.
-            // HasAlphaChannel() reads texture header metadata, available independent of the GPU
-            // upload having completed - GetCacheState()/CacheIn() are for the draw loops below, not
-            // this classification pass.
+            // HasAlphaChannel() reads texture header metadata regardless of GPU upload state, so a
+            // still-streaming texture is still classified here (drawn as a black placeholder below).
             int alphaLevel = 0;
             if ( matTex->HasAlphaChannel() ) {
                 alphaLevel = 2;
@@ -5429,7 +5405,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 alphaLevel = 1;
             }
 
-            // Create a new key using the animated texture
             MeshKey key = range.Key;
             key.Texture = matTex;
 
@@ -5908,9 +5883,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         if ( worldMeshCache && !worldMeshCache->empty() ) {
             for ( const MeshDrawRange& r : *worldMeshCache ) {
                 bool isAlpha = false;
-                // Bind texture
                 if ( r.Key.Material && r.Key.Material->GetTextureSingle() ) {
-                    // Check surface type
 
                     if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
@@ -5927,11 +5900,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                             ActivePS->Apply();
                             isAlpha = true;
                         } else
-                            continue;  // Don't render if not loaded
+                            continue;
                     } else {
-                        if ( !linearDepth )  // Only unbind when not rendering linear depth
-                        {
-                            // Unbind PS
+                        if ( !linearDepth ) {
                             D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         } else {
                             if ( lastTex != WhiteTexture.get() ) {
@@ -5947,8 +5918,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
                 }
 
-                // Draw the cached range (built the first time this light computed it - see the
-                // recompute branch below; may be a cluster sub-range, not the whole mesh)
+                // Cached range may be a cluster sub-range, not the whole mesh.
                 DrawVertexBufferIndexed( r.Mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( r.Mesh, isAlpha ),
                     r.IndexCount, r.IndexOffset );
@@ -5958,8 +5928,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             Frustum f;
             f.BuildCubemapFace( position, range, 0 );
 
-            // Still needed for the VOB-caster gathering below (drawnSections[i]->Vobs) - orthogonal
-            // to how tightly the mesh GEOMETRY itself gets culled, so this stays section-granularity.
+            // Section-granularity: needed for the VOB-caster gathering below (drawnSections[i]->Vobs).
             std::vector<WorldMeshSectionInfo*> sections = {};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
             for ( auto* section : sections ) {
@@ -5972,19 +5941,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 }
             } else {
-                // Finer-grained than `sections`: only the triangle clusters actually within `f`,
-                // not every material bucket of every section `f`'s bounds happen to touch.
+                // Finer-grained than `sections`: only the clusters actually within `f`.
                 std::vector<MeshDrawRange> ranges;
                 Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );
 
                 for ( const MeshDrawRange& r : ranges ) {
-                    // Check surface type
                     if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
                     bool isAlpha = false;
-                    // Bind texture
                     if ( r.Key.Material && r.Key.Material->GetTexture() ) {
                         if ( r.Key.Material->HasAlphaTest() || r.Key.Material->GetTexture()->HasAlphaChannel() ) {
                             if ( alphaRef > 0.0f &&
@@ -5998,12 +5964,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                 ActivePS->Apply();
                                 isAlpha = true;
                             } else
-                                continue;  // Don't render if not loaded
+                                continue;
                         } else {
-                            if ( !linearDepth )  // Only unbind when not rendering linear
-                                // depth
-                            {
-                                // Unbind PS
+                            if ( !linearDepth ) {
                                 D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                             } else {
                                 if ( lastTex != WhiteTexture.get() ) {
@@ -6285,10 +6248,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         // no vobs near!
         if ( worldMeshCache && !worldMeshCache->empty() ) {
             for ( const MeshDrawRange& r : *worldMeshCache ) {
-                // Bind texture
                 bool isAlpha = false;
                 if ( r.Key.Material && r.Key.Material->GetTextureSingle() ) {
-                    // Check surface type
 
                     if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
@@ -6302,11 +6263,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             ActivePS->Apply();
                             isAlpha = true;
                         } else
-                            continue;  // Don't render if not loaded
+                            continue;
                     } else {
-                        if ( !linearDepth )  // Only unbind when not rendering linear depth
-                        {
-                            // Unbind PS
+                        if ( !linearDepth ) {
                             D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         } else {
                             if ( lastTex != WhiteTexture.get() ) {
@@ -6322,8 +6281,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     }
                 }
 
-                // Draw the cached range (built the first time this light computed it - see the
-                // recompute branch below; may be a cluster sub-range, not the whole mesh)
                 DrawVertexBufferInstancedIndexed( r.Mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( r.Mesh, isAlpha ),
                     r.IndexCount,
@@ -6334,8 +6291,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             Frustum f;
             f.BuildCubemapFace( position, range, 0 );
 
-            // Still needed for the VOB-caster gathering below (drawnSections[i]->Vobs) - orthogonal
-            // to how tightly the mesh GEOMETRY itself gets culled, so this stays section-granularity.
             std::vector<WorldMeshSectionInfo*> sections = {};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
             for ( auto section : sections ) {
@@ -6348,18 +6303,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         Engine::GAPI->DrawMeshInfo_Layered( nullptr, section->FullStaticMesh );
                 }
             } else {
-                // Finer-grained than `sections`: only the triangle clusters actually within `f`,
-                // not every material bucket of every section `f`'s bounds happen to touch.
                 std::vector<MeshDrawRange> ranges;
-                Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );                
+                Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );
                 for ( const MeshDrawRange& r : ranges ) {
-                    // Check surface type
                     if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
                     bool isAlpha = false;
-                    // Bind texture
                     if ( r.Key.Material && r.Key.Material->GetTexture() ) {
                         if ( r.Key.Material ->HasAlphaTest() || r.Key.Material->GetTexture()->HasAlphaChannel()) {
                             if ( alphaRef > 0.0f &&
@@ -6371,12 +6322,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                 ActivePS->Apply();
                                 isAlpha = true;
                             } else
-                                continue;  // Don't render if not loaded
+                                continue;
                         } else {
-                            if ( !linearDepth )  // Only unbind when not rendering linear
-                                // depth
-                            {
-                                // Unbind PS
+                            if ( !linearDepth ) {
                                 D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                             } else {
                                 if ( lastTex != WhiteTexture.get() ) {
@@ -7224,7 +7172,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             // will cause some pop-in, but allows us to render much less expensive verticies
             const bool isAlpha = bindTexture && (params.CascadeIndex < lodCascadeStart);
 
-            // Bind texture
             if ( bindTexture ) {
                 if ( previousTx != tx ) {
                     if ( tx->GetCacheState() == zRES_CACHED_IN ) {
@@ -8215,7 +8162,6 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
             bool blendAdd = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
             bool blendBlend = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
 
-            // Bind texture
             MeshInfo* mi = alphaMesh.mi;
             MeshVisualInfo* vi = alphaMesh.vi;
 

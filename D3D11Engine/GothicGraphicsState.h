@@ -516,14 +516,9 @@ enum class AOMode : int {
     AO_ASSAO = 3,
 };
 
-// D3D12 only: resolution the AO compute chain runs at, relative to the render resolution. Covers both of
-// D3D12's AO implementations (the simple SSAO path and XeGTAO) — D3D11's AO modes (HBAO+/SAO/ASSAO) are
-// untouched and keep their own quality knobs. Half quarters the pixel count of every AO dispatch; the lit
-// shaders need NO changes to consume a lower-res mask, because include/ScreenSpaceAO.hlsl's
-// SampleScreenSpaceAO already reads it through a bilinear CLAMP sampler at a UV derived from the native
-// screen resolution (AoInvRes) — that is a free, depth-agnostic upsample regardless of the mask's actual
-// texel dimensions. First quality rung of a future general "effects resolution" knob (bloom/DoF/etc. would
-// follow the same pattern); kept as its own field rather than a shared enum until a second effect needs it.
+// D3D12 only: resolution the AO compute chain (simple SSAO or XeGTAO) runs at, relative to the render
+// resolution. D3D11's AO modes are untouched. The lit shaders need no changes to consume a lower-res
+// mask - include/ScreenSpaceAO.hlsl already samples it through a bilinear CLAMP upsample.
 enum class AoResolutionScale : int {
     Full = 0,
     Half = 1,

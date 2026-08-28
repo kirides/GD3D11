@@ -191,10 +191,7 @@ void D3D12GraphicsEngine::RenderSimpleSSAO() {
     // This frame's projection — the same one the prepass depth below was rasterized with. Its _13/_23 carry the
     // TAA jitter, which none of the terms used here read.
     const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
-    // m_AoResourceSize, NOT m_Resolution: m_AOMask/m_AOBlurTemp are built at GetAoTargetResolution(), which is
-    // m_Resolution halved when RendererSettings.AoResolution == Half (see D3D12GraphicsEngine.cpp). The DEPTH
-    // input stays full-res regardless — the shader samples it via normalized UV, so reading it at this coarser
-    // stride is exactly the intended "AO at half res" decimation, not a mismatch.
+    // m_AoResourceSize, NOT m_Resolution - m_AOMask/m_AOBlurTemp are built at GetAoTargetResolution().
     const UINT gx = ( static_cast<UINT>( m_AoResourceSize.x ) + 7 ) / 8;
     const UINT gy = ( static_cast<UINT>( m_AoResourceSize.y ) + 7 ) / 8;
 
