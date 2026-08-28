@@ -5357,7 +5357,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
         for ( const MeshDrawRange& range : visibleMeshRanges ) {
             if ( !range.Key.Material ) continue;
-            zCTexture* matTex = range.Key.Material->GetTextureSingle();
+            zCTexture* matTex = range.Key.Material->GetAniTexture();
             if ( !matTex ) continue;
 
             const MaterialInfo::EMaterialType matType = range.Key.Info->MaterialType;
@@ -5542,17 +5542,18 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         
         for ( size_t i = 0; i < numMeshes; i++ ) {
             auto const& mesh = meshList[i];
+            const auto tex = mesh.Range.Key.Material->GetAniTexture();
 
-            if ( mesh.Range.Key.Texture != bound &&
+            if ( tex != bound &&
                 Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
-                MyDirectDrawSurface7* surface = mesh.Range.Key.Texture->GetSurface();
+                MyDirectDrawSurface7* surface = tex->GetSurface();
                 ID3D11ShaderResourceView* srv[3];
                 MaterialInfo* info = mesh.Range.Key.Info;
 
                 // Get diffuse and normalmap. If the texture is still streaming in (async load),
                 // draw with a black placeholder instead of whatever happens to be bound in slot 0,
                 // so it doesn't flash the clear-color background.
-                const bool diffuseReady = mesh.Range.Key.Texture->CacheIn( 0.6f ) == zRES_CACHED_IN && surface;
+                const bool diffuseReady = tex->CacheIn( 0.6f ) == zRES_CACHED_IN && surface;
                 srv[0] = diffuseReady ? GetSrvFromGfx( surface->GetEngineTexture() ) : GetSrvFromGfx( BlackTexture.get() );
                 srv[1] = diffuseReady ? GetSrvFromGfx( surface->GetNormalmap() ) : nullptr;
                 srv[2] = diffuseReady ? GetSrvFromGfx( surface->GetFxMap() ) : nullptr;
@@ -5568,7 +5569,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 GetContext()->PSSetShaderResources( 0, 3, srv );
 
                 // Get the right shader for it
-                if ( BindShaderForTexture( mesh.Range.Key.Texture, false,
+                if ( BindShaderForTexture( tex, false,
                     zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                     // shader changed? update buffers.
                     updatePSBuffers();
@@ -5595,7 +5596,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     DynamicConstantBufferPool->BindPS(materialInfoBuffer, materialInfoBufferAllocation);
                     lastMatCbAllocation = materialInfoBufferAllocation;
                 }
-                bound = mesh.Range.Key.Texture;
+                bound = tex;
             }
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
