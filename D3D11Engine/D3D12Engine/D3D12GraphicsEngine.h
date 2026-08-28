@@ -1328,7 +1328,13 @@ private:
     void RenderSSAO();                        // the AO entry point: publishes the AO constants, then runs XeGTAO or simple SSAO
     void RenderSimpleSSAO();                  // main estimate -> separable blur (Shaders/D3D12/SSAO.hlsl)
     void BeginAoDepthRead();                  // m_DepthBuffer DEPTH_WRITE -> NON_PIXEL_SHADER_RESOURCE
-    void EndAoDepthRead();                    // ...and straight back (both AO implementations bracket with these)
+    void EndAoDepthRead();                    // ...and straight back. RenderSimpleSSAO brackets with both;
+                                               // RenderGTAO calls NEITHER — its depth-buffer transition is
+                                               // batched together with its other pre-graph transitions
+                                               // (normal buffer, m_AOMask) into one TransitionBarriers() call,
+                                               // and its "after" side rides a TransitionExternalAfter on its
+                                               // graph's last pass, alongside that pass's own restores (see
+                                               // D3D12GTAO.cpp) — neither fits calling this pair as-is.
 
     // ---- Intel XeGTAO (D3D12GTAO.cpp) ----------------------------------------------------------------------
     // Ground-truth ambient occlusion; this is what AOMode::AO_ASSAO selects on D3D12 (D3D11 keeps its own ASSAO
