@@ -585,52 +585,55 @@ void ImGuiShim::OnResize( INT2 newSize )
     ImGuiCollectResolutions( Resolutions );
 }
 
-template <typename T>
-bool ImComboBox( const char* id, const ListItem<T> *items, size_t numItems, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
-    if ( storage == nullptr || numItems == 0 ) {
-        return ImGui::BeginCombo( id, "invalid storage" );
-    }
-    ListItem<T> selectedItem = items[0];
-    for ( size_t i = 0; i < numItems; i++ ) {
-        const auto& it = items[i];
-        if ( it.value == *storage ) {
-            selectedItem = it;
-            break;
+namespace Internal
+{
+    template <typename T>
+    static bool ImComboBox( const char* id, const ListItem<T> *items, size_t numItems, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
+        if ( storage == nullptr || numItems == 0 ) {
+            return ImGui::BeginCombo( id, "invalid storage" );
         }
-    }
-    if ( ImGui::BeginCombo( id, selectedItem.label ) ) {
+        ListItem<T> selectedItem = items[0];
         for ( size_t i = 0; i < numItems; i++ ) {
-            bool isSelected = (*storage == items[i].value);
-
-            if ( ImGui::Selectable( items[i].label, isSelected ) ) {
-                *storage = items[i].value;
-                if (selected) selected();
-            }
-            
-            if ( items[i].toolTip ) {
-                ImGui::SetItemTooltip( "%s", items[i].toolTip );
-            }
-
-            if ( isSelected ) {
-                ImGui::SetItemDefaultFocus();
+            const auto& it = items[i];
+            if ( it.value == *storage ) {
+                selectedItem = it;
+                break;
             }
         }
-        return true;
+        if ( ImGui::BeginCombo( id, selectedItem.label ) ) {
+            for ( size_t i = 0; i < numItems; i++ ) {
+                bool isSelected = (*storage == items[i].value);
+
+                if ( ImGui::Selectable( items[i].label, isSelected ) ) {
+                    *storage = items[i].value;
+                    if (selected) selected();
+                }
+                
+                if ( items[i].toolTip ) {
+                    ImGui::SetItemTooltip( "%s", items[i].toolTip );
+                }
+
+                if ( isSelected ) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            return true;
+        }
+        return false;
     }
-    return false;
 }
 
 template <typename T, size_t N>
-bool ImComboBox( const char* id, const ListItem<T>(&items)[N], T* storage, const std::move_only_function<void() const>& selected = []{}) {
-    return ImComboBox( id, items, N, storage, selected );
+static bool ImComboBox( const char* id, const ListItem<T>(&items)[N], T* storage, const std::move_only_function<void() const>& selected = []{}) {
+    return Internal::ImComboBox( id, items, N, storage, selected );
 }
 
 template <typename T>
-bool ImComboBox( const char* id, const std::vector<ListItem<T>>& items, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
-    return ImComboBox( id, items.data(), items.size(), storage, selected );
+static bool ImComboBox( const char* id, const std::vector<ListItem<T>>& items, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
+    return Internal::ImComboBox( id, items.data(), items.size(), storage, selected );
 }
 
-void ImText( const char* label, const ImVec2& size ) {
+static void ImText( const char* label, const ImVec2& size ) {
     auto& col = ImGui::GetStyleColorVec4( ImGuiCol_::ImGuiCol_Button );
 
     ImGui::PushStyleColor( ImGuiCol_::ImGuiCol_ButtonActive, col );
@@ -645,7 +648,7 @@ void ImText( const char* label, const ImVec2& size ) {
 
 // Helper function to edit a direction vector using ImGuizmo::ViewManipulate
 // Returns true if the direction was modified
-bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widgetSize = 100.0f )
+static bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widgetSize = 100.0f )
 {
     // Normalize the input direction
     XMVECTOR dirVec = XMLoadFloat3( &direction );
@@ -917,7 +920,9 @@ void ImGuiShim::RenderSettingsWindowModern() {
                 { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", noFsr1 ? upscalersNoFsr1 : upscalers, noFsr1 ? std::size(upscalersNoFsr1) : std::size(upscalers), &settings.Upscaler ) ) {
+            if ( noFsr1
+                ? ImComboBox( "##Upscaler", upscalersNoFsr1, &settings.Upscaler )
+                : ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
             }
             if ( noFsr1 ) {
