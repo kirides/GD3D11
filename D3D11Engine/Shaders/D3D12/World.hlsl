@@ -1,15 +1,10 @@
 // Default (column-major) matrix packing — matches D3D11's VS_ExPacked, which reads the same
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
-cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-// Forward+ tiled: light count + tiles/row + low-res cube heap slot. ProjA/ProjB/NearZ/FarZ feed
-// PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see that header for what each means.
-cbuffer LightCB : register(b2) {
-    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
-    float ProjA; float ProjB; float NearZ; float FarZ;
-};
-
+#include "include/FogCB.hlsl"
 #include "include/ForwardPlusTypes.hlsl"
+// LightCB (LIGHTCB_REGISTER = b2, the default) — light count + tiles/row + cluster Z-slice basis.
+#include "include/LightCB.hlsl"
 
 // Bound as a ROOT descriptor SRV (no descriptor-table slot). The per-cluster mask produced by the light-cull
 // compute (DispatchLightCulling) narrows this loop to only the lights visible in this pixel's cluster.
@@ -24,42 +19,8 @@ SamplerState smp : register(s0);
 // s2 = a LESS_EQUAL PCF comparison sampler. Uploaded row-major, read column-major → mul(pos, CascadeVP[c])
 // matches the caster exactly. Shadow modulates the BAKED vertex lighting (darken sun-facing surfaces the
 // sun can't reach); replacing baked lighting with a full computed sun term (FP_ComputeSunLighting) is later.
-cbuffer ShadowCB : register(b3)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;    // dir TOWARD sun; shadow-map resolution
-    float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
-    float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
-    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
-    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
-    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
-    float    SkyOccStrength;    float SunSpecularEnabled;
-    // --- Scene wetness (rain) tail, uploaded separately by UploadWetnessConstants after the rain shadow
-    // pass has computed this frame's rain camera. Keep in sync with Vob.hlsl/Skeletal.hlsl and the
-    // WetnessCBData struct on the CPU side. RainShadowIndex/DistortionIndex are 0xFFFFFFFF when the rain
-    // shadowmap / distortion2.dds isn't available, which disables the effect entirely.
-    float4x4 RainViewProj;
-    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
-    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO / opaque-SSR-reprojection block, 80 bytes, written by UploadAoScreenConstants
-    // (kAoReprojCbOffset). AoInvRes: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask
-    // UV with. SsrPrevColorIndex/SsrPrevDepthIndex + SsrPrevViewProj: the previous-frame opaque scene
-    // color/depth (D3D12Ssr.cpp's m_SsrPrevColor/m_SsrPrevDepth) and the view-proj to reproject into their
-    // UV space — see PBRLighting.hlsl's opaque-SSR march and D3D12_SSR_WET_SURFACES_PLAN.md. Each index's
-    // low 24 bits are the bindless SRV slot, top 8 bits the step count for that pass (MaxSteps/RefineSteps);
-    // MaxSteps == 0 means SSR is off. Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl — the
-    // sky-IBL tail below relies on this block staying exactly 80 bytes (kSkyIblCbOffset = 432).
-    float2   AoInvRes;          uint SsrPrevColorIndex; uint SsrPrevDepthIndex;
-    float4x4 SsrPrevViewProj;
-    // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
-    // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
-    // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
-    // Keep in sync across World/Vob/Skeletal/Vegetation.hlsl and the SkyIblCBData struct on the CPU side.
-    // NOTE: SkyIblIntensity is the COMPLETE ambient scale for the IBL path (user knob x radiance
-    // normalization x an UNHALVED ShadowStrength), premultiplied by UploadSkyIblConstants. The IBL branch
-    // must not also apply AmbientStrength — that one still belongs to the flat fallback branch only.
-    uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
-};
+// (SHADOWCB_REGISTER defaults to b3, which is what World wants.)
+#include "include/ShadowCB.hlsl"
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
@@ -67,14 +28,12 @@ SamplerComparisonState  shadowCmp : register(s2);
 // draw — so the diffuse is sampled bindless too (no per-draw descriptor table). MatNormalIndex == 0xFFFFFFFF ->
 // no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0) and its
 // top 2 bits pack the FxMap's channel layout for SampleOrm() to decode (see PBRLighting.hlsl).
-// MatNormalStrength scales the normal-map perturb: 1.0 for a real material normalmap, or the weak
-// DEFAULT_NOISE_NORMALMAP_STRENGTH (0.10) when it's raining and MatNormalIndex is instead the rain-distortion
-// texture standing in for a missing normalmap (wet-ground look, mirrors D3D11GraphicsEngine::BindTextureNRFX).
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; float MatNormalStrength; };
+// World also gets MatNormalStrength (the world-only extra field — see include/MaterialCB.hlsl).
+#define MATERIALCB_EXTRA_FIELDS float MatNormalStrength;
+#include "include/MaterialCB.hlsl"
+#undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
-// Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
-// Points at the white 1x1 texture (mask = no occlusion) when SSAO is disabled/unavailable.
-cbuffer AOCB : register(b7) { uint AoMaskIndex; };
+#include "include/AOCB.hlsl"
 // Point-clamp for the AO mask: MUST be Sample-based (normalized UV, CLAMP addressing), not Load — Load() with
 // raw pixel coords returns 0 out-of-bounds, which the 1x1 "AO disabled" fallback always is at screen res.
 SamplerState smpAoClamp : register(s1);

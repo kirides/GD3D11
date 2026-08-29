@@ -25,8 +25,9 @@
 #define NUM_Z_SLICES 16u
 #define NUM_CSM_CASCADES 3
 
-// Per-frame visible point light (torches/campfires/spells), 64 B. Must stay in lockstep with the C++ GPULight
-// in D3D12Engine/D3D12EngineCommon.h and with LightCull.hlsl's TiledPointLight copy.
+// Per-frame visible point light (torches/campfires/spells), 64 B, and its shadow-tier bit constants — ONE
+// definition shared verbatim with the C++ GPULight in D3D12Engine/D3D12EngineCommon.h and with LightCull.hlsl
+// (which binds the same StructuredBuffer<GPULight> rather than keeping its own TiledPointLight copy).
 // Forward shaders read PositionWorld/Range/Color for shading (Color.w = 0 for an isStatic() light, and is used as
 // the specular scale so those diffuse-only fill lights cast no highlight); PositionView feeds the tile cull;
 // ShadowCubeIndex/ShadowOrigin/ShadowRange feed the point-shadow lookup.
@@ -34,12 +35,8 @@
 // ShadowOrigin/ShadowRange are the CUBE's centre and far-plane basis, which are NOT the light's own whenever
 // several co-located static lights share one cube (see the clustering in BuildFrameLightBuffer). Shading
 // always uses PositionWorld/Range; only SamplePointShadow uses the Shadow* pair.
-struct GPULight {
-    float3 PositionView; float Range;
-    float4 Color;
-    float3 PositionWorld; int ShadowCubeIndex;
-    float3 ShadowOrigin;  float ShadowRange;
-};
+#include "GPULightShared.h"
+
 // Clustered Forward+ grid cell: a MAX_ACTIVE_LIGHTS-bit membership mask over the frame's active light list (bit
 // i set = light i is visible in this cluster), NOT an {Offset,Count} index slice — see LightCull.hlsl/
 // PBRLighting.hlsl's AccumTiledPointLights. (MASK_WORDS + 1) * 4 bytes per cluster.
@@ -50,10 +47,8 @@ struct GPULight {
 // entry cannot spin away. MASK_WORDS is 32, so the summary fits exactly one word.
 struct LightGrid { uint WordOccupancy; uint Mask[MASK_WORDS]; };
 
-// ShadowCubeIndex encoding: -1 = unshadowed, else (slot | tier). Bit 30 selects the low-res static cube array
-// over the full-res dynamic one, and keeps the value positive so "ShadowCubeIndex >= 0" still means shadowed.
-static const int kShadowTierLow  = 0x40000000;
-// Bit 29: the slot also has a valid dynamic (skeletal overlay) cube — sample it too and min the two results.
-// Full-res slots only; absent means a pure static shadow and no second sample. Mirrors D3D12EngineCommon.h.
-static const int kShadowHasDynamic = 0x20000000;
-static const int kShadowSlotMask = 0x1FFFFFFF;
+// LightCB (the per-frame tiled/clustered params cbuffer) is declared separately in LightCB.hlsl, NOT
+// included from here: LightCull.hlsl wants GPULight/LightGrid/the constants above but has no LightCB of
+// its own (it has CullCB instead), and an unreferenced cbuffer declaration still reserves its register
+// in the compiled shader's reflection — pulling one in unconditionally would leak an unwanted binding
+// into LightCull's compute root signature. World/Vob/Skeletal/Vegetation/Decal.hlsl include both files.

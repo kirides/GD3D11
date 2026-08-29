@@ -1,28 +1,14 @@
-#define TILE_SIZE 16u
-#define MAX_ACTIVE_LIGHTS 1024u
-#define MASK_WORDS (MAX_ACTIVE_LIGHTS / 32u)
-#define NUM_Z_SLICES 16u
+// TILE_SIZE/MAX_ACTIVE_LIGHTS/MASK_WORDS/NUM_Z_SLICES/GPULight/LightGrid come from ForwardPlusTypes.hlsl —
+// the same declarations World/Vob/Skeletal/Vegetation/Decal.hlsl bind their StructuredBuffer<GPULight> to,
+// so a stride/layout change can no longer drift between the cull pass and the lit shaders that consume its
+// output. (LightCB itself is NOT pulled in — see the note there; this pass has its own CullCB below.)
+#include "include/ForwardPlusTypes.hlsl"
 
 // One thread group per SCREEN TILE (not per cluster): the group culls once against the tile's infinite frustum
 // column, then bins the survivors into all NUM_Z_SLICES slices itself. See CSMain's header for why.
 #define CULL_GROUP_SIZE 64u
 
-// MUST stay layout-identical to GPULight (C++ D3D12EngineCommon.h / HLSL include/ForwardPlusTypes.hlsl) — this
-// is a StructuredBuffer, so a stride mismatch silently misindexes EVERY light. The cull only reads
-// PositionView/Range; the trailing fields are here purely to keep the 64-byte stride.
-struct TiledPointLight {
-    float3 PositionView; float Range;
-    float4 Color;
-    float3 PositionWorld; int ShadowCubeIndex;
-    float3 ShadowOrigin;  float ShadowRange;
-};
-// Clustered Forward+ (P2.14): a MAX_ACTIVE_LIGHTS-bit membership mask, one bit per light in
-// SB_Lights[0..MAX_ACTIVE_LIGHTS). MASK_WORDS * 4 bytes, same layout as ForwardPlusTypes.hlsl's copy.
-// WordOccupancy: bit w set iff Mask[w] != 0, so the pixel shader can skip the empty words instead of walking all
-// MASK_WORDS of them. See the fuller note on ForwardPlusTypes.hlsl's copy — the two MUST stay layout-identical.
-struct LightGrid { uint WordOccupancy; uint Mask[MASK_WORDS]; };
-
-StructuredBuffer<TiledPointLight> SB_Lights   : register(t0);
+StructuredBuffer<GPULight>        SB_Lights    : register(t0);
 RWStructuredBuffer<LightGrid>     RW_LightGrid : register(u0);
 
 cbuffer CullCB : register(b0) {
@@ -107,7 +93,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint ti : SV_GroupIndex ) {
         // NOTE: no early-out/continue here — every lane must reach the wave ops below with the same activity
         // mask, so out-of-range lanes fall through with hit=false instead of exiting the loop.
         if ( li < lightCount ) {
-            const TiledPointLight L = SB_Lights[li];
+            const GPULight L = SB_Lights[li];
             const float3 c = L.PositionView;
             const float  r = L.Range * 1.05;
 

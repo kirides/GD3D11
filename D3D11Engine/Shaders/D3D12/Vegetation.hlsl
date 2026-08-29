@@ -11,14 +11,13 @@ cbuffer GrassCB : register(b1)
     float G_Time;             float G_WindStrength;    float G_HeroAffectStrength; float G_PrevTime;
     float3 G_PlayerPosWS;     float _gpad1;
 };
-cbuffer FogCB : register(b2) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
-cbuffer LightCB : register(b3) {
-    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
-    float ProjA; float ProjB; float NearZ; float FarZ;
-};
-
+#define FOGCB_REGISTER b2
+#include "include/FogCB.hlsl"
+#undef FOGCB_REGISTER
 #include "include/ForwardPlusTypes.hlsl"
+#define LIGHTCB_REGISTER b3
+#include "include/LightCB.hlsl"
+#undef LIGHTCB_REGISTER
 
 // Forward+ tiled point lights (root-descriptor SRVs + per-cluster mask) — see World.hlsl for the rationale.
 StructuredBuffer<GPULight>  Lights        : register(t2);
@@ -28,41 +27,12 @@ Texture2D    tx       : register(t0);   // grass blade texture (GVegetationBox::
 Texture2D    txGround : register(t1);   // ground/undercoat texture (GVegetationBox::MeshTexture) — tints the blades
 SamplerState smp       : register(s0);
 
-cbuffer ShadowCB : register(b4)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;
-    float3   SunColor;          float SunIntensity;
-    float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
-    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
-    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
-    float    SkyOccStrength;    float SunSpecularEnabled;
-    // Scene-wetness (rain) block. Grass applies no wetness (no Wetness.hlsl include here), but the fields must
-    // be declared so the sky-IBL tail below lands at the byte offset UploadSkyIblConstants writes it to — this
-    // CB is the same 512-byte resource World/Vob/Skeletal bind, three disjoint writers into one layout.
-    float4x4 RainViewProj;
-    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
-    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO / opaque-SSR-reprojection block, 80 bytes, written by UploadAoScreenConstants
-    // (kAoReprojCbOffset). AoInvRes: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask
-    // UV with. SsrPrevColorIndex/SsrPrevDepthIndex + SsrPrevViewProj: the previous-frame opaque scene
-    // color/depth (D3D12Ssr.cpp's m_SsrPrevColor/m_SsrPrevDepth) and the view-proj to reproject into their
-    // UV space — see PBRLighting.hlsl's opaque-SSR march and D3D12_SSR_WET_SURFACES_PLAN.md. Each index's
-    // low 24 bits are the bindless SRV slot, top 8 bits the step count for that pass (MaxSteps/RefineSteps);
-    // MaxSteps == 0 means SSR is off. Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl — the
-    // sky-IBL tail below relies on this block staying exactly 80 bytes (kSkyIblCbOffset = 432).
-    float2   AoInvRes;          uint SsrPrevColorIndex; uint SsrPrevDepthIndex;
-    float4x4 SsrPrevViewProj;
-    // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
-    // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
-    // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
-    // Keep in sync across World/Vob/Skeletal/Vegetation.hlsl and the SkyIblCBData struct on the CPU side.
-    // NOTE: SkyIblIntensity is the COMPLETE ambient scale for the IBL path (user knob x radiance
-    // normalization x an UNHALVED ShadowStrength), premultiplied by UploadSkyIblConstants. The IBL branch
-    // must not also apply AmbientStrength — that one still belongs to the flat fallback branch only.
-    uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
-};
+// Grass applies no wetness (no Wetness.hlsl include here), but ShadowCB.hlsl's fields must still be
+// declared so the sky-IBL tail lands at the byte offset UploadSkyIblConstants writes it to — this CB is
+// the same 512-byte resource World/Vob/Skeletal bind, four disjoint writers into one layout.
+#define SHADOWCB_REGISTER b4
+#include "include/ShadowCB.hlsl"
+#undef SHADOWCB_REGISTER
 Texture2DArray          ShadowMap : register(t5);
 SamplerComparisonState  shadowCmp : register(s2);
 // PBRLighting.hlsl's AccumTiledPointLights hard-requires this symbol to exist (it samples it for any nearby
@@ -70,7 +40,9 @@ SamplerComparisonState  shadowCmp : register(s2);
 TextureCubeArray        PointShadowCubes : register(t6);
 // Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
 // b5: b0..b4 above are all spoken for on this root sig.
-cbuffer AOCB : register(b5) { uint AoMaskIndex; };
+#define AOCB_REGISTER b5
+#include "include/AOCB.hlsl"
+#undef AOCB_REGISTER
 // Point-clamp for the AO mask — see World.hlsl for why Sample, not Load.
 SamplerState smpAoClamp : register(s1);
 // SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp declared above.
