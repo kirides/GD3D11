@@ -499,11 +499,14 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
 
     ImGui::SeparatorText( "Tone Mapping" );
 
-    CheckRow( "HDR Rendering", &settings.EnableHDR,
-        "Render the scene in high dynamic range and tone-map it down. Not the same as HDR\n"
-        "monitor output, which lives on the Display tab.", "HDR" );
+    const bool hdrEnabled = IsD3D12() || settings.EnableHDR;
+    if (!IsD3D12()) { // dx12 always renders hdr.
+        CheckRow( "HDR Rendering", &settings.EnableHDR,
+            "Render the scene in high dynamic range and tone-map it down. Not the same as HDR\n"
+            "monitor output, which lives on the Display tab.", "HDR" );
+    }
 
-    ImGui::BeginDisabled( !settings.EnableHDR );
+    ImGui::BeginDisabled( !hdrEnabled );
     {
         constexpr ListItem<GothicRendererSettings::E_HDRToneMap> toneMaps[] = {
             { "Simple", GothicRendererSettings::ToneMap_Simple },
