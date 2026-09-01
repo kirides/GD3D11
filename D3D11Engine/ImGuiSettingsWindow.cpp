@@ -604,8 +604,6 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     ImGui::SeparatorText( "Interface" );
 
-    SliderFloatRow( "UI Scale", "##GothicUIScale", &settings.GothicUIScale, 0.5f, 4.0f );
-    CheckRow( "Custom Font Rendering", &settings.EnableCustomFontRendering );
     CheckRow( "Fast Inventory Rendering", &settings.FastInventoryRendering,
         "Skips ZenGin's per-slot pseudo-world render for inventory items." );
     CheckRow( "Allow Numpad Keys", &settings.AllowNumpadKeys,
