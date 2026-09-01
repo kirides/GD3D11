@@ -78,6 +78,21 @@ int GetDpi( HWND hWnd )
 }
 
 namespace {
+    
+    template<typename T>
+    struct ListItem
+    {
+        const char* label;
+        T value;
+        const char* toolTip;
+        
+        constexpr ListItem(const char* label, const T value) noexcept :
+            label(label), value(value), toolTip(nullptr) {}
+        
+        constexpr ListItem(const char* label, const T value, const char* toolTip) noexcept :
+            label(label), value(value), toolTip(toolTip) {}
+    };
+    
     // SRV-descriptor callbacks for imgui_impl_dx12: it needs to allocate/free shader-visible
     // descriptors for its textures (font atlas + any user textures). We route these through the
     // D3D12GraphicsEngine's shader-visible heap (passed via ImGui_ImplDX12_InitInfo::UserData).
@@ -570,99 +585,55 @@ void ImGuiShim::OnResize( INT2 newSize )
     ImGuiCollectResolutions( Resolutions );
 }
 
-template <typename T>
-bool ImComboBoxC( const char* id, const std::vector<std::pair<const char*, T>>& items, T* storage, const std::function<void()>& selected ) {
-    if ( storage == nullptr || items.size() == 0 ) {
-        return ImGui::BeginCombo( id, "invalid storage" );
-    }
-    std::pair<const char*, T> selectedItem = items[0];
-    for ( auto& it : items ) {
-        if ( it.second == *storage ) {
-            selectedItem = it;
-            break;
+namespace Internal
+{
+    template <typename T>
+    static bool ImComboBox( const char* id, const ListItem<T> *items, size_t numItems, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
+        if ( storage == nullptr || numItems == 0 ) {
+            return ImGui::BeginCombo( id, "invalid storage" );
         }
-    }
-    if ( ImGui::BeginCombo( id, selectedItem.first ) ) {
-        for ( size_t i = 0; i < items.size(); i++ ) {
-            bool isSelected = (*storage == items[i].second);
-
-            if ( ImGui::Selectable( items[i].first, isSelected ) ) {
-                *storage = items[i].second;
-                selected();
-            }
-
-            if ( isSelected ) {
-                ImGui::SetItemDefaultFocus();
+        ListItem<T> selectedItem = items[0];
+        for ( size_t i = 0; i < numItems; i++ ) {
+            const auto& it = items[i];
+            if ( it.value == *storage ) {
+                selectedItem = it;
+                break;
             }
         }
-        return true;
+        if ( ImGui::BeginCombo( id, selectedItem.label ) ) {
+            for ( size_t i = 0; i < numItems; i++ ) {
+                bool isSelected = (*storage == items[i].value);
+
+                if ( ImGui::Selectable( items[i].label, isSelected ) ) {
+                    *storage = items[i].value;
+                    if (selected) selected();
+                }
+                
+                if ( items[i].toolTip ) {
+                    ImGui::SetItemTooltip( "%s", items[i].toolTip );
+                }
+
+                if ( isSelected ) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            return true;
+        }
+        return false;
     }
-    return false;
+}
+
+template <typename T, size_t N>
+static bool ImComboBox( const char* id, const ListItem<T>(&items)[N], T* storage, const std::move_only_function<void() const>& selected = []{}) {
+    return Internal::ImComboBox( id, items, N, storage, selected );
 }
 
 template <typename T>
-bool ImComboBoxCT( const char* id, const std::vector<std::tuple<const char*, T, const char*>>& items, T* storage, const std::function<void()>& selected ) {
-    if ( storage == nullptr || items.size() == 0 ) {
-        return ImGui::BeginCombo( id, "invalid storage" );
-    }
-    auto selectedItem = items[0];
-    for ( auto& it : items ) {
-        if ( std::get<1>( it ) == *storage ) {
-            selectedItem = it;
-            break;
-        }
-    }
-    if ( ImGui::BeginCombo( id, std::get<0>( selectedItem )) ) {
-        for ( size_t i = 0; i < items.size(); i++ ) {
-            bool isSelected = (*storage == std::get<1>( items[i] ));
-
-            if ( ImGui::Selectable( std::get<0>( items[i] ), isSelected ) ) {
-                *storage = std::get<1>( items[i] );
-                selected();
-            }
-            if ( std::get<2>(items[i]) ) {
-                ImGui::SetItemTooltip( "%s", std::get<2>( items[i] ) );
-            }
-
-            if ( isSelected ) {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        return true;
-    }
-    return false;
+static bool ImComboBox( const char* id, const std::vector<ListItem<T>>& items, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
+    return Internal::ImComboBox( id, items.data(), items.size(), storage, selected );
 }
 
-template <typename T>
-bool ImComboBox( const char* id, const std::vector<std::pair<const char*, T>>& items, T* storage ) {
-    if ( storage == nullptr || items.size() == 0 ) {
-        return ImGui::BeginCombo( id, "invalid storage" );
-    }
-    std::pair<const char*, T> selectedItem = items[0];
-    for ( auto& it : items ) {
-        if ( it.second == *storage ) {
-            selectedItem = it;
-            break;
-        }
-    }
-    if ( ImGui::BeginCombo( id, selectedItem.first ) ) {
-        for ( size_t i = 0; i < items.size(); i++ ) {
-            bool isSelected = (*storage == items[i].second);
-
-            if ( ImGui::Selectable( items[i].first, isSelected ) ) {
-                *storage = items[i].second;
-            }
-
-            if ( isSelected ) {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        return true;
-    }
-    return false;
-}
-
-void ImText( const char* label, const ImVec2& size ) {
+static void ImText( const char* label, const ImVec2& size ) {
     auto& col = ImGui::GetStyleColorVec4( ImGuiCol_::ImGuiCol_Button );
 
     ImGui::PushStyleColor( ImGuiCol_::ImGuiCol_ButtonActive, col );
@@ -677,7 +648,7 @@ void ImText( const char* label, const ImVec2& size ) {
 
 // Helper function to edit a direction vector using ImGuizmo::ViewManipulate
 // Returns true if the direction was modified
-bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widgetSize = 100.0f )
+static bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widgetSize = 100.0f )
 {
     // Normalize the input direction
     XMVECTOR dirVec = XMLoadFloat3( &direction );
@@ -912,7 +883,7 @@ void ImGuiShim::RenderSettingsWindowModern() {
             if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
                 // Display "levels" as typical for FSR
-                static std::vector<std::pair<const char*, int>> fsrLevels = {
+                constexpr ListItem<int> fsrLevels[] = {
                     { "Native AA", 100 },
                     { "High Quality", 83 },
                     { "Quality", 75 },
@@ -940,16 +911,18 @@ void ImGuiShim::RenderSettingsWindowModern() {
             }
 
             ImText( "Upscaler", buttonWidth ); ImGui::SameLine();
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalers = {
+            constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
                 { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalersNoFsr1 = {
+            constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
                 { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", noFsr1 ? upscalersNoFsr1 : upscalers, &settings.Upscaler ) ) {
+            if ( noFsr1
+                ? ImComboBox( "##Upscaler", upscalersNoFsr1, &settings.Upscaler )
+                : ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
             }
             if ( noFsr1 ) {
@@ -980,7 +953,7 @@ void ImGuiShim::RenderSettingsWindowModern() {
 
             GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
-            static std::vector<std::pair<const char*, int>> graphicsPresets = {
+            constexpr ListItem<int> graphicsPresets[] = {
                 {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
                 {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
                 {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
@@ -991,7 +964,7 @@ void ImGuiShim::RenderSettingsWindowModern() {
             ImGui::TextUnformatted( "Graphics Preset" ); ImGui::SameLine();
 
             ImGui::PushItemWidth( 250 );
-            if ( ImComboBoxC( "##GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
+            if ( ImComboBox( "##GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
                 settings.ApplyGraphicsPreset();
                 } ) ) {
                 ImGui::EndCombo();
@@ -1115,7 +1088,7 @@ void ImGuiShim::RenderSettingsWindow()
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
         FixupSettings(settings);
 
-        static std::vector<std::pair<const char*, int>> graphicsPresets = {
+        constexpr ListItem<int> graphicsPresets[] = {
             {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
             {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
             {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
@@ -1126,7 +1099,7 @@ void ImGuiShim::RenderSettingsWindow()
         ImGui::TextUnformatted("Graphics Preset"); ImGui::SameLine();
         
         ImGui::PushItemWidth( 250 );
-        if ( ImComboBoxC( "##GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
+        if ( ImComboBox( "##GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
             settings.ApplyGraphicsPreset();
             } ) ) {
             ImGui::EndCombo();
@@ -1150,13 +1123,13 @@ void ImGuiShim::RenderSettingsWindow()
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
-            static std::vector<std::tuple<const char*, AOMode, const char*>> aoModes = {
+            constexpr ListItem<AOMode> aoModes[] = {
                     {"Disabled", AOMode::AO_NONE, nullptr},
                     {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
                     {"SAO", AOMode::AO_SAO, nullptr},
                     {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
             };
-            if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
+            if ( ImComboBox( "AO Mode", aoModes, &settings.AoMode, [] {
                 if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                     Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
                 }
@@ -1174,7 +1147,7 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::Checkbox( "Depth of Field", &settings.EnableDoF );
             ImGui::SetItemTooltip( "Enable Depth of Field with bokeh blur." );
-            static std::vector<std::tuple<const char*, GothicRendererSettings::E_AntiAliasingMode, const char*>> antiAliasing = {
+            constexpr ListItem<GothicRendererSettings::E_AntiAliasingMode> antiAliasing[] = {
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE, nullptr },
                 {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA, nullptr },
                 {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA, "Temporal Anti-Aliasing" },
@@ -1184,7 +1157,7 @@ void ImGuiShim::RenderSettingsWindow()
             {
                 ImGui::PushID( "AntiAliasingSettings" );
                 auto selectedMode = settings.AntiAliasingMode;
-                if ( ImComboBoxCT( "Anti Aliasing", antiAliasing, &selectedMode, [&selectedMode, &settings] {
+                if ( ImComboBox( "Anti Aliasing", antiAliasing, &selectedMode, [&selectedMode, &settings] {
                     if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
                         settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
                     }
@@ -1196,7 +1169,7 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
-                static const std::vector<std::pair<const char*, int>> msaaSamples = {
+                static const std::vector<ListItem<int>> msaaSamples = {
                     { "Off", 1 },
                     { "2x",  2 },
                     { "4x",  4 },
@@ -1213,12 +1186,12 @@ void ImGuiShim::RenderSettingsWindow()
                 shadersToReload |= ShaderCategory::LightsAndShadows;
             }
             {
-                static std::vector<std::pair<const char*, GothicRendererSettings::E_ShadowFilterMode>> shadowFilterModes = {
+                constexpr ListItem<GothicRendererSettings::E_ShadowFilterMode> shadowFilterModes[] = {
                     {"Disabled", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED},
                     {"Simple", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE},
                     {"PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS},
                 };
-                if ( ImComboBoxC( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, [&shadersToReload]() {
+                if ( ImComboBox( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, [&shadersToReload]() {
                     shadersToReload |= ShaderCategory::LightsAndShadows;
                     } ) ) {
                     ImGui::EndCombo();
@@ -1269,6 +1242,17 @@ void ImGuiShim::RenderSettingsWindow()
                     settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
                     shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
                 }
+            }
+            // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
+            // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime
+            // loop-bound uniform, same as WaterSSRQuality's own D3D12 path (see D3D12Water.cpp).
+            if ( Engine::GraphicsEngine && Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
+                const char* opaqueSsrLevels[] = { "Disabled", "Low", "Medium", "High" };
+                int opaqueSsr = settings.OpaqueSSRQuality;
+                if ( ImGui::Combo( "Wet Surface Reflections (SSR)", &opaqueSsr, opaqueSsrLevels, IM_ARRAYSIZE( opaqueSsrLevels ) ) ) {
+                    settings.OpaqueSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)opaqueSsr;
+                }
+                ImGui::SetItemTooltip( "Temporal screen-space reflections on wet/glossy ground and metal. One frame of lag; D3D12 only." );
             }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
@@ -1327,7 +1311,7 @@ void ImGuiShim::RenderSettingsWindow()
             if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
                 // Display "levels" as typical for FSR
-                static std::vector<std::pair<const char*, int>> fsrLevels = {
+                constexpr ListItem<int> fsrLevels[] = {
                     { "Native AA", 100 },
                     { "High Quality", 83 },
                     { "Quality", 75 },
@@ -1354,16 +1338,18 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             ImText( "Upscaler", buttonWidth ); ImGui::SameLine();
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalers = {
+            constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
                 { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalersNoFsr1 = {
+            constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
                 { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
-            if ( ImComboBox( "##Upscaler", noFsr1 ? upscalersNoFsr1 : upscalers, &settings.Upscaler ) ) {
+            if ( noFsr1
+                ? ImComboBox( "##Upscaler", upscalersNoFsr1, &settings.Upscaler )
+                : ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
                 ImGui::EndCombo();
             }
             if ( noFsr1 ) {
@@ -1383,7 +1369,7 @@ void ImGuiShim::RenderSettingsWindow()
 
 
             ImText( "Texture Quality", buttonWidth ); ImGui::SameLine();
-            static std::vector<std::pair<const char*, int>> QualityOptions = {
+            constexpr ListItem<int> QualityOptions[] = {
                 { "Very Low", static_cast<int>(GothicRendererSettings::TX_QUALITY::VeryLow) },
                 { "Low", static_cast<int>(GothicRendererSettings::TX_QUALITY::Low) },
                 { "Medium", static_cast<int>(GothicRendererSettings::TX_QUALITY::Medium) },
@@ -1392,16 +1378,16 @@ void ImGuiShim::RenderSettingsWindow()
                 { "Extreme", static_cast<int>(GothicRendererSettings::TX_QUALITY::MAX) }, // TODO: this should depend on the GPU capabilities like in the original game
             };
             
-            if (settings.textureMaxSize > QualityOptions.back().second) {
-                settings.textureMaxSize = QualityOptions.back().second;
+            if (settings.textureMaxSize > QualityOptions[std::size(QualityOptions)-1].value) {
+                settings.textureMaxSize = QualityOptions[std::size(QualityOptions)-1].value;
                 Engine::GAPI->UpdateTextureMaxSize();
             }
-            if (settings.textureMaxSize < QualityOptions.front().second) {
-                settings.textureMaxSize = QualityOptions.front().second;
+            if (settings.textureMaxSize < QualityOptions[0].value) {
+                settings.textureMaxSize = QualityOptions[0].value;
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
-            if (ImComboBoxC("##TextureQuality", QualityOptions, &settings.textureMaxSize, []{
+            if (ImComboBox("##TextureQuality", QualityOptions, &settings.textureMaxSize, []{
                 Engine::GAPI->UpdateTextureMaxSize();
             } ))
             {
@@ -1413,14 +1399,14 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::SameLine();
 
             static auto displayModeState = InterpretWindowMode( settings );
-            static std::vector<std::tuple<const char*, WindowModes, const char*>> DisplayEnums = {
+            constexpr ListItem<WindowModes> DisplayEnums[] = {
                 { "Fullscreen Borderless", WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, nullptr },
                 { "Fullscreen Lowlatency [*]", WindowModes::WINDOW_MODE_FULLSCREEN_LOWLATENCY, "switching requires restarting the game"},
                 { "Fullscreen Exclusive [*]", WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE, "switching requires restarting the game"},
                 { "Windowed", WindowModes::WINDOW_MODE_WINDOWED, nullptr},
             };
             
-            if ( ImComboBoxCT( "##DisplayMode", DisplayEnums, &displayModeState, [&settings] {
+            if ( ImComboBox( "##DisplayMode", DisplayEnums, &displayModeState, [&settings] {
                 // selected
                 settings.ChangeWindowPreset = displayModeState;
                 } ) ) {
@@ -1431,7 +1417,7 @@ void ImGuiShim::RenderSettingsWindow()
 
             // Resolutions are restricted to these five power-of-two steps — 8192 is the hard ceiling on both
             // backends/feature levels (a 16384 cascade slice is ~1GB, not worth the VRAM for a shadow map).
-            const static std::vector<std::pair<const char*, int>> shadowMapSizes = {
+            constexpr ListItem<int> shadowMapSizes[] = {
                 {"very low", 512},
                 {"low", 1024},
                 {"medium", 2048},
@@ -1439,7 +1425,7 @@ void ImGuiShim::RenderSettingsWindow()
                 {"very high", 8192},
             };
 
-            if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, [&shadersToReload]{
+            if ( ImComboBox( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, [&shadersToReload]{
                 if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                     shadersToReload |= ShaderCategory::LightsAndShadows;
                 }
@@ -1449,14 +1435,14 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
             
-            const static std::vector<std::tuple<const char*, GothicRendererSettings::EPointLightShadowMode, const char*>> dynamicShadowValues = {
+            constexpr ListItem<GothicRendererSettings::EPointLightShadowMode> dynamicShadowValues[] = {
                 { "Off", GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED, nullptr },
                 { "Static", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, nullptr },
                 { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC, nullptr },
                 { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL, "Very expensive. Don't use unless you encounter visual bugs." },
             };
 
-            if ( ImComboBoxCT( "##DynamicShadows", dynamicShadowValues, &settings.EnablePointlightShadows, [] {} ) ) {
+            if ( ImComboBox( "##DynamicShadows", dynamicShadowValues, &settings.EnablePointlightShadows, [] {} ) ) {
                 ImGui::EndCombo();
             }
 
@@ -1729,6 +1715,19 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "Weld a separate, smaller index buffer for shadow passes. Off falls back to\n"
             "the render index buffer for shadows (more vertex work in the shadow pass, no\n"
             "visual change) and skips one buffer per sub-mesh. Takes effect on the next world load." );
+
+        ImGui::CheckboxFlags( "Cache on disk##MeshOptCacheDisk", &settings.MeshOptimizeCacheFlags, GothicRendererSettings::MOC_DISK );
+        ImGui::SetItemTooltip( "Remember already-optimized meshes in system\\GD3D11\\cache\\meshes.db so a\n"
+            "world/VOB that has been loaded before, even in an earlier session, skips this pass\n"
+            "entirely. Off skips reading and writing that file. Takes effect on the next lookup." );
+        ImGui::SameLine();
+        ImGui::CheckboxFlags( "Cache in memory##MeshOptCacheMemory", &settings.MeshOptimizeCacheFlags, GothicRendererSettings::MOC_MEMORY );
+        ImGui::SetItemTooltip( "Also remember already-optimized meshes in RAM for the duration of the current\n"
+            "world load, so re-converting the same mesh twice in one load (shared VOB visuals,\n"
+            "e.g.) skips the disk read too. Never kept beyond one load regardless of this setting,\n"
+            "to avoid growing unbounded over a long play session in this 32-bit process, and capped\n"
+            "at a fixed RAM budget even within one load so a single huge world can't do the same.\n"
+            "Takes effect on the next world load." );
         ImGui::EndDisabled();
 
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
@@ -1750,7 +1749,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
         ImGui::DragFloat( "Exposure", &settings.Exposure, 0.01f, 0.0f, 8.0f, "%.2f" );
 
-        static std::vector<std::pair<const char*, int>> hdrToneMapValues = {
+        constexpr ListItem<int> hdrToneMapValues[] = {
             {"ToneMap_jafEq4", 0},
             {"Uncharted2Tonemap", 1},
             {"ACESFilmTonemap", 2},
@@ -1760,7 +1759,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         };
 
         ImGui::BeginDisabled( !settings.EnableHDR );
-        if ( ImComboBoxC( "HDR ToneMap", hdrToneMapValues, reinterpret_cast<int*>(&settings.HDRToneMap), []
+        if ( ImComboBox( "HDR ToneMap", hdrToneMapValues, reinterpret_cast<int*>(&settings.HDRToneMap), []
         {
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Tonemapping );
@@ -1849,14 +1848,14 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "DynamicLighting", &settings.EnableDynamicLighting );
         ImGui::BeginDisabled( !settings.EnableDynamicLighting );
         {
-            const static std::vector<std::tuple<const char*, GothicRendererSettings::EPointLightShadowMode, const char*>> dynamicShadowValues = {
+            constexpr ListItem<GothicRendererSettings::EPointLightShadowMode> dynamicShadowValues[] = {
                 { "Off", GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED, nullptr },
                 { "Static", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, nullptr },
                 { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC, nullptr },
                 { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL, "Very expensive. Don't use unless you encounter visual bugs." },
             };
 
-            if ( ImComboBoxCT( "##DynamicShadows", dynamicShadowValues, &settings.EnablePointlightShadows, [] {} ) ) {
+            if ( ImComboBox( "##DynamicShadows", dynamicShadowValues, &settings.EnablePointlightShadows, [] {} ) ) {
                 ImGui::EndCombo();
             }
 
@@ -1895,7 +1894,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
         // Resolutions are restricted to these five power-of-two steps — 8192 is the hard ceiling on both
         // backends/feature levels (a 16384 cascade slice is ~1GB, not worth the VRAM for a shadow map).
-        static std::vector<std::pair<const char*, int>> shadowMapSizes = {
+        constexpr ListItem<int> shadowMapSizes[] = {
           {"512", 512},
           {"1024", 1024},
           {"2048", 2048},
@@ -1913,7 +1912,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "Fixed shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
             ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
 
-            if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { 
+            if ( ImComboBox( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { 
                 if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                     Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
                 }
@@ -1946,7 +1945,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
             ImGui::BeginDisabled( settings.NumShadowCascades <= 1 );
             {
-                static std::vector<std::pair<const char*, GothicRendererSettings::E_ShadowFrustumCulling>> shadowFrustumCullingModes = {
+                constexpr ListItem<GothicRendererSettings::E_ShadowFrustumCulling> shadowFrustumCullingModes[] = {
                     {"Disabled", GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_DISABLED},
                     {"Conservative", GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE},
                     {"Aggressive", GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE},
@@ -1959,12 +1958,12 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             }
 
             {
-                static std::vector<std::pair<const char*, GothicRendererSettings::E_ShadowFilterMode>> shadowFilterModes = {
+                constexpr ListItem<GothicRendererSettings::E_ShadowFilterMode> shadowFilterModes[] = {
                     {"Disabled", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED},
                     {"Simple", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE},
                     {"PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS},
                 };
-                if ( ImComboBoxC( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, []() {
+                if ( ImComboBox( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, []() {
                     if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
                     }
@@ -2247,7 +2246,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Allow Driver Extensions (AMD, Nvidia, Intel).\nRequires restart.");
 
                 {
-                    static const std::vector<std::pair<const char*, GothicRendererSettings::E_RendererMode>> rendererModes = {
+                    static const std::vector<ListItem<GothicRendererSettings::E_RendererMode>> rendererModes = {
                         { "Deferred",   GothicRendererSettings::RM_Deferred },
                         { "Forward+",   GothicRendererSettings::RM_ForwardPlus },
                     };
@@ -2257,7 +2256,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ImGui::SetItemTooltip( "Deferred: GBuffer + tiled deferred lighting.  Forward+: depth prepass + per-pixel lit geometry pass." );
                 }
                 if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
-                    static const std::vector<std::pair<const char*, int>> msaaSamples = {
+                    static const std::vector<ListItem<int>> msaaSamples = {
                         { "Off", 1 },
                         { "2x",  2 },
                         { "4x",  4 },
@@ -2300,12 +2299,12 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip("Enables support for BC5 compressed Normalmaps.");
 
-                static const std::vector<std::pair<const char*, int>> normalMapType = {
+                static const std::vector<ListItem<int>> normalMapType = {
                     { "Disabled",   0 },
                     { "OpenGL (Y+)",   1 }, 
                     { "DirectX (Y-)",   2 },
                 };
-                if ( ImComboBoxC( "Normalmapping texture mode", normalMapType, &settings.AllowNormalmaps, []
+                if ( ImComboBox( "Normalmapping texture mode", normalMapType, &settings.AllowNormalmaps, []
                 {
                     if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                         Engine::GraphicsEngine->ReloadShaders();
@@ -2416,13 +2415,13 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::SeparatorText( "Ambient Occlusion" );
             {
                 ImGui::PushID( "AOSettings" );
-                static std::vector<std::tuple<const char*, AOMode, const char*>> aoModes = {
+                constexpr ListItem<AOMode> aoModes[] = {
                     {"Disabled", AOMode::AO_NONE, nullptr},
                     {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
                     {"SAO", AOMode::AO_SAO, nullptr},
                     {"ASSAO / XeGTAO", AOMode::AO_ASSAO, "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)."},
                 };
-                if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
+                if ( ImComboBox( "AO Mode", aoModes, &settings.AoMode, [] {
                     if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
                         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
                     }
@@ -2434,7 +2433,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 // D3D12 only; rebuild happens next frame in ApplyPendingAoResolutionChange.
                 if ( settings.AoMode != AOMode::AO_NONE
                     && settings.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
-                    static std::vector<std::pair<const char*, AoResolutionScale>> aoResolutions = {
+                    constexpr ListItem<AoResolutionScale> aoResolutions[] = {
                         { "Full", AoResolutionScale::Full },
                         { "Half", AoResolutionScale::Half },
                     };
@@ -2458,17 +2457,17 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     }
 
                     ImGui::Checkbox( "Enable Blur", &settings.HbaoSettings.EnableBlur );
-                    static std::vector<std::pair<const char*, int>> ssaoRadi = { {"2", 0}, {"4", 1} };
+                    constexpr ListItem<int> ssaoRadi[] = { {"2", 0}, {"4", 1} };
                     if ( ImComboBox( "SSAO radius", ssaoRadi, &settings.HbaoSettings.SsaoBlurRadius ) ) {
                         ImGui::EndCombo();
                     }
                     ImGui::DragFloat( "BlurSharpness", &settings.HbaoSettings.BlurSharpness, 0.01f );
-                    static std::vector<std::pair<const char*, int>> blendMode = { {"Replace", 0}, {"Multiply", 1} };
+                    constexpr ListItem<int> blendMode[] = { {"Replace", 0}, {"Multiply", 1} };
                     if ( ImComboBox( "BlendMode", blendMode, &settings.HbaoSettings.BlendMode ) ) {
                         ImGui::EndCombo();
                     }
 
-                    static std::vector<std::pair<const char*, int>> stepCount = { {"4", 0}, {"8", 1} };
+                    constexpr ListItem<int> stepCount[] = { {"4", 0}, {"8", 1} };
                     if ( ImComboBox( "SSAO steps", stepCount, &settings.HbaoSettings.SsaoStepCount ) ) {
                         ImGui::EndCombo();
                     }
@@ -2487,7 +2486,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     ImGui::SeparatorText( "XeGTAO Settings (D3D12)" );
                     ImGui::TextUnformatted( "Intel XeGTAO — ground-truth ambient occlusion." );
 
-                    static std::vector<std::pair<const char*, int>> gtaoQuality = {
+                    constexpr ListItem<int> gtaoQuality[] = {
                         {"Low", 0}, {"Medium", 1}, {"High", 2}, {"Ultra", 3}
                     };
                     if ( ImComboBox( "Quality Level", gtaoQuality, &settings.GtaoSettings.QualityLevel ) ) {
@@ -2495,7 +2494,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     }
                     ImGui::SetItemTooltip( "Higher levels take more samples per pixel (slices x steps: 1x2, 2x2, 3x3, 9x3)." );
 
-                    static std::vector<std::pair<const char*, int>> gtaoDenoise = {
+                    constexpr ListItem<int> gtaoDenoise[] = {
                         {"Disabled", 0}, {"Sharp", 1}, {"Medium", 2}, {"Soft", 3}
                     };
                     if ( ImComboBox( "Denoising", gtaoDenoise, &settings.GtaoSettings.DenoisePasses ) ) {
@@ -2558,7 +2557,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     ImGui::SetItemTooltip( "[0.0, ~] Distance to start fading out the effect." );
                     ImGui::DragFloat( "Fade Out To", &settings.AssaoSettings.FadeOutTo, 1.0f, 0.0f, 0.0f, "%.0f" );
                     ImGui::SetItemTooltip( "[0.0, ~] Distance at which the effect is fully faded out." );
-                    static std::vector<std::pair<const char*, int>> assaoQuality = {
+                    constexpr ListItem<int> assaoQuality[] = {
                         {"Lowest (-1)", -1}, {"Low (0)", 0}, {"Medium (1)", 1}, {"High (2)", 2}, {"Very High/Adaptive (3)", 3}
                     };
                     if ( ImComboBox( "Quality Level", assaoQuality, &settings.AssaoSettings.QualityLevel ) ) {
@@ -2582,14 +2581,14 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::SeparatorText( "Anti Aliasing" );
         {
             ImGui::PushID( "AntiAliasingSettings" );
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_AntiAliasingMode>> antiAliasing = {
+            constexpr ListItem<GothicRendererSettings::E_AntiAliasingMode> antiAliasing[] = {
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE},
                 {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA},
                 {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA},
                 {"FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR},
             };
             auto selectedMode = settings.AntiAliasingMode;
-            if ( ImComboBoxC( "Anti Aliasing", antiAliasing, &selectedMode, [&selectedMode, &settings] {
+            if ( ImComboBox( "Anti Aliasing", antiAliasing, &selectedMode, [&selectedMode, &settings] {
                 if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
                     settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
                 }
@@ -2601,7 +2600,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
         }
 
         if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
-            static const std::vector<std::pair<const char*, int>> msaaSamples = {
+            static const std::vector<ListItem<int>> msaaSamples = {
                 { "Off", 1 },
                 { "2x",  2 },
                 { "4x",  4 },
@@ -2616,7 +2615,7 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::SeparatorText( "Sharpening" );
         {
             ImGui::PushID( "SharpeningSettings" );
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_SharpeningMode>> sharpenModes = {
+            constexpr ListItem<GothicRendererSettings::E_SharpeningMode> sharpenModes[] = {
                 {"Disabled", GothicRendererSettings::E_SharpeningMode::SHARPEN_NONE},
                 {"Simple", GothicRendererSettings::E_SharpeningMode::SHARPEN_SIMPLE},
                 {"CAS", GothicRendererSettings::E_SharpeningMode::SHARPEN_CAS},

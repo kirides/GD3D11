@@ -11,6 +11,7 @@
 #include "D3D11_Helpers.h"
 #include "RenderToTextureBuffer.h"
 #include "zCVobLight.h"
+#include "D3D11Effect.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -378,6 +379,15 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         shadeCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z, settings.VisualFXDrawRadius );
         XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, viewRaw ) );
 
+        // Rain wetness (same source data PS_DS_AtmosphericScattering.hlsl's SQ_RainViewProj is filled
+        // from — see D3D11ShadowMap.cpp) so this, the PRIMARY point-light path, darkens/dampens wet
+        // ground consistently with the sun/ambient pass instead of ignoring wetness entirely (see
+        // RainWetnessSample.h).
+        XMStoreFloat4x4( &shadeCB.RainViewProj,
+            XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
+            XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
+        shadeCB.SceneWettness = Engine::GAPI->GetSceneWetness();
+
         csTiledShading->UpdateBuffer("TiledShadingConstantBuffer", &shadeCB, sizeof(shadeCB));
 
         // Bind GBuffer SRVs to CS
@@ -393,6 +403,11 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // Bind tiled data SRVs
         context->CSSetShaderResources( 8, 1, m_LightBufferSRV.GetAddressOf() );
         context->CSSetShaderResources( 9, 1, m_LightGridSRV.GetAddressOf() );
+
+        // Rain shadowmap for ApplyPointLightWetness — same texture PS_DS_AtmosphericScattering.hlsl binds
+        // at D3D11ShadowMap.h's TX_RainShadowmap slot, here on the CS stage instead of PS.
+        if ( RenderToDepthStencilBuffer* rainShadowmap = graphicsEngine->Effects->GetRainShadowmap() )
+            context->CSSetShaderResources( TX_RainShadowmap, 1, rainShadowmap->GetShaderResView().GetAddressOf() );
 
         // Bind comparison sampler unconditionally — the runtime validates at Dispatch
         // even if the shader branches around SampleCmpLevelZero

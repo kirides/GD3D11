@@ -44,18 +44,7 @@ cbuffer RainShadowCB : register( b3 )
     uint     RainShadowSrvIndex;
 };
 
-struct RainParticleDynamic
-{
-    float3 position;
-    float3 velocity;
-};
-
-struct RainParticleStatic
-{
-    float3 seed;
-    float  randomBrightness;
-    int    drawMode;
-};
+#include "include/RainParticleTypes.hlsl"
 
 StructuredBuffer<RainParticleDynamic> DynamicData : register( t0 );
 StructuredBuffer<RainParticleStatic>  StaticData  : register( t1 );

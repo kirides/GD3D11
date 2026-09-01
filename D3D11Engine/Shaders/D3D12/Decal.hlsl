@@ -16,14 +16,9 @@
 // feeds). The quad's own plane normal carries the shading, flipped toward the viewer because decals render
 // with CULL_NONE.
 cbuffer FrameCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
-cbuffer LightCB : register(b2) {
-    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
-    float ProjA; float ProjB; float NearZ; float FarZ;
-};
-
+#include "include/FogCB.hlsl"
 #include "include/ForwardPlusTypes.hlsl"
+#include "include/LightCB.hlsl"
 
 // Forward+ tiled point lights (root-descriptor SRVs + per-cluster mask) — same t1/t2 the world pass binds.
 StructuredBuffer<GPULight>  Lights        : register(t1);
@@ -32,33 +27,13 @@ StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);   // linear CLAMP: a decal is a single [0,1] sprite; wrap would bleed the edge
 
-// Must stay byte-identical to World/Vob/Skeletal.hlsl's ShadowCB and the CPU-side upload structs.
-cbuffer ShadowCB : register(b3)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;
-    float3   SunColor;          float SunIntensity;
-    float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;
-    float    SkyOccStrength;    float SunSpecularEnabled;
-    float4x4 RainViewProj;
-    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
-    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
-    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
-    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
-    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
-    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
-    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
-    float2   AoInvRes;          float2 _aopad0;
-    float4   _aoReserved[4];
-    uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
-};
+// Single source of truth for this layout: include/ShadowCB.hlsl (also bound by World/Vob/Skeletal/
+// Vegetation.hlsl at their own registers — see that file for the byte-offset notes).
+#include "include/ShadowCB.hlsl"
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 TextureCubeArray        PointShadowCubes : register(t5);
-// Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
-cbuffer AOCB : register(b7) { uint AoMaskIndex; };
+#include "include/AOCB.hlsl"
 SamplerState smpAoClamp : register(s1);
 #include "include/ScreenSpaceAO.hlsl"
 // SrgbToLinear, ComputeSunShadow, ComputeSunLightingPBR and AccumTiledPointLights live here — the same

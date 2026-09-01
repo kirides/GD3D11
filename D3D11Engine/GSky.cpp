@@ -236,7 +236,10 @@ XRESULT GSky::RenderSky() {
     }
 
     XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
-    XMFLOAT3 LightDir = {};
+    // Default to the last known-good direction rather than zero: a zero light direction
+    // normalizes to the zero vector, which later blows up XMMatrixLookToLH in the shadow
+    // cascade code (EyeDirection == 0 assert) when no outdoor sky controller is available.
+    XMFLOAT3 LightDir = Atmosphere.LightDirection;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.ReplaceSunDirection ) {
         LightDir = Atmosphere.LightDirection;
@@ -246,6 +249,11 @@ XRESULT GSky::RenderSky() {
             LightDir = sc->GetSunWorldPosition( Atmosphere.SkyTimeScale );
             Atmosphere.LightDirection = LightDir;
         }
+    }
+    if ( LightDir.x == 0.0f && LightDir.y == 0.0f && LightDir.z == 0.0f ) {
+        // Still degenerate (e.g. very first frame, before any valid direction was ever seen).
+        // Fall back to a fixed, arbitrary-but-non-zero direction instead of crashing downstream.
+        LightDir = XMFLOAT3( 0.0f, -1.0f, 0.0f );
     }
     XMStoreFloat3( &LightDir, XMVector3Normalize( XMLoadFloat3( &LightDir ) ) );
     //Atmosphere.SpherePosition.y = -Atmosphere.InnerRadius;

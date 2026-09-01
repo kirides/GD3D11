@@ -572,13 +572,18 @@ struct GTAOSettings {
 /** D3D12 only: the discrete roughness values the default (no _FX/_ORM map) material can be set to.
     The D3D12 backend can't sample an arbitrary roughness for these materials — it hands the shader a
     bindless 1x1 ORM texture, so every selectable value needs its own texture created up front (see
-    D3D12GraphicsEngine::CreateWhiteTexture / m_DefaultOrmTextures). Nine steps of 0.05 from 0.50 to 0.90
-    is nine 1x1 textures, i.e. nothing, and covers everything from damp stone to chalky plaster.
+    D3D12GraphicsEngine::CreateWhiteTexture / m_DefaultOrmTextures). 14 steps of 0.05 from 0.25 to 0.90
+    is 14 1x1 textures, i.e. nothing, and covers everything from damp stone to chalky plaster. kMin is
+    floored at 0.25 deliberately: below that the GGX specular lobe (PBRLighting.hlsl's
+    PBR_DistributionGGX) gets so tight that a directional-light highlight almost never lines up with
+    a given pixel, and with no local reflection probes the lost specular energy has nowhere to go —
+    default (no-map) materials just read as uniformly darker rather than glossier. Real materials with
+    an authored _ORM map are unaffected; they aren't limited to this step table.
     Kept here rather than in the D3D12 headers so ImGuiShim can drive the slider without including them. */
 namespace DefaultRoughness {
-    constexpr float kMin  = 0.50f;
+    constexpr float kMin  = 0.25f;
     constexpr float kStep = 0.05f;
-    constexpr int   kNumSteps = 9;                          // 0.50 0.55 ... 0.90
+    constexpr int   kNumSteps = 14;                         // 0.25 0.30 ... 0.90
     constexpr float kMax = kMin + kStep * ( kNumSteps - 1 );
 
     /** Roughness for step index i (clamped). */
@@ -835,6 +840,7 @@ struct GothicRendererSettings {
         DrawThreaded = false;
         EnableMeshOptimization = true;
         EnableShadowIndexBuffers = true;
+        MeshOptimizeCacheFlags = MOC_DISK | MOC_MEMORY;
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
@@ -924,6 +930,7 @@ struct GothicRendererSettings {
         BinkVideoRunning = false;
         EnableWaterAnimation = false;
         WaterSSRQuality = WATER_SSR_MEDIUM;
+        OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
@@ -1124,6 +1131,14 @@ struct GothicRendererSettings {
         (slightly more shadow-map vertex work, no alpha-test capability loss - see
         MeshShadowIndexBuilder.h) in exchange for skipping the weld and one buffer per sub-mesh. */
     bool EnableShadowIndexBuffers;
+    // Which tiers of the mesh-optimize cache (MeshOptimizeCache.h) may serve/store a hit, as an OR of
+    // flags. MOC_MEMORY is only ever armed for one world load regardless of this flag - see MeshOptimizeCache.h.
+    enum EMeshOptimizeCacheFlags : int {
+        MOC_OFF = 0,
+        MOC_DISK = 1 << 0,
+        MOC_MEMORY = 1 << 1,
+    };
+    int MeshOptimizeCacheFlags;
     EPointLightShadowMode EnablePointlightShadows;
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
@@ -1304,6 +1319,10 @@ struct GothicRendererSettings {
     bool BinkVideoRunning;
     bool EnableWaterAnimation;
     E_WaterSSRQuality WaterSSRQuality;
+    // D3D12 only: temporal SSR on opaque wet/glossy surfaces (D3D12Ssr.cpp's history + the Forward+ PS
+    // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —
+    // same quality/cost tradeoff, different geometry class. See D3D12_SSR_WET_SURFACES_PLAN.md.
+    E_WaterSSRQuality OpaqueSSRQuality;
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

@@ -14,6 +14,7 @@
 #include "D3D12TracyDebug.h"
 #include "../widenarrow.h"
 #include "../ConstantBufferStructs.h"   // VobInstanceInfo — held by value in FrameAttachDraw
+#include "../Shaders/D3D12/include/GPULightShared.h"   // GPULight — one definition, shared with HLSL
 
 class zCTexture;
 class zCVob;
@@ -92,38 +93,10 @@ struct FrameAttachDraw {
     bool                        batchable;
 };
 
-// Per-frame GPU point light. Filled by BuildFrameLightBuffer (D3D12Scene.cpp); the point-shadow slot
-// selection (D3D12PointShadows::SelectShadowedLights) reads Range/PositionWorld/Color.w and writes
-// ShadowCubeIndex/ShadowOrigin/ShadowRange. Mirrored in HLSL by Shaders/D3D12/include/ForwardPlusTypes.hlsl
-// and LightCull.hlsl's TiledPointLight — all three MUST be changed together.
-//
-// This USED to be byte-identical to D3D11's 48-byte TiledPointLight; it deliberately is not any more. The
-// D3D12 backend needs a light to be able to sample a shadow cube that is NOT centred on itself:
-//   * clustered static lights (the 10-30 "atmospheric" fill lights a Gothic room is lit with) share ONE cube
-//     rendered from their cluster centroid, so the cube lookup origin/far-plane differ from the light's own;
-//   * the shadow tier bit selects which cube array the slot lives in (see kShadowTierLow).
-// The two shader sides are separate declarations, so D3D11's TiledPointLight is unaffected.
-struct GPULight {
-    DirectX::XMFLOAT3 PositionView;    // 0
-    float             Range;           // 12  shading falloff radius (range-clamped for unshadowed statics)
-    DirectX::XMFLOAT4 Color;           // 16  (.w = static flag 0/1)
-    DirectX::XMFLOAT3 PositionWorld;   // 32
-    int32_t           ShadowCubeIndex; // 44  -1 = no shadow, else slot | tier bit (see kShadowTierLow)
-    DirectX::XMFLOAT3 ShadowOrigin;    // 48  cube centre — == PositionWorld unless this light is clustered
-    float             ShadowRange;     // 60  cube far-plane basis (far = ShadowRange*2) — == Range unless clustered
-};
-static_assert( sizeof( GPULight ) == 64, "GPULight must match the HLSL GPULight in ForwardPlusTypes.hlsl" );
-
-// High bit of GPULight::ShadowCubeIndex selecting the LOW-RESOLUTION static cube array
-// (D3D12PointShadows::kStaticCubeSize) over the full-res dynamic one. Bit 30, so the value stays a positive
-// int and the existing "ShadowCubeIndex >= 0 means shadowed" test in every shader keeps working untouched;
-// the slot itself is the low 30 bits. Mirrored as kShadowTierLow in ForwardPlusTypes.hlsl.
-constexpr int32_t kShadowTierLow = 0x40000000;
-// Bit 29: this light's slot also has a valid DYNAMIC (skeletal overlay) cube, so the lit pass samples the
-// dynamic array as well and mins the two results. Full-res slots only — the low tier has no dynamic twin.
-// Absent = pure static shadow, and no second sample is taken. Mirrored in ForwardPlusTypes.hlsl.
-constexpr int32_t kShadowHasDynamic = 0x20000000;
-constexpr int32_t kShadowSlotMask = 0x1FFFFFFF;
+// GPULight (per-frame GPU point light) and its shadow-tier bit constants now live in
+// Shaders/D3D12/include/GPULightShared.h (#included above) — one definition compiled as both C++ here
+// and HLSL in ForwardPlusTypes.hlsl/LightCull.hlsl, instead of three hand-synced copies.
+static_assert( sizeof( GPULight ) == 64, "GPULight must match the HLSL GPULight in GPULightShared.h" );
 
 // This frame's visible-VOB instance-ring snapshot (UploadFrameVobInstances) — the depth prepass, the color
 // pass AND the point-shadow static-VOB gather all draw from it. Defined in D3D12Scene.cpp.
@@ -217,6 +190,20 @@ FogConstants MakeSceneFogConstants();
 inline D3D12_HEAP_TYPE DefaultUploadHeapType = D3D12_HEAP_TYPE_UPLOAD;
 inline bool GetSkipDefaultHeapCopyAfterUpload() {
     return DefaultUploadHeapType == D3D12_HEAP_TYPE_GPU_UPLOAD;
+}
+
+// Screen-space reflection step-count tiers, shared by water (D3D12Water.cpp) and opaque-surface SSR
+// (D3D12AO.cpp's UploadAoScreenConstants — see D3D12_SSR_WET_SURFACES_PLAN.md). `quality` is
+// GothicRendererSettings::E_WaterSSRQuality (0=Disabled/1=Low/2=Medium/3=High) passed as a plain int, to
+// avoid pulling GothicGraphicsState.h into this widely-included header — both callers already have the
+// real enum type in scope and pass it in, implicitly converted.
+inline void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps ) {
+    switch ( quality ) {
+    case 1: maxSteps = 12; refineSteps = 4; break;   // WATER_SSR_LOW
+    case 2: maxSteps = 24; refineSteps = 5; break;   // WATER_SSR_MEDIUM
+    case 3: maxSteps = 48; refineSteps = 6; break;   // WATER_SSR_HIGH
+    default: maxSteps = 0; refineSteps = 0; break;   // WATER_SSR_DISABLED
+    }
 }
 
 // HDR scene-color format: the 3D passes accumulate lighting here in linear-ish FLOAT (values may

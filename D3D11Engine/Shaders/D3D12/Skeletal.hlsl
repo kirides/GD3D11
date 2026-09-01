@@ -17,15 +17,14 @@ cbuffer InstanceCB : register(b1)
 // SkeletalDrawCommand indirect signature — a separate previous-bone CB would have needed a third root CBV in
 // every skeletal command. 192 is 2 * NUM_MAX_BONES; only the allocated prefix is ever indexed.
 cbuffer BonesCB    : register(b2) { float4x4 Bones[192]; };
-cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-// Forward+ tiled: light count + tiles/row + low-res cube heap slot. ProjA/ProjB/NearZ/FarZ feed
-// PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
-cbuffer LightCB    : register(b4) {
-    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
-    float ProjA; float ProjB; float NearZ; float FarZ;
-};
-
+#define FOGCB_REGISTER b3
+#include "include/FogCB.hlsl"
+#undef FOGCB_REGISTER
 #include "include/ForwardPlusTypes.hlsl"
+// Skeletal already uses b3 (fog), so its LightCB lands at b4 (world/VOB use b2).
+#define LIGHTCB_REGISTER b4
+#include "include/LightCB.hlsl"
+#undef LIGHTCB_REGISTER
 
 // Forward+ tiled point lights (root-descriptor SRVs + per-cluster mask) — see the world shader for the rationale.
 StructuredBuffer<GPULight>  Lights        : register(t1);
@@ -38,38 +37,9 @@ SamplerState smp : register(s0);
 
 // CSM sun-shadow sampling (P2.9c-4b). Skeletal already uses b3 (fog) + b4 (light count), so the shadow CB
 // lands at b5 here (world/VOB use b3); t4/s2 are free. Same select+PCF math as the world/VOB block.
-cbuffer ShadowCB : register(b5)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;
-    float3   SunColor;          float SunIntensity;
-    float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
-    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
-    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
-    float    SkyOccStrength;    float SunSpecularEnabled;
-    // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
-    // lit shaders and in the CPU-side WetnessCBData.
-    float4x4 RainViewProj;
-    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
-    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
-    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
-    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
-    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
-    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
-    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
-    float2   AoInvRes;          float2 _aopad0;
-    float4   _aoReserved[4];
-    // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
-    // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
-    // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
-    // Keep in sync across World/Vob/Skeletal/Vegetation.hlsl and the SkyIblCBData struct on the CPU side.
-    // NOTE: SkyIblIntensity is the COMPLETE ambient scale for the IBL path (user knob x radiance
-    // normalization x an UNHALVED ShadowStrength), premultiplied by UploadSkyIblConstants. The IBL branch
-    // must not also apply AmbientStrength — that one still belongs to the flat fallback branch only.
-    uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
-};
+#define SHADOWCB_REGISTER b5
+#include "include/ShadowCB.hlsl"
+#undef SHADOWCB_REGISTER
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
@@ -78,7 +48,7 @@ SamplerComparisonState  shadowCmp : register(s2);
 // bits pack the FxMap's channel layout for SampleOrm() to decode (see PBRLighting.hlsl). MatDiffuseIndex is
 // always valid too (the 1x1 black texture when the material's texture isn't cached in yet), and replaces what
 // used to be a per-material descriptor-table bind — same layout the world/VOB ExecuteIndirect commands push.
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
+#include "include/MaterialCB.hlsl"
 // The diffuse for every non-ghost entry point. One helper so the color/prepass/shadow-clip variants can never
 // drift apart on which slot or sampler they read.
 float4 SampleSkelDiffuse( float2 uv )
@@ -89,7 +59,9 @@ float4 SampleSkelDiffuse( float2 uv )
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 // Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
 // b8, not b7: b7 is GhostCB below, read only by the separate GhostSkeletal root sig/PSO (PSGhost), not PSMain.
-cbuffer AOCB : register(b8) { uint AoMaskIndex; };
+#define AOCB_REGISTER b8
+#include "include/AOCB.hlsl"
+#undef AOCB_REGISTER
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
 SamplerState smpAoClamp : register(s1);
 // SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp declared above.
@@ -155,13 +127,21 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetSheen;
-    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
+    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
-    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
+    // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
+    // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
+    {
+        float ssrConfidence;
+        float3 ssrColor = EvaluateOpaqueSSR( i.wpos, N, V, orm.g, ssrConfidence );
+        float3 ssrF0 = lerp( float3( 0.04, 0.04, 0.04 ), albedo, orm.b );
+        float3 ssrFresnel = PBR_FresnelSchlick( saturate( dot( N, V ) ), ssrF0 );
+        rgb += ssrColor * ssrConfidence * ssrFresnel;
+    }
     rgb *= 1.0f + step( 1.5f, i.col.a );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -208,7 +188,9 @@ void PSShadowClip( VS_DEPTH_OUT i )
 // sample, alpha multiplied by a per-vob fade factor, no alpha-clip (a fading ghost should smoothly disappear,
 // not pop). Mirrors D3D11's PS_TransparencySkel / the non-skeletal PSGhost in Preview.hlsl — including its
 // sRGB linearize, which both ghost shaders need and neither originally had (see the note in PSGhost).
-cbuffer GhostCB : register(b7) { float GhostAlpha; float3 _GhostPad; }
+#define GHOSTCB_REGISTER b7
+#include "include/GhostCB.hlsl"
+#undef GHOSTCB_REGISTER
 
 float4 PSGhost( VS_DEPTH_OUT i ) : SV_TARGET
 {

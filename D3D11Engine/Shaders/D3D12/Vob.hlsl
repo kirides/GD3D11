@@ -1,10 +1,5 @@
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-// ProjA/ProjB/NearZ/FarZ feed PBRLighting.hlsl's ComputeZSlice (clustered Forward+, P2.14) — see World.hlsl.
-cbuffer LightCB : register(b2) {
-    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowLowIndex; uint PointShadowDynIndex;
-    float ProjA; float ProjB; float NearZ; float FarZ;
-};
+#include "include/FogCB.hlsl"
 // Wind sway for instanced VOBs (flags/foliage). Mirrors D3D11's WindParams cbuffer (VS_ExInstancedObj.hlsl);
 // minHeight/maxHeight are the flat (non-WIND_META_SRV) per-visual bounding-box fallback, refreshed per visual
 // by DrawVobsInstanced before each visual's draw calls (see WindMinHeight/WindMaxHeight below).
@@ -16,6 +11,7 @@ cbuffer WindCB : register(b4)
 };
 
 #include "include/ForwardPlusTypes.hlsl"
+#include "include/LightCB.hlsl"
 #include "include/Wind.hlsl"
 
 // Forward+ tiled point lights (root-descriptor SRVs + per-tile grid)
@@ -25,48 +21,17 @@ StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
-cbuffer ShadowCB : register(b3)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;
-    float3   SunColor;          float SunIntensity;
-    float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
-    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
-    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
-    float    SkyOccStrength;    float SunSpecularEnabled;
-    // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
-    // lit shaders and in the CPU-side WetnessCBData.
-    float4x4 RainViewProj;
-    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
-    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
-    // --- Screen-space AO block, 80 bytes, written by UploadAoScreenConstants (kAoReprojCbOffset). Only the
-    // first float2 is live: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask UV with.
-    // The other 72 bytes are the hole left by the AO REPROJECTION constants (previous-frame view-proj + depth
-    // index) from back when the mask was built off a previous-frame depth SNAPSHOT; RenderSSAO now runs off
-    // THIS frame's depth prepass and nothing reprojects. The hole stays so the sky-IBL tail below keeps its
-    // byte offset (kSkyIblCbOffset = 432). Keep in sync across World/Vob/Skeletal/Vegetation/Decal.hlsl.
-    float2   AoInvRes;          float2 _aopad0;
-    float4   _aoReserved[4];
-    // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
-    // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
-    // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
-    // Keep in sync across World/Vob/Skeletal/Vegetation.hlsl and the SkyIblCBData struct on the CPU side.
-    // NOTE: SkyIblIntensity is the COMPLETE ambient scale for the IBL path (user knob x radiance
-    // normalization x an UNHALVED ShadowStrength), premultiplied by UploadSkyIblConstants. The IBL branch
-    // must not also apply AmbientStrength — that one still belongs to the flat fallback branch only.
-    uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
-};
+// (SHADOWCB_REGISTER defaults to b3, which is what Vob wants.)
+#include "include/ShadowCB.hlsl"
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // MatDiffuseIndex (3rd field) is read only by the *Bindless PS variants below — the ExecuteIndirect VOB path
 // (P2.12) sets the diffuse SRV heap slot as a root constant instead of a per-draw t0 descriptor table, so the
 // whole instanced-VOB pass (color/depth/shadow) submits as one ExecuteIndirect. The classic t0-table PS
 // (PSMain/PSDepthClip/PSShadowClip, used by node attachments) simply never reads the 3rd field.
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
+#include "include/MaterialCB.hlsl"
 TextureCubeArray        PointShadowCubes : register(t5);
-// Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
-cbuffer AOCB : register(b7) { uint AoMaskIndex; };
+#include "include/AOCB.hlsl"
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
 SamplerState smpAoClamp : register(s1);
 // SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp declared above.
@@ -150,13 +115,21 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetSheen;
-    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
+    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
-    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
+    // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
+    // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
+    {
+        float ssrConfidence;
+        float3 ssrColor = EvaluateOpaqueSSR( i.wpos, N, V, orm.g, ssrConfidence );
+        float3 ssrF0 = lerp( float3( 0.04, 0.04, 0.04 ), albedo, orm.b );
+        float3 ssrFresnel = PBR_FresnelSchlick( saturate( dot( N, V ) ), ssrF0 );
+        rgb += ssrColor * ssrConfidence * ssrFresnel;
+    }
     rgb *= 1.0f + step( 1.5f, i.focus );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -249,13 +222,21 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetSheen;
-    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
+    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
-    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
+    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
+    // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
+    // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
+    {
+        float ssrConfidence;
+        float3 ssrColor = EvaluateOpaqueSSR( i.wpos, N, V, orm.g, ssrConfidence );
+        float3 ssrF0 = lerp( float3( 0.04, 0.04, 0.04 ), albedo, orm.b );
+        float3 ssrFresnel = PBR_FresnelSchlick( saturate( dot( N, V ) ), ssrF0 );
+        rgb += ssrColor * ssrConfidence * ssrFresnel;
+    }
     rgb *= 1.0f + step( 1.5f, i.focus );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

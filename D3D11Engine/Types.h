@@ -16,17 +16,34 @@ enum XRESULT : int {
 };
 
 struct INT2 {
-    INT2( int x, int y ) {
-        this->x = x;
-        this->y = y;
+    INT2( int x, int y ) :
+        x(x), y(y) { }
+
+    INT2( long x, long y ) :
+        x( x ), y( y ) {
+        static_assert(sizeof( long ) == sizeof( int ));
     }
 
-    INT2( const XMFLOAT2& v ) {
-        this->x = static_cast<int>(v.x + 0.5f);
-        this->y = static_cast<int>(v.y + 0.5f);
+    INT2( unsigned long x, unsigned long y ) :
+        x( x ), y( y ) {
+        static_assert(sizeof( long ) == sizeof( int ));
+
+        assert( x < INT_MAX );
+        assert( y < INT_MAX );
     }
 
-    INT2() { x = 0; y = 0; }
+    INT2( unsigned int x, unsigned int y ) :
+        x( x ), y( y ) {
+        assert( x < INT_MAX );
+        assert( y < INT_MAX );
+    }
+    
+    INT2( float x, float y )
+        : x(static_cast<int>(x + 0.5f)), y(static_cast<int>(y + 0.5f))  { }
+
+    INT2( const XMFLOAT2& v ) : INT2(v.x, v.y) { }
+
+    INT2() : x(0), y(0) { }
 
     INT2( const std::string& resolution ) {
         std::istringstream iss( resolution );

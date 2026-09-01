@@ -1,39 +1,25 @@
 #pragma once
 
-/** Memoization for the CPU cost of GfxVertexBuffer::OptimizeVertices (vertex-cache/fetch reorder,
-    shadow-index welding, LOD simplification) - see WorldConverter.cpp's OptimizeMeshBuffers, the sole
-    caller. Two tiers: an in-memory map for this session, and an on-disk cache under
-    system\GD3D11\meshoptcache\ so the FIRST load of a session benefits too, on the second and later
-    runs of the game.
+/** Memoizes GfxVertexBuffer::OptimizeVertices (vertex-cache reorder, shadow-index weld, LOD
+    simplification) - see WorldConverter.cpp's OptimizeMeshBuffers, the sole caller. Two tiers: an
+    in-memory map and an on-disk SQLite DB (cache\meshes.db), each independently gated by the
+    caller-supplied GothicRendererSettings::MeshOptimizeCacheFlags mask.
 
-    Gothic reloads the SAME world and VOB geometry many times, both within one session (leaving/
-    re-entering a world, reloading a save, walking back into a camp) and across separate game launches,
-    and meshopt's output is a pure function of the input vertex/index bytes plus which optional outputs
-    were asked for. A hit skips the vertex-cache optimization, the shadow weld and the min-error
-    simplification pass entirely, which is where load-time actually goes.
-    RendererSettings.EnableMeshOptimization/EnableShadowIndexBuffers exist to let a player skip that work
-    in the FIRST place; this is what stops any OTHER load - this session or a future one - from paying
-    for it again.
+    Keyed on a content hash of the pre-optimization vertices/indices, not a Gothic-side pointer -
+    zCProgMeshProto/zCSubMesh don't reliably survive a world change, but the bytes a given source
+    asset produces don't.
 
-    Keyed on a content hash of the PRE-optimization (vertices, indices), not on any Gothic-side pointer -
-    zCProgMeshProto/zCSubMesh objects do not reliably survive a world change (ZenGin's own resource
-    manager purges and reloads them independently of GD3D11), but the bytes a given source asset produces
-    do not change. Self-validating: two different source meshes colliding on the same hash would have to
-    produce identical bytes, in which case optimizing them identically is correct anyway.
+    The memory tier is only armed for the span of one world load (SetMemoryCache, called from
+    GothicAPI::OnLoadWorld/OnWorldLoaded) even when its flag is set - unbounded growth across a whole
+    play session, not one load, is what exhausts the 32-bit address space. Disarming clears the map so
+    the memory is actually freed.
 
-    In-memory tier bounded by the number of DISTINCT sub-meshes the session has ever converted - same
-    growth shape as SharedVisualRegistry. Acceptable because an entry holds only small CPU-side index/
-    vertex arrays, never a GPU buffer, so it does not touch the 32-bit VA budget the pooling rules in
-    CLAUDE.md are about. The on-disk tier is one row per distinct sub-mesh ever seen in a single SQLite
-    database (cache\meshes.db, via SqliteBlobStore) - tens of thousands of mostly-tiny entries is exactly
-    the shape a single DB beats a directory of loose files on (fewer file-system objects for the AV
-    scanner/NTFS to chew through during a load burst). Deleting cache\meshes.db is always safe, it just
-    repays the CPU cost on the next load. kFormatVersion below exists for the same reason
-    kDxbcCacheArgsRevision does in D3D11ShaderManager.cpp: bump it whenever a change to
-    MeshShadowIndexBuilder.h, MeshLodBuilder.h, this record layout, or the vendored meshoptimizer version
-    would make a previously-stored row's bytes stop matching what a fresh run produces today - old rows
-    are simply orphaned (dead weight, harmless), never misread, since the version is part of the record
-    and checked before anything else is trusted. */
+    Per-load scoping alone isn't enough for one huge world, so kMemoryBudgetBytes below also caps the
+    memory tier's resident size; past that, entries just aren't memoized (the unbounded disk tier still is).
+
+    kFormatVersion guards the on-disk record layout, same idea as kDxbcCacheArgsRevision in
+    D3D11ShaderManager.cpp - bump it whenever MeshShadowIndexBuilder.h/MeshLodBuilder.h/meshoptimizer
+    change enough to invalidate old rows; stale rows are just orphaned, never misread. */
 
 #include "VertexTypes.h"
 #include "Logger.h"
@@ -52,9 +38,8 @@
 
 namespace MeshOptimizeCache {
 
-    /** `wantShadow`/`wantLod` are folded into the key so a session that turns on
-        EnableShadowIndexBuffers partway through - or that mixes D3D11/D3D12 results, the only thing that
-        varies LOD - never gets served a hit that is missing an output it now needs. */
+    // wantShadow/wantLod fold into the key so toggling those settings never serves a hit missing an
+    // output it now needs.
     inline uint64_t Hash( const std::vector<VERTEX_INDEX>& indices, const std::vector<ExVertexStruct>& vertices,
         bool wantShadow, bool wantLod ) {
         uint64_t h = ShaderCacheHash::HashBytes( indices.data(), indices.size() * sizeof( VERTEX_INDEX ) );
@@ -70,11 +55,55 @@ namespace MeshOptimizeCache {
         std::vector<VERTEX_INDEX> LodIndices;
     };
 
-    // Worker-pool concurrent: BuildWorldMeshBuffers optimizes many sub-meshes at once (see
-    // WorldConverter.cpp's batched jobs), and VOB visual extraction runs on the same pool.
+    inline size_t EntryBytes( const Entry& e ) {
+        return e.Vertices.size() * sizeof( ExVertexStruct ) +
+            ( e.Indices.size() + e.ShadowIndices.size() + e.LodIndices.size() ) * sizeof( VERTEX_INDEX );
+    }
+
+    // Worker-pool concurrent: mesh conversion batches jobs across threads.
     inline std::mutex g_Mutex;
     inline gtl::flat_hash_map<uint64_t, Entry> g_Cache;
     inline std::atomic<uint32_t> g_MemHits{ 0 }, g_DiskHits{ 0 }, g_Misses{ 0 };
+    inline std::atomic<bool> g_MemoryArmed{ true };
+
+    // Resident-byte cap for the memory tier - see the header comment.
+    constexpr size_t kMemoryBudgetBytes = 512ull << 20;   // 512 MiB
+    inline size_t g_CacheBytes = 0;   // guarded by g_Mutex, not atomic - always touched under lock below
+    inline std::atomic<bool> g_BudgetCapLogged{ false };
+
+    // Arms/disarms the memory tier for the span of one world load - see the header comment. Disarming
+    // clears the map so the memory is actually released, not just stopped from growing.
+    inline void SetMemoryCache( bool on ) {
+        g_MemoryArmed = on;
+        if ( !on ) {
+            std::scoped_lock lock( g_Mutex );
+            g_Cache.clear();
+            g_CacheBytes = 0;
+            g_BudgetCapLogged = false;
+        }
+    }
+
+    // Inserts into g_Cache only if under kMemoryBudgetBytes; caller already holds g_Mutex. Logs once
+    // when the budget first gets hit, per CLAUDE.md's rule on silent caps.
+    inline void TryInsertLocked( uint64_t key, Entry&& e ) {
+        const size_t bytes = EntryBytes( e );
+        if ( g_CacheBytes + bytes > kMemoryBudgetBytes ) {
+            if ( !g_BudgetCapLogged.exchange( true ) ) {
+                LogInfo() << "Mesh optimize cache: memory tier hit its " << ( kMemoryBudgetBytes >> 20 )
+                    << " MiB budget - further entries this load are disk-only/recomputed, not memoized.";
+            }
+            return;
+        }
+        g_CacheBytes += bytes;
+        g_Cache.emplace( key, std::move( e ) );
+    }
+
+    inline bool MemoryTierActive( int flags ) {
+        return ( flags & GothicRendererSettings::MOC_MEMORY ) != 0 && g_MemoryArmed.load();
+    }
+    inline bool DiskTierActive( int flags ) {
+        return ( flags & GothicRendererSettings::MOC_DISK ) != 0;
+    }
 
     inline void ReportStats() {
         const uint32_t total = g_MemHits + g_DiskHits + g_Misses;
@@ -87,14 +116,12 @@ namespace MeshOptimizeCache {
     }
 
     namespace Disk {
-        // Bump on any change that would make a previously-stored row's bytes stop matching what a fresh
-        // OptimizeFaces/OptimizeVertices run produces today - see the header comment.
+        // Bump on any change that invalidates previously-stored rows - see the header comment.
         constexpr uint32_t kFormatVersion = 1;
         constexpr uint32_t kMaxElements = 8u << 20;   // sanity cap against a corrupted/truncated record
 
         inline SqliteBlobStore& GetStore() {
-            // Constructed on first use (magic-static, thread-safe) - by the time any mesh conversion
-            // runs, GetStartDirectory() is already valid.
+            // Magic-static: constructed on first use, once GetStartDirectory() is valid.
             static SqliteBlobStore s_store( Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\meshes.db)" );
             return s_store;
         }
@@ -110,8 +137,7 @@ namespace MeshOptimizeCache {
             }
         }
 
-        // Cursor over the blob TryGet hands back - the on-disk record layout is unchanged from the old
-        // per-file cache, just read from memory now instead of an ifstream.
+        // Cursor over the blob SqliteBlobStore::TryGet hands back.
         struct Cursor {
             const uint8_t* p;
             const uint8_t* end;
@@ -172,13 +198,11 @@ namespace MeshOptimizeCache {
         }
     }   // namespace Disk
 
-    /** On a hit (memory, then disk), overwrites indices/vertices/shadowIndices/lodIndices with the
-        cached, already-optimized result and returns true - the caller skips OptimizeFaces/
-        OptimizeVertices entirely. A disk hit is folded into the in-memory map so the rest of this
-        session skips the file read too. */
+    // On a hit (memory, then disk), overwrites indices/vertices/shadowIndices/lodIndices with the cached
+    // result and returns true. `flags` is RendererSettings.MeshOptimizeCacheFlags.
     inline bool TryGet( uint64_t key, std::vector<VERTEX_INDEX>& indices, std::vector<ExVertexStruct>& vertices,
-        std::vector<VERTEX_INDEX>* shadowIndices, std::vector<VERTEX_INDEX>* lodIndices ) {
-        {
+        std::vector<VERTEX_INDEX>* shadowIndices, std::vector<VERTEX_INDEX>* lodIndices, int flags ) {
+        if ( MemoryTierActive( flags ) ) {
             std::scoped_lock lock( g_Mutex );
             auto it = g_Cache.find( key );
             if ( it != g_Cache.end() ) {
@@ -192,19 +216,21 @@ namespace MeshOptimizeCache {
             }
         }
 
-        Entry disk;
-        if ( Disk::TryLoad( key, disk ) ) {
-            indices = disk.Indices;
-            vertices = disk.Vertices;
-            if ( shadowIndices ) *shadowIndices = disk.ShadowIndices;
-            if ( lodIndices ) *lodIndices = disk.LodIndices;
-            {
-                std::scoped_lock lock( g_Mutex );
-                g_Cache.emplace( key, std::move( disk ) );
+        if ( DiskTierActive( flags ) ) {
+            Entry disk;
+            if ( Disk::TryLoad( key, disk ) ) {
+                indices = disk.Indices;
+                vertices = disk.Vertices;
+                if ( shadowIndices ) *shadowIndices = disk.ShadowIndices;
+                if ( lodIndices ) *lodIndices = disk.LodIndices;
+                if ( MemoryTierActive( flags ) ) {
+                    std::scoped_lock lock( g_Mutex );
+                    TryInsertLocked( key, std::move( disk ) );
+                }
+                ++g_DiskHits;
+                ReportStats();
+                return true;
             }
-            ++g_DiskHits;
-            ReportStats();
-            return true;
         }
 
         ++g_Misses;
@@ -213,7 +239,11 @@ namespace MeshOptimizeCache {
     }
 
     inline void Put( uint64_t key, const std::vector<VERTEX_INDEX>& indices, const std::vector<ExVertexStruct>& vertices,
-        const std::vector<VERTEX_INDEX>* shadowIndices, const std::vector<VERTEX_INDEX>* lodIndices ) {
+        const std::vector<VERTEX_INDEX>* shadowIndices, const std::vector<VERTEX_INDEX>* lodIndices, int flags ) {
+        if ( !MemoryTierActive( flags ) && !DiskTierActive( flags ) ) {
+            return;
+        }
+
         Entry e;
         e.Indices = indices;
         e.Vertices = vertices;
@@ -224,10 +254,14 @@ namespace MeshOptimizeCache {
             e.LodIndices = *lodIndices;
         }
 
-        Disk::Store( key, e );
+        if ( DiskTierActive( flags ) ) {
+            Disk::Store( key, e );
+        }
 
-        std::scoped_lock lock( g_Mutex );
-        g_Cache.emplace( key, std::move( e ) );
+        if ( MemoryTierActive( flags ) ) {
+            std::scoped_lock lock( g_Mutex );
+            TryInsertLocked( key, std::move( e ) );
+        }
     }
 
 }   // namespace MeshOptimizeCache

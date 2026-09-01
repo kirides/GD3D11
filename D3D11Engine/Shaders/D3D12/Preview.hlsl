@@ -29,7 +29,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // Ghost/transparency VOBs (D3D12PipelineState::CreateGhost): reuses VSMain's single-object World/ViewProj
 // layout. Mirrors D3D11's PS_Transparency — unlit diffuse sample, alpha multiplied by a per-vob fade factor,
 // no alpha-clip (a fading ghost should smoothly disappear, not pop).
-cbuffer GhostCB : register(b2) { float GhostAlpha; float3 _GhostPad; };
+#include "include/GhostCB.hlsl"
 
 // Verbatim copy of include/PBRLighting.hlsl's helper (that header pulls in the whole Forward+ lighting
 // stack, which this standalone shader has no root signature for). NOTE the `select` — a vector ternary is

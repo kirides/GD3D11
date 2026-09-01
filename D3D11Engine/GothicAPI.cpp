@@ -8,6 +8,7 @@
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
 #include "WorldConverter.h"
+#include "MeshOptimizeCache.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -1015,6 +1016,10 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
 
 /** Called when the game is about to load a new level */
 void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
+    // Arm the mesh-optimize in-memory cache for the duration of this load - see MeshOptimizeCache.h.
+    // Disarmed again at the end of OnWorldLoaded once conversion work is done.
+    MeshOptimizeCache::SetMemoryCache( true );
+
     _canClearVobsByVisual = true;
     if ( (loadMode == zWLD_LOAD_GAME_STARTUP || loadMode == zWLD_LOAD_GAME_SAVED_STAT) ) {
         if ( !levelName.empty() ) {
@@ -1117,6 +1122,10 @@ void GothicAPI::OnWorldLoaded() {
 #endif
 
     _canClearVobsByVisual = false;
+
+    // World load is done - drop the mesh-optimize in-memory cache back to disk-only so it doesn't
+    // keep growing across the rest of the session (see MeshOptimizeCache.h).
+    MeshOptimizeCache::SetMemoryCache( false );
 }
 
 void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s )
@@ -4441,6 +4450,9 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawFlags.CollectIndoorVobs = true;
     ctx.drawFlags.CollectMobs = true;
     ctx.drawFlags.CollectLights = true;
+    // ~15m: a torch or campfire the player stands next to stays lit when he turns around.
+    constexpr float kKeepCloseLightsRange = 1500.0f;
+    ctx.keepLightsWithinRange = kKeepCloseLightsRange;
 
     // This overload is the main camera pass of both backends, and the only place portal culling
     // applies: shadow passes need casters from rooms the player cannot see into.
@@ -5942,6 +5954,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnablePortalShadowSkip", to_string_locale_independent( s.EnablePortalShadowSkip ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableMeshOptimization", to_string_locale_independent( s.EnableMeshOptimization ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableShadowIndexBuffers", to_string_locale_independent( s.EnableShadowIndexBuffers ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "MeshOptimizeCacheFlags", to_string_locale_independent( s.MeshOptimizeCacheFlags ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "PausedFpsLimit", to_string_locale_independent( s.PausedFpsLimit ).c_str(), ini.c_str() );
     
@@ -5977,6 +5990,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     
 
@@ -6128,6 +6142,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnablePortalShadowSkip = GetPrivateProfileBoolA( "General", "EnablePortalShadowSkip", ds.EnablePortalShadowSkip, ini );
         s.EnableMeshOptimization = GetPrivateProfileBoolA( "General", "EnableMeshOptimization", ds.EnableMeshOptimization, ini );
         s.EnableShadowIndexBuffers = GetPrivateProfileBoolA( "General", "EnableShadowIndexBuffers", ds.EnableShadowIndexBuffers, ini );
+        s.MeshOptimizeCacheFlags = GetPrivateProfileSignedIntA( "General", "MeshOptimizeCacheFlags", ds.MeshOptimizeCacheFlags, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
         s.PausedFpsLimit = GetPrivateProfileIntA( "General", "PausedFpsLimit", ds.PausedFpsLimit, ini.c_str() );
         // Not optional: an unthrottled paused loop crashes drivers, so the ini can only pick a value
@@ -6223,6 +6238,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
+        s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
 
         if ( GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini ) ) {
@@ -6976,6 +6992,8 @@ static void CollectLeafVobs(
     const float vobOutdoorSmallDistSq = ctx.drawDistancesSq.OutdoorVobsSmall;
     const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
     const float visualFXDrawRadiusSq = ctx.drawDistancesSq.VisualFX;
+    // 0 for every pass that doesn't want the close-light exemption, which makes the test below a no-op.
+    const float keepCloseLightsDistSq = ctx.keepLightsWithinRange * ctx.keepLightsWithinRange;
     const XMVECTOR cameraPosition = XMLoadFloat3( &ctx.cameraPosition );
     const bool collectIndoorVobs = ctx.drawFlags.CollectIndoorVobs;
     const bool collectMobs = ctx.drawFlags.CollectMobs;
@@ -7118,8 +7136,9 @@ static void CollectLeafVobs(
             if ( !visitor->Visit( vi ) ) continue;
 
 
-            // Cull any lights that are not visible even though they are in range
-            if ( clipResult != ContainmentType::CONTAINS) {
+            // Cull any lights that are not visible even though they are in range. Lights inside the
+            // close sphere skip the test and are kept; it reuses the range test's own distance.
+            if ( clipResult != ContainmentType::CONTAINS && lightCameraDistSq >= keepCloseLightsDistSq ) {
                 BoundingSphere lightSphere;
                 lightSphere.Center = vob->GetPositionWorld();
                 lightSphere.Radius = lightRange;

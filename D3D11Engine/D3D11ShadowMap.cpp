@@ -476,7 +476,12 @@ XRESULT D3D11ShadowMap::PrepareRender()
     m_CascadeSplits.clear();
     m_CascadeSplits.insert( m_CascadeSplits.begin(), splits.begin(), splits.end() );
 
-    // Get current light direction from atmosphere
+    // Get current light direction from atmosphere.
+    // PrepareRender() runs before DrawSky() this frame, so GetAtmosphereCB() would otherwise still hold
+    // last frame's values; force a refresh here so AC_LightPos is never stale/zero (matches the D3D12
+    // path, see D3D12ShadowMap::ComputeCascadeMatrices). Does not render, just computes atmosphere data.
+    Engine::GAPI->GetSky()->RenderSky();
+
     XMVECTOR currentDir = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
     currentDir = XMVector3Normalize( currentDir );
 
