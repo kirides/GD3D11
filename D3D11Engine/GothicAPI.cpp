@@ -5995,6 +5995,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     
 
     WritePrivateProfileStringA( "Shadows", "EnableShadows", to_string_locale_independent( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowQuality", to_string_locale_independent( static_cast<int>(s.ShadowQuality) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowFilterMode", to_string_locale_independent( static_cast<int>(s.ShadowFilterMode) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowMapSize", to_string_locale_independent( s.ShadowMapSize ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldShadowRangeScale", to_string_locale_independent( s.WorldShadowRangeScale ).c_str(), ini.c_str() );
@@ -6158,6 +6159,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         }
 
         s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", ds.EnableShadows, ini );
+        s.ShadowQuality = static_cast<GothicRendererSettings::E_GraphicsPreset>(
+            GetPrivateProfileIntA( "Shadows", "ShadowQuality",
+                static_cast<int>(ds.ShadowQuality), ini.c_str() ));
         s.ShadowFilterMode = static_cast<GothicRendererSettings::E_ShadowFilterMode>(
             GetPrivateProfileIntA( "Shadows", "ShadowFilterMode",
                 static_cast<int>(ds.ShadowFilterMode), ini.c_str() ));

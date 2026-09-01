@@ -933,6 +933,7 @@ struct GothicRendererSettings {
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
+        ShadowQuality = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
         DisableStaticPointlights = false;
         SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
@@ -955,6 +956,8 @@ struct GothicRendererSettings {
     }
 
     void ApplyGraphicsPreset();
+    /** Applies just the shadow values of the ShadowQuality preset. */
+    void ApplyShadowPreset();
     void ApplyFeatureLevel10Downgrades();
 
     void ApplyAssaoPreset( int preset ) {
@@ -1326,6 +1329,9 @@ struct GothicRendererSettings {
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
+    // Which preset's shadow values are in effect. The graphics presets set it along the way; the
+    // settings window uses it as the single shadow-quality knob (see ApplyShadowPreset).
+    E_GraphicsPreset ShadowQuality;
     bool CompressedNormalsSupport;
     bool AllowSelfShadowingPointlights;
     // Drop every zCVobLight with IsStatic() from the frame's point-light set. Gothic lights its rooms and caves

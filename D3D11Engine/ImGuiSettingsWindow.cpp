@@ -370,34 +370,23 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
 
     ImGui::BeginDisabled( !settings.EnableShadows );
     {
-        // Restricted to these five power-of-two steps - 8192 is the hard ceiling on both backends.
-        constexpr ListItem<int> shadowMapSizes[] = {
-            { "Very Low", 512, nullptr, "ShadowQuality_VeryLow" },
-            { "Low", 1024, nullptr, "ShadowQuality_Low" },
-            { "Medium", 2048, nullptr, "ShadowQuality_Medium" },
-            { "High", 4096, nullptr, "ShadowQuality_High" },
-            { "Very High", 8192, nullptr, "ShadowQuality_VeryHigh" },
+        // One knob for resolution, cascade count and filtering together - the individual values are
+        // still tweakable in the classic settings window.
+        constexpr ListItem<GothicRendererSettings::E_GraphicsPreset> shadowQualities[] = {
+            { "Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM },
+            { "Very Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_LOW, nullptr, "ShadowQuality_VeryLow" },
+            { "Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW, nullptr, "ShadowQuality_Low" },
+            { "Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM, nullptr, "ShadowQuality_Medium" },
+            { "High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH, nullptr, "ShadowQuality_High" },
+            { "Very High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_HIGH, nullptr, "ShadowQuality_VeryHigh" },
         };
-        ComboRow( "Shadow Quality", "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, nullptr,
-            [&shadersToReload] { shadersToReload |= ShaderCategory::LightsAndShadows; } );
-
-        constexpr ListItem<GothicRendererSettings::E_ShadowFilterMode> shadowFilterModes[] = {
-            { "Disabled", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED },
-            { "Simple", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE },
-            { "PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS,
-              "Contact-hardening shadows: sharp where an object touches the ground, softer further away." },
-        };
-        ComboRow( "Shadow Filtering", "##ShadowFiltering", shadowFilterModes, &settings.ShadowFilterMode, nullptr,
-            [&shadersToReload] { shadersToReload |= ShaderCategory::LightsAndShadows; } );
-
-        if ( SliderIntRow( "Shadow Cascades", "##ShadowCascades", &settings.NumShadowCascades,
-            1, MAX_CSM_CASCADES, "%d",
-            "How many sun-shadow slices the view is split into. More reaches further with\n"
-            "the same detail near the camera, at the cost of one extra shadow pass each.\n"
-            "Changing this reloads shaders." ) ) {
-            settings.ApplyFeatureLevel10Downgrades();
-            shadersToReload |= ShaderCategory::LightsAndShadows;
-        }
+        ComboRow( "Shadow Quality", "##ShadowQuality", shadowQualities, &settings.ShadowQuality,
+            "Shadow map resolution, cascade count and filtering, taken from the graphics preset\n"
+            "of the same name. Changing this reloads shaders.",
+            [&settings, &shadersToReload] {
+                settings.ApplyShadowPreset();
+                shadersToReload |= ShaderCategory::LightsAndShadows;
+            } );
 
         SliderFloatRow( "Shadow Distance", "##ShadowDistance", &settings.WorldShadowRangeScale, 0.25f, 4.0f, "%.2f",
             "Scales how far the sun shadows reach. Larger covers more of the world with\n"
@@ -667,6 +656,7 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 void RenderHeader( GothicRendererSettings& settings ) {
     constexpr ListItem<GothicRendererSettings::E_GraphicsPreset> graphicsPresets[] = {
         { "Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM },
+        { "Very Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_LOW },
         { "Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW },
         { "Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM },
         { "High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH },

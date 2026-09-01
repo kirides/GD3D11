@@ -280,6 +280,14 @@ void ImGuiShim::BuildFrameUI()
         if ( oldSettings.GraphicsPreset == Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset ) {
             Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
         }
+        // Editing one of the preset-driven shadow values by hand makes the shadow quality "Custom".
+        GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( oldSettings.ShadowQuality == rs.ShadowQuality
+            && ( oldSettings.ShadowMapSize != rs.ShadowMapSize
+                || oldSettings.NumShadowCascades != rs.NumShadowCascades
+                || oldSettings.ShadowFilterMode != rs.ShadowFilterMode ) ) {
+            rs.ShadowQuality = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
+        }
         if ( FeatureLevel10Compatibility ) {
             Engine::GAPI->GetRendererState().RendererSettings.ApplyFeatureLevel10Downgrades();
         }
@@ -664,6 +672,7 @@ void ImGuiShim::RenderSettingsWindow()
 
         constexpr ListItem<int> graphicsPresets[] = {
             {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
+            {"Very Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_LOW},
             {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
             {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
             {"High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH},
