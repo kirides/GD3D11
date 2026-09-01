@@ -641,6 +641,7 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         if ( IsD3D12() ) {
             settings.ApplyDx12Defaults();
         }
+        settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
     }
     ImGui::SetItemTooltip( "Reset all settings to their default values." );

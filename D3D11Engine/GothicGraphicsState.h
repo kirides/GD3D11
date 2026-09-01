@@ -4,6 +4,7 @@
 
 #include "pch.h"
 #include "BasePipelineStates.h"
+#include "GraphicsDeviceCapabilities.h"
 #include <ASSAO/ASSAO.h>
 
 /** Struct handling all the graphical states set by the game. Can be used as Constantbuffer */
@@ -955,6 +956,11 @@ struct GothicRendererSettings {
         EnableBloom = true;
     }
 
+    /** Resolves the capability-driven FeatureSet entries: FEATURE_AUTO takes the device's answer, a
+        forced override wins. Called by every backend at the end of device init and by the settings
+        window's reset button, so a reset lands back on what the hardware actually supports. */
+    void ApplyDeviceCapabilities( const GraphicsDeviceCapabilities& caps );
+
     void ApplyGraphicsPreset();
     /** Applies just the shadow values of the ShadowQuality preset. */
     void ApplyShadowPreset();
@@ -1007,6 +1013,10 @@ struct GothicRendererSettings {
         // Deliberately conservative: at 2 texels only props that resolve to a smudge get dropped. Raise it
         // against a capture - this is the one lever left on VOB casters dominating the shadow pass.
         DebugSettings.ShadowCascades.CasterMinTexels = 2.0f;
+        // Capability-driven: AUTO everywhere, then resolved against the device by ApplyDeviceCapabilities().
+        DebugSettings.FeatureSet.EnableDriverExtensionsOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.UseMDIOverride = FEATURE_AUTO;
+        DebugSettings.FeatureSet.UseLayeredRenderingOverride = FEATURE_AUTO;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1352,7 +1362,15 @@ struct GothicRendererSettings {
         SH_ATMOSPHERIC = 1 << 2,
     };
     int SpecularHighlightsFlags;
-    
+
+    /** Tri-state for the settings that follow the device's capabilities. FEATURE_AUTO takes whatever
+        the backend reported; a forced value lets a player override a bad or unlucky driver report. */
+    enum E_FeatureOverride : int {
+        FEATURE_AUTO = -1,
+        FEATURE_FORCE_OFF = 0,
+        FEATURE_FORCE_ON = 1,
+    };
+
     struct {
         struct {
             bool DepthMotionVectors;
@@ -1387,10 +1405,22 @@ struct GothicRendererSettings {
             bool CullBspSections;
         } Culling;
         struct {
+            // The three entries below are resolved from the device capabilities and the matching
+            // *Override tri-state by ApplyDeviceCapabilities(); renderer code reads these, only the
+            // overrides are persisted.
             bool EnableDriverExtensions;
-            bool UseWorldSectionBVH;
             bool UseMDI;
             bool UseLayeredRendering;
+
+            E_FeatureOverride EnableDriverExtensionsOverride;
+            E_FeatureOverride UseMDIOverride;
+            E_FeatureOverride UseLayeredRenderingOverride;
+
+            // EnableDriverExtensions can only be resolved once the device is up, but the init path has
+            // to decide whether to even load NVAPI/AGS - so it asks the override instead.
+            bool WantsDriverExtensions() const { return EnableDriverExtensionsOverride != FEATURE_FORCE_OFF; }
+
+            bool UseWorldSectionBVH;
             bool UseShadowAtlas;
             bool UseScreenSpaceShadowMask;
             bool GenerateAONormalsFromDepth; // Forward+: build smooth normals from depth for SAO/ASSAO

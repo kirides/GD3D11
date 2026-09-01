@@ -171,6 +171,14 @@ namespace {
         return true;
     }
 
+    // SV_RenderTargetArrayIndex straight out of a vertex shader - lets the shadow cascades render
+    // layered instead of once per cascade.
+    bool DeviceSupportsLayeredRendering( ID3D12Device* device ) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+        return SUCCEEDED( device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) )
+            && options.VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation;
+    }
+
     bool DeviceSupportsEnhancedBarriers( ID3D12Device* device, std::string* outReason ) {
         D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12 = {};
         if ( FAILED( device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof( options12 ) ) )
@@ -350,6 +358,8 @@ bool D3D12Device::Init() {
         return false;
     }
     LogInfo() << "D3D12 device created on: " << m_DeviceDescription.c_str();
+
+    m_LayeredRenderingSupported = DeviceSupportsLayeredRendering( m_Device.Get() );
 
     std::string barrierReason;
     m_EnhancedBarriersSupported = DeviceSupportsEnhancedBarriers( m_Device.Get(), &barrierReason );

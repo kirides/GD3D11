@@ -536,7 +536,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         dxgiVKInterop->Release();
     }
     
-    if ( !dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions ) {
+    if ( !dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.WantsDriverExtensions() ) {
         if ( adpDesc.VendorId == 0x10DE ) {
             nvapiDevice.reset( new D3D11NVAPI );
             if ( !nvapiDevice->InitNVAPI() ) {
@@ -624,7 +624,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         exit( 2 );
     }
 
-    if ( dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions) {
+    if ( dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.WantsDriverExtensions() ) {
         Microsoft::WRL::ComPtr<ID3D11VkExtDevice> DXVKDevice;
         if ( SUCCEEDED( Device11.As( &DXVKDevice ) ) ) {
             if ( DXVKDevice->GetExtensionSupport( D3D11_VK_EXT_MULTI_DRAW_INDIRECT ) ) {
@@ -696,14 +696,6 @@ XRESULT D3D11GraphicsEngine::Init() {
         ResolvedDrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
     }
 
-    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI =
-        !FeatureLevel10Compatibility
-        && ResolvedDrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
-
-    DrawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
-        ? ResolvedDrawMultiIndexedInstancedIndirect
-        : Stub_DrawMultiIndexedInstancedIndirect;
-
     if ( !BeginUAVOverlap || !EndUAVOverlap ) {
         BeginUAVOverlap = Stub_BeginUAVOverlap;
         EndUAVOverlap = Stub_EndUAVOverlap;
@@ -718,7 +710,22 @@ XRESULT D3D11GraphicsEngine::Init() {
         LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
     }
 
-    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
+    m_DeviceCapabilities.DeviceDescription = deviceDescription;
+    m_DeviceCapabilities.VendorId = adpDesc.VendorId;
+    m_DeviceCapabilities.FeatureLevel10Only = FeatureLevel10Compatibility;
+    m_DeviceCapabilities.Native16BitTextures = NativeSupport16BitTextures;
+    m_DeviceCapabilities.MultiDrawIndirect = !FeatureLevel10Compatibility
+        && ResolvedDrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
+    m_DeviceCapabilities.UAVOverlap = BeginUAVOverlap != Stub_BeginUAVOverlap;
+    // No extension interface resolved anything usable (or RenderDoc stubbed them out again).
+    m_DeviceCapabilities.DriverExtensions = m_DeviceCapabilities.MultiDrawIndirect || m_DeviceCapabilities.UAVOverlap;
+    m_DeviceCapabilities.LayeredRendering = FeatureRTArrayIndexFromAnyShader;
+
+    Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
+
+    DrawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
+        ? ResolvedDrawMultiIndexedInstancedIndirect
+        : Stub_DrawMultiIndexedInstancedIndirect;
 
     RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
 

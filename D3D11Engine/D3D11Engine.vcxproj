@@ -997,6 +997,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GothicMemoryLocations1_08k.h" />
     <ClInclude Include="GothicMemoryLocations2_6_fix.h" />
     <ClInclude Include="GothicMemoryLocations1_12f.h" />
+    <ClInclude Include="GraphicsDeviceCapabilities.h" />
     <ClInclude Include="GraphicsEventRecord.h" />
     <ClInclude Include="GraphicsShader.h" />
     <ClInclude Include="GSky.h" />

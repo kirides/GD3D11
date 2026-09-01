@@ -581,6 +581,26 @@ void ImGuiShim::OnResize( INT2 newSize )
     ImGuiCollectResolutions( Resolutions );
 }
 
+// One Auto/Off/On row for a FeatureSet entry that follows the device's capabilities. Only the
+// override is stored; picking one re-resolves the effective value against the live device.
+static void FeatureOverrideRow( const char* label, GothicRendererSettings& settings,
+    GothicRendererSettings::E_FeatureOverride& value, const bool& effective, bool deviceSupports,
+    const char* toolTip ) {
+    static const ListItem<GothicRendererSettings::E_FeatureOverride> overrides[] = {
+        { "Auto",      GothicRendererSettings::FEATURE_AUTO },
+        { "Force Off", GothicRendererSettings::FEATURE_FORCE_OFF },
+        { "Force On",  GothicRendererSettings::FEATURE_FORCE_ON },
+    };
+
+    if ( ImComboBox( label, overrides, &value, [&settings] {
+        settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+    } ) ) {
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip( "%s\n\nDevice reports: %s. Currently: %s.", toolTip,
+        deviceSupports ? "supported" : "unsupported", effective ? "on" : "off" );
+}
+
 // Helper function to edit a direction vector using ImGuizmo::ViewManipulate
 // Returns true if the direction was modified
 static bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widgetSize = 100.0f )
@@ -1245,6 +1265,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
                 settings.ApplyDx12Defaults();
             }
+            settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
         }
         ImGui::SetItemTooltip( "Reset all settings to their default values." );
@@ -1837,8 +1858,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             }
             
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
-                ImGui::Checkbox("Enable GPU Driver Extensions", &settings.DebugSettings.FeatureSet.EnableDriverExtensions );
-                ImGui::SetItemTooltip("Allow Driver Extensions (AMD, Nvidia, Intel).\nRequires restart.");
+                FeatureOverrideRow( "Enable GPU Driver Extensions", settings,
+                    settings.DebugSettings.FeatureSet.EnableDriverExtensionsOverride,
+                    settings.DebugSettings.FeatureSet.EnableDriverExtensions,
+                    Engine::GraphicsEngine->GetDeviceCapabilities().DriverExtensions,
+                    "Allow Driver Extensions (AMD, Nvidia, Intel).\nRequires restart." );
 
                 {
                     static const std::vector<ListItem<GothicRendererSettings::E_RendererMode>> rendererModes = {
@@ -1863,10 +1887,18 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ImGui::SetItemTooltip( "Forward+ only: hardware multisample anti-aliasing for opaque geometry. Falls back to the highest supported level if the requested one isn't available. Mutually exclusive with TAA/FSR." );
                 }
                 if (!FeatureLevel10Compatibility){
-                    ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
-                    ImGui::SetItemTooltip("Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).");
+                    FeatureOverrideRow( "Use MDI", settings,
+                        settings.DebugSettings.FeatureSet.UseMDIOverride,
+                        settings.DebugSettings.FeatureSet.UseMDI,
+                        Engine::GraphicsEngine->GetDeviceCapabilities().MultiDrawIndirect,
+                        "Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).\nRequires restart." );
 
-                    ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                    FeatureOverrideRow( "Use Layered Drawing", settings,
+                        settings.DebugSettings.FeatureSet.UseLayeredRenderingOverride,
+                        settings.DebugSettings.FeatureSet.UseLayeredRendering,
+                        Engine::GraphicsEngine->GetDeviceCapabilities().LayeredRendering,
+                        "Render the shadow cascades in one layered pass instead of one draw per cascade." );
+
                     ImGui::Checkbox("Use Tiled Lighting", &settings.EnableTiledLighting );
                     ImGui::SetItemTooltip( "Uses compute shader light culling for point lights. Reduces draw calls and overdraw." );
                 }

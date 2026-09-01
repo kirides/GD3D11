@@ -768,6 +768,9 @@
     <ClInclude Include="D3D11ShadowAtlas.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="GraphicsDeviceCapabilities.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
     <ClInclude Include="GraphicsEventRecord.h">
       <Filter>Engine</Filter>
     </ClInclude>

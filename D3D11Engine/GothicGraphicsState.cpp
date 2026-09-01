@@ -200,6 +200,18 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     if ( Engine::GAPI ) Engine::GAPI->UpdateCompressBackBuffer();
 }
 
+void GothicRendererSettings::ApplyDeviceCapabilities( const GraphicsDeviceCapabilities& caps )
+{
+    auto resolve = []( E_FeatureOverride ov, bool supported ) {
+        return ov == FEATURE_AUTO ? supported : ov == FEATURE_FORCE_ON;
+    };
+
+    auto& fs = DebugSettings.FeatureSet;
+    fs.EnableDriverExtensions = resolve( fs.EnableDriverExtensionsOverride, caps.DriverExtensions );
+    fs.UseMDI = resolve( fs.UseMDIOverride, caps.MultiDrawIndirect );
+    fs.UseLayeredRendering = resolve( fs.UseLayeredRenderingOverride, caps.LayeredRendering );
+}
+
 void GothicRendererSettings::ApplyGraphicsPreset()
 {
     ::ApplyGraphicsPresets( *this );
