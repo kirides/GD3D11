@@ -21,10 +21,15 @@
     do not change. Self-validating: two different source meshes colliding on the same hash would have to
     produce identical bytes, in which case optimizing them identically is correct anyway.
 
-    In-memory tier bounded by the number of DISTINCT sub-meshes the session has ever converted - same
-    growth shape as SharedVisualRegistry. Acceptable because an entry holds only small CPU-side index/
-    vertex arrays, never a GPU buffer, so it does not touch the 32-bit VA budget the pooling rules in
-    CLAUDE.md are about. The on-disk tier is one row per distinct sub-mesh ever seen in a single SQLite
+    In-memory tier is only kept ARMED for the duration of one world load (GothicAPI::OnLoadWorld ->
+    OnWorldLoaded calls SetMemoryCache(true)/(false) below) - unbounded growth across an entire play
+    session, not one load, is what was actually exhausting the 32-bit address space, since Gothic
+    reloads worlds/VOBs repeatedly over hours of play. Disarming clears the map immediately so the
+    memory is freed, not just stopped from growing; every lookup after that falls through to the
+    on-disk tier at a small IO cost instead of being memoized in RAM. While armed, an entry holds only
+    small CPU-side index/vertex arrays, never a GPU buffer, so it does not touch the 32-bit VA budget
+    the pooling rules in CLAUDE.md are about. The on-disk tier is one row per distinct sub-mesh ever seen
+    in a single SQLite
     database (cache\meshes.db, via SqliteBlobStore) - tens of thousands of mostly-tiny entries is exactly
     the shape a single DB beats a directory of loose files on (fewer file-system objects for the AV
     scanner/NTFS to chew through during a load burst). Deleting cache\meshes.db is always safe, it just
@@ -75,6 +80,21 @@ namespace MeshOptimizeCache {
     inline std::mutex g_Mutex;
     inline gtl::flat_hash_map<uint64_t, Entry> g_Cache;
     inline std::atomic<uint32_t> g_MemHits{ 0 }, g_DiskHits{ 0 }, g_Misses{ 0 };
+    inline std::atomic<bool> g_MemoryCacheEnabled{ true };
+
+    /** Arms/disarms the in-memory tier - see the header comment for why. Call with true right before a
+        world load's mesh conversion work starts and false once it's done; disarming drops any entries
+        already resident so the memory is actually released. Safe to call from the main thread while
+        worker-pool lookups are in flight (TryGet/Put) - both paths take g_Mutex around the memory
+        tier and read g_MemoryCacheEnabled fresh on every call, so a race just means a lookup right at
+        the boundary happens to land on one side or the other of it, never a torn read. */
+    inline void SetMemoryCache( bool on ) {
+        g_MemoryCacheEnabled = on;
+        if ( !on ) {
+            std::scoped_lock lock( g_Mutex );
+            g_Cache.clear();
+        }
+    }
 
     inline void ReportStats() {
         const uint32_t total = g_MemHits + g_DiskHits + g_Misses;
@@ -198,7 +218,7 @@ namespace MeshOptimizeCache {
             vertices = disk.Vertices;
             if ( shadowIndices ) *shadowIndices = disk.ShadowIndices;
             if ( lodIndices ) *lodIndices = disk.LodIndices;
-            {
+            if ( g_MemoryCacheEnabled ) {
                 std::scoped_lock lock( g_Mutex );
                 g_Cache.emplace( key, std::move( disk ) );
             }
@@ -226,8 +246,10 @@ namespace MeshOptimizeCache {
 
         Disk::Store( key, e );
 
-        std::scoped_lock lock( g_Mutex );
-        g_Cache.emplace( key, std::move( e ) );
+        if ( g_MemoryCacheEnabled ) {
+            std::scoped_lock lock( g_Mutex );
+            g_Cache.emplace( key, std::move( e ) );
+        }
     }
 
 }   // namespace MeshOptimizeCache

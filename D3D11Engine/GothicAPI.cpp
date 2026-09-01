@@ -8,6 +8,7 @@
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
 #include "WorldConverter.h"
+#include "MeshOptimizeCache.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -1015,6 +1016,10 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
 
 /** Called when the game is about to load a new level */
 void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
+    // Arm the mesh-optimize in-memory cache for the duration of this load - see MeshOptimizeCache.h.
+    // Disarmed again at the end of OnWorldLoaded once conversion work is done.
+    MeshOptimizeCache::SetMemoryCache( true );
+
     _canClearVobsByVisual = true;
     if ( (loadMode == zWLD_LOAD_GAME_STARTUP || loadMode == zWLD_LOAD_GAME_SAVED_STAT) ) {
         if ( !levelName.empty() ) {
@@ -1117,6 +1122,10 @@ void GothicAPI::OnWorldLoaded() {
 #endif
 
     _canClearVobsByVisual = false;
+
+    // World load is done - drop the mesh-optimize in-memory cache back to disk-only so it doesn't
+    // keep growing across the rest of the session (see MeshOptimizeCache.h).
+    MeshOptimizeCache::SetMemoryCache( false );
 }
 
 void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s )
