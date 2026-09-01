@@ -1715,6 +1715,18 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "Weld a separate, smaller index buffer for shadow passes. Off falls back to\n"
             "the render index buffer for shadows (more vertex work in the shadow pass, no\n"
             "visual change) and skips one buffer per sub-mesh. Takes effect on the next world load." );
+
+        ImGui::CheckboxFlags( "Cache on disk##MeshOptCacheDisk", &settings.MeshOptimizeCacheFlags, GothicRendererSettings::MOC_DISK );
+        ImGui::SetItemTooltip( "Remember already-optimized meshes in system\\GD3D11\\cache\\meshes.db so a\n"
+            "world/VOB that has been loaded before, even in an earlier session, skips this pass\n"
+            "entirely. Off skips reading and writing that file. Takes effect on the next lookup." );
+        ImGui::SameLine();
+        ImGui::CheckboxFlags( "Cache in memory##MeshOptCacheMemory", &settings.MeshOptimizeCacheFlags, GothicRendererSettings::MOC_MEMORY );
+        ImGui::SetItemTooltip( "Also remember already-optimized meshes in RAM for the duration of the current\n"
+            "world load, so re-converting the same mesh twice in one load (shared VOB visuals,\n"
+            "e.g.) skips the disk read too. Never kept beyond one load regardless of this setting,\n"
+            "to avoid growing unbounded over a long play session in this 32-bit process. Takes\n"
+            "effect on the next world load." );
         ImGui::EndDisabled();
 
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );

@@ -80,7 +80,7 @@ namespace {
         std::vector<VERTEX_INDEX>* const wantShadow = s.EnableShadowIndexBuffers ? shadowIndices : nullptr;
 
         const uint64_t key = MeshOptimizeCache::Hash( indices, vertices, wantShadow != nullptr, lodIndices != nullptr );
-        if ( MeshOptimizeCache::TryGet( key, indices, vertices, wantShadow, lodIndices ) ) {
+        if ( MeshOptimizeCache::TryGet( key, indices, vertices, wantShadow, lodIndices, s.MeshOptimizeCacheFlags ) ) {
             return;
         }
 
@@ -89,7 +89,7 @@ namespace {
         vertexBuffer->OptimizeVertices( indices.data(), reinterpret_cast<byte*>(vertices.data()),
             indices.size(), vertices.size(), sizeof( ExVertexStruct ), wantShadow, lodIndices );
 
-        MeshOptimizeCache::Put( key, indices, vertices, wantShadow, lodIndices );
+        MeshOptimizeCache::Put( key, indices, vertices, wantShadow, lodIndices, s.MeshOptimizeCacheFlags );
     }
 
     /** ZENGIN's zPMINDEX_NONE: terminator of a WedgeMap collapse chain. */

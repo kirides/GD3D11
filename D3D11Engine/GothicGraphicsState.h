@@ -840,6 +840,7 @@ struct GothicRendererSettings {
         DrawThreaded = false;
         EnableMeshOptimization = true;
         EnableShadowIndexBuffers = true;
+        MeshOptimizeCacheFlags = MOC_DISK | MOC_MEMORY;
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
@@ -1130,6 +1131,14 @@ struct GothicRendererSettings {
         (slightly more shadow-map vertex work, no alpha-test capability loss - see
         MeshShadowIndexBuilder.h) in exchange for skipping the weld and one buffer per sub-mesh. */
     bool EnableShadowIndexBuffers;
+    // Which tiers of the mesh-optimize cache (MeshOptimizeCache.h) may serve/store a hit, as an OR of
+    // flags. MOC_MEMORY is only ever armed for one world load regardless of this flag - see MeshOptimizeCache.h.
+    enum EMeshOptimizeCacheFlags : int {
+        MOC_OFF = 0,
+        MOC_DISK = 1 << 0,
+        MOC_MEMORY = 1 << 1,
+    };
+    int MeshOptimizeCacheFlags;
     EPointLightShadowMode EnablePointlightShadows;
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
