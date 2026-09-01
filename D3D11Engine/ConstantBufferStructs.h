@@ -197,7 +197,17 @@ struct DS_PointLightConstantBuffer {
 
     float3 PL_LightScreenPos;
     float PL_Pad3;
+
+    // Rain wetness (frame-constant, re-sent with every light like PL_InvView above): lets the point-light
+    // passes darken/dampen a wet pixel the same way PS_DS_AtmosphericScattering.hlsl's ApplySceneWettness
+    // does for the sun/ambient term, instead of adding un-wetted brightness on top of it. See
+    // ApplyPointLightWetness (Shaders/include/RainWetnessSample.h).
+    XMFLOAT4X4 PL_RainViewProj;
+    float PL_SceneWettness;
+    float3 PL_Pad4;
 };
+static_assert( sizeof( DS_PointLightConstantBuffer ) == 240,
+    "DS_PointLightConstantBuffer (b0) layout must match PS_DS_PointLight.hlsl / PS_DS_PointLightDynShadow.hlsl" );
 
 constexpr int MAX_CSM_CASCADES = 4;
 
@@ -468,7 +478,16 @@ struct TiledShadingConstantBuffer {
     float ClusterNearZ;   // cluster Z range; must match the CS_LightCulling dispatch
     float ClusterFarZ;
     XMFLOAT4X4 InvView; // For world-space reconstruction (shadow sampling)
+
+    // Rain wetness (frame-constant): lets CS_TiledShading.hlsl darken/dampen a wet pixel once, before its
+    // light loop, the same way PS_DS_AtmosphericScattering.hlsl's ApplySceneWettness does for the sun/
+    // ambient term. See ApplyPointLightWetness (Shaders/include/RainWetnessSample.h).
+    XMFLOAT4X4 RainViewProj;
+    float SceneWettness;
+    float3 WetnessPad;
 };
+static_assert( sizeof( TiledShadingConstantBuffer ) == 192,
+    "TiledShadingConstantBuffer (b0) layout must match CS_TiledShading.hlsl" );
 
 struct ForwardPlusTileConstantBuffer {
     float2 ViewportSize;

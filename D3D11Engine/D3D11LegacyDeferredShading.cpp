@@ -9,6 +9,8 @@
 #include "D3D11_Helpers.h"
 #include "zCVobLight.h"
 #include "GMesh.h"
+#include "D3D11Effect.h"
+#include "D3D11ShadowMap.h"
 
 XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     std::vector<VobLightInfo*>& lights,
@@ -62,10 +64,23 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
 
     plcb.PL_ViewportSize = Engine::GraphicsEngine->GetResolution();
 
+    // Rain wetness (frame-constant, same source data PS_DS_AtmosphericScattering.hlsl's
+    // DS_ScreenQuadConstantBuffer.SQ_RainViewProj is filled from — see D3D11ShadowMap.cpp) so the
+    // point-light passes can darken/dampen wet ground consistently with the sun/ambient pass instead
+    // of ignoring wetness entirely (see RainWetnessSample.h).
+    XMStoreFloat4x4( &plcb.PL_RainViewProj,
+        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
+        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
+    plcb.PL_SceneWettness = Engine::GAPI->GetSceneWetness();
+
     color.BindToPixelShader( context.Get(), 0 );
     normals.BindToPixelShader( context.Get(), 1 );
     specular.BindToPixelShader( context.Get(), 7 );
     depthCopy.BindToPixelShader( context.Get(), 2 );
+    // Same texture/slot PS_DS_AtmosphericScattering.hlsl binds it to (D3D11ShadowMap.h's TX_RainShadowmap
+    // slot); SS_Comp (s2) is already bound for the whole frame by that same earlier pass.
+    if ( RenderToDepthStencilBuffer* rainShadowmap = graphicsEngine->Effects->GetRainShadowmap() )
+        rainShadowmap->BindToPixelShader( context.Get(), TX_RainShadowmap );
 
     // Mirrors D3D12 BuildFrameLightBuffer's post-selection range clamp (D3D12Scene.cpp): a light that
     // ends up with no shadow cube shades unshadowed and bleeds through walls. Clamping its range to a

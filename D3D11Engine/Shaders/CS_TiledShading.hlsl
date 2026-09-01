@@ -1,6 +1,7 @@
 #include "DS_Defines.h"
 #include "DepthReconstruction.h"
 #include "include/PointLightShadows.h"
+#include "include/RainWetnessSample.h"
 
 #define TILE_SIZE 16
 
@@ -30,6 +31,11 @@ cbuffer TiledShadingConstantBuffer : register( b0 ) {
     float ClusterNearZ;   // must match what CS_LightCulling was dispatched with
     float ClusterFarZ;
     matrix InvView; // For world-space reconstruction (shadow sampling)
+
+    // Rain wetness, frame-constant (see ApplyPointLightWetness / RainWetnessSample.h).
+    matrix RainViewProj;
+    float SceneWettness;
+    float3 WetnessPad;
 };
 
 SamplerComparisonState SS_Comp : register( s2 );
@@ -37,6 +43,7 @@ Texture2D TX_Diffuse : register( t0 );
 Texture2D TX_Nrm : register( t1 );
 Texture2D TX_Depth : register( t2 );
 Texture2D TX_SI_SP : register( t7 );
+Texture2D TX_RainShadowmap : register( t4 );
 
 StructuredBuffer<TiledPointLight> SB_Lights : register( t8 );
 StructuredBuffer<LightGrid> SB_LightGrid : register( t9 );
@@ -75,6 +82,15 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     // World-space position for shadow sampling (computed once, shared by all shadowed lights)
     float3 wsPosition = mul( float4( vsPosition, 1 ), InvView ).xyz;
     float3 wsNormal = normalize( mul( float4( normal, 0 ), InvView ).xyz );
+
+    // Rain wetness: darken/dampen this pixel's diffuse/specular ONCE, before the light loop below, so
+    // every overlapping light shades against wet ground consistently with what
+    // PS_DS_AtmosphericScattering.hlsl already did for the sun/ambient term — instead of each light
+    // additively blending un-wetted brightness on top of it (see RainWetnessSample.h's header for the
+    // bug this fixes; this is the primary point-light path lights use, PS_DS_PointLight.hlsl only
+    // handles the shadow-cube-overflow fallback).
+    ApplyPointLightWetness( wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, RainViewProj, SceneWettness,
+        diffuse.rgb, specIntensity, specPower );
 
     // Compute tile index
     uint tileX = pixelCoord.x / TILE_SIZE;
