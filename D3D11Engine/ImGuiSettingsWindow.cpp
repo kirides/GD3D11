@@ -287,7 +287,9 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
             }
         } );
 
-    if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
+    // D3D12 has no MSAA render target support at all (it is always Forward+, but that path never
+    // reads MSAASamples), so this row is D3D11-only regardless of RendererMode.
+    if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus && !IsD3D12() ) {
         constexpr ListItem<int> msaaSamples[] = {
             { "Off", 1, nullptr, "MSAA_Off" },
             { "2x",  2, nullptr, "MSAA_2x" },
@@ -446,9 +448,23 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "ASSAO / XeGTAO", AOMode::AO_ASSAO,
           "D3D11: Intel ASSAO (Adaptive Screen Space Ambient Occlusion).\nD3D12: Intel XeGTAO (ground-truth ambient occlusion)." },
     };
-    ComboRow( "Ambient Occlusion", "##AoMode", aoModes, &settings.AoMode,
-        "Darkens creases and contact points. Changing this reloads shaders.",
-        [] { ReloadD3D11Shaders( ShaderCategory::Other ); } );
+    // HBAO+ has no D3D12 port (NVIDIA GFSDK is D3D11-only); a stored HBAO+ choice must survive a
+    // switch back to D3D11, so it is NOT written back here - it silently behaves as SAO instead
+    // (see D3D12GraphicsEngine::RenderSSAO), the combo just doesn't show it as selected.
+    constexpr ListItem<AOMode> aoModesNoHbao[] = {
+        { "Disabled", AOMode::AO_NONE },
+        { "SAO", AOMode::AO_SAO },
+        { "ASSAO / XeGTAO", AOMode::AO_ASSAO, "Intel XeGTAO (ground-truth ambient occlusion)." },
+    };
+    if ( IsD3D12() ) {
+        ComboRow( "Ambient Occlusion", "##AoMode", aoModesNoHbao, &settings.AoMode,
+            "Darkens creases and contact points. HBAO+ needs the Direct3D 11 backend. Changing this reloads shaders.",
+            [] { ReloadD3D11Shaders( ShaderCategory::Other ); } );
+    } else {
+        ComboRow( "Ambient Occlusion", "##AoMode", aoModes, &settings.AoMode,
+            "Darkens creases and contact points. Changing this reloads shaders.",
+            [] { ReloadD3D11Shaders( ShaderCategory::Other ); } );
+    }
 
     ImGui::SeparatorText( "Reflections" );
 
