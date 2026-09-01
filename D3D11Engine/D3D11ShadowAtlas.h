@@ -88,6 +88,7 @@ public:
 private:
     void Release();
     void ComputeLayout();
+    HRESULT ResizeInternal( UINT cascade0Size, UINT numCascades );
 
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_texture;
