@@ -759,7 +759,7 @@ void ImGuiSettings::RenderWindow( ImGuiShim& shim ) {
     if ( title.empty() ) {
         title.append( "GD3D11 " ).append( VERSION_NUMBER );
         if ( Engine::GraphicsEngine ) {
-            title.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ? " - D3D12" : " - D3D11" );
+            title.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ? " - Dx12" : " - Dx11" );
         }
 #ifdef IS_DEV_BUILD
         title.append( " (" BUILD_DATE ")" );
