@@ -185,12 +185,14 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     ComboRow( "Display Mode [*]", "##DisplayMode", displayModes, &displayMode,
         "Some changes require a restart.", [&settings] { settings.ChangeWindowPreset = displayMode; } );
 
+#ifndef PUBLIC_RELEASE
     constexpr ListItem<GothicRendererSettings::E_GraphicsAPI> graphicsApis[] = {
         { "Direct3D 11", GothicRendererSettings::GRAPHICS_API_D3D11 },
         { "Direct3D 12", GothicRendererSettings::GRAPHICS_API_D3D12, "Falls back to Direct3D 11 if the device can't be created." },
     };
     ComboRow( "Graphics API [*]", "##GraphicsAPI", graphicsApis, &settings.GraphicsAPI,
         "Takes effect after restarting the game." );
+#endif
 
     CheckRow( "V-Sync", &settings.EnableVSync );
 
@@ -341,8 +343,8 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Low", static_cast<int>( GothicRendererSettings::TX_QUALITY::Low ), nullptr, "TextureQuality_Low" },
         { "Medium", static_cast<int>( GothicRendererSettings::TX_QUALITY::Medium ), nullptr, "TextureQuality_Medium" },
         { "High", static_cast<int>( GothicRendererSettings::TX_QUALITY::High ), nullptr, "TextureQuality_High" },
-        { "Very High", static_cast<int>( GothicRendererSettings::TX_QUALITY::VeryHigh ), nullptr, "TextureQuality_VeryHigh" },
-        { "Extreme", static_cast<int>( GothicRendererSettings::TX_QUALITY::MAX ), nullptr, "TextureQuality_Extreme" },
+        { "Very High", static_cast<int>( GothicRendererSettings::TX_QUALITY::VeryHigh ), nullptr, "TextureQuality_High" },
+        { "Maximum", static_cast<int>( GothicRendererSettings::TX_QUALITY::MAX ), nullptr, "TextureQuality_High" },
     };
     settings.textureMaxSize = std::clamp( settings.textureMaxSize,
         textureQuality[0].value, textureQuality[std::size( textureQuality ) - 1].value );
