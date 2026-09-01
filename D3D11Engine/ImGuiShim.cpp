@@ -1480,6 +1480,23 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "Allow Pointlights self-shadowing", &settings.AllowSelfShadowingPointlights );
         ImGui::SetItemTooltip("Lets things like torches and lights from players also cast shadow for players.");
 
+        ImGui::Text( "Pointlight Shadows From" );
+        ImGui::SetItemTooltip("Which categories of point light are allowed to cast shadows from VOBs/NPCs, not\n"
+            "just the world mesh. Untick a category to keep it restricted to cheap world-mesh-only\n"
+            "shadows (or none, for Particle FX below its default).");
+        ImGui::CheckboxFlags( "Dynamic Lights##CasterDynamic", &settings.PointlightShadowCasterFlags, GothicRendererSettings::PLSC_DYNAMIC_LIGHTS );
+        ImGui::SameLine();
+        ImGui::CheckboxFlags( "Static Lights##CasterStatic", &settings.PointlightShadowCasterFlags, GothicRendererSettings::PLSC_STATIC_LIGHTS );
+        ImGui::SetItemTooltip("Lets IsStatic() lights (Gothic's 10-30-per-room atmospheric fill lights included)\n"
+            "cast VOB/NPC shadows too, instead of staying on the cheap world-mesh-only/cached path.\n"
+            "Can cost noticeably more with many static lights in a scene.");
+        ImGui::SameLine();
+        ImGui::CheckboxFlags( "Particle FX##CasterPfx", &settings.PointlightShadowCasterFlags, GothicRendererSettings::PLSC_PARTICLE_FX );
+        ImGui::SetItemTooltip("Lets torches, campfires and spell-effect lights cast shadows from VOBs/NPCs,\n"
+            "not just the world mesh. These lights can't always tell which vob is carrying them, so\n"
+            "enabling this may bring back a large self-shadow on whatever an attached light is mounted\n"
+            "on (e.g. a belt-worn torch shadowing the player).");
+
         ImGui::Checkbox( "Disable static Pointlights", &settings.DisableStaticPointlights );
         ImGui::SetItemTooltip("Drops every static light from the scene.\n"
             "Gothic fills rooms and caves with 10-30 co-located 'atmospheric' static lights that only raise the\n"

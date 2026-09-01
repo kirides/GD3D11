@@ -936,6 +936,7 @@ struct GothicRendererSettings {
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_MEDIUM;
         AllowSelfShadowingPointlights = false;
+        PointlightShadowCasterFlags = PLSC_DYNAMIC_LIGHTS;
         DisableStaticPointlights = false;
         SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
 
@@ -1344,6 +1345,26 @@ struct GothicRendererSettings {
     E_GraphicsPreset ShadowQuality;
     bool CompressedNormalsSupport;
     bool AllowSelfShadowingPointlights;
+    // Which categories of point light are allowed to cast shadows from VOBs/NPCs (not just the world mesh),
+    // as an OR of flags - on both backends (see D3D11PointLight::RenderStaticShadowPass/RenderFullCubemap/
+    // GetCurrentShadowMode and D3D12PointShadows::SelectShadowedLights/Prepare). A light whose category bit
+    // is unset here is restricted to world-mesh-only casters:
+    //   - PLSC_STATIC_LIGHTS off (the default) keeps every IsStatic() light on the cheap world-only/
+    //     PLS_STATIC_ONLY path Gothic's 10-30-per-room atmospheric fill lights would otherwise cost.
+    //   - PLSC_PARTICLE_FX off (the default) protects PFX-driven lights (torches/campfires/spell effects):
+    //     their vob-tree parent chain doesn't reliably resolve to a single origin item, so the usual
+    //     self-shadow exclusion can't be trusted and a carried/attached PFX light could throw a large shadow
+    //     off its own carrier. Enabling it accepts that risk for the extra shadow detail.
+    //   - PLSC_DYNAMIC_LIGHTS covers every other point light (the common case) and is on by default.
+    // A light matches at most one category - PFX takes precedence over Static when a light is both (see the
+    // category-resolution comment at each use site).
+    enum EPointlightShadowCasterFlags : int {
+        PLSC_NONE = 0,
+        PLSC_DYNAMIC_LIGHTS = 1 << 0,
+        PLSC_STATIC_LIGHTS = 1 << 1,
+        PLSC_PARTICLE_FX = 1 << 2,
+    };
+    int PointlightShadowCasterFlags;
     // Drop every zCVobLight with IsStatic() from the frame's point-light set. Gothic lights its rooms and caves
     // with 10-30 co-located "atmospheric" static fill lights that exist only to raise the ambient level; under
     // an HDR pipeline they stack into a badly over-bright interior. D3D12 backend only (see BuildFrameLightBuffer).

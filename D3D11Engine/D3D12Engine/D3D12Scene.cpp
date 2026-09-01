@@ -848,8 +848,12 @@ namespace {
 		XMFLOAT3    pos;
 		float       range;
 		float       distSq;
-		bool        isStatic;
+		bool        isStatic;         // Gothic's true IsStatic() — governs specular scale / DisableStaticPointlights,
+		                              // unaffected by PointlightShadowCasterFlags
 		bool        isIndoor;
+		bool        shadowRoutingStatic; // isStatic, UNLESS PLSC_STATIC_LIGHTS opted static lights into full
+		                              // dynamic-tier shadow treatment — see the PointlightShadowCasterFlags read below.
+		                              // Governs clustering eligibility and LightShadowKey::isStatic/lowRes.
 		XMFLOAT3    shadowOrigin;   // the CUBE's centre — the light's own, or its cluster's
 		float       shadowRange;    // the CUBE's far-plane basis — likewise
 		uint64_t    key;            // slot-ownership identity: the vob pointer, or a tagged cluster cell
@@ -893,11 +897,13 @@ namespace {
 		const void* world = Engine::GAPI->GetLoadedWorldInfo() ? Engine::GAPI->GetLoadedWorldInfo()->BspTree : nullptr;
 		if ( world != s_clusterWorld ) { g_StaticClusters.clear(); s_clusterWorld = world; }
 
-		// Pass 1 — fold this frame's visible static lights into the per-cell state (all grow-only).
+		// Pass 1 — fold this frame's visible static lights into the per-cell state (all grow-only). Keyed on
+		// shadowRoutingStatic, not isStatic: a light opted into PLSC_STATIC_LIGHTS skips clustering entirely and
+		// is treated as its own full dynamic-tier light (see BuildFrameLightBuffer).
 		static std::unordered_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
 		s_cellCount.clear();
 		for ( const FrameLightCand& c : cands ) {
-			if ( !c.isStatic ) continue;
+			if ( !c.shadowRoutingStatic ) continue;
 			const XMINT3 cell = ClusterCellOf( c.pos );
 			const uint64_t key = ClusterKeyOf( cell );
 			++s_cellCount[key];
@@ -920,7 +926,7 @@ namespace {
 		// cube up to a half-diagonal away and inflate its range for no benefit. seenCount is monotonic, so a cell
 		// never flips back and forth as members come in and out of view.
 		for ( FrameLightCand& c : cands ) {
-			if ( !c.isStatic ) continue;
+			if ( !c.shadowRoutingStatic ) continue;
 			const uint64_t key = ClusterKeyOf( ClusterCellOf( c.pos ) );
 			const auto it = g_StaticClusters.find( key );
 			if ( it == g_StaticClusters.end() || it->second.seenCount < 2 ) continue;
@@ -1007,6 +1013,11 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const GothicRendererSettings& lightSettings = Engine::GAPI->GetRendererState().RendererSettings;
 	const bool dropStaticLights = lightSettings.DisableStaticPointlights;
 	const bool pointShadowsOn = lightSettings.EnablePointlightShadows != GothicRendererSettings::PLS_DISABLED;
+	// See D3D11PointLight's AllowsDynamicCasters/PointlightShadowCasterFlags (D3D11PointLight.cpp) - the same
+	// advanced setting, mirrored here. On, a static light skips the low-res clustered/cached-forever tier and
+	// is routed through the exact same pipeline as a normal dynamic light (full Phase A VOB + Phase C skeletal
+	// overlay in D3D12PointShadows) instead of world-mesh-only.
+	const bool allowStaticDynamicShadows = (lightSettings.PointlightShadowCasterFlags & GothicRendererSettings::PLSC_STATIC_LIGHTS) != 0;
 	// "Is the camera indoors" for the indoor/outdoor gate below. The player vob carries Gothic's own indoor flag
 	// (the same sector state D3D11 keys its indoor/outdoor vob filtering off).
 	const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
@@ -1029,7 +1040,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// shadowOrigin/shadowRange start as the light's own and are redirected to a cluster's below; `key`
 		// likewise starts as the light's own identity.
 		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
-			pw, range, reinterpret_cast<uint64_t>( vob ) } );
+			isStatic && !allowStaticDynamicShadows, pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
 	// Total order, not just "by distance": the cluster cull keeps the first MAX_ACTIVE_LIGHTS candidates in BUFFER
 	// order, so the buffer order has to be a pure function of the visible light SET. std::sort is unstable, so
@@ -1082,7 +1093,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// the dynamic-overlay exclude list, which no static/clustered slot reaches.
 		s_lightKeys.push_back( { pointShadowsOn ? cand.key : 0ull,
 			cand.key == reinterpret_cast<uint64_t>( vob ) ? vob : nullptr,
-			cand.isStatic, cand.isStatic } );
+			cand.shadowRoutingStatic, cand.shadowRoutingStatic } );
 		++count;
 	}
 	m_FrameLightCount = count;
