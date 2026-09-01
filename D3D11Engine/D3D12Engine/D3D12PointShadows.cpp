@@ -464,7 +464,24 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 		// `!c.lowRes` is redundant with `!c.isStatic` today (only static lights are routed low) but is stated
 		// explicitly: the low-res array has no dynamic twin, so a low slot becoming overlay-eligible would point
 		// Phase C at a DSV that does not exist for it.
-		const bool overlayEligible = !c.isStatic && !c.lowRes && shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+		// PFX-spawned lights (candles/torches/spell effects) mirror D3D11's RenderStaticShadowPass/RenderFullCubemap
+		// gate: unless PLSC_PARTICLE_FX is enabled, restrict them to world-mesh-only casters — BuildExcludeList
+		// never excludes a PFX light's own carrier (see its comment), so without this a PFX light attached to an
+		// NPC/the player could throw a large self-shadow from its own carrier. Checked even when c.isStatic is
+		// already false only because PLSC_STATIC_LIGHTS opted it in (BuildFrameLightBuffer's shadowRoutingStatic):
+		// a light can be both IsStatic() and IsPFXVobLight (e.g. a fixed PFX-spawned torch), and PFX takes
+		// precedence — mirrors D3D11's AllowsDynamicCasters category order.
+		bool restrictToWorld = false;
+		if ( c.vob && !c.isStatic ) {
+			auto li = Engine::GAPI->VobLightMap.find( c.vob );
+			if ( li != Engine::GAPI->VobLightMap.end() && li->second->IsPFXVobLight ) {
+				restrictToWorld = !(Engine::GAPI->GetRendererState().RendererSettings.PointlightShadowCasterFlags
+					& GothicRendererSettings::PLSC_PARTICLE_FX);
+			}
+		}
+
+		const bool overlayEligible = !c.isStatic && !c.lowRes && shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC
+			&& !restrictToWorld;
 		// An ineligible slot must not keep advertising a stale overlay: drop the bit so the lit pass stops
 		// sampling the dynamic array for it the moment the setting (or the light's IsStatic) changes.
 		if ( !overlayEligible ) ss.dynamicValid = false;
@@ -508,7 +525,7 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 				? static_cast<int32_t>( LowIndex( static_cast<UINT>( slot ) ) ) | kShadowTierLow
 				: ( static_cast<int32_t>( slot ) | ( ss.dynamicValid ? kShadowHasDynamic : 0 ) );
 		}
-		m_FrameLights.push_back( { np, L.ShadowRange, static_cast<UINT>(slot), renderStatic, false, overlayEligible } );
+		m_FrameLights.push_back( { np, L.ShadowRange, static_cast<UINT>(slot), renderStatic, false, overlayEligible, restrictToWorld } );
 		if ( renderStatic ) { ss.pos = np; ss.range = L.ShadowRange; }   // staticValid stamped once actually drawn
 	}
 
@@ -794,7 +811,8 @@ void D3D12PointShadows::Prepare() {
 			// tight ring, draw count*6. An isStatic() slot additionally requires GP_Slot bit 30 (ZENGIN's own
 			// StaticVob flag) per instance — items are always StaticVob==false and would otherwise get baked
 			// into a cube that never re-renders. Items cast via the dynamic overlay (Phase C) instead. ---
-			if ( haveVobs ) {
+			// restrictToWorld: mirrors D3D11's world-mesh-only PFX gate — skip instanced-VOB casters too.
+			if ( haveVobs && !ps.restrictToWorld ) {
 				const bool staticTier = m_Slots[ps.slot].isStatic;
 				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
 					MeshVisualInfo* visual = up.visual;

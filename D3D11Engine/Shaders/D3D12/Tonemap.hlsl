@@ -6,7 +6,11 @@ cbuffer TonemapCB : register(b0)
     float DisplayHeadroom;
     // Dynamic-exposure controls, straight from RendererSettings (see PSTonemap for how they combine).
     float MiddleGray; float AutoExposureStrength; float AutoExposureMin;
-    float AutoExposureMax; float3 _pad;
+    float AutoExposureMax;
+    // RendererSettings.BrightnessValue / .GammaValue. On screen these are applied by the separate post-UI pass
+    // (GammaCorrect.hlsl) so the 2D UI/HUD gets them too; only the screenshot re-tonemap pushes them here,
+    // where there is no UI to include. Both 1.0 on the on-screen path, which skips the branch below entirely.
+    float Brightness; float Gamma; float _pad;
 };
 Texture2D    SceneHDR : register(t0);
 SamplerState smp      : register(s0);
@@ -195,5 +199,9 @@ float4 PSTonemap( VS_OUT i ) : SV_TARGET
     else if ( ToneMapMode == 4 ) mapped = ToneMap_Simple( hdr );
     else                         mapped = ToneMap_ACESFitted( hdr );
 
-    return float4( LinearToSrgb( saturate( mapped ) ), 1.0 );
+    float3 ldr = LinearToSrgb( saturate( mapped ) );
+    // Screenshot path only (see the cbuffer note) — same order as D3D11's PS_PFX_GammaCorrectInv.
+    [branch] if ( abs( Brightness - 1.0 ) > 0.01 || abs( Gamma - 1.0 ) > 0.01 )
+        ldr = saturate( pow( saturate( ldr * Brightness ), Gamma ) );
+    return float4( ldr, 1.0 );
 }

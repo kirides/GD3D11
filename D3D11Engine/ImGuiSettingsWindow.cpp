@@ -499,11 +499,14 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
 
     ImGui::SeparatorText( "Tone Mapping" );
 
-    CheckRow( "HDR Rendering", &settings.EnableHDR,
-        "Render the scene in high dynamic range and tone-map it down. Not the same as HDR\n"
-        "monitor output, which lives on the Display tab.", "HDR" );
+    const bool hdrEnabled = IsD3D12() || settings.EnableHDR;
+    if (!IsD3D12()) { // dx12 always renders hdr.
+        CheckRow( "HDR Rendering", &settings.EnableHDR,
+            "Render the scene in high dynamic range and tone-map it down. Not the same as HDR\n"
+            "monitor output, which lives on the Display tab.", "HDR" );
+    }
 
-    ImGui::BeginDisabled( !settings.EnableHDR );
+    ImGui::BeginDisabled( !hdrEnabled );
     {
         constexpr ListItem<GothicRendererSettings::E_HDRToneMap> toneMaps[] = {
             { "Simple", GothicRendererSettings::ToneMap_Simple },
@@ -638,11 +641,23 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     ImGui::SeparatorText( "Memory" );
 
-    if ( CheckRow( "Compress Backbuffer", &settings.CompressBackBuffer,
-        "Halves the backbuffer's memory cost at a small quality loss. This is a 32-bit\n"
-        "process, so on a large resolution it can be the difference between running and\n"
-        "running out of address space." ) ) {
-        Engine::GAPI->UpdateCompressBackBuffer();
+    {
+        // D3D12 bakes the scene-colour format into every PSO, so it only reads this at startup.
+        const bool d3d12 = IsD3D12();
+        const bool uavOk = Engine::GraphicsEngine->GetDeviceCapabilities().TypedUAVLoadAdditionalFormats;
+        std::string tip =
+            "Halves the backbuffer's memory cost at a small quality loss. This is a 32-bit\n"
+            "process, so on a large resolution it can be the difference between running and\n"
+            "running out of address space.";
+        if ( d3d12 ) {
+            tip += uavOk ? "\n\nTakes effect after a restart."
+                         : "\n\nUnavailable: this device can't use R11G11B10 as a typed UAV.";
+        }
+        ImGui::BeginDisabled( d3d12 && !uavOk );
+        if ( CheckRow( "Compress Backbuffer", &settings.CompressBackBuffer, tip.c_str() ) ) {
+            Engine::GAPI->UpdateCompressBackBuffer();
+        }
+        ImGui::EndDisabled();
     }
 
     CheckRow( "Optimize Meshes On Load", &settings.EnableMeshOptimization,
@@ -759,7 +774,7 @@ void ImGuiSettings::RenderWindow( ImGuiShim& shim ) {
     if ( title.empty() ) {
         title.append( "GD3D11 " ).append( VERSION_NUMBER );
         if ( Engine::GraphicsEngine ) {
-            title.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ? " - D3D12" : " - D3D11" );
+            title.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ? " - Dx12" : " - Dx11" );
         }
 #ifdef IS_DEV_BUILD
         title.append( " (" BUILD_DATE ")" );

@@ -98,6 +98,7 @@ XRESULT D3D12GraphicsEngine::Init() {
     // Gated at adapter selection (DeviceSupportsBindless), so a device that got this far has it.
     m_DeviceCapabilities.BindlessResources = true;
     m_DeviceCapabilities.EnhancedBarriers = m_Device.EnhancedBarriersSupported();
+    m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = m_Device.TypedUAVLoadAdditionalFormatsSupported();
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 
     if ( !CreateAllocators() ) {
@@ -129,6 +130,23 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;
     }
+    // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
+    // R11G11B10 drops alpha (nothing blends against destination alpha) but is an optional typed-UAV
+    // format, and the TAA/DoF/bloom compute passes bind the scene colour as a UAV.
+    {
+        auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( rs.CompressBackBuffer ) {
+            if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
+                kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
+                LogInfo() << "D3D12: compressed scene colour (R11G11B10_FLOAT).";
+            } else {
+                LogWarn() << "D3D12: CompressBackBuffer requested but the device lacks "
+                             "TypedUAVLoadAdditionalFormats; keeping R16G16B16A16_FLOAT.";
+                rs.CompressBackBuffer = false;
+            }
+        }
+    }
+
     // Must run BEFORE any Create*(): it decides m_Pipelines.DisplayFormat, which every display-space PSO
     // (2D/UI, video, preview, lines, tonemap, SMAA's final pass, sharpen) bakes into its RTV format. That is
     // also why the HDR toggle needs a restart rather than taking effect on the next resize.
@@ -307,6 +325,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Non-fatal: RenderSharpen() guards on the PSO for the selected mode and just leaves the frame
         // unsharpened. Note this one IS on by default (RendererSettings.SharpeningMode == SHARPEN_CAS).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sharpen pipeline (the image will not be sharpened).";
+    }
+    if ( !m_Pipelines.CreateGammaCorrect() ) {
+        // Non-fatal: ApplyDisplayGammaCorrection() guards on the PSO, so the frame just shows at the
+        // uncorrected 1.0/1.0 brightness and contrast.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the gamma-correct pipeline (the brightness/contrast sliders will do nothing).";
     }
     if ( !m_Pipelines.CreateUnderwater() ) {
         // Non-fatal: DrawUnderwaterEffects() guards on the PSOs, so a failure here just leaves the frame
@@ -1195,7 +1218,8 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	// this R16F target so lighting can exceed 1.0 (bright sun + stacked additive point lights keep their detail
 	// instead of clipping to white). ResolveSceneToBackBuffer then tonemaps it into the swapchain. Resolution-
 	// sized → (re)created here on init and every resize (RTV heap + SRV slot persist; only the resource + views
-	// are rebuilt). DEFAULT-heap GPU memory (64bpp), so it barely touches the 32-bit CPU address space.
+	// are rebuilt). DEFAULT-heap GPU memory (64bpp, or 32 when CompressBackBuffer picked R11G11B10 at init),
+	// so it barely touches the 32-bit CPU address space.
 	if ( size.x <= 0 || size.y <= 0 ) return false;
 	ID3D12Device* device = m_Device.GetDevice();
 	if ( !device || !m_RtvHeap ) return false;
@@ -1222,7 +1246,8 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 		LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
 		return false;
 	}
-	m_SceneColor->SetName( L"SceneColorHDR(R16F)" );
+	m_SceneColor->SetName( kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
+		? L"SceneColorHDR(R11G11B10)" : L"SceneColorHDR(R16F)" );
 	m_SceneColorInPixelState = false;
 
 	// RTV in the extra heap slot (index kBackBufferMax, past the swapchain RTVs - the heap always reserves
@@ -1320,7 +1345,8 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
-	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive );
+	// applyDisplayCorrection=false: brightness/contrast are applied later, in Present, so they cover the UI too.
+	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive, false );
 	// Count MUST match the AddConstants( 0, ... ) in D3D12PipelineState::CreateTonemap.
 	static_assert( kTonemapRootConstantCount == 12, "Tonemap root constant count changed - update CreateTonemap" );
 	m_CmdList->SetGraphicsRoot32BitConstants( 1, kTonemapRootConstantCount, &tonemapConsts, 0 );
@@ -1332,8 +1358,10 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 
 
 /** Fills Tonemap.hlsl's b0. `hdrOutput` selects the display path (highlight roll-off, extended-sRGB out)
-	over the SDR operators; GetBackbufferData passes false so screenshots always capture the SDR image. */
-D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConstants( bool hdrOutput ) const {
+	over the SDR operators; GetBackbufferData passes false so screenshots always capture the SDR image.
+	`applyDisplayCorrection` folds brightness/contrast into the resolve — only the screenshot path wants that;
+	on screen ApplyDisplayGammaCorrection does it later so Gothic's 2D UI/HUD is corrected too, as in D3D11. */
+D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConstants( bool hdrOutput, bool applyDisplayCorrection ) const {
 	const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 	TonemapRootConstants c = {};
 	c.Exposure = s.Exposure > 0.0f ? s.Exposure : 1.0f;
@@ -1350,6 +1378,9 @@ D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConsta
 	// Headroom expressed in paper-white units: how many times brighter than diffuse white the panel can go.
 	// GetHdrPaperWhiteNits keeps this >= 1.25 by construction.
 	c.DisplayHeadroom = hdrOutput ? ( GetHdrMaxBrightnessNits() / GetHdrPaperWhiteNits() ) : 0.0f;
+	// 1.0/1.0 is the identity the shader branches around; only the screenshot path asks for the real values.
+	c.Brightness = applyDisplayCorrection ? std::max( Engine::GAPI->GetBrightnessValue(), 0.0f ) : 1.0f;
+	c.Gamma = applyDisplayCorrection ? std::max( Engine::GAPI->GetGammaValue(), 0.01f ) : 1.0f;
 	return c;
 }
 
@@ -2235,6 +2266,10 @@ XRESULT D3D12GraphicsEngine::Present() {
         info.FramePipelineStates = filtered;   // "SC_PipelineStates" row — redundant binds dropped
     }
 
+    // Brightness/contrast over the finished image (scene + Gothic's 2D UI/HUD), before the ImGui overlay —
+    // the same point D3D11 applies it. No-op at the default 1.0/1.0.
+    ApplyDisplayGammaCorrection();
+
     // Draw the ImGui overlay last, on top of the 2D UI, while the backbuffer is still a render target.
     // The SRV heap is bound (OnBeginFrame); re-bind the RTV defensively in case a draw changed it.
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
@@ -2651,8 +2686,10 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
     // Same source the on-screen resolve used: m_Fsr3Output when FSR 3 upscaled this frame, else m_SceneColor.
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
-    const TonemapRootConstants captureConsts = MakeTonemapConstants( false );
-    m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &captureConsts, 0 );
+    // Brightness/contrast go in here, not through Present's pass: the capture never sees the 2D UI anyway,
+    // and D3D11's GetBackbufferData likewise draws HDRBackBuffer through PS_PFX_GammaCorrectInv.
+    const TonemapRootConstants captureConsts = MakeTonemapConstants( false, true );
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, kTonemapRootConstantCount, &captureConsts, 0 );
     m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     m_CmdList->IASetVertexBuffers( 0, 0, nullptr );

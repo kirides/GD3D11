@@ -269,10 +269,16 @@ private:
     // winner — always for the closest kAlwaysDynamicCount, round-robined (oldest-serviced-first) for the rest,
     // so a large persisted-light count doesn't multiply the CPU cost of sphere-culling the full skeletal-vob
     // list against every shadowed light every frame.
-    // overlayEligible: whether this light can EVER receive a dynamic overlay (not a static light, and the
-    // global PointlightShadows setting is >= PLS_UPDATE_DYNAMIC).
+    // overlayEligible: whether this light can EVER receive a dynamic overlay (not a static-tier light — see
+    // shadowRoutingStatic in D3D12Scene.cpp's BuildFrameLightBuffer — and the global PointlightShadows setting
+    // is >= PLS_UPDATE_DYNAMIC).
     // `slot` is the GLOBAL slot index (see kMaxSlots); IsLowSlot(slot) picks the array/DSV heap/viewport.
-    struct FrameLight { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; bool overlayEligible; };
+    // restrictToWorld: mirrors D3D11's RenderStaticShadowPass/RenderFullCubemap PFX gate (see D3D11PointLight.cpp
+    // AllowsDynamicCasters) — true when this winner is a PFX-spawned light and RendererSettings.
+    // PointlightShadowCasterFlags doesn't have PLSC_PARTICLE_FX set. Strips instanced-VOB casters from Phase A
+    // (see Prepare()) on top of overlayEligible already excluding it from the skeletal Phase C overlay, so an
+    // unopted-in PFX light casts world-mesh-only shadows like D3D11.
+    struct FrameLight { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; bool overlayEligible; bool restrictToWorld; };
     std::vector<FrameLight> m_FrameLights;
 
     bool m_PassReady = false;

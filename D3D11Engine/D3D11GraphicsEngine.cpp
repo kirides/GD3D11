@@ -720,6 +720,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     // No extension interface resolved anything usable (or RenderDoc stubbed them out again).
     m_DeviceCapabilities.DriverExtensions = m_DeviceCapabilities.MultiDrawIndirect || m_DeviceCapabilities.UAVOverlap;
     m_DeviceCapabilities.LayeredRendering = FeatureRTArrayIndexFromAnyShader;
+    // D3D11 has always bound a UAV to its R11G11B10 HDRBackBuffer; keep that behaviour unconditional.
+    m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = true;
 
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 

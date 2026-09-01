@@ -75,6 +75,20 @@ static const zCVob* GetOriginVob( VobLightInfo* info ) {
     return nullptr;
 }
 
+// Whether this light's category is allowed VOB/NPC casters (see RendererSettings.PointlightShadowCasterFlags).
+// A light is at most one category - PFX takes precedence over Static (a PFX-spawned light can itself carry
+// Gothic's IsStatic() flag, e.g. a fixed torch), everything else is the common "Dynamic Lights" case.
+static bool AllowsDynamicCasters( const VobLightInfo* info ) {
+    const int flags = Engine::GAPI->GetRendererState().RendererSettings.PointlightShadowCasterFlags;
+    if ( info->IsPFXVobLight ) {
+        return (flags & GothicRendererSettings::PLSC_PARTICLE_FX) != 0;
+    }
+    if ( info->IsStaticVobLight ) {
+        return (flags & GothicRendererSettings::PLSC_STATIC_LIGHTS) != 0;
+    }
+    return (flags & GothicRendererSettings::PLSC_DYNAMIC_LIGHTS) != 0;
+}
+
 D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     LightInfo = info;
     DynamicLight = dynamicLight;
@@ -163,9 +177,11 @@ void D3D11PointLight::ClearTiledSlot() {
 int D3D11PointLight::GetCurrentShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
     // Only PLS_UPDATE_DYNAMIC downgrades a static-flagged light to PLS_STATIC_ONLY; PLS_FULL must stay FULL
-    // (it's the no-caching-shortcuts escape hatch, and downgrading it would make it never re-render).
+    // (it's the no-caching-shortcuts escape hatch, and downgrading it would make it never re-render). Skipped
+    // when PLSC_STATIC_LIGHTS opts static lights into real VOB/NPC casters - they need the full dynamic-overlay
+    // machinery to actually receive one, not just the cheap cached path this downgrade exists for.
     if ( mode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
-        if ( LightInfo->IsStaticVobLight ) {
+        if ( LightInfo->IsStaticVobLight && !AllowsDynamicCasters( LightInfo ) ) {
             return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
         }
     }
@@ -260,10 +276,12 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
     // be parented anywhere in the vob tree, including onto NPCs/the player. GetOriginVob's self-exclusion
     // below only walks the oCItem-origin chain, so a PFX light whose origin ISN'T an item has no reliable way
     // to exclude its own carrier from the caster set - that's what used to make e.g. a belt-mounted light
-    // draw a huge shadow from the player all around (see SetupVobsToExclude's comment). Restricting these to
-    // world-mesh-only casters sidesteps that class of bug entirely instead of needing a more general fix, at
-    // the cost of PFX lights never getting VOB/NPC shadows.
-    const unsigned int staticCasterMask = (LightInfo->IsPFXVobLight || LightInfo->IsStaticVobLight) 
+    // draw a huge shadow from the player all around (see SetupVobsToExclude's comment). Restricting a light's
+    // category to world-mesh-only casters (see AllowsDynamicCasters/PointlightShadowCasterFlags) sidesteps
+    // that class of bug for PFX lights entirely instead of needing a more general fix, and separately keeps
+    // static lights off the expensive VOB/MOB caster set by default.
+    const bool restrictToWorld = !AllowsDynamicCasters( LightInfo );
+    const unsigned int staticCasterMask = restrictToWorld
         ? SHADOW_CASTER_WORLD
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
@@ -523,6 +541,9 @@ void D3D11PointLight::RenderFullCubemap() {
     }
 
     const int shadowMode = GetCurrentShadowMode();
+    // See RenderStaticShadowPass's comment: a light whose category isn't opted into
+    // PointlightShadowCasterFlags skips animated/VOB casters entirely, staying world-mesh-only.
+    const bool restrictToWorld = !AllowsDynamicCasters( LightInfo );
     if ( !m_StaticShadowReady && shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
         RenderStaticShadowPass( *activeTarget, true );
         m_StaticShadowReady = true;
@@ -549,11 +570,11 @@ void D3D11PointLight::RenderFullCubemap() {
                     m_StaticShadowReady = true;
                 }
 
-                // PFX lights are restricted to world-mesh casters only (see RenderStaticShadowPass) - there
-                // is nothing animated to put in the overlay, and this shared array slot may still hold a
-                // DIFFERENT light's stale movers from whichever light last held it. Leave m_HasDynamicOverlay
-                // false so the shader never composites against that leftover data.
-                if ( !LightInfo->IsPFXVobLight ) {
+                // A world-mesh-only light (see RenderStaticShadowPass) has nothing animated to put in the
+                // overlay, and this shared array slot may still hold a DIFFERENT light's stale movers from
+                // whichever light last held it. Leave m_HasDynamicOverlay false so the shader never
+                // composites against that leftover data.
+                if ( !restrictToWorld ) {
                     // Clear: the overlay must hold ONLY this update's movers, never the previous one's.
                     RenderAnimatedShadowPass( *dynTarget, true );
                     m_HasDynamicOverlay = true;
@@ -580,8 +601,8 @@ void D3D11PointLight::RenderFullCubemap() {
             CopyStaticAsideToActiveTarget();
         }
 
-        // See the PLS_UPDATE_DYNAMIC/tiled branch above: PFX lights have no animated casters to add.
-        if ( !LightInfo->IsPFXVobLight ) {
+        // See the PLS_UPDATE_DYNAMIC/tiled branch above: a world-mesh-only light has no animated casters to add.
+        if ( !restrictToWorld ) {
             RenderAnimatedShadowPass( *activeTarget, false );
         }
         return;
@@ -595,8 +616,8 @@ void D3D11PointLight::RenderFullCubemap() {
         // FULL never reuses the world-mesh candidate cache - it always re-collects the whole scene fresh.
         std::vector<MeshDrawRange>* wc = nullptr;
 
-        // Keep RenderStaticShadowPass's world-only restriction for PFX/static lights.
-        const unsigned int casterMask = (LightInfo->IsPFXVobLight || LightInfo->IsStaticVobLight) ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
+        // Keep RenderStaticShadowPass's world-only restriction.
+        const unsigned int casterMask = restrictToWorld ? SHADOW_CASTER_WORLD : SHADOW_CASTER_ALL;
 
         const bool excludeSelf = GetOriginVob( LightInfo ) != nullptr;
         if ( excludeSelf ) {

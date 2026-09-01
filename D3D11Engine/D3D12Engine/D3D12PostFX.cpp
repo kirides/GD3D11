@@ -749,3 +749,60 @@ void D3D12GraphicsEngine::RenderSharpen() {
 		m_CmdList->TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
 	}
 }
+
+
+void D3D12GraphicsEngine::ApplyDisplayGammaCorrection() {
+	// Final brightness/contrast — port of D3D11's last swapchain blit (PS_PFX_GammaCorrectInv, applied in
+	// D3D11GraphicsEngine::Present). Called from Present after Gothic's 2D UI/HUD and before the ImGui overlay,
+	// which is exactly where D3D11 applies it, so the HUD is corrected along with the scene but ImGui is not.
+	// At the default 1.0/1.0 the whole pass — copy included — is skipped, so it costs nothing unless used.
+	const float brightness = std::max( Engine::GAPI->GetBrightnessValue(), 0.0f );
+	const float gamma = std::max( Engine::GAPI->GetGammaValue(), 0.01f );
+	// Both sliders effectively at 1.0 (0.01 window): nothing to do, and skipping avoids the copy + blit.
+	auto isIdentity = []( float v ) { return v > 0.99f && v < 1.01f; };
+	if ( isIdentity( brightness ) && isIdentity( gamma ) ) return;
+	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady ) return;
+	if ( !m_Pipelines.GammaCorrect.PSO || !m_Pipelines.GammaCorrect.RootSig ) return;
+
+	DX_ZONE( m_CmdList.Get(), "Gamma correct" );
+
+	ID3D12Resource* displayTarget = GetDisplayTarget();
+	D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = GetDisplayRtv();
+
+	// A texture can't be its own SRV and RTV, so correct a copy of the display target back onto itself —
+	// same shape as RenderSharpen above. m_LdrCopy rests in COPY_DEST and is restored to it below.
+	m_CmdList->TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
+	m_CmdList->CopyResource( m_LdrCopy.Get(), displayTarget );
+	m_CmdList->TransitionBarriers( {
+		{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+		{ displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+	} );
+
+	struct GammaConsts { UINT SrcIndex; float Brightness; float Gamma; float EncodedMax; } consts = {};
+	consts.SrcIndex = m_LdrCopySrvSlot;
+	consts.Brightness = brightness;
+	consts.Gamma = gamma;
+	// SDR stores plain [0,1]; the HDR display buffer stores extended-sRGB with headroom, so hand the shader that
+	// ceiling (encoded) to normalize against. The sRGB encode of 1.0 is 1.0, so SDR reduces to D3D11's math.
+	if ( m_HdrOutputActive ) {
+		const float headroom = std::max( 1.0f, GetHdrMaxBrightnessNits() / GetHdrPaperWhiteNits() );
+		consts.EncodedMax = 1.055f * std::pow( headroom, 1.0f / 2.4f ) - 0.055f;
+	} else {
+		consts.EncodedMax = 1.0f;
+	}
+	static_assert( sizeof( GammaConsts ) == 4 * sizeof( UINT ), "GammaCorrectCB must match the 4 root constants in CreateGammaCorrect" );
+
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.GammaCorrect.RootSig.Get() );
+	m_CmdList->SetPipelineState( m_Pipelines.GammaCorrect.PSO.Get() );
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, &consts, 0 );
+	m_CmdList->OMSetRenderTargets( 1, &displayRtv, FALSE, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	m_CmdList->TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+}

@@ -361,6 +361,11 @@ bool D3D12Device::Init() {
 
     m_LayeredRenderingSupported = DeviceSupportsLayeredRendering( m_Device.Get() );
 
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+    if ( SUCCEEDED( m_Device->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof( options ) ) ) ) {
+        m_TypedUAVLoadAdditionalFormats = options.TypedUAVLoadAdditionalFormats != FALSE;
+    }
+
     std::string barrierReason;
     m_EnhancedBarriersSupported = DeviceSupportsEnhancedBarriers( m_Device.Get(), &barrierReason );
     if ( m_EnhancedBarriersSupported ) {

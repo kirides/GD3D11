@@ -45,6 +45,8 @@ runs:
         Copy-Item -Path "blobs/Fonts" -Destination "$relDir/GD3D11/Fonts/" -Recurse -Force
         Copy-Item -Path "blobs/Meshes" -Destination "$relDir/GD3D11/Meshes/" -Recurse -Force
         Copy-Item -Path "blobs/Textures" -Destination "$relDir/GD3D11/Textures/" -Recurse -Force
+        New-Item -Path "$relDir/GD3D11/Previews" -ItemType Directory -Force | Out-Null
+        Copy-Item -Path "blobs/Previews/*.jpg", "blobs/Previews/*.png" -Destination "$relDir/GD3D11/Previews/" -Force -ErrorAction SilentlyContinue
         Copy-Item -Path "blobs/libs/*" -Destination "$relDir/" -Recurse -Force
 
         Copy-Item -Path "$artifactDir/*" -Destination $binDir -Force
