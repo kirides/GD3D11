@@ -5,13 +5,15 @@
 #include <type_traits>
 #include <imgui.h>
 
-/** Optional "this is what the setting does" images for the settings window.
-    Adding one is meant to be a file drop, not a code change: the lookup name of an enum-valued
-    setting is derived from its enum member (see NameOf), so putting
-    System\GD3D11\Previews\<EnumType>_<Member>.jpg next to the mod makes the preview appear.
-    A name with no matching file simply draws nothing. */
+/** Optional "this is what the setting does" images for the settings windows.
+
+    Nothing is reserved in the settings layout: a row that is being pointed at hints its image, and a
+    single panel pinned beside the window shows it. Adding one is a file drop, not a code change -
+    the lookup name of an enum-valued setting is derived from its enum member (see NameOf), so
+    putting System\GD3D11\Previews\<EnumType>_<Member>.jpg next to the mod makes it appear, and a
+    name with no matching file simply keeps the panel hidden. */
 namespace ImPreview {
-    /** Edge length previews are drawn at, and the width the settings window reserves for them. */
+    /** Edge length previews are drawn at. */
     inline constexpr float Size = 256.0f;
 
     /** Lookup name of an enum value: "<EnumType>_<Member>", e.g. "E_WaterSSRQuality_WATER_SSR_HIGH". */
@@ -23,29 +25,18 @@ namespace ImPreview {
         return name;
     }
 
-    /** Draws the preview `name`, swapping to `hoverName` while the mouse is over it so the two can be
-        compared in place. Returns false and draws nothing when no image is shipped for `name`.
-        Names carry no extension - .jpg and .png are tried in that order. */
-    bool Show( std::string_view name, std::string_view hoverName = {} );
+    /** Lookup name of a checkbox state: "<name>_On" / "<name>_Off". */
+    std::string NameOfToggle( std::string_view name, bool value );
 
-    /** Preview of an enum value, comparing against `compareTo` (usually the "off" member) on hover. */
-    template <typename E> requires std::is_enum_v<E>
-    bool Show( E value, E compareTo ) {
-        return Show( NameOf( value ), NameOf( compareTo ) );
-    }
+    /** Records what the mouse is pointing at. The last hint of a frame is what the panel shows, so
+        callers can hint freely - only one image is ever loaded or drawn. Names carry no extension;
+        .jpg and .png are tried in that order. */
+    void Hint( std::string_view name, std::string_view caption = {} );
 
-    /** Preview of an enum value with nothing to compare against. */
-    template <typename E> requires std::is_enum_v<E>
-    bool Show( E value ) {
-        return Show( NameOf( value ) );
-    }
-
-    /** Preview of a checkbox: "<name>_On" / "<name>_Off", hovering shows the other state. */
-    bool ShowToggle( std::string_view name, bool value );
-
-    /** Whether an image is shipped for `name`. Loads it (once) like Show does, so a layout can ask
-        before it has reserved the room to draw one. */
-    bool Exists( std::string_view name );
+    /** Draws the pinned panel for whatever was hinted, beside the window spanning anchorMin/anchorMax
+        (it flips to the other side when there is no room). Call once per frame, after that window's
+        End(). Draws nothing while nothing is hinted or the hinted image isn't shipped. */
+    void DrawPinned( const ImVec2& anchorMin, const ImVec2& anchorMax );
 
     /** Drops every cached texture. Must run while the graphics engine is still alive. */
     void Reset();

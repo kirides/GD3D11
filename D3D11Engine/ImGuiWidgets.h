@@ -29,6 +29,31 @@ struct ListItem {
         label( label ), value( value ), toolTip( toolTip ), preview( preview ) {}
 };
 
+/** Preview-image name of a list entry: its explicit one, else the enum member's. Empty for a
+    non-enum entry that didn't bring its own. */
+template <typename T>
+inline std::string PreviewNameOf( const ListItem<T>& item ) {
+    if ( item.preview ) {
+        return item.preview;
+    }
+    if constexpr ( std::is_enum_v<T> ) {
+        return ImPreview::NameOf( item.value );
+    } else {
+        return {};
+    }
+}
+
+/** The entry holding `value`, or nullptr. */
+template <typename T>
+inline const ListItem<T>* FindListItem( const ListItem<T>* items, size_t numItems, const T& value ) {
+    for ( size_t i = 0; i < numItems; i++ ) {
+        if ( items[i].value == value ) {
+            return &items[i];
+        }
+    }
+    return nullptr;
+}
+
 namespace Internal {
     template <typename T>
     inline bool ImComboBox( const char* id, const ListItem<T>* items, size_t numItems, T* storage,
@@ -36,14 +61,9 @@ namespace Internal {
         if ( storage == nullptr || numItems == 0 ) {
             return ImGui::BeginCombo( id, "invalid storage" );
         }
-        ListItem<T> selectedItem = items[0];
-        for ( size_t i = 0; i < numItems; i++ ) {
-            const auto& it = items[i];
-            if ( it.value == *storage ) {
-                selectedItem = it;
-                break;
-            }
-        }
+        const ListItem<T>* found = FindListItem( items, numItems, *storage );
+        const ListItem<T>& selectedItem = found ? *found : items[0];
+
         if ( ImGui::BeginCombo( id, selectedItem.label ) ) {
             for ( size_t i = 0; i < numItems; i++ ) {
                 bool isSelected = (*storage == items[i].value);
@@ -51,6 +71,12 @@ namespace Internal {
                 if ( ImGui::Selectable( items[i].label, isSelected ) ) {
                     *storage = items[i].value;
                     if ( selected ) selected();
+                }
+
+                // Pointing at an entry of the open list previews THAT entry, so the options can be
+                // compared without picking one first.
+                if ( ImGui::IsItemHovered() ) {
+                    ImPreview::Hint( PreviewNameOf( items[i] ), items[i].label );
                 }
 
                 if ( items[i].toolTip ) {
@@ -91,29 +117,4 @@ inline void ImText( const char* label, const ImVec2& size ) {
     ImGui::PopStyleVar( 1 );
 
     ImGui::PopStyleColor( 2 );
-}
-
-/** Preview-image name of a list entry: its explicit one, else the enum member's name. Empty for a
-    non-enum entry that didn't bring its own. */
-template <typename T>
-inline std::string PreviewNameOf( const ListItem<T>& item ) {
-    if ( item.preview ) {
-        return item.preview;
-    }
-    if constexpr ( std::is_enum_v<T> ) {
-        return ImPreview::NameOf( item.value );
-    } else {
-        return {};
-    }
-}
-
-/** Preview-image name for the entry currently selected in `items`. */
-template <typename T>
-inline std::string PreviewNameOf( const ListItem<T>* items, size_t numItems, const T& value ) {
-    for ( size_t i = 0; i < numItems; i++ ) {
-        if ( items[i].value == value ) {
-            return PreviewNameOf( items[i] );
-        }
-    }
-    return {};
 }

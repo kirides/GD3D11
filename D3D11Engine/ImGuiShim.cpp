@@ -655,6 +655,7 @@ void ImGuiShim::RenderSettingsWindow()
     }
 
     ShaderCategory shadersToReload = ShaderCategory::None;
+    ImVec2 anchorMin{}, anchorMax{};
 
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
     if ( ImGui::Begin( settingsLabel.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize) ) {
@@ -1108,8 +1109,14 @@ void ImGuiShim::RenderSettingsWindow()
             }
             Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
         }
+
+        anchorMin = ImGui::GetWindowPos();
+        anchorMax = ImVec2( anchorMin.x + ImGui::GetWindowWidth(), anchorMin.y + ImGui::GetWindowHeight() );
     }
     ImGui::End();
+
+    // Separate window, so it has to come after this one's End().
+    ImPreview::DrawPinned( anchorMin, anchorMax );
 
     if ( shadersToReload != ShaderCategory::None ) {
         Engine::GraphicsEngine->ReloadShaders( shadersToReload );

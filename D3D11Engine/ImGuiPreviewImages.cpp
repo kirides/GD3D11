@@ -77,34 +77,70 @@ namespace {
     }
 }
 
-bool ImPreview::Show( std::string_view name, std::string_view hoverName ) {
-    GfxTexture* base = GetOrLoad( name );
-    if ( !base ) {
-        return false;
-    }
-
-    GfxTexture* alt = ( hoverName.empty() || hoverName == name ) ? nullptr : GetOrLoad( hoverName );
-
-    const ImVec2 pos = ImGui::GetCursorScreenPos();
-    const bool hovered = alt && ImGui::IsMouseHoveringRect( pos, ImVec2( pos.x + Size, pos.y + Size ) );
-
-    ImGui::Image( ToImTextureID( hovered ? alt : base ), ImVec2( Size, Size ) );
-    if ( alt ) {
-        ImGui::TextDisabled( hovered ? "comparing" : "hover to compare" );
-    }
-    return true;
+namespace {
+    // What the mouse was last pointing at, and when. Hints are collected while the settings window
+    // draws and consumed by DrawPinned afterwards, so only the winning image is ever loaded.
+    std::string s_HintName;
+    std::string s_HintCaption;
+    double s_HintTime = -1.0;
 }
 
-bool ImPreview::ShowToggle( std::string_view name, bool value ) {
-    std::string on{ name }; on += "_On";
-    std::string off{ name }; off += "_Off";
-    return value ? Show( on, off ) : Show( off, on );
+std::string ImPreview::NameOfToggle( std::string_view name, bool value ) {
+    std::string out{ name };
+    out += value ? "_On" : "_Off";
+    return out;
 }
 
-bool ImPreview::Exists( std::string_view name ) {
-    return GetOrLoad( name ) != nullptr;
+void ImPreview::Hint( std::string_view name, std::string_view caption ) {
+    if ( name.empty() ) {
+        return;
+    }
+    s_HintName.assign( name );
+    s_HintCaption.assign( caption );
+    s_HintTime = ImGui::GetTime();
+}
+
+void ImPreview::DrawPinned( const ImVec2& anchorMin, const ImVec2& anchorMax ) {
+    // Keep the panel up briefly after the mouse leaves a row, so crossing the gap between two rows
+    // doesn't make it blink.
+    constexpr double lingerSeconds = 0.15;
+    if ( s_HintTime < 0.0 || ImGui::GetTime() - s_HintTime > lingerSeconds ) {
+        return;
+    }
+
+    GfxTexture* tex = GetOrLoad( s_HintName );
+    if ( !tex ) {
+        return;
+    }
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float width = Size + style.WindowPadding.x * 2.0f;
+    const ImVec2 workPos = ImGui::GetMainViewport()->WorkPos;
+    const ImVec2 workSize = ImGui::GetMainViewport()->WorkSize;
+
+    // Pinned beside the settings window, flipping to its other side when there is no room.
+    float x = anchorMax.x + style.ItemSpacing.x;
+    if ( x + width > workPos.x + workSize.x ) {
+        x = anchorMin.x - style.ItemSpacing.x - width;
+    }
+    x = std::clamp( x, workPos.x, std::max( workPos.x, workPos.x + workSize.x - width ) );
+
+    ImGui::SetNextWindowPos( ImVec2( x, anchorMin.y ) );
+    ImGui::SetNextWindowBgAlpha( 0.95f );
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
+        | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse
+        | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
+        | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    if ( ImGui::Begin( "##SettingPreview", nullptr, flags ) ) {
+        ImGui::Image( ToImTextureID( tex ), ImVec2( Size, Size ) );
+        if ( !s_HintCaption.empty() ) {
+            ImGui::TextUnformatted( s_HintCaption.c_str() );
+        }
+    }
+    ImGui::End();
 }
 
 void ImPreview::Reset() {
     s_Previews.clear();
+    s_HintTime = -1.0;
 }
