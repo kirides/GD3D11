@@ -16,7 +16,12 @@ namespace {
         using is_transparent = void;
         size_t operator()( std::string_view s ) const noexcept { return std::hash<std::string_view>{}( s ); }
     };
-    std::unordered_map<std::string, std::unique_ptr<GfxTexture>, PreviewNameHash, std::equal_to<>> s_Previews;
+    struct Preview {
+        std::unique_ptr<GfxTexture> Tex;
+        int Width = 0;
+        int Height = 0;
+    };
+    std::unordered_map<std::string, Preview, PreviewNameHash, std::equal_to<>> s_Previews;
 
     ImTextureID ToImTextureID( GfxTexture* tex ) {
         switch ( Engine::GraphicsEngine->GetBackendAPI() ) {
@@ -28,7 +33,7 @@ namespace {
         return ImTextureID{};
     }
 
-    std::unique_ptr<GfxTexture> LoadFromVdfs( const std::string& file, const std::string& debugName ) {
+    Preview LoadFromVdfs( const std::string& file, const std::string& debugName ) {
         auto filePtr = zFILE_VDFS::Create( R"(\System\GD3D11\Previews\)" + file );
         if ( !filePtr->Exists() || filePtr->Open( false ) != zERRORS::zERROR_NONE ) {
             return {};
@@ -52,28 +57,40 @@ namespace {
             : XRESULT::XR_FAILED;
         stbi_image_free( pixels );
 
-        return r == XRESULT::XR_SUCCESS ? std::move( tex ) : nullptr;
+        if ( r != XRESULT::XR_SUCCESS ) {
+            return {};
+        }
+        return Preview{ std::move( tex ), width, height };
     }
 
-    GfxTexture* GetOrLoad( std::string_view name ) {
+    const Preview* GetOrLoad( std::string_view name ) {
         if ( name.empty() || !Engine::GraphicsEngine ) {
             return nullptr;
         }
         if ( auto it = s_Previews.find( name ); it != s_Previews.end() ) {
-            return it->second.get();
+            return it->second.Tex ? &it->second : nullptr;
         }
 
         std::string key{ name };
-        std::unique_ptr<GfxTexture> tex;
+        Preview preview;
         if ( key.find( '.' ) != std::string::npos ) {
-            tex = LoadFromVdfs( key, key );
+            preview = LoadFromVdfs( key, key );
         } else {
             for ( const char* ext : { ".jpg", ".png" } ) {
-                tex = LoadFromVdfs( key + ext, key );
-                if ( tex ) break;
+                preview = LoadFromVdfs( key + ext, key );
+                if ( preview.Tex ) break;
             }
         }
-        return s_Previews.emplace( std::move( key ), std::move( tex ) ).first->second.get();
+        const Preview& entry = s_Previews.emplace( std::move( key ), std::move( preview ) ).first->second;
+        return entry.Tex ? &entry : nullptr;
+    }
+
+    // Fit into the MaxWidth x MaxHeight box, never upscaling.
+    ImVec2 FitSize( const Preview& preview ) {
+        const float scale = std::min( { ImPreview::MaxWidth / static_cast<float>( preview.Width ),
+            ImPreview::MaxHeight / static_cast<float>( preview.Height ), 1.0f } );
+        return ImVec2( std::max( 1.0f, std::floor( preview.Width * scale ) ),
+            std::max( 1.0f, std::floor( preview.Height * scale ) ) );
     }
 }
 
@@ -108,13 +125,14 @@ void ImPreview::DrawPinned( const ImVec2& anchorMin, const ImVec2& anchorMax ) {
         return;
     }
 
-    GfxTexture* tex = GetOrLoad( s_HintName );
-    if ( !tex ) {
+    const Preview* preview = GetOrLoad( s_HintName );
+    if ( !preview ) {
         return;
     }
 
+    const ImVec2 imageSize = FitSize( *preview );
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float width = Size + style.WindowPadding.x * 2.0f;
+    const float width = imageSize.x + style.WindowPadding.x * 2.0f;
     const ImVec2 workPos = ImGui::GetMainViewport()->WorkPos;
     const ImVec2 workSize = ImGui::GetMainViewport()->WorkSize;
 
@@ -132,7 +150,7 @@ void ImPreview::DrawPinned( const ImVec2& anchorMin, const ImVec2& anchorMax ) {
         | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
         | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if ( ImGui::Begin( "##SettingPreview", nullptr, flags ) ) {
-        ImGui::Image( ToImTextureID( tex ), ImVec2( Size, Size ) );
+        ImGui::Image( ToImTextureID( preview->Tex.get() ), imageSize );
         if ( !s_HintCaption.empty() ) {
             ImGui::TextUnformatted( s_HintCaption.c_str() );
         }

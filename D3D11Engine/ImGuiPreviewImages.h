@@ -13,8 +13,9 @@
     putting System\GD3D11\Previews\<EnumType>_<Member>.jpg next to the mod makes it appear, and a
     name with no matching file simply keeps the panel hidden. */
 namespace ImPreview {
-    /** Edge length previews are drawn at. */
-    inline constexpr float Size = 256.0f;
+    /** Previews are fit into this box, keeping their aspect ratio. */
+    inline constexpr float MaxWidth = 256.0f;
+    inline constexpr float MaxHeight = 512.0f;
 
     /** Lookup name of an enum value: "<EnumType>_<Member>", e.g. "E_WaterSSRQuality_WATER_SSR_HIGH". */
     template <typename E> requires std::is_enum_v<E>
