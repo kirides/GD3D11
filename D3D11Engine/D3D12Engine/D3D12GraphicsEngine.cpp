@@ -326,6 +326,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         // unsharpened. Note this one IS on by default (RendererSettings.SharpeningMode == SHARPEN_CAS).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sharpen pipeline (the image will not be sharpened).";
     }
+    if ( !m_Pipelines.CreateGammaCorrect() ) {
+        // Non-fatal: ApplyDisplayGammaCorrection() guards on the PSO, so the frame just shows at the
+        // uncorrected 1.0/1.0 brightness and contrast.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the gamma-correct pipeline (the brightness/contrast sliders will do nothing).";
+    }
     if ( !m_Pipelines.CreateUnderwater() ) {
         // Non-fatal: DrawUnderwaterEffects() guards on the PSOs, so a failure here just leaves the frame
         // untinted and undistorted while swimming — everything else renders as before.
@@ -1340,7 +1345,8 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
-	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive );
+	// applyDisplayCorrection=false: brightness/contrast are applied later, in Present, so they cover the UI too.
+	const TonemapRootConstants tonemapConsts = MakeTonemapConstants( m_HdrOutputActive, false );
 	// Count MUST match the AddConstants( 0, ... ) in D3D12PipelineState::CreateTonemap.
 	static_assert( kTonemapRootConstantCount == 12, "Tonemap root constant count changed - update CreateTonemap" );
 	m_CmdList->SetGraphicsRoot32BitConstants( 1, kTonemapRootConstantCount, &tonemapConsts, 0 );
@@ -1352,8 +1358,10 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 
 
 /** Fills Tonemap.hlsl's b0. `hdrOutput` selects the display path (highlight roll-off, extended-sRGB out)
-	over the SDR operators; GetBackbufferData passes false so screenshots always capture the SDR image. */
-D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConstants( bool hdrOutput ) const {
+	over the SDR operators; GetBackbufferData passes false so screenshots always capture the SDR image.
+	`applyDisplayCorrection` folds brightness/contrast into the resolve — only the screenshot path wants that;
+	on screen ApplyDisplayGammaCorrection does it later so Gothic's 2D UI/HUD is corrected too, as in D3D11. */
+D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConstants( bool hdrOutput, bool applyDisplayCorrection ) const {
 	const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 	TonemapRootConstants c = {};
 	c.Exposure = s.Exposure > 0.0f ? s.Exposure : 1.0f;
@@ -1370,6 +1378,9 @@ D3D12GraphicsEngine::TonemapRootConstants D3D12GraphicsEngine::MakeTonemapConsta
 	// Headroom expressed in paper-white units: how many times brighter than diffuse white the panel can go.
 	// GetHdrPaperWhiteNits keeps this >= 1.25 by construction.
 	c.DisplayHeadroom = hdrOutput ? ( GetHdrMaxBrightnessNits() / GetHdrPaperWhiteNits() ) : 0.0f;
+	// 1.0/1.0 is the identity the shader branches around; only the screenshot path asks for the real values.
+	c.Brightness = applyDisplayCorrection ? std::max( Engine::GAPI->GetBrightnessValue(), 0.0f ) : 1.0f;
+	c.Gamma = applyDisplayCorrection ? std::max( Engine::GAPI->GetGammaValue(), 0.01f ) : 1.0f;
 	return c;
 }
 
@@ -2255,6 +2266,10 @@ XRESULT D3D12GraphicsEngine::Present() {
         info.FramePipelineStates = filtered;   // "SC_PipelineStates" row — redundant binds dropped
     }
 
+    // Brightness/contrast over the finished image (scene + Gothic's 2D UI/HUD), before the ImGui overlay —
+    // the same point D3D11 applies it. No-op at the default 1.0/1.0.
+    ApplyDisplayGammaCorrection();
+
     // Draw the ImGui overlay last, on top of the 2D UI, while the backbuffer is still a render target.
     // The SRV heap is bound (OnBeginFrame); re-bind the RTV defensively in case a draw changed it.
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
@@ -2671,8 +2686,10 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
     // Same source the on-screen resolve used: m_Fsr3Output when FSR 3 upscaled this frame, else m_SceneColor.
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( GetTonemapSourceSrvSlot() ) );
-    const TonemapRootConstants captureConsts = MakeTonemapConstants( false );
-    m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &captureConsts, 0 );
+    // Brightness/contrast go in here, not through Present's pass: the capture never sees the 2D UI anyway,
+    // and D3D11's GetBackbufferData likewise draws HDRBackBuffer through PS_PFX_GammaCorrectInv.
+    const TonemapRootConstants captureConsts = MakeTonemapConstants( false, true );
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, kTonemapRootConstantCount, &captureConsts, 0 );
     m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     m_CmdList->IASetVertexBuffers( 0, 0, nullptr );

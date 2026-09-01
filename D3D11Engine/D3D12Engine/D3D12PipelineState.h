@@ -401,6 +401,16 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasPSO;      // SHARPEN_CAS (FidelityFX CAS)
     };
 
+    // Final brightness/contrast correction on the finished image, UI included (D3D11 does this in its last
+    // swapchain blit). Bindless root sig: b0 root consts { source SRV heap index, brightness, gamma,
+    // encoded headroom }, no sampler (the pass is a 1:1 Load()). Writes the display target (DisplayFormat).
+    struct GammaCorrectPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
+    };
+
     // Underwater screen effect (only while GothicAPI::IsUnderWater()) — port of
     // D3D11GraphicsEngine::DrawUnderwaterEffects. Two root sigs because the passes straddle compute and
     // graphics: the separable quarter-res Gaussian is compute (b0 12 root consts, static linear-clamp s0),
@@ -566,6 +576,7 @@ public:
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
     bool CreateSharpen();     // post-tonemap sharpen (bindless root sig + simple/CAS PSOs); LDR copy stays in engine
+    bool CreateGammaCorrect(); // final brightness/contrast blit over the finished image (UI included)
     bool CreateUnderwater();  // underwater blur+distort (compute blur root sig + composite root sig); scratch stays in engine
     bool CreateFx();          // MUL quad marks + poly strips (own unlit root sig; warms the default blend PSO)
     // Lit quad marks: World.RootSig + World.hlsl VSQuadMark/PSMain, blend-keyed like the FX cache above.
@@ -632,6 +643,7 @@ public:
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
     SharpenPipeline  Sharpen;       // post-tonemap sharpening (Shaders/D3D12/Sharpen.hlsl)
+    GammaCorrectPipeline GammaCorrect;  // final brightness/contrast (Shaders/D3D12/GammaCorrect.hlsl)
     UnderwaterPipeline Underwater;  // underwater screen effect (Shaders/D3D12/Underwater.hlsl)
     FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;

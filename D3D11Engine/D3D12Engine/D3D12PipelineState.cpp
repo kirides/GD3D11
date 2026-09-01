@@ -2969,6 +2969,55 @@ bool D3D12PipelineState::CreateSharpen() {
     return true;
 }
 
+bool D3D12PipelineState::CreateGammaCorrect() {
+    // Final brightness/contrast blit — port of D3D11's PS_PFX_GammaCorrectInv swapchain pass. Runs over the
+    // finished image (UI included) at the very end of Present, so it targets DisplayFormat like the sharpen
+    // pass. Non-fatal on failure — ApplyDisplayGammaCorrection() guards on the PSO.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "GammaCorrect" );
+    // 0: b0 GammaCorrectCB — 4 root constants { uint SrcIndex; float Brightness; float Gamma; float EncodedMax }.
+    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    // No sampler: the pass is a 1:1 Load() of the display-target copy.
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    GammaCorrect.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "GammaCorrect.hlsl", "VSFullscreen", Shadermodel_VS, GammaCorrect.VsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "GammaCorrect.hlsl", "PSMain", Shadermodel_PS, GammaCorrect.PsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    rs.ValidateShaders( {
+        { GammaCorrect.VsBlob.Get(), "GammaCorrect.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { GammaCorrect.PsBlob.Get(), "GammaCorrect.hlsl:PSMain",       D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = GammaCorrect.RootSig.Get();
+    pso.VS = { GammaCorrect.VsBlob->GetBufferPointer(), GammaCorrect.VsBlob->GetBufferSize() };
+    pso.PS = { GammaCorrect.PsBlob->GetBufferPointer(), GammaCorrect.PsBlob->GetBufferSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DisplayFormat;
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( GammaCorrect.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (GammaCorrect).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateUnderwater() {
     // Underwater screen effect (Shaders/D3D12/Underwater.hlsl) — port of D3D11GraphicsEngine::DrawUnderwaterEffects.
     // Non-fatal: DrawUnderwaterEffects() guards on every object here and simply leaves the frame untinted while
@@ -3833,6 +3882,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     runOptional( "Video", &D3D12PipelineState::CreateVideo );
     runOptional( "Smaa", &D3D12PipelineState::CreateSmaa );
     runOptional( "Sharpen", &D3D12PipelineState::CreateSharpen );
+    runOptional( "GammaCorrect", &D3D12PipelineState::CreateGammaCorrect );
     runOptional( "AO", &D3D12PipelineState::CreateAO );
     runOptional( "Gtao", &D3D12PipelineState::CreateGtao );
     runOptional( "Motion", &D3D12PipelineState::CreateMotion );

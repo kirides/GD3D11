@@ -277,10 +277,12 @@ private:
         float DisplayHeadroom;
         // Dynamic-exposure controls (RendererSettings.AutoExposure*), see MakeTonemapConstants.
         float MiddleGray; float AutoExposureStrength; float AutoExposureMin;
-        float AutoExposureMax; float _pad[3];
+        float AutoExposureMax;
+        // RendererSettings.BrightnessValue / .GammaValue — D3D11 applies these in its final swapchain blit.
+        float Brightness; float Gamma; float _pad;
     };
     static constexpr UINT kTonemapRootConstantCount = sizeof( TonemapRootConstants ) / sizeof( UINT );
-    TonemapRootConstants MakeTonemapConstants( bool hdrOutput ) const;
+    TonemapRootConstants MakeTonemapConstants( bool hdrOutput, bool applyDisplayCorrection ) const;
 
     void   DetectHdrOutputCapability();     // fills m_HdrOutputActive + the luminance metadata (best effort)
     void   ApplySwapChainColorSpace();      // SetColorSpace1(G2084/P2020) + SetHDRMetaData; clears m_HdrEncodePQ on refusal
@@ -1250,6 +1252,9 @@ private:
     // as D3D11). Runs on the tonemapped LDR swapchain right after RenderSMAA, before Gothic's 2D UI/HUD
     // composites on top, mirroring D3D11's "Sharpen" render-graph pass placement.
     void RenderSharpen();                     // guards on the mode/strength, m_LdrCopyReady and the mode's PSO
+    // Final brightness/contrast over the finished image, UI included (D3D11 does this in its swapchain blit).
+    // Called from Present after the 2D UI and before ImGui; no-ops at the default 1.0/1.0, copy included.
+    void ApplyDisplayGammaCorrection();
 
     // Underwater screen effect — port of D3D11GraphicsEngine::DrawUnderwaterEffects (D3D12Underwater.cpp).
     // Runs only while GothicAPI::IsUnderWater(), in the same frame slot D3D11 uses: on the finished LDR image,
