@@ -720,6 +720,15 @@
     <ClInclude Include="ImGuiShim.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="ImGuiPreviewImages.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="ImGuiSettingsWindow.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="ImGuiWidgets.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
     <ClInclude Include="include\imgui\imconfig.h">
       <Filter>Librarys\imgui</Filter>
     </ClInclude>
@@ -1264,6 +1273,12 @@
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="ImGuiShim.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="ImGuiPreviewImages.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="ImGuiSettingsWindow.cpp">
       <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="include\imgui\imgui.cpp">

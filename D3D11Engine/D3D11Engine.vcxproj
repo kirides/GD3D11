@@ -1007,7 +1007,10 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="HookedFunctions.h" />
     <ClInclude Include="IkarusBindings.h" />
     <ClInclude Include="ImGuiEditorView.h" />
+    <ClInclude Include="ImGuiPreviewImages.h" />
+    <ClInclude Include="ImGuiSettingsWindow.h" />
     <ClInclude Include="ImGuiShim.h" />
+    <ClInclude Include="ImGuiWidgets.h" />
     <ClInclude Include="include\assimp\aabb.h" />
     <ClInclude Include="include\assimp\ai_assert.h" />
     <ClInclude Include="include\assimp\anim.h" />
@@ -1843,6 +1846,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="HookedFunctions.cpp" />
     <ClCompile Include="IkarusBindings.cpp" />
     <ClCompile Include="ImGuiEditorView.cpp" />
+    <ClCompile Include="ImGuiPreviewImages.cpp" />
+    <ClCompile Include="ImGuiSettingsWindow.cpp" />
     <ClCompile Include="ImGuiShim.cpp" />
     <ClCompile Include="include\ImGuizmo\src\GraphEditor.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImCurveEdit.cpp" />

@@ -42,6 +42,9 @@ public:
     bool IsActive = false;
     bool SettingsVisible = false;
     bool AdvancedSettingsVisible = false;
+    /** Draw the pre-tab settings window instead of the one in ImGuiSettingsWindow.cpp. Runtime only
+        (not persisted) - it exists so the two can be compared without a rebuild. */
+    bool UseClassicSettingsWindow = false;
     bool LibShowBlockingThisFrame = false;
     bool LibShowNonBlockingThisFrame = false;
     //bool DemoVisible = false;
@@ -83,7 +86,6 @@ public:
         return WINDOW_MODE_FULLSCREEN_BORDERLESS;
     }
 private:
-    void RenderSettingsWindowModern();
     void RenderSettingsWindow();
     void RenderAdvancedSettingsWindow();
     void RenderAdvancedColumn2(GothicRendererSettings& settings, GothicAPI* gapi);
