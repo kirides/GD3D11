@@ -6,6 +6,7 @@
 #include "ShaderIDs.h"
 #include "GfxVertexBuffer.h"
 #include "GfxTexture.h"
+#include "GraphicsDeviceCapabilities.h"
 #include "fpslimiter.h"
 #include "widenarrow.h"
 
@@ -415,7 +416,13 @@ public:
         then call this from their GetDisplayModeList() override. */
     XRESULT AppendCachedDisplayModes( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling ) const;
 
+    /** What the device this backend initialized on can actually do. Filled during Init(); the
+        settings that follow the hardware are resolved from it (ApplyDeviceCapabilities). */
+    const GraphicsDeviceCapabilities& GetDeviceCapabilities() const { return m_DeviceCapabilities; }
+
 protected:
+    GraphicsDeviceCapabilities m_DeviceCapabilities;
+
     HWND m_OutputWindow = nullptr;
     bool m_IsWindowActive = false;
     INT2 m_NewResolution = {};

@@ -14,6 +14,59 @@ static void ApplyFeatureLevel10Downgrades( GothicRendererSettings& s ) {
     }
 }
 
+// The shadow half of a graphics preset, split out so the settings window can offer a single shadow
+// quality knob without duplicating the numbers.
+static void ApplyShadowPresets( GothicRendererSettings& s, GothicRendererSettings::E_GraphicsPreset preset ) {
+    s.DebugSettings.FeatureSet.UseShadowAtlas = false; // default atlas to OFF. only use if FL_10 is required. 
+
+    switch ( preset ) {
+    case GothicRendererSettings::GRAPHICS_VERY_LOW:
+    case GothicRendererSettings::GRAPHICS_LOW:
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 2;
+        s.ShadowMapSize = preset == GothicRendererSettings::GRAPHICS_VERY_LOW ? 512 : 1024;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
+        s.ShadowSoftness = 2.00f;
+        s.SmoothShadowCameraUpdate = true;
+        s.SmoothShadowFrequency = 500;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
+        break;
+    case GothicRendererSettings::GRAPHICS_MEDIUM:
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 3;
+        s.ShadowMapSize = 2048;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
+        s.ShadowSoftness = 2.00f;
+        s.SmoothShadowCameraUpdate = true;
+        s.SmoothShadowFrequency = 1000;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
+        break;
+    case GothicRendererSettings::GRAPHICS_HIGH:
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 3;
+        s.ShadowMapSize = 4096;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
+        s.ShadowSoftness = 2.00f;
+        s.SmoothShadowCameraUpdate = false;
+        s.SmoothShadowFrequency = 1000;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
+        break;
+    case GothicRendererSettings::GRAPHICS_VERY_HIGH:
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 4;
+        s.ShadowMapSize = 4096;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
+        s.ShadowSoftness = 1.0f;
+        s.SmoothShadowCameraUpdate = false;
+        s.SmoothShadowFrequency = 1000;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
+        break;
+    default:
+        return;
+    }
+    s.ShadowQuality = preset;
+}
+
 static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     const auto preset = s.GraphicsPreset;
     if ( preset == GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM ) {
@@ -21,20 +74,13 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     }
 
     switch ( preset ) {
+    case GothicRendererSettings::GRAPHICS_VERY_LOW:
     case GothicRendererSettings::GRAPHICS_LOW:
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
         s.CompressBackBuffer = true;
-        s.WorldShadowRangeScale = 1.0f;
-        s.NumShadowCascades = 2;
-        s.DebugSettings.FeatureSet.UseShadowAtlas = true;
-        s.ShadowMapSize = 1024;
-        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
-        s.ShadowSoftness = 2.00f;
-        s.SmoothShadowCameraUpdate = true;
-        s.SmoothShadowFrequency = 500;
-        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
+        ApplyShadowPresets( s, preset );
 
         s.EnableDynamicLighting = false;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED;
@@ -61,15 +107,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
         s.CompressBackBuffer = true;
-        s.WorldShadowRangeScale = 1.0f;
-        s.NumShadowCascades = 3;
-        s.DebugSettings.FeatureSet.UseShadowAtlas = true;
-        s.ShadowMapSize = 2048;
-        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
-        s.ShadowSoftness = 2.00f;
-        s.SmoothShadowCameraUpdate = true;
-        s.SmoothShadowFrequency = 1000;
-        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
+        ApplyShadowPresets( s, preset );
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
@@ -97,14 +135,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
         s.CompressBackBuffer = false;
-        s.WorldShadowRangeScale = 1.0f;
-        s.NumShadowCascades = 3;
-        s.ShadowMapSize = 4096;
-        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
-        s.ShadowSoftness = 2.0f;
-        s.SmoothShadowCameraUpdate = false;
-        s.SmoothShadowFrequency = 1000;
-        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
+        ApplyShadowPresets( s, preset );
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
@@ -132,14 +163,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
         s.CompressBackBuffer = false;
-        s.WorldShadowRangeScale = 1.0f;
-        s.NumShadowCascades = 4;
-        s.ShadowMapSize = 4096;
-        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
-        s.ShadowSoftness = 1.0f;
-        s.SmoothShadowCameraUpdate = false;
-        s.SmoothShadowFrequency = 1000;
-        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
+        ApplyShadowPresets( s, preset );
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
@@ -174,9 +198,29 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     if ( Engine::GAPI ) Engine::GAPI->UpdateCompressBackBuffer();
 }
 
+void GothicRendererSettings::ApplyDeviceCapabilities( const GraphicsDeviceCapabilities& caps )
+{
+    auto resolve = []( E_FeatureOverride ov, bool supported ) {
+        return ov == FEATURE_AUTO ? supported : ov == FEATURE_FORCE_ON;
+    };
+
+    auto& fs = DebugSettings.FeatureSet;
+    fs.EnableDriverExtensions = resolve( fs.EnableDriverExtensionsOverride, caps.DriverExtensions );
+    fs.UseMDI = resolve( fs.UseMDIOverride, caps.MultiDrawIndirect );
+    fs.UseLayeredRendering = resolve( fs.UseLayeredRenderingOverride, caps.LayeredRendering );
+}
+
 void GothicRendererSettings::ApplyGraphicsPreset()
 {
     ::ApplyGraphicsPresets( *this );
+}
+
+void GothicRendererSettings::ApplyShadowPreset()
+{
+    ::ApplyShadowPresets( *this, ShadowQuality );
+    if ( FeatureLevel10Compatibility ) {
+        ApplyFeatureLevel10Downgrades();
+    }
 }
 
 void GothicRendererSettings::ApplyFeatureLevel10Downgrades()

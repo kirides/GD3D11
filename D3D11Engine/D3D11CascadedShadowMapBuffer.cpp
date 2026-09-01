@@ -27,9 +27,10 @@ HRESULT D3D11CascadedShadowMapBuffer::Init(
     UINT numCascades ) {
 
     m_device = device;
-    m_numCascades = std::clamp<UINT>( numCascades, 1, MAX_CSM_CASCADES );
+    const UINT wanted = std::clamp<UINT>( numCascades, 1, MAX_CSM_CASCADES );
 
-    if ( m_size != size || m_numCascades != numCascades ) {
+    if ( !m_texture || m_size != size || m_numCascades != wanted ) {
+        m_numCascades = wanted;
         return Resize( size );
     }
     return S_OK;

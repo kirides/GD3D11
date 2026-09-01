@@ -83,6 +83,23 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
+
+    m_DeviceCapabilities.DeviceDescription = m_Device.GetDeviceDescription();
+    DXGI_ADAPTER_DESC1 adapterDesc = {};
+    if ( m_Device.GetAdapter() && SUCCEEDED( m_Device.GetAdapter()->GetDesc1( &adapterDesc ) ) ) {
+        m_DeviceCapabilities.VendorId = adapterDesc.VendorId;
+    }
+    // No vendor driver extensions in this backend - indirect draws and explicit UAV barriers are core D3D12.
+    m_DeviceCapabilities.DriverExtensions = false;
+    m_DeviceCapabilities.MultiDrawIndirect = true;
+    m_DeviceCapabilities.UAVOverlap = true;
+    m_DeviceCapabilities.Native16BitTextures = true;
+    m_DeviceCapabilities.LayeredRendering = m_Device.LayeredRenderingSupported();
+    // Gated at adapter selection (DeviceSupportsBindless), so a device that got this far has it.
+    m_DeviceCapabilities.BindlessResources = true;
+    m_DeviceCapabilities.EnhancedBarriers = m_Device.EnhancedBarriersSupported();
+    Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
+
     if ( !CreateAllocators() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create allocators.";
         return XR_FAILED;

@@ -177,9 +177,18 @@ public:
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 
 private:
+    // Per-cascade size cap for the multi-cascade atlas, which packs all cascades into one
+    // (2*S) x (1.5*S) texture. 2048 keeps the biggest atlas at 4096x3072.
+    static const int MAX_ATLAS_CASCADE_SIZE = 2048;
+
     bool ShouldUseAtlas() const;
     void RecreateShadowSampler();
     void EnsureShadowMapBackend( int size );
+    static int AtlasCascade0Size( int requestedSize, UINT numCascades );
+
+    /** Clears one cascade's rect of the atlas. D3D11 has no rect-based depth clear, so this
+        draws a single viewport-sized triangle with the clear depth as the viewport range. */
+    void ClearAtlasCascade( UINT cascadeIndex, float depth );
 
     void WaitShadowCullingComplete();
 
@@ -192,6 +201,8 @@ private:
     // CSM using texture atlas (FL10 fallback)
     std::unique_ptr<D3D11ShadowAtlas> m_shadowAtlas;
     bool m_useAtlas = false;
+    int m_lastLoggedAtlasCap = 0;
+    bool m_ForceFullCascadeUpdate = true;
 
     std::unique_ptr<RenderToTextureBuffer> m_dummyCubeRT;
 
@@ -200,7 +211,7 @@ private:
     std::array<CameraReplacement, MAX_CSM_CASCADES> m_CascadeCRs;
     std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;
-    std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade;
+    std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade = { true, true, true, true };
     XMFLOAT3 m_WorldShadowPos;
 
     std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;

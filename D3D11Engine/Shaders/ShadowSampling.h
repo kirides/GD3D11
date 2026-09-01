@@ -60,12 +60,11 @@ float2 CascadeToAtlasUV(float2 cascadeUV, int cascadeIndex)
     float4 rect = SQ_CascadeAtlasRect[cascadeIndex];
     float2 atlasUV = cascadeUV * rect.zw + rect.xy;
 
-    // Clamp to cascade bounds with half-texel inset to prevent bilinear filter
-    // from sampling texels in neighboring cascades
-    // Atlas texel size = rect.zw / cascadePixelSize = 1/atlasSize (constant for all cascades)
-    // Use rect.zw / SQ_ShadowmapSize as conservative estimate (correct for cascade 0,
-    // slightly conservative for smaller cascades which is fine)
-    float2 halfTexel = 0.5 * rect.zw / SQ_ShadowmapSize;
+    // Clamp to cascade bounds with half-texel inset to prevent the bilinear filter from
+    // sampling texels of a neighbouring cascade. The atlas texel is the same size everywhere,
+    // so derive it from cascade 0 (whose pixel size IS SQ_ShadowmapSize) - taking rect.zw of a
+    // half-size cascade would halve the inset and let it bleed.
+    float2 halfTexel = 0.5 * SQ_CascadeAtlasRect[0].zw / SQ_ShadowmapSize;
     float2 minUV = rect.xy + halfTexel;
     float2 maxUV = rect.xy + rect.zw - halfTexel;
     return clamp(atlasUV, minUV, maxUV);

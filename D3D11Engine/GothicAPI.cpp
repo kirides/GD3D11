@@ -5995,6 +5995,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     
 
     WritePrivateProfileStringA( "Shadows", "EnableShadows", to_string_locale_independent( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowQuality", to_string_locale_independent( static_cast<int>(s.ShadowQuality) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowFilterMode", to_string_locale_independent( static_cast<int>(s.ShadowFilterMode) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowMapSize", to_string_locale_independent( s.ShadowMapSize ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldShadowRangeScale", to_string_locale_independent( s.WorldShadowRangeScale ).c_str(), ini.c_str() );
@@ -6067,7 +6068,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", to_string_locale_independent( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GenerateAONormalsFromDepth", to_string_locale_independent( s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "ForceFeatureLevel10", to_string_locale_independent( s.DebugSettings.FeatureSet.ForceFeatureLevel10 ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Debug", "EnableDriverExtensions", to_string_locale_independent( s.DebugSettings.FeatureSet.EnableDriverExtensions ? TRUE : FALSE ).c_str(), ini.c_str() );
+    // Capability-driven: only the player's override is persisted (-1 auto, 0 off, 1 on). The effective
+    // value is whatever the device reported at init - see GothicRendererSettings::ApplyDeviceCapabilities.
+    WritePrivateProfileStringA( "Debug", "EnableDriverExtensionsOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.EnableDriverExtensionsOverride ) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "UseMDIOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseMDIOverride ) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "UseLayeredRenderingOverride", to_string_locale_independent( static_cast<int>( s.DebugSettings.FeatureSet.UseLayeredRenderingOverride ) ).c_str(), ini.c_str() );
 
     return XR_SUCCESS;
 }
@@ -6158,6 +6163,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         }
 
         s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", ds.EnableShadows, ini );
+        s.ShadowQuality = static_cast<GothicRendererSettings::E_GraphicsPreset>(
+            GetPrivateProfileIntA( "Shadows", "ShadowQuality",
+                static_cast<int>(ds.ShadowQuality), ini.c_str() ));
         s.ShadowFilterMode = static_cast<GothicRendererSettings::E_ShadowFilterMode>(
             GetPrivateProfileIntA( "Shadows", "ShadowFilterMode",
                 static_cast<int>(ds.ShadowFilterMode), ini.c_str() ));
@@ -6299,7 +6307,19 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask = GetPrivateProfileBoolA( "Debug", "UseScreenSpaceShadowMask", ds.DebugSettings.FeatureSet.UseScreenSpaceShadowMask, ini );
         s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth = GetPrivateProfileBoolA( "Debug", "GenerateAONormalsFromDepth", ds.DebugSettings.FeatureSet.GenerateAONormalsFromDepth, ini );
         s.DebugSettings.FeatureSet.ForceFeatureLevel10 = GetPrivateProfileBoolA( "Debug", "ForceFeatureLevel10", ds.DebugSettings.FeatureSet.ForceFeatureLevel10, ini );
-        s.DebugSettings.FeatureSet.EnableDriverExtensions = GetPrivateProfileBoolA( "Debug", "EnableDriverExtensions", ds.DebugSettings.FeatureSet.EnableDriverExtensions, ini );
+        auto readFeatureOverride = [&ini]( const char* key, GothicRendererSettings::E_FeatureOverride nDefault ) {
+            const int value = GetPrivateProfileSignedIntA( "Debug", key, static_cast<int>( nDefault ), ini );
+            if ( value < 0 ) return GothicRendererSettings::FEATURE_AUTO;
+            return value > 0 ? GothicRendererSettings::FEATURE_FORCE_ON : GothicRendererSettings::FEATURE_FORCE_OFF;
+        };
+
+        // Migrates the old boolean key: a player who had extensions turned off keeps them off.
+        const auto legacyExtensions = GetPrivateProfileBoolA( "Debug", "EnableDriverExtensions", true, ini )
+            ? ds.DebugSettings.FeatureSet.EnableDriverExtensionsOverride : GothicRendererSettings::FEATURE_FORCE_OFF;
+
+        s.DebugSettings.FeatureSet.EnableDriverExtensionsOverride = readFeatureOverride( "EnableDriverExtensionsOverride", legacyExtensions );
+        s.DebugSettings.FeatureSet.UseMDIOverride = readFeatureOverride( "UseMDIOverride", ds.DebugSettings.FeatureSet.UseMDIOverride );
+        s.DebugSettings.FeatureSet.UseLayeredRenderingOverride = readFeatureOverride( "UseLayeredRenderingOverride", ds.DebugSettings.FeatureSet.UseLayeredRenderingOverride );
 
         // Fix the resolution if the players maximum resolution got lower
         /*RECT r;

@@ -9,6 +9,7 @@
 #include "D3D11PfxRenderer.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11GraphicsEngine.h"
+#include "D3D11PipelineStateCache.h"
 #include "zCCamera.h"
 #include "zCVob.h"
 #include "oCGame.h"
@@ -278,11 +279,18 @@ void D3D11ShadowMap::RecreateShadowSampler() {
     SetDebugName( m_shadowmapSampler.Get(), "ShadowmapSamplerState" );
 }
 
+int D3D11ShadowMap::AtlasCascade0Size( int requestedSize, UINT numCascades ) {
+    // Multi-cascade atlases pack every cascade into ONE texture of (2*S) x (1.5*S), so an
+    // "8192" setting would mean a 16384x12288 surface. Cap the per-cascade size instead.
+    const int cap = ( numCascades <= 1 ) ? ( FeatureLevel10Compatibility ? 8192 : 16384 ) : MAX_ATLAS_CASCADE_SIZE;
+    return std::min<int>( std::max<int>( requestedSize, 512 ), cap );
+}
+
 void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     if ( !m_device ) return;
-     
+
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, std::min(4, MAX_CSM_CASCADES) ) );
+    const UINT numCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, std::min(4, MAX_CSM_CASCADES) ) );
 
     bool desiredUseAtlas = ShouldUseAtlas();
     int clampedSize = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
@@ -290,17 +298,10 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     if ( desiredUseAtlas != m_useAtlas ) {
         // Switch backend at runtime.
         m_useAtlas = desiredUseAtlas;
-
         if ( m_useAtlas ) {
             m_cascadedShadowMap.reset();
-            m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-            const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
-            int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
-            m_shadowAtlas->Init( m_device, atlasCascade0Size, atlasNumCascades );
         } else {
             m_shadowAtlas.reset();
-            m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
-            m_cascadedShadowMap->Init( m_device, clampedSize, atlasNumCascades );
         }
 
         // Sampler addressing depends on atlas/array path.
@@ -313,21 +314,25 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
         }
     }
 
-    // Ensure resources exist even if no mode switch occurred.
-    if ( m_useAtlas && !m_shadowAtlas ) {
-        m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
-        int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
-        m_shadowAtlas->Init( m_device, atlasCascade0Size, atlasNumCascades );
-    } else if ( m_useAtlas && m_shadowAtlas ) {
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
-        int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
-        m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
-    } else if ( !m_useAtlas ) {
+    // Both backends no-op when size and cascade count already match, so this is safe to poll.
+    if ( m_useAtlas ) {
+        const int atlasCascade0Size = AtlasCascade0Size( clampedSize, numCascades );
+        if ( atlasCascade0Size < clampedSize && m_lastLoggedAtlasCap != clampedSize ) {
+            m_lastLoggedAtlasCap = clampedSize;
+            LogInfo() << "ShadowAtlas: requested " << clampedSize << " capped to " << atlasCascade0Size
+                << " per cascade (" << numCascades << " cascades share one texture)";
+        }
+        if ( !m_shadowAtlas ) {
+            m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
+            m_shadowAtlas->Init( m_device, atlasCascade0Size, numCascades );
+        } else {
+            m_shadowAtlas->Resize( atlasCascade0Size, numCascades );
+        }
+    } else {
         if ( !m_cascadedShadowMap ) {
             m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
         }
-        m_cascadedShadowMap->Init( m_device, clampedSize, atlasNumCascades );
+        m_cascadedShadowMap->Init( m_device, clampedSize, numCascades );
     }
 }
 
@@ -375,25 +380,14 @@ void D3D11ShadowMap::Resize( int size ) {
     const int maxSize = (FeatureLevel10Compatibility ? 8192 : 16384);
     const int s = std::min<int>( std::max<int>( size, 512 ), maxSize );
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, std::min( 4, MAX_CSM_CASCADES ) ) );
+    const UINT numCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, std::min( 4, MAX_CSM_CASCADES ) ) );
 
     EnsureShadowMapBackend( s );
 
-    if ( m_useAtlas ) {
-        // Atlas path: with one cascade, use full hardware limit; otherwise reserve width for atlas packing.
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? maxSize : (maxSize / 4);
-        int atlasCascade0Size = std::min<int>( s, maxAtlasCascade0Size );
-        if ( m_shadowAtlas ) {
-            m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
-        }
-    } else {
-        // Texture array path
-        if ( m_cascadedShadowMap ) {
-            m_cascadedShadowMap->Resize( s );
-        }
-    }
-
-    m_lastNumCascades = static_cast<int>( atlasNumCascades );
+    m_lastNumCascades = static_cast<int>( numCascades );
+    // Fresh depth surfaces hold garbage; the next frame has to fill every cascade before
+    // lazy updates may start freezing any of them.
+    m_ForceFullCascadeUpdate = true;
 }
 
 void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) {
@@ -422,8 +416,14 @@ XRESULT D3D11ShadowMap::PrepareRender()
         // is the hard ceiling for both feature levels now, so there's no FeatureLevel10Compatibility distinction.
         const int desiredSize = std::min<int>( std::max<int>( settings.ShadowMapSize, 512 ), 8192 );
         const int desiredCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
+        // In atlas mode the per-cascade size is capped below ShadowMapSize, so compare against
+        // what the atlas would actually allocate - comparing to desiredSize never matched and
+        // re-created the whole atlas every frame.
+        const int effectiveSize = ShouldUseAtlas()
+            ? AtlasCascade0Size( desiredSize, static_cast<UINT>( desiredCascades ) )
+            : desiredSize;
 
-        if ( GetSizeX() != desiredSize
+        if ( GetSizeX() != effectiveSize
             || m_useAtlas != ShouldUseAtlas()
             || m_lastNumCascades != desiredCascades ) {
             LogInfo() << "Shadowmap config changed, resizing to " << desiredSize << "x" << desiredSize;
@@ -616,9 +616,9 @@ XRESULT D3D11ShadowMap::PrepareRender()
 
         // Increment frame counter for temporal cascade updates
         perFrameCascadeData.frameCount++;
-        bool lazyCascadeUpdate = m_useAtlas // atlas breaks when last cascade is not rendered, as we clear the atlas for the next pass.
-            ? false 
-            : settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
+        // Works on both paths: DrawWorldShadow only clears the rects it is about to redraw, so a
+        // frozen cascade keeps the depth it already holds.
+        bool lazyCascadeUpdate = settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
 
         Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
@@ -636,7 +636,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             bool shouldUpdateCascade = true;
-            if ( lazyCascadeUpdate ) {
+            if ( lazyCascadeUpdate && !m_ForceFullCascadeUpdate ) {
                 if ( cascadeIdx == 2 ) {
                     // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
                     shouldUpdateCascade = (perFrameCascadeData.frameCount % 5) == 0;
@@ -663,6 +663,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
                     GetCascadePixelSize( cascadeIdx ) );
             }
         }
+        m_ForceFullCascadeUpdate = false;
     }
 
     if ( settings.ThreadedShadowCulling ) {
@@ -1215,6 +1216,45 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     return XR_SUCCESS;
 }
 
+void D3D11ShadowMap::ClearAtlasCascade( UINT cascadeIndex, float depth ) {
+    if ( !m_shadowAtlas ) return;
+    auto dsv = m_shadowAtlas->GetDepthStencilView();
+    if ( !dsv ) return;
+
+    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "ClearAtlasCascade" ) );
+
+    // The viewport both scissors the triangle to this cascade's rect and, by collapsing its
+    // depth range onto a single value, turns VS_PFX's z=0 output into the clear depth.
+    D3D11_VIEWPORT vp = m_shadowAtlas->GetCascadeViewport( cascadeIndex );
+    vp.MinDepth = depth;
+    vp.MaxDepth = depth;
+
+    D3D11_VIEWPORT oldVP; UINT n = 1;
+    m_context->RSGetViewports( &n, &oldVP );
+    m_context->RSSetViewports( 1, &vp );
+    m_context->OMSetRenderTargets( 0, nullptr, dsv );
+
+    auto& renderState = Engine::GAPI->GetRendererState();
+    renderState.BlendState.SetDefault();
+    renderState.BlendState.ColorWritesEnabled = false;
+    renderState.BlendState.SetDirty();
+    renderState.RasterizerState.SetDefault();
+    renderState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    renderState.RasterizerState.SetDirty();
+    renderState.DepthState.SetDefault();
+    renderState.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    renderState.DepthState.SetDirty();
+
+    graphicsEngine->SetActiveVertexShader( VShaderID::VS_PFX );
+    graphicsEngine->GetActiveVS()->Apply();
+    D3D11PipelineStateCache::SetPixelShader( m_context.Get(), nullptr );
+
+    graphicsEngine->GetPfxRenderer()->DrawFullScreenQuad();
+
+    m_context->RSSetViewports( 1, &oldVP );
+}
+
 XRESULT D3D11ShadowMap::DrawWorldShadow( )
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
@@ -1254,18 +1294,25 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
     }
 
     if ( isOutdoor ) {
-        // For atlas path: clear entire atlas once before rendering all cascades
+        // Atlas path: one DSV covers every cascade, so nothing may be cleared wholesale while
+        // lazy updates leave some cascades frozen. Only the rects redrawn below get cleared.
+        float atlasClearValue = 1.0f;
         if ( m_useAtlas && m_shadowAtlas ) {
-            auto dsv = m_shadowAtlas->GetDepthStencilView();
-            if ( dsv ) {
-                // Determine clear value based on sun/shadow state
-                bool shouldRenderShadows =
-                    Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y > 0 &&
-                    settings.DrawShadowGeometry &&
-                    settings.EnableShadows;
-                float clearValue = shouldRenderShadows ? 1.0f :
-                    (Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ? 0.0f : 1.0f);
-                m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, clearValue, 0 );
+            const bool shouldRenderShadows =
+                Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y > 0 &&
+                settings.DrawShadowGeometry &&
+                settings.EnableShadows;
+            if ( !shouldRenderShadows ) {
+                // No caster is drawn at all this frame; the whole atlas becomes one constant.
+                atlasClearValue = Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ? 0.0f : 1.0f;
+                if ( auto dsv = m_shadowAtlas->GetDepthStencilView() ) {
+                    m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, atlasClearValue, 0 );
+                }
+                for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+                    m_RenderQueues[cascadeIdx]->Reset();
+                }
+                Engine::GAPI->SetCameraReplacementPtr( nullptr );
+                return XR_SUCCESS;
             }
         }
 
@@ -1290,8 +1337,9 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
             renderParams.CascadeSplits = m_CascadeSplits;
             renderParams.CascadeCameraReplacements = &m_CascadeCRs;
 
-            // Atlas path: provide per-cascade viewport and skip per-cascade clear
+            // Atlas path: clear only this cascade's rect, then render into it.
             if ( m_useAtlas && m_shadowAtlas ) {
+                ClearAtlasCascade( static_cast<UINT>(cascadeIdx), atlasClearValue );
                 renderParams.ViewportOverride = m_shadowAtlas->GetCascadeViewport( static_cast<UINT>(cascadeIdx) );
                 renderParams.UseViewportOverride = true;
                 renderParams.SkipClear = true;
@@ -1550,11 +1598,11 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
             const float sy = sqrtf( m._12 * m._12 + m._22 * m._22 + m._32 * m._32 );
             const float wx = ( sx > 1e-6f ) ? ( 2.0f / sx ) : 0.0f;
             const float wy = ( sy > 1e-6f ) ? ( 2.0f / sy ) : 0.0f;
-            float res = mapSize;
-            if ( m_useAtlas && m_shadowAtlas ) {
-                const float4& r = scb.SQ_CascadeAtlasRect[i];
-                res *= std::max( r.z, r.w );
-            }
+            // Cascade resolution in pixels - in atlas mode this is the sub-rect's own size, not
+            // the atlas-relative UV scale (which is half of it and doubled the normal offset).
+            const float res = m_useAtlas
+                ? static_cast<float>( GetCascadePixelSize( static_cast<UINT>( i ) ) )
+                : mapSize;
             ts[i] = 0.5f * ( wx + wy ) / std::max( res, 1.0f );
         }
     }
@@ -1697,11 +1745,11 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
             const float sy = sqrtf( m._12 * m._12 + m._22 * m._22 + m._32 * m._32 );
             const float wx = ( sx > 1e-6f ) ? ( 2.0f / sx ) : 0.0f;
             const float wy = ( sy > 1e-6f ) ? ( 2.0f / sy ) : 0.0f;
-            float res = mapSize;
-            if ( m_useAtlas && m_shadowAtlas ) {
-                const float4& r = scb.SQ_CascadeAtlasRect[i];
-                res *= std::max( r.z, r.w );
-            }
+            // Cascade resolution in pixels - in atlas mode this is the sub-rect's own size, not
+            // the atlas-relative UV scale (which is half of it and doubled the normal offset).
+            const float res = m_useAtlas
+                ? static_cast<float>( GetCascadePixelSize( static_cast<UINT>( i ) ) )
+                : mapSize;
             ts[i] = 0.5f * ( wx + wy ) / std::max( res, 1.0f );
         }
     }

@@ -36,6 +36,9 @@ public:
         enhanced barriers are optional, never required, so this doesn't affect Init()'s success. */
     bool EnhancedBarriersSupported() const { return m_EnhancedBarriersSupported; }
 
+    /** True if a vertex shader can write SV_RenderTargetArrayIndex without geometry-shader emulation. */
+    bool LayeredRenderingSupported() const { return m_LayeredRenderingSupported; }
+
     ID3D12Device*       GetDevice()      const { return m_Device.Get(); }
     ID3D12CommandQueue* GetDirectQueue() const { return m_DirectQueue.Get(); }
     ID3D12CommandQueue* GetCopyQueue()   const { return m_CopyQueue.Get(); }
@@ -50,4 +53,5 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandQueue>  m_CopyQueue;
     std::string m_DeviceDescription;
     bool m_EnhancedBarriersSupported = false;
+    bool m_LayeredRenderingSupported = false;
 };

@@ -6,6 +6,8 @@
 #include <ShellScalingApi.h>
 
 #include "ImGuiEditorView.h"
+#include "ImGuiSettingsWindow.h"
+#include "ImGuiWidgets.h"
 #include "MorphGpu.h"
 #include "zCParser.h"
 #include "D3D11PointLight.h"
@@ -19,11 +21,6 @@
 #include <chrono>
 #include <numeric>
 #include <codecvt>
-#include "zFILE_VDFS.h"
-
-#define STB_IMAGE_IMPLEMENTATION
-#include "D3D12Engine/D3D12Texture.h"
-#include "vendor/stb/stb_image.h"
 
 namespace ImGui {
     void TextUnformatted( const wchar_t* text ) {
@@ -78,21 +75,7 @@ int GetDpi( HWND hWnd )
 }
 
 namespace {
-    
-    template<typename T>
-    struct ListItem
-    {
-        const char* label;
-        T value;
-        const char* toolTip;
-        
-        constexpr ListItem(const char* label, const T value) noexcept :
-            label(label), value(value), toolTip(nullptr) {}
-        
-        constexpr ListItem(const char* label, const T value, const char* toolTip) noexcept :
-            label(label), value(value), toolTip(toolTip) {}
-    };
-    
+
     // SRV-descriptor callbacks for imgui_impl_dx12: it needs to allocate/free shader-visible
     // descriptors for its textures (font atlas + any user textures). We route these through the
     // D3D12GraphicsEngine's shader-visible heap (passed via ImGui_ImplDX12_InitInfo::UserData).
@@ -235,6 +218,7 @@ void ImGuiShim::InitD3D12(
 ImGuiShim::~ImGuiShim()
 {
     if ( Initiated ) {
+        ImPreview::Reset(); // preview textures belong to the graphics engine, which outlives us
         if ( m_Backend == Backend::D3D12 ) {
             ImGui_ImplDX12_Shutdown();
         } else {
@@ -276,7 +260,11 @@ void ImGuiShim::BuildFrameUI()
 
     auto oldSettings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( SettingsVisible ) {
-        RenderSettingsWindow();
+        if ( UseClassicSettingsWindow ) {
+            RenderSettingsWindow();
+        } else {
+            ImGuiSettings::RenderWindow( *this );
+        }
     } else if ( AdvancedSettingsVisible ) {
         RenderAdvancedSettingsWindow();
     }
@@ -291,6 +279,14 @@ void ImGuiShim::BuildFrameUI()
     if ( memcmp( &oldSettings, &Engine::GAPI->GetRendererState().RendererSettings, sizeof( GothicRendererSettings ) ) != 0 ) {
         if ( oldSettings.GraphicsPreset == Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset ) {
             Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
+        }
+        // Editing one of the preset-driven shadow values by hand makes the shadow quality "Custom".
+        GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( oldSettings.ShadowQuality == rs.ShadowQuality
+            && ( oldSettings.ShadowMapSize != rs.ShadowMapSize
+                || oldSettings.NumShadowCascades != rs.NumShadowCascades
+                || oldSettings.ShadowFilterMode != rs.ShadowFilterMode ) ) {
+            rs.ShadowQuality = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
         }
         if ( FeatureLevel10Compatibility ) {
             Engine::GAPI->GetRendererState().RendererSettings.ApplyFeatureLevel10Downgrades();
@@ -585,65 +581,24 @@ void ImGuiShim::OnResize( INT2 newSize )
     ImGuiCollectResolutions( Resolutions );
 }
 
-namespace Internal
-{
-    template <typename T>
-    static bool ImComboBox( const char* id, const ListItem<T> *items, size_t numItems, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
-        if ( storage == nullptr || numItems == 0 ) {
-            return ImGui::BeginCombo( id, "invalid storage" );
-        }
-        ListItem<T> selectedItem = items[0];
-        for ( size_t i = 0; i < numItems; i++ ) {
-            const auto& it = items[i];
-            if ( it.value == *storage ) {
-                selectedItem = it;
-                break;
-            }
-        }
-        if ( ImGui::BeginCombo( id, selectedItem.label ) ) {
-            for ( size_t i = 0; i < numItems; i++ ) {
-                bool isSelected = (*storage == items[i].value);
+// One Auto/Off/On row for a FeatureSet entry that follows the device's capabilities. Only the
+// override is stored; picking one re-resolves the effective value against the live device.
+static void FeatureOverrideRow( const char* label, GothicRendererSettings& settings,
+    GothicRendererSettings::E_FeatureOverride& value, const bool& effective, bool deviceSupports,
+    const char* toolTip ) {
+    static const ListItem<GothicRendererSettings::E_FeatureOverride> overrides[] = {
+        { "Auto",      GothicRendererSettings::FEATURE_AUTO },
+        { "Force Off", GothicRendererSettings::FEATURE_FORCE_OFF },
+        { "Force On",  GothicRendererSettings::FEATURE_FORCE_ON },
+    };
 
-                if ( ImGui::Selectable( items[i].label, isSelected ) ) {
-                    *storage = items[i].value;
-                    if (selected) selected();
-                }
-                
-                if ( items[i].toolTip ) {
-                    ImGui::SetItemTooltip( "%s", items[i].toolTip );
-                }
-
-                if ( isSelected ) {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            return true;
-        }
-        return false;
+    if ( ImComboBox( label, overrides, &value, [&settings] {
+        settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
+    } ) ) {
+        ImGui::EndCombo();
     }
-}
-
-template <typename T, size_t N>
-static bool ImComboBox( const char* id, const ListItem<T>(&items)[N], T* storage, const std::move_only_function<void() const>& selected = []{}) {
-    return Internal::ImComboBox( id, items, N, storage, selected );
-}
-
-template <typename T>
-static bool ImComboBox( const char* id, const std::vector<ListItem<T>>& items, T* storage, const std::move_only_function<void() const>& selected = []{} ) {
-    return Internal::ImComboBox( id, items.data(), items.size(), storage, selected );
-}
-
-static void ImText( const char* label, const ImVec2& size ) {
-    auto& col = ImGui::GetStyleColorVec4( ImGuiCol_::ImGuiCol_Button );
-
-    ImGui::PushStyleColor( ImGuiCol_::ImGuiCol_ButtonActive, col );
-    ImGui::PushStyleColor( ImGuiCol_::ImGuiCol_ButtonHovered, col );
-    ImGui::PushStyleVarX( ImGuiStyleVar_::ImGuiStyleVar_ButtonTextAlign, 0 );
-
-    ImGui::Button( label, size );
-    ImGui::PopStyleVar( 1 );
-
-    ImGui::PopStyleColor( 2 );
+    ImGui::SetItemTooltip( "%s\n\nDevice reports: %s. Currently: %s.", toolTip,
+        deviceSupports ? "supported" : "unsupported", effective ? "on" : "off" );
 }
 
 // Helper function to edit a direction vector using ImGuizmo::ViewManipulate
@@ -702,358 +657,6 @@ static bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float
 }
 
 
-namespace
-{
-    bool IsFSRUpscaler( GothicRendererSettings::E_Upscaler v ) {
-        return v == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
-    }
-    void FixupSettings(GothicRendererSettings& s) {
-        if (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) {
-            if ( !IsFSRUpscaler( s.Upscaler ) ) {
-                s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
-            }
-        }
-        if (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
-            && ( s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3)) {
-            // don't allow TAA and FSR2 at the same time.
-            s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1;
-        }
-        if (s.ResolutionScalePercent > 100 && s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) {
-            // switch to regular TAA if upsampled
-            s.AntiAliasingMode = GothicRendererSettings::AA_TAA;
-        }
-
-        // MSAA (Forward+ only) and TAA/FSR are mutually exclusive: both do their own edge/temporal
-        // resolve and combining them adds no value while doubling the resolve complexity.
-        if ( s.MSAASamples > 1 && (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
-            || s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) ) {
-            s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
-        }
-        if ( s.RendererMode != GothicRendererSettings::E_RendererMode::RM_ForwardPlus ) {
-            s.MSAASamples = 1;
-        }
-    }
-}
-
-static std::vector<std::unique_ptr<GfxTexture>> s_previewTextures = {};
-
-static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
-    switch (Engine::GraphicsEngine->GetBackendAPI())
-    {
-    case EGraphicsEngineBackend::D3D11:
-        return (ImTextureID)(intptr_t)D3D11Texture::From(tex)->GetShaderResourceView().Get();
-    case EGraphicsEngineBackend::D3D12:
-        return (ImTextureID)(intptr_t)D3D12Texture::From(tex)->GetSrvGpuHandle().ptr;
-    }
-    return ImTextureID{};
-}
-
-static ImTextureID GetOrLoadTexture( int textureId, std::string_view textureName ) {
-
-    if ( textureId < s_previewTextures.size() && s_previewTextures[textureId] ) {
-        return GetImTextureIdFromGfx( s_previewTextures[textureId].get() );
-    }
-
-    std::string path;
-    path.reserve( 255 );
-    path.append( R"(\System\GD3D11\Previews\)" );
-    path.append( textureName );
-
-    auto filePtr = zFILE_VDFS::Create( path.c_str() );
-
-    if ( !filePtr->Exists() || filePtr->Open( false ) != zERRORS::zERROR_NONE ) {
-        return ImTextureID{};
-    }
-
-    std::vector<uint8_t> data;
-    data.resize( filePtr->Size() );
-    filePtr->Read( data.data(), data.size() );
-    filePtr->Close();
-
-    int image_width = 0;
-    int image_height = 0;
-    unsigned char* image_data = stbi_load_from_memory( (const unsigned char*)data.data(), (int)data.size(), &image_width, &image_height, NULL, 4);
-    if ( image_data == NULL )
-        return ImTextureID{};
-
-    GfxTexture* tex;
-    Engine::GraphicsEngine->CreateTexture( &tex );
-
-    auto r = tex->Init( INT2( image_width, image_height ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, image_data, std::string(textureName.data(), textureName.size()) );
-    stbi_image_free( image_data );
-
-    if ( r != XR_SUCCESS ) {
-        return ImTextureID{};
-    }
-    if ( s_previewTextures.size() < textureId+1 ) {
-        s_previewTextures.resize( (textureId+1) * 2 );
-    }
-    s_previewTextures.push_back( {} );
-    s_previewTextures[textureId].reset( tex );
-
-    return GetImTextureIdFromGfx( s_previewTextures[textureId].get() );
-}
-
-static void ImRenderPreview(const std::vector<std::pair<int, std::string_view>>& previewImages, int defaultImage, int hoverImage ) {
-
-    auto texBefore = GetOrLoadTexture( defaultImage, previewImages[defaultImage].second);
-    auto texAfter = GetOrLoadTexture( hoverImage, previewImages[hoverImage].second );
-
-    if ( texBefore && texAfter ) {
-        ImVec2 imageSize( 256, 256 );
-
-        ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-        ImVec2 maxPos = ImVec2( cursorPos.x + imageSize.x, cursorPos.y + imageSize.y );
-
-        bool isHovered = ImGui::IsMouseHoveringRect( cursorPos, maxPos );
-
-        ImTextureID displayTex = isHovered ? texAfter : texBefore;
-        ImGui::Image( displayTex, imageSize );
-    }
-}
-
-static int s_currentTextureId = 0;
-
-void ImGuiShim::RenderSettingsWindowModern() {
-    // Autosized settings by child objects & centered
-    IM_ASSERT( ImGui::GetCurrentContext() != NULL && "Missing Dear ImGui context!" );
-    IMGUI_CHECKVERSION();
-
-    auto windowSize = CurrentResolution;
-    // Get the center point of the screen, then shift the window by 50% of its size in both directions.
-    // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or oversample the game.
-    // Use whatever the resolution is spit out instead.
-    ImVec2 buttonWidth( 275, 0 );
-    auto& style = ImGui::GetStyle();
-
-#ifdef IS_DEV_BUILD
-    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER " - (" BUILD_DATE ")##XX";
-#else
-    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER "##XX";
-#endif
-    ShaderCategory shadersToReload = ShaderCategory::None;
-
-    auto renderDisplayTab = [this]() {
-        if ( ImGui::BeginTabItem( "Display" ) ) {
-            ImGui::PushFont( nullptr, 18 );
-
-            GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-            ImVec2 buttonWidth( 275, 0 );
-
-            for ( size_t i = 0; i < Resolutions.size(); ++i ) {
-                if ( Resolutions[i].first == CurrentResolution ) {
-                    ResolutionState = i;
-                    break;
-                }
-            }
-
-            static std::string resolutionLabel = "Resolution";
-
-            if ( settings.ResolutionScalePercent != 100 ) {
-                std::stringstream ss;
-                ss << "Resolution (scaled: " << (CurrentResolution.x * settings.ResolutionScalePercent / 100)
-                    << " x "
-                    << (CurrentResolution.y * settings.ResolutionScalePercent / 100)
-                    << ")";
-                resolutionLabel = ss.str();
-            }
-
-            ImText( settings.ResolutionScalePercent != 100 ? resolutionLabel.c_str() : "Resolution", buttonWidth ); ImGui::SameLine();
-            if ( ImGui::BeginCombo( "##Resolution", Resolutions[ResolutionState].second.c_str() ) ) {
-                for ( size_t i = 0; i < Resolutions.size(); i++ ) {
-                    bool isSelected = (ResolutionState == i);
-
-                    if ( ImGui::Selectable( Resolutions[i].second.c_str(), isSelected ) ) {
-                        Engine::GraphicsEngine->TriggerResize( Resolutions[i].first );
-                    }
-
-                    if ( isSelected ) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-
-            // D3D12 has the FSR 3 temporal upscaler (D3D12Fsr3.cpp) but no FSR 1 spatial one. Ask the ENGINE,
-            // not settings.GraphicsAPI — that one is the requested API, which a failed init falls back from
-            // without a restart.
-            const bool noFsr1 = Engine::IsD3D12Backend;
-
-            ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
-            if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
-                settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
-                // Display "levels" as typical for FSR
-                constexpr ListItem<int> fsrLevels[] = {
-                    { "Native AA", 100 },
-                    { "High Quality", 83 },
-                    { "Quality", 75 },
-                    { "Balanced", 66 },
-                    { "Performance", 50 },
-                    { "Ultra Performance", 33 },
-                };
-                if ( ImComboBox( "##ResolutionScalePercent", fsrLevels, &settings.ResolutionScalePercent ) ) {
-                    ImGui::EndCombo();
-                }
-                ImGui::SetItemTooltip( "Effective resolution: %d x %d",
-                    CurrentResolution.x * settings.ResolutionScalePercent / 100,
-                    CurrentResolution.y * settings.ResolutionScalePercent / 100
-                );
-            } else {
-                static float previousResolutionScale = static_cast<float>(settings.ResolutionScalePercent);
-                if ( ImGui::SliderFloat( "##ResolutionScalePercent", &previousResolutionScale, 25.0f, 200.0f, "%.0f%%" ) ) {
-                    previousResolutionScale = std::clamp( previousResolutionScale, 25.0f, 200.0f );
-                    settings.ResolutionScalePercent = static_cast<int>(previousResolutionScale);
-                }
-                ImGui::SetItemTooltip( "Effective resolution: %d x %d",
-                    CurrentResolution.x * settings.ResolutionScalePercent / 100,
-                    CurrentResolution.y * settings.ResolutionScalePercent / 100
-                );
-            }
-
-            ImText( "Upscaler", buttonWidth ); ImGui::SameLine();
-            constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
-                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-                { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
-                { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
-            };
-            constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
-                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-                { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
-            };
-            if ( noFsr1
-                ? ImComboBox( "##Upscaler", upscalersNoFsr1, &settings.Upscaler )
-                : ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
-                ImGui::EndCombo();
-            }
-            if ( noFsr1 ) {
-                ImGui::SetItemTooltip( "FSR 1 needs the Direct3D 11 backend." );
-                // A stored FSR 1 choice must survive a switch back to D3D11, so it is NOT written back here —
-                // it simply behaves as "Simple" (D3D12 has no FSR 1 pass) while the combo shows nothing selected.
-            }
-            ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
-            {
-                if ( settings.Upscaler ) {
-                    ImText( "Upscaler sharpening", buttonWidth ); ImGui::SameLine();
-                    if ( ImGui::SliderFloat( "##Upscale sharpening", &settings.SharpenFactor, 0.0f, 1.0f, "%.3f%" ) ) {
-                        settings.SharpenFactor = std::clamp( settings.SharpenFactor, 0.0f, 1.0f );
-                    }
-                }
-
-                ImGui::EndDisabled();
-            }
-
-            ImGui::PopFont();
-            ImGui::EndTabItem();
-        }
-    };
-
-    auto renderGraphicsTab = [this, &shadersToReload]() {
-        if ( ImGui::BeginTabItem( "Graphics" ) ) {
-            ImGui::PushFont( nullptr, 18 );
-
-            GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-
-            constexpr ListItem<int> graphicsPresets[] = {
-                {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
-                {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
-                {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
-                {"High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH},
-                {"Very High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_HIGH},
-            };
-
-            ImGui::TextUnformatted( "Graphics Preset" ); ImGui::SameLine();
-
-            ImGui::PushItemWidth( 250 );
-            if ( ImComboBox( "##GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
-                settings.ApplyGraphicsPreset();
-                } ) ) {
-                ImGui::EndCombo();
-            }
-            ImGui::PopItemWidth();
-            ImGui::Separator();
-
-            if ( ImGui::BeginTable( "##TblGraphics", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_BordersInnerV ) ) {
-                ImGui::TableSetupColumn( "Main Content", ImGuiTableColumnFlags_WidthStretch );
-                ImGui::TableSetupColumn( "Preview", ImGuiTableColumnFlags_WidthFixed, 256.0f );
-
-                {
-                    ImGui::TableNextRow();
-
-                    ImGui::TableNextColumn();
-                    static const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High" };
-                    int ssr = std::clamp<int>(settings.WaterSSRQuality, 0, std::size( ssrLevels ) - 1);
-                    if ( ImGui::SliderInt( "Water Reflections", &ssr, 0, std::size( ssrLevels ) - 1, ssrLevels[ssr], ImGuiSliderFlags_::ImGuiSliderFlags_AlwaysClamp ) ) {
-                        settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
-                        if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
-                            shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
-                        }
-                    }
-
-                    ImGui::TableNextColumn();
-                    static std::vector<std::pair<int, std::string_view>> ssrPreviews = {
-                        {s_currentTextureId++, "SSR_0_Disabled.jpg" },
-                        {s_currentTextureId++, "SSR_1_Low.jpg" },
-                        {s_currentTextureId++, "SSR_2_Medium.jpg" },
-                        {s_currentTextureId++, "SSR_3_High.jpg" },
-                    };
-
-                    int before = ssrPreviews[0].first;
-                    int after = ssrPreviews[3].first;
-                    if ( ssr == 1 ) {
-                        before = ssrPreviews[1].first;
-                        after = ssrPreviews[0].first;
-                    } else if ( ssr == 2 ) {
-                        before = ssrPreviews[2].first;
-                        after = ssrPreviews[0].first;
-                    } else if ( ssr == 3 ) {
-                        before = ssrPreviews[3].first;
-                        after = ssrPreviews[0].first;
-                    }
-
-                    ImRenderPreview( ssrPreviews, before, after );
-                }
-
-                ImGui::EndTable();
-            }
-
-            ImGui::PopFont();
-            ImGui::EndTabItem();
-        }
-    };
-
-    auto renderFeaturesTab = [this]() {
-        if ( ImGui::BeginTabItem( "Features" ) ) {
-            ImGui::PushFont( nullptr, 18 );
-            // TODO: additional features, like vob highlighting in G1
-            
-            ImGui::PopFont();
-            ImGui::EndTabItem();
-        }
-    };
-
-
-    ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
-    ImGui::SetNextWindowSize( ImVec2( 800, 600 ), ImGuiCond_Appearing );
-    if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_NoCollapse ) ) {
-        GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        FixupSettings( settings );
-        if (ImGui:: BeginTabBar("##TabModernSettings") ) {
-            renderDisplayTab();
-            renderGraphicsTab();
-            renderFeaturesTab();
-
-            ImGui::EndTabBar();
-        }
-    }
-
-    ImGui::End();
-
-    if ( shadersToReload != ShaderCategory::None ) {
-        Engine::GraphicsEngine->ReloadShaders( shadersToReload );
-    }
-
-}
-
 void ImGuiShim::RenderSettingsWindow()
 {
     // Autosized settings by child objects & centered
@@ -1066,8 +669,6 @@ void ImGuiShim::RenderSettingsWindow()
     // Use whatever the resolution is spit out instead.
     ImVec2 buttonWidth( 275, 0 );
     auto& style = ImGui::GetStyle();
-
-    // RenderSettingsWindowModern(); -- Disabled while in development ;)
 
     static std::string settingsLabel;
     if ( settingsLabel.empty() && Engine::GraphicsEngine ) {
@@ -1082,14 +683,16 @@ void ImGuiShim::RenderSettingsWindow()
     }
 
     ShaderCategory shadersToReload = ShaderCategory::None;
+    ImVec2 anchorMin{}, anchorMax{};
 
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
     if ( ImGui::Begin( settingsLabel.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        FixupSettings(settings);
+        ImGuiSettings::FixupSettings( settings );
 
         constexpr ListItem<int> graphicsPresets[] = {
             {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
+            {"Very Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_LOW},
             {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
             {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
             {"High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH},
@@ -1263,11 +866,13 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::EndGroup();
         }
+        const float leftColumnHeight = ImGui::GetItemRectSize().y;
 
         ImGui::SameLine();
 
         {
             ImGui::BeginGroup();
+            const float rightColumnTop = ImGui::GetCursorPosY();
             ImGui::PushItemWidth( 250 );
 
             for (size_t i = 0; i < Resolutions.size(); ++i){
@@ -1500,19 +1105,23 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Brightness", buttonWidth ); ImGui::SameLine();
             ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.10f, 3.0f, "%.2f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+            // Right edge of this column, taken from the last widget instead of the window: the window is
+            // AlwaysAutoResize, so placing the hint by window size feeds back into it and grows it every frame.
+            const float columnRight = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
             ImGui::PopItemWidth();
 
-
-            ImGui::Spacing();
-            auto availableSize = ImGui::GetWindowSize();
-            static const char* advancedSettingsHint = "Advanced settings: CTRL+F11 ";
-            auto textSize = ImGui::CalcTextSize( advancedSettingsHint );
-            ImGui::SetCursorPos( ImVec2( (availableSize.x - textSize.x) - 15, availableSize.y - textSize.y - 50 ) );
+            static const char* advancedSettingsHint = "Advanced settings: CTRL+F11";
+            const ImVec2 textSize = ImGui::CalcTextSize( advancedSettingsHint );
+            ImGui::SetCursorPos( ImVec2( columnRight - textSize.x,
+                std::max( rightColumnTop + leftColumnHeight - textSize.y, ImGui::GetCursorPosY() ) ) );
             ImGui::TextUnformatted( advancedSettingsHint );
 
             ImGui::EndGroup();
         }
         
+        ImGui::Checkbox( "Classic Settings Window", &UseClassicSettingsWindow );
+        ImGui::SetItemTooltip( "Untick to switch to the tabbed settings window." );
+
         auto saved = ImGui::Button( "Save Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) );
         auto worldSettingsPath = Engine::GAPI->GetLoadedWorldSettingsPath(false);
         const bool isInWorld = !worldSettingsPath.empty();
@@ -1532,8 +1141,14 @@ void ImGuiShim::RenderSettingsWindow()
             }
             Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
         }
+
+        anchorMin = ImGui::GetWindowPos();
+        anchorMax = ImVec2( anchorMin.x + ImGui::GetWindowWidth(), anchorMin.y + ImGui::GetWindowHeight() );
     }
     ImGui::End();
+
+    // Separate window, so it has to come after this one's End().
+    ImPreview::DrawPinned( anchorMin, anchorMax );
 
     if ( shadersToReload != ShaderCategory::None ) {
         Engine::GraphicsEngine->ReloadShaders( shadersToReload );
@@ -1650,6 +1265,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
                 settings.ApplyDx12Defaults();
             }
+            settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
         }
         ImGui::SetItemTooltip( "Reset all settings to their default values." );
@@ -2242,8 +1858,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             }
             
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
-                ImGui::Checkbox("Enable GPU Driver Extensions", &settings.DebugSettings.FeatureSet.EnableDriverExtensions );
-                ImGui::SetItemTooltip("Allow Driver Extensions (AMD, Nvidia, Intel).\nRequires restart.");
+                FeatureOverrideRow( "Enable GPU Driver Extensions", settings,
+                    settings.DebugSettings.FeatureSet.EnableDriverExtensionsOverride,
+                    settings.DebugSettings.FeatureSet.EnableDriverExtensions,
+                    Engine::GraphicsEngine->GetDeviceCapabilities().DriverExtensions,
+                    "Allow Driver Extensions (AMD, Nvidia, Intel).\nRequires restart." );
 
                 {
                     static const std::vector<ListItem<GothicRendererSettings::E_RendererMode>> rendererModes = {
@@ -2268,10 +1887,18 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ImGui::SetItemTooltip( "Forward+ only: hardware multisample anti-aliasing for opaque geometry. Falls back to the highest supported level if the requested one isn't available. Mutually exclusive with TAA/FSR." );
                 }
                 if (!FeatureLevel10Compatibility){
-                    ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
-                    ImGui::SetItemTooltip("Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).");
+                    FeatureOverrideRow( "Use MDI", settings,
+                        settings.DebugSettings.FeatureSet.UseMDIOverride,
+                        settings.DebugSettings.FeatureSet.UseMDI,
+                        Engine::GraphicsEngine->GetDeviceCapabilities().MultiDrawIndirect,
+                        "Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).\nRequires restart." );
 
-                    ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                    FeatureOverrideRow( "Use Layered Drawing", settings,
+                        settings.DebugSettings.FeatureSet.UseLayeredRenderingOverride,
+                        settings.DebugSettings.FeatureSet.UseLayeredRendering,
+                        Engine::GraphicsEngine->GetDeviceCapabilities().LayeredRendering,
+                        "Render the shadow cascades in one layered pass instead of one draw per cascade." );
+
                     ImGui::Checkbox("Use Tiled Lighting", &settings.EnableTiledLighting );
                     ImGui::SetItemTooltip( "Uses compute shader light culling for point lights. Reduces draw calls and overdraw." );
                 }
@@ -2649,7 +2276,7 @@ void ImGuiShim::RenderAdvancedSettingsWindow()
     auto columnHeight = std::max( 400.0f, static_cast<float>(windowSize.y) / 2.f );
 
     GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    FixupSettings(settings);
+    ImGuiSettings::FixupSettings( settings );
 
     static bool lastStatisticsVisible = m_FrameStatisticsVisible;
     bool forceReappear = false;
