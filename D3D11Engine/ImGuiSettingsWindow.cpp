@@ -103,6 +103,12 @@ namespace {
         return Engine::IsD3D12Backend;
     }
 
+    /** Spells out what the device reported, so an "Auto" row isn't a mystery. */
+    std::string DeviceTooltip( const char* text, bool supported ) {
+        return std::string( text ) + "\n\nAuto follows the device, which reports this as "
+            + ( supported ? "supported." : "unsupported." );
+    }
+
     void ReloadD3D11Shaders( ShaderCategory category ) {
         if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11 ) {
             Engine::GraphicsEngine->ReloadShaders( category );
@@ -633,6 +639,36 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     CheckRow( "Classic Settings Window", &shim.UseClassicSettingsWindow,
         "Switches back to the pre-tab settings window. Everything not listed here lives in\n"
         "the advanced windows (CTRL+F11) either way." );
+
+    // D3D11 only: D3D12 clusters its lights, renders the cascades layered and issues indirect draws
+    // unconditionally, so there is nothing to switch off over there.
+    if ( !IsD3D12() ) {
+        const auto& caps = Engine::GraphicsEngine->GetDeviceCapabilities();
+
+        CheckRow( "Clustered Lighting", &settings.EnableTiledLighting,
+            "Culls point lights in a compute shader instead of drawing each one on its own. Fewer\n"
+            "draw calls and less overdraw - turn it off if lit scenes come out wrong." );
+
+        if ( !caps.FeatureLevel10Only ) {
+            constexpr ListItem<GothicRendererSettings::E_FeatureOverride> featureOverrides[] = {
+                { "Auto", GothicRendererSettings::FEATURE_AUTO },
+                { "Off", GothicRendererSettings::FEATURE_FORCE_OFF },
+                { "On", GothicRendererSettings::FEATURE_FORCE_ON },
+            };
+            auto applyCaps = [&settings, &caps] { settings.ApplyDeviceCapabilities( caps ); };
+
+            ComboRow( "Layered Shadow Rendering", "##LayeredRendering", featureOverrides,
+                &settings.DebugSettings.FeatureSet.UseLayeredRenderingOverride,
+                DeviceTooltip( "Renders every shadow cascade in one layered pass instead of one draw per\n"
+                    "cascade. Force it off if shadows are missing or land in the wrong cascade.",
+                    caps.LayeredRendering ).c_str(), applyCaps );
+
+            ComboRow( "Use MultiDrawIndirect", "##UseMDI", featureOverrides,
+                &settings.DebugSettings.FeatureSet.UseMDIOverride,
+                DeviceTooltip( "Merges instanced draws through a GPU driver extension (AMD, Nvidia, Intel).\n"
+                    "Takes effect on the next restart.", caps.MultiDrawIndirect ).c_str(), applyCaps );
+        }
+    }
 
     ImGui::TextDisabled( "Advanced settings: CTRL+F11" );
 
