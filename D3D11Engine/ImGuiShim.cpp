@@ -846,11 +846,13 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::EndGroup();
         }
+        const float leftColumnHeight = ImGui::GetItemRectSize().y;
 
         ImGui::SameLine();
 
         {
             ImGui::BeginGroup();
+            const float rightColumnTop = ImGui::GetCursorPosY();
             ImGui::PushItemWidth( 250 );
 
             for (size_t i = 0; i < Resolutions.size(); ++i){
@@ -1083,14 +1085,15 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Brightness", buttonWidth ); ImGui::SameLine();
             ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.10f, 3.0f, "%.2f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+            // Right edge of this column, taken from the last widget instead of the window: the window is
+            // AlwaysAutoResize, so placing the hint by window size feeds back into it and grows it every frame.
+            const float columnRight = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
             ImGui::PopItemWidth();
 
-
-            ImGui::Spacing();
-            auto availableSize = ImGui::GetWindowSize();
-            static const char* advancedSettingsHint = "Advanced settings: CTRL+F11 ";
-            auto textSize = ImGui::CalcTextSize( advancedSettingsHint );
-            ImGui::SetCursorPos( ImVec2( (availableSize.x - textSize.x) - 15, availableSize.y - textSize.y - 50 ) );
+            static const char* advancedSettingsHint = "Advanced settings: CTRL+F11";
+            const ImVec2 textSize = ImGui::CalcTextSize( advancedSettingsHint );
+            ImGui::SetCursorPos( ImVec2( columnRight - textSize.x,
+                std::max( rightColumnTop + leftColumnHeight - textSize.y, ImGui::GetCursorPosY() ) ) );
             ImGui::TextUnformatted( advancedSettingsHint );
 
             ImGui::EndGroup();
