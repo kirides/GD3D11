@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "D3D12PipelineState.h"
 #include "D3D12ShaderBackend.h"
+#include "D3D12EngineCommon.h"        // kSceneColorFormat — runtime-resolved, must not be duplicated
 #include <wrl/client.h>
 #include "../Logger.h"
 #include "../GothicGraphicsState.h"   // GothicBlendStateInfo / GothicDepthBufferStateInfo (full defs for BlendKey/DepthKey)
@@ -11,11 +12,8 @@ namespace {
     // Duplicated from the engine TU (namespace-scope constants have internal linkage, so each TU
     // keeps its own copy — no ODR concern). Kept in sync with D3D12GraphicsEngine.cpp.
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
-    constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    // Motion-vector + octahedral-normal G-buffer targets written by the *GBuf depth-prepass PSOs.
-    // Kept in sync with D3D12EngineCommon.h's kVelocityFormat / kGBufferNormalFormat.
-    constexpr DXGI_FORMAT kVelocityFormat = DXGI_FORMAT_R16G16_FLOAT;
-    constexpr DXGI_FORMAT kGBufferNormalFormat = DXGI_FORMAT_R16G16_FLOAT;
+    // kSceneColorFormat/kVelocityFormat/kGBufferNormalFormat deliberately have no copy here — the first
+    // is resolved at runtime, so every TU must read the single D3D12EngineCommon.h definition.
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
     constexpr const char* Shadermodel_CS = "cs_6_6";

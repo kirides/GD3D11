@@ -209,7 +209,10 @@ inline void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps )
 // HDR scene-color format: the 3D passes accumulate lighting here in linear-ish FLOAT (values may
 // exceed 1.0), then the tonemap resolve writes the swapchain. Shared by the engine-core target
 // creation and the post-FX (bloom/luminance) passes that sample it.
-inline constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+// Resolved once during Init from RendererSettings.CompressBackBuffer (R11G11B10 halves the cost of
+// every resolution-sized HDR target) and never written again — each scene PSO bakes it into
+// RTVFormats[0], so changing it needs a restart, same contract as D3D12PipelineState::DisplayFormat.
+inline DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 // Display-buffer format used ONLY when real HDR scanout is active. The tonemap resolve, Gothic's 2D UI, SMAA,
 // the sharpen pass and the ImGui overlay then composite into an m_HdrDisplay of this format instead of writing

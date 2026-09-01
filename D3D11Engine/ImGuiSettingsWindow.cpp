@@ -638,11 +638,23 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     ImGui::SeparatorText( "Memory" );
 
-    if ( CheckRow( "Compress Backbuffer", &settings.CompressBackBuffer,
-        "Halves the backbuffer's memory cost at a small quality loss. This is a 32-bit\n"
-        "process, so on a large resolution it can be the difference between running and\n"
-        "running out of address space." ) ) {
-        Engine::GAPI->UpdateCompressBackBuffer();
+    {
+        // D3D12 bakes the scene-colour format into every PSO, so it only reads this at startup.
+        const bool d3d12 = IsD3D12();
+        const bool uavOk = Engine::GraphicsEngine->GetDeviceCapabilities().TypedUAVLoadAdditionalFormats;
+        std::string tip =
+            "Halves the backbuffer's memory cost at a small quality loss. This is a 32-bit\n"
+            "process, so on a large resolution it can be the difference between running and\n"
+            "running out of address space.";
+        if ( d3d12 ) {
+            tip += uavOk ? "\n\nTakes effect after a restart."
+                         : "\n\nUnavailable: this device can't use R11G11B10 as a typed UAV.";
+        }
+        ImGui::BeginDisabled( d3d12 && !uavOk );
+        if ( CheckRow( "Compress Backbuffer", &settings.CompressBackBuffer, tip.c_str() ) ) {
+            Engine::GAPI->UpdateCompressBackBuffer();
+        }
+        ImGui::EndDisabled();
     }
 
     CheckRow( "Optimize Meshes On Load", &settings.EnableMeshOptimization,

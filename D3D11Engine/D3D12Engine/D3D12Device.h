@@ -39,6 +39,10 @@ public:
     /** True if a vertex shader can write SV_RenderTargetArrayIndex without geometry-shader emulation. */
     bool LayeredRenderingSupported() const { return m_LayeredRenderingSupported; }
 
+    /** True if the device reports D3D12_OPTIONS.TypedUAVLoadAdditionalFormats, which is what makes
+        R11G11B10_FLOAT usable as a typed UAV (the compressed scene-colour format). */
+    bool TypedUAVLoadAdditionalFormatsSupported() const { return m_TypedUAVLoadAdditionalFormats; }
+
     ID3D12Device*       GetDevice()      const { return m_Device.Get(); }
     ID3D12CommandQueue* GetDirectQueue() const { return m_DirectQueue.Get(); }
     ID3D12CommandQueue* GetCopyQueue()   const { return m_CopyQueue.Get(); }
@@ -54,4 +58,5 @@ private:
     std::string m_DeviceDescription;
     bool m_EnhancedBarriersSupported = false;
     bool m_LayeredRenderingSupported = false;
+    bool m_TypedUAVLoadAdditionalFormats = false;
 };

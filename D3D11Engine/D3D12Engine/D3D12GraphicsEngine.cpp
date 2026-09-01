@@ -98,6 +98,7 @@ XRESULT D3D12GraphicsEngine::Init() {
     // Gated at adapter selection (DeviceSupportsBindless), so a device that got this far has it.
     m_DeviceCapabilities.BindlessResources = true;
     m_DeviceCapabilities.EnhancedBarriers = m_Device.EnhancedBarriersSupported();
+    m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = m_Device.TypedUAVLoadAdditionalFormatsSupported();
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 
     if ( !CreateAllocators() ) {
@@ -129,6 +130,23 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;
     }
+    // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
+    // R11G11B10 drops alpha (nothing blends against destination alpha) but is an optional typed-UAV
+    // format, and the TAA/DoF/bloom compute passes bind the scene colour as a UAV.
+    {
+        auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( rs.CompressBackBuffer ) {
+            if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
+                kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
+                LogInfo() << "D3D12: compressed scene colour (R11G11B10_FLOAT).";
+            } else {
+                LogWarn() << "D3D12: CompressBackBuffer requested but the device lacks "
+                             "TypedUAVLoadAdditionalFormats; keeping R16G16B16A16_FLOAT.";
+                rs.CompressBackBuffer = false;
+            }
+        }
+    }
+
     // Must run BEFORE any Create*(): it decides m_Pipelines.DisplayFormat, which every display-space PSO
     // (2D/UI, video, preview, lines, tonemap, SMAA's final pass, sharpen) bakes into its RTV format. That is
     // also why the HDR toggle needs a restart rather than taking effect on the next resize.
@@ -1195,7 +1213,8 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	// this R16F target so lighting can exceed 1.0 (bright sun + stacked additive point lights keep their detail
 	// instead of clipping to white). ResolveSceneToBackBuffer then tonemaps it into the swapchain. Resolution-
 	// sized → (re)created here on init and every resize (RTV heap + SRV slot persist; only the resource + views
-	// are rebuilt). DEFAULT-heap GPU memory (64bpp), so it barely touches the 32-bit CPU address space.
+	// are rebuilt). DEFAULT-heap GPU memory (64bpp, or 32 when CompressBackBuffer picked R11G11B10 at init),
+	// so it barely touches the 32-bit CPU address space.
 	if ( size.x <= 0 || size.y <= 0 ) return false;
 	ID3D12Device* device = m_Device.GetDevice();
 	if ( !device || !m_RtvHeap ) return false;
@@ -1222,7 +1241,8 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 		LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
 		return false;
 	}
-	m_SceneColor->SetName( L"SceneColorHDR(R16F)" );
+	m_SceneColor->SetName( kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
+		? L"SceneColorHDR(R11G11B10)" : L"SceneColorHDR(R16F)" );
 	m_SceneColorInPixelState = false;
 
 	// RTV in the extra heap slot (index kBackBufferMax, past the swapchain RTVs - the heap always reserves

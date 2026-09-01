@@ -26,4 +26,7 @@ struct GraphicsDeviceCapabilities {
     bool BindlessResources = false;
     /** D3D12: D3D12_OPTIONS12.EnhancedBarriersSupported. */
     bool EnhancedBarriers = false;
+    /** R11G11B10_FLOAT works as a typed UAV, which is what the compressed scene-colour format needs
+        (D3D12: D3D12_OPTIONS.TypedUAVLoadAdditionalFormats; D3D11 has always relied on it). */
+    bool TypedUAVLoadAdditionalFormats = false;
 };
