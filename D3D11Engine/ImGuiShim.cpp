@@ -1725,8 +1725,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SetItemTooltip( "Also remember already-optimized meshes in RAM for the duration of the current\n"
             "world load, so re-converting the same mesh twice in one load (shared VOB visuals,\n"
             "e.g.) skips the disk read too. Never kept beyond one load regardless of this setting,\n"
-            "to avoid growing unbounded over a long play session in this 32-bit process. Takes\n"
-            "effect on the next world load." );
+            "to avoid growing unbounded over a long play session in this 32-bit process, and capped\n"
+            "at a fixed RAM budget even within one load so a single huge world can't do the same.\n"
+            "Takes effect on the next world load." );
         ImGui::EndDisabled();
 
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );

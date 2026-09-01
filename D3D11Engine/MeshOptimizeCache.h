@@ -14,6 +14,9 @@
     play session, not one load, is what exhausts the 32-bit address space. Disarming clears the map so
     the memory is actually freed.
 
+    Per-load scoping alone isn't enough for one huge world, so kMemoryBudgetBytes below also caps the
+    memory tier's resident size; past that, entries just aren't memoized (the unbounded disk tier still is).
+
     kFormatVersion guards the on-disk record layout, same idea as kDxbcCacheArgsRevision in
     D3D11ShaderManager.cpp - bump it whenever MeshShadowIndexBuilder.h/MeshLodBuilder.h/meshoptimizer
     change enough to invalidate old rows; stale rows are just orphaned, never misread. */
@@ -52,11 +55,21 @@ namespace MeshOptimizeCache {
         std::vector<VERTEX_INDEX> LodIndices;
     };
 
+    inline size_t EntryBytes( const Entry& e ) {
+        return e.Vertices.size() * sizeof( ExVertexStruct ) +
+            ( e.Indices.size() + e.ShadowIndices.size() + e.LodIndices.size() ) * sizeof( VERTEX_INDEX );
+    }
+
     // Worker-pool concurrent: mesh conversion batches jobs across threads.
     inline std::mutex g_Mutex;
     inline gtl::flat_hash_map<uint64_t, Entry> g_Cache;
     inline std::atomic<uint32_t> g_MemHits{ 0 }, g_DiskHits{ 0 }, g_Misses{ 0 };
     inline std::atomic<bool> g_MemoryArmed{ true };
+
+    // Resident-byte cap for the memory tier - see the header comment.
+    constexpr size_t kMemoryBudgetBytes = 512ull << 20;   // 512 MiB
+    inline size_t g_CacheBytes = 0;   // guarded by g_Mutex, not atomic - always touched under lock below
+    inline std::atomic<bool> g_BudgetCapLogged{ false };
 
     // Arms/disarms the memory tier for the span of one world load - see the header comment. Disarming
     // clears the map so the memory is actually released, not just stopped from growing.
@@ -65,7 +78,24 @@ namespace MeshOptimizeCache {
         if ( !on ) {
             std::scoped_lock lock( g_Mutex );
             g_Cache.clear();
+            g_CacheBytes = 0;
+            g_BudgetCapLogged = false;
         }
+    }
+
+    // Inserts into g_Cache only if under kMemoryBudgetBytes; caller already holds g_Mutex. Logs once
+    // when the budget first gets hit, per CLAUDE.md's rule on silent caps.
+    inline void TryInsertLocked( uint64_t key, Entry&& e ) {
+        const size_t bytes = EntryBytes( e );
+        if ( g_CacheBytes + bytes > kMemoryBudgetBytes ) {
+            if ( !g_BudgetCapLogged.exchange( true ) ) {
+                LogInfo() << "Mesh optimize cache: memory tier hit its " << ( kMemoryBudgetBytes >> 20 )
+                    << " MiB budget - further entries this load are disk-only/recomputed, not memoized.";
+            }
+            return;
+        }
+        g_CacheBytes += bytes;
+        g_Cache.emplace( key, std::move( e ) );
     }
 
     inline bool MemoryTierActive( int flags ) {
@@ -195,7 +225,7 @@ namespace MeshOptimizeCache {
                 if ( lodIndices ) *lodIndices = disk.LodIndices;
                 if ( MemoryTierActive( flags ) ) {
                     std::scoped_lock lock( g_Mutex );
-                    g_Cache.emplace( key, std::move( disk ) );
+                    TryInsertLocked( key, std::move( disk ) );
                 }
                 ++g_DiskHits;
                 ReportStats();
@@ -230,7 +260,7 @@ namespace MeshOptimizeCache {
 
         if ( MemoryTierActive( flags ) ) {
             std::scoped_lock lock( g_Mutex );
-            g_Cache.emplace( key, std::move( e ) );
+            TryInsertLocked( key, std::move( e ) );
         }
     }
 

@@ -44,11 +44,12 @@ SqliteBlobStore::SqliteBlobStore( const std::string& path ) {
         return;
     }
 
-    // WAL: a reader on another thread (once it has m_mutex) never blocks behind a writer mid-transaction.
-    // NORMAL sync: this is a cache, not a ledger - losing the last few writes to a power cut is exactly
-    // as safe as never having cached them, and trading that away is the entire point of WAL+NORMAL.
+    // WAL+NORMAL: readers never block on an in-progress writer, and losing the last few writes to a
+    // power cut is fine for a cache. mmap_size=0: pin this explicitly - SQLITE_MAX_MMAP_SIZE is ~2GiB
+    // on Windows, too large to risk in a 32-bit process's address space.
     if ( !Exec( db, "PRAGMA journal_mode=WAL;" ) ||
         !Exec( db, "PRAGMA synchronous=NORMAL;" ) ||
+        !Exec( db, "PRAGMA mmap_size=0;" ) ||
         !Exec( db, "CREATE TABLE IF NOT EXISTS blobs (key INTEGER PRIMARY KEY, data BLOB NOT NULL);" ) ) {
         sqlite3_close( db );
         return;
