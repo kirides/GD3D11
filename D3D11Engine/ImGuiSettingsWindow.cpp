@@ -29,9 +29,11 @@ namespace {
     }
 
     /** True while the mouse is over the group that just ended - i.e. over the whole row, label
-        included. Ignored while a combo popup is open, which hints its own hovered entry instead. */
+        included. NoPopupHierarchy is what keeps a row *behind* an open combo popup from claiming the
+        hover (and overriding the entry the popup hinted) - without it ImGui counts the popup as a
+        child of this window, and IsMouseHoveringRect knows nothing about what is drawn on top. */
     bool RowHovered() {
-        return ImGui::IsWindowHovered( ImGuiHoveredFlags_ChildWindows )
+        return ImGui::IsWindowHovered( ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_NoPopupHierarchy )
             && ImGui::IsMouseHoveringRect( ImGui::GetItemRectMin(), ImGui::GetItemRectMax() );
     }
 
@@ -418,7 +420,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
               "Only the world geometry casts shadows from torches and spells." },
             { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC },
             { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL,
-              "Very expensive. Don't use unless you encounter visual bugs." },
+              "Very expensive. Don't use unless you encounter visual bugs.", "EPointLightShadowMode_PLS_UPDATE_DYNAMIC" },
         };
         ComboRow( "Point Light Shadows", "##PointLightShadows", pointLightShadows,
             &settings.EnablePointlightShadows );
