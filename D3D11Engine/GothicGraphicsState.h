@@ -840,7 +840,7 @@ struct GothicRendererSettings {
         DrawThreaded = false;
         EnableMeshOptimization = true;
         EnableShadowIndexBuffers = true;
-        MeshOptimizeCacheFlags = MOC_DISK;
+        MeshOptimizeCacheFlags = MOC_DISK | MOC_MEMORY;
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
