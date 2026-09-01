@@ -620,6 +620,11 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     CheckRow( "Allow Numpad Keys", &settings.AllowNumpadKeys,
         "Lets the mod's debug hotkeys on the numpad through to the engine." );
 
+    ImGui::SeparatorText( "Performance" );
+
+    CheckRow( "Threaded Shadow Culling", &settings.ThreadedShadowCulling,
+        "Culls the shadow cascades on worker threads instead of the render thread." );
+
     ImGui::SeparatorText( "Memory" );
 
     if ( CheckRow( "Compress Backbuffer", &settings.CompressBackBuffer,
