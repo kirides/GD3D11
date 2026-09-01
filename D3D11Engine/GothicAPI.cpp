@@ -4450,6 +4450,9 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawFlags.CollectIndoorVobs = true;
     ctx.drawFlags.CollectMobs = true;
     ctx.drawFlags.CollectLights = true;
+    // ~15m: a torch or campfire the player stands next to stays lit when he turns around.
+    constexpr float kKeepCloseLightsRange = 1500.0f;
+    ctx.keepLightsWithinRange = kKeepCloseLightsRange;
 
     // This overload is the main camera pass of both backends, and the only place portal culling
     // applies: shadow passes need casters from rooms the player cannot see into.
@@ -6989,6 +6992,8 @@ static void CollectLeafVobs(
     const float vobOutdoorSmallDistSq = ctx.drawDistancesSq.OutdoorVobsSmall;
     const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
     const float visualFXDrawRadiusSq = ctx.drawDistancesSq.VisualFX;
+    // 0 for every pass that doesn't want the close-light exemption, which makes the test below a no-op.
+    const float keepCloseLightsDistSq = ctx.keepLightsWithinRange * ctx.keepLightsWithinRange;
     const XMVECTOR cameraPosition = XMLoadFloat3( &ctx.cameraPosition );
     const bool collectIndoorVobs = ctx.drawFlags.CollectIndoorVobs;
     const bool collectMobs = ctx.drawFlags.CollectMobs;
@@ -7131,8 +7136,9 @@ static void CollectLeafVobs(
             if ( !visitor->Visit( vi ) ) continue;
 
 
-            // Cull any lights that are not visible even though they are in range
-            if ( clipResult != ContainmentType::CONTAINS) {
+            // Cull any lights that are not visible even though they are in range. Lights inside the
+            // close sphere skip the test and are kept; it reuses the range test's own distance.
+            if ( clipResult != ContainmentType::CONTAINS && lightCameraDistSq >= keepCloseLightsDistSq ) {
                 BoundingSphere lightSphere;
                 lightSphere.Center = vob->GetPositionWorld();
                 lightSphere.Radius = lightRange;

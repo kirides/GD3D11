@@ -55,6 +55,10 @@ struct RndCullContext {
         it here rather than at draw time also skips its instance upload and indirect command. */
     float minVobSize = 0.0f;
 
+    /** Keep point lights within this many units of the camera even when their sphere misses the frustum,
+        so a light the player turns away from doesn't blink out and surrender its shadow cube. 0 = off. */
+    float keepLightsWithinRange = 0.0f;
+
     struct
     {
         float OutdoorVobs;
