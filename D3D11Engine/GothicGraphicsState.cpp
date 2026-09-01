@@ -17,12 +17,13 @@ static void ApplyFeatureLevel10Downgrades( GothicRendererSettings& s ) {
 // The shadow half of a graphics preset, split out so the settings window can offer a single shadow
 // quality knob without duplicating the numbers.
 static void ApplyShadowPresets( GothicRendererSettings& s, GothicRendererSettings::E_GraphicsPreset preset ) {
+    s.DebugSettings.FeatureSet.UseShadowAtlas = false; // default atlas to OFF. only use if FL_10 is required. 
+
     switch ( preset ) {
     case GothicRendererSettings::GRAPHICS_VERY_LOW:
     case GothicRendererSettings::GRAPHICS_LOW:
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 2;
-        s.DebugSettings.FeatureSet.UseShadowAtlas = true;
         s.ShadowMapSize = preset == GothicRendererSettings::GRAPHICS_VERY_LOW ? 512 : 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
         s.ShadowSoftness = 2.00f;
@@ -33,7 +34,6 @@ static void ApplyShadowPresets( GothicRendererSettings& s, GothicRendererSetting
     case GothicRendererSettings::GRAPHICS_MEDIUM:
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
-        s.DebugSettings.FeatureSet.UseShadowAtlas = true;
         s.ShadowMapSize = 2048;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 2.00f;
@@ -44,7 +44,6 @@ static void ApplyShadowPresets( GothicRendererSettings& s, GothicRendererSetting
     case GothicRendererSettings::GRAPHICS_HIGH:
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
-        s.DebugSettings.FeatureSet.UseShadowAtlas = false;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 2.00f;
@@ -55,7 +54,6 @@ static void ApplyShadowPresets( GothicRendererSettings& s, GothicRendererSetting
     case GothicRendererSettings::GRAPHICS_VERY_HIGH:
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 4;
-        s.DebugSettings.FeatureSet.UseShadowAtlas = false;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
