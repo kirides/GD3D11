@@ -44,20 +44,20 @@ namespace {
         s_attempted = true;
 
         if ( !LoadLibraryA( "dxil.dll" ) ) {
-            LogWarn() << "D3D12: dxil.dll not found; DXIL shaders would fail validation outside "
-                          "developer mode. D3D12 shader compilation is unavailable.";
+            Logging::Err( "D3D12: dxil.dll not found; DXIL shaders would fail validation outside "
+                "developer mode. D3D12 shader compilation is unavailable." );
             return nullptr;
         }
 
         HMODULE hDxCompiler = LoadLibraryA( "dxcompiler.dll" );
         if ( !hDxCompiler ) {
-            LogWarn() << "D3D12: dxcompiler.dll not found. D3D12 shader compilation is unavailable.";
+            Logging::Err( "D3D12: dxcompiler.dll not found. D3D12 shader compilation is unavailable." );
             return nullptr;
         }
 
         s_pfn = reinterpret_cast<PFN_DXC_CREATE_INSTANCE>( GetProcAddress( hDxCompiler, "DxcCreateInstance" ) );
         if ( !s_pfn ) {
-            LogWarn() << "D3D12: dxcompiler.dll is missing the DxcCreateInstance export. D3D12 shader compilation is unavailable.";
+            Logging::Err( "D3D12: dxcompiler.dll is missing the DxcCreateInstance export. D3D12 shader compilation is unavailable." );
         }
         return s_pfn;
     }
@@ -304,7 +304,7 @@ namespace {
 
         if ( FAILED( dxcCreateInstance( kClsidDxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ||
             FAILED( dxcCreateInstance( kClsidDxcUtils, IID_PPV_ARGS( dxcUtils.GetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: Failed to create DXC compiler instances.";
+            Logging::Err( "D3D12: failed to create the DXC compiler instances." );
             return false;
         }
 
@@ -502,9 +502,9 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
 
 void D3D12ShaderBackend::LogAndResetCacheStats( const char* context ) {
     if ( g_CacheHits == 0 && g_CacheMisses == 0 ) return;
-    LogInfo() << "D3D12 shader cache (" << ( context ? context : "" ) << "): " << g_CacheHits
-        << " reused from disk, " << g_CacheMisses << " compiled."
-        << ( g_CacheHits == 0 ? " (first run for these shaders, or dxcompiler.dll changed)" : "" );
+    Logging::Inf( "D3D12 shader cache ({}): {} reused from disk, {} compiled.{}", context ? context : "",
+        g_CacheHits, g_CacheMisses,
+        g_CacheHits == 0 ? " (first run for these shaders, or dxcompiler.dll changed)" : "" );
     g_CacheHits = 0;
     g_CacheMisses = 0;
 }

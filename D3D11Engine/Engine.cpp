@@ -66,12 +66,12 @@ namespace Engine {
             } else {
                 SAFE_DELETE( GraphicsEngine );
                 
-                LogWarn() << "The Direct3D 12 backend failed to initialize. Falling back to Direct3D 11.";
+                Logging::Wrn( "The Direct3D 12 backend failed to initialize. Falling back to Direct3D 11." );
                 
                 std::string deviceDesc, reason;
                 if (!D3D12Device::IsAvailable( &deviceDesc, &reason ))
                 {
-                    LogWarn() << "Direct3D 12 was requested but is unavailable: " << reason << ". Using Direct3D 11. GPU: " << deviceDesc;
+                    Logging::Wrn( "Direct3D 12 was requested but is unavailable: {}. Using Direct3D 11. GPU: {}", reason, deviceDesc );
                 }
             }
         }
@@ -122,6 +122,9 @@ namespace Engine {
         // from DllMain(DLL_PROCESS_DETACH) under the loader lock - not a place to bet that outcome on
         // function-local statics' destructors still running cleanly. See SqliteBlobStore::CloseAll().
         SqliteBlobStore::CloseAll();
+        
+        // Drains the async log queue on this thread; never joins the worker (we are under the loader lock).
+        Logging::Shutdown();
 
         // TODO: remove this hack in the future, just a temporary workaround to fix crash on shutdown with the need to kill process via TaskManager
         // Just killing before GraphicsEngine is not enough.

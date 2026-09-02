@@ -58,9 +58,9 @@ namespace {
                     if ( SUCCEEDED( hr ) && sdkConfig ) {
                         hr = sdkConfig->CreateDeviceFactory( agilitySdkVersion, agilitySdkDeployPath, IID_PPV_ARGS(&agilityDeviceFactory));
                         if ( !SUCCEEDED( hr ) ) {
-                            LogWarn() << "Failed to initialize agility SDK (version " << agilitySdkVersion << ", result: " << hr << " ); using system D3D12.";
+                            Logging::Wrn( "D3D12: failed to initialize the Agility SDK (version {}, result 0x{:08X}); using the system D3D12.", agilitySdkVersion, static_cast<uint32_t>( hr ) );
                         } else {
-                            LogInfo() << "D3D12 Agility SDK " << agilitySdkVersion << " activated from " << agilitySdkDeployPath;
+                            Logging::Inf( "D3D12 Agility SDK {} activated from {}", agilitySdkVersion, agilitySdkDeployPath );
 
                             // CreateDeviceFactory only redirects devices made through the factory — the
                             // process-global runtime (and with it every exported free function) stays on
@@ -75,16 +75,16 @@ namespace {
                             // runs once, from the first IsAvailable()/Init() call.
                             HRESULT applyHr = agilityDeviceFactory->ApplyToGlobalState();
                             if ( FAILED( applyHr ) ) {
-                                LogWarn() << "D3D12: ID3D12DeviceFactory::ApplyToGlobalState failed (0x" << std::hex
-                                          << applyHr << std::dec << "); the exported root signature serializer stays on "
-                                          "the OS runtime, which may reject SM6.6 bindless root signatures.";
+                                Logging::Wrn( "D3D12: ID3D12DeviceFactory::ApplyToGlobalState failed (0x{:08X}); the exported "
+                                    "root signature serializer stays on the OS runtime, which may reject SM6.6 bindless "
+                                    "root signatures.", static_cast<uint32_t>( applyHr ) );
                             }
                         }
                     }
                 }
             }
         } else {
-            LogInfo() << "D3D12 Agility SDK core not deployed; using the system D3D12 runtime.";
+            Logging::Inf( "D3D12 Agility SDK core not deployed; using the system D3D12 runtime." );
         }
     }
 
@@ -231,6 +231,7 @@ namespace {
                 adapter->GetDesc1( &desc );
                 if ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) continue;
                 if ( AdapterSupportsD3D12( createDevice, adapter.Get(), outReason ) ) {
+                    Logging::Dbg( "D3D12: adapter {} ({}) accepted by GPU preference.", i, DescriptionToNarrow( desc ) );
                     outAdapter = adapter;
                     outDescription = DescriptionToNarrow( desc );
                     if ( outReason ) outReason->clear();   // drop any earlier candidate's rejection reason
@@ -246,11 +247,17 @@ namespace {
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1( &desc );
             if ( desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ) continue;
-            if ( !AdapterSupportsD3D12( createDevice, adapter.Get(), outReason ) ) continue;
+            if ( !AdapterSupportsD3D12( createDevice, adapter.Get(), outReason ) ) {
+                Logging::Dbg( "D3D12: adapter {} ({}) rejected: {}.", i, DescriptionToNarrow( desc ),
+                    outReason ? outReason->c_str() : "unsupported" );
+                continue;
+            }
 
             uint64_t rating = static_cast<uint64_t>( desc.DedicatedVideoMemory );
             if ( desc.VendorId == 0x10DE ) rating += 0x200000000; // NVIDIA
             else if ( desc.VendorId == 0x1002 ) rating += 0x100000000; // AMD > Intel IGPU
+            Logging::Dbg( "D3D12: adapter {} ({}) rated 0x{:X}, {} MiB dedicated VRAM.", i, DescriptionToNarrow( desc ),
+                rating, desc.DedicatedVideoMemory / (1024ull * 1024ull) );
             candidates.emplace( rating, adapter );
             descriptions.emplace( rating, DescriptionToNarrow( desc ) );
         }
@@ -301,7 +308,7 @@ bool D3D12Device::Init() {
     
     PFN_D3D12_CREATE_DEVICE createDevice = LoadD3D12CreateDevice();
     if ( !createDevice ) {
-        LogWarn() << "D3D12Device::Init: d3d12.dll / D3D12CreateDevice unavailable.";
+        Logging::Wrn( "D3D12Device::Init: d3d12.dll / D3D12CreateDevice unavailable." );
         return false;
     }
 
@@ -317,7 +324,7 @@ bool D3D12Device::Init() {
         ComPtr<ID3D12Debug> debug;
         if ( DEBUG_D3D11_ENABLED && getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
             debug->EnableDebugLayer();
-            LogInfo() << "D3D12 debug layer enabled.";
+            Logging::Inf( "D3D12 debug layer enabled." );
         }
 
         ComPtr<ID3D12Debug1> debug1;
@@ -341,23 +348,23 @@ bool D3D12Device::Init() {
     }
 
     if ( !CreateFactory( m_Factory ) ) {
-        LogWarn() << "D3D12Device::Init: failed to create DXGI factory.";
+        Logging::Wrn( "D3D12Device::Init: failed to create the DXGI factory." );
         return false;
     }
 
     std::string rejectReason;
     if ( !SelectAdapter( m_Factory.Get(), createDevice, m_Adapter, m_DeviceDescription, &rejectReason ) ) {
-        LogWarn() << "D3D12Device::Init: no usable GPU found ("
-                  << ( rejectReason.empty() ? "no Feature-Level-12_0-capable GPU" : rejectReason.c_str() ) << ").";
+        Logging::Wrn( "D3D12Device::Init: no usable GPU found ({}).",
+            rejectReason.empty() ? "no Feature-Level-12_0-capable GPU" : rejectReason.c_str() );
         return false;
     }
 
     HRESULT hr = createDevice( m_Adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS( m_Device.ReleaseAndGetAddressOf() ) );
     if ( FAILED( hr ) ) {
-        LogWarn() << "D3D12Device::Init: D3D12CreateDevice failed with code 0x" << std::hex << hr << ".";
+        Logging::Wrn( "D3D12Device::Init: D3D12CreateDevice failed with code 0x{:08X}.", static_cast<uint32_t>( hr ) );
         return false;
     }
-    LogInfo() << "D3D12 device created on: " << m_DeviceDescription.c_str();
+    Logging::Inf( "D3D12 device created on: {}", m_DeviceDescription );
 
     m_LayeredRenderingSupported = DeviceSupportsLayeredRendering( m_Device.Get() );
 
@@ -369,9 +376,9 @@ bool D3D12Device::Init() {
     std::string barrierReason;
     m_EnhancedBarriersSupported = DeviceSupportsEnhancedBarriers( m_Device.Get(), &barrierReason );
     if ( m_EnhancedBarriersSupported ) {
-        LogInfo() << "D3D12: enhanced barriers supported.";
+        Logging::Inf( "D3D12: enhanced barriers supported." );
     } else {
-        LogInfo() << "D3D12: enhanced barriers unavailable (" << barrierReason.c_str() << "); using legacy transitions.";
+        Logging::Inf( "D3D12: enhanced barriers unavailable ({}); using legacy transitions.", barrierReason );
     }
 
     // Direct (graphics) queue
@@ -380,7 +387,7 @@ bool D3D12Device::Init() {
     directDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     hr = m_Device->CreateCommandQueue( &directDesc, IID_PPV_ARGS( m_DirectQueue.ReleaseAndGetAddressOf() ) );
     if ( FAILED( hr ) ) {
-        LogWarn() << "D3D12Device::Init: failed to create the direct command queue (0x" << std::hex << hr << ").";
+        Logging::Wrn( "D3D12Device::Init: failed to create the direct command queue (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
 
@@ -390,7 +397,7 @@ bool D3D12Device::Init() {
     copyDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     hr = m_Device->CreateCommandQueue( &copyDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) );
     if ( FAILED( hr ) ) {
-        LogWarn() << "D3D12Device::Init: failed to create the copy command queue (0x" << std::hex << hr << ").";
+        Logging::Wrn( "D3D12Device::Init: failed to create the copy command queue (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
 
