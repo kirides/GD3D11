@@ -7254,7 +7254,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         for ( auto [_, sm] : Engine::GAPI->GetStaticMeshVisuals() ) {
-            sm->Instances.clear();
+            sm->StartNewFrame();
         }
     }
 
@@ -7982,7 +7982,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                     }
                     if ( clear ) {
-                        cv.Visual->Instances.clear();
+                        cv.Visual->StartNewFrame();
                     }
                 }
             }
@@ -10087,9 +10087,9 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
 
     float UIScale = 1.0f;
     static int savedBarSize = -1;
-    if ( oCGame::GetGame() ) {
+    if ( auto game = oCGame::GetGame(); game && game->swimBar ) {
         if ( savedBarSize == -1 ) {
-            savedBarSize = oCGame::GetGame()->swimBar->psizex;
+            savedBarSize = game->swimBar->psizex;
         }
         UIScale = static_cast<float>(savedBarSize) / 180.f;
     }

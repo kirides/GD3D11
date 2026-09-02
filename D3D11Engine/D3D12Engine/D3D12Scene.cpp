@@ -2456,7 +2456,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
 	// Done here (not in DrawVobsInstanced) so it runs even when DrawVOBs is off and that pass early-outs.
 	for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
-		if ( visual ) visual->Instances.clear();
+		if ( visual ) {
+            visual->StartNewFrame();
+		}
 	}
 
 	// Motion-vector history: snapshot every drawn vob's world matrix and every animated skeletal's bone pose so
