@@ -17,7 +17,13 @@ public:
     zSTRING(const zSTRING& other)
         : zSTRING(other.ToChar()) {}
 
-    zSTRING& operator=(const zSTRING& other) = delete;
+    zSTRING& operator=( const zSTRING& other ) {
+        return *reinterpret_cast<zSTRING*( __fastcall* )(zSTRING*, int, const zSTRING*)>(GothicMemoryLocations::zSTRING::OperatorAssignString)(this, 0, &other);
+    }
+
+    zSTRING& operator=( const char* str ) {
+        return *reinterpret_cast<zSTRING*( __fastcall* )(zSTRING*, int, const char*)>(GothicMemoryLocations::zSTRING::OperatorAssignCharPtr)(this, 0, str);
+    }
 
     ~zSTRING() {
         reinterpret_cast<void( __fastcall* )(zSTRING*)>(GothicMemoryLocations::zSTRING::DestructorCharPtr)(this);

@@ -653,6 +653,8 @@ struct GothicMemoryLocations {
         static const unsigned int ConstructorEmptyPtr = 0x00402AF0;
         static const unsigned int ConstructorCharPtr = 0x004010C0;
         static const unsigned int DestructorCharPtr = 0x00401160;
+        static const unsigned int OperatorAssignCharPtr = 0x004CFAF0;
+        static const unsigned int OperatorAssignString = 0x0059CEB0;
     };
 
     struct zCMaterial {
