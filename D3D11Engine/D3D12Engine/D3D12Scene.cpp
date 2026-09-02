@@ -345,25 +345,31 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // shadow slots and invalidate any whose light range the new VOB reaches, forcing a one-time static re-render
     // next frame (staticValid=false → renderStatic). Slots are empty during world load (owner==nullptr) so this is
     // a no-op then; the margin mirrors the static-VOB gather's cull (ps.range + visual->MeshSize * 0.5f).
-    // Gated on StaticVob: items are always StaticVob==false (even ones just lying around, since oItem clears it
-    // unconditionally), and an NPC eating/drinking spawns/despawns one constantly -- without this gate that
-    // forced a full re-render of every nearby cached slot, causing a visible one-frame shadow blackout.
-    if ( vi->Vob && vi->VisualInfo && vi->Vob->GetFlags().StaticVob )
+    // Gated on "not riding an NPC" rather than on the StaticVob flag: items always clear StaticVob (oItem does
+    // it unconditionally), so that gate also kept a dropped item from ever appearing in a nearby cube. What it
+    // was really there to stop is the item an NPC eating/drinking/smoking spawns and despawns constantly, which
+    // forced a full re-render of every cached slot around it -- and that one is identified by its NPC parent.
+    if ( vi->Vob && vi->VisualInfo && !D3D12PointShadows::IsNpcAttached( vi->Vob ) )
         m_PointShadows.InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
 }
 
 
 XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
-    // Symmetric to OnAddVob's static-cube invalidation: a VOB removed from the world must stop casting into any
-    // point light's cached static-aside shadow cube. D3D11 keys this off each light's per-vob VobCache
-    // (D3D11PointLight::OnVobRemovedFromWorld); D3D12 keeps no per-slot vob list, so test the removed vob's world
-    // AABB against each active slot's light sphere (the same closest-point AABB test the static world-section cull
-    // uses) and force a one-time static re-render (staticValid=false) for any slot it intersects. Over-invalidation
-    // is harmless (one extra static pass); under-invalidation would leave the removed vob's shadow frozen in the
-    // cache. Slots are empty during world load (owner==nullptr) so this is a no-op then.
-    // Gated on StaticVob -- see OnAddVob.
-    if ( vob && vob->GetFlags().StaticVob ) m_PointShadows.InvalidateStaticForVobRemoved( vob->GetBBox() );
+    // Symmetric to OnAddVob's static-cube invalidation: a VOB removed from the world (an item picked up, a
+    // container emptied) must stop casting into any point light's cached static shadow cube. Matched by POINTER
+    // against the caster set each slot actually baked -- the vob is on its way out and nothing about its contents
+    // (bbox, position, flags) can be trusted here any more, which is also why there is no StaticVob gate left:
+    // a slot that never baked this vob simply doesn't match. Slots are empty during world load, no-op then.
+    m_PointShadows.InvalidateStaticForVobRemoved( vob );
     return XR_SUCCESS;
+}
+
+
+void D3D12GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
+    // Gothic just promoted this vob out of the BSP into its dynamic/animated list, i.e. it started moving (a
+    // door swinging open, a chest lid). Anything baked into a cached static cube has to come back out -- same
+    // pointer match as the removal case, and equally cheap when nothing baked it.
+    m_PointShadows.InvalidateStaticForVobRemoved( vob );
 }
 
 
@@ -4206,10 +4212,18 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         ? reinterpret_cast<VobCullVisual*>( m_VobCullVisualsPtr[frame] ) : nullptr;
 
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
-        if ( !visual || visual->Instances.empty() ) continue;
+        if ( !visual ) continue;
 
-        if ( animateStaticVobs && visual->MorphMeshVisual )
+        // The second condition is what keeps a spinning windmill's SHADOW attached to it: the cascades cull
+        // against their own frustum, so a caster the player can't see still casts, and a morph visual left at
+        // whatever deformation it had when it was last on screen makes that shadow drift off the mesh. Gated
+        // on a live ani channel so idle .MMS decoration costs one read and nothing else.
+        if ( animateStaticVobs && visual->MorphMeshVisual
+            && ( !visual->Instances.empty()
+                || reinterpret_cast<zCMorphMesh*>( visual->MorphMeshVisual )->GetNumAniChannels() > 0 ) )
             WorldConverter::UpdateMorphMeshVisual( visual->MorphMeshVisual, visual );
+
+        if ( visual->Instances.empty() ) continue;
 
         const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
         constexpr UINT kInstStride = static_cast<UINT>( sizeof( VobInstanceInfo ) );

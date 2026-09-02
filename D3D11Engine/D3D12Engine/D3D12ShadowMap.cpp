@@ -14,6 +14,7 @@
 #include "../zCMaterial.h"
 #include "../zCTexture.h"
 #include "../zCVob.h"
+#include "../zCMorphMesh.h"
 #include "../zCWorld.h"
 #include "../zCBspTree.h"
 #include "../GSky.h"
@@ -579,7 +580,7 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	++m_LazyFrameCounter;
 	const bool lazyUpdate = shadowDirSettings.DebugSettings.ShadowCascades.LazyCascadeUpdate && m_CascadeMatricesValid;
 	for ( UINT c = 0; c < kShadowCascades; ++c ) m_ShouldUpdateCascade[c] = true;
-	if ( lazyUpdate && kShadowCascades > 1 )
+	if ( lazyUpdate && kShadowCascades > 1 && !m_CascadeHasAnimatedCaster[kShadowCascades - 1] )
 		m_ShouldUpdateCascade[kShadowCascades - 1] = (m_LazyFrameCounter % kLazyLastCascadeInterval) == 0;
 	m_CascadeMatricesValid = true;
 
@@ -992,6 +993,7 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	const UINT c = cascade;
 	const UINT frame = m_E->m_FrameIndex;
 	m_VobDrawCount[c] = 0;
+	m_CascadeHasAnimatedCaster[c] = false;
 	if ( !m_SunUp ) return;
 
 	// thread_local, not static: one of these exists per worker now that cascades build concurrently. Cleared
@@ -999,6 +1001,15 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	thread_local std::vector<FrameVobUpload> cascadeUploads;
 	cascadeUploads.clear();
 	if ( !m_E->UploadVobs( PassVobs[c].buckets, cascadeUploads, c ) ) return;
+	// Does this cascade hold a per-frame-deformed caster? If so it must not be lazily frozen next frame - see
+	// m_CascadeHasAnimatedCaster. Read-only on Gothic state, which is what makes it safe from a pool thread.
+	for ( const FrameVobUpload& up : cascadeUploads ) {
+		if ( !up.visual || !up.visual->MorphMeshVisual ) continue;
+		if ( reinterpret_cast<zCMorphMesh*>( up.visual->MorphMeshVisual )->GetNumAniChannels() > 0 ) {
+			m_CascadeHasAnimatedCaster[c] = true;
+			break;
+		}
+	}
 	// GPU-driven VOB casters (P2.12): build this cascade's command set from the uploads (diffuse-only
 	// material resolution — the void PSShadowClipBindless just alpha-clips), submitted as ONE
 	// ExecuteIndirect by RecordCascade. Same command signature/PSO family as the main-view VOB pass;

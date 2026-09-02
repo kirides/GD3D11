@@ -217,6 +217,13 @@ private:
     static constexpr size_t kLazyLastCascadeInterval = 3;
     size_t m_LazyFrameCounter = 0;
     bool m_ShouldUpdateCascade[kShadowCascades] = {};   // resolved in ComputeCascadeMatrices, read everywhere else
+    // Set by BuildCascade when the cascade's caster set contains an .MMS with a live morph channel - a
+    // windmill sail, a water wheel. Such a caster's vertex buffer is re-deformed every frame, so freezing the
+    // cascade leaves its depth describing a shape the main view no longer draws (a shadow visibly detached
+    // from the mesh). Latched one frame late by design: written by the cascade's own job (nothing else touches
+    // the entry) and read here after WaitCascadeJobs, and a cascade that stays unfrozen re-evaluates it every
+    // frame, so it clears itself once the caster leaves.
+    bool m_CascadeHasAnimatedCaster[kShadowCascades] = {};
     bool m_CascadeMatricesValid = false;                // first frame (and after a Resize) nothing may be frozen
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read

@@ -65,6 +65,7 @@ namespace {
 		D3D12_GPU_VIRTUAL_ADDRESS faceCb = 0;
 		UINT staticWorldBegin = 0, staticWorldEnd = 0;
 		UINT staticVobBegin = 0,   staticVobEnd = 0;
+		UINT staticSkelBegin = 0,  staticSkelEnd = 0;
 		UINT dynSkelBegin = 0,     dynSkelEnd = 0;
 		UINT dynAttachBegin = 0,   dynAttachEnd = 0;
 		bool lowRes = false;         // slot lives in the low-res STATIC cube array (D3D12PointShadows::LowIndex(slot)).
@@ -77,6 +78,7 @@ namespace {
 	};
 	std::vector<PointShadowDraw>        g_PsStaticWorldDraws;
 	std::vector<PointShadowDraw>        g_PsStaticVobDraws;
+	std::vector<PointShadowDraw>        g_PsStaticSkelDraws;   // MOB bodies baked into the static cube
 	std::vector<PointShadowDraw>        g_PsDynSkelDraws;
 	std::vector<PointShadowDraw>        g_PsDynAttachDraws;
 	std::vector<PointShadowLightRecord> g_PsLights;   // only slots TOUCHED this frame (static and/or dynamic)
@@ -85,6 +87,14 @@ namespace {
 	// point-shadow pass is single-consumer (one recorder list) and the project's standing rule is no per-frame
 	// (re)allocations on the frame path.
 	std::vector<D3D12ResourceTransition> g_PsBarriers;
+}
+
+
+bool D3D12PointShadows::IsNpcAttached( const zCVob* vob ) {
+	for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
+		if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
+	}
+	return false;
 }
 
 
@@ -305,19 +315,18 @@ void D3D12PointShadows::InvalidateStaticForVobAdded( const XMFLOAT3& posWS, floa
 }
 
 
-void D3D12PointShadows::InvalidateStaticForVobRemoved( const zTBBox3D& bb ) {
-	// Symmetric to the add case: a VOB removed from the world must stop casting into any light's cached static
-	// cube. D3D11 keys this off each light's per-vob VobCache (D3D11PointLight::OnVobRemovedFromWorld); D3D12
-	// keeps no per-slot vob list, so test the removed vob's world AABB against each active slot's light sphere
-	// (the same closest-point AABB test the static world-section cull uses).
+void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
+	// Symmetric to the add case: a VOB removed from the world (an item picked up, a container emptied) must
+	// stop casting into any light's cached static cube. Matched against the exact caster set Phase A baked,
+	// by POINTER - the vob is being torn down, so its bbox and position can no longer be read, and identity is
+	// the only thing left that is still meaningful. D3D11 does the same thing against each light's VobCache
+	// (D3D11PointLight::OnVobRemovedFromWorld). Nothing was baked => nothing to invalidate, which is what keeps
+	// an NPC's throwaway held item (never baked, see IsNpcAttached) from re-rendering every cube nearby.
+	if ( !vob ) return;
 	for ( Slot& ss : m_Slots ) {
-		if ( !ss.ownerKey || !ss.staticValid ) continue;
-		const float cx = std::min( std::max( ss.pos.x, bb.Min.x ), bb.Max.x );
-		const float cy = std::min( std::max( ss.pos.y, bb.Min.y ), bb.Max.y );
-		const float cz = std::min( std::max( ss.pos.z, bb.Min.z ), bb.Max.z );
-		const float dx = ss.pos.x - cx, dy = ss.pos.y - cy, dz = ss.pos.z - cz;
-		if ( dx * dx + dy * dy + dz * dz < ss.range * ss.range )
-			ss.staticValid = false;   // removed vob was within this light's static coverage -- re-cache
+		if ( !ss.ownerKey || !ss.staticValid || ss.bakedVobs.empty() ) continue;
+		if ( std::ranges::contains( ss.bakedVobs, vob ) )
+			ss.staticValid = false;   // this slot's cube holds the removed vob -- re-cache without it
 	}
 }
 
@@ -516,7 +525,10 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 		// whose render got deferred by the budget above must NOT be sampled yet: it still holds the previous
 		// occupant's depth, which would read as a wrong shadow. Leaving it -1 makes the light unshadowed for a
 		// few frames instead, and BuildFrameLightBuffer's range clamp keeps it from bleeding meanwhile.
-		if ( ss.staticValid || renderStatic ) {
+		// staticPresent, not just staticValid: a slot that was invalidated by a world change still holds this
+		// owner's depth and stays sampleable until the re-render lands. Only a FRESH slot (holding the previous
+		// occupant's depth) is withheld.
+		if ( ss.staticValid || ss.staticPresent || renderStatic ) {
 			// What the shader sees is the TIER-ENCODED index (local slot | kShadowTierLow), not the global slot.
 			// kShadowHasDynamic additionally tells the lit pass to sample the dynamic-overlay array for this light
 			// and min it with the static one. Only full-res slots can carry it (the low tier has no dynamic twin),
@@ -656,6 +668,7 @@ void D3D12PointShadows::Prepare() {
 	g_PsLights.clear();
 	g_PsStaticWorldDraws.clear();
 	g_PsStaticVobDraws.clear();
+	g_PsStaticSkelDraws.clear();
 	g_PsDynSkelDraws.clear();
 	g_PsDynAttachDraws.clear();
 	g_PsAnyStatic = false;
@@ -766,8 +779,12 @@ void D3D12PointShadows::Prepare() {
 		// ==================== Phase A resolve — STATIC casters (world mesh + instanced VOBs) ====================
 		rec.staticWorldBegin = rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 		rec.staticVobBegin   = rec.staticVobEnd   = static_cast<UINT>( g_PsStaticVobDraws.size() );
+		rec.staticSkelBegin  = rec.staticSkelEnd  = static_cast<UINT>( g_PsStaticSkelDraws.size() );
 		if ( rec.renderStatic ) {
 			g_PsAnyStatic = true;
+			// Rebuilt below alongside the draws it describes - see InvalidateStaticForVobRemoved.
+			std::vector<const zCVob*>& bakedVobs = m_Slots[ps.slot].bakedVobs;
+			bakedVobs.clear();
 			// The slot's CURRENT static target (aside cube if eligible, else the active cube itself) is about to
 			// be cleared and redrawn — but it does not HOLD that depth until the pass has actually been recorded
 			// and submitted, so the cache stamp is queued for CommitStaticCache instead of applied here.
@@ -807,13 +824,15 @@ void D3D12PointShadows::Prepare() {
 			}
 			rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 
-			// --- Instanced VOBs (static decoration): range-cull instances, pack 64B world matrices into the
-			// tight ring, draw count*6. An isStatic() slot additionally requires GP_Slot bit 30 (ZENGIN's own
-			// StaticVob flag) per instance — items are always StaticVob==false and would otherwise get baked
-			// into a cube that never re-renders. Items cast via the dynamic overlay (Phase C) instead. ---
+			// --- Instanced VOBs (static decoration AND loose items): range-cull instances, pack 64B world
+			// matrices into the tight ring, draw count*6. Items used to be kept out of an isStatic() slot via
+			// GP_Slot bit 30 (ZENGIN's StaticVob flag, which oCItem always clears), which meant a torch-lit
+			// room cast no shadow at all from anything lying on its floor. They are baked now; what must stay
+			// out is only what MOVES with an animation, i.e. anything hanging off an NPC — that one is drawn
+			// by the dynamic overlay (Phase C) instead, and a vob leaving the world takes the cube with it
+			// (InvalidateStaticForVobRemoved). ---
 			// restrictToWorld: mirrors D3D11's world-mesh-only PFX gate — skip instanced-VOB casters too.
 			if ( haveVobs && !ps.restrictToWorld ) {
-				const bool staticTier = m_Slots[ps.slot].isStatic;
 				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
 					MeshVisualInfo* visual = up.visual;
 					if ( !visual || visual->Instances.empty() ) continue;
@@ -826,8 +845,14 @@ void D3D12PointShadows::Prepare() {
 					const UINT gatherStart = m_VobInstOffset;
 					UINT count = 0;
 					bool overflow = false;
-					for ( const VobInstanceInfo& inst : visual->Instances ) {
-						if ( staticTier && !( inst.GP_Slot & ( 1u << 30 ) ) ) continue;   // not a StaticVob — see above
+					const size_t numInst = visual->Instances.size();
+					// InstanceVobs is filled in lockstep with Instances (CollectVisibleVobs), but only trust the
+					// pairing while the two are actually the same length.
+					const bool haveInstanceVobs = visual->InstanceVobs.size() == numInst;
+					for ( size_t ii = 0; ii < numInst; ++ii ) {
+						const VobInstanceInfo& inst = visual->Instances[ii];
+						const zCVob* srcVob = haveInstanceVobs ? visual->InstanceVobs[ii] : nullptr;
+						if ( srcVob && IsNpcAttached( srcVob ) ) continue;   // animated — see above
 						float dx = inst.world._14 - ps.posWS.x, dy = inst.world._24 - ps.posWS.y, dz = inst.world._34 - ps.posWS.z;
 						if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
 						if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
@@ -841,6 +866,7 @@ void D3D12PointShadows::Prepare() {
 						}
 						memcpy( viBase + m_VobInstOffset, &inst.world, sizeof( XMFLOAT4X4 ) );
 						m_VobInstOffset += sizeof( XMFLOAT4X4 );
+						if ( srcVob ) bakedVobs.push_back( srcVob );
 						++count;
 					}
 					if ( count == 0 ) { if ( overflow ) break; continue; }
@@ -872,6 +898,63 @@ void D3D12PointShadows::Prepare() {
 				}
 			}
 			rec.staticVobEnd = static_cast<UINT>( g_PsStaticVobDraws.size() );
+
+			// --- MOB casters (chests, beds, chairs, doors, benches): skeletal vobs that are NOT NPCs. They are
+			// world furniture that happens to be built as a zCModel, so they belong in the cached static cube
+			// exactly like the instanced decoration above - without this a static/low-tier light saw them as
+			// nothing at all, since Phase C (the only place skeletals were drawn) never runs for such a slot.
+			// NPCs and anything parented under one are excluded: they animate, and Phase C already owns them.
+			// A MOB that later starts moving is promoted to Gothic's animated list, which invalidates every
+			// static cube it was baked into (GothicAPI::MoveVobFromBspToDynamic -> OnVobBecameDynamic).
+			// !overlayEligible: on a slot that DOES get the overlay, Phase C already sphere-culls the same
+			// full skeletal list every frame and draws MOBs along with the NPCs, so baking them here as well
+			// would only duplicate the draws and freeze a copy of them in the static cube.
+			if ( haveSkel && !ps.restrictToWorld && !ps.overlayEligible ) {
+				SkelScratch.clear();
+				AttachScratch.clear();
+				m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
+
+				for ( const FrameSkelDraw& sd : SkelScratch ) {
+					if ( !sd.visual || !sd.vobInfo || !sd.vobInfo->Vob ) continue;
+					if ( sd.vobInfo->Vob->GetVobType() == zVOB_TYPE_NSC || IsNpcAttached( sd.vobInfo->Vob ) ) continue;
+					const XMFLOAT3 pos = sd.vobInfo->Vob->GetPositionWorld();
+					const float cullR = ps.range + sd.visual->MeshSize * 0.5f;
+					float dx = pos.x - ps.posWS.x, dy = pos.y - ps.posWS.y, dz = pos.z - ps.posWS.z;
+					if ( dx * dx + dy * dy + dz * dz >= cullR * cullR ) continue;
+
+					// Shared per-MODEL texture slots - see the identical note in the Phase C gather.
+					zCModel* model = static_cast<zCModel*>(sd.vobInfo->Vob->GetVisual());
+					model->UpdateMeshLibTexAniState();
+
+					bool baked = false;
+					for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
+						zCTexture* const matTex = mat ? mat->GetAniTexture() : nullptr;
+						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
+							|| ( mat && mat->HasAlphaTest() );
+						for ( auto const& mesh : meshList ) {
+							if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
+							D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+							D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+							if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+							PointShadowDraw d;
+							d.vb = mvb; d.ib = mib;
+							d.stride = sizeof( ExSkelVertexStruct );
+							d.indexCount = static_cast<UINT>( mesh->Indices.size() );
+							d.instanceCount = 6;
+							d.srv = srv;
+							d.instCb = sd.instCb;
+							d.boneCb = sd.boneCb;
+							d.alphaTested = matAlphaTested;
+							g_PsStaticSkelDraws.push_back( d );
+							baked = true;
+						}
+					}
+					if ( baked ) bakedVobs.push_back( sd.vobInfo->Vob );
+				}
+			}
+			rec.staticSkelEnd = static_cast<UINT>( g_PsStaticSkelDraws.size() );
 		}
 
 		// ==================== Phase C resolve — DYNAMIC casters (skeletal NPCs + their attachments) ============
@@ -1057,6 +1140,7 @@ void D3D12PointShadows::CommitStaticCache() {
 		Slot& ss = m_Slots[p.slot];
 		if ( !ss.ownerKey ) continue;   // slot released between Prepare() and here — nothing to validate
 		ss.staticValid = true;
+		ss.staticPresent = true;
 	}
 	m_PendingStatic.clear();
 
@@ -1222,6 +1306,23 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 					const PointShadowDraw& d = g_PsStaticVobDraws[i];
 					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
 					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					emitGeometry( d );
+				}
+			}
+
+			if ( L.staticSkelEnd > L.staticSkelBegin ) {
+				DX_ZONE( cmdList.Get(), "MOBs" );
+				TracyD3D12ZoneCGX( cmdList.Get(), "MOBs" );
+				// Its own (smaller) root signature - re-bound per light for the same reason Phase C does it.
+				cmdList->SetGraphicsRootSignature( psPipe.SkeletalRootSig.Get() );
+				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				resetBindCache();
+				for ( UINT i = L.staticSkelBegin; i < L.staticSkelEnd; ++i ) {
+					const PointShadowDraw& d = g_PsStaticSkelDraws[i];
+					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
+					if ( d.instCb != lastInstCb ) { cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb ); lastInstCb = d.instCb; }
+					if ( d.boneCb != lastBoneCb ) { cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb ); lastBoneCb = d.boneCb; }
+					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
 			}

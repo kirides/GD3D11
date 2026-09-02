@@ -176,6 +176,16 @@ public:
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 
+    /** Reported back by the cascade's VOB pass: whether it drew a caster whose geometry is deformed every
+        frame (an .MMS morph mesh with a live ani channel - windmill sails, water wheels). Such a cascade
+        can't be frozen by LazyCascadeUpdate or its depth stops matching the mesh the main view draws, which
+        is what made big spinning props cast a detached, garbled shadow. Latched one frame late by design:
+        the flag is re-evaluated every time the cascade actually renders. */
+    void NoteCascadeAnimatedCasters( int cascadeIndex, bool hasAnimated ) {
+        if ( cascadeIndex >= 0 && cascadeIndex < MAX_CSM_CASCADES )
+            m_CascadeHasAnimatedCaster[cascadeIndex] = hasAnimated;
+    }
+
 private:
     // Per-cascade size cap for the multi-cascade atlas, which packs all cascades into one
     // (2*S) x (1.5*S) texture. 2048 keeps the biggest atlas at 4096x3072.
@@ -212,6 +222,9 @@ private:
     std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;
     std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade = { true, true, true, true };
+    // See NoteCascadeAnimatedCasters - keeps a cascade out of the lazy-update skip while it holds a
+    // per-frame-deformed caster.
+    std::array<bool, MAX_CSM_CASCADES> m_CascadeHasAnimatedCaster = {};
     XMFLOAT3 m_WorldShadowPos;
 
     std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;

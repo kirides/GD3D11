@@ -636,7 +636,9 @@ XRESULT D3D11ShadowMap::PrepareRender()
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             bool shouldUpdateCascade = true;
-            if ( lazyCascadeUpdate && !m_ForceFullCascadeUpdate ) {
+            // A cascade holding a per-frame-deformed caster (spinning windmill sails and friends) must never
+            // be frozen - see NoteCascadeAnimatedCasters.
+            if ( lazyCascadeUpdate && !m_ForceFullCascadeUpdate && !m_CascadeHasAnimatedCaster[cascadeIdx] ) {
                 if ( cascadeIdx == 2 ) {
                     // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
                     shouldUpdateCascade = (perFrameCascadeData.frameCount % 5) == 0;

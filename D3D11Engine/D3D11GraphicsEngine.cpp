@@ -5814,6 +5814,32 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         DepthStencilBuffer->GetDepthStencilView().Get() );
 }
 
+namespace {
+    /** True if this vob rides an NPC's transform - a held item, a torch, an attached effect. Such a caster
+        moves with the animation every frame, so it must never enter a point light's cached static caster
+        set (D3D11PointLight::VobCache); the animated pass draws it instead. */
+    bool IsAttachedToNpc( const zCVob* vob ) {
+        for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
+            if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
+        }
+        return false;
+    }
+
+    /** Same idea for MOB casters: anything ZenGin already promoted to the animated list moves, and the
+        animated pass redraws it anyway. Only ever called while (re)building a light's caster cache. */
+    bool IsAnimatedShadowCaster( const SkeletalVobInfo* vob ) {
+        if ( IsAttachedToNpc( vob->Vob ) ) return true;
+        return std::ranges::contains( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), vob );
+    }
+
+    /** True while this .MMS visual has a live morph channel, i.e. its vertex buffer is re-deformed every
+        frame (windmill sails, water wheels). Idle .MMS decoration answers false. */
+    bool IsMorphAnimating( MeshVisualInfo* visual ) {
+        if ( !visual->MorphMeshVisual ) return false;
+        return reinterpret_cast<zCMorphMesh*>(visual->MorphMeshVisual)->GetNumAniChannels() > 0;
+    }
+}
+
 /** Draws everything around the given position */
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
@@ -6019,6 +6045,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         continue;  // Seems to happen in Gothic 1
                     }
 
+                    // Rides an NPC (held item, torch, effect) - the animated pass owns it. Caching it here
+                    // is also what let a smoking/eating NPC's throwaway item invalidate every nearby light's
+                    // static cube the moment it despawned.
+                    if ( IsAttachedToNpc( it->Vob ) ) {
+                        continue;
+                    }
+
                     if ( !it->Vob->GetShowVisual() ) {
                         continue;
                     }
@@ -6104,6 +6137,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             for ( auto it : Engine::GAPI->GetSkeletalMeshVobs() ) {
                 if ( !it->VisualInfo ) {
                     continue;  // Seems to happen in Gothic 1
+                }
+
+                // Animated or NPC-attached MOBs belong to the animated pass - see IsAnimatedShadowCaster.
+                if ( IsAnimatedShadowCaster( it ) ) {
+                    continue;
                 }
 
                 if ( !it->Vob->GetShowVisual() ) {
@@ -6378,6 +6416,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;  // Seems to happen in Gothic 1
                     }
 
+                    // Rides an NPC (held item, torch, effect) - the animated pass owns it. Caching it here
+                    // is also what let a smoking/eating NPC's throwaway item invalidate every nearby light's
+                    // static cube the moment it despawned.
+                    if ( IsAttachedToNpc( it->Vob ) ) {
+                        continue;
+                    }
+
                     if ( !it->Vob->GetShowVisual() ) {
                         continue;
                     }
@@ -6468,6 +6513,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             for ( auto it : Engine::GAPI->GetSkeletalMeshVobs() ) {
                 if ( !it->VisualInfo ) {
                     continue;  // Seems to happen in Gothic 1
+                }
+
+                // Animated or NPC-attached MOBs belong to the animated pass - see IsAnimatedShadowCaster.
+                if ( IsAnimatedShadowCaster( it ) ) {
+                    continue;
                 }
 
                 if ( !it->Vob->GetShowVisual() ) {
@@ -7061,6 +7111,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 activeVisuals.push_back( pair.second );
             }
         }
+
+        // Morph-mesh casters are deformed per frame, so a cascade holding one can't be frozen by
+        // LazyCascadeUpdate, and the deform has to run even for a vob only the shadow pass sees (the main
+        // pass doesn't reach it, and UpdateMorphMeshVisual is frame-idempotent so doing it twice is free).
+        bool hasAnimatedCaster = false;
+        if ( renderState.RendererSettings.AnimateStaticVobs ) {
+            for ( MeshVisualInfo* visual : activeVisuals ) {
+                if ( !IsMorphAnimating( visual ) ) continue;
+                hasAnimatedCaster = true;
+                WorldConverter::UpdateMorphMeshVisual( visual->MorphMeshVisual, visual );
+            }
+        }
+        if ( ShadowMaps ) ShadowMaps->NoteCascadeAnimatedCasters( params.CascadeIndex, hasAnimatedCaster );
 
         // Apply instancing shader early so metadata indexing can be prepared before instance upload.
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );

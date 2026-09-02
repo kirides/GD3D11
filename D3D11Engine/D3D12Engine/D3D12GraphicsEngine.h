@@ -222,6 +222,7 @@ public:
 
     void OnAddVob(VobInfo* vi) override;
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
+    void OnVobBecameDynamic( zCVob* vob ) override;
     // Purges the VOB arena's cache of this MeshInfo* before it's freed - see BaseGraphicsEngine's doc comment.
     void OnMeshInfoDestroyed( MeshInfo* mesh ) override { m_VobArena.Forget( mesh ); }
     void OnLoadWorld() override;

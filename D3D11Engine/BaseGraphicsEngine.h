@@ -341,6 +341,10 @@ public:
     /** Called when a vob was removed from the world */
     virtual XRESULT OnVobRemovedFromWorld( zCVob* vob ) { return XR_SUCCESS; }
 
+    /** Gothic promoted this vob out of the BSP into its dynamic/animated list - it started moving. Backends
+        that bake it into a cached shadow (D3D12's static point-light cubes) must drop that cache. */
+    virtual void OnVobBecameDynamic( zCVob* vob ) {}
+
     /** Called from MeshInfo::~MeshInfo(), right before its buffers/CPU vectors are torn down. A MeshInfo can
         be freed independently of any world (re)load - e.g. a shared MeshVisualInfo's last VOB reference
         dropping via SharedVisualRegistry::Release() - so any backend that caches raw MeshInfo* pointers

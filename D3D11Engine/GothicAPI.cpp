@@ -5044,6 +5044,10 @@ void GothicAPI::MoveVobFromBspToDynamic( SkeletalVobInfo* vob ) {
     parentBspNodes.clear();
 
     AnimatedSkeletalVobs.push_back( vob );
+
+    // It moves from here on, so anything that baked it as static geometry has to let go - see
+    // D3D12PointShadows' static cube cache.
+    Engine::GraphicsEngine->OnVobBecameDynamic( vob->Vob );
 }
 
 /** Moves the given vob from a BSP-Node to the dynamic vob list */
@@ -5061,6 +5065,9 @@ void GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob ) {
 
     // Add to dynamic vob list
     DynamicallyAddedVobs.push_back( vob );
+
+    // See the SkeletalVobInfo overload - it moves now, so cached static shadows holding it must be dropped.
+    Engine::GraphicsEngine->OnVobBecameDynamic( vob->Vob );
 }
 
 std::vector<LeafVobEntry>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob, std::vector<LeafVobEntry>* source ) {
@@ -5105,6 +5112,7 @@ std::vector<LeafVobEntry>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo*
 
     // Add to dynamic vob list
     DynamicallyAddedVobs.push_back( vob );
+    Engine::GraphicsEngine->OnVobBecameDynamic( vob->Vob );
 
     return itn;
 }

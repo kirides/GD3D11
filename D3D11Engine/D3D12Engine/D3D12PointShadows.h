@@ -128,8 +128,16 @@ public:
     // fresh / moved / resized — not when geometry around it changes — so a VOB appearing or disappearing inside
     // a cached slot's light sphere must force a one-time static re-render next frame. Over-invalidation is
     // harmless (one extra static pass); under-invalidation freezes a stale shadow in the cache.
+    /** True if this vob rides an NPC's transform - a held item, a torch, an attached effect. Such a caster
+        moves with the animation every frame, so it is never baked into a cached static cube and its comings
+        and goings must not invalidate one either. Mirrors D3D11's IsAttachedToNpc. */
+    static bool IsNpcAttached( const zCVob* vob );
+
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
-    void InvalidateStaticForVobRemoved( const zTBBox3D& bbox );
+    // Removal is matched by POINTER against what each slot actually baked (Slot::bakedVobs), never by reading
+    // the vob: by the time this fires the object may already be half torn down, and its bbox/position are no
+    // longer trustworthy. Identity comparison only - `vob` is never dereferenced.
+    void InvalidateStaticForVobRemoved( const zCVob* vob );
 
     // Skeletal-caster scratch lists for the per-light sphere cull. PrepareFrameSkeletals(..., shadowCascade=-2)
     // routes into these: each shadowed light sphere-culls the FULL registered skeletal-vob list against itself
@@ -221,6 +229,13 @@ private:
         bool              isStatic = false;  // Vob->IsStatic(): gates Prepare() — static lights cache world mesh
                                              // plus StaticVob-flagged decoration once, forever; never receive the
                                              // per-frame dynamic overlay (mirrors D3D11's PLS_STATIC_ONLY).
+        bool              staticPresent = false; // this slot's static target physically holds depth rendered for THIS
+                                             // owner, even if a later world change has since marked it out of date.
+                                             // Kept apart from staticValid so an INVALIDATED slot keeps being sampled
+                                             // (slightly stale) while it waits its turn in the low-tier render budget,
+                                             // instead of dropping to unshadowed - a stale shadow is a far smaller
+                                             // artifact than a light that briefly bleeds through walls, and it is what
+                                             // makes over-invalidation genuinely cheap rather than visible.
         bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
                                              // cube itself) holds valid static-only depth; false => must re-render static
         bool              dynamicValid = false; // this slot's DYNAMIC cube holds a valid skeletal overlay, as of the
@@ -235,6 +250,11 @@ private:
                                              // index from BuildFrameLightBuffer, before Prepare() has resolved this
                                              // frame's overlay. Same class of latency the round-robin already has.
         UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
+        // Every caster identity Phase A baked into this slot's static cube, in the order it gathered them.
+        // Rebuilt from scratch on each static (re)render and consulted ONLY by InvalidateStaticForVobRemoved,
+        // which compares pointers - see there for why the removed vob can't be read instead. Capacity is kept
+        // across rebuilds; a slot handing over to a new owner drops it with the rest of the Slot.
+        std::vector<const zCVob*> bakedVobs;
         UINT32            missingFrames = 0;   // consecutive frames this slot's owner was NOT a winner; 0 while it is.
                                              // A slot is NOT released the moment its light drops out of the winner
                                              // set (the light buffer is frustum-culled upstream, so merely turning
