@@ -1468,33 +1468,67 @@ struct GothicRendererSettings {
     }
 };
 
-/** Event rate over a sliding ~1 second window. Self-sampling: the window rolls inside both Note() and
-    PerSecond(), so a metric nothing has reported in a while decays to 0 on its own without needing a
-    per-frame tick, and reading it from a debug window that is only sometimes open changes nothing. */
+/** Event rate over a SLIDING one-second window, kept as ten 100 ms buckets that PerSecond() sums.
+    Deliberately not a single tumbling window: that only publishes a count once the second it was counting
+    in has ended, so a stat you watch while provoking the thing you are measuring reads 0 for the entire
+    time the events are happening and then reports them after the fact - which makes it look broken and,
+    worse, easy to miss. Summing the buckets (the one in progress included) surfaces an event within
+    100 ms and lets it decay out again over the following second.
+
+    Self-sampling: the buckets advance inside both Note() and PerSecond(), so nothing needs a per-frame
+    tick and a metric no one has reported in a while falls back to 0 on its own.
+
+    MAIN THREAD ONLY - the bucket rotation is not synchronized. Every current caller is on Gothic's own
+    thread; anything reporting from the worker pool needs its own accumulation. */
 class RollingSecondCounter {
 public:
     void Note( unsigned int n = 1 ) {
-        Roll();
-        m_Count.fetch_add( n, std::memory_order_relaxed );
+        Advance();
+        m_Buckets[m_Head] += n;
+        m_Total += n;
     }
 
-    /** Events counted in the last completed window. */
+    /** Events in the last second, including the bucket still being filled. */
     unsigned int PerSecond() {
-        Roll();
-        return m_Last.load( std::memory_order_relaxed );
+        Advance();
+        unsigned int sum = 0;
+        for ( unsigned int b : m_Buckets ) sum += b;
+        return sum;
     }
+
+    /** Every event since startup. Unwindowed, so it separates "nothing is happening" from "the window
+        already let it go" - which is the question a rate alone cannot answer. */
+    unsigned long long Total() const { return m_Total; }
 
 private:
-    void Roll() {
+    static const size_t NUM_BUCKETS = 10;
+    static const long long BUCKET_MS = 100;   // NUM_BUCKETS * BUCKET_MS = the window length
+
+    void Advance() {
         const auto now = std::chrono::steady_clock::now();
-        if ( now - m_WindowStart < std::chrono::seconds( 1 ) ) return;
-        m_WindowStart = now;
-        m_Last.store( m_Count.exchange( 0, std::memory_order_relaxed ), std::memory_order_relaxed );
+        const long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>( now - m_BucketStart ).count();
+        if ( elapsed < BUCKET_MS ) return;
+
+        const long long steps = elapsed / BUCKET_MS;
+        if ( steps >= static_cast<long long>( NUM_BUCKETS ) ) {
+            // Idle (or paused) for longer than the whole window - everything in it has expired.
+            m_Buckets.fill( 0 );
+            m_Head = 0;
+            m_BucketStart = now;
+            return;
+        }
+        // Keep the phase rather than restarting from `now`, so buckets stay on a fixed 100 ms grid.
+        m_BucketStart += std::chrono::milliseconds( BUCKET_MS * steps );
+        for ( long long i = 0; i < steps; ++i ) {
+            m_Head = ( m_Head + 1 ) % NUM_BUCKETS;
+            m_Buckets[m_Head] = 0;
+        }
     }
 
-    std::chrono::steady_clock::time_point m_WindowStart = std::chrono::steady_clock::now();
-    std::atomic<unsigned int> m_Count = 0;
-    std::atomic<unsigned int> m_Last = 0;
+    std::chrono::steady_clock::time_point m_BucketStart = std::chrono::steady_clock::now();
+    std::array<unsigned int, NUM_BUCKETS> m_Buckets = {};
+    size_t m_Head = 0;
+    unsigned long long m_Total = 0;
 };
 
 struct GothicRendererInfo {

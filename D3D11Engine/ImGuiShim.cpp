@@ -359,17 +359,22 @@ namespace {
 // number is the point: a cached cube costs nothing to keep and a full re-bake to replace, so anything but a
 // brief spike after a teleport/world change means something nearby is churning the cache every frame.
 static void DrawPointLightInvalidationStat() {
-    const unsigned int perSec = Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.PerSecond();
+    auto& counter = Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations;
+    const unsigned int perSec = counter.PerSecond();
     const ImVec4 color = perSec == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
         : perSec < 10 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
                       : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
-    ImGui::TextColored( color, "Static shadow invalidations: %u / s", perSec );
+    // The total is shown next to the rate because the rate alone cannot distinguish "nothing is invalidating"
+    // from "it happened and the window has already let it go".
+    ImGui::TextColored( color, "Static shadow invalidations: %u / s   (%llu total)", perSec, counter.Total() );
     ImGui::SetItemTooltip( "Baked static point-light shadows dropped in the last one-second window, across all\n"
         "lights: a caster appearing, vanishing or starting to move inside a light's range, the light\n"
         "itself moving or changing shadow mode, or a shadow slot changing hands. Steady zero is the\n"
         "healthy state - every light is reusing its cached cube. A sustained non-zero rate means those\n"
         "cubes are being re-rendered instead, which is the exact cost the cache exists to avoid; the\n"
-        "usual culprit is a caster that keeps entering and leaving the static caster set." );
+        "usual culprit is a caster that keeps entering and leaving the static caster set.\n"
+        "The rate is a sliding one-second window, so it reacts within ~100ms of an event and decays\n"
+        "back to 0 over the following second; the total only ever climbs." );
 }
 
 /** Debug-only visualization to help diagnose point-light shadow bugs (light bleed/self-occlusion) without
