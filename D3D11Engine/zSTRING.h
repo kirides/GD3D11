@@ -34,7 +34,7 @@ public:
     }
 
     std::string ToString() const {
-        return _dataPtr ? std::string(_dataPtr, length) : "";
+        return std::string(ToChar(), length);
     }
 
     size_t Length() const
@@ -50,7 +50,7 @@ private:
     void* _vtblString;
     void* _allocator;
     //---
-    char* _dataPtr;
+    const char* _dataPtr;
     size_t length;
     size_t reserved;
 };
