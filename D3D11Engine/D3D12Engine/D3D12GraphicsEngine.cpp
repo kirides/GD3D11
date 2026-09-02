@@ -2071,21 +2071,28 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 
-    // this seems to do nothing on its own - CURRENTLY. But who knows what will happen when we do 3d.
-    zCView::SetWindowMode(
-        m_BackbufferResolution.x,
-        m_BackbufferResolution.y,
-        32 );
+    // Only when the resolution actually changed, like D3D11 does from OnResize. SetVirtualMode ends in
+    // zCView::SetMode, which rewrites vid_xdim/ydim + screen->psizex and then RecalcChildsSize/Pos over every
+    // open view; running that per frame re-derives layouts that were set in pixels (oCViewDocument sizes the
+    // book that way) and ratchets them smaller each frame. First frame still applies it.
+    if ( m_AppliedZViewMode.x != m_BackbufferResolution.x || m_AppliedZViewMode.y != m_BackbufferResolution.y ) {
+        m_AppliedZViewMode = m_BackbufferResolution;
 
-    // This ensures any 2D UI is rendered with the proper resolution.
-    // needs to be per-frame or it won't do anything.
-    zCView::SetVirtualMode(
-        static_cast<int>(m_BackbufferResolution.x),
-        static_cast<int>(m_BackbufferResolution.y),
-        32 );
+        zCView::SetWindowMode(
+            m_BackbufferResolution.x,
+            m_BackbufferResolution.y,
+            32 );
 
-    //POINT virtualSize = { 8192, 8192 };
-    //zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
+        zCView::SetVirtualMode(
+            static_cast<int>(m_BackbufferResolution.x),
+            static_cast<int>(m_BackbufferResolution.y),
+            32 );
+
+        // SetMode leaves the zCViewDraw screen's virtual size derived from pixels; restore the 8192 space the
+        // document/page views are authored in (D3D11 OnResize does the same right after its SetVirtualMode).
+        POINT virtualSize = { 8192, 8192 };
+        zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
+    }
 
     m_FrameOpen = true;
     return XR_SUCCESS;

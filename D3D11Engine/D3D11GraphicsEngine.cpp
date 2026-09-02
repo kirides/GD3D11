@@ -291,7 +291,6 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() :
     // Match the resolution with the current desktop resolution
     Resolution = m_scaledResolution =
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
-    unionCurrentCustomFontMultiplier = 1.0;
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
@@ -10064,12 +10063,6 @@ namespace UI::zFont {
 }
 
 
-float  D3D11GraphicsEngine::UpdateCustomFontMultiplierFontRendering( float multiplier ) {
-    float res = unionCurrentCustomFontMultiplier;
-    unionCurrentCustomFontMultiplier = multiplier;
-    return res; 
-}
-
 void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {
     if ( !font ) return;
     if ( !font->tex ) return;
@@ -10101,7 +10094,7 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
         return;
     }
     
-    UIScale *= unionCurrentCustomFontMultiplier;
+    UIScale *= GetCustomFontMultiplier();
 
     //
     // Set alpha blending

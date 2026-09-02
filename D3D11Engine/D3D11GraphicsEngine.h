@@ -385,8 +385,6 @@ public:
 
     void EnsureTempVertexBufferSize( std::unique_ptr<D3D11VertexBuffer>& buffer, UINT size );
 
-    float UpdateCustomFontMultiplierFontRendering( float multiplier );
-
     // TODO: Remove from here, put into D3D11ShadowMaps
     D3D11PointLight* DebugPointlight;
 
@@ -796,7 +794,6 @@ private:
     bool m_HDR;
     int m_previousFpsLimit;
     bool m_FrameNeedsJitter;
-    float unionCurrentCustomFontMultiplier;
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;
     XMFLOAT4X4 m_PrevViewProjMatrix;

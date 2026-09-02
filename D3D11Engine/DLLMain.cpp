@@ -271,11 +271,7 @@ extern "C" void WINAPI HookedReleaseDDThreadLock() {
 }
 
 extern "C" float WINAPI UpdateCustomFontMultiplierFontRendering( float multiplier ) {
-    if (Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D11) {
-        D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
-        return engine ? engine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0f;
-    }
-    return 1.0f;
+    return Engine::GraphicsEngine ? Engine::GraphicsEngine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0f;
 }
 
 extern "C" void WINAPI SetCustomCloudAndNightTexture( int idxTexture, bool isNightTexture ) {
