@@ -993,6 +993,11 @@ public:
     /** Returns if the given vob is registered in the world */
     SkeletalVobInfo* GetSkeletalVobByVob( zCVob* vob );
 
+    /** Static-mesh counterpart of the above. Also the cheapest liveness test there is for a zCVob* that was
+        stashed for later: OnRemovedVob erases the entry and deletes the VobInfo, so a hit means the vob is
+        still in the world and safe to read. */
+    VobInfo* GetVobByVob( zCVob* vob );
+
     /** Returns the frame particle info collected from all DrawParticleFX-Calls */
     std::map<zCTexture*, ParticleRenderInfo>& GetFrameParticleInfo();
 

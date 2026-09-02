@@ -345,12 +345,17 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // shadow slots and invalidate any whose light range the new VOB reaches, forcing a one-time static re-render
     // next frame (staticValid=false → renderStatic). Slots are empty during world load (owner==nullptr) so this is
     // a no-op then; the margin mirrors the static-VOB gather's cull (ps.range + visual->MeshSize * 0.5f).
-    // Gated on "not riding an NPC" rather than on the StaticVob flag: items always clear StaticVob (oItem does
-    // it unconditionally), so that gate also kept a dropped item from ever appearing in a nearby cube. What it
-    // was really there to stop is the item an NPC eating/drinking/smoking spawns and despawns constantly, which
-    // forced a full re-render of every cached slot around it -- and that one is identified by its NPC parent.
-    if ( vi->Vob && vi->VisualInfo && !D3D12PointShadows::IsNpcAttached( vi->Vob ) )
-        m_PointShadows.InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
+    // PARKED, not applied here: at this point Gothic has often not placed the vob yet (a dropped item is
+    // inserted where it came from and moved to where it lands afterwards) and its parent link may still be the
+    // NPC that is letting go of it -- and the position and that parent are precisely what the decision reads,
+    // so doing it now either misses every light or writes off a genuine drop as an NPC attachment. Resolved a
+    // frame later, once both have settled (D3D12PointShadows::QueueVobAddedInvalidation).
+    // The "not riding an NPC" test that lives there replaces the old StaticVob gate: items always clear
+    // StaticVob (oItem does it unconditionally), so that gate kept a dropped item from ever appearing in a
+    // nearby cube at all. What it was really there to stop is the item an NPC eating/drinking/smoking spawns
+    // and despawns constantly -- and that one is identified by its NPC parent.
+    if ( vi->Vob && vi->VisualInfo )
+        m_PointShadows.QueueVobAddedInvalidation( vi->Vob );
 }
 
 

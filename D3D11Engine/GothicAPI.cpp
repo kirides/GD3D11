@@ -6663,6 +6663,11 @@ SkeletalVobInfo* GothicAPI::GetSkeletalVobByVob( zCVob* vob ) {
     return nullptr;
 }
 
+VobInfo* GothicAPI::GetVobByVob( zCVob* vob ) {
+    auto it = VobMap.find( vob );
+    return it != VobMap.end() ? it->second : nullptr;
+}
+
 /** Returns true if the given string can be found in the commandline */
 bool GothicAPI::HasCommandlineParameter( const std::string& param ) {
     return zCOption::GetOptions()->IsParameter( param );

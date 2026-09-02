@@ -299,6 +299,26 @@ bool D3D12PointShadows::Init() {
 }
 
 
+void D3D12PointShadows::QueueVobAddedInvalidation( zCVob* vob ) {
+	if ( !vob || !m_HaveCachedStatic ) return;
+	m_PendingVobAdds.push_back( vob );
+}
+
+
+void D3D12PointShadows::DrainPendingVobAdds() {
+	for ( zCVob* vob : m_PendingVobAdds ) {
+		// OnRemovedVob erases the entry (and deletes the VobInfo), so a hit means the vob is still alive.
+		VobInfo* vi = Engine::GAPI->GetVobByVob( vob );
+		if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
+		// Settled in an NPC's hand rather than on the ground: it animates, so it is never baked and must not
+		// invalidate anything. This is the read that is unreliable at AddVob time - see the header.
+		if ( IsNpcAttached( vi->Vob ) ) continue;
+		InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
+	}
+	m_PendingVobAdds.clear();
+}
+
+
 void D3D12PointShadows::InvalidateStaticForVobAdded( const XMFLOAT3& posWS, float extent ) {
 	// A VOB added after a nearby point light already cached its static shadow cube would otherwise cast no
 	// point-light shadow: the static cube is only re-rendered when the light is fresh / moved / resized, not when
@@ -325,6 +345,8 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 	// (D3D11PointLight::OnVobRemovedFromWorld). Nothing was baked => nothing to invalidate, which is what keeps
 	// an NPC's throwaway held item (never baked, see IsNpcAttached) from re-rendering every cube nearby.
 	if ( !vob ) return;
+	// It may still be parked for a deferred add-invalidation - drop it, the drain must never look it up.
+	std::erase( m_PendingVobAdds, const_cast<zCVob*>( vob ) );
 	for ( Slot& ss : m_Slots ) {
 		if ( !ss.ownerKey || !ss.staticValid || ss.bakedVobs.empty() ) continue;
 		if ( std::ranges::contains( ss.bakedVobs, vob ) ) {
@@ -336,6 +358,10 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 
 
 void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const std::vector<LightShadowKey>& keys ) {
+	// Before anything decides renderStatic below: apply the world changes that were parked last frame, so a
+	// vob added since then lands in this frame's re-bake rather than the next one.
+	DrainPendingVobAdds();
+
 	// Point-light shadow selection (P2.10c + static-aside/round-robin P2.10f). Pick the closest-to-camera
 	// in-range lights (up to kMaxCubes) as this frame's "winners", but assign each winner a STABLE cube slot
 	// keyed by its light Vob identity (kept across frames, not reassigned by proximity every frame). A slot's
@@ -1151,6 +1177,7 @@ void D3D12PointShadows::CommitStaticCache() {
 		if ( !ss.ownerKey ) continue;   // slot released between Prepare() and here — nothing to validate
 		ss.staticValid = true;
 		ss.staticPresent = true;
+		m_HaveCachedStatic = true;
 	}
 	m_PendingStatic.clear();
 

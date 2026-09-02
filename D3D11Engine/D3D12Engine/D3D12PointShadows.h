@@ -133,6 +133,15 @@ public:
         and goings must not invalidate one either. Mirrors D3D11's IsAttachedToNpc. */
     static bool IsNpcAttached( const zCVob* vob );
 
+    /** Park a vob that just entered the world; the actual invalidation happens at the top of the next
+        SelectShadowedLights. It cannot be decided at AddVob time: ZenGin has not necessarily given the vob
+        its final transform yet (an item is inserted at the hand/waypoint it came from and moved to where it
+        lands afterwards) and its parent link may still be the NPC that is in the middle of letting go of it
+        - and the position and that parent are exactly the two things the decision reads. One frame later
+        both have settled. Entries whose vob left the world again are dropped; still being in
+        GothicAPI::VobMap is the liveness test that also makes the deferred read safe. */
+    void QueueVobAddedInvalidation( zCVob* vob );
+
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
     // Removal is matched by POINTER against what each slot actually baked (Slot::bakedVobs), never by reading
     // the vob: by the time this fires the object may already be half torn down, and its bbox/position are no
@@ -154,6 +163,13 @@ private:
     // false (excludeOut left empty) when self-shadowing is allowed, the light isn't attached to a carried item,
     // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
     bool BuildExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
+
+    /** Resolves everything QueueVobAddedInvalidation parked since the last frame - see there. */
+    void DrainPendingVobAdds();
+    std::vector<zCVob*> m_PendingVobAdds;
+    // Has any slot ever finished a static bake? Until one has there is no cache to invalidate, which is what
+    // keeps world load (tens of thousands of AddVob calls before the first frame) from parking any of them.
+    bool m_HaveCachedStatic = false;
 
     D3D12GraphicsEngine* m_E = nullptr;
 
