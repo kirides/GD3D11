@@ -362,6 +362,15 @@ public:
 
     virtual void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {};
 
+    /** Union's font-scaling plugins set this through the ddraw export of the same name. Backend-neutral so
+        every renderer's DrawString scales its glyphs by it. Returns the previous value. */
+    float UpdateCustomFontMultiplierFontRendering( float multiplier ) {
+        float res = m_CustomFontMultiplier;
+        m_CustomFontMultiplier = multiplier;
+        return res;
+    }
+    float GetCustomFontMultiplier() const { return m_CustomFontMultiplier; }
+
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
     virtual GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) { return GraphicsEventRecord{}; }
@@ -422,6 +431,9 @@ public:
 
 protected:
     GraphicsDeviceCapabilities m_DeviceCapabilities;
+
+    /** Glyph-scale multiplier set by Union's font plugins. 1 = untouched. */
+    float m_CustomFontMultiplier = 1.0f;
 
     HWND m_OutputWindow = nullptr;
     bool m_IsWindowActive = false;

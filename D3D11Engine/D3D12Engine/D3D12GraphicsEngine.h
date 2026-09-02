@@ -616,6 +616,9 @@ private:
     INT2  m_Resolution = {};
     // NATIVE swapchain/window size: swapchain, HDR display target, every post-tonemap pass, 2D UI, ImGui.
     INT2  m_BackbufferResolution = {};
+    // Resolution zCView::SetMode was last handed. SetMode reflows Gothic's whole view hierarchy, so it may
+    // only run when this actually changes (see OnBeginFrame).
+    INT2  m_AppliedZViewMode = {};
     // Last ResolutionScalePercent the render targets were built for (D3D11's s_oldResolutionScalePercent).
     int   m_AppliedResolutionScalePercent = 100;
     int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)
