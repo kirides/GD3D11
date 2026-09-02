@@ -355,16 +355,41 @@ namespace {
     }
 }
 
+// Rate at which cached static point-light shadows are being thrown away. Shown on both backends, since the
+// number is the point: a cached cube costs nothing to keep and a full re-bake to replace, so anything but a
+// brief spike after a teleport/world change means something nearby is churning the cache every frame.
+static void DrawPointLightInvalidationStat() {
+    const unsigned int perSec = Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.PerSecond();
+    const ImVec4 color = perSec == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
+        : perSec < 10 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
+                      : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+    ImGui::TextColored( color, "Static shadow invalidations: %u / s", perSec );
+    ImGui::SetItemTooltip( "Baked static point-light shadows dropped in the last one-second window, across all\n"
+        "lights: a caster appearing, vanishing or starting to move inside a light's range, the light\n"
+        "itself moving or changing shadow mode, or a shadow slot changing hands. Steady zero is the\n"
+        "healthy state - every light is reusing its cached cube. A sustained non-zero rate means those\n"
+        "cubes are being re-rendered instead, which is the exact cost the cache exists to avoid; the\n"
+        "usual culprit is a caster that keeps entering and leaving the static caster set." );
+}
+
 /** Debug-only visualization to help diagnose point-light shadow bugs (light bleed/self-occlusion) without
     guessing blind: draws every active light's range as a wireframe sphere (color-coded by shadow state) and
     shows the raw shadow-cube depth faces for whichever light is nearest the camera, unfolded as a cross. */
 void ImGuiShim::RenderPointLightShadowDebugWindow() {
-    if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
-        return; // Point-light cube visualization only implemented for the D3D11 backend so far.
-    }
-
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( !settings.DebugSettings.PointLightDebug.Enabled ) {
+        return;
+    }
+
+    // The cube visualization below is D3D11-only, but the invalidation rate is backend-neutral and is just as
+    // useful on D3D12 - so open the window either way and show what applies.
+    if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
+        ImGui::SetNextWindowSize( ImVec2( 620, 120 ), ImGuiCond_FirstUseEver );
+        if ( ImGui::Begin( "Point Light Shadow Debug" ) ) {
+            DrawPointLightInvalidationStat();
+            ImGui::TextUnformatted( "Cube visualization is only implemented for the D3D11 backend." );
+        }
+        ImGui::End();
         return;
     }
 
@@ -411,6 +436,9 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         ImGui::End();
         return;
     }
+
+    DrawPointLightInvalidationStat();
+    ImGui::Separator();
 
     if ( !nearest || !nearestInfo ) {
         ImGui::TextUnformatted( "No point light with an allocated shadow map found nearby." );

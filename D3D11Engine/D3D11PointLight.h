@@ -126,6 +126,11 @@ protected:
     void AcquireStaticAsideShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseStaticAsideShadowMap();
     void CopyStaticAsideToActiveTarget() const;
+
+    /** Single funnel for "this light's baked static shadow is no longer valid". Counts the drop into
+        RendererInfo.PointLightStaticInvalidations, but only when there actually WAS a bake to lose - so
+        PLS_FULL, which never latches one, doesn't drown the stat in one event per light per frame. */
+    void DropStaticBake();
     void RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
     void RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
 

@@ -154,7 +154,7 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
 
     StartReInit();
     DrawnOnce = false;
-    m_StaticShadowReady = false;
+    DropStaticBake();
     m_HasDynamicOverlay = false;
 }
 
@@ -170,7 +170,7 @@ void D3D11PointLight::ClearTiledSlot() {
     m_TiledSlotLowRes = false;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
-    m_StaticShadowReady = false;
+    DropStaticBake();
     m_HasDynamicOverlay = false;
 }
 
@@ -194,7 +194,7 @@ void D3D11PointLight::HandleShadowModeChange( int shadowMode ) {
     }
 
     m_LastShadowMode = shadowMode;
-    m_StaticShadowReady = false;
+    DropStaticBake();
     DrawnOnce = false;
     m_HasDynamicOverlay = false;
 
@@ -235,12 +235,12 @@ void D3D11PointLight::AcquireStaticAsideShadowMap( DepthStencilPool* pool, int r
     desc.ArraySize = 6;
 
     m_StaticDepthCubemap = pool->Acquire( desc );
-    m_StaticShadowReady = false;
+    DropStaticBake();
 }
 
 void D3D11PointLight::ReleaseStaticAsideShadowMap() {
     m_StaticDepthCubemap.reset();
-    m_StaticShadowReady = false;
+    DropStaticBake();
 }
 
 void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
@@ -438,7 +438,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
         SkeletalVobCache.clear();
 
         // Invalidate worldcache
-        m_StaticShadowReady = false;
+        DropStaticBake();
         m_HasDynamicOverlay = false;
     }
 
@@ -610,7 +610,7 @@ void D3D11PointLight::RenderFullCubemap() {
 
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
         ReleaseStaticAsideShadowMap();
-        m_StaticShadowReady = false;
+        DropStaticBake();
         m_HasDynamicOverlay = false;
 
         // FULL never reuses the world-mesh candidate cache - it always re-collects the whole scene fresh.
@@ -649,9 +649,16 @@ bool D3D11PointLight::IsReady()
         && LightInfo->Vob;
 }
 
+void D3D11PointLight::DropStaticBake() {
+    if ( m_StaticShadowReady ) {
+        Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
+    }
+    m_StaticShadowReady = false;
+}
+
 void D3D11PointLight::Invalidate() {
     DrawnOnce = false;
-    m_StaticShadowReady = false;
+    DropStaticBake();
     m_HasDynamicOverlay = false;
     VobCache.clear();
     SkeletalVobCache.clear();
@@ -731,7 +738,7 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
         VobCache.clear();
         SkeletalVobCache.clear();
         DrawnOnce = false;
-        m_StaticShadowReady = false;
+        DropStaticBake();
         m_HasDynamicOverlay = false;
     }
 

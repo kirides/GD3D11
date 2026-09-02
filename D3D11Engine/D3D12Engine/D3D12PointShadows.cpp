@@ -309,8 +309,10 @@ void D3D12PointShadows::InvalidateStaticForVobAdded( const XMFLOAT3& posWS, floa
 		if ( !ss.ownerKey || !ss.staticValid ) continue;
 		const float r = ss.range + extent;
 		const float dx = posWS.x - ss.pos.x, dy = posWS.y - ss.pos.y, dz = posWS.z - ss.pos.z;
-		if ( dx * dx + dy * dy + dz * dz < r * r )
+		if ( dx * dx + dy * dy + dz * dz < r * r ) {
 			ss.staticValid = false;   // re-render this slot's static depth next frame to include the new VOB
+			Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
+		}
 	}
 }
 
@@ -325,8 +327,10 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 	if ( !vob ) return;
 	for ( Slot& ss : m_Slots ) {
 		if ( !ss.ownerKey || !ss.staticValid || ss.bakedVobs.empty() ) continue;
-		if ( std::ranges::contains( ss.bakedVobs, vob ) )
+		if ( std::ranges::contains( ss.bakedVobs, vob ) ) {
 			ss.staticValid = false;   // this slot's cube holds the removed vob -- re-cache without it
+			Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
+		}
 	}
 }
 
@@ -427,7 +431,12 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 		bool stillWinner = false;
 		for ( const Cand& c : cands ) if ( c.key == ss.ownerKey ) { stillWinner = true; break; }
 		if ( stillWinner ) { ss.missingFrames = 0; continue; }
-		if ( ++ss.missingFrames > kSlotRetentionFrames ) ss = Slot{};
+		if ( ++ss.missingFrames > kSlotRetentionFrames ) {
+			// Retention expired - the cached depth goes with the slot. Counted like any other invalidation
+			// (D3D11 counts its equivalent tiled-slot handover), so slot churn shows up in the stat too.
+			if ( ss.staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
+			ss = Slot{};
+		}
 	}
 
 	static std::unordered_map<uint64_t, int32_t> encodedByKey;   // key -> tier-encoded ShadowCubeIndex
@@ -457,6 +466,7 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 					if ( m_Slots[s].missingFrames > worst ) { worst = m_Slots[s].missingFrames; slot = static_cast<int>( s ); }
 				if ( slot < 0 ) continue;   // whole tier held by present winners — this light goes unshadowed
 			}
+			if ( m_Slots[slot].staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
 			m_Slots[slot] = Slot{};
 			m_Slots[slot].ownerKey = c.key;
 			m_Slots[slot].owner = c.vob;          // nullptr for a cluster — see the Slot::owner comment

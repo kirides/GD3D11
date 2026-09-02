@@ -1468,6 +1468,35 @@ struct GothicRendererSettings {
     }
 };
 
+/** Event rate over a sliding ~1 second window. Self-sampling: the window rolls inside both Note() and
+    PerSecond(), so a metric nothing has reported in a while decays to 0 on its own without needing a
+    per-frame tick, and reading it from a debug window that is only sometimes open changes nothing. */
+class RollingSecondCounter {
+public:
+    void Note( unsigned int n = 1 ) {
+        Roll();
+        m_Count.fetch_add( n, std::memory_order_relaxed );
+    }
+
+    /** Events counted in the last completed window. */
+    unsigned int PerSecond() {
+        Roll();
+        return m_Last.load( std::memory_order_relaxed );
+    }
+
+private:
+    void Roll() {
+        const auto now = std::chrono::steady_clock::now();
+        if ( now - m_WindowStart < std::chrono::seconds( 1 ) ) return;
+        m_WindowStart = now;
+        m_Last.store( m_Count.exchange( 0, std::memory_order_relaxed ), std::memory_order_relaxed );
+    }
+
+    std::chrono::steady_clock::time_point m_WindowStart = std::chrono::steady_clock::now();
+    std::atomic<unsigned int> m_Count = 0;
+    std::atomic<unsigned int> m_Last = 0;
+};
+
 struct GothicRendererInfo {
     GothicRendererInfo() {
         VOBVerticesDataSize = 0;
@@ -1525,6 +1554,13 @@ struct GothicRendererInfo {
     float NearPlane;
     int FrameDrawnLights;
     int WorldMeshDrawCalls;
+
+    // Cached static point-light shadows dropped per second - a caster appearing, vanishing or starting to
+    // move inside a light's range, or the light itself moving. Deliberately NOT reset per frame (it owns its
+    // own window). A steady non-zero rate means point-light cubes are being re-baked continuously instead of
+    // cached, which is the expensive failure mode this cache exists to avoid; see ImGuiShim's Point Light
+    // Shadow Debug window.
+    RollingSecondCounter PointLightStaticInvalidations;
 
     unsigned int VOBVerticesDataSize;
     // Skeletal meshes can be extracted (and their SkeletalMeshInfo destroyed) from background
