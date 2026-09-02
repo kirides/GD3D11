@@ -3,6 +3,8 @@
 #include "GothicMemoryLocations.h"
 #include "zAllocator.h"
 
+#pragma pack(push, 1)
+
 class zSTRING {
 public:
     zSTRING() {
@@ -11,6 +13,11 @@ public:
     zSTRING( const char* str ) {
         reinterpret_cast<void( __fastcall* )(zSTRING*, int, const char*)>(GothicMemoryLocations::zSTRING::ConstructorCharPtr)(this, 0, str);
     }
+
+    zSTRING(const zSTRING& other)
+        : zSTRING(other.ToChar()) {}
+
+    zSTRING& operator=(const zSTRING& other) = delete;
 
     ~zSTRING() {
         reinterpret_cast<void( __fastcall* )(zSTRING*)>(GothicMemoryLocations::zSTRING::DestructorCharPtr)(this);
@@ -54,3 +61,5 @@ private:
     size_t length;
     size_t reserved;
 };
+static_assert(sizeof(zSTRING) == 20, "Must be exactly 20");
+#pragma pack(pop)

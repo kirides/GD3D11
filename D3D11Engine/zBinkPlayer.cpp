@@ -472,8 +472,8 @@ int __fastcall BinkPlayerOpenVideo(DWORD BinkPlayer, DWORD _EDX, zSTRING videoNa
 #else
 	zSTRING& directoryRoot = reinterpret_cast<zSTRING&(__thiscall*)(DWORD, int)>(GothicMemoryLocations::zCOption::GetDirectory)(zCOption, 24);
 #endif
-	std::string pathToVideo = std::string(directoryRoot.ToChar(), directoryRoot.Length()) +
-		std::string(videoName.ToChar(), videoName.Length());
+	std::string pathToVideo = directoryRoot.ToString()
+        .append(videoName.ToChar(), videoName.Length());
 	if(pathToVideo.find(".BIK") == std::string::npos && pathToVideo.find(".BK2") == std::string::npos)
 		pathToVideo.append(".BIK");
 
@@ -494,12 +494,9 @@ int __fastcall BinkPlayerOpenVideo(DWORD BinkPlayer, DWORD _EDX, zSTRING videoNa
         video->scaleVideo = BinkPlayerReadScaleVideos(zCOption);
         Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning = true;
 
-		// We are passing directly zSTRING so the memory will be deleted inside this function
 		reinterpret_cast<int(__thiscall*)(DWORD, zSTRING)>(GothicMemoryLocations::zCBinkPlayer::OpenVideo)(BinkPlayer, videoName);
 		return 1;
 	}
-
-	videoName.Delete();
 	return 0;
 }
 
