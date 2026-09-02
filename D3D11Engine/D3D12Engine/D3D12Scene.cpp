@@ -355,7 +355,7 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // nearby cube at all. What it was really there to stop is the item an NPC eating/drinking/smoking spawns
     // and despawns constantly -- and that one is identified by its NPC parent.
     if ( vi->Vob && vi->VisualInfo )
-        m_PointShadows.QueueVobAddedInvalidation( vi->Vob );
+        m_PointShadows.QueueVobChangedInvalidation( vi->Vob );
 }
 
 
@@ -367,6 +367,14 @@ XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     // a slot that never baked this vob simply doesn't match. Slots are empty during world load, no-op then.
     m_PointShadows.InvalidateStaticForVobRemoved( vob );
     return XR_SUCCESS;
+}
+
+
+void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
+    // A vob baked into a cached static cube at its old position leaves a shadow behind; one that just moved
+    // into a light's reach is missing from that light's cube. Queued rather than resolved here because a
+    // falling/thrown item moves several times per frame and its position is only final once it stops.
+    m_PointShadows.QueueVobChangedInvalidation( vob );
 }
 
 

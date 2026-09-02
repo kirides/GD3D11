@@ -299,23 +299,33 @@ bool D3D12PointShadows::Init() {
 }
 
 
-void D3D12PointShadows::QueueVobAddedInvalidation( zCVob* vob ) {
+void D3D12PointShadows::QueueVobChangedInvalidation( zCVob* vob ) {
 	if ( !vob || !m_HaveCachedStatic ) return;
-	m_PendingVobAdds.push_back( vob );
+	// A falling or thrown vob reports several transform changes per frame; they would all resolve to the same
+	// answer, so only the first is kept. Scanning is fine - the list holds one frame of world changes.
+	if ( std::ranges::contains( m_PendingVobChanges, vob ) ) return;
+	m_PendingVobChanges.push_back( vob );
 }
 
 
-void D3D12PointShadows::DrainPendingVobAdds() {
-	for ( zCVob* vob : m_PendingVobAdds ) {
+void D3D12PointShadows::DrainPendingVobChanges() {
+	if ( m_PendingVobChanges.empty() ) return;
+	// Swapped out, not iterated in place: InvalidateStaticForVobRemoved below scrubs the pending list.
+	m_DrainScratch.swap( m_PendingVobChanges );
+	for ( zCVob* vob : m_DrainScratch ) {
 		// OnRemovedVob erases the entry (and deletes the VobInfo), so a hit means the vob is still alive.
 		VobInfo* vi = Engine::GAPI->GetVobByVob( vob );
 		if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
-		// Settled in an NPC's hand rather than on the ground: it animates, so it is never baked and must not
-		// invalidate anything. This is the read that is unreliable at AddVob time - see the header.
+		// Riding an NPC rather than lying on the ground: it animates, so it is never baked and must not
+		// invalidate anything. This is the read that is unreliable at report time - see the header.
 		if ( IsNpcAttached( vi->Vob ) ) continue;
+		// Two halves, and a move needs both: every cube that baked it is now showing a shadow where the vob
+		// no longer is, and every cube reaching where it is NOW is missing it. A fresh add matches nothing in
+		// the first half, a vob that moved within one light's reach matches in both.
+		InvalidateStaticForVobRemoved( vi->Vob );
 		InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
 	}
-	m_PendingVobAdds.clear();
+	m_DrainScratch.clear();
 }
 
 
@@ -345,8 +355,8 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 	// (D3D11PointLight::OnVobRemovedFromWorld). Nothing was baked => nothing to invalidate, which is what keeps
 	// an NPC's throwaway held item (never baked, see IsNpcAttached) from re-rendering every cube nearby.
 	if ( !vob ) return;
-	// It may still be parked for a deferred add-invalidation - drop it, the drain must never look it up.
-	std::erase( m_PendingVobAdds, const_cast<zCVob*>( vob ) );
+	// It may still be parked for a deferred resolve - drop it, the drain must never look it up.
+	std::erase( m_PendingVobChanges, const_cast<zCVob*>( vob ) );
 	for ( Slot& ss : m_Slots ) {
 		if ( !ss.ownerKey || !ss.staticValid || ss.bakedVobs.empty() ) continue;
 		if ( std::ranges::contains( ss.bakedVobs, vob ) ) {
@@ -359,8 +369,8 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 
 void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const std::vector<LightShadowKey>& keys ) {
 	// Before anything decides renderStatic below: apply the world changes that were parked last frame, so a
-	// vob added since then lands in this frame's re-bake rather than the next one.
-	DrainPendingVobAdds();
+	// vob added or moved since then lands in this frame's re-bake rather than the next one.
+	DrainPendingVobChanges();
 
 	// Point-light shadow selection (P2.10c + static-aside/round-robin P2.10f). Pick the closest-to-camera
 	// in-range lights (up to kMaxCubes) as this frame's "winners", but assign each winner a STABLE cube slot

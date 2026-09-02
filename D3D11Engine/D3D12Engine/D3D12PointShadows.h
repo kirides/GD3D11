@@ -133,14 +133,17 @@ public:
         and goings must not invalidate one either. Mirrors D3D11's IsAttachedToNpc. */
     static bool IsNpcAttached( const zCVob* vob );
 
-    /** Park a vob that just entered the world; the actual invalidation happens at the top of the next
-        SelectShadowedLights. It cannot be decided at AddVob time: ZenGin has not necessarily given the vob
-        its final transform yet (an item is inserted at the hand/waypoint it came from and moved to where it
-        lands afterwards) and its parent link may still be the NPC that is in the middle of letting go of it
-        - and the position and that parent are exactly the two things the decision reads. One frame later
-        both have settled. Entries whose vob left the world again are dropped; still being in
-        GothicAPI::VobMap is the liveness test that also makes the deferred read safe. */
-    void QueueVobAddedInvalidation( zCVob* vob );
+    /** Park a vob that just entered the world or just moved; the invalidation itself happens at the top of
+        the next SelectShadowedLights. Deferred rather than decided on the spot because the two things the
+        decision reads - the vob's position and whether it hangs off an NPC - are not settled when Gothic
+        reports the change. An item is inserted at the hand/waypoint it came from and placed afterwards, its
+        parent link can still be the NPC that is letting go of it, and it then FALLS: several transform
+        changes across several frames before it comes to rest. So this coalesces to one resolve per frame
+        reading the position as it is by then, and a still-moving vob simply queues again next frame until it
+        stops - the last resolve is the one that sticks. Entries whose vob left the world meanwhile are
+        dropped; still being in GothicAPI::VobMap is the liveness test that also makes the deferred read
+        safe. */
+    void QueueVobChangedInvalidation( zCVob* vob );
 
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
     // Removal is matched by POINTER against what each slot actually baked (Slot::bakedVobs), never by reading
@@ -164,9 +167,12 @@ private:
     // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
     bool BuildExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
 
-    /** Resolves everything QueueVobAddedInvalidation parked since the last frame - see there. */
-    void DrainPendingVobAdds();
-    std::vector<zCVob*> m_PendingVobAdds;
+    /** Resolves everything QueueVobChangedInvalidation parked since the last frame - see there. */
+    void DrainPendingVobChanges();
+    std::vector<zCVob*> m_PendingVobChanges;
+    // Swapped with the above for the duration of a drain, so the invalidation helpers it calls can scrub the
+    // pending list without the loop iterating a vector that is being erased from. Capacity is retained.
+    std::vector<zCVob*> m_DrainScratch;
     // Has any slot ever finished a static bake? Until one has there is no cache to invalidate, which is what
     // keeps world load (tens of thousands of AddVob calls before the first frame) from parking any of them.
     bool m_HaveCachedStatic = false;

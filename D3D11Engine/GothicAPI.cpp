@@ -1934,6 +1934,7 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
         }
 
         vi->UpdateState();
+        Engine::GraphicsEngine->OnVobMoved( vob );
         Engine::GAPI->GetRendererState().RendererInfo.FrameVobUpdates++;
     } else {
         auto sit = SkeletalVobMap.find( vob );
@@ -5065,9 +5066,8 @@ void GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob ) {
 
     // Add to dynamic vob list
     DynamicallyAddedVobs.push_back( vob );
-
-    // See the SkeletalVobInfo overload - it moves now, so cached static shadows holding it must be dropped.
-    Engine::GraphicsEngine->OnVobBecameDynamic( vob->Vob );
+    // No OnVobBecameDynamic here: the only caller is OnVobMoved, which fires OnVobMoved( vob ) right after
+    // this and covers the same ground with the transform already applied.
 }
 
 std::vector<LeafVobEntry>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob, std::vector<LeafVobEntry>* source ) {
@@ -5112,7 +5112,6 @@ std::vector<LeafVobEntry>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo*
 
     // Add to dynamic vob list
     DynamicallyAddedVobs.push_back( vob );
-    Engine::GraphicsEngine->OnVobBecameDynamic( vob->Vob );
 
     return itn;
 }

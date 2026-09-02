@@ -345,6 +345,12 @@ public:
         that bake it into a cached shadow (D3D12's static point-light cubes) must drop that cache. */
     virtual void OnVobBecameDynamic( zCVob* vob ) {}
 
+    /** A registered static-mesh vob's transform actually changed (GothicAPI::OnVobMoved, after the move has
+        been applied). A cached shadow that baked it at its old position is now wrong, and a light it has just
+        moved into range of has to pick it up - so a backend that caches must re-bake both. Fires per real
+        move, so anything acting on it should coalesce to at most once per frame. */
+    virtual void OnVobMoved( zCVob* vob ) {}
+
     /** Called from MeshInfo::~MeshInfo(), right before its buffers/CPU vectors are torn down. A MeshInfo can
         be freed independently of any world (re)load - e.g. a shared MeshVisualInfo's last VOB reference
         dropping via SharedVisualRegistry::Release() - so any backend that caches raw MeshInfo* pointers
