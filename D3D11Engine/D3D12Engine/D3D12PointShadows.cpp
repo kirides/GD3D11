@@ -547,15 +547,73 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 	for ( const Cand& c : cands ) {
 		const UINT poolBegin = c.lowRes ? kMaxCubes : 0u;
 		const UINT poolEnd   = c.lowRes ? kMaxSlots : kMaxCubes;
+
+		// PFX-spawned lights (candles/torches/spell effects) mirror D3D11's RenderStaticShadowPass/RenderFullCubemap
+		// gate: unless PLSC_PARTICLE_FX is enabled, restrict them to world-mesh-only casters — BuildExcludeList
+		// never excludes a PFX light's own carrier (see its comment), so without this a PFX light attached to an
+		// NPC/the player could throw a large self-shadow from its own carrier. Checked even when c.isStatic is
+		// already false only because PLSC_STATIC_LIGHTS opted it in (BuildFrameLightBuffer's shadowRoutingStatic):
+		// a light can be both IsStatic() and IsPFXVobLight (e.g. a fixed PFX-spawned torch), and PFX takes
+		// precedence — mirrors D3D11's AllowsDynamicCasters category order.
+		bool restrictToWorld = false;
+		if ( c.vob && !c.isStatic ) {
+			auto li = Engine::GAPI->VobLightMap.find( c.vob );
+			if ( li != Engine::GAPI->VobLightMap.end() && li->second->IsPFXVobLight ) {
+				restrictToWorld = !(Engine::GAPI->GetRendererState().RendererSettings.PointlightShadowCasterFlags
+					& GothicRendererSettings::PLSC_PARTICLE_FX);
+			}
+		}
+		// Would this light actually USE the full-res tier? Only one that receives the per-frame skeletal overlay
+		// there has anything to gain from it. Computed before slot assignment because it is what decides whether
+		// a light sitting in the low-res tier gets promoted back out of it.
+		const bool wantsOverlay = !c.isStatic && !restrictToWorld
+			&& shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+
+		// Pick a slot in [b,e): a free one; else the longest-absent owner (an absent light's cache is worth
+		// keeping, but not at the cost of a light on screen now); else the FARTHEST present owner, and only if
+		// this candidate is substantially closer than it — kEvictDistanceRatio is the anti-oscillation margin,
+		// so two lights at similar distances can never trade a slot back and forth. -1 when every owner is
+		// about as close as this light, i.e. genuine oversubscription rather than arrival order.
+		auto pickSlot = [&]( UINT b, UINT e ) -> int {
+			for ( UINT s = b; s < e; ++s ) if ( !m_Slots[s].ownerKey ) return static_cast<int>( s );
+			int best = -1;
+			UINT32 worst = 0;
+			for ( UINT s = b; s < e; ++s )
+				if ( m_Slots[s].missingFrames > worst ) { worst = m_Slots[s].missingFrames; best = static_cast<int>( s ); }
+			if ( best >= 0 ) return best;
+			float bar = c.distSq * kEvictDistanceRatio;
+			for ( UINT s = b; s < e; ++s ) {
+				const Slot& os = m_Slots[s];
+				if ( !os.ownerKey ) continue;
+				const XMVECTOR d = XMVectorSubtract( XMLoadFloat3( &os.pos ), camPos );
+				const float dsq = XMVectorGetX( XMVector3LengthSq( d ) );
+				if ( dsq > bar ) { bar = dsq; best = static_cast<int>( s ); }
+			}
+			return best;
+			};
+
 		int slot = -1;
 		// A light keeps whatever slot it already owns, in EITHER tier. Tier preference decides where a light
 		// LOOKS for a slot, not where it is allowed to keep one: re-homing a spilled light the moment pressure
-		// eased would make it ping-pong between tiers, and every flip is a fresh cube render.
-		// The one thing that forces a hand-back is a light that has STARTED MOVING while holding a low-res
-		// slot - that tier bakes a cube once and never runs the dynamic overlay, so a mover cannot stay in it.
+		// eased would make it ping-pong between tiers, and every flip is a fresh cube render. Two things do
+		// force a low-res holder out, both of them one-directional:
 		if ( auto it = slotByKey.find( c.key ); it != slotByKey.end() ) {
 			const UINT owned = it->second;
-			if ( IsLowSlot( owned ) && !c.spatiallyStatic ) {
+			const bool ownedLow = IsLowSlot( owned );
+			// 1. It STARTED MOVING. That tier bakes a cube once and caches it forever, and never runs the
+			//    dynamic overlay, so a mover cannot stay in it.
+			bool handBack = ownedLow && !c.spatiallyStatic;
+			// 2. It now ranks into the full-res tier (the trim left c.lowRes false) AND would get a dynamic
+			//    overlay there. Without this a light that spilled while far away stayed in the cached tier for
+			//    good: walk right up to it under UPDATE DYNAMIC and it still drew static-only shadows, because
+			//    ownership alone kept it there. Promotion is attempted only when a full-res slot can ACTUALLY
+			//    be had — giving up the cube it holds for nothing would leave it unshadowed, and unshadowed is
+			//    what the range clamp turns into a light that looks switched off.
+			if ( !handBack && ownedLow && !c.lowRes && wantsOverlay ) {
+				const int hi = pickSlot( 0, kMaxCubes );
+				if ( hi >= 0 ) { handBack = true; slot = hi; }
+			}
+			if ( handBack ) {
 				if ( m_Slots[owned].staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
 				m_Slots[owned] = Slot{};
 				slotByKey.erase( c.key );
@@ -563,36 +621,9 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 				slot = static_cast<int>( owned );
 			}
 		}
-		if ( slot < 0 ) {
-			for ( UINT s = poolBegin; s < poolEnd; ++s )
-				if ( !m_Slots[s].ownerKey ) { slot = static_cast<int>( s ); break; }
-			if ( slot < 0 ) {
-				// Every slot in this tier is spoken for. Retained-but-absent owners are the ones to give up
-				// first, longest-absent first — an absent light's cache is worth keeping, but not at the cost
-				// of a light on screen now.
-				UINT32 worst = 0;
-				for ( UINT s = poolBegin; s < poolEnd; ++s )
-					if ( m_Slots[s].missingFrames > worst ) { worst = m_Slots[s].missingFrames; slot = static_cast<int>( s ); }
-				if ( slot < 0 ) {
-					// Every slot is held by a light that is on screen RIGHT NOW. This used to give up here, which
-					// made slot ownership first-come-first-served for the rest of the session: whoever filled the
-					// tier kept it, however far away they drifted, and a light you walked right up to never got
-					// one. Take the FARTHEST owner's slot instead, and only if this candidate is substantially
-					// closer than it — that margin is the anti-oscillation hysteresis (two lights at similar
-					// distances can never trade the slot back and forth).
-					float bar = c.distSq * kEvictDistanceRatio;   // the owner must be beyond this to be worth taking
-					for ( UINT s = poolBegin; s < poolEnd; ++s ) {
-						const Slot& ss = m_Slots[s];
-						if ( !ss.ownerKey ) continue;
-						const XMVECTOR d = XMVectorSubtract( XMLoadFloat3( &ss.pos ), camPos );
-						const float dsq = XMVectorGetX( XMVector3LengthSq( d ) );
-						if ( dsq > bar ) { bar = dsq; slot = static_cast<int>( s ); }
-					}
-					// Still nothing: every owner is about as close as this light. It goes unshadowed — but it is
-					// genuinely one of the farthest in a fully-subscribed tier, not a victim of arrival order.
-					if ( slot < 0 ) { ++starvedThisFrame; continue; }
-				}
-			}
+		if ( slot < 0 ) slot = pickSlot( poolBegin, poolEnd );
+		if ( slot < 0 ) { ++starvedThisFrame; continue; }
+		if ( m_Slots[slot].ownerKey != c.key ) {
 			if ( m_Slots[slot].staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
 			if ( m_Slots[slot].ownerKey ) slotByKey.erase( m_Slots[slot].ownerKey );
 			slotByKey[c.key] = static_cast<UINT>( slot );
@@ -620,24 +651,7 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 		// `!slotLow` is load-bearing, not belt-and-braces: the low-res array has no dynamic twin, so a low slot
 		// becoming overlay-eligible would point Phase C at a DSV that does not exist for it. Since the SPILL,
 		// a non-static light can end up in that tier too - it gives up its overlay in exchange for a cube.
-		// PFX-spawned lights (candles/torches/spell effects) mirror D3D11's RenderStaticShadowPass/RenderFullCubemap
-		// gate: unless PLSC_PARTICLE_FX is enabled, restrict them to world-mesh-only casters — BuildExcludeList
-		// never excludes a PFX light's own carrier (see its comment), so without this a PFX light attached to an
-		// NPC/the player could throw a large self-shadow from its own carrier. Checked even when c.isStatic is
-		// already false only because PLSC_STATIC_LIGHTS opted it in (BuildFrameLightBuffer's shadowRoutingStatic):
-		// a light can be both IsStatic() and IsPFXVobLight (e.g. a fixed PFX-spawned torch), and PFX takes
-		// precedence — mirrors D3D11's AllowsDynamicCasters category order.
-		bool restrictToWorld = false;
-		if ( c.vob && !c.isStatic ) {
-			auto li = Engine::GAPI->VobLightMap.find( c.vob );
-			if ( li != Engine::GAPI->VobLightMap.end() && li->second->IsPFXVobLight ) {
-				restrictToWorld = !(Engine::GAPI->GetRendererState().RendererSettings.PointlightShadowCasterFlags
-					& GothicRendererSettings::PLSC_PARTICLE_FX);
-			}
-		}
-
-		const bool overlayEligible = !c.isStatic && !slotLow && shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC
-			&& !restrictToWorld;
+		const bool overlayEligible = wantsOverlay && !slotLow;
 		// An ineligible slot must not keep advertising a stale overlay: drop the bit so the lit pass stops
 		// sampling the dynamic array for it the moment the setting (or the light's IsStatic) changes.
 		if ( !overlayEligible ) ss.dynamicValid = false;
