@@ -321,11 +321,20 @@ void D3D12PointShadows::DrainPendingVobChanges() {
 		// Riding an NPC rather than lying on the ground: it animates, so it is never baked and must not
 		// invalidate anything. This is the read that is unreliable at report time - see the header.
 		if ( IsNpcAttached( vi->Vob ) ) continue;
+		// Below the movement threshold this is jitter, not a move - see kVobMoveEpsSq. The stored reference is
+		// only advanced when an invalidation actually happens, so repeated sub-eps steps still add up to one.
+		const XMFLOAT3 pos = vi->Vob->GetPositionWorld();
+		if ( auto posIt = m_LastInvalidationPos.find( vi->Vob ); posIt != m_LastInvalidationPos.end() ) {
+			const float dx = pos.x - posIt->second.x, dy = pos.y - posIt->second.y, dz = pos.z - posIt->second.z;
+			if ( dx * dx + dy * dy + dz * dz < kVobMoveEpsSq ) continue;
+		}
 		// Two halves, and a move needs both: every cube that baked it is now showing a shadow where the vob
 		// no longer is, and every cube reaching where it is NOW is missing it. A fresh add matches nothing in
 		// the first half, a vob that moved within one light's reach matches in both.
 		InvalidateStaticForVobRemoved( vi->Vob );
-		InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
+		InvalidateStaticForVobAdded( pos, vi->VisualInfo->MeshSize * 0.5f );
+		// After the removal half, which drops this vob's entry along with the caster records it matched.
+		m_LastInvalidationPos.insert_or_assign( vi->Vob, pos );
 	}
 	m_DrainScratch.clear();
 }
@@ -359,6 +368,7 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 	if ( !vob ) return;
 	// It may still be parked for a deferred resolve - drop it, the drain must never look it up.
 	std::erase( m_PendingVobChanges, const_cast<zCVob*>( vob ) );
+	m_LastInvalidationPos.erase( vob );   // the address may be reused by a different vob later
 	for ( Slot& ss : m_Slots ) {
 		if ( !ss.ownerKey || !ss.staticValid || ss.bakedVobs.empty() ) continue;
 		if ( std::ranges::contains( ss.bakedVobs, vob ) ) {

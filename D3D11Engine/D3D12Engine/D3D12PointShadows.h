@@ -170,6 +170,15 @@ private:
     /** Resolves everything QueueVobChangedInvalidation parked since the last frame - see there. */
     void DrainPendingVobChanges();
     std::vector<zCVob*> m_PendingVobChanges;
+    // Movement threshold for the resolve, mirroring D3D11's PositionEqualEps (D3D11PointLight.cpp). Gothic
+    // reports a transform change for ANY delta, and a settling/jittering vob produces a sub-unit one every
+    // single frame - each of which would re-bake the static cube of every light around it, forever.
+    static constexpr float kVobMoveEpsSq = 1.0f;
+    // Where each vob was when it last actually invalidated something. The reference is that position, NOT the
+    // previous frame's, so a slow drift keeps accumulating until it crosses the threshold instead of being
+    // filtered out one sub-eps step at a time. Entries are dropped in InvalidateStaticForVobRemoved, i.e. when
+    // the vob leaves the world.
+    gtl::flat_hash_map<const zCVob*, DirectX::XMFLOAT3> m_LastInvalidationPos;
     // Swapped with the above for the duration of a drain, so the invalidation helpers it calls can scrub the
     // pending list without the loop iterating a vector that is being erased from. Capacity is retained.
     std::vector<zCVob*> m_DrainScratch;
