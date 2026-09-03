@@ -66,6 +66,7 @@ namespace {
 		UINT staticWorldBegin = 0, staticWorldEnd = 0;
 		UINT staticVobBegin = 0,   staticVobEnd = 0;
 		UINT staticSkelBegin = 0,  staticSkelEnd = 0;
+		UINT staticAttachBegin = 0, staticAttachEnd = 0;
 		UINT dynSkelBegin = 0,     dynSkelEnd = 0;
 		UINT dynAttachBegin = 0,   dynAttachEnd = 0;
 		bool lowRes = false;         // slot lives in the low-res STATIC cube array (D3D12PointShadows::LowIndex(slot)).
@@ -79,6 +80,7 @@ namespace {
 	std::vector<PointShadowDraw>        g_PsStaticWorldDraws;
 	std::vector<PointShadowDraw>        g_PsStaticVobDraws;
 	std::vector<PointShadowDraw>        g_PsStaticSkelDraws;   // MOB bodies baked into the static cube
+	std::vector<PointShadowDraw>        g_PsStaticAttachDraws; // MOB node attachments baked into the static cube
 	std::vector<PointShadowDraw>        g_PsDynSkelDraws;
 	std::vector<PointShadowDraw>        g_PsDynAttachDraws;
 	std::vector<PointShadowLightRecord> g_PsLights;   // only slots TOUCHED this frame (static and/or dynamic)
@@ -715,6 +717,7 @@ void D3D12PointShadows::Prepare() {
 	g_PsStaticWorldDraws.clear();
 	g_PsStaticVobDraws.clear();
 	g_PsStaticSkelDraws.clear();
+	g_PsStaticAttachDraws.clear();
 	g_PsDynSkelDraws.clear();
 	g_PsDynAttachDraws.clear();
 	g_PsAnyStatic = false;
@@ -826,6 +829,7 @@ void D3D12PointShadows::Prepare() {
 		rec.staticWorldBegin = rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 		rec.staticVobBegin   = rec.staticVobEnd   = static_cast<UINT>( g_PsStaticVobDraws.size() );
 		rec.staticSkelBegin  = rec.staticSkelEnd  = static_cast<UINT>( g_PsStaticSkelDraws.size() );
+		rec.staticAttachBegin = rec.staticAttachEnd = static_cast<UINT>( g_PsStaticAttachDraws.size() );
 		if ( rec.renderStatic ) {
 			g_PsAnyStatic = true;
 			// Rebuilt below alongside the draws it describes - see InvalidateStaticForVobRemoved.
@@ -999,8 +1003,36 @@ void D3D12PointShadows::Prepare() {
 					}
 					if ( baked ) bakedVobs.push_back( sd.vobInfo->Vob );
 				}
+
+				// Most MOBs carry no soft-skin geometry at all: a chest, door or bench is a zCModel whose only
+				// renderable content hangs off its nodes, so the body loop above finds nothing for them. Bake
+				// those attachments too, through the VOB caster PSO like a node attachment in Phase C.
+				if ( psPipe.CasterVobPSO ) {
+					const zCVob* lastOwner = nullptr;
+					for ( const FrameAttachDraw& a : AttachScratch ) {
+						if ( !a.mesh || !a.owner || a.mesh->Indices.empty() ) continue;
+						if ( !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+						if ( a.owner->GetVobType() == zVOB_TYPE_NSC || IsNpcAttached( a.owner ) ) continue;
+						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
+						D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
+						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+						PointShadowDraw d;
+						d.vb = mvb; d.ib = mib;
+						d.stride = sizeof( ExVertexStruct );
+						d.indexCount = static_cast<UINT>( a.mesh->Indices.size() );
+						d.instanceCount = 6;
+						d.srv = resolveDiffuse( a.tex );
+						d.instView = a.instView;
+						d.alphaTested = a.alphaTested;
+						g_PsStaticAttachDraws.push_back( d );
+						// AttachScratch is grouped by owner, so this dedupes the whole run in one compare.
+						if ( a.owner != lastOwner ) { bakedVobs.push_back( a.owner ); lastOwner = a.owner; }
+					}
+				}
 			}
 			rec.staticSkelEnd = static_cast<UINT>( g_PsStaticSkelDraws.size() );
+			rec.staticAttachEnd = static_cast<UINT>( g_PsStaticAttachDraws.size() );
 		}
 
 		// ==================== Phase C resolve — DYNAMIC casters (skeletal NPCs + their attachments) ============
@@ -1370,6 +1402,21 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 					if ( d.instCb != lastInstCb ) { cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb ); lastInstCb = d.instCb; }
 					if ( d.boneCb != lastBoneCb ) { cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb ); lastBoneCb = d.boneCb; }
 					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
+					emitGeometry( d );
+				}
+			}
+
+			if ( L.staticAttachEnd > L.staticAttachBegin ) {
+				DX_ZONE( cmdList.Get(), "MOB Nodes" );
+				TracyD3D12ZoneCGX( cmdList.Get(), "MOB Nodes" );
+				// Back to the VOB signature the block above switched away from - see Phase C's identical note.
+				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
+				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				resetBindCache();
+				for ( UINT i = L.staticAttachBegin; i < L.staticAttachEnd; ++i ) {
+					const PointShadowDraw& d = g_PsStaticAttachDraws[i];
+					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
+					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
 			}

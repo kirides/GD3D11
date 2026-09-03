@@ -10,7 +10,7 @@
 // m_Cube (cached static-only depth) and m_DynCube (this frame's moving casters). Hundreds of shadowed lights
 // can therefore update their MOVING casters every frame without re-rendering static geometry. Three phases:
 //   A) STATIC   — for slots whose light is fresh / moved / resized, (re)render the static casters
-//                 (world mesh + instanced VOBs) into m_Cube. Amortized: usually a no-op.
+//                 (world mesh + instanced VOBs + MOB bodies/node attachments) into m_Cube. Amortized: usually a no-op.
 //   C) DYNAMIC  — clear this slot's m_DynCube face-set and draw the moving casters (skeletal NPCs + their node
 //                 attachments) into it. Only for slots that actually HAVE casters in range this frame.
 //   D) hand the touched slots back to PIXEL_SHADER_RESOURCE for the lit pass.
