@@ -870,6 +870,11 @@ namespace {
 		bool        isStatic;         // Gothic's true IsStatic() — governs specular scale / DisableStaticPointlights,
 		                              // unaffected by PointlightShadowCasterFlags
 		bool        isIndoor;
+		bool        spatiallyStatic;  // has not MOVED for a while and does not ride a moving transform.
+		                              // Gothic's own IsStatic() is NOT this: a colour-animated candle or
+		                              // brazier reads as non-static there while never being repositioned,
+		                              // which is why so many fixed room lights were competing for the
+		                              // 64-slot moving-light tier. Also gates the SPILL in SelectShadowedLights.
 		bool        shadowRoutingStatic; // isStatic, UNLESS PLSC_STATIC_LIGHTS opted static lights into full
 		                              // dynamic-tier shadow treatment — see the PointlightShadowCasterFlags read below.
 		                              // Governs clustering eligibility and LightShadowKey::isStatic/lowRes.
@@ -1042,6 +1047,19 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
 	const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
 
+	// At PLS_STATIC_ONLY nothing receives a dynamic overlay at all, so the full-res tier buys resolution and
+	// nothing else - and it is 16x scarcer. See the routing decision in the collect loop below.
+	const bool staticOnlyMode = lightSettings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
+
+	// Per-light "has not moved recently" tracking, keyed by vob. Frame-path map: capacity is reused, and it
+	// is swept only every 1024 frames.
+	struct StationaryState { XMFLOAT3 pos{}; UINT32 frames = 0; UINT32 lastSeen = 0; };
+	static std::unordered_map<const zCVob*, StationaryState> s_stationary;
+	static UINT32 s_stationaryFrame = 0;
+	++s_stationaryFrame;
+	constexpr float  kStationaryEps = 1.0f;     // world units; below this a light is jittering, not moving
+	constexpr UINT32 kStationaryFrames = 60;    // ~1 s of holding still before a light counts as a fixture
+
 	static std::vector<FrameLightCand> s_cands;   // static: capacity is reused, no per-frame allocation
 	s_cands.clear();
 
@@ -1056,11 +1074,36 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		const XMFLOAT3 pw = vob->GetPositionWorld();
 		const float range = vob->GetLightRange();
 		const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &pw ), camPos ) ) );
+		// Has this light held still long enough to count as a fixture? A light that never moves has a shadow
+		// cube that can be rendered once and cached forever, which is the entire basis of the low-res static
+		// tier - and Gothic's IsStatic() bit does not answer that question. NPC-attached lights are excluded
+		// outright rather than timed out: a torch in an idle NPC's hand stands still for seconds at a time and
+		// would flip tier every time they set off walking again.
+		bool spatiallyStatic = isStatic;
+		if ( !spatiallyStatic && !D3D12PointShadows::IsNpcAttached( vob ) ) {
+			auto& st = s_stationary[vob];
+			const bool moved = std::fabs( pw.x - st.pos.x ) > kStationaryEps
+				|| std::fabs( pw.y - st.pos.y ) > kStationaryEps
+				|| std::fabs( pw.z - st.pos.z ) > kStationaryEps;
+			if ( moved ) { st.pos = pw; st.frames = 0; }
+			else if ( st.frames < kStationaryFrames ) ++st.frames;
+			st.lastSeen = s_stationaryFrame;
+			spatiallyStatic = st.frames >= kStationaryFrames;
+		}
+		// Route to the cached low-res tier when the light will not move AND could not receive a dynamic overlay
+		// anyway - which at PLS_STATIC_ONLY is every light there is. Without this, every colour-animated room
+		// light in Gothic queued for the 64 full-res cubes (whose per-frame skeletal overlay that mode does not
+		// even run) while a thousand static slots sat empty, and whichever ones lost the queue were
+		// range-clamped into looking switched off.
+		const bool routeStatic = !allowStaticDynamicShadows && ( isStatic || ( spatiallyStatic && staticOnlyMode ) );
 		// shadowOrigin/shadowRange start as the light's own and are redirected to a cluster's below; `key`
 		// likewise starts as the light's own identity.
-		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
-			isStatic && !allowStaticDynamicShadows, pw, range, reinterpret_cast<uint64_t>( vob ) } );
+		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob, spatiallyStatic,
+			routeStatic, pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
+	// Drop stationary-tracking entries for lights long out of the light set. Swept rarely; walks the map.
+	if ( ( s_stationaryFrame % 1024 ) == 0 )
+		std::erase_if( s_stationary, []( const auto& e ) { return s_stationaryFrame - e.second.lastSeen > 600; } );
 	// Total order, not just "by distance": the cluster cull keeps the first MAX_ACTIVE_LIGHTS candidates in BUFFER
 	// order, so the buffer order has to be a pure function of the visible light SET. std::sort is unstable, so
 	// equal distances (co-located atmospheric lights are common) would otherwise permute between frames and make
@@ -1112,10 +1155,15 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// the dynamic-overlay exclude list, which no static/clustered slot reaches.
 		s_lightKeys.push_back( { pointShadowsOn ? cand.key : 0ull,
 			cand.key == reinterpret_cast<uint64_t>( vob ) ? vob : nullptr,
-			cand.shadowRoutingStatic, cand.shadowRoutingStatic } );
+			cand.shadowRoutingStatic, cand.shadowRoutingStatic, cand.spatiallyStatic } );
 		++count;
 	}
 	m_FrameLightCount = count;
+	// Lights the per-frame buffer could not hold at all (the farthest ones, since s_cands is distance-sorted).
+	// Not the same failure as being starved of a shadow cube - these are not shaded at all - but it looks
+	// identical in game, so it is reported next to it.
+	Engine::GAPI->GetRendererState().RendererInfo.PointLightsDropped =
+		static_cast<unsigned int>( s_cands.size() - count );
 
 	// Point-light shadow selection: hand the filled buffer to the point-shadow module, which picks this
 	// frame's shadowed lights (stable per-light cube slots, static-cache + round-robin scheduling) and writes
@@ -1134,15 +1182,51 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// s_cands is parallel to dst[] for i < count (the fill loop walks it in order and only ever breaks).
 	constexpr float kUnshadowedStaticScale = 0.35f;        // still lights its own alcove; can't reach the next room
 	constexpr float kIndoorSeenFromOutsideScale = 0.15f;   // the worst bleed case — clamp it much harder
+
+	// The clamp is applied THROUGH a per-light eased scale rather than switched on and off. Gaining or losing a
+	// cube changes a light's radius by 3-7x, and snapping that in one frame reads as the light being switched
+	// off (or flashing on) — which is exactly what a static light does the moment it drops out of the shadow
+	// system. Easing it over ~0.3 s turns the switch into a dimmer. A light seen for the FIRST time starts at
+	// its target, so world load and every fresh room light in are unaffected.
+	constexpr float kClampEaseSeconds = 0.3f;
+	struct ClampState { float scale; UINT32 lastFrame; };
+	static std::unordered_map<uint64_t, ClampState> s_clampScale;
+	static UINT32 s_clampFrame = 0;
+	++s_clampFrame;
+	const float dt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
+	const float ease = 1.0f - std::exp( -dt / kClampEaseSeconds );   // framerate-independent exponential approach
+
 	for ( UINT i = 0; i < count; ++i ) {
-		if ( dst[i].ShadowCubeIndex >= 0 ) continue;   // shadowed: correctly occluded, leave it alone
 		if ( !s_cands[i].isStatic && !s_cands[i].isIndoor ) continue;
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.
 		const bool leakingOutdoors = s_cands[i].isIndoor && !cameraIndoors;
-		dst[i].Range *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
-		dst[i].ShadowRange = dst[i].Range;
+		const float target = dst[i].ShadowCubeIndex >= 0 ? 1.0f
+			: ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
+		// key 0 is "this light can never be shadowed" (point shadows off): its target never changes, so there
+		// is nothing to ease and no identity to ease it under. Clamp it outright, as before.
+		const uint64_t key = s_lightKeys[i].key;
+		if ( !key ) {
+			dst[i].Range *= target;
+			dst[i].ShadowRange = dst[i].Range;
+			continue;
+		}
+		const auto [it, fresh] = s_clampScale.try_emplace( key, ClampState{ target, s_clampFrame } );
+		if ( !fresh && it->second.lastFrame != s_clampFrame ) {   // once per frame, however many members share the key
+			it->second.scale += ( target - it->second.scale ) * ease;
+			it->second.lastFrame = s_clampFrame;
+		}
+		if ( it->second.scale >= 0.999f ) continue;    // fully unclamped — leave the light exactly as it was
+		dst[i].Range *= it->second.scale;
+		// ShadowRange follows Range only while the light is UNSHADOWED. It is the cube's far-plane basis, and the
+		// shader rebuilds the caster's depth from it: shrinking it under a light that HAS a cube (one easing back
+		// up after re-acquiring one) would compare against a projection the cube was never rendered with.
+		if ( dst[i].ShadowCubeIndex < 0 ) dst[i].ShadowRange = dst[i].Range;
 	}
+	// Drop lights that have been out of the buffer long enough that their eased scale is meaningless anyway;
+	// without this the map keeps every light the session has ever seen. Swept rarely — it walks the whole map.
+	if ( ( s_clampFrame % 1024 ) == 0 )
+		std::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
 }
 
 
@@ -1157,7 +1241,8 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// every overlapping point light" for "brightest single light" to avoid overexposure).
 	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
-	// PointShadowLowIndex @ b*.w — the BINDLESS heap slot of the low-res static shadow-cube array. The full-res
+	// PointShadowLowIndex @ b*.w — the BINDLESS heap slot of the low-res static shadow-cube tier's FIRST page;
+	// the encoded ShadowCubeIndex carries the page, which the shader adds to this (the pages are contiguous). The full-res
 	// array is a declared t-register in each shader, but the second tier rides in this spare 4th root constant
 	// instead (SM6.6 ResourceDescriptorHeap), which is why adding it needed no root signature changes. Only ever
 	// read by a light whose ShadowCubeIndex carries kShadowTierLow, so the 0 fallback is never dereferenced.

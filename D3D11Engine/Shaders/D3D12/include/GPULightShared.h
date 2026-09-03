@@ -38,5 +38,12 @@ static const int kShadowTierLow = 0x40000000;
 // twin. Absent = pure static shadow, and no second sample is taken.
 static const int kShadowHasDynamic = 0x20000000;
 static const int kShadowSlotMask = 0x1FFFFFFF;
+// LOW-TIER slot layout inside those bits. The static tier is bigger than one Texture2DArray can hold
+// (341 cubes), so it is split into pages — separate arrays whose SRVs sit CONTIGUOUSLY in the bindless heap.
+// Bits 0..9 are the slot within its page, bits 10..12 the page: the shader reads
+// ResourceDescriptorHeap[PointShadowLowIndex + page]. Full-res slots keep using the whole kShadowSlotMask.
+static const int kShadowLowSlotMask = 0x3FF;
+static const int kShadowLowPageShift = 10;
+static const int kShadowLowPageMask = 0x7;
 
 #endif // GD3D12_GPULIGHT_SHARED_H

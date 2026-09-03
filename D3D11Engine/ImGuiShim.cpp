@@ -377,6 +377,35 @@ static void DrawPointLightInvalidationStat() {
         "back to 0 over the following second; the total only ever climbs." );
 }
 
+// Shadow-cube slot occupancy per tier, plus the number of lights that asked for a cube and got none. Zero
+// starved is the healthy state; a steady non-zero value means the tier is genuinely too small for the scene,
+// and the lights missing out are being range-clamped (i.e. they look switched off), which is otherwise very
+// hard to tell apart from a bug in slot assignment.
+static void DrawPointLightSlotStat() {
+    const auto& info = Engine::GAPI->GetRendererState().RendererInfo;
+    if ( info.PointLightSlotsMax == 0 ) return;   // D3D11 doesn't fill these
+    ImGui::Text( "Shadow cubes: %u/%u dynamic, %u/%u static",
+        info.PointLightSlotsUsed, info.PointLightSlotsMax,
+        info.PointLightStaticSlotsUsed, info.PointLightStaticSlotsMax );
+    const ImVec4 color = info.PointLightSlotsStarved == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
+                                                         : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+    ImGui::TextColored( color, "Lights starved of a cube: %u", info.PointLightSlotsStarved );
+    ImGui::SetItemTooltip(
+        "Lights that wanted a shadow cube this frame and could not be given one because their tier was\n"
+        "already full of lights at a comparable distance. A starved static light is range-clamped so it\n"
+        "cannot bleed through walls, which makes it look switched off - so a sustained non-zero number\n"
+        "here is the direct explanation for lights that go dark. Slots are taken from the farthest owner\n"
+        "when a much closer light needs one, so this counts genuine oversubscription, not lights waiting." );
+    if ( info.PointLightsDropped ) {
+        ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
+            "Lights dropped from the frame buffer: %u", info.PointLightsDropped );
+        ImGui::SetItemTooltip(
+            "Visible point lights that did not fit in the per-frame light buffer and are not shaded at all\n"
+            "this frame. The buffer keeps the nearest ones, so this is the far end of the light set - but\n"
+            "it is a hard cap, and raising the effects draw distance is what pushes a scene into it." );
+    }
+}
+
 /** Debug-only visualization to help diagnose point-light shadow bugs (light bleed/self-occlusion) without
     guessing blind: draws every active light's range as a wireframe sphere (color-coded by shadow state) and
     shows the raw shadow-cube depth faces for whichever light is nearest the camera, unfolded as a cross. */
@@ -389,9 +418,10 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
     // The cube visualization below is D3D11-only, but the invalidation rate is backend-neutral and is just as
     // useful on D3D12 - so open the window either way and show what applies.
     if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
-        ImGui::SetNextWindowSize( ImVec2( 620, 120 ), ImGuiCond_FirstUseEver );
+        ImGui::SetNextWindowSize( ImVec2( 620, 170 ), ImGuiCond_FirstUseEver );
         if ( ImGui::Begin( "Point Light Shadow Debug" ) ) {
             DrawPointLightInvalidationStat();
+            DrawPointLightSlotStat();
             ImGui::TextUnformatted( "Cube visualization is only implemented for the D3D11 backend." );
         }
         ImGui::End();

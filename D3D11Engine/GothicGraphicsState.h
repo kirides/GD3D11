@@ -1596,6 +1596,19 @@ struct GothicRendererInfo {
     // Shadow Debug window.
     RollingSecondCounter PointLightStaticInvalidations;
 
+    // Point-light shadow-cube slot occupancy, per tier, as of the last frame's selection (D3D12 only; D3D11
+    // leaves them 0). `Starved` counts lights that wanted a cube and could not be given one because their tier
+    // was full of lights at comparable distance - the one number that separates "the tier is too small for this
+    // scene" from "something is wrong with slot assignment", which look identical from inside the game.
+    unsigned int PointLightSlotsUsed = 0;
+    unsigned int PointLightSlotsMax = 0;
+    unsigned int PointLightStaticSlotsUsed = 0;
+    unsigned int PointLightStaticSlotsMax = 0;
+    unsigned int PointLightSlotsStarved = 0;
+    // Visible point lights that did not fit in the per-frame light buffer at all (kMaxFrameLights). These are
+    // not shaded at all, not merely unshadowed - a different failure that looks the same from inside the game.
+    unsigned int PointLightsDropped = 0;
+
     unsigned int VOBVerticesDataSize;
     // Skeletal meshes can be extracted (and their SkeletalMeshInfo destroyed) from background
     // worker threads (see GothicAPI::LoadzCModelData), so this counter needs to be atomic.
