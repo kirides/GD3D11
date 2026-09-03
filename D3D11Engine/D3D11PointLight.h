@@ -77,10 +77,24 @@ public:
     int GetShadowMapResolution() const { return m_CurrentResolution; }
     ID3D11Texture2D* GetShadowCubeTexture() const { return m_DepthCubemap ? m_DepthCubemap->GetTexture().Get() : nullptr; }
 
-    /** Whether this light belongs in the low-res static-only tiled tier rather than the full-res one. */
+    /** Which tier this light would PREFER, independent of the one it currently sits in. Deliberately reads
+        the preferred mode and not GetCurrentShadowMode(): a light SPILLED into the low-res tier (see
+        DrawPointlightShadows) reports STATIC_ONLY as its effective mode, and asking that question here would
+        make the spill permanent - the light could never be promoted back once a full-res slot freed up. */
     bool WantsStaticOnlySlot() const {
-        return GetCurrentShadowMode() == GothicRendererSettings::PLS_STATIC_ONLY;
+        return GetPreferredShadowMode() == GothicRendererSettings::PLS_STATIC_ONLY;
     }
+
+    /** Fold this frame's position into the "has not moved recently" tracker. Called once per frame per
+        visible light from DrawPointlightShadows. Gothic's own IsStatic() bit does NOT answer the question
+        this does: a colour-animated candle or brazier reads as non-static there while never being
+        repositioned, and it is exactly those lights that fill the scarce full-res tier. */
+    void NoteStationary();
+
+    /** True once this light has held still long enough for its cube to be worth caching - the condition for
+        SPILLING it into the low-res static tier when the full-res one is full. A light that moves cannot go
+        there: that tier bakes a cube once and keeps it, and never runs the dynamic overlay. */
+    bool IsSpatiallyStatic() const;
 
     void AcquireShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseShadowMap();
@@ -104,6 +118,10 @@ public:
     }
     int GetMissingFrames() const { return m_MissingFrames; }
 
+    /** How many consecutive frames this light has been in the low-res tier while preferring the full-res one.
+        Only used by the debug window. */
+    bool IsSpilled() const { return m_TiledSlotLowRes && !WantsStaticOnlySlot(); }
+
     // Debug-visualization accessors (see ImGuiShim::RenderPointLightShadowDebugWindow).
     VobLightInfo* GetLightInfo() const { return LightInfo; }
     ID3D11Texture2D* GetTiledShadowCubeTexture() const { return m_TiledDepthTarget ? m_TiledDepthTarget->GetTexture().Get() : nullptr; }
@@ -120,7 +138,13 @@ public:
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
+    /** The mode this light's CONTENT is rendered and sampled with. Equal to GetPreferredShadowMode(), except
+        that a light holding a low-res tier slot is forced to STATIC_ONLY: that array has no dynamic-overlay
+        twin, so a spilled light gives up its overlay in exchange for having a cube at all. */
     int GetCurrentShadowMode() const;
+    /** The mode the light would run at on its own merits - the global setting, with a static-flagged light
+        downgraded to STATIC_ONLY. Independent of which tier it currently occupies. */
+    int GetPreferredShadowMode() const;
     void HandleShadowModeChange( int shadowMode );
     RenderToDepthStencilBuffer* GetActiveShadowTarget() const;
     void AcquireStaticAsideShadowMap( DepthStencilPool* pool, int resolution );
@@ -181,6 +205,10 @@ protected:
     float m_DebugLastZFar = 0.0f;
     // Consecutive frames this light has been absent (disabled/out of VisibleInFrame) - see NoteAbsence().
     int m_MissingFrames = 0;
+
+    // "Has not moved recently" tracking - see NoteStationary()/IsSpatiallyStatic().
+    XMFLOAT3 m_StationaryPos = {};
+    int m_StationaryFrames = 0;
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;

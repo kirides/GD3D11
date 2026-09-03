@@ -175,6 +175,17 @@ void D3D11PointLight::ClearTiledSlot() {
 }
 
 int D3D11PointLight::GetCurrentShadowMode() const {
+    // A light SPILLED into the low-res tier (the full-res pool was full - see DrawPointlightShadows) renders
+    // and samples as STATIC_ONLY whatever it would otherwise be: that array has no dynamic-overlay twin, so
+    // there is nowhere to put moving casters for it. It keeps asking for the full-res tier through
+    // GetPreferredShadowMode() and is promoted back the moment a slot can be had.
+    if ( m_TiledSlotLowRes ) {
+        return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
+    }
+    return GetPreferredShadowMode();
+}
+
+int D3D11PointLight::GetPreferredShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
     // Only PLS_UPDATE_DYNAMIC downgrades a static-flagged light to PLS_STATIC_ONLY; PLS_FULL must stay FULL
     // (it's the no-caching-shortcuts escape hatch, and downgrading it would make it never re-render). Skipped
@@ -186,6 +197,40 @@ int D3D11PointLight::GetCurrentShadowMode() const {
         }
     }
     return mode;
+}
+
+namespace {
+    /** True if this vob rides an NPC's transform - a held item, a torch, an attached effect. Such a light moves
+        with the animation, so it is never treated as a fixture however long it happens to stand still: an idle
+        NPC's torch would otherwise flip tier every time they set off walking again. Mirrors D3D12PointShadows::
+        IsNpcAttached and D3D11GraphicsEngine's IsAttachedToNpc. */
+    bool LightRidesNpc( const zCVob* vob ) {
+        for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
+            if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
+        }
+        return false;
+    }
+    constexpr float kStationaryEps = 1.0f;   // world units; below this a light is jittering, not moving
+    constexpr int   kStationaryFrames = 60;  // ~1 s of holding still before a light counts as a fixture
+}
+
+void D3D11PointLight::NoteStationary() {
+    if ( !LightInfo || !LightInfo->Vob ) return;
+    const XMFLOAT3 pos = LightInfo->Vob->GetPositionWorld();
+    if ( std::fabs( pos.x - m_StationaryPos.x ) > kStationaryEps
+        || std::fabs( pos.y - m_StationaryPos.y ) > kStationaryEps
+        || std::fabs( pos.z - m_StationaryPos.z ) > kStationaryEps ) {
+        m_StationaryPos = pos;
+        m_StationaryFrames = 0;
+    } else if ( m_StationaryFrames < kStationaryFrames ) {
+        ++m_StationaryFrames;
+    }
+}
+
+bool D3D11PointLight::IsSpatiallyStatic() const {
+    if ( LightInfo && LightInfo->IsStaticVobLight ) return true;
+    if ( !LightInfo || !LightInfo->Vob || LightRidesNpc( LightInfo->Vob ) ) return false;
+    return m_StationaryFrames >= kStationaryFrames;
 }
 
 void D3D11PointLight::HandleShadowModeChange( int shadowMode ) {

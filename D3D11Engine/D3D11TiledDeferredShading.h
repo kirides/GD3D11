@@ -114,6 +114,12 @@ public:
     void FreeStaticSlot( int slot );
     RenderToDepthStencilBuffer* GetStaticSlotTarget( int slot );
 
+    // Real occupancy, for the ImGui point-light window. Not derivable from DrawPointlightShadows' per-frame
+    // owner arrays: those only list slots held by lights VISIBLE this frame, while a slot stays allocated
+    // across the absence-retention window.
+    uint32_t GetUsedSlotCount() const { return static_cast<uint32_t>( m_SlotInUse.count() ); }
+    uint32_t GetUsedStaticSlotCount() const { return static_cast<uint32_t>( m_StaticSlotInUse.count() ); }
+
 private:
     void EnsureBuffers( uint32_t numTilesX, uint32_t numTilesY );
     void EnsureShadowArray();

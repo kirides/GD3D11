@@ -488,6 +488,12 @@ struct VobLightInfo {
     std::atomic<size_t> VisibleInRenderPass;
     bool IsPFXVobLight;
     bool IsStaticVobLight;
+    /** Eased 0..1 multiplier the tiled light fill applies to this light's range while it has no shadow
+        cube (see D3D11TiledDeferredShading's unshadowed clamp). Gaining or losing a cube changes the
+        radius by 3-7x, and snapping that in one frame reads as the light being switched off, so the
+        clamp is approached over ~0.3 s instead. 1 = unclamped; a light seen for the first time starts
+        at its target, so world load does not fade every light in. */
+    float UnshadowedRangeScale = -1.0f;   // <0 = never evaluated, snap to the target on first sight
     /** True if this is an indoor-vob */
     bool IsIndoorVob;
 

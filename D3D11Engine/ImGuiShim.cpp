@@ -473,6 +473,7 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
     }
 
     DrawPointLightInvalidationStat();
+    DrawPointLightSlotStat();
     ImGui::Separator();
 
     if ( !nearest || !nearestInfo ) {

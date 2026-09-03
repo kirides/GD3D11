@@ -500,6 +500,11 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     constexpr float kIndoorSeenFromOutsideScale = 0.15f; // worst bleed case - clamp it much harder
     const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
     const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
+    // The clamp is applied THROUGH a per-light eased scale rather than switched on and off - see
+    // VobLightInfo::UnshadowedRangeScale. Framerate-independent exponential approach, ~0.3 s.
+    constexpr float kClampEaseSeconds = 0.3f;
+    const float clampDt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
+    const float clampEase = 1.0f - std::exp( -clampDt / kClampEaseSeconds );
 
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
@@ -528,9 +533,13 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
         float4 lightColor = float4( vob->GetLightColor() );
         float lightRange = vob->GetLightRange();
-        if ( !hasShadow && ( vob->IsStatic() || light->IsIndoorVob ) ) {
+        if ( vob->IsStatic() || light->IsIndoorVob ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
-            lightRange *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
+            const float target = hasShadow ? 1.0f
+                : ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
+            if ( light->UnshadowedRangeScale < 0.0f ) light->UnshadowedRangeScale = target;   // first sight
+            else light->UnshadowedRangeScale += ( target - light->UnshadowedRangeScale ) * clampEase;
+            if ( light->UnshadowedRangeScale < 0.999f ) lightRange *= light->UnshadowedRangeScale;
         }
         float3 posWorld = vob->GetPositionWorld();
 
