@@ -592,7 +592,8 @@ struct GothicMemoryLocations {
         // { T* array; int numAlloc; int numInArray; } - the COUNT is the third dword, not the second.
         // zCArrayAdapt reads the second, which is fine for file-loaded arrays (numAlloc == numInArray)
         // but wrong here: this array grows and shrinks as anis start and finish.
-        static const unsigned int Offset_AniChannels = 0x6C;
+        // G1 lacks G2's zCMorphMesh::m_bUsesAlphaTesting at 0x68, so the array sits 4 bytes earlier here.
+        static const unsigned int Offset_AniChannels = 0x68;
         static const unsigned int ArraySort_Offset_Array = 0x00;
         static const unsigned int ArraySort_Offset_NumInArray = 0x08;
         // zTMorphAniEntry (sizeof 0x2C)
