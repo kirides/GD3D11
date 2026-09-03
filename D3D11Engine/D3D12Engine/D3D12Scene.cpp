@@ -1241,8 +1241,7 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// every overlapping point light" for "brightest single light" to avoid overexposure).
 	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
-	// PointShadowLowIndex @ b*.w — the BINDLESS heap slot of the low-res static shadow-cube tier's FIRST page;
-	// the encoded ShadowCubeIndex carries the page, which the shader adds to this (the pages are contiguous). The full-res
+	// PointShadowLowIndex @ b*.w — the BINDLESS heap slot of the low-res static shadow-cube array. The full-res
 	// array is a declared t-register in each shader, but the second tier rides in this spare 4th root constant
 	// instead (SM6.6 ResourceDescriptorHeap), which is why adding it needed no root signature changes. Only ever
 	// read by a light whose ShadowCubeIndex carries kShadowTierLow, so the 0 fallback is never dereferenced.

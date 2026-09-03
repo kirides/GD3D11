@@ -53,36 +53,29 @@ public:
     // atmospheric fill lights look right at all. But a static light's cube is rendered ONCE and cached forever
     // (the light and the world it occludes both never move), and it exists only to stop room-to-room bleed, not
     // to resolve shadow detail. So it does not need 128^2:
-    //     dynamic tier: 64 slots @128^2 = 12.6 MB (x2: static + overlay)   static tier: 1020 slots @32^2 = 12.5 MB
+    //     dynamic tier: 64 slots @128^2 = 12.6 MB (x2: static + overlay)   static tier: 340 slots @32^2 = 4.2 MB
     //
-    // 340 is the per-ARRAY hard ceiling, not a tuning choice: a cube array is a Texture2DArray of slot*6 slices,
-    // and D3D12 caps a Texture2D array at D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices regardless of
-    // how small the faces are — 2048/6 = 341. Going past it fails resource creation outright
-    // (CREATERESOURCE_INVALIDDIMENSIONS, which is exactly how the first 512-slot attempt died). More static
-    // cubes than that therefore need MORE ARRAYS, not a bigger one — hence the PAGES below: kStaticCubePages
-    // separate arrays whose SRVs are allocated CONTIGUOUSLY in the bindless heap, so the shader reaches page p
-    // as ResourceDescriptorHeap[PointShadowLowIndex + p] and the extra tier still costs no root parameter.
-    // The page rides in the encoded ShadowCubeIndex (kShadowLowPageShift in GPULightShared.h).
+    // 340 slots is the hard ceiling of ONE array, and it is also more than any Gothic scene has been measured to
+    // need (~200 static, ~64 moving): a cube array is a Texture2DArray of slot*6 slices, and D3D12 caps a
+    // Texture2D array at D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices regardless of how small the faces
+    // are - 2048/6 = 341. Going past it fails resource creation outright (CREATERESOURCE_INVALIDDIMENSIONS, which
+    // is exactly how the first 512-slot attempt died), so more cubes than this would need MORE ARRAYS, not a
+    // bigger one. That was built once - paged arrays, contiguous bindless SRVs, a page index in the encoded
+    // ShadowCubeIndex - and removed again as unused complexity once the real occupancy was measured. Raise this
+    // only with that measurement in hand.
     //
     // The two pools share ONE slot index space so all the ownership/retention bookkeeping below stays single-pool:
-    // global slot < kMaxCubes is the dynamic array, >= kMaxCubes is the static tier at (slot - kMaxCubes). What
-    // reaches the SHADER is the re-encoded GPULight::ShadowCubeIndex (kShadowTierLow | page | localIndex), not this.
+    // global slot < kMaxCubes is the dynamic array, >= kMaxCubes is the static array at (slot - kMaxCubes). What
+    // reaches the SHADER is the re-encoded GPULight::ShadowCubeIndex (kShadowTierLow | localIndex), not this.
     static constexpr UINT kStaticCubeSize = 32;
-    static constexpr UINT kStaticCubesPerPage = 340;   // 340*6 = 2040 slices, just under the 2048 array-axis cap
-    static constexpr UINT kStaticCubePages = 3;        // 1020 cubes total >= kMaxFrameLights, i.e. never the constraint
-    static constexpr UINT kMaxStaticCubes = kStaticCubesPerPage * kStaticCubePages;
+    static constexpr UINT kMaxStaticCubes = 340;
     static constexpr UINT kMaxSlots = kMaxCubes + kMaxStaticCubes;
-    // Both tiers are Texture2DArrays of slot*6 slices — see the ceiling note above. Asserted for BOTH so raising
+    // Both tiers are Texture2DArrays of slot*6 slices - see the ceiling note above. Asserted for BOTH so raising
     // either one can never silently produce an undersized/failed resource again.
     static_assert( kMaxCubes * 6 <= 2048, "dynamic cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
-    static_assert( kStaticCubesPerPage * 6 <= 2048, "static cube page exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
-    // The page index has kShadowLowPageBits in the encoded ShadowCubeIndex, the in-page slot kShadowLowSlotBits.
-    static_assert( kStaticCubePages <= 8 && kStaticCubesPerPage <= 1024, "static tier exceeds the ShadowCubeIndex encoding" );
+    static_assert( kMaxStaticCubes * 6 <= 2048, "static cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
     static bool IsLowSlot( UINT globalSlot ) { return globalSlot >= kMaxCubes; }
     static UINT LowIndex( UINT globalSlot ) { return globalSlot - kMaxCubes; }
-    // Which of the kStaticCubePages arrays a low-tier index lives in, and where inside that array's own slices.
-    static UINT LowPage( UINT lowIndex ) { return lowIndex / kStaticCubesPerPage; }
-    static UINT LowIndexInPage( UINT lowIndex ) { return lowIndex % kStaticCubesPerPage; }
 
     static constexpr UINT kBackBufferMax = 3;   // must match D3D12GraphicsEngine::kBackBufferMax (asserted in the .cpp)
     UINT kBackBufferCount = 2;   // synced from the engine in Attach() below
@@ -98,8 +91,7 @@ public:
     bool Init();
 
     UINT GetSrvSlot() const { return m_SrvSlot; }
-    UINT GetLowSrvSlot() const { return m_LowSrvSlot; }   // first of the low-res static tier's kStaticCubePages
-                                                          // CONTIGUOUS bindless slots (page p = this + p)
+    UINT GetLowSrvSlot() const { return m_LowSrvSlot; }   // bindless heap slot of the low-res static cube array
     UINT GetDynSrvSlot() const { return m_DynSrvSlot; }   // bindless heap slot of the dynamic-overlay cube array
     bool IsPassReady() const { return m_PassReady; }
 
@@ -226,16 +218,10 @@ private:
     // overlay-eligible (D3D11's GetCurrentShadowMode forces static lights to PLS_STATIC_ONLY). Their static depth
     // therefore renders straight into this array and stays there — no per-frame copy, no dynamic overlay. Phases
     // B and C skip these slots entirely; only Phase A (on a cache miss) and Phase D ever touch them.
-    // kStaticCubePages separate arrays, not one: 341 cubes is the hard per-array slice ceiling (see above).
-    // Everything else about the tier stays single-pool — one DSV heap and one per-slot state array span all
-    // pages, indexed by the GLOBAL low index, while the RESOURCE and the subresource number come from
-    // LowPage()/LowIndexInPage().
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_LowCube[kStaticCubePages];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LowCubeAlloc[kStaticCubePages];
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_LowDsvHeap;   // one D16 6-slice DSV per low-res slot, all pages
-    UINT m_LowSrvSlot = UINT_MAX;                                // FIRST of kStaticCubePages CONTIGUOUS R16_UNORM
-                                                                 // TextureCubeArray SRVs, fetched bindlessly as
-                                                                 // PointShadowLowIndex + page
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_LowCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LowCubeAlloc;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_LowDsvHeap;   // one D16 6-slice DSV per low-res slot
+    UINT m_LowSrvSlot = UINT_MAX;                                // R16_UNORM TextureCubeArray SRV, fetched bindlessly
     D3D12_RESOURCE_STATES m_LowSlotState[kMaxStaticCubes] = {};  // PIXEL_SHADER_RESOURCE at rest, per-slot like above
 
     // Dynamic-overlay cube: second persistent full-res cube array holding ONLY this frame's skeletal overlay

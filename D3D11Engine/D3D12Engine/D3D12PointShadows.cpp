@@ -200,25 +200,21 @@ bool D3D12PointShadows::Init() {
 	if ( m_DynSrvSlot == UINT_MAX ) return false;
 	device->CreateShaderResourceView( m_DynCube.Get(), &srv, m_E->GetSrvCpuHandle( m_DynSrvSlot ) );
 
-	// --- Low-res STATIC cube tier (see the kStaticCubeSize block in the header): kMaxStaticCubes slots at
-	// kStaticCubeSize^2, split over kStaticCubePages arrays because 341 cubes is the hard per-array ceiling. One
-	// shared per-slot 6-slice DSV heap across all pages, plus one bindless SRV PER PAGE, allocated contiguously so
-	// the shader can reach page p as PointShadowLowIndex + p. No aside twin: nothing routed here can receive a
-	// dynamic overlay, so its static depth renders straight in and persists. Born in PIXEL_SHADER_RESOURCE for the
-	// same reason the active cube is: barriers here are per-slot, so a slot the pass never touches is never
-	// transitioned and has to be born sampleable.
+	// --- Low-res STATIC cube array (see the kStaticCubeSize block in the header): kMaxStaticCubes slots at
+	// kStaticCubeSize^2, with its own per-slot 6-slice DSV heap and a bindless SRV. No aside twin: nothing
+	// routed here can receive a dynamic overlay, so its static depth renders straight in and persists. Born in
+	// PIXEL_SHADER_RESOURCE for the same reason the active cube is: barriers here are per-slot, so a slot the
+	// pass never touches is never transitioned and has to be born sampleable.
 	D3D12_RESOURCE_DESC ld = dd;
 	ld.Width = kStaticCubeSize;
 	ld.Height = kStaticCubeSize;
-	ld.DepthOrArraySize = static_cast<UINT16>(kStaticCubesPerPage * 6);
-	for ( UINT page = 0; page < kStaticCubePages; ++page ) {
-		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, ld,
-			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_LowCubeAlloc[page].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_LowCube[page].ReleaseAndGetAddressOf() ) ) ) )
-			return false;
-		m_LowCube[page]->SetName( L"PointShadowStaticLowCubeArray(D16)" );
-		m_LowCubeAlloc[page]->SetName( L"AllocPointShadowStaticLowCubeArray" );
-	}
+	ld.DepthOrArraySize = static_cast<UINT16>(kMaxStaticCubes * 6);
+	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, ld,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_LowCubeAlloc.ReleaseAndGetAddressOf(),
+		IID_PPV_ARGS( m_LowCube.ReleaseAndGetAddressOf() ) ) ) )
+		return false;
+	m_LowCube->SetName( L"PointShadowStaticLowCubeArray(D16)" );
+	m_LowCubeAlloc->SetName( L"AllocPointShadowStaticLowCubeArray" );
 	for ( D3D12_RESOURCE_STATES& s : m_LowSlotState ) s = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 	D3D12_DESCRIPTOR_HEAP_DESC lowDsvHeapDesc = {};
@@ -231,30 +227,20 @@ bool D3D12PointShadows::Init() {
 		D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
 		dsv.Format = DXGI_FORMAT_D16_UNORM;
 		dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
-		dsv.Texture2DArray.FirstArraySlice = LowIndexInPage( s ) * 6;
+		dsv.Texture2DArray.FirstArraySlice = s * 6;
 		dsv.Texture2DArray.ArraySize = 6;
-		device->CreateDepthStencilView( m_LowCube[LowPage( s )].Get(), &dsv, ldsvH );
+		device->CreateDepthStencilView( m_LowCube.Get(), &dsv, ldsvH );
 		ldsvH.ptr += m_DsvSize;
 	}
 
-	// Bindless (SM6.6 ResourceDescriptorHeap) — the forward shaders reach this tier through LightCB's
-	// PointShadowLowIndex root constant rather than a declared t-register, so it cost no root signature changes.
-	// The pages MUST land on consecutive heap slots: the shader indexes PointShadowLowIndex + page and only that
-	// base is passed. AllocateSrvSlot recycles freed slots, so contiguity is checked rather than assumed (same
-	// pattern as D3D12AO's blur pairs). See PBRLighting.hlsl SamplePointShadow.
+	// Bindless (SM6.6 ResourceDescriptorHeap) - the forward shaders reach this array through LightCB's
+	// PointShadowLowIndex root constant rather than a declared t-register, so the second tier cost no root
+	// signature changes. See PBRLighting.hlsl SamplePointShadow.
+	m_LowSrvSlot = m_E->AllocateSrvSlot();
+	if ( m_LowSrvSlot == UINT_MAX ) return false;
 	D3D12_SHADER_RESOURCE_VIEW_DESC lowSrv = srv;
-	lowSrv.TextureCubeArray.NumCubes = kStaticCubesPerPage;
-	for ( UINT page = 0; page < kStaticCubePages; ++page ) {
-		const UINT slot = m_E->AllocateSrvSlot();
-		if ( slot == UINT_MAX ) return false;
-		if ( page == 0 ) m_LowSrvSlot = slot;
-		else if ( slot != m_LowSrvSlot + page ) {
-			LogWarn() << "D3D12: point-shadow low-res cube SRVs not contiguous - static point-light shadows disabled.";
-			m_LowSrvSlot = UINT_MAX;
-			return false;
-		}
-		device->CreateShaderResourceView( m_LowCube[page].Get(), &lowSrv, m_E->GetSrvCpuHandle( slot ) );
-	}
+	lowSrv.TextureCubeArray.NumCubes = kMaxStaticCubes;
+	device->CreateShaderResourceView( m_LowCube.Get(), &lowSrv, m_E->GetSrvCpuHandle( m_LowSrvSlot ) );
 
 	// Per-frame ring for the face-matrix CB: one 512-byte (256-aligned; 6 matrices = 384B) slot per shadowed
 	// light, so each light's cube draw binds its own root CBV without clobbering earlier same-frame draws.
@@ -694,12 +680,8 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 			// kShadowHasDynamic additionally tells the lit pass to sample the dynamic-overlay array for this light
 			// and min it with the static one. Only full-res slots can carry it (the low tier has no dynamic twin),
 			// and it reflects the last SUBMITTED overlay — see Slot::dynamicValid on the one-frame lag.
-			// The low tier's slot is encoded as (page << kShadowLowPageShift) | slot-within-page: it spans
-			// kStaticCubePages separate arrays, and the shader picks the array by adding the page to
-			// PointShadowLowIndex. See GPULightShared.h.
-			const UINT lowIdx = slotLow ? LowIndex( static_cast<UINT>( slot ) ) : 0u;
 			encodedByKey[c.key] = slotLow
-				? static_cast<int32_t>( LowIndexInPage( lowIdx ) | ( LowPage( lowIdx ) << kShadowLowPageShift ) ) | kShadowTierLow
+				? static_cast<int32_t>( LowIndex( static_cast<UINT>( slot ) ) ) | kShadowTierLow
 				: ( static_cast<int32_t>( slot ) | ( ss.dynamicValid ? kShadowHasDynamic : 0 ) );
 		}
 		m_FrameLights.push_back( { np, L.ShadowRange, static_cast<UINT>(slot), renderStatic, false, overlayEligible, restrictToWorld } );
@@ -731,13 +713,9 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 		if ( std::fabs( np.x - ss.pos.x ) > 0.5f || std::fabs( np.y - ss.pos.y ) > 0.5f
 			|| std::fabs( np.z - ss.pos.z ) > 0.5f || std::fabs( dst[i].ShadowRange - ss.range ) > 1.0f )
 			continue;
-		if ( IsLowSlot( it->second ) ) {
-			const UINT lowIdx = LowIndex( it->second );
-			encodedByKey[key] = static_cast<int32_t>( LowIndexInPage( lowIdx ) | ( LowPage( lowIdx ) << kShadowLowPageShift ) )
-				| kShadowTierLow;
-		} else {
-			encodedByKey[key] = static_cast<int32_t>( it->second );
-		}
+		encodedByKey[key] = IsLowSlot( it->second )
+			? static_cast<int32_t>( LowIndex( it->second ) ) | kShadowTierLow
+			: static_cast<int32_t>( it->second );
 	}
 
 	// Occupancy + starvation, for the ImGui point-light window (see DrawPointLightSlotStat). Counted here rather
@@ -889,7 +867,7 @@ void D3D12PointShadows::Prepare() {
 
 
 	const auto& psPipe = m_E->m_Pipelines.PointShadow;
-	if ( !m_E->m_FrameOpen || !m_Cube || !m_DynCube || !m_LowCube[0] || !psPipe.CasterWorldPSO
+	if ( !m_E->m_FrameOpen || !m_Cube || !m_DynCube || !m_LowCube || !psPipe.CasterWorldPSO
 		|| !m_DsvHeap || !m_DynDsvHeap || !m_LowDsvHeap || !psPipe.RootSig )
 		return;
 	if ( m_FrameLights.empty() ) return;
@@ -1437,18 +1415,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// ---- Per-slot (6-subresource) barriers. Never transition these two cubes with ALL_SUBRESOURCES — see the
 	// m_ActiveSlotState comment in the header. Transitions are batched into g_PsBarriers and issued in one call
 	// per phase so the GPU pays one pipeline flush per phase rather than one per slot.
-	// `slot` indexes the state array (the tier-local slot), `resSlot` the SUBRESOURCE inside `res` — the two
-	// differ for the paged low-res tier, where the state array spans all pages but each page is its own resource.
-	auto pushSlot = [&]( ID3D12Resource* res, D3D12_RESOURCE_STATES* slotStates, UINT slot, UINT resSlot, D3D12_RESOURCE_STATES after ) {
+	auto pushSlot = [&]( ID3D12Resource* res, D3D12_RESOURCE_STATES* slotStates, UINT slot, D3D12_RESOURCE_STATES after ) {
 		if ( slotStates[slot] == after ) return;   // already there — no redundant barrier
 		for ( UINT face = 0; face < 6; ++face ) {
-			g_PsBarriers.push_back( { res, slotStates[slot], after, resSlot * 6 + face } );
+			g_PsBarriers.push_back( { res, slotStates[slot], after, slot * 6 + face } );
 		}
 		slotStates[slot] = after;
-		};
-	// The paged low tier's two coordinates in one place: which page resource, and the slot within it.
-	auto pushLowSlot = [&]( UINT lowIndex, D3D12_RESOURCE_STATES after ) {
-		pushSlot( m_LowCube[LowPage( lowIndex )].Get(), m_LowSlotState, lowIndex, LowIndexInPage( lowIndex ), after );
 		};
 	auto flushBarriers = [&]() {
 		if ( g_PsBarriers.empty() ) return;
@@ -1513,8 +1485,8 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		TracyD3D12ZoneCGX( cmdList.Get(), "Static Pass" );
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
 			if ( !L.renderStatic ) continue;
-			if ( L.lowRes ) pushLowSlot( LowIndex( L.slot ), D3D12_RESOURCE_STATE_DEPTH_WRITE );
-			else            pushSlot( m_Cube.Get(), m_ActiveSlotState, L.slot, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+			if ( L.lowRes ) pushSlot( m_LowCube.Get(), m_LowSlotState,    LowIndex( L.slot ), D3D12_RESOURCE_STATE_DEPTH_WRITE );
+			else            pushSlot( m_Cube.Get(),    m_ActiveSlotState, L.slot,             D3D12_RESOURCE_STATE_DEPTH_WRITE );
 		}
 		flushBarriers();
 
@@ -1622,7 +1594,7 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		// its dynamicValid below and the shader stops reading the array for it.
 		for ( const PointShadowLightRecord& L : g_PsLights )
 			if ( L.dynSkelEnd > L.dynSkelBegin || L.dynAttachEnd > L.dynAttachBegin )
-				pushSlot( m_DynCube.Get(), m_DynSlotState, L.slot, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+				pushSlot( m_DynCube.Get(), m_DynSlotState, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 		flushBarriers();
 
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
@@ -1678,11 +1650,11 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// already sampleable and are never named in a barrier. Slots in g_PsLights that ended up doing no work at all
 	// never left PSR either, and pushSlot drops those as redundant.
 	for ( const PointShadowLightRecord& L : g_PsLights ) {
-		if ( L.lowRes ) pushLowSlot( LowIndex( L.slot ), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		else            pushSlot( m_Cube.Get(), m_ActiveSlotState, L.slot, L.slot, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		if ( L.lowRes ) pushSlot( m_LowCube.Get(), m_LowSlotState, LowIndex( L.slot ), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		else            pushSlot( m_Cube.Get(),    m_ActiveSlotState, L.slot, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		// ...and the dynamic array, which is now sampled as well. pushSlot drops this as redundant for every slot
 		// Phase C did not actually draw into, so it costs nothing for lights with no casters in range.
-		if ( !L.lowRes ) pushSlot( m_DynCube.Get(), m_DynSlotState, L.slot, L.slot, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		if ( !L.lowRes ) pushSlot( m_DynCube.Get(), m_DynSlotState, L.slot, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 	}
 	flushBarriers();
 	// Leave nothing bound: the cube DSVs this list used have just left DEPTH_WRITE, and a DSV that is still the

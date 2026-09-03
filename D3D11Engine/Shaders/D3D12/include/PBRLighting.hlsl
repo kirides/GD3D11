@@ -44,8 +44,8 @@ float3 DelightDiffuse( float3 linearAlbedo )
 // apply the LH projection z-map. Most acne bias is the PSO's hardware slope bias; add a small normal offset +
 // constant. 4-tap rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
 // `encodedIndex` is GPULight::ShadowCubeIndex: the low 30 bits are the cube slot, bit 30 (kShadowTierLow)
-// selects the LOW-RES static cube tier (kStaticCubeSize^2, fetched bindlessly via LightCB's
-// PointShadowLowIndex + the encoded page) over the full-res dynamic one (PointShadowCubes). `lightPos`/`range` are the CUBE's
+// selects the LOW-RES static cube array (kStaticCubeSize^2, fetched bindlessly via LightCB's
+// PointShadowLowIndex) over the full-res dynamic one (PointShadowCubes). `lightPos`/`range` are the CUBE's
 // origin and far-plane basis — GPULight::ShadowOrigin /
 // ShadowRange, NOT the light's own position/range, because co-located static lights share one clustered cube.
 //
@@ -55,11 +55,8 @@ float3 DelightDiffuse( float3 linearAlbedo )
 // to resolve shadow detail.
 float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPos, float range )
 {
+    int   slot   = encodedIndex & kShadowSlotMask;
     bool  lowRes = ( encodedIndex & kShadowTierLow ) != 0;
-    // Low tier: the slot is per-PAGE (the tier spans several arrays — 341 cubes is the hard per-array ceiling),
-    // and the page selects which of the contiguous bindless SRVs at PointShadowLowIndex to read.
-    int   slot   = lowRes ? ( encodedIndex & kShadowLowSlotMask ) : ( encodedIndex & kShadowSlotMask );
-    uint  lowPage = ( encodedIndex >> kShadowLowPageShift ) & kShadowLowPageMask;
     float coarse = lowRes ? 4.0 : 1.0;
     // Full-res slots keep their STATIC depth in PointShadowCubes and this frame's moving (skeletal) casters in a
     // SEPARATE array; taking the min of the two comparisons is "occluded by either", which is exactly what the
@@ -100,7 +97,7 @@ float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPo
         float3 o = normalize( L + ( kDisk[s * stride].x * t + kDisk[s * stride].y * bt ) * r );
         if ( lowRes )
         {
-            TextureCubeArray lowCubes = ResourceDescriptorHeap[NonUniformResourceIndex( PointShadowLowIndex + lowPage )];
+            TextureCubeArray lowCubes = ResourceDescriptorHeap[PointShadowLowIndex];
             sh += lowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
         }
         else
