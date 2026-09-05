@@ -47,7 +47,7 @@ void D3D11TiledDeferredShading::Init(
     // The clustered cull writes a bitmask straight into the grid, so it needs no flat index list and no
     // atomic allocation counter - both are gone with the old per-tile cull.
 
-    // Shadow cube array is lazy-created on first AllocateSlot() to save memory when shadows are off
+    // Shadow cube array is lazy-created on the first ClaimSlot() to save memory when shadows are off
 }
 
 void D3D11TiledDeferredShading::EnsureShadowArray() {
@@ -240,21 +240,10 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     }
 }
 
-int D3D11TiledDeferredShading::AllocateStaticSlot() {
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimStaticSlot( int slot ) {
+    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_STATIC_SHADOW_CUBEMAPS ) return nullptr;
     EnsureStaticShadowArray();
-    if ( !m_ShadowStaticCubeArray ) return -1;
-    for ( uint32_t i = 0; i < MAX_STATIC_SHADOW_CUBEMAPS; i++ ) {
-        if ( !m_StaticSlotInUse[i] ) {
-            m_StaticSlotInUse[i] = true;
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-void D3D11TiledDeferredShading::FreeStaticSlot( int slot ) {
-    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_STATIC_SHADOW_CUBEMAPS )
-        m_StaticSlotInUse[slot] = false;
+    return GetStaticSlotTarget( slot );
 }
 
 RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetStaticSlotTarget( int slot ) {
@@ -263,20 +252,10 @@ RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetStaticSlotTarget( int 
     return nullptr;
 }
 
-int D3D11TiledDeferredShading::AllocateSlot() {
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimSlot( int slot ) {
+    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_SHADOW_CUBEMAPS ) return nullptr;
     EnsureShadowArray();
-    for ( uint32_t i = 0; i < MAX_SHADOW_CUBEMAPS; i++ ) {
-        if ( !m_SlotInUse[i] ) {
-            m_SlotInUse[i] = true;
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-void D3D11TiledDeferredShading::FreeSlot( int slot ) {
-    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_SHADOW_CUBEMAPS )
-        m_SlotInUse[slot] = false;
+    return GetSlotTarget( slot );
 }
 
 RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetSlotTarget( int slot ) {

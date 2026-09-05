@@ -383,7 +383,7 @@ static void DrawPointLightInvalidationStat() {
 // hard to tell apart from a bug in slot assignment.
 static void DrawPointLightSlotStat() {
     const auto& info = Engine::GAPI->GetRendererState().RendererInfo;
-    if ( info.PointLightSlotsMax == 0 ) return;   // D3D11 doesn't fill these
+    if ( info.PointLightSlotsMax == 0 ) return;   // legacy per-light cubemaps: no fixed pools to report on
     ImGui::Text( "Shadow cubes: %u/%u dynamic, %u/%u static",
         info.PointLightSlotsUsed, info.PointLightSlotsMax,
         info.PointLightStaticSlotsUsed, info.PointLightStaticSlotsMax );

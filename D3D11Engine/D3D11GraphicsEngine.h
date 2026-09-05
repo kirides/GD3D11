@@ -186,6 +186,14 @@ public:
     /** Called when a vob was removed from the world */
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
 
+    // World changes that can invalidate a point light's CACHED static shadow cube. The cube is only
+    // re-rendered when the light itself is fresh / moved / resized, never when the geometry around it
+    // changes, so a vob appearing, moving, or starting to move has to say so. All three resolve through the
+    // shared PointLightSlotSelector, exactly as the D3D12 backend does.
+    void OnAddVob( VobInfo* vi ) override;
+    void OnVobBecameDynamic( zCVob* vob ) override;
+    void OnVobMoved( zCVob* vob ) override;
+
     /** Called when a key got pressed */
     XRESULT OnKeyDown( unsigned int key ) override;
 

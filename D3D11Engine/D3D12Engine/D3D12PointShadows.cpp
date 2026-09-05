@@ -28,6 +28,18 @@ static_assert( D3D12PointShadows::kBackBufferMax == D3D12GraphicsEngine::kBackBu
 void D3D12PointShadows::Attach( D3D12GraphicsEngine& engine ) {
     m_E = &engine;
     kBackBufferCount = engine.kBackBufferCount;
+
+    // Size the shared slot table and hand it this backend's constants. The two tiers keep sharing ONE index
+    // space (global slot >= kMaxCubes is the low-res array), which is what the barrier-state arrays below and
+    // every DSV lookup in Prepare()/Record() index by. The two tier bits differ between backends - D3D12's
+    // live in Shaders/D3D12/include/GPULightShared.h - so they are configuration, not a shared constant.
+    PointLightSlotSelector::Config cfg;
+    cfg.MaxHiSlots = kMaxCubes;
+    cfg.MaxLowSlots = kMaxStaticCubes;
+    cfg.RetentionFrames = 600;   // ~10 s at 60 fps; see PointLightSlotSelector::Slot::missingFrames
+    cfg.TierLowBit = kShadowTierLow;
+    cfg.HasDynamicBit = kShadowHasDynamic;
+    m_Sel.Configure( cfg );
 }
 
 using namespace DirectX;
@@ -93,10 +105,7 @@ namespace {
 
 
 bool D3D12PointShadows::IsNpcAttached( const zCVob* vob ) {
-	for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
-		if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
-	}
-	return false;
+	return PointLightSlotSelector::IsNpcAttached( vob );
 }
 
 
@@ -302,518 +311,43 @@ bool D3D12PointShadows::Init() {
 
 
 void D3D12PointShadows::QueueVobChangedInvalidation( zCVob* vob ) {
-	if ( !vob || !m_HaveCachedStatic ) return;
-	// A falling or thrown vob reports several transform changes per frame; they would all resolve to the same
-	// answer, so only the first is kept. Scanning is fine - the list holds one frame of world changes.
-	if ( std::ranges::contains( m_PendingVobChanges, vob ) ) return;
-	m_PendingVobChanges.push_back( vob );
-}
-
-
-void D3D12PointShadows::DrainPendingVobChanges() {
-	if ( m_PendingVobChanges.empty() ) return;
-	// Swapped out, not iterated in place: InvalidateStaticForVobRemoved below scrubs the pending list.
-	m_DrainScratch.swap( m_PendingVobChanges );
-	for ( zCVob* vob : m_DrainScratch ) {
-		// OnRemovedVob erases the entry (and deletes the VobInfo), so a hit means the vob is still alive.
-		VobInfo* vi = Engine::GAPI->GetVobByVob( vob );
-		if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
-		// Riding an NPC rather than lying on the ground: it animates, so it is never baked and must not
-		// invalidate anything. This is the read that is unreliable at report time - see the header.
-		if ( IsNpcAttached( vi->Vob ) ) continue;
-		// Below the movement threshold this is jitter, not a move - see kVobMoveEpsSq. The stored reference is
-		// only advanced when an invalidation actually happens, so repeated sub-eps steps still add up to one.
-		const XMFLOAT3 pos = vi->Vob->GetPositionWorld();
-		if ( auto posIt = m_LastInvalidationPos.find( vi->Vob ); posIt != m_LastInvalidationPos.end() ) {
-			const float dx = pos.x - posIt->second.x, dy = pos.y - posIt->second.y, dz = pos.z - posIt->second.z;
-			if ( dx * dx + dy * dy + dz * dz < kVobMoveEpsSq ) continue;
-		}
-		// Two halves, and a move needs both: every cube that baked it is now showing a shadow where the vob
-		// no longer is, and every cube reaching where it is NOW is missing it. A fresh add matches nothing in
-		// the first half, a vob that moved within one light's reach matches in both.
-		InvalidateStaticForVobRemoved( vi->Vob );
-		InvalidateStaticForVobAdded( pos, vi->VisualInfo->MeshSize * 0.5f );
-		// After the removal half, which drops this vob's entry along with the caster records it matched.
-		m_LastInvalidationPos.insert_or_assign( vi->Vob, pos );
-	}
-	m_DrainScratch.clear();
+	m_Sel.QueueVobChangedInvalidation( vob );
 }
 
 
 void D3D12PointShadows::InvalidateStaticForVobAdded( const XMFLOAT3& posWS, float extent ) {
-	// A VOB added after a nearby point light already cached its static shadow cube would otherwise cast no
-	// point-light shadow: the static cube is only re-rendered when the light is fresh / moved / resized, not when
-	// world geometry around it changes. Walk the active slots and invalidate any whose light range the new VOB
-	// reaches. Slots are empty during world load (owner==nullptr) so this is a no-op then; the margin mirrors the
-	// static-VOB gather's cull (ps.range + visual->MeshSize * 0.5f).
-	for ( Slot& ss : m_Slots ) {
-		if ( !ss.ownerKey || !ss.staticValid ) continue;
-		const float r = ss.range + extent;
-		const float dx = posWS.x - ss.pos.x, dy = posWS.y - ss.pos.y, dz = posWS.z - ss.pos.z;
-		if ( dx * dx + dy * dy + dz * dz < r * r ) {
-			ss.staticValid = false;   // re-render this slot's static depth next frame to include the new VOB
-			Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
-		}
-	}
+	m_Sel.InvalidateStaticForVobAdded( posWS, extent );
 }
 
 
 void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
-	// Symmetric to the add case: a VOB removed from the world (an item picked up, a container emptied) must
-	// stop casting into any light's cached static cube. Matched against the exact caster set Phase A baked,
-	// by POINTER - the vob is being torn down, so its bbox and position can no longer be read, and identity is
-	// the only thing left that is still meaningful. D3D11 does the same thing against each light's VobCache
-	// (D3D11PointLight::OnVobRemovedFromWorld). Nothing was baked => nothing to invalidate, which is what keeps
-	// an NPC's throwaway held item (never baked, see IsNpcAttached) from re-rendering every cube nearby.
-	if ( !vob ) return;
-	// It may still be parked for a deferred resolve - drop it, the drain must never look it up.
-	std::erase( m_PendingVobChanges, const_cast<zCVob*>( vob ) );
-	m_LastInvalidationPos.erase( vob );   // the address may be reused by a different vob later
-	for ( Slot& ss : m_Slots ) {
-		if ( !ss.ownerKey || !ss.staticValid || ss.bakedVobs.empty() ) continue;
-		if ( std::ranges::contains( ss.bakedVobs, vob ) ) {
-			ss.staticValid = false;   // this slot's cube holds the removed vob -- re-cache without it
-			Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
-		}
-	}
+	m_Sel.InvalidateStaticForVobRemoved( vob );
 }
 
 
 void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const std::vector<LightShadowKey>& keys ) {
-	// Before anything decides renderStatic below: apply the world changes that were parked last frame, so a
-	// vob added or moved since then lands in this frame's re-bake rather than the next one.
-	DrainPendingVobChanges();
-
-	// Point-light shadow selection (P2.10c + static-aside/round-robin P2.10f). Pick the closest-to-camera
-	// in-range lights (up to kMaxCubes) as this frame's "winners", but assign each winner a STABLE cube slot
-	// keyed by its light Vob identity (kept across frames, not reassigned by proximity every frame). A slot's
-	// rendered content persists in the cube array, so a STATIC winner whose light didn't move can reuse its
-	// cached cube (renderStatic=false) instead of re-culling + re-rendering all world/VOB/skeletal casters each
-	// frame. Dynamic (moving) lights, newly-assigned slots, and moved/range-changed lights render.
-	// Mirrors D3D11 DrawPointlightShadows' distance/range gating (it keys off the player; camera is close enough).
-	//
-	// The global PointlightShadows setting (ini [Shadows] PointlightShadows / the ImGui combo) gates the whole
-	// thing:
-	//   PLS_DISABLED       — no winners at all; every ShadowCubeIndex stays -1 and the pass never arms.
-	//   PLS_STATIC_ONLY    — winners get their static cube (rendered direct-to-active, no aside/copy) but never a
-	//                        dynamic overlay.
-	//   PLS_UPDATE_DYNAMIC — overlay for the near winners + a round-robin budget for the rest.
-	//   PLS_FULL           — overlay for every winner, every frame (no round-robin).
+	// Thin adapter onto the shared PointLightSlotSelector, which owns every decision this used to make inline
+	// (candidacy horizon, per-tier trim + spill, stable slot ownership, retention/eviction, promotion, the
+	// low-tier render budget, the publish gate and the dynamic round-robin). D3D11 runs the exact same code -
+	// see PointLightSlotSelector.h.
 	const GothicRendererSettings::EPointLightShadowMode shadowMode =
 		Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows;
-	m_FrameLights.clear();
-	if ( shadowMode == GothicRendererSettings::PLS_DISABLED ) {
-		// Release every slot so re-enabling mid-session re-renders from scratch instead of sampling depth that has
-		// been stale for however long the setting was off. Slot resource states are indexed by slot, not by owner,
-		// and every touched slot is returned to PIXEL_SHADER_RESOURCE before the frame ends, so dropping ownership
-		// here cannot desync the barrier tracking.
-		for ( Slot& ss : m_Slots )
-			if ( ss.ownerKey ) ss = Slot{};
-		for ( UINT i = 0; i < count; ++i ) dst[i].ShadowCubeIndex = -1;
-		return;
-	}
-	// NOT gated on count>0: with zero visible lights every slot's owner is absent, and the retention/eviction
-	// bookkeeping below still has to tick for them.
-	if ( !m_Cube ) return;
 
-	// Absolute shadow-candidacy horizon, in Gothic world units (~100 = 1 m). Not a quality knob: below this
-	// distance a light MUST be allowed to compete for a cube, because a static light without one is range-clamped
-	// down to nothing and reads as switched off. Applies to BOTH tiers — a static light routed to the full-res
-	// tier by PLSC_STATIC_LIGHTS is clamped by exactly the same rule and switches off exactly the same way.
-	constexpr float kMinShadowDist = 3000.0f;
-	// How much closer (squared) a candidate must be than a present slot owner before it may take that slot.
-	// 2.0 squared = ~1.41x in linear distance.
-	constexpr float kEvictDistanceRatio = 2.0f;
-	// Candidates that wanted a cube and could not get one because their tier was fully subscribed by lights at
-	// comparable distance. Surfaced in the ImGui point-light window: a steady non-zero value is the signal that
-	// the tier is genuinely too small for the scene, which is otherwise indistinguishable from a bug.
-	UINT starvedThisFrame = 0;
-
-	const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
-	// One candidate per distinct ownership KEY, not per light: a cluster of co-located static lights shares a key
-	// (and a ShadowOrigin/ShadowRange), so it competes for — and wins — exactly ONE cube between all its members.
-	// `dstIdx` is just the first member found; the write-back at the end fans the result out to all of them.
-	struct Cand { UINT dstIdx; uint64_t key; zCVobLight* vob; float distSq; bool isStatic; bool lowRes; bool spatiallyStatic; };
-	static std::vector<Cand> cands;
-	static std::unordered_map<uint64_t, UINT> candByKey;   // key -> index into cands; capacity reused across frames
+	static std::vector<PointLightSlotSelector::Candidate> cands;   // frame path: capacity reused, no realloc
 	cands.clear();
-	candByKey.clear();
-	// key -> slot, for every OCCUPIED slot. Built once because the three lookups below (incumbency, ageing,
-	// "does this winner already own a slot") each used to walk all kMaxSlots per light — fine at 192 slots,
-	// but the static tier is now paged into four figures and that product is a per-frame O(slots*lights) scan.
-	// Kept in sync by hand at the two points a slot changes hands.
-	static std::unordered_map<uint64_t, UINT> slotByKey;
-	slotByKey.clear();
-	for ( UINT s = 0; s < kMaxSlots; ++s )
-		if ( m_Slots[s].ownerKey ) slotByKey.emplace( m_Slots[s].ownerKey, s );
-	// Every ownership key the frame's light buffer carries, winner or not. Slot ageing keys off THIS, not off
-	// the winner set: a light that is on screen and being shaded still wants the cube it already paid for, even
-	// on frames it is too far away to compete for a new one.
-	static std::unordered_set<uint64_t> frameKeys;
-	frameKeys.clear();
 	for ( UINT i = 0; i < count; ++i ) {
-		const GPULight& L = dst[i];
-		if ( keys[i].key == 0 ) continue;                     // caller marked this light as never-shadowed
-		frameKeys.insert( keys[i].key );
-		if ( candByKey.contains( keys[i].key ) ) continue;    // another member of this cluster already stands for it
-		// Ranked on the CUBE's placement (ShadowOrigin/ShadowRange), which for a clustered light is its cluster's.
-		const float range = L.ShadowRange;
-		if ( range <= 0.0f ) continue;
-		XMVECTOR d = XMVectorSubtract( XMLoadFloat3( &L.ShadowOrigin ), camPos );
-		float distSq = XMVectorGetX( XMVector3LengthSq( d ) );
-		// D3D11's distMaxShadowSq is range*9, which for a CANDLE (range ~150 units) puts the horizon at ~13 m —
-		// and a light that falls off this list is shaded unshadowed, which BuildFrameLightBuffer then range-clamps
-		// to 0.35x/0.15x. The lit patch around the candle collapses and the light reads as switched OFF, at a
-		// distance where it is still plainly visible. The horizon has to be about where the light stops being
-		// *seen*, not where its own falloff sphere stops reaching the camera, so the low tier gets an absolute
-		// floor as well. It can afford one: its cubes are 32^2, rendered once and cached forever.
-		const float maxDist = std::max( range * 9.0f, kMinShadowDist );
-		if ( distSq >= maxDist * maxDist ) continue;
-		// Ranked on RAW distance. This used to discount an incumbent's distance by 0.35 before ranking, as
-		// hysteresis against a newcomer bumping an established light out on a marginal difference — but the
-		// ranking is also what the per-tier TRIM cuts at, so with more candidate keys than slots the discount
-		// let far-away incumbents outrank a light right in front of the camera and push it off the list
-		// entirely. Since a light that is off the list cannot take a slot back (eviction only ever considered
-		// ABSENT owners), that was permanent: the candle stayed unshadowed, hence range-clamped, hence dark,
-		// until something flushed the light set. Nearest-first here; the hysteresis now lives where it belongs,
-		// in the eviction rule below, which demands a newcomer be substantially closer than the owner it takes
-		// a slot from.
-		candByKey.emplace( keys[i].key, static_cast<UINT>( cands.size() ) );
-		cands.push_back( { i, keys[i].key, keys[i].vob, distSq, keys[i].isStatic, keys[i].lowRes, keys[i].spatiallyStatic } );
-	}
-	std::sort( cands.begin(), cands.end(), []( const Cand& a, const Cand& b ) {
-		if ( a.distSq != b.distSq ) return a.distSq < b.distSq;
-		return a.key < b.key;   // total order: equal distances must not permute between frames
-		} );
-
-	// Trim PER TIER: the two pools are independent budgets, so a room full of static clusters can never crowd a
-	// dynamic torch out of the full-res pool (and vice versa). Nearest-first within each tier; the losers simply
-	// go unshadowed here — BuildFrameLightBuffer has already range-clamped the statics so they cannot bleed far.
-	{
-		UINT keptHi = 0, keptLow = 0;
-		size_t out = 0;
-		for ( size_t idx = 0; idx < cands.size(); ++idx ) {
-			Cand& c = cands[idx];
-			if ( !c.lowRes ) {
-				// SPILL. A light whose preferred tier is full does not go dark while the other tier sits empty:
-				// if it never moves, its cube is cacheable, and a 32^2 cached cube is enormously better than no
-				// cube at all (no cube means the range clamp, which reads as the light being switched off). This
-				// is what makes "64/64 dynamic, 0/1020 static, N starved" impossible for a light that holds still.
-				if ( keptHi >= kMaxCubes && c.spatiallyStatic ) c.lowRes = true;
-			}
-			UINT& kept = c.lowRes ? keptLow : keptHi;
-			const UINT budget = c.lowRes ? kMaxStaticCubes : kMaxCubes;
-			if ( kept >= budget ) { ++starvedThisFrame; continue; }   // more candidate keys than either tier holds
-			++kept;
-			cands[out++] = c;
-		}
-		cands.resize( out );
-		// candByKey stood for "already has a candidate" during the build above; from here on it is the winner
-		// set, which the ageing loop below tests every occupied slot against.
-		candByKey.clear();
-		for ( size_t idx = 0; idx < cands.size(); ++idx ) candByKey.emplace( cands[idx].key, static_cast<UINT>( idx ) );
+		const LightShadowKey& k = keys[i];
+		cands.push_back( { k.key, k.vob, dst[i].ShadowOrigin, dst[i].ShadowRange,
+			k.isStatic, k.lowRes, k.spatiallyStatic, k.restrictToWorld } );
 	}
 
-	// Age slots whose owner is not in this frame's light buffer at all — but do NOT release them. That buffer is
-	// frustum-culled upstream (CollectVisibleVobs), so a light drops out merely because the camera turned away;
-	// its cached static depth is still valid and is exactly what should be reused the moment it comes back.
-	// Releasing on absence made every frustum blink a fresh occupant, i.e. a full static re-cull + re-render of
-	// the world sections and VOB instances around that light. Slots are surrendered only under real pressure
-	// (below) or once the absence outlives kSlotRetentionFrames.
-	// Presence, NOT winning: a light past the candidacy horizon keeps being SHADED every frame, so it keeps
-	// sampling the cube it owns (see the cached-cube publish below) and must not have it aged out from under it.
-	for ( UINT s = 0; s < kMaxSlots; ++s ) {
-		Slot& ss = m_Slots[s];
-		if ( !ss.ownerKey ) continue;
-		if ( frameKeys.contains( ss.ownerKey ) ) { ss.missingFrames = 0; continue; }
-		if ( ++ss.missingFrames > kSlotRetentionFrames ) {
-			// Retention expired - the cached depth goes with the slot. Counted like any other invalidation
-			// (D3D11 counts its equivalent tiled-slot handover), so slot churn shows up in the stat too.
-			if ( ss.staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
-			slotByKey.erase( ss.ownerKey );
-			ss = Slot{};
-		}
-	}
-
-	static std::unordered_map<uint64_t, int32_t> encodedByKey;   // key -> tier-encoded ShadowCubeIndex
-	encodedByKey.clear();
-	// Per-frame ceiling on low-tier static (re)renders — see the deferral in the assignment loop below.
-	constexpr UINT kLowStaticRendersPerFrame = 8;
-	UINT lowStaticBudget = kLowStaticRendersPerFrame;
-
-	// Assign each winner a stable slot (keep its existing one, else grab a free one) and decide render vs cache.
-	// The search is confined to the winner's TIER — [0,kMaxCubes) for dynamic lights, [kMaxCubes,kMaxSlots) for
-	// static/clustered ones — so the two budgets stay genuinely independent.
-	for ( const Cand& c : cands ) {
-		const UINT poolBegin = c.lowRes ? kMaxCubes : 0u;
-		const UINT poolEnd   = c.lowRes ? kMaxSlots : kMaxCubes;
-
-		// PFX-spawned lights (candles/torches/spell effects) mirror D3D11's RenderStaticShadowPass/RenderFullCubemap
-		// gate: unless PLSC_PARTICLE_FX is enabled, restrict them to world-mesh-only casters — BuildExcludeList
-		// never excludes a PFX light's own carrier (see its comment), so without this a PFX light attached to an
-		// NPC/the player could throw a large self-shadow from its own carrier. Checked even when c.isStatic is
-		// already false only because PLSC_STATIC_LIGHTS opted it in (BuildFrameLightBuffer's shadowRoutingStatic):
-		// a light can be both IsStatic() and IsPFXVobLight (e.g. a fixed PFX-spawned torch), and PFX takes
-		// precedence — mirrors D3D11's AllowsDynamicCasters category order.
-		bool restrictToWorld = false;
-		if ( c.vob && !c.isStatic ) {
-			auto li = Engine::GAPI->VobLightMap.find( c.vob );
-			if ( li != Engine::GAPI->VobLightMap.end() && li->second->IsPFXVobLight ) {
-				restrictToWorld = !(Engine::GAPI->GetRendererState().RendererSettings.PointlightShadowCasterFlags
-					& GothicRendererSettings::PLSC_PARTICLE_FX);
-			}
-		}
-		// Would this light actually USE the full-res tier? Only one that receives the per-frame skeletal overlay
-		// there has anything to gain from it. Computed before slot assignment because it is what decides whether
-		// a light sitting in the low-res tier gets promoted back out of it.
-		const bool wantsOverlay = !c.isStatic && !restrictToWorld
-			&& shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
-
-		// Pick a slot in [b,e): a free one; else the longest-absent owner (an absent light's cache is worth
-		// keeping, but not at the cost of a light on screen now); else the FARTHEST present owner, and only if
-		// this candidate is substantially closer than it — kEvictDistanceRatio is the anti-oscillation margin,
-		// so two lights at similar distances can never trade a slot back and forth. -1 when every owner is
-		// about as close as this light, i.e. genuine oversubscription rather than arrival order.
-		auto pickSlot = [&]( UINT b, UINT e ) -> int {
-			for ( UINT s = b; s < e; ++s ) if ( !m_Slots[s].ownerKey ) return static_cast<int>( s );
-			int best = -1;
-			UINT32 worst = 0;
-			for ( UINT s = b; s < e; ++s )
-				if ( m_Slots[s].missingFrames > worst ) { worst = m_Slots[s].missingFrames; best = static_cast<int>( s ); }
-			if ( best >= 0 ) return best;
-			float bar = c.distSq * kEvictDistanceRatio;
-			for ( UINT s = b; s < e; ++s ) {
-				const Slot& os = m_Slots[s];
-				if ( !os.ownerKey ) continue;
-				const XMVECTOR d = XMVectorSubtract( XMLoadFloat3( &os.pos ), camPos );
-				const float dsq = XMVectorGetX( XMVector3LengthSq( d ) );
-				if ( dsq > bar ) { bar = dsq; best = static_cast<int>( s ); }
-			}
-			return best;
-			};
-
-		int slot = -1;
-		// A light keeps whatever slot it already owns, in EITHER tier. Tier preference decides where a light
-		// LOOKS for a slot, not where it is allowed to keep one: re-homing a spilled light the moment pressure
-		// eased would make it ping-pong between tiers, and every flip is a fresh cube render. Two things do
-		// force a low-res holder out, both of them one-directional:
-		if ( auto it = slotByKey.find( c.key ); it != slotByKey.end() ) {
-			const UINT owned = it->second;
-			const bool ownedLow = IsLowSlot( owned );
-			// 1. It STARTED MOVING. That tier bakes a cube once and caches it forever, and never runs the
-			//    dynamic overlay, so a mover cannot stay in it.
-			bool handBack = ownedLow && !c.spatiallyStatic;
-			// 2. It now ranks into the full-res tier (the trim left c.lowRes false) AND would get a dynamic
-			//    overlay there. Without this a light that spilled while far away stayed in the cached tier for
-			//    good: walk right up to it under UPDATE DYNAMIC and it still drew static-only shadows, because
-			//    ownership alone kept it there. Promotion is attempted only when a full-res slot can ACTUALLY
-			//    be had — giving up the cube it holds for nothing would leave it unshadowed, and unshadowed is
-			//    what the range clamp turns into a light that looks switched off.
-			if ( !handBack && ownedLow && !c.lowRes && wantsOverlay ) {
-				const int hi = pickSlot( 0, kMaxCubes );
-				if ( hi >= 0 ) { handBack = true; slot = hi; }
-			}
-			if ( handBack ) {
-				if ( m_Slots[owned].staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
-				m_Slots[owned] = Slot{};
-				slotByKey.erase( c.key );
-			} else {
-				slot = static_cast<int>( owned );
-			}
-		}
-		if ( slot < 0 ) slot = pickSlot( poolBegin, poolEnd );
-		if ( slot < 0 ) { ++starvedThisFrame; continue; }
-		if ( m_Slots[slot].ownerKey != c.key ) {
-			if ( m_Slots[slot].staticValid ) Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
-			if ( m_Slots[slot].ownerKey ) slotByKey.erase( m_Slots[slot].ownerKey );
-			slotByKey[c.key] = static_cast<UINT>( slot );
-			m_Slots[slot] = Slot{};
-			m_Slots[slot].ownerKey = c.key;
-			m_Slots[slot].owner = c.vob;          // nullptr for a cluster — see the Slot::owner comment
-			m_Slots[slot].staticValid = false;   // fresh occupant → must render static (the slot changed hands)
-			// Stamp the intended cube origin NOW, not when the static render finally happens: an acquisition
-			// whose render the per-frame budget defers would otherwise sit at pos {0,0,0}, read as infinitely
-			// far to the eviction scan above, and be taken straight back off the light that just got it.
-			m_Slots[slot].pos = dst[c.dstIdx].ShadowOrigin;
-			m_Slots[slot].range = dst[c.dstIdx].ShadowRange;
-		}
-		Slot& ss = m_Slots[slot];
-		ss.isStatic = c.isStatic;
-		// Everything below follows the slot this light ACTUALLY holds, not the tier it asked for - a spilled
-		// light sits in the low-res array and must be encoded, budgeted and overlay-gated as such.
-		const bool slotLow = IsLowSlot( static_cast<UINT>( slot ) );
-
-		// Can this slot EVER receive the skeletal overlay? Static lights never do (D3D11's GetCurrentShadowMode
-		// forces them to PLS_STATIC_ONLY), and neither does anything below PLS_UPDATE_DYNAMIC.
-		// This NO LONGER decides which cube the static pass targets — static always goes to m_Cube, the overlay
-		// always to m_DynCube — so there is no routing flip to invalidate staticValid over any more. It only
-		// gates whether the overlay runs at all.
-		// `!slotLow` is load-bearing, not belt-and-braces: the low-res array has no dynamic twin, so a low slot
-		// becoming overlay-eligible would point Phase C at a DSV that does not exist for it. Since the SPILL,
-		// a non-static light can end up in that tier too - it gives up its overlay in exchange for a cube.
-		const bool overlayEligible = wantsOverlay && !slotLow;
-		// An ineligible slot must not keep advertising a stale overlay: drop the bit so the lit pass stops
-		// sampling the dynamic array for it the moment the setting (or the light's IsStatic) changes.
-		if ( !overlayEligible ) ss.dynamicValid = false;
-
-		GPULight& L = dst[c.dstIdx];
-		// Move/resize detection tracks the CUBE, not the light: a clustered light wandering inside its cluster
-		// does not move the shared cube, and must not invalidate its cached static depth.
-		const XMFLOAT3& np = L.ShadowOrigin;
-		const float moveEps = 0.5f;   // Gothic world units; below this the light hasn't meaningfully moved
-		bool moved = std::fabs( np.x - ss.pos.x ) > moveEps
-			|| std::fabs( np.y - ss.pos.y ) > moveEps
-			|| std::fabs( np.z - ss.pos.z ) > moveEps;
-		bool rangeChanged = std::fabs( L.ShadowRange - ss.range ) > 1.0f;
-		// The static cube is re-rendered only when fresh / the light moved / range changed / the routing
-		// flipped; otherwise reused. For overlay-eligible slots the DYNAMIC overlay + the static->active copy
-		// still run every frame regardless (see Prepare()).
-		bool renderStatic = !ss.staticValid || moved || rangeChanged;
-
-		// Amortize LOW-TIER static renders across frames. A static cube is rendered once and then cached forever,
-		// but "once" still costs a full world-section cull plus its draws — and acquisitions arrive in BURSTS
-		// (world load, a teleport, rounding a corner into a lit district), which without a budget means up to
-		// kMaxStaticCubes full static renders in a single frame and a very visible hitch. Nearest-first, because
-		// `cands` is already sorted by distance. The dynamic tier is deliberately NOT budgeted: it holds few
-		// lights, they are the ones the player is looking at, and its behaviour here is unchanged.
-		if ( renderStatic && slotLow ) {
-			if ( lowStaticBudget == 0 ) renderStatic = false;   // deferred; staticValid stays false so it retries
-			else --lowStaticBudget;
-		}
-
-		// Publish the cube index ONLY once the slot actually holds this owner's depth — either it was already
-		// cached, or it is being rendered this very frame (the cube pass runs before the lit pass). A fresh slot
-		// whose render got deferred by the budget above must NOT be sampled yet: it still holds the previous
-		// occupant's depth, which would read as a wrong shadow. Leaving it -1 makes the light unshadowed for a
-		// few frames instead, and BuildFrameLightBuffer's range clamp keeps it from bleeding meanwhile.
-		// staticPresent, not just staticValid: a slot that was invalidated by a world change still holds this
-		// owner's depth and stays sampleable until the re-render lands. Only a FRESH slot (holding the previous
-		// occupant's depth) is withheld.
-		if ( ss.staticValid || ss.staticPresent || renderStatic ) {
-			// What the shader sees is the TIER-ENCODED index (local slot | kShadowTierLow), not the global slot.
-			// kShadowHasDynamic additionally tells the lit pass to sample the dynamic-overlay array for this light
-			// and min it with the static one. Only full-res slots can carry it (the low tier has no dynamic twin),
-			// and it reflects the last SUBMITTED overlay — see Slot::dynamicValid on the one-frame lag.
-			encodedByKey[c.key] = slotLow
-				? static_cast<int32_t>( LowIndex( static_cast<UINT>( slot ) ) ) | kShadowTierLow
-				: ( static_cast<int32_t>( slot ) | ( ss.dynamicValid ? kShadowHasDynamic : 0 ) );
-		}
-		m_FrameLights.push_back( { np, L.ShadowRange, static_cast<UINT>(slot), renderStatic, false, overlayEligible, restrictToWorld } );
-		if ( renderStatic ) { ss.pos = np; ss.range = L.ShadowRange; }   // staticValid stamped once actually drawn
-	}
-
-	// ---- Non-winners that STILL OWN a valid cube keep sampling it -------------------------------------------
-	// Winning is about who may SPEND slots and render passes this frame; it is not what makes a cube sampleable.
-	// A static light that fell off the candidate list (past the horizon above, or beaten to the last free slot)
-	// used to drop to ShadowCubeIndex -1 while its own depth sat there in a slot it still owns, cached and
-	// resting in PIXEL_SHADER_RESOURCE — and going unshadowed is what triggers BuildFrameLightBuffer's range
-	// clamp, i.e. the light visibly switching off. Publishing the cube it already owns costs nothing: no
-	// re-render, no barrier, no entry in m_FrameLights, just one shadow sample the light was worth anyway.
-	//
-	// BOTH tiers, but only while the light still sits where the cube was rendered from: a cube is valid for the
-	// ORIGIN it was baked at, and the shader looks it up from the light's CURRENT ShadowOrigin, so a light that
-	// moved away from its bake would sample a cube centred somewhere else. That check is what makes this safe
-	// for the full-res tier too, whose lights can move. What a full-res non-winner does NOT get is
-	// kShadowHasDynamic: nothing refreshed its skeletal overlay this frame, and a stale one would leave an NPC's
-	// shadow standing where the NPC no longer is. Its static depth is still exactly right.
-	for ( UINT i = 0; i < count; ++i ) {
-		const uint64_t key = keys[i].key;
-		if ( !key || encodedByKey.contains( key ) ) continue;
-		const auto it = slotByKey.find( key );
-		if ( it == slotByKey.end() ) continue;
-		const Slot& ss = m_Slots[it->second];
-		if ( !ss.staticPresent ) continue;   // slot holds no depth for this owner yet
-		const XMFLOAT3& np = dst[i].ShadowOrigin;
-		if ( std::fabs( np.x - ss.pos.x ) > 0.5f || std::fabs( np.y - ss.pos.y ) > 0.5f
-			|| std::fabs( np.z - ss.pos.z ) > 0.5f || std::fabs( dst[i].ShadowRange - ss.range ) > 1.0f )
-			continue;
-		encodedByKey[key] = IsLowSlot( it->second )
-			? static_cast<int32_t>( LowIndex( it->second ) ) | kShadowTierLow
-			: static_cast<int32_t>( it->second );
-	}
-
-	// Occupancy + starvation, for the ImGui point-light window (see DrawPointLightSlotStat). Counted here rather
-	// than derived later: `starvedThisFrame` is only knowable inside the assignment loop.
-	{
-		auto& info = Engine::GAPI->GetRendererState().RendererInfo;
-		UINT usedHi = 0, usedLow = 0;
-		for ( UINT s = 0; s < kMaxSlots; ++s )
-			if ( m_Slots[s].ownerKey ) ( IsLowSlot( s ) ? usedLow : usedHi )++;
-		info.PointLightSlotsUsed = usedHi;
-		info.PointLightSlotsMax = kMaxCubes;
-		info.PointLightStaticSlotsUsed = usedLow;
-		info.PointLightStaticSlotsMax = kMaxStaticCubes;
-		info.PointLightSlotsStarved = starvedThisFrame;
-	}
+	// `m_Cube` is the resources gate: with no cube array there is nothing to own, so the selector only ticks
+	// its PLS_DISABLED wipe and leaves every slot alone (matching what this function did before the extraction).
+	m_Sel.Select( cands, shadowMode, m_Cube != nullptr );
 
 	// Fan the result out to EVERY light, so all members of a clustered key sample the one cube their cluster won.
-	for ( UINT i = 0; i < count; ++i ) {
-		dst[i].ShadowCubeIndex = -1;
-		if ( !keys[i].key ) continue;
-		if ( auto it = encodedByKey.find( keys[i].key ); it != encodedByKey.end() )
-			dst[i].ShadowCubeIndex = it->second;
-	}
-
-	// Round-robin the per-frame skeletal DYNAMIC overlay across overlay-eligible winners (P2.10h). With
-	// kMaxCubes persisting many lights, running the full sphere-cull-against-registered-skeletal-vobs pass for
-	// every single winner every frame would multiply CPU cost with light count. The nearest kAlwaysDynamicCount
-	// winners (where a moving caster's shadow lag would be most visible) always get it; the rest take turns via
-	// a stale-frames counter so every dynamic light's overlay still refreshes periodically instead of never.
-	// Static geometry shadows (walls, VOBs) are unaffected — those persist via the static cache regardless.
-	// Skipped wholesale below PLS_UPDATE_DYNAMIC (nothing is eligible), and un-budgeted at PLS_FULL.
-	if ( shadowMode < GothicRendererSettings::PLS_UPDATE_DYNAMIC ) return;
-
-	constexpr UINT kAlwaysDynamicCount = 8;   // NPCs barely move frame-to-frame; only the player (camera) moves a lot,
-	// and it won't be this close to more than a handful of lights at once, nor perceive the lag on distant ones.
-	constexpr UINT kDynamicRoundRobinBudget = 6;
-
-	static std::vector<FrameLight*> eligible;   // frame path: keep the capacity, don't realloc per frame
-	eligible.clear();
-	for ( FrameLight& ps : m_FrameLights ) if ( ps.overlayEligible ) eligible.push_back( &ps );
-
-	if ( shadowMode >= GothicRendererSettings::PLS_FULL ) {
-		// "Very expensive. Don't use unless you encounter visual bugs." — every eligible winner overlays
-		// every frame, no distance ranking and no budget.
-		for ( FrameLight* ps : eligible ) {
-			ps->renderDynamic = true;
-			m_Slots[ps->slot].dynamicStaleFrames = 0;
-		}
-	} else {
-		std::sort( eligible.begin(), eligible.end(), [&]( const FrameLight* a, const FrameLight* b ) {
-			XMVECTOR da = XMVectorSubtract( XMLoadFloat3( &a->posWS ), camPos );
-			XMVECTOR db = XMVectorSubtract( XMLoadFloat3( &b->posWS ), camPos );
-			return XMVectorGetX( XMVector3LengthSq( da ) ) < XMVectorGetX( XMVector3LengthSq( db ) );
-		} );
-
-		const size_t closeCount = std::min<size_t>( kAlwaysDynamicCount, eligible.size() );
-		for ( size_t idx = 0; idx < closeCount; ++idx ) {
-			eligible[idx]->renderDynamic = true;
-			m_Slots[eligible[idx]->slot].dynamicStaleFrames = 0;
-		}
-		for ( size_t idx = closeCount; idx < eligible.size(); ++idx ) ++m_Slots[eligible[idx]->slot].dynamicStaleFrames;
-
-		// Among the "far" set, service the most-stale slots first, up to this frame's round-robin budget.
-		std::sort( eligible.begin() + closeCount, eligible.end(), [&]( const FrameLight* a, const FrameLight* b ) {
-			return m_Slots[a->slot].dynamicStaleFrames > m_Slots[b->slot].dynamicStaleFrames;
-		} );
-		for ( size_t idx = closeCount, serviced = 0; idx < eligible.size() && serviced < kDynamicRoundRobinBudget; ++idx, ++serviced ) {
-			eligible[idx]->renderDynamic = true;
-			m_Slots[eligible[idx]->slot].dynamicStaleFrames = 0;
-		}
-	}
-
-	// An ELIGIBLE slot whose STATIC base is (re)rendered this frame must also refresh its dynamic overlay,
-	// round-robin turn or not: the previous active cube's dynamic content was composited against the OLD
-	// static depth — invalid once the static geometry/position changes. Not forcing this would either ghost
-	// stale skeletal shadows onto a new depth base, or (since Phase B still copies the new static in)
-	// silently drop the overlay for a light that's actually due for a refresh. Ineligible slots have no
-	// overlay to reconcile — their static render lands straight in the active cube and stands alone.
-	for ( FrameLight& ps : m_FrameLights ) {
-		if ( ps.overlayEligible && ps.renderStatic && !ps.renderDynamic ) {
-			ps.renderDynamic = true;
-			m_Slots[ps.slot].dynamicStaleFrames = 0;
-		}
-	}
+	for ( UINT i = 0; i < count; ++i )
+		dst[i].ShadowCubeIndex = m_Sel.GetEncodedIndex( keys[i].key );
 }
 
 
@@ -884,7 +418,7 @@ void D3D12PointShadows::Prepare() {
 	if ( !m_E->m_FrameOpen || !m_Cube || !m_DynCube || !m_LowCube || !psPipe.CasterWorldPSO
 		|| !m_DsvHeap || !m_DynDsvHeap || !m_LowDsvHeap || !psPipe.RootSig )
 		return;
-	if ( m_FrameLights.empty() ) return;
+	if ( m_Sel.GetAssignments().empty() ) return;
 
 	ZoneScopedN( "Prepare point shadows" );
 
@@ -929,7 +463,7 @@ void D3D12PointShadows::Prepare() {
 
 	// Precompute each winner's 6 face view-projs into its per-frame CB slot (transpose(view*proj) — same
 	// column-major convention the world/CSM shaders read back). Both the static and dynamic passes bind this.
-	for ( const FrameLight& ps : m_FrameLights ) {
+	for ( const FrameLight& ps : m_Sel.GetAssignments() ) {
 		if ( ps.slot >= kMaxSlots ) continue;
 		const XMVECTOR eye = XMLoadFloat3( &ps.posWS );
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, 15.0f, ps.range * 2.0f );
@@ -962,7 +496,7 @@ void D3D12PointShadows::Prepare() {
 	// avoid. Loop-invariant, so it is decided once here rather than per light.
 	const bool staticResolvable = haveWorld && !worldSections.empty();
 
-	for ( const FrameLight& ps : m_FrameLights ) {
+	for ( const FrameLight& ps : m_Sel.GetAssignments() ) {
 		if ( ps.slot >= kMaxSlots ) continue;
 		// Only the slots being (re)drawn THIS frame (static change and/or scheduled dynamic overlay, see the
 		// round-robin scheduling in SelectShadowedLights). A far light skipped this frame keeps EXACTLY what its
@@ -990,7 +524,7 @@ void D3D12PointShadows::Prepare() {
 		if ( rec.renderStatic ) {
 			g_PsAnyStatic = true;
 			// Rebuilt below alongside the draws it describes - see InvalidateStaticForVobRemoved.
-			std::vector<const zCVob*>& bakedVobs = m_Slots[ps.slot].bakedVobs;
+			std::vector<const zCVob*>& bakedVobs = m_Sel.SlotAt( ps.slot ).bakedVobs;
 			bakedVobs.clear();
 			// The slot's CURRENT static target (aside cube if eligible, else the active cube itself) is about to
 			// be cleared and redrawn — but it does not HOLD that depth until the pass has actually been recorded
@@ -1204,7 +738,7 @@ void D3D12PointShadows::Prepare() {
 		if ( ps.renderDynamic && ps.overlayEligible ) {
 			// Self-shadow exclusion (see BuildExcludeList) — shared by the skeletal/attachment gather and the
 			// dynamic-mesh-vob gather below.
-			const bool hasExclusions = BuildExcludeList( m_Slots[ps.slot].owner, excludeVobs );
+			const bool hasExclusions = BuildExcludeList( static_cast<zCVobLight*>( m_Sel.SlotAt( ps.slot ).owner ), excludeVobs );
 
 		if ( haveSkel ) {
 			// Sphere-cull the FULL registered skeletal-vob list against THIS light (parity with the CSM cascade
@@ -1372,11 +906,7 @@ void D3D12PointShadows::CommitStaticCache() {
 		// point is that this happens once. That also kept Phase A issuing low-res records every frame, which is
 		// what left the 32^2 viewport bound underneath the dynamic overlay (see Phase C).
 		if ( p.slot >= kMaxSlots ) continue;
-		Slot& ss = m_Slots[p.slot];
-		if ( !ss.ownerKey ) continue;   // slot released between Prepare() and here — nothing to validate
-		ss.staticValid = true;
-		ss.staticPresent = true;
-		m_HaveCachedStatic = true;
+		m_Sel.CommitStatic( p.slot );   // no-op if the slot was released between Prepare() and here
 	}
 	m_PendingStatic.clear();
 
@@ -1384,9 +914,7 @@ void D3D12PointShadows::CommitStaticCache() {
 	// unscheduled round-robin slot keeps its previous bit and its cube contents untouched.
 	for ( const PendingDynamic& p : m_PendingDynamic ) {
 		if ( p.slot >= kMaxSlots ) continue;
-		Slot& ss = m_Slots[p.slot];
-		if ( !ss.ownerKey ) continue;   // slot released between Prepare() and here — nothing to validate
-		ss.dynamicValid = p.has;
+		m_Sel.CommitDynamic( p.slot, p.has );
 	}
 	m_PendingDynamic.clear();
 }

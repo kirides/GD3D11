@@ -186,7 +186,26 @@ public:
             m_CascadeHasAnimatedCaster[cascadeIndex] = hasAnimated;
     }
 
+    /** The shared point-light shadow-cube slot table - see PointLightSlotSelector.h. Public because the world
+        change hooks on D3D11GraphicsEngine (a vob added, moved, or promoted to dynamic) resolve against it,
+        exactly as the D3D12 backend does through D3D12PointShadows. */
+    PointLightSlotSelector& GetPointSlots() { return m_PointSlots; }
+
+    /** Hands a point-light slot back when its owning light vob leaves the world. Keyed on the vob POINTER, so
+        nothing about the dying light has to be read - by the time this fires its VobLightInfo may already be
+        on its way out. */
+    void ReleasePointLightSlotFor( const zCVob* lightVob );
+
 private:
+    /** Sizes the shared slot table for this backend on first use. Idempotent. */
+    void ConfigurePointSlots();
+
+    /** Makes every light's tiled slot agree with the selector, which is the sole owner of the slot table.
+        Walks the whole light map rather than this frame's visible set on purpose: a light that has gone out
+        of view still holds a slot index, and a queued background update would otherwise render into a slot
+        the selector has since handed to somebody else. */
+    void ReconcileTiledSlots();
+
     // Per-cascade size cap for the multi-cascade atlas, which packs all cascades into one
     // (2*S) x (1.5*S) texture. 2048 keeps the biggest atlas at 4096x3072.
     static const int MAX_ATLAS_CASCADE_SIZE = 2048;
@@ -228,6 +247,10 @@ private:
     XMFLOAT3 m_WorldShadowPos;
 
     std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;
+
+    // Which point light owns which shadow cube, and when each one's cached static depth is re-rendered.
+    // Shared verbatim with the D3D12 backend - see PointLightSlotSelector.h.
+    PointLightSlotSelector m_PointSlots;
     D3D11LegacyDeferredShading m_LegacyDeferred;
 
     TracyLockable(std::mutex, m_CullingJobsMutex);

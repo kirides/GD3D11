@@ -9916,6 +9916,16 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
+    if ( ShadowMaps ) {
+        // A vob leaving the world must stop casting into every cached static cube that baked it. Matched by
+        // POINTER against each slot's caster set - the object is on its way out, so nothing about its bbox or
+        // position can be trusted here any more.
+        ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
+        // ...and if the vob IS a light, its slot goes back to the pool. Keyed on the pointer for the same
+        // reason: its VobLightInfo may already be half torn down.
+        ShadowMaps->ReleasePointLightSlotFor( vob );
+    }
+
     // Take out of shadowupdate queue
     for ( auto it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
         if ( (*it)->Vob == vob ) {
@@ -9937,6 +9947,34 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
 
     return XR_SUCCESS;
 }
+
+void D3D11GraphicsEngine::OnAddVob( VobInfo* vi ) {
+    // A VOB added after a nearby point light already cached its static shadow cube would otherwise cast no
+    // point-light shadow at all: that cube is only re-rendered when the light is fresh / moved / resized, not
+    // when the world around it changes. PARKED rather than applied here - at this point Gothic has often not
+    // placed the vob yet (a dropped item is inserted where it came from and moved to where it lands
+    // afterwards) and its parent link can still be the NPC letting go of it, which are exactly the two things
+    // the decision reads. Resolved a frame later, once both have settled.
+    if ( ShadowMaps && vi && vi->Vob && vi->VisualInfo )
+        ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
+}
+
+
+void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
+    // Gothic just promoted this vob out of the BSP into its dynamic/animated list, i.e. it started moving (a
+    // door swinging open, a chest lid). Anything baked into a cached static cube has to come back out - the
+    // animated pass draws it from now on.
+    if ( ShadowMaps ) ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
+}
+
+
+void D3D11GraphicsEngine::OnVobMoved( zCVob* vob ) {
+    // A vob baked into a cached static cube at its old position leaves a shadow behind; one that just moved
+    // into a light's reach is missing from that light's cube. Queued rather than resolved here because a
+    // falling or thrown item moves several times per frame and its position is only final once it stops.
+    if ( ShadowMaps ) ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
+}
+
 
 /** Updates the occlusion for the bsp-tree */
 void D3D11GraphicsEngine::UpdateOcclusion() {

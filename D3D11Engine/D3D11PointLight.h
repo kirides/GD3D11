@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <atomic>
 #include "TexturePool.h"
+#include "PointLightSlotSelector.h"
 #include "ThreadPool.h"
 
 class D3D11PointLight;
@@ -101,6 +102,12 @@ public:
         repositioned, and it is exactly those lights that fill the scarce full-res tier. */
     void NoteStationary();
 
+    /** True when this light's category is NOT opted into VOB/NPC casters (see PointlightShadowCasterFlags):
+        its cube holds the world mesh alone. Handed to the shared slot selector as
+        PointLightSlotSelector::Candidate::restrictToWorld, where it decides whether the full-res tier would
+        buy this light anything at all - a world-mesh-only light can never receive a dynamic overlay. */
+    bool RestrictsCastersToWorld() const;
+
     /** True once this light has held still long enough for its cube to be worth caching - the condition for
         SPILLING it into the low-res static tier when the full-res one is full. A light that moves cannot go
         there: that tier bakes a cube once and keeps it, and never runs the dynamic overlay. */
@@ -140,11 +147,18 @@ public:
     float GetDebugZFar() const { return m_DebugLastZFar; }
 
     // Tiled deferred slot management (renders directly into a shared TextureCubeArray). `lowRes` selects
-    // which of the two independent slot pools this came from - see WantsStaticOnlySlot().
-    void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes );
+    // which of the two independent slot pools this came from - see WantsStaticOnlySlot(). `sel` is the shared
+    // slot table that HANDED OUT this slot: the light reports its finished bakes back to it (the static-cache
+    // stamp and the caster set that bake covered), which is what lets the backend-neutral world-change
+    // invalidation reach a D3D11 light. Never owned, never held past ClearTiledSlot().
+    void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes,
+        PointLightSlotSelector* sel );
     void ClearTiledSlot();
     int GetTiledSlot() const { return m_TiledSlotIndex; }
     bool IsTiledSlotLowRes() const { return m_TiledSlotLowRes; }
+    /** This light's slot in the selector's single GLOBAL index space (low-res slots sit above the full-res
+        pool), or -1. The two tiers keep separate local indices in D3D11 because they are separate arrays. */
+    int GetGlobalTiledSlot() const;
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
@@ -163,7 +177,8 @@ protected:
 
     /** Single funnel for "this light's baked static shadow is no longer valid". Counts the drop into
         RendererInfo.PointLightStaticInvalidations, but only when there actually WAS a bake to lose - so
-        PLS_FULL, which never latches one, doesn't drown the stat in one event per light per frame. */
+        PLS_FULL, which never latches one, doesn't drown the stat in one event per light per frame - and only
+        on the legacy path, where no shared slot table has already counted it. */
     void DropStaticBake();
     void RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
     void RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
@@ -223,8 +238,15 @@ protected:
     XMFLOAT3 m_StationaryPos = {};
     int m_StationaryFrames = 0;
 
+    /** Reports a finished static bake back to the shared slot table: the cache stamp (so the selector stops
+        asking for a re-render) plus the caster identities it covered (so a vob later removed or moved can be
+        matched against it by pointer). No-op on the legacy per-light-cubemap path, which owns no slot. */
+    void CommitStaticBakeToSlot();
+
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;
+    // The shared slot table this slot came from - see SetTiledSlot. Non-owning; null on the legacy path.
+    PointLightSlotSelector* m_SlotSel = nullptr;
     bool m_TiledSlotLowRes = false; // which of the two independent slot pools m_TiledSlotIndex indexes into
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;

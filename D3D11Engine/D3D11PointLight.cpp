@@ -147,11 +147,31 @@ void D3D11PointLight::ReleaseShadowMap() {
 
 }
 
-void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes ) {
+int D3D11PointLight::GetGlobalTiledSlot() const {
+    if ( m_TiledSlotIndex < 0 ) return -1;
+    return m_TiledSlotLowRes ? static_cast<int>(MAX_SHADOW_CUBEMAPS) + m_TiledSlotIndex : m_TiledSlotIndex;
+}
+
+void D3D11PointLight::CommitStaticBakeToSlot() {
+    const int global = GetGlobalTiledSlot();
+    if ( !m_SlotSel || global < 0 ) return;
+    m_SlotSel->CommitStatic( static_cast<uint32_t>(global) );
+    // The caster set this bake actually covered, so a vob later removed (or moved off its old spot) can be
+    // matched against it by pointer. VobCache/SkeletalVobCache are the same lists RenderShadowCube just
+    // filled/reused, so this is a copy of what went into the cube, not a second cull.
+    auto& baked = m_SlotSel->SlotAt( static_cast<uint32_t>(global) ).bakedVobs;
+    baked.clear();
+    for ( const VobInfo* v : VobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
+    for ( const SkeletalVobInfo* v : SkeletalVobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
+}
+
+void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner,
+    bool lowRes, PointLightSlotSelector* sel ) {
     m_TiledSlotIndex = slot;
     m_TiledSlotLowRes = lowRes;
     m_TiledDepthTarget = target;
     m_TiledOwner = owner;
+    m_SlotSel = sel;
 
     StartReInit();
     DrawnOnce = false;
@@ -161,20 +181,20 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
 }
 
 void D3D11PointLight::ClearTiledSlot() {
-    if ( m_TiledSlotIndex >= 0 && m_TiledOwner ) {
-        if ( m_TiledSlotLowRes ) {
-            m_TiledOwner->FreeStaticSlot( m_TiledSlotIndex );
-        } else {
-            m_TiledOwner->FreeSlot( m_TiledSlotIndex );
-        }
-    }
+    // No free-list to give the slot back to: the shared PointLightSlotSelector owns who holds what, and this
+    // only lets go of the light's end of that (it is called BECAUSE the selector reassigned the slot).
+    m_SlotHasOwnDepth = false;
+    DropStaticBake();   // before dropping m_SlotSel, so the slot table stays the single invalidation counter
+    m_HasDynamicOverlay = false;
     m_TiledSlotIndex = -1;
     m_TiledSlotLowRes = false;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
-    m_SlotHasOwnDepth = false;
-    DropStaticBake();
-    m_HasDynamicOverlay = false;
+    m_SlotSel = nullptr;
+}
+
+bool D3D11PointLight::RestrictsCastersToWorld() const {
+    return !AllowsDynamicCasters( LightInfo );
 }
 
 int D3D11PointLight::GetCurrentShadowMode() const {
@@ -596,6 +616,7 @@ void D3D11PointLight::RenderFullCubemap() {
     if ( !m_StaticShadowReady && shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
         RenderStaticShadowPass( *activeTarget, true );
         m_StaticShadowReady = true;
+        CommitStaticBakeToSlot();
         return;
     }
 
@@ -617,6 +638,7 @@ void D3D11PointLight::RenderFullCubemap() {
                 if ( !m_StaticShadowReady ) {
                     RenderStaticShadowPass( *activeTarget, true );
                     m_StaticShadowReady = true;
+                    CommitStaticBakeToSlot();
                 }
 
                 // A world-mesh-only light (see RenderStaticShadowPass) has nothing animated to put in the
@@ -640,6 +662,7 @@ void D3D11PointLight::RenderFullCubemap() {
             if ( m_StaticDepthCubemap ) {
                 RenderStaticShadowPass( *m_StaticDepthCubemap, true );
                 m_StaticShadowReady = true;
+                CommitStaticBakeToSlot();
             } else {
                 // No aside buffer, we can't cache the static shadows.
                 RenderStaticShadowPass( *activeTarget, true );
@@ -699,7 +722,10 @@ bool D3D11PointLight::IsReady()
 }
 
 void D3D11PointLight::DropStaticBake() {
-    if ( m_StaticShadowReady ) {
+    // Counted only on the LEGACY path. In the tiled one the shared slot table is the single counter for every
+    // reason a bake dies (slot handover, retention, a world change), and every drop here is downstream of one
+    // it has already noted - counting both would simply double the number.
+    if ( m_StaticShadowReady && !m_SlotSel ) {
         Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
     }
     m_StaticShadowReady = false;

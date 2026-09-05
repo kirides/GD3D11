@@ -875,6 +875,8 @@ namespace {
 		                              // brazier reads as non-static there while never being repositioned,
 		                              // which is why so many fixed room lights were competing for the
 		                              // 64-slot moving-light tier. Also gates the SPILL in SelectShadowedLights.
+		bool        isPFX;            // oCVisualFX-spawned (candle/torch/spell). Gates the world-mesh-only
+		                              // caster restriction below - see LightShadowKey::restrictToWorld.
 		bool        shadowRoutingStatic; // isStatic, UNLESS PLSC_STATIC_LIGHTS opted static lights into full
 		                              // dynamic-tier shadow treatment — see the PointlightShadowCasterFlags read below.
 		                              // Governs clustering eligibility and LightShadowKey::isStatic/lowRes.
@@ -1099,7 +1101,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// shadowOrigin/shadowRange start as the light's own and are redirected to a cluster's below; `key`
 		// likewise starts as the light's own identity.
 		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob, spatiallyStatic,
-			routeStatic, pw, range, reinterpret_cast<uint64_t>( vob ) } );
+			li->IsPFXVobLight, routeStatic, pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
 	// Drop stationary-tracking entries for lights long out of the light set. Swept rarely; walks the map.
 	if ( ( s_stationaryFrame % 1024 ) == 0 )
@@ -1153,9 +1155,14 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// key 0 = "never give this light a cube" — what point-shadows-off means for every light. `vob` is only
 		// passed for an UNclustered light: a cluster has no single owning vob, and the field exists purely for
 		// the dynamic-overlay exclude list, which no static/clustered slot reaches.
+		// World-mesh-only casters for an un-opted-in PFX light, mirroring D3D11's AllowsDynamicCasters. Asked
+		// of the light's OWN identity only: a clustered light is routing-static, so the question never applies.
+		const bool unclustered = cand.key == reinterpret_cast<uint64_t>( vob );
+		const bool restrictToWorld = unclustered && !cand.shadowRoutingStatic && cand.isPFX
+			&& !( lightSettings.PointlightShadowCasterFlags & GothicRendererSettings::PLSC_PARTICLE_FX );
 		s_lightKeys.push_back( { pointShadowsOn ? cand.key : 0ull,
-			cand.key == reinterpret_cast<uint64_t>( vob ) ? vob : nullptr,
-			cand.shadowRoutingStatic, cand.shadowRoutingStatic, cand.spatiallyStatic } );
+			unclustered ? vob : nullptr,
+			cand.shadowRoutingStatic, cand.shadowRoutingStatic, cand.spatiallyStatic, restrictToWorld } );
 		++count;
 	}
 	m_FrameLightCount = count;

@@ -34,6 +34,7 @@
 
 #include "D3D12EngineCommon.h"
 #include "D3D12StateCache.h"
+#include "../PointLightSlotSelector.h"
 
 class D3D12GraphicsEngine;
 class zCVobLight;
@@ -110,6 +111,11 @@ public:
                                        // holds - the low tier renders a cube once and caches it forever, so a
                                        // light that moves would re-enter its per-frame render budget every single
                                        // frame and starve everything else in it.
+        bool        restrictToWorld;   // world-mesh-only casters. Mirrors D3D11's RenderStaticShadowPass /
+                                       // AllowsDynamicCasters PFX gate: a PFX-spawned light with PLSC_PARTICLE_FX
+                                       // off casts from the world mesh alone, because BuildExcludeList never
+                                       // excludes such a light's own carrier and it would otherwise throw a large
+                                       // self-shadow from whatever is holding it.
     };
 
     // Picks this frame's shadowed lights out of the filled GPU light buffer and writes each winner's
@@ -175,24 +181,6 @@ private:
     // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
     bool BuildExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
 
-    /** Resolves everything QueueVobChangedInvalidation parked since the last frame - see there. */
-    void DrainPendingVobChanges();
-    std::vector<zCVob*> m_PendingVobChanges;
-    // Movement threshold for the resolve, mirroring D3D11's PositionEqualEps (D3D11PointLight.cpp). Gothic
-    // reports a transform change for ANY delta, and a settling/jittering vob produces a sub-unit one every
-    // single frame - each of which would re-bake the static cube of every light around it, forever.
-    static constexpr float kVobMoveEpsSq = 1.0f;
-    // Where each vob was when it last actually invalidated something. The reference is that position, NOT the
-    // previous frame's, so a slow drift keeps accumulating until it crosses the threshold instead of being
-    // filtered out one sub-eps step at a time. Entries are dropped in InvalidateStaticForVobRemoved, i.e. when
-    // the vob leaves the world.
-    gtl::flat_hash_map<const zCVob*, DirectX::XMFLOAT3> m_LastInvalidationPos;
-    // Swapped with the above for the duration of a drain, so the invalidation helpers it calls can scrub the
-    // pending list without the loop iterating a vector that is being erased from. Capacity is retained.
-    std::vector<zCVob*> m_DrainScratch;
-    // Has any slot ever finished a static bake? Until one has there is no cache to invalidate, which is what
-    // keeps world load (tens of thousands of AddVob calls before the first frame) from parking any of them.
-    bool m_HaveCachedStatic = false;
 
     D3D12GraphicsEngine* m_E = nullptr;
 
@@ -254,61 +242,12 @@ private:
     UINT m_VobInstOffset = 0;     // reset each frame at the top of Prepare()
     bool m_VobInstOverflowLogged = false;
 
-    // Slots are owned by light Vob identity and kept stable across frames (not reassigned by proximity), so a
-    // static winner whose light didn't move reuses its cached cube instead of re-culling + re-rendering.
-    struct Slot {
-        uint64_t          ownerKey = 0;      // identity owning this slot (0 = free). A light's own vob pointer, or
-                                             // a tagged cluster-cell id when several co-located static lights share
-                                             // this cube. Compared for identity only; never dereferenced.
-        zCVobLight*       owner = nullptr;   // the owning vob when ownerKey is a single light, else nullptr. Read
-                                             // ONLY by the dynamic-overlay exclude list, which no clustered or
-                                             // low-tier slot ever reaches — so a cluster leaving it null is safe.
-        DirectX::XMFLOAT3 pos = {};          // last static-rendered cube origin (move detection)
-        float             range = 0.0f;      // last static-rendered range (range-change detection)
-        bool              isStatic = false;  // Vob->IsStatic(): gates Prepare() — static lights cache world mesh
-                                             // plus StaticVob-flagged decoration once, forever; never receive the
-                                             // per-frame dynamic overlay (mirrors D3D11's PLS_STATIC_ONLY).
-        bool              staticPresent = false; // this slot's static target physically holds depth rendered for THIS
-                                             // owner, even if a later world change has since marked it out of date.
-                                             // Kept apart from staticValid so an INVALIDATED slot keeps being sampled
-                                             // (slightly stale) while it waits its turn in the low-tier render budget,
-                                             // instead of dropping to unshadowed - a stale shadow is a far smaller
-                                             // artifact than a light that briefly bleeds through walls, and it is what
-                                             // makes over-invalidation genuinely cheap rather than visible.
-        bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
-                                             // cube itself) holds valid static-only depth; false => must re-render static
-        bool              dynamicValid = false; // this slot's DYNAMIC cube holds a valid skeletal overlay, as of the
-                                             // last Record that was actually submitted (committed in CommitStaticCache,
-                                             // symmetric with staticValid). Drives kShadowHasDynamic in the encoded
-                                             // index, i.e. whether the lit pass samples the dynamic cube for this
-                                             // light at all. Set on a frame whose overlay produced draws, cleared on a
-                                             // SCHEDULED frame that produced none (the NPC left) — deliberately left
-                                             // alone on an unscheduled frame, so a round-robin light keeps its last
-                                             // overlay between turns instead of flickering.
-                                             // Read one frame late by design: SelectShadowedLights builds the encoded
-                                             // index from BuildFrameLightBuffer, before Prepare() has resolved this
-                                             // frame's overlay. Same class of latency the round-robin already has.
-        UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
-        // Every caster identity Phase A baked into this slot's static cube, in the order it gathered them.
-        // Rebuilt from scratch on each static (re)render and consulted ONLY by InvalidateStaticForVobRemoved,
-        // which compares pointers - see there for why the removed vob can't be read instead. Capacity is kept
-        // across rebuilds; a slot handing over to a new owner drops it with the rest of the Slot.
-        std::vector<const zCVob*> bakedVobs;
-        UINT32            missingFrames = 0;   // consecutive frames this slot's owner was NOT a winner; 0 while it is.
-                                             // A slot is NOT released the moment its light drops out of the winner
-                                             // set (the light buffer is frustum-culled upstream, so merely turning
-                                             // away drops it): its cached static depth is still perfectly good and
-                                             // is exactly what should be reused when the light comes back. Slots
-                                             // are given up only under pressure (a new winner needs one — the
-                                             // longest-absent goes first) or after kSlotRetentionFrames, so a
-                                             // static re-cull happens on FIRST acquisition, on invalidation, or
-                                             // after actually losing the slot — not on every frustum blink.
-    };
-    // Absent-owner retention cap. Also bounds how long a released-but-remembered zCVobLight* can linger: `owner`
-    // is only ever compared for identity while absent (never dereferenced — BuildExcludeList only ever sees a
-    // current winner), but a vob freed and its address reused would otherwise inherit the slot's stale cache.
-    static constexpr UINT32 kSlotRetentionFrames = 600;   // ~10 s at 60 fps
-    Slot m_Slots[kMaxSlots];   // [0,kMaxCubes) = full-res dynamic pool, [kMaxCubes,kMaxSlots) = low-res static pool
+    // Every decision about slots - ownership, retention, eviction, tier spill/promotion, the static-cache
+    // stamps and the dynamic round-robin - lives in the backend-neutral PointLightSlotSelector, shared
+    // verbatim with D3D11. See PointLightSlotSelector.h; this class only owns the resources and the draws.
+    PointLightSlotSelector m_Sel;
+    using Slot = PointLightSlotSelector::Slot;
+    using FrameLight = PointLightSlotSelector::Assignment;
 
     // Slots whose static target was (re)rendered by THIS frame's records, pending the CommitStaticCache() that
     // turns them into cache hits. Kept out of Slot so an uncommitted frame simply leaves staticValid false and
@@ -321,24 +260,6 @@ private:
     struct PendingDynamic { UINT slot; bool has; };
     std::vector<PendingDynamic> m_PendingDynamic;
 
-    // The shadowed lights chosen this frame — filled by SelectShadowedLights, consumed by Prepare().
-    // renderStatic: also (re)render the STATIC casters into this slot's static target (fresh slot / light moved
-    // / range changed / routing flipped); otherwise the cached static depth is reused.
-    // renderDynamic (round-robin, P2.10h): whether the per-frame skeletal overlay runs THIS frame for this
-    // winner — always for the closest kAlwaysDynamicCount, round-robined (oldest-serviced-first) for the rest,
-    // so a large persisted-light count doesn't multiply the CPU cost of sphere-culling the full skeletal-vob
-    // list against every shadowed light every frame.
-    // overlayEligible: whether this light can EVER receive a dynamic overlay (not a static-tier light — see
-    // shadowRoutingStatic in D3D12Scene.cpp's BuildFrameLightBuffer — and the global PointlightShadows setting
-    // is >= PLS_UPDATE_DYNAMIC).
-    // `slot` is the GLOBAL slot index (see kMaxSlots); IsLowSlot(slot) picks the array/DSV heap/viewport.
-    // restrictToWorld: mirrors D3D11's RenderStaticShadowPass/RenderFullCubemap PFX gate (see D3D11PointLight.cpp
-    // AllowsDynamicCasters) — true when this winner is a PFX-spawned light and RendererSettings.
-    // PointlightShadowCasterFlags doesn't have PLSC_PARTICLE_FX set. Strips instanced-VOB casters from Phase A
-    // (see Prepare()) on top of overlayEligible already excluding it from the skeletal Phase C overlay, so an
-    // unopted-in PFX light casts world-mesh-only shadows like D3D11.
-    struct FrameLight { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; bool overlayEligible; bool restrictToWorld; };
-    std::vector<FrameLight> m_FrameLights;
 
     bool m_PassReady = false;
 };
