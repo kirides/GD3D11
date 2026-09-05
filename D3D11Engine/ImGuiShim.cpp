@@ -355,17 +355,16 @@ namespace {
     }
 }
 
-// Rate at which cached static point-light shadows are being thrown away. Shown on both backends, since the
-// number is the point: a cached cube costs nothing to keep and a full re-bake to replace, so anything but a
-// brief spike after a teleport/world change means something nearby is churning the cache every frame.
+// Rate at which cached static point-light shadows are being thrown away: a cached cube costs nothing to keep
+// and a full re-bake to replace, so anything but a brief spike means something nearby is churning the cache.
 static void DrawPointLightInvalidationStat() {
     auto& counter = Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations;
     const unsigned int perSec = counter.PerSecond();
     const ImVec4 color = perSec == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
         : perSec < 10 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
                       : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
-    // The total is shown next to the rate because the rate alone cannot distinguish "nothing is invalidating"
-    // from "it happened and the window has already let it go".
+    // The total sits next to the rate because the rate alone cannot tell "nothing is invalidating" from
+    // "it happened and the window has already let it go".
     ImGui::TextColored( color, "Static shadow invalidations: %u / s   (%llu total)", perSec, counter.Total() );
     ImGui::SetItemTooltip( "Baked static point-light shadows dropped in the last one-second window, across all\n"
         "lights: a caster appearing, vanishing or starting to move inside a light's range, the light\n"
@@ -377,10 +376,8 @@ static void DrawPointLightInvalidationStat() {
         "back to 0 over the following second; the total only ever climbs." );
 }
 
-// Shadow-cube slot occupancy per tier, plus the number of lights that asked for a cube and got none. Zero
-// starved is the healthy state; a steady non-zero value means the tier is genuinely too small for the scene,
-// and the lights missing out are being range-clamped (i.e. they look switched off), which is otherwise very
-// hard to tell apart from a bug in slot assignment.
+// Shadow-cube slot occupancy per tier, plus the lights that asked for a cube and got none. Zero starved is
+// the healthy state; a steady non-zero value means the tier is genuinely too small for the scene.
 static void DrawPointLightSlotStat() {
     const auto& info = Engine::GAPI->GetRendererState().RendererInfo;
     if ( info.PointLightSlotsMax == 0 ) return;   // legacy per-light cubemaps: no fixed pools to report on
@@ -415,8 +412,8 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         return;
     }
 
-    // The cube visualization below is D3D11-only, but the invalidation rate is backend-neutral and is just as
-    // useful on D3D12 - so open the window either way and show what applies.
+    // The cube visualization below is D3D11-only, but the invalidation rate is backend-neutral - so open the
+    // window either way and show what applies.
     if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
         ImGui::SetNextWindowSize( ImVec2( 620, 170 ), ImGuiCond_FirstUseEver );
         if ( ImGui::Begin( "Point Light Shadow Debug" ) ) {

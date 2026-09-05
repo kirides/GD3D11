@@ -10,7 +10,7 @@
 // m_Cube (cached static-only depth) and m_DynCube (this frame's moving casters). Hundreds of shadowed lights
 // can therefore update their MOVING casters every frame without re-rendering static geometry. Three phases:
 //   A) STATIC   — for slots whose light is fresh / moved / resized, (re)render the static casters
-//                 (world mesh + instanced VOBs + MOB bodies/node attachments) into m_Cube. Amortized: usually a no-op.
+//                 (world mesh + instanced VOBs + MOB bodies/attachments) into m_Cube. Usually a no-op.
 //   C) DYNAMIC  — clear this slot's m_DynCube face-set and draw the moving casters (skeletal NPCs + their node
 //                 attachments) into it. Only for slots that actually HAVE casters in range this frame.
 //   D) hand the touched slots back to PIXEL_SHADER_RESOURCE for the lit pass.
@@ -48,22 +48,18 @@ public:
 
     // ---- Low-resolution STATIC tier -------------------------------------------------------------------------
     // Static lights (and the clusters they are merged into) get their own, much coarser cube array. A cube-less
-    // point light is shaded UNSHADOWED — and BuildFrameLightBuffer then clamps its range hard so it cannot bleed
-    // through walls, which is what makes losing a slot visible as a light POPPING between its full and its
-    // clamped radius. So the slot count is not a quality knob, it is what decides how many of a Gothic room's
-    // atmospheric fill lights look right at all. But a static light's cube is rendered ONCE and cached forever
-    // (the light and the world it occludes both never move), and it exists only to stop room-to-room bleed, not
-    // to resolve shadow detail. So it does not need 128^2:
+    // point light is shaded UNSHADOWED, and BuildFrameLightBuffer then clamps its range hard so it cannot bleed
+    // through walls - which makes losing a slot visible as the light popping between its full and its clamped
+    // radius. So the slot count decides how many of a room's fill lights look right at all. But a static
+    // light's cube is rendered ONCE and cached forever, and only exists to stop room-to-room bleed, so it does
+    // not need 128^2:
     //     dynamic tier: 64 slots @128^2 = 12.6 MB (x2: static + overlay)   static tier: 340 slots @32^2 = 4.2 MB
     //
-    // 340 slots is the hard ceiling of ONE array, and it is also more than any Gothic scene has been measured to
-    // need (~200 static, ~64 moving): a cube array is a Texture2DArray of slot*6 slices, and D3D12 caps a
-    // Texture2D array at D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices regardless of how small the faces
-    // are - 2048/6 = 341. Going past it fails resource creation outright (CREATERESOURCE_INVALIDDIMENSIONS, which
-    // is exactly how the first 512-slot attempt died), so more cubes than this would need MORE ARRAYS, not a
-    // bigger one. That was built once - paged arrays, contiguous bindless SRVs, a page index in the encoded
-    // ShadowCubeIndex - and removed again as unused complexity once the real occupancy was measured. Raise this
-    // only with that measurement in hand.
+    // 340 slots is the hard ceiling of ONE array, and more than any Gothic scene has been measured to need
+    // (~200 static, ~64 moving): a cube array is a Texture2DArray of slot*6 slices, and D3D12 caps that at
+    // D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices - 2048/6 = 341. Going past it fails resource
+    // creation outright, so more cubes would need MORE ARRAYS, not a bigger one. Paging was built once and
+    // removed again as unused complexity; raise this only with an occupancy measurement in hand.
     //
     // The two pools share ONE slot index space so all the ownership/retention bookkeeping below stays single-pool:
     // global slot < kMaxCubes is the dynamic array, >= kMaxCubes is the static array at (slot - kMaxCubes). What
@@ -106,16 +102,12 @@ public:
                               // list, which a static/clustered (low-tier) slot never reaches.
         bool        lowRes;   // PREFERRED tier: take the slot from the low-res static pool
         bool        isStatic;
-        bool        spatiallyStatic;   // never moves, whatever tier it was routed to. A full-res candidate that
-                                       // cannot be given a full-res cube SPILLS into the low-res tier when this
-                                       // holds - the low tier renders a cube once and caches it forever, so a
-                                       // light that moves would re-enter its per-frame render budget every single
-                                       // frame and starve everything else in it.
-        bool        restrictToWorld;   // world-mesh-only casters. Mirrors D3D11's RenderStaticShadowPass /
-                                       // AllowsDynamicCasters PFX gate: a PFX-spawned light with PLSC_PARTICLE_FX
-                                       // off casts from the world mesh alone, because BuildExcludeList never
-                                       // excludes such a light's own carrier and it would otherwise throw a large
-                                       // self-shadow from whatever is holding it.
+        bool        spatiallyStatic;   // never moves; only such a candidate may SPILL into the low-res tier,
+                                       // which bakes once and would be starved by a mover re-entering its
+                                       // per-frame render budget every frame.
+        bool        restrictToWorld;   // world-mesh-only casters, mirroring D3D11's AllowsDynamicCasters PFX
+                                       // gate: BuildExcludeList never excludes such a light's own carrier, so
+                                       // it would otherwise throw a large self-shadow from whatever holds it.
     };
 
     // Picks this frame's shadowed lights out of the filled GPU light buffer and writes each winner's
@@ -142,27 +134,19 @@ public:
     // fresh / moved / resized — not when geometry around it changes — so a VOB appearing or disappearing inside
     // a cached slot's light sphere must force a one-time static re-render next frame. Over-invalidation is
     // harmless (one extra static pass); under-invalidation freezes a stale shadow in the cache.
-    /** True if this vob rides an NPC's transform - a held item, a torch, an attached effect. Such a caster
-        moves with the animation every frame, so it is never baked into a cached static cube and its comings
-        and goings must not invalidate one either. Mirrors D3D11's IsAttachedToNpc. */
+    /** True if this vob rides an NPC's transform. Such a caster is never baked into a cached static cube,
+        so its comings and goings must not invalidate one. Mirrors D3D11's IsAttachedToNpc. */
     static bool IsNpcAttached( const zCVob* vob );
 
-    /** Park a vob that just entered the world or just moved; the invalidation itself happens at the top of
-        the next SelectShadowedLights. Deferred rather than decided on the spot because the two things the
-        decision reads - the vob's position and whether it hangs off an NPC - are not settled when Gothic
-        reports the change. An item is inserted at the hand/waypoint it came from and placed afterwards, its
-        parent link can still be the NPC that is letting go of it, and it then FALLS: several transform
-        changes across several frames before it comes to rest. So this coalesces to one resolve per frame
-        reading the position as it is by then, and a still-moving vob simply queues again next frame until it
-        stops - the last resolve is the one that sticks. Entries whose vob left the world meanwhile are
-        dropped; still being in GothicAPI::VobMap is the liveness test that also makes the deferred read
-        safe. */
+    /** Park a vob that entered the world or moved; the invalidation happens at the top of the next
+        SelectShadowedLights. Deferred because neither the position nor the NPC parent link is settled when
+        Gothic reports the change - a dropped item is inserted, re-parented and then falls for several
+        frames. Entries whose vob left the world meanwhile are dropped. */
     void QueueVobChangedInvalidation( zCVob* vob );
 
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
-    // Removal is matched by POINTER against what each slot actually baked (Slot::bakedVobs), never by reading
-    // the vob: by the time this fires the object may already be half torn down, and its bbox/position are no
-    // longer trustworthy. Identity comparison only - `vob` is never dereferenced.
+    // Matched by POINTER against Slot::bakedVobs - the vob may already be half torn down here, so it is
+    // never dereferenced.
     void InvalidateStaticForVobRemoved( const zCVob* vob );
 
     // Skeletal-caster scratch lists for the per-light sphere cull. PrepareFrameSkeletals(..., shadowCascade=-2)
@@ -180,7 +164,6 @@ private:
     // false (excludeOut left empty) when self-shadowing is allowed, the light isn't attached to a carried item,
     // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
     bool BuildExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
-
 
     D3D12GraphicsEngine* m_E = nullptr;
 
@@ -242,9 +225,9 @@ private:
     UINT m_VobInstOffset = 0;     // reset each frame at the top of Prepare()
     bool m_VobInstOverflowLogged = false;
 
-    // Every decision about slots - ownership, retention, eviction, tier spill/promotion, the static-cache
-    // stamps and the dynamic round-robin - lives in the backend-neutral PointLightSlotSelector, shared
-    // verbatim with D3D11. See PointLightSlotSelector.h; this class only owns the resources and the draws.
+    // Every slot decision - ownership, retention, eviction, tier spill/promotion, cache stamps, the dynamic
+    // round-robin - lives in PointLightSlotSelector, shared verbatim with D3D11. This class owns only the
+    // resources and the draws.
     PointLightSlotSelector m_Sel;
     using Slot = PointLightSlotSelector::Slot;
     using FrameLight = PointLightSlotSelector::Assignment;
@@ -259,7 +242,6 @@ private:
     // unscheduled round-robin slot keeps whatever it had.
     struct PendingDynamic { UINT slot; bool has; };
     std::vector<PendingDynamic> m_PendingDynamic;
-
 
     bool m_PassReady = false;
 };

@@ -1001,8 +1001,8 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	thread_local std::vector<FrameVobUpload> cascadeUploads;
 	cascadeUploads.clear();
 	if ( !m_E->UploadVobs( PassVobs[c].buckets, cascadeUploads, c ) ) return;
-	// Does this cascade hold a per-frame-deformed caster? If so it must not be lazily frozen next frame - see
-	// m_CascadeHasAnimatedCaster. Read-only on Gothic state, which is what makes it safe from a pool thread.
+	// A per-frame-deformed caster must keep this cascade out of the lazy freeze - see
+	// m_CascadeHasAnimatedCaster. Read-only on Gothic state, so it is safe from a pool thread.
 	for ( const FrameVobUpload& up : cascadeUploads ) {
 		if ( !up.visual || !up.visual->MorphMeshVisual ) continue;
 		if ( reinterpret_cast<zCMorphMesh*>( up.visual->MorphMeshVisual )->GetNumAniChannels() > 0 ) {

@@ -5815,9 +5815,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 }
 
 namespace {
-    /** True if this vob rides an NPC's transform - a held item, a torch, an attached effect. Such a caster
-        moves with the animation every frame, so it must never enter a point light's cached static caster
-        set (D3D11PointLight::VobCache); the animated pass draws it instead. */
+    /** True if this vob rides an NPC's transform. It moves every frame, so it must never enter a point
+        light's cached caster set (D3D11PointLight::VobCache) - the animated pass draws it instead. */
     bool IsAttachedToNpc( const zCVob* vob ) {
         for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
             if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
@@ -5825,15 +5824,15 @@ namespace {
         return false;
     }
 
-    /** Same idea for MOB casters: anything ZenGin already promoted to the animated list moves, and the
-        animated pass redraws it anyway. Only ever called while (re)building a light's caster cache. */
+    /** Same idea for MOB casters: anything ZenGin promoted to the animated list moves, and the animated
+        pass redraws it anyway. */
     bool IsAnimatedShadowCaster( const SkeletalVobInfo* vob ) {
         if ( IsAttachedToNpc( vob->Vob ) ) return true;
         return std::ranges::contains( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), vob );
     }
 
     /** True while this .MMS visual has a live morph channel, i.e. its vertex buffer is re-deformed every
-        frame (windmill sails, water wheels). Idle .MMS decoration answers false. */
+        frame. Idle .MMS decoration answers false. */
     bool IsMorphAnimating( MeshVisualInfo* visual ) {
         if ( !visual->MorphMeshVisual ) return false;
         return reinterpret_cast<zCMorphMesh*>(visual->MorphMeshVisual)->GetNumAniChannels() > 0;
@@ -6045,9 +6044,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         continue;  // Seems to happen in Gothic 1
                     }
 
-                    // Rides an NPC (held item, torch, effect) - the animated pass owns it. Caching it here
-                    // is also what let a smoking/eating NPC's throwaway item invalidate every nearby light's
-                    // static cube the moment it despawned.
+                    // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
+                    // item invalidate every nearby light's static cube when it despawned.
                     if ( IsAttachedToNpc( it->Vob ) ) {
                         continue;
                     }
@@ -6416,9 +6414,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;  // Seems to happen in Gothic 1
                     }
 
-                    // Rides an NPC (held item, torch, effect) - the animated pass owns it. Caching it here
-                    // is also what let a smoking/eating NPC's throwaway item invalidate every nearby light's
-                    // static cube the moment it despawned.
+                    // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
+                    // item invalidate every nearby light's static cube when it despawned.
                     if ( IsAttachedToNpc( it->Vob ) ) {
                         continue;
                     }
@@ -7113,8 +7110,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         // Morph-mesh casters are deformed per frame, so a cascade holding one can't be frozen by
-        // LazyCascadeUpdate, and the deform has to run even for a vob only the shadow pass sees (the main
-        // pass doesn't reach it, and UpdateMorphMeshVisual is frame-idempotent so doing it twice is free).
+        // LazyCascadeUpdate. UpdateMorphMeshVisual is frame-idempotent, so running it here too is free.
         bool hasAnimatedCaster = false;
         if ( renderState.RendererSettings.AnimateStaticVobs ) {
             for ( MeshVisualInfo* visual : activeVisuals ) {
@@ -9917,12 +9913,8 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
     if ( ShadowMaps ) {
-        // A vob leaving the world must stop casting into every cached static cube that baked it. Matched by
-        // POINTER against each slot's caster set - the object is on its way out, so nothing about its bbox or
-        // position can be trusted here any more.
+        // Both are matched by POINTER: the object is on its way out, so nothing about it can be read here.
         ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
-        // ...and if the vob IS a light, its slot goes back to the pool. Keyed on the pointer for the same
-        // reason: its VobLightInfo may already be half torn down.
         ShadowMaps->ReleasePointLightSlotFor( vob );
     }
 
@@ -9949,29 +9941,24 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
 }
 
 void D3D11GraphicsEngine::OnAddVob( VobInfo* vi ) {
-    // A VOB added after a nearby point light already cached its static shadow cube would otherwise cast no
-    // point-light shadow at all: that cube is only re-rendered when the light is fresh / moved / resized, not
-    // when the world around it changes. PARKED rather than applied here - at this point Gothic has often not
-    // placed the vob yet (a dropped item is inserted where it came from and moved to where it lands
-    // afterwards) and its parent link can still be the NPC letting go of it, which are exactly the two things
-    // the decision reads. Resolved a frame later, once both have settled.
+    // A cached static cube is only re-rendered when its light is fresh / moved / resized, so a new VOB in
+    // range has to say so. Parked rather than applied here: Gothic has often not placed the vob yet and its
+    // parent link can still be the NPC letting go of it, which are the two things the decision reads.
     if ( ShadowMaps && vi && vi->Vob && vi->VisualInfo )
         ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
 }
 
 
 void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
-    // Gothic just promoted this vob out of the BSP into its dynamic/animated list, i.e. it started moving (a
-    // door swinging open, a chest lid). Anything baked into a cached static cube has to come back out - the
-    // animated pass draws it from now on.
+    // It started moving (a door swinging open, a chest lid), so anything that baked it into a static cube
+    // has to let go - the animated pass draws it from now on.
     if ( ShadowMaps ) ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
 }
 
 
 void D3D11GraphicsEngine::OnVobMoved( zCVob* vob ) {
-    // A vob baked into a cached static cube at its old position leaves a shadow behind; one that just moved
-    // into a light's reach is missing from that light's cube. Queued rather than resolved here because a
-    // falling or thrown item moves several times per frame and its position is only final once it stops.
+    // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
+    // missing from its cube. Queued because a falling item moves several times before coming to rest.
     if ( ShadowMaps ) ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
 }
 

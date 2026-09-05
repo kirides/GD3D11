@@ -227,10 +227,9 @@ namespace Logging {
     void Shutdown() {
         State& state = Get();
 
-        // Drains here rather than joining the worker: this runs from DllMain, where a join would
-        // deadlock on the loader lock. For the same reason every lock is a try_lock - at process
-        // teardown the worker may already have been killed holding one, and blocking the loader on an
-        // abandoned mutex would hang the game on exit. Losing the last second of records beats that.
+        // Drains here rather than joining the worker: this runs from DllMain, where a join would deadlock
+        // on the loader lock. Every lock is a try_lock for the same reason - the worker may already have
+        // been killed holding one. Losing the last second of records beats hanging the game on exit.
         std::unique_lock fileLock( state.FileMutex, std::try_to_lock );
         std::unique_lock lock( state.QueueMutex, std::try_to_lock );
         if ( !lock.owns_lock() ) return;

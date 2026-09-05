@@ -5046,8 +5046,7 @@ void GothicAPI::MoveVobFromBspToDynamic( SkeletalVobInfo* vob ) {
 
     AnimatedSkeletalVobs.push_back( vob );
 
-    // It moves from here on, so anything that baked it as static geometry has to let go - see
-    // D3D12PointShadows' static cube cache.
+    // It moves from here on, so anything that baked it as static geometry has to let go.
     Engine::GraphicsEngine->OnVobBecameDynamic( vob->Vob );
 }
 
@@ -5066,8 +5065,8 @@ void GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob ) {
 
     // Add to dynamic vob list
     DynamicallyAddedVobs.push_back( vob );
-    // No OnVobBecameDynamic here: the only caller is OnVobMoved, which fires OnVobMoved( vob ) right after
-    // this and covers the same ground with the transform already applied.
+    // No OnVobBecameDynamic here: the only caller is OnVobMoved, which fires its own hook right after this
+    // with the transform already applied.
 }
 
 std::vector<LeafVobEntry>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob, std::vector<LeafVobEntry>* source ) {

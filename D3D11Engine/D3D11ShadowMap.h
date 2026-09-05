@@ -176,34 +176,28 @@ public:
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 
-    /** Reported back by the cascade's VOB pass: whether it drew a caster whose geometry is deformed every
-        frame (an .MMS morph mesh with a live ani channel - windmill sails, water wheels). Such a cascade
-        can't be frozen by LazyCascadeUpdate or its depth stops matching the mesh the main view draws, which
-        is what made big spinning props cast a detached, garbled shadow. Latched one frame late by design:
-        the flag is re-evaluated every time the cascade actually renders. */
+    /** Reported back by the cascade's VOB pass: whether it drew a per-frame-deformed caster (an .MMS with a
+        live ani channel). Such a cascade can't be frozen by LazyCascadeUpdate or its depth stops matching
+        the mesh the main view draws. Latched one frame late - re-evaluated whenever the cascade renders. */
     void NoteCascadeAnimatedCasters( int cascadeIndex, bool hasAnimated ) {
         if ( cascadeIndex >= 0 && cascadeIndex < MAX_CSM_CASCADES )
             m_CascadeHasAnimatedCaster[cascadeIndex] = hasAnimated;
     }
 
-    /** The shared point-light shadow-cube slot table - see PointLightSlotSelector.h. Public because the world
-        change hooks on D3D11GraphicsEngine (a vob added, moved, or promoted to dynamic) resolve against it,
-        exactly as the D3D12 backend does through D3D12PointShadows. */
+    /** The shared point-light shadow-cube slot table. Public because D3D11GraphicsEngine's world-change
+        hooks resolve against it, exactly as D3D12 does through D3D12PointShadows. */
     PointLightSlotSelector& GetPointSlots() { return m_PointSlots; }
 
-    /** Hands a point-light slot back when its owning light vob leaves the world. Keyed on the vob POINTER, so
-        nothing about the dying light has to be read - by the time this fires its VobLightInfo may already be
-        on its way out. */
+    /** Hands a point-light slot back when its light vob leaves the world. Keyed on the vob POINTER: the
+        VobLightInfo may already be on its way out by the time this fires. */
     void ReleasePointLightSlotFor( const zCVob* lightVob );
 
 private:
     /** Sizes the shared slot table for this backend on first use. Idempotent. */
     void ConfigurePointSlots();
 
-    /** Makes every light's tiled slot agree with the selector, which is the sole owner of the slot table.
-        Walks the whole light map rather than this frame's visible set on purpose: a light that has gone out
-        of view still holds a slot index, and a queued background update would otherwise render into a slot
-        the selector has since handed to somebody else. */
+    /** Makes every light's tiled slot agree with the selector. Walks the whole light map, not this frame's
+        visible set: a queued background update must not render into a slot that changed hands. */
     void ReconcileTiledSlots();
 
     // Per-cascade size cap for the multi-cascade atlas, which packs all cascades into one

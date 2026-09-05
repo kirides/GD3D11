@@ -29,10 +29,9 @@ void D3D12PointShadows::Attach( D3D12GraphicsEngine& engine ) {
     m_E = &engine;
     kBackBufferCount = engine.kBackBufferCount;
 
-    // Size the shared slot table and hand it this backend's constants. The two tiers keep sharing ONE index
-    // space (global slot >= kMaxCubes is the low-res array), which is what the barrier-state arrays below and
-    // every DSV lookup in Prepare()/Record() index by. The two tier bits differ between backends - D3D12's
-    // live in Shaders/D3D12/include/GPULightShared.h - so they are configuration, not a shared constant.
+    // Size the shared slot table and hand it this backend's constants. The two tiers share ONE index space
+    // (global slot >= kMaxCubes is the low-res array), which the barrier arrays and every DSV lookup index
+    // by. The tier bits differ between backends, so they are configuration rather than shared constants.
     PointLightSlotSelector::Config cfg;
     cfg.MaxHiSlots = kMaxCubes;
     cfg.MaxLowSlots = kMaxStaticCubes;
@@ -211,9 +210,9 @@ bool D3D12PointShadows::Init() {
 
 	// --- Low-res STATIC cube array (see the kStaticCubeSize block in the header): kMaxStaticCubes slots at
 	// kStaticCubeSize^2, with its own per-slot 6-slice DSV heap and a bindless SRV. No aside twin: nothing
-	// routed here can receive a dynamic overlay, so its static depth renders straight in and persists. Born in
-	// PIXEL_SHADER_RESOURCE for the same reason the active cube is: barriers here are per-slot, so a slot the
-	// pass never touches is never transitioned and has to be born sampleable.
+	// routed here gets a dynamic overlay, so its static depth renders straight in and persists. Born in
+	// PIXEL_SHADER_RESOURCE because barriers are per-slot, so a slot the pass never touches is never
+	// transitioned.
 	D3D12_RESOURCE_DESC ld = dd;
 	ld.Width = kStaticCubeSize;
 	ld.Height = kStaticCubeSize;
@@ -326,10 +325,8 @@ void D3D12PointShadows::InvalidateStaticForVobRemoved( const zCVob* vob ) {
 
 
 void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const std::vector<LightShadowKey>& keys ) {
-	// Thin adapter onto the shared PointLightSlotSelector, which owns every decision this used to make inline
-	// (candidacy horizon, per-tier trim + spill, stable slot ownership, retention/eviction, promotion, the
-	// low-tier render budget, the publish gate and the dynamic round-robin). D3D11 runs the exact same code -
-	// see PointLightSlotSelector.h.
+	// Thin adapter onto the shared PointLightSlotSelector, which owns every decision this used to make
+	// inline. D3D11 runs the exact same code - see PointLightSlotSelector.h.
 	const GothicRendererSettings::EPointLightShadowMode shadowMode =
 		Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows;
 
@@ -342,7 +339,7 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 	}
 
 	// `m_Cube` is the resources gate: with no cube array there is nothing to own, so the selector only ticks
-	// its PLS_DISABLED wipe and leaves every slot alone (matching what this function did before the extraction).
+	// its PLS_DISABLED wipe and leaves every slot alone.
 	m_Sel.Select( cands, shadowMode, m_Cube != nullptr );
 
 	// Fan the result out to EVERY light, so all members of a clustered key sample the one cube their cluster won.
@@ -566,12 +563,9 @@ void D3D12PointShadows::Prepare() {
 			rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 
 			// --- Instanced VOBs (static decoration AND loose items): range-cull instances, pack 64B world
-			// matrices into the tight ring, draw count*6. Items used to be kept out of an isStatic() slot via
-			// GP_Slot bit 30 (ZENGIN's StaticVob flag, which oCItem always clears), which meant a torch-lit
-			// room cast no shadow at all from anything lying on its floor. They are baked now; what must stay
-			// out is only what MOVES with an animation, i.e. anything hanging off an NPC — that one is drawn
-			// by the dynamic overlay (Phase C) instead, and a vob leaving the world takes the cube with it
-			// (InvalidateStaticForVobRemoved). ---
+			// matrices into the tight ring, draw count*6. Loose items are baked too - excluding them by
+			// ZENGIN's StaticVob flag meant a torch-lit room cast no shadow from anything on its floor. Only
+			// what MOVES with an animation stays out; the dynamic overlay (Phase C) draws that. ---
 			// restrictToWorld: mirrors D3D11's world-mesh-only PFX gate — skip instanced-VOB casters too.
 			if ( haveVobs && !ps.restrictToWorld ) {
 				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
@@ -587,8 +581,8 @@ void D3D12PointShadows::Prepare() {
 					UINT count = 0;
 					bool overflow = false;
 					const size_t numInst = visual->Instances.size();
-					// InstanceVobs is filled in lockstep with Instances (CollectVisibleVobs), but only trust the
-					// pairing while the two are actually the same length.
+					// InstanceVobs is filled in lockstep with Instances, but only trust the pairing while the
+					// two are actually the same length.
 					const bool haveInstanceVobs = visual->InstanceVobs.size() == numInst;
 					for ( size_t ii = 0; ii < numInst; ++ii ) {
 						const VobInstanceInfo& inst = visual->Instances[ii];
@@ -640,16 +634,12 @@ void D3D12PointShadows::Prepare() {
 			}
 			rec.staticVobEnd = static_cast<UINT>( g_PsStaticVobDraws.size() );
 
-			// --- MOB casters (chests, beds, chairs, doors, benches): skeletal vobs that are NOT NPCs. They are
-			// world furniture that happens to be built as a zCModel, so they belong in the cached static cube
-			// exactly like the instanced decoration above - without this a static/low-tier light saw them as
-			// nothing at all, since Phase C (the only place skeletals were drawn) never runs for such a slot.
-			// NPCs and anything parented under one are excluded: they animate, and Phase C already owns them.
-			// A MOB that later starts moving is promoted to Gothic's animated list, which invalidates every
-			// static cube it was baked into (GothicAPI::MoveVobFromBspToDynamic -> OnVobBecameDynamic).
-			// !overlayEligible: on a slot that DOES get the overlay, Phase C already sphere-culls the same
-			// full skeletal list every frame and draws MOBs along with the NPCs, so baking them here as well
-			// would only duplicate the draws and freeze a copy of them in the static cube.
+			// --- MOB casters (chests, beds, doors, benches): skeletal vobs that are NOT NPCs. World furniture
+			// that happens to be a zCModel, so it belongs in the cached cube like the decoration above -
+			// without this a low-tier light saw it as nothing at all, Phase C never running for such a slot.
+			// A MOB that starts moving is promoted to Gothic's animated list, which invalidates the cubes it
+			// was baked into. !overlayEligible because Phase C already draws MOBs on a slot that gets the
+			// overlay, so baking them would duplicate the draws and freeze a copy of them. ---
 			if ( haveSkel && !ps.restrictToWorld && !ps.overlayEligible ) {
 				SkelScratch.clear();
 				AttachScratch.clear();
@@ -695,9 +685,8 @@ void D3D12PointShadows::Prepare() {
 					if ( baked ) bakedVobs.push_back( sd.vobInfo->Vob );
 				}
 
-				// Most MOBs carry no soft-skin geometry at all: a chest, door or bench is a zCModel whose only
-				// renderable content hangs off its nodes, so the body loop above finds nothing for them. Bake
-				// those attachments too, through the VOB caster PSO like a node attachment in Phase C.
+				// Most MOBs carry no soft-skin geometry: a chest or door is a zCModel whose renderable content
+				// hangs off its nodes, so the body loop above finds nothing. Bake those attachments too.
 				if ( psPipe.CasterVobPSO ) {
 					const zCVob* lastOwner = nullptr;
 					for ( const FrameAttachDraw& a : AttachScratch ) {

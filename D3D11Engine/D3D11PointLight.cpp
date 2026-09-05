@@ -156,9 +156,8 @@ void D3D11PointLight::CommitStaticBakeToSlot() {
     const int global = GetGlobalTiledSlot();
     if ( !m_SlotSel || global < 0 ) return;
     m_SlotSel->CommitStatic( static_cast<uint32_t>(global) );
-    // The caster set this bake actually covered, so a vob later removed (or moved off its old spot) can be
-    // matched against it by pointer. VobCache/SkeletalVobCache are the same lists RenderShadowCube just
-    // filled/reused, so this is a copy of what went into the cube, not a second cull.
+    // The caster set this bake covered, so a vob later removed or moved can be matched against it by
+    // pointer. These are the lists the render just used, so this is a copy rather than a second cull.
     auto& baked = m_SlotSel->SlotAt( static_cast<uint32_t>(global) ).bakedVobs;
     baked.clear();
     for ( const VobInfo* v : VobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
@@ -175,17 +174,17 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
 
     StartReInit();
     DrawnOnce = false;
-    m_SlotHasOwnDepth = false;   // brand new slot: it holds the previous occupant's depth until we render
+    m_SlotHasOwnDepth = false;   // a new slot holds the previous occupant's depth until we render
     DropStaticBake();
     m_HasDynamicOverlay = false;
 }
 
 void D3D11PointLight::ClearTiledSlot() {
-    // No free-list to give the slot back to: the shared PointLightSlotSelector owns who holds what, and this
-    // only lets go of the light's end of that (it is called BECAUSE the selector reassigned the slot).
+    // No free list to give the slot back to: the selector owns who holds what, and this only lets go of
+    // the light's end of it (it is called BECAUSE the selector reassigned the slot).
     m_SlotHasOwnDepth = false;
     m_FallbackSlotIndex = -1;
-    DropStaticBake();   // before dropping m_SlotSel, so the slot table stays the single invalidation counter
+    DropStaticBake();   // before m_SlotSel goes, so the slot table stays the single invalidation counter
     m_HasDynamicOverlay = false;
     m_TiledSlotIndex = -1;
     m_TiledSlotLowRes = false;
@@ -199,10 +198,8 @@ bool D3D11PointLight::RestrictsCastersToWorld() const {
 }
 
 int D3D11PointLight::GetCurrentShadowMode() const {
-    // A light SPILLED into the low-res tier (the full-res pool was full - see DrawPointlightShadows) renders
-    // and samples as STATIC_ONLY whatever it would otherwise be: that array has no dynamic-overlay twin, so
-    // there is nowhere to put moving casters for it. It keeps asking for the full-res tier through
-    // GetPreferredShadowMode() and is promoted back the moment a slot can be had.
+    // A light spilled into the low-res tier renders and samples as STATIC_ONLY whatever it would otherwise
+    // be - that array has no dynamic-overlay twin. GetPreferredShadowMode() keeps asking for full-res.
     if ( m_TiledSlotLowRes ) {
         return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
     }
@@ -224,10 +221,8 @@ int D3D11PointLight::GetPreferredShadowMode() const {
 }
 
 namespace {
-    /** True if this vob rides an NPC's transform - a held item, a torch, an attached effect. Such a light moves
-        with the animation, so it is never treated as a fixture however long it happens to stand still: an idle
-        NPC's torch would otherwise flip tier every time they set off walking again. Mirrors D3D12PointShadows::
-        IsNpcAttached and D3D11GraphicsEngine's IsAttachedToNpc. */
+    /** True if this vob rides an NPC's transform. Such a light is never treated as a fixture however long
+        it stands still, or an idle NPC's torch would flip tier every time they set off walking again. */
     bool LightRidesNpc( const zCVob* vob ) {
         for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
             if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
@@ -596,7 +591,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     LightInfo->LastRenderedPosition = vobPos;
     DrawnOnce = true;
     m_SlotHasOwnDepth = true;   // the target now holds this light's depth - see HasOwnDepthInSlot()
-    m_FallbackSlotIndex = -1;   // handover complete: the new slot is the one to sample from here on
+    m_FallbackSlotIndex = -1;   // handover complete
 }
 
 /** Renders all cubemap faces at once, using the geometry shader */
@@ -724,9 +719,8 @@ bool D3D11PointLight::IsReady()
 }
 
 void D3D11PointLight::DropStaticBake() {
-    // Counted only on the LEGACY path. In the tiled one the shared slot table is the single counter for every
-    // reason a bake dies (slot handover, retention, a world change), and every drop here is downstream of one
-    // it has already noted - counting both would simply double the number.
+    // Counted only on the legacy path: in the tiled one the slot table is the single counter, and every
+    // drop here is downstream of one it has already noted.
     if ( m_StaticShadowReady && !m_SlotSel ) {
         Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
     }

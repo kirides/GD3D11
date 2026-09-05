@@ -101,10 +101,8 @@ public:
     ID3D11ShaderResourceView* GetShadowStaticCubeArraySRV() const { return m_ShadowStaticCubeArraySRV.Get(); }
     bool IsStaticShadowArrayCreated() const { return m_StaticShadowArrayCreated; }
 
-    // Shadow cubemap array slot access. There is no allocator here any more: which light owns which slot is
-    // decided entirely by the shared PointLightSlotSelector (see D3D11ShadowMap::ReconcileTiledSlots), so
-    // these only hand out the view for a slot the selector already assigned, creating the array on first use.
-    // A second, independently-owned free list here could only ever disagree with that one.
+    // Shadow cubemap array slot access. There is no allocator here: PointLightSlotSelector decides who owns
+    // which slot, so these only hand out the view for one it already assigned, creating the array on demand.
     RenderToDepthStencilBuffer* ClaimSlot( int slot );
     RenderToDepthStencilBuffer* GetSlotTarget( int slot );
     /** Same slot index as GetSlotTarget, but into the dynamic-overlay array. Creates that array on first use,

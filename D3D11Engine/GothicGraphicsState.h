@@ -1468,18 +1468,11 @@ struct GothicRendererSettings {
     }
 };
 
-/** Event rate over a SLIDING one-second window, kept as ten 100 ms buckets that PerSecond() sums.
-    Deliberately not a single tumbling window: that only publishes a count once the second it was counting
-    in has ended, so a stat you watch while provoking the thing you are measuring reads 0 for the entire
-    time the events are happening and then reports them after the fact - which makes it look broken and,
-    worse, easy to miss. Summing the buckets (the one in progress included) surfaces an event within
-    100 ms and lets it decay out again over the following second.
+/** Event rate over a SLIDING one-second window, as ten 100 ms buckets that PerSecond() sums - a tumbling
+    window would read 0 for the whole time the events are happening and report them afterwards. The buckets
+    advance inside both Note() and PerSecond(), so nothing needs a per-frame tick.
 
-    Self-sampling: the buckets advance inside both Note() and PerSecond(), so nothing needs a per-frame
-    tick and a metric no one has reported in a while falls back to 0 on its own.
-
-    MAIN THREAD ONLY - the bucket rotation is not synchronized. Every current caller is on Gothic's own
-    thread; anything reporting from the worker pool needs its own accumulation. */
+    MAIN THREAD ONLY - the bucket rotation is not synchronized. */
 class RollingSecondCounter {
 public:
     void Note( unsigned int n = 1 ) {
@@ -1497,7 +1490,7 @@ public:
     }
 
     /** Every event since startup. Unwindowed, so it separates "nothing is happening" from "the window
-        already let it go" - which is the question a rate alone cannot answer. */
+        already let it go". */
     unsigned long long Total() const { return m_Total; }
 
 private:
@@ -1589,24 +1582,20 @@ struct GothicRendererInfo {
     int FrameDrawnLights;
     int WorldMeshDrawCalls;
 
-    // Cached static point-light shadows dropped per second - a caster appearing, vanishing or starting to
-    // move inside a light's range, or the light itself moving. Deliberately NOT reset per frame (it owns its
-    // own window). A steady non-zero rate means point-light cubes are being re-baked continuously instead of
-    // cached, which is the expensive failure mode this cache exists to avoid; see ImGuiShim's Point Light
-    // Shadow Debug window.
+    // Cached static point-light shadows dropped per second. Owns its own window, so it is not reset per
+    // frame. A steady non-zero rate means cubes are being re-baked continuously instead of cached.
     RollingSecondCounter PointLightStaticInvalidations;
 
-    // Point-light shadow-cube slot occupancy, per tier, as of the last frame's selection (D3D12 only; D3D11
-    // leaves them 0). `Starved` counts lights that wanted a cube and could not be given one because their tier
-    // was full of lights at comparable distance - the one number that separates "the tier is too small for this
-    // scene" from "something is wrong with slot assignment", which look identical from inside the game.
+    // Point-light shadow-cube slot occupancy per tier, as of the last frame's selection. `Starved` counts
+    // lights that wanted a cube and could not be given one because their tier was full at comparable
+    // distance - which is what separates "the tier is too small" from "slot assignment is broken".
     unsigned int PointLightSlotsUsed = 0;
     unsigned int PointLightSlotsMax = 0;
     unsigned int PointLightStaticSlotsUsed = 0;
     unsigned int PointLightStaticSlotsMax = 0;
     unsigned int PointLightSlotsStarved = 0;
-    // Visible point lights that did not fit in the per-frame light buffer at all (kMaxFrameLights). These are
-    // not shaded at all, not merely unshadowed - a different failure that looks the same from inside the game.
+    // Visible point lights that did not fit in the per-frame light buffer (kMaxFrameLights). Not shaded at
+    // all rather than merely unshadowed, though it looks the same in game.
     unsigned int PointLightsDropped = 0;
 
     unsigned int VOBVerticesDataSize;
