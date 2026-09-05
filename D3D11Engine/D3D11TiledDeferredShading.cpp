@@ -516,7 +516,16 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         bool hasShadow = false;
         if ( settings.EnablePointlightShadows > 0 ) {
             pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
-            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) ) {
+            // HasOwnDepthInSlot() is load-bearing, not a formality: owning a slot is not the same as that
+            // slot holding THIS light's depth. A freshly assigned (or re-assigned) slot still contains
+            // whatever the previous occupant rendered there, or nothing at all, and the render that fills it
+            // is rationed to a handful of lights per frame in DrawPointlightShadows. Advertising the slot in
+            // the meantime samples that foreign depth and shades the light as fully occluded - it goes BLACK,
+            // which is far worse than the range-clamped unshadowed look it gets by waiting for its turn.
+            // Mirrors D3D12's "publish the cube index only once the slot holds this owner's depth" - and,
+            // like that rule, it deliberately keeps advertising a slot whose bake has merely been
+            // INVALIDATED: stale depth is a small artefact, no depth at all is a light that switches off.
+            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) && pl->HasOwnDepthInSlot() ) {
                 hasShadow = true;
             }
         }

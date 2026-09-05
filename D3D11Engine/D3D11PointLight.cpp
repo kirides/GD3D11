@@ -142,6 +142,7 @@ void D3D11PointLight::ReleaseShadowMap() {
     ReleaseStaticAsideShadowMap();
     m_CurrentResolution = 0;
     DrawnOnce = false;
+    m_SlotHasOwnDepth = false;
     m_HasDynamicOverlay = false;
 
 }
@@ -154,6 +155,7 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
 
     StartReInit();
     DrawnOnce = false;
+    m_SlotHasOwnDepth = false;   // brand new slot: it holds the previous occupant's depth until we render
     DropStaticBake();
     m_HasDynamicOverlay = false;
 }
@@ -170,6 +172,7 @@ void D3D11PointLight::ClearTiledSlot() {
     m_TiledSlotLowRes = false;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
+    m_SlotHasOwnDepth = false;
     DropStaticBake();
     m_HasDynamicOverlay = false;
 }
@@ -571,6 +574,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     // regardless of whether a render actually happened, so it was not trustworthy debug signal.
     LightInfo->LastRenderedPosition = vobPos;
     DrawnOnce = true;
+    m_SlotHasOwnDepth = true;   // the target now holds this light's depth - see HasOwnDepthInSlot()
 }
 
 /** Renders all cubemap faces at once, using the geometry shader */

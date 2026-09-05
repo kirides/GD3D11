@@ -56,6 +56,16 @@ public:
         return m_StaticShadowReady;
     }
 
+    /** True once this light has completed a cubemap render into the target it currently holds - i.e. that
+        target physically contains THIS light's depth. Deliberately NOT the same question as "is its bake up
+        to date" (IsStaticShadowReady) or "has it been drawn since the last invalidation" (NotYetDrawn): a
+        world change near the light drops those, but the depth in the slot is still the light's own and still
+        far better than nothing. Only a slot changing hands clears this. It is what gates advertising the cube
+        to the shader at all, because a slot that has NOT been rendered into holds the previous occupant's
+        depth and shades the light as fully occluded - black, not merely unshadowed. Mirrors D3D12's
+        Slot::staticPresent. */
+    bool HasOwnDepthInSlot() const { return m_SlotHasOwnDepth; }
+
     bool IsShadowReady() const override {
         return m_StaticShadowReady;
     }
@@ -196,6 +206,9 @@ protected:
     std::atomic<bool> InitDone;
     bool DrawnOnce;
     bool m_StaticShadowReady = false;
+    // See HasOwnDepthInSlot(). Set when a render into the current target completes, cleared only when that
+    // target changes hands.
+    bool m_SlotHasOwnDepth = false;
     /** Set once the animated pass has rendered into this light's slot of the dynamic-overlay array; cleared
         whenever the slot changes hands or the light's caches are invalidated, so we never advertise an
         overlay that still holds another light's (or a stale) depth. */

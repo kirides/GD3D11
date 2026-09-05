@@ -1166,7 +1166,14 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
                 // gives up its dynamic overlay (that tier has no overlay array - see GetCurrentShadowMode)
                 // and keeps its shadow. Without this a room full of fixed lights left everything past the
                 // pool size unshadowed while the static tier sat empty.
-                if ( slot < 0 && c.spatiallyStatic ) {
+                // `spatiallyStatic` is what makes a low-res slot a good LONG-TERM home (that tier bakes once
+                // and caches forever, so a mover would re-enter the per-frame bake budget every frame). A
+                // light that currently has NO cube at all is a different question: it is being shaded
+                // unshadowed and range-clamped right now, i.e. it looks switched off, and even a cube it will
+                // have to keep re-baking beats that. So it spills too, and is promoted out again as soon as
+                // the full-res tier has room.
+                const bool maySpill = c.spatiallyStatic || !pl->HasShadowMap( requiredShadowMapKind );
+                if ( slot < 0 && maySpill ) {
                     if ( pl->GetTiledSlot() >= 0 && pl->IsTiledSlotLowRes() ) {
                         // Already spilled, and still nothing in the full-res pool: keep the cube it has.
                         // Taking a DIFFERENT low-res slot instead would drop the bake and re-render it, and
@@ -1271,12 +1278,16 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     }
 
     // Process Background Queue (Round-Robin)
-    // Set a strict, safe limit to prevent FPS drops. 
-    // 2 per frame is 120 updates per second at 60fps.
-    int maxBackgroundUpdates = 2;
-    int updatesDone = 0;
+    // Set a strict, safe limit to prevent FPS drops - but priced per cube rather than counted, because the
+    // two tiers are not the same job: a low-res static cube is 32^2 against 128^2, a sixteenth of the raster
+    // work, though it still pays the same CPU caster cull. Half price, so the full-res rate is unchanged at
+    // 2 per frame while a wave of spilled/static lights (which is what a room full of fixed lights produces
+    // the moment they all need their one-time bake) drains twice as fast. They are shaded unshadowed until
+    // their turn comes, so this is how long they spend looking range-clamped.
+    constexpr int kBackgroundUpdateBudget = 4;   // 2 full-res cubes, or 4 low-res ones
+    int updateBudget = kBackgroundUpdateBudget;
 
-    while ( !graphicsEngine->FrameShadowUpdateLights.empty() && updatesDone < maxBackgroundUpdates ) {
+    while ( !graphicsEngine->FrameShadowUpdateLights.empty() && updateBudget > 0 ) {
         auto light = graphicsEngine->FrameShadowUpdateLights.front();
         graphicsEngine->FrameShadowUpdateLights.pop_front();
 
@@ -1296,7 +1307,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         l->RenderCubemap( force );
         graphicsEngine->DebugPointlight = l;
 
-        updatesDone++;
+        updateBudget -= l->IsTiledSlotLowRes() ? 1 : 2;
     }
 
     return XR_SUCCESS;
