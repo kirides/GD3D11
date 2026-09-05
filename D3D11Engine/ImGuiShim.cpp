@@ -355,16 +355,73 @@ namespace {
     }
 }
 
+// Rate at which cached static point-light shadows are being thrown away: a cached cube costs nothing to keep
+// and a full re-bake to replace, so anything but a brief spike means something nearby is churning the cache.
+static void DrawPointLightInvalidationStat() {
+    auto& counter = Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations;
+    const unsigned int perSec = counter.PerSecond();
+    const ImVec4 color = perSec == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
+        : perSec < 10 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
+                      : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+    // The total sits next to the rate because the rate alone cannot tell "nothing is invalidating" from
+    // "it happened and the window has already let it go".
+    ImGui::TextColored( color, "Static shadow invalidations: %u / s   (%llu total)", perSec, counter.Total() );
+    ImGui::SetItemTooltip( "Baked static point-light shadows dropped in the last one-second window, across all\n"
+        "lights: a caster appearing, vanishing or starting to move inside a light's range, the light\n"
+        "itself moving or changing shadow mode, or a shadow slot changing hands. Steady zero is the\n"
+        "healthy state - every light is reusing its cached cube. A sustained non-zero rate means those\n"
+        "cubes are being re-rendered instead, which is the exact cost the cache exists to avoid; the\n"
+        "usual culprit is a caster that keeps entering and leaving the static caster set.\n"
+        "The rate is a sliding one-second window, so it reacts within ~100ms of an event and decays\n"
+        "back to 0 over the following second; the total only ever climbs." );
+}
+
+// Shadow-cube slot occupancy per tier, plus the lights that asked for a cube and got none. Zero starved is
+// the healthy state; a steady non-zero value means the tier is genuinely too small for the scene.
+static void DrawPointLightSlotStat() {
+    const auto& info = Engine::GAPI->GetRendererState().RendererInfo;
+    if ( info.PointLightSlotsMax == 0 ) return;   // legacy per-light cubemaps: no fixed pools to report on
+    ImGui::Text( "Shadow cubes: %u/%u dynamic, %u/%u static",
+        info.PointLightSlotsUsed, info.PointLightSlotsMax,
+        info.PointLightStaticSlotsUsed, info.PointLightStaticSlotsMax );
+    const ImVec4 color = info.PointLightSlotsStarved == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
+                                                         : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+    ImGui::TextColored( color, "Lights starved of a cube: %u", info.PointLightSlotsStarved );
+    ImGui::SetItemTooltip(
+        "Lights that wanted a shadow cube this frame and could not be given one because their tier was\n"
+        "already full of lights at a comparable distance. A starved static light is range-clamped so it\n"
+        "cannot bleed through walls, which makes it look switched off - so a sustained non-zero number\n"
+        "here is the direct explanation for lights that go dark. Slots are taken from the farthest owner\n"
+        "when a much closer light needs one, so this counts genuine oversubscription, not lights waiting." );
+    if ( info.PointLightsDropped ) {
+        ImGui::TextColored( ImVec4( 1.0f, 0.3f, 0.3f, 1.0f ),
+            "Lights dropped from the frame buffer: %u", info.PointLightsDropped );
+        ImGui::SetItemTooltip(
+            "Visible point lights that did not fit in the per-frame light buffer and are not shaded at all\n"
+            "this frame. The buffer keeps the nearest ones, so this is the far end of the light set - but\n"
+            "it is a hard cap, and raising the effects draw distance is what pushes a scene into it." );
+    }
+}
+
 /** Debug-only visualization to help diagnose point-light shadow bugs (light bleed/self-occlusion) without
     guessing blind: draws every active light's range as a wireframe sphere (color-coded by shadow state) and
     shows the raw shadow-cube depth faces for whichever light is nearest the camera, unfolded as a cross. */
 void ImGuiShim::RenderPointLightShadowDebugWindow() {
-    if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
-        return; // Point-light cube visualization only implemented for the D3D11 backend so far.
-    }
-
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( !settings.DebugSettings.PointLightDebug.Enabled ) {
+        return;
+    }
+
+    // The cube visualization below is D3D11-only, but the invalidation rate is backend-neutral - so open the
+    // window either way and show what applies.
+    if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
+        ImGui::SetNextWindowSize( ImVec2( 620, 170 ), ImGuiCond_FirstUseEver );
+        if ( ImGui::Begin( "Point Light Shadow Debug" ) ) {
+            DrawPointLightInvalidationStat();
+            DrawPointLightSlotStat();
+            ImGui::TextUnformatted( "Cube visualization is only implemented for the D3D11 backend." );
+        }
+        ImGui::End();
         return;
     }
 
@@ -411,6 +468,10 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         ImGui::End();
         return;
     }
+
+    DrawPointLightInvalidationStat();
+    DrawPointLightSlotStat();
+    ImGui::Separator();
 
     if ( !nearest || !nearestInfo ) {
         ImGui::TextUnformatted( "No point light with an allocated shadow map found nearby." );

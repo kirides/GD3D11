@@ -109,6 +109,9 @@
     <ClInclude Include="Logger.h">
       <Filter>Tools</Filter>
     </ClInclude>
+    <ClInclude Include="Logging.h">
+      <Filter>Tools</Filter>
+    </ClInclude>
     <ClInclude Include="ZenGinTypes.h">
       <Filter>ZenGin</Filter>
     </ClInclude>
@@ -986,6 +989,9 @@
     </ClCompile>
     <ClCompile Include="D3D7\MyDirectDrawSurface7.cpp">
       <Filter>D3D7</Filter>
+    </ClCompile>
+    <ClCompile Include="Logging.cpp">
+      <Filter>Tools</Filter>
     </ClCompile>
     <ClCompile Include="Toolbox.cpp">
       <Filter>Tools</Filter>

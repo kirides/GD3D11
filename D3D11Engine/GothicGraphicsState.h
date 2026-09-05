@@ -1468,6 +1468,62 @@ struct GothicRendererSettings {
     }
 };
 
+/** Event rate over a SLIDING one-second window, as ten 100 ms buckets that PerSecond() sums - a tumbling
+    window would read 0 for the whole time the events are happening and report them afterwards. The buckets
+    advance inside both Note() and PerSecond(), so nothing needs a per-frame tick.
+
+    MAIN THREAD ONLY - the bucket rotation is not synchronized. */
+class RollingSecondCounter {
+public:
+    void Note( unsigned int n = 1 ) {
+        Advance();
+        m_Buckets[m_Head] += n;
+        m_Total += n;
+    }
+
+    /** Events in the last second, including the bucket still being filled. */
+    unsigned int PerSecond() {
+        Advance();
+        unsigned int sum = 0;
+        for ( unsigned int b : m_Buckets ) sum += b;
+        return sum;
+    }
+
+    /** Every event since startup. Unwindowed, so it separates "nothing is happening" from "the window
+        already let it go". */
+    unsigned long long Total() const { return m_Total; }
+
+private:
+    static const size_t NUM_BUCKETS = 10;
+    static const long long BUCKET_MS = 100;   // NUM_BUCKETS * BUCKET_MS = the window length
+
+    void Advance() {
+        const auto now = std::chrono::steady_clock::now();
+        const long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>( now - m_BucketStart ).count();
+        if ( elapsed < BUCKET_MS ) return;
+
+        const long long steps = elapsed / BUCKET_MS;
+        if ( steps >= static_cast<long long>( NUM_BUCKETS ) ) {
+            // Idle (or paused) for longer than the whole window - everything in it has expired.
+            m_Buckets.fill( 0 );
+            m_Head = 0;
+            m_BucketStart = now;
+            return;
+        }
+        // Keep the phase rather than restarting from `now`, so buckets stay on a fixed 100 ms grid.
+        m_BucketStart += std::chrono::milliseconds( BUCKET_MS * steps );
+        for ( long long i = 0; i < steps; ++i ) {
+            m_Head = ( m_Head + 1 ) % NUM_BUCKETS;
+            m_Buckets[m_Head] = 0;
+        }
+    }
+
+    std::chrono::steady_clock::time_point m_BucketStart = std::chrono::steady_clock::now();
+    std::array<unsigned int, NUM_BUCKETS> m_Buckets = {};
+    size_t m_Head = 0;
+    unsigned long long m_Total = 0;
+};
+
 struct GothicRendererInfo {
     GothicRendererInfo() {
         VOBVerticesDataSize = 0;
@@ -1525,6 +1581,22 @@ struct GothicRendererInfo {
     float NearPlane;
     int FrameDrawnLights;
     int WorldMeshDrawCalls;
+
+    // Cached static point-light shadows dropped per second. Owns its own window, so it is not reset per
+    // frame. A steady non-zero rate means cubes are being re-baked continuously instead of cached.
+    RollingSecondCounter PointLightStaticInvalidations;
+
+    // Point-light shadow-cube slot occupancy per tier, as of the last frame's selection. `Starved` counts
+    // lights that wanted a cube and could not be given one because their tier was full at comparable
+    // distance - which is what separates "the tier is too small" from "slot assignment is broken".
+    unsigned int PointLightSlotsUsed = 0;
+    unsigned int PointLightSlotsMax = 0;
+    unsigned int PointLightStaticSlotsUsed = 0;
+    unsigned int PointLightStaticSlotsMax = 0;
+    unsigned int PointLightSlotsStarved = 0;
+    // Visible point lights that did not fit in the per-frame light buffer (kMaxFrameLights). Not shaded at
+    // all rather than merely unshadowed, though it looks the same in game.
+    unsigned int PointLightsDropped = 0;
 
     unsigned int VOBVerticesDataSize;
     // Skeletal meshes can be extracted (and their SkeletalMeshInfo destroyed) from background

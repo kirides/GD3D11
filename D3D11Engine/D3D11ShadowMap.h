@@ -74,6 +74,9 @@ struct RenderShadowmapsParams {
     D3D11_VIEWPORT ViewportOverride = {};
     bool UseViewportOverride = false;
     bool SkipClear = false;
+
+    // Grass is not a rain blocker - the rain shadowmap must not see it (see D3D11Effect::DrawRainShadowmap)
+    bool DrawVegetation = true;
 };
 
 class D3D11ShadowMap {
@@ -176,7 +179,30 @@ public:
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 
+    /** Reported back by the cascade's VOB pass: whether it drew a per-frame-deformed caster (an .MMS with a
+        live ani channel). Such a cascade can't be frozen by LazyCascadeUpdate or its depth stops matching
+        the mesh the main view draws. Latched one frame late - re-evaluated whenever the cascade renders. */
+    void NoteCascadeAnimatedCasters( int cascadeIndex, bool hasAnimated ) {
+        if ( cascadeIndex >= 0 && cascadeIndex < MAX_CSM_CASCADES )
+            m_CascadeHasAnimatedCaster[cascadeIndex] = hasAnimated;
+    }
+
+    /** The shared point-light shadow-cube slot table. Public because D3D11GraphicsEngine's world-change
+        hooks resolve against it, exactly as D3D12 does through D3D12PointShadows. */
+    PointLightSlotSelector& GetPointSlots() { return m_PointSlots; }
+
+    /** Hands a point-light slot back when its light vob leaves the world. Keyed on the vob POINTER: the
+        VobLightInfo may already be on its way out by the time this fires. */
+    void ReleasePointLightSlotFor( const zCVob* lightVob );
+
 private:
+    /** Sizes the shared slot table for this backend on first use. Idempotent. */
+    void ConfigurePointSlots();
+
+    /** Makes every light's tiled slot agree with the selector. Walks the whole light map, not this frame's
+        visible set: a queued background update must not render into a slot that changed hands. */
+    void ReconcileTiledSlots();
+
     // Per-cascade size cap for the multi-cascade atlas, which packs all cascades into one
     // (2*S) x (1.5*S) texture. 2048 keeps the biggest atlas at 4096x3072.
     static const int MAX_ATLAS_CASCADE_SIZE = 2048;
@@ -212,9 +238,16 @@ private:
     std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;
     std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade = { true, true, true, true };
+    // See NoteCascadeAnimatedCasters - keeps a cascade out of the lazy-update skip while it holds a
+    // per-frame-deformed caster.
+    std::array<bool, MAX_CSM_CASCADES> m_CascadeHasAnimatedCaster = {};
     XMFLOAT3 m_WorldShadowPos;
 
     std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;
+
+    // Which point light owns which shadow cube, and when each one's cached static depth is re-rendered.
+    // Shared verbatim with the D3D12 backend - see PointLightSlotSelector.h.
+    PointLightSlotSelector m_PointSlots;
     D3D11LegacyDeferredShading m_LegacyDeferred;
 
     TracyLockable(std::mutex, m_CullingJobsMutex);

@@ -217,6 +217,10 @@ private:
     static constexpr size_t kLazyLastCascadeInterval = 3;
     size_t m_LazyFrameCounter = 0;
     bool m_ShouldUpdateCascade[kShadowCascades] = {};   // resolved in ComputeCascadeMatrices, read everywhere else
+    // Set by BuildCascade when the cascade holds an .MMS with a live morph channel. Such a caster is
+    // re-deformed every frame, so freezing the cascade leaves its depth describing a shape the main view no
+    // longer draws. Latched one frame late: written by the cascade's own job, read after WaitCascadeJobs.
+    bool m_CascadeHasAnimatedCaster[kShadowCascades] = {};
     bool m_CascadeMatricesValid = false;                // first frame (and after a Resize) nothing may be frozen
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read

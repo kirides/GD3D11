@@ -47,7 +47,7 @@ void D3D11TiledDeferredShading::Init(
     // The clustered cull writes a bitmask straight into the grid, so it needs no flat index list and no
     // atomic allocation counter - both are gone with the old per-tile cull.
 
-    // Shadow cube array is lazy-created on first AllocateSlot() to save memory when shadows are off
+    // Shadow cube array is lazy-created on the first ClaimSlot() to save memory when shadows are off
 }
 
 void D3D11TiledDeferredShading::EnsureShadowArray() {
@@ -240,21 +240,10 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     }
 }
 
-int D3D11TiledDeferredShading::AllocateStaticSlot() {
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimStaticSlot( int slot ) {
+    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_STATIC_SHADOW_CUBEMAPS ) return nullptr;
     EnsureStaticShadowArray();
-    if ( !m_ShadowStaticCubeArray ) return -1;
-    for ( uint32_t i = 0; i < MAX_STATIC_SHADOW_CUBEMAPS; i++ ) {
-        if ( !m_StaticSlotInUse[i] ) {
-            m_StaticSlotInUse[i] = true;
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-void D3D11TiledDeferredShading::FreeStaticSlot( int slot ) {
-    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_STATIC_SHADOW_CUBEMAPS )
-        m_StaticSlotInUse[slot] = false;
+    return GetStaticSlotTarget( slot );
 }
 
 RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetStaticSlotTarget( int slot ) {
@@ -263,20 +252,10 @@ RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetStaticSlotTarget( int 
     return nullptr;
 }
 
-int D3D11TiledDeferredShading::AllocateSlot() {
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimSlot( int slot ) {
+    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_SHADOW_CUBEMAPS ) return nullptr;
     EnsureShadowArray();
-    for ( uint32_t i = 0; i < MAX_SHADOW_CUBEMAPS; i++ ) {
-        if ( !m_SlotInUse[i] ) {
-            m_SlotInUse[i] = true;
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-void D3D11TiledDeferredShading::FreeSlot( int slot ) {
-    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_SHADOW_CUBEMAPS )
-        m_SlotInUse[slot] = false;
+    return GetSlotTarget( slot );
 }
 
 RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetSlotTarget( int slot ) {
@@ -500,6 +479,11 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     constexpr float kIndoorSeenFromOutsideScale = 0.15f; // worst bleed case - clamp it much harder
     const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
     const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
+    // Applied through a per-light eased scale rather than switched on and off - see
+    // VobLightInfo::UnshadowedRangeScale. Framerate-independent exponential approach.
+    constexpr float kClampEaseSeconds = 0.3f;
+    const float clampDt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
+    const float clampEase = 1.0f - std::exp( -clampDt / kClampEaseSeconds );
 
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
@@ -511,13 +495,18 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         bool hasShadow = false;
         if ( settings.EnablePointlightShadows > 0 ) {
             pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
-            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) ) {
+            // Owning a slot is not the same as that slot holding THIS light's depth: a freshly assigned
+            // one still holds the previous occupant's, and sampling that shades the light BLACK rather than
+            // merely unshadowed. A slot whose bake was only INVALIDATED keeps being advertised, though -
+            // stale depth beats none. HasSampleableDepth covers a light mid-handover, whose old slot is
+            // being held back for exactly this - see SetSlotFallback.
+            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) && pl->HasSampleableDepth() ) {
                 hasShadow = true;
             }
         }
 
         // Shadowed lights need a tiled slot (assigned earlier in DrawPointlightShadows).
-        if ( hasShadow && pl->GetTiledSlot() < 0 ) {
+        if ( hasShadow && pl->GetSampleSlot() < 0 ) {
             continue;
         }
 
@@ -528,9 +517,13 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
         float4 lightColor = float4( vob->GetLightColor() );
         float lightRange = vob->GetLightRange();
-        if ( !hasShadow && ( vob->IsStatic() || light->IsIndoorVob ) ) {
+        if ( vob->IsStatic() || light->IsIndoorVob ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;
-            lightRange *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
+            const float target = hasShadow ? 1.0f
+                : ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
+            if ( light->UnshadowedRangeScale < 0.0f ) light->UnshadowedRangeScale = target;   // first sight
+            else light->UnshadowedRangeScale += ( target - light->UnshadowedRangeScale ) * clampEase;
+            if ( light->UnshadowedRangeScale < 0.999f ) lightRange *= light->UnshadowedRangeScale;
         }
         float3 posWorld = vob->GetPositionWorld();
 
@@ -566,9 +559,11 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
 
         if ( hasShadow ) {
-            tl.ShadowCubeIndex = pl->GetTiledSlot()
-                | ( pl->IsTiledSlotLowRes() ? SHADOW_CUBE_TIER_LOW : 0 )
-                | ( pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
+            // The overlay bit belongs to the light's OWN slot only: the one it is handing over from was
+            // never refreshed this frame.
+            tl.ShadowCubeIndex = pl->GetSampleSlot()
+                | ( pl->IsSampleSlotLowRes() ? SHADOW_CUBE_TIER_LOW : 0 )
+                | ( pl->HasOwnDepthInSlot() && pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
             hasShadowedTiledLights = true;
         } else {
             tl.ShadowCubeIndex = -1;

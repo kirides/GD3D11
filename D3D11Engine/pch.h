@@ -39,6 +39,7 @@
 #include <gtl/phmap.hpp>
 
 #include "Logger.h"
+#include "Logging.h"
 #include "Types.h"
 #include "VertexTypes.h"
 

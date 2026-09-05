@@ -504,6 +504,80 @@ bool D3D12PipelineState::CreatePreview() {
     return true;
 }
 
+bool D3D12PipelineState::CreatePreviewSkeletal() {
+    // Skinned inventory-item preview (D3D12GraphicsEngine::DrawVobSingle(SkeletalVobInfo*)): same target,
+    // depth and alpha-clip as Preview above, but skins the vertex against the model's node palette. Its own
+    // root sig because Preview's has no b2 — everything else matches, and it reuses Preview.hlsl's PSMain.
+    ID3D12Device* device = m_Device->GetDevice();
+
+    D3D12RootLayout& rs = Layout( "PreviewSkeletal" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World
+    // 2: b2 bone palette. Points into the per-frame skeletal ring, whose cursor only ADVANCES within a
+    // frame, so the handed-out address stays valid until Present — same promise as Skeletal.RootSig's b2.
+    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 3: t0 diffuse
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
+
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+        return false;
+    PreviewSkeletal.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "VSSkeletal", Shadermodel_VS, PreviewSkeletal.VsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "PSMain", Shadermodel_PS, PreviewSkeletal.PsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    rs.ValidateShaders( {
+        { PreviewSkeletal.VsBlob.Get(), "Preview.hlsl:VSSkeletal", D3D12_SHADER_VISIBILITY_VERTEX },
+        { PreviewSkeletal.PsBlob.Get(), "Preview.hlsl:PSMain",     D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
+    // 76-byte ExSkelVertexStruct — same layout as Skeletal's PSOs, see CreateSkeletal.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = PreviewSkeletal.RootSig.Get();
+    pso.VS = { PreviewSkeletal.VsBlob->GetBufferPointer(), PreviewSkeletal.VsBlob->GetBufferSize() };
+    pso.PS = { PreviewSkeletal.PsBlob->GetBufferPointer(), PreviewSkeletal.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DisplayFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PreviewSkeletal.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skinned preview).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateGhost() {
     // Ghost/transparency VOBs (GothicAPI::TransparencyVobs — invisible-potion/fade-out items, GetVisualAlpha()):
     // single-object, non-instanced, alpha-blended draw. Mirrors D3D11's PS_Transparency (unlit: sample diffuse,
@@ -3875,6 +3949,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     runFatal( "Tonemap", &D3D12PipelineState::CreateTonemap );
     runFatal( "LumAdapt", &D3D12PipelineState::CreateLumAdapt );
     runFatal( "Preview", &D3D12PipelineState::CreatePreview );
+    runOptional( "PreviewSkeletal", &D3D12PipelineState::CreatePreviewSkeletal );
     runOptional( "Bloom", &D3D12PipelineState::CreateBloom );
     runOptional( "Ghost", &D3D12PipelineState::CreateGhost );
     runOptional( "GhostSkeletal", &D3D12PipelineState::CreateGhostSkeletal );

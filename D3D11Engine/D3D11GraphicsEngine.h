@@ -186,6 +186,12 @@ public:
     /** Called when a vob was removed from the world */
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
 
+    // World changes that can invalidate a point light's cached static shadow cube; all three resolve
+    // through the shared PointLightSlotSelector, exactly as the D3D12 backend does.
+    void OnAddVob( VobInfo* vi ) override;
+    void OnVobBecameDynamic( zCVob* vob ) override;
+    void OnVobMoved( zCVob* vob ) override;
+
     /** Called when a key got pressed */
     XRESULT OnKeyDown( unsigned int key ) override;
 
@@ -257,6 +263,11 @@ public:
 
     /** Draws a VOB (used for inventory) */
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;
+    void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;
+
+    /** Binds 'transforms' as both the current and the previous bone palette of the active skeletal VS.
+        Preview-only: an inventory item has no motion history to reproject against. */
+    void BindPreviewBoneTransforms( const std::vector<XMFLOAT4X4>& transforms );
 
     /** Draws everything around the given position */
     void ShadowPass_DrawWorldMesh_Indirect( const std::vector<WorldMeshSectionInfo*>& visibleSections, const Frustum* cullingFrustum = nullptr );
@@ -306,7 +317,7 @@ public:
     bool IsVelocityBufferInUse() const;
 
     /** Renders the shadowmaps for the sun */
-    void XM_CALLCONV RenderShadowmaps( FXMVECTOR cameraPosition, RenderToDepthStencilBuffer* target = nullptr, bool cullFront = true, bool dontCull = false, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite = nullptr, Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = nullptr );
+    void XM_CALLCONV RenderShadowmaps( FXMVECTOR cameraPosition, RenderToDepthStencilBuffer* target = nullptr, bool cullFront = true, bool dontCull = false, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite = nullptr, Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = nullptr, bool drawVegetation = true );
 
     /** Renders the shadowmaps for a pointlight */
     void XM_CALLCONV RenderShadowCube( FXMVECTOR position,

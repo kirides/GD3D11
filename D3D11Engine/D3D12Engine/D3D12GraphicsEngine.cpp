@@ -79,7 +79,7 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
 
 XRESULT D3D12GraphicsEngine::Init() {
     if ( !m_Device.Init() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: device creation failed.";
+        Logging::Err( "D3D12GraphicsEngine::Init: device creation failed." );
         return XR_FAILED;
     }
     D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
@@ -102,32 +102,32 @@ XRESULT D3D12GraphicsEngine::Init() {
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 
     if ( !CreateAllocators() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create allocators.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create allocators." );
         return XR_FAILED;
     }
     if ( !CreateUploadObjects() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create upload objects.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create upload objects." );
         return XR_FAILED;
     }
     if ( !InitCopyQueue() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to initialize the copy queue.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to initialize the copy queue." );
         return XR_FAILED;
     }
     if ( !CreateSrvHeap() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create SRV heap.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create SRV heap." );
         return XR_FAILED;
     }
     if ( !m_TexturePool.Attach( *this ) ) {
         // Non-fatal: nothing consumes the pool yet (see D3D12RenderGraph.h), so a failure here just means
         // that infrastructure stays unavailable until the next Init(). Nothing in today's frame depends on it.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the pooled-render-target RTV heap.";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the pooled-render-target RTV heap." );
     }
     if ( !m_AliasArena.Attach( *this ) ) {
         // Non-fatal for the same reason: no pass constructs a D3D12RenderGraph yet (see D3D12RenderGraph.h).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the render-graph aliasing arena.";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the render-graph aliasing arena." );
     }
     if ( !m_Pipelines.Init( &m_Device, &m_ShaderBackend ) ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to init the pipeline-state module." );
         return XR_FAILED;
     }
     // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
@@ -138,10 +138,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         if ( rs.CompressBackBuffer ) {
             if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
                 kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
-                LogInfo() << "D3D12: compressed scene colour (R11G11B10_FLOAT).";
+                Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT)." );
             } else {
-                LogWarn() << "D3D12: CompressBackBuffer requested but the device lacks "
-                             "TypedUAVLoadAdditionalFormats; keeping R16G16B16A16_FLOAT.";
+                Logging::Wrn( "D3D12: CompressBackBuffer requested but the device lacks "
+                    "TypedUAVLoadAdditionalFormats; keeping R16G16B16A16_FLOAT." );
                 rs.CompressBackBuffer = false;
             }
         }
@@ -155,49 +155,49 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Without the encode pass nothing in the FP16 display buffer would ever reach the swapchain, so give
         // up on HDR here — while it is still free to do so, i.e. before any display-space PSO has baked
         // DisplayFormat. Everything downstream then builds exactly as it does in SDR.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the HDR scanout encode pipeline; falling back to SDR output.";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the HDR scanout encode pipeline; falling back to SDR output." );
         m_HdrOutputActive = false;
         m_HdrEncodePQ = false;
         m_Pipelines.DisplayFormat = kBackBufferFormat;
     }
     if ( !m_Pipelines.CreateUI() || !CreateUIVertexBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline." );
         return XR_FAILED;
     }
     if ( !CreateWhiteTexture() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the white fallback texture.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the white fallback texture." );
         return XR_FAILED;
     }
     LoadDistortionTexture();   // non-fatal: wet ground just skips the no-normalmap fallback if this is missing
     if ( !m_Pipelines.CreateWorld() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateDepthPrepass() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline." );
         return XR_FAILED;
     }
     if ( !CreateWorldIndirect() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world ExecuteIndirect resources.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the world ExecuteIndirect resources." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateWorldTransparency() ) {
         // Non-fatal: DrawWorldTransparencyRun early-outs on a missing root sig, which leaves the peeled
         // alpha-blended world surfaces (ice/glass) simply undrawn — the same as before this pass existed,
         // minus their opaque stand-in. Everything else keeps rendering.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the alpha-blended world-mesh pipeline "
-                     "(ice/glass surfaces will not be drawn).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the alpha-blended world-mesh pipeline "
+            "(ice/glass surfaces will not be drawn)." );
     }
     if ( !m_Pipelines.CreateLightCull() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateVob() || !CreateVobInstanceBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the VOB pipeline." );
         return XR_FAILED;
     }
     if ( !CreateVobIndirect() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB ExecuteIndirect resources.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the VOB ExecuteIndirect resources." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateCull() || !CreateVobCullResources() ) {
@@ -206,212 +206,212 @@ XRESULT D3D12GraphicsEngine::Init() {
         // frustum cull in charge (RndCullContext::drawFlags.SkipVobFrustumCull stays clear) — the exact
         // behavior the backend had before. Must run AFTER CreateVobInstanceBuffers (it sizes the compacted
         // instance buffer from m_VobInstanceBufferCapacity) and after CreateVobIndirect.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the GPU VOB-culling resources (falling back to CPU frustum culling).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the GPU VOB-culling resources (falling back to CPU frustum culling)." );
     }
     if ( !m_Pipelines.CreateMorphFold() || !CreateMorphFoldResources() ) {
         // Non-fatal, but it MUST be attempted here — before the first world/attachment conversion. Whether
         // the fold is available is what decides how a morph submesh's vertex buffer is created (DEFAULT+UAV
         // for the GPU fold vs DYNAMIC+CA_WRITE for ZENGIN's CPU deform), and MorphGpu::IsActive() freezes
         // that answer for the session. Failing here simply leaves the CPU deform as the path.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the GPU morph-fold resources (morph meshes will deform on the CPU).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the GPU morph-fold resources (morph meshes will deform on the CPU)." );
     }
     if ( !CreateLightBuffer() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the point-light buffer.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the point-light buffer." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateSkeletal() || !CreateSkeletalConstantBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline." );
         return XR_FAILED;
     }
     if ( !CreateSkeletalIndirect() ) {
         // Fatal: both skeletal passes submit exclusively through these (T9), so a missing signature/ring would
         // silently drop every NPC/monster and every node attachment. Must run after CreateSkeletal (it needs
         // Skeletal.RootSig) and after CreateVobIndirect (the attachment rings ride the VOB command signature).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal ExecuteIndirect resources.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal ExecuteIndirect resources." );
         return XR_FAILED;
     }
     if ( !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
         // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
         // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).
         // Runs after the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the sun shadow map." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreatePointShadow() || !m_PointShadows.Init() ) {
         // Fatal: the lit PSOs sample the cube array (t5) unconditionally once P2.10d lands, so a missing resource
         // would leave that root slot unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create point-light shadow cubes.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create point-light shadow cubes." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateWater() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the water pipeline." );
         return XR_FAILED;
     }
     if ( !CreateWaterConstantBuffers() ) {
         // Fatal-ish for water only: DrawWaterSurfaces skips its color pass without the CB (the Z-prepass
         // still runs so height fog stays correct), leaving water surfaces unshaded. Not worth failing the
         // whole backend over — but it should never happen, so log it loudly.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water constant buffers (water will not be shaded).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the water constant buffers (water will not be shaded)." );
     }
     LoadReflectionCube();   // non-fatal: water then reflects only on-screen geometry via SSR
     if ( !m_Pipelines.CreateParticle() || !CreateParticleInstanceBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the particle pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the particle pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateDecal() || !CreateDecalQuadVB() || !CreateDecalInstanceBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the decal pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the decal pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateTonemap() ) {
         // Fatal: the 3D scene PSOs now target the HDR scene-color RT (kSceneColorFormat), so without the tonemap
         // resolve nothing reaches the swapchain. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateLumAdapt() || !CreateLumAdaptedBuffer() ) {
         // Fatal: Tonemap.hlsl's PS now reads m_LumAdaptedBuffer (t1) unconditionally every frame — a missing
         // buffer would leave that root SRV unbound. Same reasoning as the tonemap PSO itself just above.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the dynamic-exposure (auto-exposure) pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the dynamic-exposure (auto-exposure) pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreatePreview() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline.";
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline." );
         return XR_FAILED;
     }
     if ( !m_Pipelines.CreateBloom() ) {
         // Non-fatal: bloom is an opt-in visual enhancement (RendererSettings.EnableBloom, default off), not a
         // required resource any other PSO samples unconditionally — unlike tonemap/shadow/point-shadow above.
         // RenderBloom() guards on the PSOs existing and just skips the effect if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the bloom pipeline (bloom will be unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the bloom pipeline (bloom will be unavailable)." );
     }
     if ( !m_Pipelines.CreateGhost() ) {
         // Non-fatal: ghost/transparency VOBs are a niche effect (invisible-potion/fade items). DrawGhostVobs()
         // guards on Ghost.PSO existing and, if this failed, simply drains+discards Engine::GAPI->TransparencyVobs
         // every frame instead of drawing it — GothicAPI still needs that drain to avoid an unbounded per-frame leak.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the ghost pipeline (ghost VOBs will be invisible).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the ghost pipeline (ghost VOBs will be invisible)." );
     }
     if ( !m_Pipelines.CreateGhostSkeletal() ) {
         // Non-fatal: skeletal ghosts (invisible/fading NPCs) are rarer still. DrawGhostVobs() guards on
         // GhostSkeletal.PSO existing and just skips those entries (still drained, no leak) if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal ghost pipeline (invisible NPCs will not render).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the skeletal ghost pipeline (invisible NPCs will not render)." );
     }
     if ( !m_Pipelines.CreateGrass() ) {
         // Non-fatal: vegetation boxes are an optional decoration layer. DrawVegetation() guards on
         // Grass.PSO existing and just skips the pass (grass simply doesn't render) if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass pipeline (vegetation boxes will not render).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the grass pipeline (vegetation boxes will not render)." );
     } else if ( !m_ShadowMap.CreateGrassCaster() ) {
         // Non-fatal: the CSM pass guards on the grass caster PSO and just skips grass's shadow
         // contribution (it still renders lit, just casts no shadow) if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass shadow-caster pipeline (grass will not cast shadows).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the grass shadow-caster pipeline (grass will not cast shadows)." );
     }
     if ( !CreateShadowRecordCommandLists() ) {
         // Non-fatal: BeginShadowRecording() checks m_ShadowCmdListsReady and falls back to recording every shadow
         // pass serially into m_CmdList (exactly what it did before) — slower, identical output.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the shadow command lists (shadow passes will be recorded single-threaded).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the shadow command lists (shadow passes will be recorded single-threaded)." );
     }
     if ( !m_Pipelines.CreateVideo() ) {
         // Non-fatal: Bink cutscene playback (zBinkPlayer.cpp) is a niche path. DrawVertexArray's PS_Video branch
         // guards on Video.PSO existing and falls back to the normal FF/UI draw (a black/untextured quad) if not.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the video (Bink) pipeline (cutscenes will not render).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the video (Bink) pipeline (cutscenes will not render)." );
     }
     if ( !m_Pipelines.CreateSmaa() ) {
         // Non-fatal: SMAA is an opt-in AA mode (RendererSettings.AntiAliasingMode == AA_SMAA). RenderSMAA()
         // guards on the PSOs existing and just skips the effect (no AA) if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SMAA pipeline (SMAA anti-aliasing will be unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the SMAA pipeline (SMAA anti-aliasing will be unavailable)." );
     } else {
         LoadSmaaTextures();   // non-fatal; RenderSMAA also guards on the LUTs being present
     }
     if ( !m_Pipelines.CreateSharpen() ) {
         // Non-fatal: RenderSharpen() guards on the PSO for the selected mode and just leaves the frame
         // unsharpened. Note this one IS on by default (RendererSettings.SharpeningMode == SHARPEN_CAS).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sharpen pipeline (the image will not be sharpened).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the sharpen pipeline (the image will not be sharpened)." );
     }
     if ( !m_Pipelines.CreateGammaCorrect() ) {
         // Non-fatal: ApplyDisplayGammaCorrection() guards on the PSO, so the frame just shows at the
         // uncorrected 1.0/1.0 brightness and contrast.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the gamma-correct pipeline (the brightness/contrast sliders will do nothing).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the gamma-correct pipeline (the brightness/contrast sliders will do nothing)." );
     }
     if ( !m_Pipelines.CreateUnderwater() ) {
         // Non-fatal: DrawUnderwaterEffects() guards on the PSOs, so a failure here just leaves the frame
         // untinted and undistorted while swimming — everything else renders as before.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the underwater pipeline (no underwater screen effect).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the underwater pipeline (no underwater screen effect)." );
     }
     if ( !m_Pipelines.CreateAO() ) {
         // Non-fatal: SSAO is an opt-in visual enhancement (RendererSettings.AoMode, defaults to a real AO mode
         // but nothing else depends on it unconditionally). RenderSSAO() guards on the PSOs existing and just
         // leaves the AO mask at white (no occlusion) if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable)." );
     }
     // Intel XeGTAO — AoMode::AO_ASSAO on this backend. Non-fatal: IsGtaoEnabled() reports false and RenderSSAO
     // falls back to the simple SSAO path above, so a failure here costs AO quality, never AO.
     if ( !m_Pipelines.CreateGtao() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the XeGTAO pipeline "
-                     "(AO mode 'ASSAO' will fall back to the simple SSAO).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the XeGTAO pipeline "
+            "(AO mode 'ASSAO' will fall back to the simple SSAO)." );
     }
     // Motion-vector G-buffer support (camera-velocity fill + debug overlay). Non-fatal: nothing consumes the
     // velocity/normal targets yet (TAA consumes velocity; FSR3 is still to come, and XeGTAO deliberately derives
     // its own normals from the depth snapshot instead), so a failure here costs TAA, never the frame. CreateMotionConstantBuffers must succeed too — without
     // the CB the *GBuf prepass PSOs would have an unbound root CBV, so failure disables the whole feature.
     if ( !m_Pipelines.CreateMotion() || !CreateMotionConstantBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the motion-vector pipeline "
-                     "(no motion vectors / normal buffer — TAA and FSR3 will have no input).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the motion-vector pipeline "
+            "(no motion vectors / normal buffer — TAA and FSR3 will have no input)." );
         m_MotionResourcesReady = false;
     }
     // Temporal AA (Intel's TAA resolve). Non-fatal: RenderTAA and AdvanceJitter both guard through
     // IsTaaEnabled(), so a failure here leaves the frame un-jittered and un-resolved exactly as before.
     if ( !m_Pipelines.CreateTaa() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the TAA pipeline (temporal AA unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the TAA pipeline (temporal AA unavailable)." );
     }
     // Depth of field. Non-fatal and opt-in (RendererSettings.EnableDoF, off by default): RenderDepthOfField
     // guards on the PSOs and leaves the whole scene in focus if this failed. Its textures are built lazily the
     // first time DoF is switched on, not here — see CreateDoFResources.
     if ( !m_Pipelines.CreateDoF() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth-of-field pipeline (DoF unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the depth-of-field pipeline (DoF unavailable)." );
     }
     if ( !m_Pipelines.CreateSkyIbl() ) {
         // Non-fatal: the lit shaders test the sky-IBL cube indices for 0xFFFFFFFF and fall back to the flat
         // ambient term they used before this existed, so a failure here costs indirect specular, not lighting.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-IBL pipeline (falling back to flat ambient).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the sky-IBL pipeline (falling back to flat ambient)." );
     } else if ( !CreateSkyIblResources() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-IBL cubemaps (falling back to flat ambient).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the sky-IBL cubemaps (falling back to flat ambient)." );
     }
     if ( !m_Pipelines.CreateSky() ) {
         // Non-fatal: DrawSky() falls back to Gothic's fixed-function sky (zCSkyController_Outdoor::RenderSkyPre)
         // whenever DrawAtmosphereSkyDome() can't draw, so a failure here costs the per-frame draw-call saving,
         // never the sky itself.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-dome pipeline (falling back to Gothic's fixed-function sky).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the sky-dome pipeline (falling back to Gothic's fixed-function sky)." );
     } else if ( !CreateSkyConstantBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-dome constant buffers (falling back to Gothic's fixed-function sky).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the sky-dome constant buffers (falling back to Gothic's fixed-function sky)." );
     }
     if ( !m_Pipelines.CreateFog() ) {
         // Non-fatal: the height-fog/god-ray composition is opt-in (RendererSettings.DrawFog / EnableGodRays)
         // and outdoor-only. RenderFogAndGodRays() guards on the PSOs; EvaluateHeightFogActive() additionally
         // keeps the geometry shaders' cheap linear distance fog switched ON when this failed, so a broken
         // composition pipeline degrades to the pre-existing D3D12 fog instead of no fog at all.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the height-fog/god-ray pipeline (falling back to the shaders' linear distance fog).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the height-fog/god-ray pipeline (falling back to the shaders' linear distance fog)." );
     } else if ( !CreateFogConstantBuffers() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the height-fog constant buffers (falling back to the shaders' linear distance fog).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the height-fog constant buffers (falling back to the shaders' linear distance fog)." );
     }
     if ( !m_Pipelines.CreateAdvanceRain() ) {
         // Non-fatal: rain/snow is an opt-in weather effect (RendererSettings.EnableRain). AdvanceRain() guards
         // on the PSO existing and just skips advancing/drawing particles if this failed.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the rain-advance compute pipeline (rain/snow particles will be unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the rain-advance compute pipeline (rain/snow particles will be unavailable)." );
     }
     if ( !m_Pipelines.CreateRainDraw() ) {
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the rain-draw pipeline (rain/snow particles will be unavailable).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the rain-draw pipeline (rain/snow particles will be unavailable)." );
     }
     if ( !m_Pipelines.CreateLines() || !CreateLineVertexBuffers() ) {
         // Non-fatal: debug/editor lines are a diagnostic overlay. DrawLines() guards on the PSOs + ring
         // existing; D3D12LineRenderer still drains its caches every frame either way (no unbounded growth).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the debug-line pipeline (debug lines will not render).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the debug-line pipeline (debug lines will not render)." );
     }
     if ( !m_Pipelines.CreateFx() || !CreateFxVertexBuffers() ) {
         // Non-fatal: the three FX passes guard on the root sig / ring existing. Without them blood splatter,
         // spell ground marks and weapon/spell trails simply don't draw — the same as before they were ported.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the FX pipeline (quad marks and poly strips will not render).";
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the FX pipeline (quad marks and poly strips will not render)." );
     }
     D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
+    Logging::Inf( "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set." );
     return XR_SUCCESS;
 }
 
@@ -1115,7 +1115,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd,
 		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_DepthBufferAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the depth buffer (" << size.x << "x" << size.y << ").";
+		Logging::Err( "D3D12: failed to create the depth buffer ({}x{}).", size.x, size.y );
 		return false;
 	}
 	m_DepthBuffer->SetName( L"DepthBuffer(D32)" );
@@ -1194,8 +1194,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetPreviewDsv() {
 
 	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
 		m_PreviewDepthAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_PreviewDepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the inventory-preview depth buffer ("
-			<< m_BackbufferResolution.x << "x" << m_BackbufferResolution.y << ") — item previews will not render.";
+		Logging::Wrn( "D3D12: failed to create the inventory-preview depth buffer ({}x{}) — item previews will not render.",
+			m_BackbufferResolution.x, m_BackbufferResolution.y );
 		m_PreviewDepthBuffer.Reset();
 		m_PreviewDepthAlloc.Reset();
 		m_PreviewDepthFailed = true;
@@ -1243,7 +1243,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd,
 		D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_SceneColorAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
+		Logging::Err( "D3D12: failed to create the HDR scene-color target ({}x{}).", size.x, size.y );
 		return false;
 	}
 	m_SceneColor->SetName( kSceneColorFormat == DXGI_FORMAT_R11G11B10_FLOAT
@@ -1417,13 +1417,13 @@ void D3D12GraphicsEngine::DetectHdrOutputCapability() {
 	}
 
 	if ( !m_HdrOutputActive ) {
-		LogInfo() << "D3D12: HDR output requested but no HDR-enabled display was found on this adapter; using SDR.";
+		Logging::Inf( "D3D12: HDR output requested but no HDR-enabled display was found on this adapter; using SDR." );
 		return;
 	}
 
 	m_Pipelines.DisplayFormat = kHdrDisplayFormat;
-	LogInfo() << "D3D12: HDR output enabled. Monitor reports " << m_HdrMonitorMaxNits << " nits peak, "
-		<< m_HdrMonitorMaxFullFrameNits << " nits full-frame, " << m_HdrMonitorMinNits << " nits black.";
+	Logging::Inf( "D3D12: HDR output enabled. Monitor reports {} nits peak, {} nits full-frame, {} nits black.",
+		m_HdrMonitorMaxNits, m_HdrMonitorMaxFullFrameNits, m_HdrMonitorMinNits );
 }
 
 
@@ -1456,7 +1456,7 @@ void D3D12GraphicsEngine::ApplySwapChainColorSpace() {
 	if ( FAILED( m_SwapChain->CheckColorSpaceSupport( kHdr10, &support ) )
 		|| !( support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT )
 		|| FAILED( m_SwapChain->SetColorSpace1( kHdr10 ) ) ) {
-		LogWarn() << "D3D12: the swapchain refused the HDR10 colour space; presenting SDR from the HDR display buffer.";
+		Logging::Wrn( "D3D12: the swapchain refused the HDR10 colour space; presenting SDR from the HDR display buffer." );
 		return;
 	}
 	m_HdrEncodePQ = true;
@@ -1515,7 +1515,7 @@ bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 
 	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
 		m_HdrDisplayAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HdrDisplay.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the HDR display composite target (" << size.x << "x" << size.y << ").";
+		Logging::Err( "D3D12: failed to create the HDR display composite target ({}x{}).", size.x, size.y );
 		return false;
 	}
 	m_HdrDisplay->SetName( L"HdrDisplayComposite" );
@@ -1582,7 +1582,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 
 
 XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
-    LogInfo() << "D3D12: Creating swapchain";
+    Logging::Inf( "D3D12: creating the swapchain." );
     CommonSetWindow( hWnd ); // stores m_OutputWindow, force-activates, clips cursor, hides mouse cursor
 
     // Use the configured target resolution (NOT the current client rect — Gothic creates its window
@@ -1788,7 +1788,7 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     if ( !CreateLumPartialBuffer( renderSize ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on this and skips the update, leaving m_LumAdaptedBuffer
         // at its last valid value.
-        LogWarn() << "D3D12GraphicsEngine: failed to create the dynamic-exposure partial-sum buffer.";
+        Logging::Wrn( "D3D12GraphicsEngine: failed to create the dynamic-exposure partial-sum buffer." );
     }
     m_AppliedResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     return true;
@@ -1829,7 +1829,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     HRESULT hr = m_Device.GetFactory()->CreateSwapChainForHwnd(
         m_Device.GetDirectQueue(), m_OutputWindow, &scd, nullptr, nullptr, swapChain1.GetAddressOf() );
     if ( FAILED( hr ) ) {
-        LogWarn() << "CreateSwapChainForHwnd failed (0x" << std::hex << hr << ").";
+        Logging::Err( "D3D12: CreateSwapChainForHwnd failed (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
 
@@ -1837,7 +1837,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     m_Device.GetFactory()->MakeWindowAssociation( m_OutputWindow, DXGI_MWA_NO_ALT_ENTER );
 
     if ( FAILED( swapChain1.As( &m_SwapChain ) ) ) {
-        LogWarn() << "Swapchain does not support IDXGISwapChain3.";
+        Logging::Err( "D3D12: the swapchain does not support IDXGISwapChain3." );
         return false;
     }
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
@@ -1862,7 +1862,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         // would leave those draws unbound. Degrade to the SDR passthrough encode rather than showing nothing:
         // GetDisplayRtv() falls back to the swapchain, whose format no longer matches those PSOs, so the honest
         // move is to give up on the swapchain entirely and let Init's caller fall back to D3D11.
-        LogWarn() << "D3D12GraphicsEngine::CreateSwapChain: failed to create the HDR display target.";
+        Logging::Err( "D3D12GraphicsEngine::CreateSwapChain: failed to create the HDR display target." );
         return false;
     }
     CreateDisplayResolutionTargets( size );   // post-tonemap passes, native size
@@ -2510,13 +2510,13 @@ bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
             if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
                 IID_PPV_ARGS( m_ShadowCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: failed to create a shadow command allocator — deferred shadow recording disabled.";
+                Logging::Wrn( "D3D12: failed to create a shadow command allocator — deferred shadow recording disabled." );
                 return false;
             }
             if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
                 m_ShadowCmdAllocators[c][i].Get(), nullptr,
                 IID_PPV_ARGS( m_ShadowCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: failed to create a shadow command list — deferred shadow recording disabled.";
+                Logging::Wrn( "D3D12: failed to create a shadow command list — deferred shadow recording disabled." );
                 return false;
             }
             // CreateCommandList returns the list already open; close it so BeginShadowRecording's Reset is symmetric.
@@ -2896,8 +2896,8 @@ XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
     const int maxWidth = GetSystemMetrics( SM_CXSCREEN );
     const int maxHeight = GetSystemMetrics( SM_CYSCREEN );
     if ( maxWidth > 0 && maxHeight > 0 && ( newSize.x > maxWidth || newSize.y > maxHeight ) ) {
-        LogWarn() << "D3D12GraphicsEngine::OnResize: requested " << newSize.x << "x" << newSize.y
-            << " exceeds the desktop resolution (" << maxWidth << "x" << maxHeight << ") — clamping.";
+        Logging::Wrn( "D3D12GraphicsEngine::OnResize: requested {}x{} exceeds the desktop resolution ({}x{}) — clamping.",
+            newSize.x, newSize.y, maxWidth, maxHeight );
         newSize.x = std::min( newSize.x, maxWidth );
         newSize.y = std::min( newSize.y, maxHeight );
         m_NewResolution = newSize;   // keep in sync so OnBeginFrame doesn't re-trigger this every frame
@@ -2910,17 +2910,17 @@ XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
 
     if ( !m_SwapChainReady ) {
         if ( !CreateSwapChain( newSize ) ) {
-            LogWarn() << "D3D12GraphicsEngine::OnResize: swapchain creation failed.";
+            Logging::Err( "D3D12GraphicsEngine::OnResize: swapchain creation failed." );
             return XR_FAILED;
         }
-        LogInfo() << "D3D12 swapchain created (" << newSize.x << "x" << newSize.y << ").";
+        Logging::Inf( "D3D12 swapchain created ({}x{}).", newSize.x, newSize.y );
     } else {
         if ( !ResizeSwapChain( newSize ) ) {
             // Depth/scene-color/light-cull targets may now be a mix of old- and new-resolution (or null, if
             // resource creation itself failed). Don't retry every frame — leave m_Resolution at whatever
             // ResizeSwapChain last got to and let the render path's existing null checks (haveDepth, etc.)
             // keep the frame from touching a mismatched/null DSV until the user tries again.
-            LogWarn() << "D3D12GraphicsEngine::OnResize: ResizeSwapChain failed (" << newSize.x << "x" << newSize.y << ").";
+            Logging::Err( "D3D12GraphicsEngine::OnResize: ResizeSwapChain failed ({}x{}).", newSize.x, newSize.y );
             m_NewResolution = m_BackbufferResolution;
             return XR_FAILED;
         }

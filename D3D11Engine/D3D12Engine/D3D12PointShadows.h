@@ -10,7 +10,7 @@
 // m_Cube (cached static-only depth) and m_DynCube (this frame's moving casters). Hundreds of shadowed lights
 // can therefore update their MOVING casters every frame without re-rendering static geometry. Three phases:
 //   A) STATIC   — for slots whose light is fresh / moved / resized, (re)render the static casters
-//                 (world mesh + instanced VOBs) into m_Cube. Amortized: usually a no-op.
+//                 (world mesh + instanced VOBs + MOB bodies/attachments) into m_Cube. Usually a no-op.
 //   C) DYNAMIC  — clear this slot's m_DynCube face-set and draw the moving casters (skeletal NPCs + their node
 //                 attachments) into it. Only for slots that actually HAVE casters in range this frame.
 //   D) hand the touched slots back to PIXEL_SHADER_RESOURCE for the lit pass.
@@ -34,6 +34,7 @@
 
 #include "D3D12EngineCommon.h"
 #include "D3D12StateCache.h"
+#include "../PointLightSlotSelector.h"
 
 class D3D12GraphicsEngine;
 class zCVobLight;
@@ -47,28 +48,27 @@ public:
 
     // ---- Low-resolution STATIC tier -------------------------------------------------------------------------
     // Static lights (and the clusters they are merged into) get their own, much coarser cube array. A cube-less
-    // point light is shaded UNSHADOWED, so it bleeds through walls and fights the tiled cull — which made the
-    // 128-cube ceiling the binding constraint on how many lights a room could have. But a static light's cube is
-    // rendered ONCE and cached forever (the light and the world it occludes both never move), and it exists only
-    // to stop room-to-room bleed, not to resolve shadow detail. So it does not need 128^2:
-    //     dynamic tier: 128 slots @128^2 = 25 MB      static tier: 340 slots @32^2 = 4 MB
-    // i.e. ~2.7x the shadowed-light budget for a sixth of the memory. See SamplePointShadow in PBRLighting.hlsl
-    // for the matching bias/PCF widening the coarser texels need.
+    // point light is shaded UNSHADOWED, and BuildFrameLightBuffer then clamps its range hard so it cannot bleed
+    // through walls - which makes losing a slot visible as the light popping between its full and its clamped
+    // radius. So the slot count decides how many of a room's fill lights look right at all. But a static
+    // light's cube is rendered ONCE and cached forever, and only exists to stop room-to-room bleed, so it does
+    // not need 128^2:
+    //     dynamic tier: 64 slots @128^2 = 12.6 MB (x2: static + overlay)   static tier: 340 slots @32^2 = 4.2 MB
     //
-    // 340 is a HARD CEILING, not a tuning choice: a cube array is a Texture2DArray of slot*6 slices, and D3D12
-    // caps a Texture2D array at D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices regardless of how small
-    // the faces are — 2048/6 = 341. Going past it fails resource creation outright (CREATERESOURCE_INVALIDDIMENSIONS,
-    // which is exactly how the first 512-slot attempt died), and since Init() is fail-closed that takes the whole
-    // point-shadow system down with it. More static cubes than this would need a SECOND array, not a bigger one.
+    // 340 slots is the hard ceiling of ONE array, and more than any Gothic scene has been measured to need
+    // (~200 static, ~64 moving): a cube array is a Texture2DArray of slot*6 slices, and D3D12 caps that at
+    // D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION (2048) slices - 2048/6 = 341. Going past it fails resource
+    // creation outright, so more cubes would need MORE ARRAYS, not a bigger one. Paging was built once and
+    // removed again as unused complexity; raise this only with an occupancy measurement in hand.
     //
     // The two pools share ONE slot index space so all the ownership/retention bookkeeping below stays single-pool:
     // global slot < kMaxCubes is the dynamic array, >= kMaxCubes is the static array at (slot - kMaxCubes). What
     // reaches the SHADER is the re-encoded GPULight::ShadowCubeIndex (kShadowTierLow | localIndex), not this.
     static constexpr UINT kStaticCubeSize = 32;
-    static constexpr UINT kMaxStaticCubes = 128;
+    static constexpr UINT kMaxStaticCubes = 340;
     static constexpr UINT kMaxSlots = kMaxCubes + kMaxStaticCubes;
-    // Both arrays are Texture2DArrays of slot*6 slices — see the ceiling note above. Asserted for BOTH tiers so
-    // raising either one can never silently produce an undersized/failed resource again.
+    // Both tiers are Texture2DArrays of slot*6 slices - see the ceiling note above. Asserted for BOTH so raising
+    // either one can never silently produce an undersized/failed resource again.
     static_assert( kMaxCubes * 6 <= 2048, "dynamic cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
     static_assert( kMaxStaticCubes * 6 <= 2048, "static cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
     static bool IsLowSlot( UINT globalSlot ) { return globalSlot >= kMaxCubes; }
@@ -100,8 +100,14 @@ public:
         uint64_t    key;      // 0 = never shadowed. Else the light's own vob pointer, or a tagged cluster cell id.
         zCVobLight* vob;      // nullptr for clusters — only ever dereferenced for the dynamic overlay's exclude
                               // list, which a static/clustered (low-tier) slot never reaches.
-        bool        lowRes;   // take the slot from the low-res static pool
+        bool        lowRes;   // PREFERRED tier: take the slot from the low-res static pool
         bool        isStatic;
+        bool        spatiallyStatic;   // never moves; only such a candidate may SPILL into the low-res tier,
+                                       // which bakes once and would be starved by a mover re-entering its
+                                       // per-frame render budget every frame.
+        bool        restrictToWorld;   // world-mesh-only casters, mirroring D3D11's AllowsDynamicCasters PFX
+                                       // gate: BuildExcludeList never excludes such a light's own carrier, so
+                                       // it would otherwise throw a large self-shadow from whatever holds it.
     };
 
     // Picks this frame's shadowed lights out of the filled GPU light buffer and writes each winner's
@@ -128,8 +134,20 @@ public:
     // fresh / moved / resized — not when geometry around it changes — so a VOB appearing or disappearing inside
     // a cached slot's light sphere must force a one-time static re-render next frame. Over-invalidation is
     // harmless (one extra static pass); under-invalidation freezes a stale shadow in the cache.
+    /** True if this vob rides an NPC's transform. Such a caster is never baked into a cached static cube,
+        so its comings and goings must not invalidate one. Mirrors D3D11's IsAttachedToNpc. */
+    static bool IsNpcAttached( const zCVob* vob );
+
+    /** Park a vob that entered the world or moved; the invalidation happens at the top of the next
+        SelectShadowedLights. Deferred because neither the position nor the NPC parent link is settled when
+        Gothic reports the change - a dropped item is inserted, re-parented and then falls for several
+        frames. Entries whose vob left the world meanwhile are dropped. */
+    void QueueVobChangedInvalidation( zCVob* vob );
+
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
-    void InvalidateStaticForVobRemoved( const zTBBox3D& bbox );
+    // Matched by POINTER against Slot::bakedVobs - the vob may already be half torn down here, so it is
+    // never dereferenced.
+    void InvalidateStaticForVobRemoved( const zCVob* vob );
 
     // Skeletal-caster scratch lists for the per-light sphere cull. PrepareFrameSkeletals(..., shadowCascade=-2)
     // routes into these: each shadowed light sphere-culls the FULL registered skeletal-vob list against itself
@@ -207,49 +225,12 @@ private:
     UINT m_VobInstOffset = 0;     // reset each frame at the top of Prepare()
     bool m_VobInstOverflowLogged = false;
 
-    // Slots are owned by light Vob identity and kept stable across frames (not reassigned by proximity), so a
-    // static winner whose light didn't move reuses its cached cube instead of re-culling + re-rendering.
-    struct Slot {
-        uint64_t          ownerKey = 0;      // identity owning this slot (0 = free). A light's own vob pointer, or
-                                             // a tagged cluster-cell id when several co-located static lights share
-                                             // this cube. Compared for identity only; never dereferenced.
-        zCVobLight*       owner = nullptr;   // the owning vob when ownerKey is a single light, else nullptr. Read
-                                             // ONLY by the dynamic-overlay exclude list, which no clustered or
-                                             // low-tier slot ever reaches — so a cluster leaving it null is safe.
-        DirectX::XMFLOAT3 pos = {};          // last static-rendered cube origin (move detection)
-        float             range = 0.0f;      // last static-rendered range (range-change detection)
-        bool              isStatic = false;  // Vob->IsStatic(): gates Prepare() — static lights cache world mesh
-                                             // plus StaticVob-flagged decoration once, forever; never receive the
-                                             // per-frame dynamic overlay (mirrors D3D11's PLS_STATIC_ONLY).
-        bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
-                                             // cube itself) holds valid static-only depth; false => must re-render static
-        bool              dynamicValid = false; // this slot's DYNAMIC cube holds a valid skeletal overlay, as of the
-                                             // last Record that was actually submitted (committed in CommitStaticCache,
-                                             // symmetric with staticValid). Drives kShadowHasDynamic in the encoded
-                                             // index, i.e. whether the lit pass samples the dynamic cube for this
-                                             // light at all. Set on a frame whose overlay produced draws, cleared on a
-                                             // SCHEDULED frame that produced none (the NPC left) — deliberately left
-                                             // alone on an unscheduled frame, so a round-robin light keeps its last
-                                             // overlay between turns instead of flickering.
-                                             // Read one frame late by design: SelectShadowedLights builds the encoded
-                                             // index from BuildFrameLightBuffer, before Prepare() has resolved this
-                                             // frame's overlay. Same class of latency the round-robin already has.
-        UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
-        UINT32            missingFrames = 0;   // consecutive frames this slot's owner was NOT a winner; 0 while it is.
-                                             // A slot is NOT released the moment its light drops out of the winner
-                                             // set (the light buffer is frustum-culled upstream, so merely turning
-                                             // away drops it): its cached static depth is still perfectly good and
-                                             // is exactly what should be reused when the light comes back. Slots
-                                             // are given up only under pressure (a new winner needs one — the
-                                             // longest-absent goes first) or after kSlotRetentionFrames, so a
-                                             // static re-cull happens on FIRST acquisition, on invalidation, or
-                                             // after actually losing the slot — not on every frustum blink.
-    };
-    // Absent-owner retention cap. Also bounds how long a released-but-remembered zCVobLight* can linger: `owner`
-    // is only ever compared for identity while absent (never dereferenced — BuildExcludeList only ever sees a
-    // current winner), but a vob freed and its address reused would otherwise inherit the slot's stale cache.
-    static constexpr UINT32 kSlotRetentionFrames = 600;   // ~10 s at 60 fps
-    Slot m_Slots[kMaxSlots];   // [0,kMaxCubes) = full-res dynamic pool, [kMaxCubes,kMaxSlots) = low-res static pool
+    // Every slot decision - ownership, retention, eviction, tier spill/promotion, cache stamps, the dynamic
+    // round-robin - lives in PointLightSlotSelector, shared verbatim with D3D11. This class owns only the
+    // resources and the draws.
+    PointLightSlotSelector m_Sel;
+    using Slot = PointLightSlotSelector::Slot;
+    using FrameLight = PointLightSlotSelector::Assignment;
 
     // Slots whose static target was (re)rendered by THIS frame's records, pending the CommitStaticCache() that
     // turns them into cache hits. Kept out of Slot so an uncommitted frame simply leaves staticValid false and
@@ -261,25 +242,6 @@ private:
     // unscheduled round-robin slot keeps whatever it had.
     struct PendingDynamic { UINT slot; bool has; };
     std::vector<PendingDynamic> m_PendingDynamic;
-
-    // The shadowed lights chosen this frame — filled by SelectShadowedLights, consumed by Prepare().
-    // renderStatic: also (re)render the STATIC casters into this slot's static target (fresh slot / light moved
-    // / range changed / routing flipped); otherwise the cached static depth is reused.
-    // renderDynamic (round-robin, P2.10h): whether the per-frame skeletal overlay runs THIS frame for this
-    // winner — always for the closest kAlwaysDynamicCount, round-robined (oldest-serviced-first) for the rest,
-    // so a large persisted-light count doesn't multiply the CPU cost of sphere-culling the full skeletal-vob
-    // list against every shadowed light every frame.
-    // overlayEligible: whether this light can EVER receive a dynamic overlay (not a static-tier light — see
-    // shadowRoutingStatic in D3D12Scene.cpp's BuildFrameLightBuffer — and the global PointlightShadows setting
-    // is >= PLS_UPDATE_DYNAMIC).
-    // `slot` is the GLOBAL slot index (see kMaxSlots); IsLowSlot(slot) picks the array/DSV heap/viewport.
-    // restrictToWorld: mirrors D3D11's RenderStaticShadowPass/RenderFullCubemap PFX gate (see D3D11PointLight.cpp
-    // AllowsDynamicCasters) — true when this winner is a PFX-spawned light and RendererSettings.
-    // PointlightShadowCasterFlags doesn't have PLSC_PARTICLE_FX set. Strips instanced-VOB casters from Phase A
-    // (see Prepare()) on top of overlayEligible already excluding it from the skeletal Phase C overlay, so an
-    // unopted-in PFX light casts world-mesh-only shadows like D3D11.
-    struct FrameLight { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; bool overlayEligible; bool restrictToWorld; };
-    std::vector<FrameLight> m_FrameLights;
 
     bool m_PassReady = false;
 };

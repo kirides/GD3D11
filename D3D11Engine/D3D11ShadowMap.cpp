@@ -636,7 +636,9 @@ XRESULT D3D11ShadowMap::PrepareRender()
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             bool shouldUpdateCascade = true;
-            if ( lazyCascadeUpdate && !m_ForceFullCascadeUpdate ) {
+            // A cascade holding a per-frame-deformed caster (spinning windmill sails and friends) must never
+            // be frozen - see NoteCascadeAnimatedCasters.
+            if ( lazyCascadeUpdate && !m_ForceFullCascadeUpdate && !m_CascadeHasAnimatedCaster[cascadeIdx] ) {
                 if ( cascadeIdx == 2 ) {
                     // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
                     shouldUpdateCascade = (perFrameCascadeData.frameCount % 5) == 0;
@@ -912,32 +914,111 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
     return splits;
 }
 
+void D3D11ShadowMap::ConfigurePointSlots() {
+    // Idempotent: the pool sizes are compile-time constants, so only the first call actually sizes the table.
+    PointLightSlotSelector::Config cfg;
+    cfg.MaxHiSlots = MAX_SHADOW_CUBEMAPS;
+    cfg.MaxLowSlots = MAX_STATIC_SHADOW_CUBEMAPS;
+    // The tier bits are backend-specific (D3D11's are the other way round from D3D12's), so they are
+    // configuration rather than a shared constant.
+    cfg.TierLowBit = SHADOW_CUBE_TIER_LOW;
+    cfg.HasDynamicBit = SHADOW_CUBE_HAS_DYNAMIC;
+    m_PointSlots.Configure( cfg );
+}
+
+
+void D3D11ShadowMap::ReleasePointLightSlotFor( const zCVob* lightVob ) {
+    const int slot = m_PointSlots.FindSlotOf( reinterpret_cast<uint64_t>( lightVob ) );
+    if ( slot >= 0 ) m_PointSlots.ReleaseSlot( static_cast<uint32_t>( slot ) );
+}
+
+
+void D3D11ShadowMap::ReconcileTiledSlots() {
+    if ( !m_TiledDeferred ) return;
+    for ( auto& it : Engine::GAPI->VobLightMap ) {
+        VobLightInfo* light = it.second;
+        if ( !light->LightShadowBuffers ) continue;
+        D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(light->LightShadowBuffers.get());
+        if ( !pl ) continue;
+
+        const int global = m_PointSlots.FindSlotOf( reinterpret_cast<uint64_t>( light->Vob ) );
+        if ( global < 0 ) {
+            if ( pl->GetTiledSlot() >= 0 ) pl->ClearTiledSlot();
+            continue;
+        }
+
+        // A handover the selector has retired must stop being sampled here too: that slot is back in the
+        // pool, and shading against the next owner's depth reads as black rather than merely unshadowed.
+        if ( !pl->HasOwnDepthInSlot() && pl->GetSampleSlot() >= 0
+            && m_PointSlots.FindFallbackSlotOf( reinterpret_cast<uint64_t>( light->Vob ) ) < 0 ) {
+            pl->SetSlotFallback( -1, false );
+        }
+
+        const bool low = m_PointSlots.IsLowSlot( static_cast<uint32_t>( global ) );
+        const int local = low ? static_cast<int>( m_PointSlots.LowIndex( static_cast<uint32_t>( global ) ) ) : global;
+        if ( pl->GetTiledSlot() == local && pl->IsTiledSlotLowRes() == low ) continue;
+
+        // Changing tier or slot means the new target holds nothing of this light's, so it is range-clamped
+        // until its render lands - unless the selector kept the OLD slot back for it as a handover.
+        RenderToDepthStencilBuffer* target = low ? m_TiledDeferred->ClaimStaticSlot( local )
+                                                 : m_TiledDeferred->ClaimSlot( local );
+        if ( !target ) {
+            // The array could not be created - give the slot back rather than hold it out of the pool.
+            m_PointSlots.ReleaseSlot( static_cast<uint32_t>( global ) );
+            if ( pl->GetTiledSlot() >= 0 ) pl->ClearTiledSlot();
+            continue;
+        }
+        // Captured before ClearTiledSlot wipes them, and only honoured when the selector really is holding
+        // that exact slot back for this light.
+        const int prevSlot = pl->GetTiledSlot();
+        const bool prevLow = pl->IsTiledSlotLowRes();
+        const bool prevHadDepth = pl->HasOwnDepthInSlot();
+        const int fbGlobal = m_PointSlots.FindFallbackSlotOf( reinterpret_cast<uint64_t>( light->Vob ) );
+
+        pl->ClearTiledSlot();
+        pl->ReleaseShadowMap();
+        pl->SetTiledSlot( local, target, m_TiledDeferred.get(), low, &m_PointSlots );
+        pl->SetCurrentResolution( low ? STATIC_SHADOW_CUBE_SIZE : SHADOW_CUBE_SIZE );
+
+        if ( prevHadDepth && prevSlot >= 0 && fbGlobal >= 0 ) {
+            const bool fbLow = m_PointSlots.IsLowSlot( static_cast<uint32_t>( fbGlobal ) );
+            const int fbLocal = fbLow ? static_cast<int>( m_PointSlots.LowIndex( static_cast<uint32_t>( fbGlobal ) ) )
+                                      : fbGlobal;
+            if ( fbLocal == prevSlot && fbLow == prevLow ) pl->SetSlotFallback( prevSlot, prevLow );
+        }
+    }
+}
+
+
 XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& lights ) {
     ZoneScopedN( "DrawPointlightShadows" );
 
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
-    // Release resources of lights that have been out of view for a while now - NOT on the very first
-    // missing frame. A light that only blinks (zCVobLight::IsEnabled toggling for a flicker effect, or a
-    // one-frame frustum/visibility edge case) must keep its slot and baked depth across that blink: a
-    // PLS_STATIC_ONLY light's bake is meant to happen once and stick, but if every absent frame evicted it
-    // outright, a light that blinks even occasionally could never finish a bake that survives - it gets
-    // evicted mid-wait, wins a slot again on the next visible frame, and gets evicted again before that
-    // bake completes, so it lights unshadowed (bleeding through walls) forever instead of self-healing.
-    // Mirrors D3D12PointShadows' Slot::missingFrames retention in SelectShadowedLights.
+    // Release the LEGACY per-light cubemap of a light that has been out of view for a while - never on the
+    // first absent frame, or a blinking light could never finish a bake that sticks. Tiled slots are exempt:
+    // their retention is the selector's business (PointLightSlotSelector::Slot::missingFrames).
     constexpr int kPointLightSlotRetentionFrames = 120;
     for ( auto& it : Engine::GAPI->VobLightMap ) {
         if ( !it.second->LightShadowBuffers ) continue;
         if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
             const bool visible = it.second->Vob->IsEnabled() && it.second->VisibleInFrame;
-            if ( pl->NoteAbsence( visible, kPointLightSlotRetentionFrames ) ) {
-                pl->ClearTiledSlot();
+            if ( pl->NoteAbsence( visible, kPointLightSlotRetentionFrames ) && pl->GetTiledSlot() < 0 ) {
                 pl->ReleaseShadowMap();
             }
         }
     }
 
+    const bool isTiledShadingEnabled = m_TiledDeferred && settings.EnableTiledLighting;
+    if ( isTiledShadingEnabled ) ConfigurePointSlots();
+
     if (settings.EnablePointlightShadows <= 0) {
+        // Re-enabling mid-session must re-render from scratch; ReconcileTiledSlots then makes each light let
+        // go of the slot it thought it held. Mirrors D3D12's PLS_DISABLED branch.
+        if ( isTiledShadingEnabled ) {
+            m_PointSlots.Select( {}, GothicRendererSettings::PLS_DISABLED );
+            ReconcileTiledSlots();
+        }
         return XR_SUCCESS;
     }
     
@@ -960,6 +1041,9 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     bool partialShadowUpdate = settings.PartialDynamicShadowUpdates;
     const bool staticOnlyMode = settings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
+    // See D3D11PointLight::AllowsDynamicCasters: on, a static light skips the cached low-res tier entirely.
+    const bool allowStaticDynamicShadows =
+        (settings.PointlightShadowCasterFlags & GothicRendererSettings::PLSC_STATIC_LIGHTS) != 0;
 
     // Draw pointlight shadows
     static std::vector<std::pair<float, VobLightInfo*>> importantUpdates;
@@ -967,53 +1051,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     DepthStencilPool* dsPool = graphicsEngine->GetPfxRenderer()->GetDepthStencilPool();
 
-    const bool isTiledShadingEnabled = m_TiledDeferred && settings.EnableTiledLighting;
     const int requiredShadowMapKind = isTiledShadingEnabled ? 1 : 0;
-
-    // Tiled lights share small fixed-size cube-array pools (unlike legacy, where every light gets its own
-    // unbounded DepthStencilPool allocation), so requests are ranked closest-to-player and may evict the
-    // farthest current occupant under pressure - mirrors D3D12PointShadows' SelectShadowedLights. Two
-    // independent pools: WantsStaticOnlySlot() lights route to the low-res MAX_STATIC_SHADOW_CUBEMAPS pool
-    // instead of the full-res MAX_SHADOW_CUBEMAPS one.
-    struct PendingAcquire { VobLightInfo* light; D3D11PointLight* pl; float distSq; int desiredResolution; bool wantsLowTier; };
-    static std::vector<PendingAcquire> candidates;
-    candidates.clear();
-
-    static std::array<VobLightInfo*, MAX_SHADOW_CUBEMAPS> slotOwnerLightHigh;
-    slotOwnerLightHigh.fill( nullptr );
-    static std::array<VobLightInfo*, MAX_STATIC_SHADOW_CUBEMAPS> slotOwnerLightLow;
-    slotOwnerLightLow.fill( nullptr );
-
-    // A slot must be held by a light ~1.7x farther than a challenger to be evicted, to avoid thrashing
-    // between similarly-distant lights every frame (mirrors D3D12PointShadows' kIncumbentBias).
-    constexpr float kPointShadowIncumbentBias = 0.35f;
-
-    auto allocateOrEvictSlot = [&]( float requesterDistSq, auto& slotOwnerArray, uint32_t poolSize, auto&& allocate ) -> int {
-        int slot = allocate();
-        if ( slot >= 0 ) return slot;
-
-        int worstSlot = -1;
-        float worstDistSq = -1.0f;
-        for ( uint32_t s = 0; s < poolSize; s++ ) {
-            VobLightInfo* owner = slotOwnerArray[s];
-            if ( !owner ) continue;
-            const float ownerDistSq = XMVectorGetX( XMVector3LengthSq( owner->Vob->GetPositionWorldXM() - vPlayerPosition ) );
-            if ( ownerDistSq > worstDistSq ) {
-                worstDistSq = ownerDistSq;
-                worstSlot = static_cast<int>(s);
-            }
-        }
-        if ( worstSlot < 0 || requesterDistSq * kPointShadowIncumbentBias >= worstDistSq ) {
-            return -1;
-        }
-        VobLightInfo* worstOwner = slotOwnerArray[worstSlot];
-        D3D11PointLight* worstPl = dynamic_cast<D3D11PointLight*>(worstOwner->LightShadowBuffers.get());
-        if ( !worstPl ) return -1;
-
-        worstPl->ClearTiledSlot();
-        slotOwnerArray[worstSlot] = nullptr;
-        return allocate();
-    };
 
     auto classifyLight = [&]( VobLightInfo* light, D3D11PointLight* pl, float distSq ) {
         bool needsUpdate = pl->NeedsUpdate();
@@ -1038,6 +1076,30 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         }
     };
 
+    // Drops a light out of both update paths - nothing is going to re-render its cube this frame.
+    auto dequeueLight = [&]( VobLightInfo* light ) {
+        auto it = std::find( graphicsEngine->FrameShadowUpdateLights.begin(), graphicsEngine->FrameShadowUpdateLights.end(), light );
+        if ( it != graphicsEngine->FrameShadowUpdateLights.end() ) {
+            graphicsEngine->FrameShadowUpdateLights.erase( it );
+        }
+        auto importantIt = std::find_if( importantUpdates.begin(), importantUpdates.end(),
+            [&]( const auto& entry ) { return entry.second == light; } );
+        if ( importantIt != importantUpdates.end() ) {
+            importantUpdates.erase( importantIt );
+        }
+    };
+
+    // Candidates for the shared slot selector, one per visible light. Which get a cube, out of which tier,
+    // in which slot, and whether the cached depth is re-rendered is decided entirely by Select().
+    static std::vector<PointLightSlotSelector::Candidate> slotCandidates;
+    slotCandidates.clear();
+
+    // Legacy (non-tiled) path only: every light owns an unbounded DepthStencilPool cubemap, so there is no
+    // pool to select from and the old distance gating still applies.
+    struct LegacyAcquire { VobLightInfo* light; D3D11PointLight* pl; float distSq; int desiredResolution; };
+    static std::vector<LegacyAcquire> legacyAcquires;
+    legacyAcquires.clear();
+
     for ( auto const& light : lights ) {
         if ( !light->Vob->IsEnabled() || !light->VisibleInFrame ) {
             continue;
@@ -1050,109 +1112,99 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
             light->LightShadowBuffers.reset(bpl);
         }
 
-        if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) ) {
-            bool wantsLowTier = isTiledShadingEnabled && pl->WantsStaticOnlySlot();
+        D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(light->LightShadowBuffers.get());
+        if ( !pl ) continue;
 
-            if ( isTiledShadingEnabled ) {
-                int ownSlot = pl->GetTiledSlot();
-                if ( ownSlot >= 0 ) {
-                    if ( pl->IsTiledSlotLowRes() && static_cast<uint32_t>(ownSlot) < MAX_STATIC_SHADOW_CUBEMAPS ) {
-                        slotOwnerLightLow[ownSlot] = light;
-                    } else if ( !pl->IsTiledSlotLowRes() && static_cast<uint32_t>(ownSlot) < MAX_SHADOW_CUBEMAPS ) {
-                        slotOwnerLightHigh[ownSlot] = light;
-                    }
-                }
+        pl->NoteStationary();   // feeds IsSpatiallyStatic(), i.e. whether this light may spill low
+
+        const float d = XMVectorGetX( XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+        const float range = light->Vob->GetLightRange();
+
+        const float distVeryCloseSq = (range * 0.8f) * (range * 0.8f);
+        if ( d < distVeryCloseSq && !staticOnlyMode ) {
+            light->UpdateShadows = true;
+        }
+
+        if ( isTiledShadingEnabled ) {
+            const bool spatiallyStatic = pl->IsSpatiallyStatic();
+            // Route to the cached low-res tier when the light will not move AND could not receive a dynamic
+            // overlay anyway. Same formula as D3D12Scene.cpp's routeStatic, so both backends put the same
+            // lights in the same tier; `isStatic` and `preferLow` are deliberately the same answer.
+            const bool routeStatic = !allowStaticDynamicShadows
+                && ( light->IsStaticVobLight || ( spatiallyStatic && staticOnlyMode ) );
+            slotCandidates.push_back( { reinterpret_cast<uint64_t>( light->Vob ), light,
+                light->Vob->GetPositionWorld(), range,
+                routeStatic, routeStatic, spatiallyStatic, pl->RestrictsCastersToWorld() } );
+            continue;
+        }
+
+        // Shadow-candidacy horizon, matching PointLightSlotSelector's: range*9 alone puts a candle at ~13 m,
+        // and a light outside it is shaded unshadowed, which the range clamp reads as switched OFF.
+        constexpr float kMinShadowDist = 3000.0f;   // Gothic world units (~100 = 1 m)
+        const float maxShadowDist = std::max( range * 9.0f, kMinShadowDist );
+        if ( d < maxShadowDist * maxShadowDist ) {
+            if ( !pl->HasShadowMap( requiredShadowMapKind ) || pl->GetShadowMapResolution() != SHADOW_CUBE_SIZE ) {
+                legacyAcquires.push_back( { light, pl, d, SHADOW_CUBE_SIZE } );
+                continue;
             }
-
-            const float d = XMVectorGetX( XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
-            float range = light->Vob->GetLightRange();
-            const float rangeSq = range * range;
-
-            float distVeryCloseSq = (range * 0.8f) * (range * 0.8f);
-            float distMaxShadowSq = (range * 9.0f) * (range * 9.0f); // Fade out entirely after this
-
-            // Resolution also doubles as the tier-mismatch check below: a light whose tier flipped no longer
-            // matches its current GetShadowMapResolution(), so it re-acquires into the right tier automatically.
-            int desiredResolution = wantsLowTier ? STATIC_SHADOW_CUBE_SIZE : SHADOW_CUBE_SIZE;
-            if ( d < distVeryCloseSq && !staticOnlyMode ) {
-                light->UpdateShadows = true;
-                // for now, keep all lights/shadows the same size, otherwise they change their "volume"
-                // desiredResolution = 256; // High res for close lights
-            }
-
-            bool inShadowRange = d < distMaxShadowSq;
-            if ( inShadowRange ) {
-                if ( !pl->HasShadowMap( requiredShadowMapKind ) || pl->GetShadowMapResolution() != desiredResolution ) {
-                    candidates.push_back( { light, pl, d, desiredResolution, wantsLowTier } );
-                    continue;
-                }
-
-                classifyLight( light, pl, d );
-            } else {
-                if ( pl->HasAnyShadowMap() ) {
-                    pl->ClearTiledSlot();
-                    pl->ReleaseShadowMap();
-
-                    auto it = std::find( graphicsEngine->FrameShadowUpdateLights.begin(), graphicsEngine->FrameShadowUpdateLights.end(), light );
-                    if ( it != graphicsEngine->FrameShadowUpdateLights.end() ) {
-                        graphicsEngine->FrameShadowUpdateLights.erase( it );
-                    }
-
-                    auto importantIt = std::find_if( importantUpdates.begin(), importantUpdates.end(),
-                        [&]( const auto& entry ) { return entry.second == light; } );
-                    if ( importantIt != importantUpdates.end() ) {
-                        importantUpdates.erase( importantIt );
-                    }
-                }
-            }
+            classifyLight( light, pl, d );
+        } else if ( pl->HasAnyShadowMap() ) {
+            // An unbounded DepthStencilPool allocation is a real cost to hold for a distant light, unlike a
+            // tiled slot whose depth stays perfectly good where it is.
+            pl->ClearTiledSlot();
+            pl->ReleaseShadowMap();
+            dequeueLight( light );
         }
     }
 
-    std::sort( candidates.begin(), candidates.end(), []( const PendingAcquire& a, const PendingAcquire& b ) {
-        return a.distSq < b.distSq;
-    } );
+    if ( isTiledShadingEnabled ) {
+        m_PointSlots.Select( slotCandidates, settings.EnablePointlightShadows );
+        // A light that just lost its slot must stop rendering into it before the new owner does.
+        ReconcileTiledSlots();
 
-    for ( auto& c : candidates ) {
-        D3D11PointLight* pl = c.pl;
-        VobLightInfo* light = c.light;
-
-        pl->ClearTiledSlot();
-        pl->ReleaseShadowMap();
-
-        if ( isTiledShadingEnabled ) {
-            int slot;
-            if ( c.wantsLowTier ) {
-                slot = allocateOrEvictSlot( c.distSq, slotOwnerLightLow, MAX_STATIC_SHADOW_CUBEMAPS,
-                    [&] { return m_TiledDeferred->AllocateStaticSlot(); } );
-            } else {
-                if ( c.desiredResolution != SHADOW_CUBE_SIZE ) {
-                    // only one high-tier resolution is ever used; don't put a mismatched size into a tiled slot
-                    light->UpdateShadows = false;
-                    continue;
-                }
-                slot = allocateOrEvictSlot( c.distSq, slotOwnerLightHigh, MAX_SHADOW_CUBEMAPS,
-                    [&] { return m_TiledDeferred->AllocateSlot(); } );
+        // renderStatic is the authoritative "this slot's cached depth is out of date": fresh slot, light
+        // moved or resized, or a world change invalidated the bake - only the last needs ForceRebake here.
+        for ( const PointLightSlotSelector::Assignment& a : m_PointSlots.GetAssignments() ) {
+            VobLightInfo* light = static_cast<VobLightInfo*>( a.owner );
+            if ( !light || !light->LightShadowBuffers ) continue;
+            D3D11PointLight* pl = static_cast<D3D11PointLight*>( light->LightShadowBuffers.get() );
+            if ( pl->GetTiledSlot() < 0 ) continue;   // ReconcileTiledSlots claimed no target for it
+            if ( a.renderStatic ) {
+                if ( pl->IsStaticShadowReady() ) pl->ForceRebake();
+                light->UpdateShadows = true;
             }
-
-            if ( slot < 0 ) {
-                light->UpdateShadows = false;
-                continue;
-            }
-
-            if ( c.wantsLowTier ) {
-                pl->SetTiledSlot( slot, m_TiledDeferred->GetStaticSlotTarget( slot ), m_TiledDeferred.get(), true );
-                slotOwnerLightLow[slot] = light;
-            } else {
-                pl->SetTiledSlot( slot, m_TiledDeferred->GetSlotTarget( slot ), m_TiledDeferred.get(), false );
-                slotOwnerLightHigh[slot] = light;
-            }
-            pl->SetCurrentResolution( c.desiredResolution );
-        } else {
-            pl->AcquireShadowMap( dsPool, c.desiredResolution );
+            const float distSq = XMVectorGetX( XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+            classifyLight( light, pl, distSq );
         }
 
-        light->UpdateShadows = true;
-        classifyLight( light, pl, c.distSq );
+        // A light the selector did not pick keeps whatever cube it holds, but must not sit in an update
+        // queue: re-rendering costs a full caster cull. Keyed on the winner set, not the slot table - a light
+        // past the candidacy horizon still owns and samples its slot, and is exactly the one to drop.
+        static gtl::flat_hash_set<const zCVob*> winners;
+        winners.clear();
+        for ( const PointLightSlotSelector::Assignment& a : m_PointSlots.GetAssignments() )
+            if ( VobLightInfo* w = static_cast<VobLightInfo*>( a.owner ) ) winners.insert( w->Vob );
+        for ( auto const& light : lights ) {
+            if ( !light->LightShadowBuffers ) continue;
+            if ( winners.contains( light->Vob ) ) continue;
+            dequeueLight( light );
+        }
+    } else {
+        std::sort( legacyAcquires.begin(), legacyAcquires.end(), []( const LegacyAcquire& a, const LegacyAcquire& b ) {
+            return a.distSq < b.distSq;
+        } );
+        for ( auto& c : legacyAcquires ) {
+            c.pl->ClearTiledSlot();
+            c.pl->ReleaseShadowMap();
+            c.pl->AcquireShadowMap( dsPool, c.desiredResolution );
+            c.light->UpdateShadows = true;
+            classifyLight( c.light, c.pl, c.distSq );
+        }
+        // No fixed pools to report on here; zero Max hides the row entirely.
+        auto& info = Engine::GAPI->GetRendererState().RendererInfo;
+        info.PointLightSlotsMax = 0;
+        info.PointLightStaticSlotsMax = 0;
+        info.PointLightSlotsStarved = 0;
     }
 
     // Render the immediate priority lights - but never more than a handful in one frame.
@@ -1185,12 +1237,12 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     }
 
     // Process Background Queue (Round-Robin)
-    // Set a strict, safe limit to prevent FPS drops. 
-    // 2 per frame is 120 updates per second at 60fps.
-    int maxBackgroundUpdates = 2;
-    int updatesDone = 0;
+    // Priced per cube rather than counted: a low-res cube is a sixteenth of the raster work but pays the
+    // same CPU caster cull, so it goes at half price and a wave of one-time bakes drains twice as fast.
+    constexpr int kBackgroundUpdateBudget = 4;   // 2 full-res cubes, or 4 low-res ones
+    int updateBudget = kBackgroundUpdateBudget;
 
-    while ( !graphicsEngine->FrameShadowUpdateLights.empty() && updatesDone < maxBackgroundUpdates ) {
+    while ( !graphicsEngine->FrameShadowUpdateLights.empty() && updateBudget > 0 ) {
         auto light = graphicsEngine->FrameShadowUpdateLights.front();
         graphicsEngine->FrameShadowUpdateLights.pop_front();
 
@@ -1210,7 +1262,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         l->RenderCubemap( force );
         graphicsEngine->DebugPointlight = l;
 
-        updatesDone++;
+        updateBudget -= l->IsTiledSlotLowRes() ? 1 : 2;
     }
 
     return XR_SUCCESS;

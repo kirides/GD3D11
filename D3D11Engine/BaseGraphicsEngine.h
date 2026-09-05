@@ -338,8 +338,20 @@ public:
     /** Draws a VOB (used for inventory) */
     virtual void DrawVobSingle( VobInfo* vob, zCCamera& camera ) {};
 
+    /** Same, for an inventory item whose visual is a skeletal model (skinned meshes + node attachments) */
+    virtual void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) {};
+
     /** Called when a vob was removed from the world */
     virtual XRESULT OnVobRemovedFromWorld( zCVob* vob ) { return XR_SUCCESS; }
+
+    /** Gothic promoted this vob out of the BSP into its dynamic/animated list - it started moving. A
+        backend that baked it into a cached shadow must drop that cache. */
+    virtual void OnVobBecameDynamic( zCVob* vob ) {}
+
+    /** A registered static-mesh vob's transform changed, after the move has been applied. Both the cache
+        that baked it at its old position and any light it moved into range of need a re-bake. Fires per
+        real move, so anything acting on it should coalesce to at most once per frame. */
+    virtual void OnVobMoved( zCVob* vob ) {}
 
     /** Called from MeshInfo::~MeshInfo(), right before its buffers/CPU vectors are torn down. A MeshInfo can
         be freed independently of any world (re)load - e.g. a shared MeshVisualInfo's last VOB reference

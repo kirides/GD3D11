@@ -101,17 +101,16 @@ public:
     ID3D11ShaderResourceView* GetShadowStaticCubeArraySRV() const { return m_ShadowStaticCubeArraySRV.Get(); }
     bool IsStaticShadowArrayCreated() const { return m_StaticShadowArrayCreated; }
 
-    // Shadow cubemap array slot management
-    int AllocateSlot();
-    void FreeSlot( int slot );
+    // Shadow cubemap array slot access. There is no allocator here: PointLightSlotSelector decides who owns
+    // which slot, so these only hand out the view for one it already assigned, creating the array on demand.
+    RenderToDepthStencilBuffer* ClaimSlot( int slot );
     RenderToDepthStencilBuffer* GetSlotTarget( int slot );
     /** Same slot index as GetSlotTarget, but into the dynamic-overlay array. Creates that array on first use,
         so worlds that never render a moving caster into a point-light cube never pay for it. */
     RenderToDepthStencilBuffer* GetDynSlotTarget( int slot );
 
     // Low-res static-only tier - see WantsStaticOnlySlot()/SHADOW_CUBE_TIER_LOW.
-    int AllocateStaticSlot();
-    void FreeStaticSlot( int slot );
+    RenderToDepthStencilBuffer* ClaimStaticSlot( int slot );
     RenderToDepthStencilBuffer* GetStaticSlotTarget( int slot );
 
 private:
@@ -135,7 +134,6 @@ private:
     // Shadow cubemap array for tiled shadowed lights (lazy-created)
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_ShadowCubeArray;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowCubeArraySRV;
-    std::bitset<MAX_SHADOW_CUBEMAPS> m_SlotInUse;
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_SHADOW_CUBEMAPS> m_SlotDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_SHADOW_CUBEMAPS> m_SlotViews;
     bool m_ShadowArrayCreated = false;
@@ -153,7 +151,6 @@ private:
     // Low-res static-only cube array (see WantsStaticOnlySlot()). Lazy-created like the arrays above.
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_ShadowStaticCubeArray;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowStaticCubeArraySRV;
-    std::bitset<MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotInUse;
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotViews;
     bool m_StaticShadowArrayCreated = false;

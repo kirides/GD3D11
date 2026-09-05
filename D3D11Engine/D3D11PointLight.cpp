@@ -142,39 +142,71 @@ void D3D11PointLight::ReleaseShadowMap() {
     ReleaseStaticAsideShadowMap();
     m_CurrentResolution = 0;
     DrawnOnce = false;
+    m_SlotHasOwnDepth = false;
     m_HasDynamicOverlay = false;
 
 }
 
-void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes ) {
+int D3D11PointLight::GetGlobalTiledSlot() const {
+    if ( m_TiledSlotIndex < 0 ) return -1;
+    return m_TiledSlotLowRes ? static_cast<int>(MAX_SHADOW_CUBEMAPS) + m_TiledSlotIndex : m_TiledSlotIndex;
+}
+
+void D3D11PointLight::CommitStaticBakeToSlot() {
+    const int global = GetGlobalTiledSlot();
+    if ( !m_SlotSel || global < 0 ) return;
+    m_SlotSel->CommitStatic( static_cast<uint32_t>(global) );
+    // The caster set this bake covered, so a vob later removed or moved can be matched against it by
+    // pointer. These are the lists the render just used, so this is a copy rather than a second cull.
+    auto& baked = m_SlotSel->SlotAt( static_cast<uint32_t>(global) ).bakedVobs;
+    baked.clear();
+    for ( const VobInfo* v : VobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
+    for ( const SkeletalVobInfo* v : SkeletalVobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
+}
+
+void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner,
+    bool lowRes, PointLightSlotSelector* sel ) {
     m_TiledSlotIndex = slot;
     m_TiledSlotLowRes = lowRes;
     m_TiledDepthTarget = target;
     m_TiledOwner = owner;
+    m_SlotSel = sel;
 
     StartReInit();
     DrawnOnce = false;
-    m_StaticShadowReady = false;
+    m_SlotHasOwnDepth = false;   // a new slot holds the previous occupant's depth until we render
+    DropStaticBake();
     m_HasDynamicOverlay = false;
 }
 
 void D3D11PointLight::ClearTiledSlot() {
-    if ( m_TiledSlotIndex >= 0 && m_TiledOwner ) {
-        if ( m_TiledSlotLowRes ) {
-            m_TiledOwner->FreeStaticSlot( m_TiledSlotIndex );
-        } else {
-            m_TiledOwner->FreeSlot( m_TiledSlotIndex );
-        }
-    }
+    // No free list to give the slot back to: the selector owns who holds what, and this only lets go of
+    // the light's end of it (it is called BECAUSE the selector reassigned the slot).
+    m_SlotHasOwnDepth = false;
+    m_FallbackSlotIndex = -1;
+    DropStaticBake();   // before m_SlotSel goes, so the slot table stays the single invalidation counter
+    m_HasDynamicOverlay = false;
     m_TiledSlotIndex = -1;
     m_TiledSlotLowRes = false;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
-    m_StaticShadowReady = false;
-    m_HasDynamicOverlay = false;
+    m_SlotSel = nullptr;
+}
+
+bool D3D11PointLight::RestrictsCastersToWorld() const {
+    return !AllowsDynamicCasters( LightInfo );
 }
 
 int D3D11PointLight::GetCurrentShadowMode() const {
+    // A light spilled into the low-res tier renders and samples as STATIC_ONLY whatever it would otherwise
+    // be - that array has no dynamic-overlay twin. GetPreferredShadowMode() keeps asking for full-res.
+    if ( m_TiledSlotLowRes ) {
+        return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
+    }
+    return GetPreferredShadowMode();
+}
+
+int D3D11PointLight::GetPreferredShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
     // Only PLS_UPDATE_DYNAMIC downgrades a static-flagged light to PLS_STATIC_ONLY; PLS_FULL must stay FULL
     // (it's the no-caching-shortcuts escape hatch, and downgrading it would make it never re-render). Skipped
@@ -188,13 +220,45 @@ int D3D11PointLight::GetCurrentShadowMode() const {
     return mode;
 }
 
+namespace {
+    /** True if this vob rides an NPC's transform. Such a light is never treated as a fixture however long
+        it stands still, or an idle NPC's torch would flip tier every time they set off walking again. */
+    bool LightRidesNpc( const zCVob* vob ) {
+        for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
+            if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
+        }
+        return false;
+    }
+    constexpr float kStationaryEps = 1.0f;   // world units; below this a light is jittering, not moving
+    constexpr int   kStationaryFrames = 60;  // ~1 s of holding still before a light counts as a fixture
+}
+
+void D3D11PointLight::NoteStationary() {
+    if ( !LightInfo || !LightInfo->Vob ) return;
+    const XMFLOAT3 pos = LightInfo->Vob->GetPositionWorld();
+    if ( std::fabs( pos.x - m_StationaryPos.x ) > kStationaryEps
+        || std::fabs( pos.y - m_StationaryPos.y ) > kStationaryEps
+        || std::fabs( pos.z - m_StationaryPos.z ) > kStationaryEps ) {
+        m_StationaryPos = pos;
+        m_StationaryFrames = 0;
+    } else if ( m_StationaryFrames < kStationaryFrames ) {
+        ++m_StationaryFrames;
+    }
+}
+
+bool D3D11PointLight::IsSpatiallyStatic() const {
+    if ( LightInfo && LightInfo->IsStaticVobLight ) return true;
+    if ( !LightInfo || !LightInfo->Vob || LightRidesNpc( LightInfo->Vob ) ) return false;
+    return m_StationaryFrames >= kStationaryFrames;
+}
+
 void D3D11PointLight::HandleShadowModeChange( int shadowMode ) {
     if ( m_LastShadowMode == shadowMode ) {
         return;
     }
 
     m_LastShadowMode = shadowMode;
-    m_StaticShadowReady = false;
+    DropStaticBake();
     DrawnOnce = false;
     m_HasDynamicOverlay = false;
 
@@ -235,12 +299,12 @@ void D3D11PointLight::AcquireStaticAsideShadowMap( DepthStencilPool* pool, int r
     desc.ArraySize = 6;
 
     m_StaticDepthCubemap = pool->Acquire( desc );
-    m_StaticShadowReady = false;
+    DropStaticBake();
 }
 
 void D3D11PointLight::ReleaseStaticAsideShadowMap() {
     m_StaticDepthCubemap.reset();
-    m_StaticShadowReady = false;
+    DropStaticBake();
 }
 
 void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
@@ -438,7 +502,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
         SkeletalVobCache.clear();
 
         // Invalidate worldcache
-        m_StaticShadowReady = false;
+        DropStaticBake();
         m_HasDynamicOverlay = false;
     }
 
@@ -526,6 +590,8 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     // regardless of whether a render actually happened, so it was not trustworthy debug signal.
     LightInfo->LastRenderedPosition = vobPos;
     DrawnOnce = true;
+    m_SlotHasOwnDepth = true;   // the target now holds this light's depth - see HasOwnDepthInSlot()
+    m_FallbackSlotIndex = -1;   // handover complete
 }
 
 /** Renders all cubemap faces at once, using the geometry shader */
@@ -547,6 +613,7 @@ void D3D11PointLight::RenderFullCubemap() {
     if ( !m_StaticShadowReady && shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
         RenderStaticShadowPass( *activeTarget, true );
         m_StaticShadowReady = true;
+        CommitStaticBakeToSlot();
         return;
     }
 
@@ -568,6 +635,7 @@ void D3D11PointLight::RenderFullCubemap() {
                 if ( !m_StaticShadowReady ) {
                     RenderStaticShadowPass( *activeTarget, true );
                     m_StaticShadowReady = true;
+                    CommitStaticBakeToSlot();
                 }
 
                 // A world-mesh-only light (see RenderStaticShadowPass) has nothing animated to put in the
@@ -591,6 +659,7 @@ void D3D11PointLight::RenderFullCubemap() {
             if ( m_StaticDepthCubemap ) {
                 RenderStaticShadowPass( *m_StaticDepthCubemap, true );
                 m_StaticShadowReady = true;
+                CommitStaticBakeToSlot();
             } else {
                 // No aside buffer, we can't cache the static shadows.
                 RenderStaticShadowPass( *activeTarget, true );
@@ -610,7 +679,7 @@ void D3D11PointLight::RenderFullCubemap() {
 
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
         ReleaseStaticAsideShadowMap();
-        m_StaticShadowReady = false;
+        DropStaticBake();
         m_HasDynamicOverlay = false;
 
         // FULL never reuses the world-mesh candidate cache - it always re-collects the whole scene fresh.
@@ -649,9 +718,18 @@ bool D3D11PointLight::IsReady()
         && LightInfo->Vob;
 }
 
+void D3D11PointLight::DropStaticBake() {
+    // Counted only on the legacy path: in the tiled one the slot table is the single counter, and every
+    // drop here is downstream of one it has already noted.
+    if ( m_StaticShadowReady && !m_SlotSel ) {
+        Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations.Note();
+    }
+    m_StaticShadowReady = false;
+}
+
 void D3D11PointLight::Invalidate() {
     DrawnOnce = false;
-    m_StaticShadowReady = false;
+    DropStaticBake();
     m_HasDynamicOverlay = false;
     VobCache.clear();
     SkeletalVobCache.clear();
@@ -731,7 +809,7 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
         VobCache.clear();
         SkeletalVobCache.clear();
         DrawnOnce = false;
-        m_StaticShadowReady = false;
+        DropStaticBake();
         m_HasDynamicOverlay = false;
     }
 

@@ -339,31 +339,37 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // headroom. Queueing is cheap and idempotent, the upload happens at the next frame's flush.
     m_VobArena.QueueVisual( static_cast<MeshVisualInfo*>( vi->VisualInfo ) );
 
-    // A VOB added after a nearby point light already cached its static-aside shadow cube would otherwise cast no
-    // point-light shadow: the static cube is only re-rendered when the light is fresh / moved / resized (the
-    // renderStatic gate in BuildFramePointShadows), not when world geometry around it changes. Walk the active
-    // shadow slots and invalidate any whose light range the new VOB reaches, forcing a one-time static re-render
-    // next frame (staticValid=false → renderStatic). Slots are empty during world load (owner==nullptr) so this is
-    // a no-op then; the margin mirrors the static-VOB gather's cull (ps.range + visual->MeshSize * 0.5f).
-    // Gated on StaticVob: items are always StaticVob==false (even ones just lying around, since oItem clears it
-    // unconditionally), and an NPC eating/drinking spawns/despawns one constantly -- without this gate that
-    // forced a full re-render of every nearby cached slot, causing a visible one-frame shadow blackout.
-    if ( vi->Vob && vi->VisualInfo && vi->Vob->GetFlags().StaticVob )
-        m_PointShadows.InvalidateStaticForVobAdded( vi->Vob->GetPositionWorld(), vi->VisualInfo->MeshSize * 0.5f );
+    // A cached static cube is only re-rendered when its light is fresh / moved / resized, never when the
+    // geometry around it changes, so a new VOB in range has to say so.
+    // Parked, not applied here: Gothic has often not placed the vob yet and its parent link may still be the
+    // NPC letting go of it, which are the two things the decision reads. The "not riding an NPC" test that
+    // resolves it replaces the old StaticVob gate, which kept a dropped item out of every nearby cube (oItem
+    // clears StaticVob unconditionally) while only meaning to exclude an NPC's throwaway item.
+    if ( vi->Vob && vi->VisualInfo )
+        m_PointShadows.QueueVobChangedInvalidation( vi->Vob );
 }
 
 
 XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
-    // Symmetric to OnAddVob's static-cube invalidation: a VOB removed from the world must stop casting into any
-    // point light's cached static-aside shadow cube. D3D11 keys this off each light's per-vob VobCache
-    // (D3D11PointLight::OnVobRemovedFromWorld); D3D12 keeps no per-slot vob list, so test the removed vob's world
-    // AABB against each active slot's light sphere (the same closest-point AABB test the static world-section cull
-    // uses) and force a one-time static re-render (staticValid=false) for any slot it intersects. Over-invalidation
-    // is harmless (one extra static pass); under-invalidation would leave the removed vob's shadow frozen in the
-    // cache. Slots are empty during world load (owner==nullptr) so this is a no-op then.
-    // Gated on StaticVob -- see OnAddVob.
-    if ( vob && vob->GetFlags().StaticVob ) m_PointShadows.InvalidateStaticForVobRemoved( vob->GetBBox() );
+    // Symmetric to OnAddVob: a VOB leaving the world must stop casting into any cached static cube. Matched
+    // by POINTER against what each slot baked -- nothing about the dying vob can be read here, which is also
+    // why no StaticVob gate is left: a slot that never baked it simply doesn't match.
+    m_PointShadows.InvalidateStaticForVobRemoved( vob );
     return XR_SUCCESS;
+}
+
+
+void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
+    // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
+    // missing from its cube. Queued because a falling item moves several times before coming to rest.
+    m_PointShadows.QueueVobChangedInvalidation( vob );
+}
+
+
+void D3D12GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
+    // It started moving (a door swinging open, a chest lid), so anything that baked it has to let go --
+    // same pointer match as the removal case, and equally cheap when nothing baked it.
+    m_PointShadows.InvalidateStaticForVobRemoved( vob );
 }
 
 
@@ -492,6 +498,192 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     // following 2D UI draws aren't depth-tested.
     m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 }
+
+// Same, for an inventory item whose visual is a skeletal model: skinned base meshes through the
+// PreviewSkeletal pipeline, node attachments through the plain Preview one (world = modelWorld *
+// bone[node], exactly as the scene path builds them). Mirrors D3D11GraphicsEngine's overload.
+void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) {
+    if ( !vob || !vob->VisualInfo || !vob->Vob || !m_FrameOpen
+        || !m_Pipelines.Preview.PSO || !m_Pipelines.Preview.RootSig || !m_DepthBuffer || !m_DsvHeap )
+        return;
+
+    // Still being filled in on a worker thread (GothicAPI::LoadzCModelData) - skip until the meshes are
+    // safe to iterate. The item pops in a frame or two later instead.
+    SkeletalMeshVisualInfo* visualInfo = static_cast<SkeletalMeshVisualInfo*>( vob->VisualInfo );
+    if ( !visualInfo->GetIsReady() ) return;
+
+    zCModel* model = static_cast<zCModel*>( vob->Vob->GetVisual() );
+    if ( !model ) return;
+
+    Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    // By VALUE, with the TAA jitter stripped - see DrawVobSingle(VobInfo*) above.
+    XMFLOAT4X4 projM = Engine::GAPI->GetProjectionMatrix();
+    projM._13 = 0.0f;
+    projM._23 = 0.0f;
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = GetPreviewDsv();
+    if ( !dsv.ptr ) return;
+
+    D3D12_VIEWPORT vp = m_CurrentViewport;
+    D3D12_RECT     sc = m_CurrentScissor;
+    // The scene's own depth is still in there at these pixels - clear this slot's rect back to reversed-Z
+    // far (0.0) first, same as the static preview.
+    const D3D12_RECT clearRect = {
+        static_cast<LONG>( vp.TopLeftX ), static_cast<LONG>( vp.TopLeftY ),
+        static_cast<LONG>( vp.TopLeftX + vp.Width ), static_cast<LONG>( vp.TopLeftY + vp.Height ) };
+    m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 1, &clearRect );
+
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // Into our own buffer, not GetBoneTransforms(): we are inside one of ZenGin's own render callbacks
+    // here, and that overload writes its result into zCModelNodeInst::TrafoObjToCam, which ZenGin keeps
+    // as the *world*-space node cache.
+    static std::vector<XMFLOAT4X4> boneTransforms; // Main thread only, keeps its capacity
+    boneTransforms.clear();
+    model->GetBoneTransformsTo( boneTransforms );
+    if ( boneTransforms.size() > kSkeletalMaxBones )
+        boneTransforms.resize( kSkeletalMaxBones );
+
+    const XMFLOAT4X4 world = *vob->Vob->GetWorldMatrixPtr();
+    const XMMATRIX worldXm = XMLoadFloat4x4( &world );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE fallbackSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+    auto bindDiffuse = [&]( zCMaterial* material, UINT rootParam ) -> bool {
+        zCTexture* texture = material ? material->GetAniTexture() : nullptr;
+        if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) return false;
+
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = fallbackSrv;
+        if ( MyDirectDrawSurface7* surface = texture->GetSurface() ) {
+            if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                D3D12Texture* d12 = D3D12Texture::From( gfx );
+                if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+            }
+        }
+        m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
+        return true;
+    };
+
+    // Skinned base meshes - the part a static flatten of the model would drop entirely.
+    if ( m_Pipelines.PreviewSkeletal.PSO && m_Pipelines.PreviewSkeletal.RootSig
+        && !visualInfo->SkeletalMeshes.empty() && !boneTransforms.empty() ) {
+        // Bone palette out of the per-frame skeletal ring (advance-only cursor, so the address stays
+        // valid until Present - the same promise PreviewSkeletal.RootSig's b2 is declared with).
+        const UINT frame = m_FrameIndex;
+        const UINT boneSize = static_cast<UINT>( boneTransforms.size() * sizeof( XMFLOAT4X4 ) );
+        // Reserve the full palette the shader declares, not just the poses we write: a root CBV is not
+        // bounds-checked, so a stray bone index must still land inside the ring resource.
+        const UINT boneReserve = kSkeletalMaxBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+        const UINT boneOff = AlignCB( m_SkeletalCBBufferOffset );
+        if ( m_SkeletalCBBuffer[frame] && m_SkeletalCBBufferPtr[frame]
+            && boneOff + boneReserve <= m_SkeletalCBBufferCapacity ) {
+            memcpy( m_SkeletalCBBufferPtr[frame] + boneOff, boneTransforms.data(), boneSize );
+            memset( m_SkeletalCBBufferPtr[frame] + boneOff + boneSize, 0, boneReserve - boneSize );
+            m_SkeletalCBBufferOffset = boneOff + boneReserve;
+
+            m_CmdList->SetPipelineState( m_Pipelines.PreviewSkeletal.PSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_Pipelines.PreviewSkeletal.RootSig.Get() );
+            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+            m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &world, 0 );      // b1 World
+            m_CmdList->SetGraphicsRootConstantBufferView( 2,
+                m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress() + boneOff ); // b2 bone palette
+
+            for ( auto const& [material, meshes] : visualInfo->SkeletalMeshes ) {
+                if ( !bindDiffuse( material, 3 ) ) continue;
+
+                for ( auto const& mesh : meshes ) {
+                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
+                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    m_CmdList->IASetIndexBuffer( &ibv );
+
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                    rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                }
+            }
+        } else if ( !m_SkeletalCBOverflowLogged ) {
+            LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
+                      << " bytes/frame). Skinned inventory preview dropped this frame.";
+            m_SkeletalCBOverflowLogged = true;
+        }
+    }
+
+    // Node attachments (a weapon in a hand, the lid of a chest, ...) - plain ExVertexStruct meshes, so the
+    // non-skinned Preview pipeline draws them, one root-constant world matrix per node.
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    const int numNodes = nodeList ? std::min<int>( nodeList->NumInArray, static_cast<int>( boneTransforms.size() ) ) : 0;
+    if ( numNodes > 0 ) {
+        m_CmdList->SetPipelineState( m_Pipelines.Preview.PSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.Preview.RootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+
+        auto& attachments = vob->NodeAttachments;
+        for ( int n = 0; n < numNodes; ++n ) {
+            zCModelNodeInst* node = nodeList->Array[n];
+            if ( !node || !node->NodeVisual ) continue;
+
+            // Extract on first sight, and re-extract when the node's visual changed. The visual-changed
+            // comparison is gated on Ready because the worker writes MeshVisualInfo::Visual as it finishes.
+            auto it = attachments.find( n );
+            if ( it == attachments.end() ) {
+                WorldConverter::ExtractNodeVisualAsync( n, node, attachments );
+                it = attachments.find( n );
+            } else if ( !it->second.empty() && it->second[0]
+                && it->second[0]->GetIsReady()
+                && it->second[0]->Visual != node->NodeVisual ) {
+                WorldConverter::ExtractNodeVisualAsync( n, node, attachments );
+                it = attachments.find( n );
+            }
+            if ( it == attachments.end() ) continue;
+
+            XMFLOAT4X4 attWorld;
+            XMStoreFloat4x4( &attWorld, worldXm * XMLoadFloat4x4( &boneTransforms[n] ) );
+
+            for ( MeshVisualInfo* mvi : it->second ) {
+                // Still being extracted on a worker thread - skip it for this frame rather than race it.
+                if ( !mvi || !mvi->GetIsReady() || !mvi->Visual ) continue;
+
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &attWorld, 0 );   // b1 World
+
+                for ( auto const& [material, meshes] : mvi->Meshes ) {
+                    if ( !bindDiffuse( material, 2 ) ) continue;
+
+                    for ( auto const& mesh : meshes ) {
+                        if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
+                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() );
+                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
+                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+                        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                        m_CmdList->IASetIndexBuffer( &ibv );
+
+                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                        rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                    }
+                }
+            }
+        }
+    }
+
+    // Rebind the backbuffer alone (no depth) so the following 2D UI draws aren't depth-tested.
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+}
+
 
 
 
@@ -851,6 +1043,11 @@ namespace {
 		bool        isStatic;         // Gothic's true IsStatic() — governs specular scale / DisableStaticPointlights,
 		                              // unaffected by PointlightShadowCasterFlags
 		bool        isIndoor;
+		bool        spatiallyStatic;  // has not MOVED for a while and does not ride a moving transform.
+		                              // Gothic's IsStatic() is NOT this: a colour-animated brazier reads as
+		                              // non-static there while never being repositioned. Gates the SPILL.
+		bool        isPFX;            // oCVisualFX-spawned (candle/torch/spell). Gates the world-mesh-only
+		                              // caster restriction below - see LightShadowKey::restrictToWorld.
 		bool        shadowRoutingStatic; // isStatic, UNLESS PLSC_STATIC_LIGHTS opted static lights into full
 		                              // dynamic-tier shadow treatment — see the PointlightShadowCasterFlags read below.
 		                              // Governs clustering eligibility and LightShadowKey::isStatic/lowRes.
@@ -1023,6 +1220,18 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
 	const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
 
+	// At PLS_STATIC_ONLY nothing receives a dynamic overlay, so the 16x scarcer full-res tier buys only
+	// resolution. See the routing decision in the collect loop below.
+	const bool staticOnlyMode = lightSettings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
+
+	// Per-light "has not moved recently" tracking, keyed by vob. Capacity is reused; swept every 1024 frames.
+	struct StationaryState { XMFLOAT3 pos{}; UINT32 frames = 0; UINT32 lastSeen = 0; };
+	static std::unordered_map<const zCVob*, StationaryState> s_stationary;
+	static UINT32 s_stationaryFrame = 0;
+	++s_stationaryFrame;
+	constexpr float  kStationaryEps = 1.0f;     // world units; below this a light is jittering, not moving
+	constexpr UINT32 kStationaryFrames = 60;    // ~1 s of holding still before a light counts as a fixture
+
 	static std::vector<FrameLightCand> s_cands;   // static: capacity is reused, no per-frame allocation
 	s_cands.clear();
 
@@ -1037,11 +1246,32 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		const XMFLOAT3 pw = vob->GetPositionWorld();
 		const float range = vob->GetLightRange();
 		const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &pw ), camPos ) ) );
+		// Has this light held still long enough to count as a fixture? Only such a light's cube can be baked
+		// once and cached, which is the whole basis of the low-res tier. NPC-attached lights are excluded
+		// outright: an idle NPC's torch stands still for seconds and would flip tier every time they walk.
+		bool spatiallyStatic = isStatic;
+		if ( !spatiallyStatic && !D3D12PointShadows::IsNpcAttached( vob ) ) {
+			auto& st = s_stationary[vob];
+			const bool moved = std::fabs( pw.x - st.pos.x ) > kStationaryEps
+				|| std::fabs( pw.y - st.pos.y ) > kStationaryEps
+				|| std::fabs( pw.z - st.pos.z ) > kStationaryEps;
+			if ( moved ) { st.pos = pw; st.frames = 0; }
+			else if ( st.frames < kStationaryFrames ) ++st.frames;
+			st.lastSeen = s_stationaryFrame;
+			spatiallyStatic = st.frames >= kStationaryFrames;
+		}
+		// Route to the cached low-res tier when the light will not move AND could not receive a dynamic
+		// overlay anyway - which at PLS_STATIC_ONLY is every light there is. Without it, colour-animated room
+		// lights queued for the 64 full-res cubes while hundreds of static slots sat empty.
+		const bool routeStatic = !allowStaticDynamicShadows && ( isStatic || ( spatiallyStatic && staticOnlyMode ) );
 		// shadowOrigin/shadowRange start as the light's own and are redirected to a cluster's below; `key`
 		// likewise starts as the light's own identity.
-		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
-			isStatic && !allowStaticDynamicShadows, pw, range, reinterpret_cast<uint64_t>( vob ) } );
+		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob, spatiallyStatic,
+			li->IsPFXVobLight, routeStatic, pw, range, reinterpret_cast<uint64_t>( vob ) } );
 	}
+	// Drop tracking entries for lights long out of the light set. Swept rarely; walks the whole map.
+	if ( ( s_stationaryFrame % 1024 ) == 0 )
+		std::erase_if( s_stationary, []( const auto& e ) { return s_stationaryFrame - e.second.lastSeen > 600; } );
 	// Total order, not just "by distance": the cluster cull keeps the first MAX_ACTIVE_LIGHTS candidates in BUFFER
 	// order, so the buffer order has to be a pure function of the visible light SET. std::sort is unstable, so
 	// equal distances (co-located atmospheric lights are common) would otherwise permute between frames and make
@@ -1091,12 +1321,21 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// key 0 = "never give this light a cube" — what point-shadows-off means for every light. `vob` is only
 		// passed for an UNclustered light: a cluster has no single owning vob, and the field exists purely for
 		// the dynamic-overlay exclude list, which no static/clustered slot reaches.
+		// World-mesh-only casters for an un-opted-in PFX light, mirroring D3D11's AllowsDynamicCasters. Asked
+		// of the light's OWN identity only - a clustered light is routing-static anyway.
+		const bool unclustered = cand.key == reinterpret_cast<uint64_t>( vob );
+		const bool restrictToWorld = unclustered && !cand.shadowRoutingStatic && cand.isPFX
+			&& !( lightSettings.PointlightShadowCasterFlags & GothicRendererSettings::PLSC_PARTICLE_FX );
 		s_lightKeys.push_back( { pointShadowsOn ? cand.key : 0ull,
-			cand.key == reinterpret_cast<uint64_t>( vob ) ? vob : nullptr,
-			cand.shadowRoutingStatic, cand.shadowRoutingStatic } );
+			unclustered ? vob : nullptr,
+			cand.shadowRoutingStatic, cand.shadowRoutingStatic, cand.spatiallyStatic, restrictToWorld } );
 		++count;
 	}
 	m_FrameLightCount = count;
+	// Lights the per-frame buffer could not hold at all (the farthest, s_cands being distance-sorted). Not
+	// the same failure as being starved of a cube, but it looks identical in game.
+	Engine::GAPI->GetRendererState().RendererInfo.PointLightsDropped =
+		static_cast<unsigned int>( s_cands.size() - count );
 
 	// Point-light shadow selection: hand the filled buffer to the point-shadow module, which picks this
 	// frame's shadowed lights (stable per-light cube slots, static-cache + round-robin scheduling) and writes
@@ -1115,15 +1354,46 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// s_cands is parallel to dst[] for i < count (the fill loop walks it in order and only ever breaks).
 	constexpr float kUnshadowedStaticScale = 0.35f;        // still lights its own alcove; can't reach the next room
 	constexpr float kIndoorSeenFromOutsideScale = 0.15f;   // the worst bleed case — clamp it much harder
+
+	// The clamp is applied through a per-light eased scale rather than switched on and off: gaining or losing
+	// a cube changes a light's radius by 3-7x, and snapping that reads as the light switching off. A light
+	// seen for the first time starts at its target, so world load does not fade every light in.
+	constexpr float kClampEaseSeconds = 0.3f;
+	struct ClampState { float scale; UINT32 lastFrame; };
+	static std::unordered_map<uint64_t, ClampState> s_clampScale;
+	static UINT32 s_clampFrame = 0;
+	++s_clampFrame;
+	const float dt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
+	const float ease = 1.0f - std::exp( -dt / kClampEaseSeconds );   // framerate-independent exponential approach
+
 	for ( UINT i = 0; i < count; ++i ) {
-		if ( dst[i].ShadowCubeIndex >= 0 ) continue;   // shadowed: correctly occluded, leave it alone
 		if ( !s_cands[i].isStatic && !s_cands[i].isIndoor ) continue;
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.
 		const bool leakingOutdoors = s_cands[i].isIndoor && !cameraIndoors;
-		dst[i].Range *= leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
-		dst[i].ShadowRange = dst[i].Range;
+		const float target = dst[i].ShadowCubeIndex >= 0 ? 1.0f
+			: ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
+		// key 0 is "this light can never be shadowed": no identity to ease under, and nothing to ease to.
+		const uint64_t key = s_lightKeys[i].key;
+		if ( !key ) {
+			dst[i].Range *= target;
+			dst[i].ShadowRange = dst[i].Range;
+			continue;
+		}
+		const auto [it, fresh] = s_clampScale.try_emplace( key, ClampState{ target, s_clampFrame } );
+		if ( !fresh && it->second.lastFrame != s_clampFrame ) {   // once per frame, however many share the key
+			it->second.scale += ( target - it->second.scale ) * ease;
+			it->second.lastFrame = s_clampFrame;
+		}
+		if ( it->second.scale >= 0.999f ) continue;    // fully unclamped
+		dst[i].Range *= it->second.scale;
+		// ShadowRange follows Range only while the light is UNSHADOWED: it is the cube's far-plane basis, so
+		// shrinking it under a light that has a cube compares against a projection it was never rendered with.
+		if ( dst[i].ShadowCubeIndex < 0 ) dst[i].ShadowRange = dst[i].Range;
 	}
+	// Without this the map keeps every light the session has ever seen. Swept rarely; walks the whole map.
+	if ( ( s_clampFrame % 1024 ) == 0 )
+		std::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
 }
 
 
@@ -4206,10 +4476,17 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         ? reinterpret_cast<VobCullVisual*>( m_VobCullVisualsPtr[frame] ) : nullptr;
 
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
-        if ( !visual || visual->Instances.empty() ) continue;
+        if ( !visual ) continue;
 
-        if ( animateStaticVobs && visual->MorphMeshVisual )
+        // The second condition keeps a spinning windmill's SHADOW attached to it: cascades cull against their
+        // own frustum, so a caster the player can't see still casts, and a morph visual left at its last
+        // on-screen deformation drifts off the mesh. Gated on a live ani channel, so idle .MMS costs one read.
+        if ( animateStaticVobs && visual->MorphMeshVisual
+            && ( !visual->Instances.empty()
+                || reinterpret_cast<zCMorphMesh*>( visual->MorphMeshVisual )->GetNumAniChannels() > 0 ) )
             WorldConverter::UpdateMorphMeshVisual( visual->MorphMeshVisual, visual );
+
+        if ( visual->Instances.empty() ) continue;
 
         const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
         constexpr UINT kInstStride = static_cast<UINT>( sizeof( VobInstanceInfo ) );

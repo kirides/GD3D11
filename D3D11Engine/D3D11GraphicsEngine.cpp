@@ -5814,6 +5814,31 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         DepthStencilBuffer->GetDepthStencilView().Get() );
 }
 
+namespace {
+    /** True if this vob rides an NPC's transform. It moves every frame, so it must never enter a point
+        light's cached caster set (D3D11PointLight::VobCache) - the animated pass draws it instead. */
+    bool IsAttachedToNpc( const zCVob* vob ) {
+        for ( const zCVob* v = vob; v; v = v->GetVobParent() ) {
+            if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
+        }
+        return false;
+    }
+
+    /** Same idea for MOB casters: anything ZenGin promoted to the animated list moves, and the animated
+        pass redraws it anyway. */
+    bool IsAnimatedShadowCaster( const SkeletalVobInfo* vob ) {
+        if ( IsAttachedToNpc( vob->Vob ) ) return true;
+        return std::ranges::contains( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), vob );
+    }
+
+    /** True while this .MMS visual has a live morph channel, i.e. its vertex buffer is re-deformed every
+        frame. Idle .MMS decoration answers false. */
+    bool IsMorphAnimating( MeshVisualInfo* visual ) {
+        if ( !visual->MorphMeshVisual ) return false;
+        return reinterpret_cast<zCMorphMesh*>(visual->MorphMeshVisual)->GetNumAniChannels() > 0;
+    }
+}
+
 /** Draws everything around the given position */
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
@@ -6019,6 +6044,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         continue;  // Seems to happen in Gothic 1
                     }
 
+                    // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
+                    // item invalidate every nearby light's static cube when it despawned.
+                    if ( IsAttachedToNpc( it->Vob ) ) {
+                        continue;
+                    }
+
                     if ( !it->Vob->GetShowVisual() ) {
                         continue;
                     }
@@ -6104,6 +6135,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             for ( auto it : Engine::GAPI->GetSkeletalMeshVobs() ) {
                 if ( !it->VisualInfo ) {
                     continue;  // Seems to happen in Gothic 1
+                }
+
+                // Animated or NPC-attached MOBs belong to the animated pass - see IsAnimatedShadowCaster.
+                if ( IsAnimatedShadowCaster( it ) ) {
+                    continue;
                 }
 
                 if ( !it->Vob->GetShowVisual() ) {
@@ -6378,6 +6414,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;  // Seems to happen in Gothic 1
                     }
 
+                    // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
+                    // item invalidate every nearby light's static cube when it despawned.
+                    if ( IsAttachedToNpc( it->Vob ) ) {
+                        continue;
+                    }
+
                     if ( !it->Vob->GetShowVisual() ) {
                         continue;
                     }
@@ -6468,6 +6510,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             for ( auto it : Engine::GAPI->GetSkeletalMeshVobs() ) {
                 if ( !it->VisualInfo ) {
                     continue;  // Seems to happen in Gothic 1
+                }
+
+                // Animated or NPC-attached MOBs belong to the animated pass - see IsAnimatedShadowCaster.
+                if ( IsAnimatedShadowCaster( it ) ) {
+                    continue;
                 }
 
                 if ( !it->Vob->GetShowVisual() ) {
@@ -7062,6 +7109,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
         }
 
+        // Morph-mesh casters are deformed per frame, so a cascade holding one can't be frozen by
+        // LazyCascadeUpdate. UpdateMorphMeshVisual is frame-idempotent, so running it here too is free.
+        bool hasAnimatedCaster = false;
+        if ( renderState.RendererSettings.AnimateStaticVobs ) {
+            for ( MeshVisualInfo* visual : activeVisuals ) {
+                if ( !IsMorphAnimating( visual ) ) continue;
+                hasAnimatedCaster = true;
+                WorldConverter::UpdateMorphMeshVisual( visual->MorphMeshVisual, visual );
+            }
+        }
+        if ( ShadowMaps ) ShadowMaps->NoteCascadeAnimatedCasters( params.CascadeIndex, hasAnimatedCaster );
+
         // Apply instancing shader early so metadata indexing can be prepared before instance upload.
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
         ActiveVS->Apply();
@@ -7302,7 +7361,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     if ( renderState.RendererSettings.DrawVOBs
-        && isCloseCascade ) {
+        && isCloseCascade && params.DrawVegetation ) {
         ZoneScopedN( "Shadows::DrawVegetation" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVegetation" ) );
 
@@ -8721,9 +8780,11 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowmaps( FXMVECTOR cameraPosition
     RenderToDepthStencilBuffer* target,
     bool cullFront, bool dontCull,
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite,
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV ) {
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV,
+    bool drawVegetation ) {
 
     RenderShadowmapsParams renderParams = {};
+    renderParams.DrawVegetation = drawVegetation;
     XMStoreFloat3( &renderParams.CameraPosition, cameraPosition );
     renderParams.Target = target;
     renderParams.CullFront = cullFront;
@@ -8807,6 +8868,165 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
             DrawVertexBufferIndexed(
                 itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                 itm2nd->Indices.size() );
+        }
+    }
+
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+
+    // Disable culling again
+    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
+}
+
+void D3D11GraphicsEngine::BindPreviewBoneTransforms( const std::vector<XMFLOAT4X4>& transforms ) {
+    const UINT boneCount = std::min<UINT>( static_cast<UINT>(transforms.size()), NUM_MAX_BONES );
+
+    if ( !FeatureLevel10Compatibility
+        && UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, transforms, "SkeletalBoneTransformsBufferTransient" )
+        && SkeletalBoneTransformsBufferTransient ) {
+        // Same buffer for both poses - the preview never moves, so a velocity of zero is correct.
+        ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+        ActiveVS->BindResource( "PrevBoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+
+        VS_ExConstantBuffer_SkeletalBoneRange range = {};
+        range.BoneCount = boneCount;
+        range.UseStructuredBones = 1u;
+        ActiveVS->UpdateBuffer( "BoneTransformRange", &range, sizeof( range ) );
+        return;
+    }
+
+    auto allocation = AllocateDynamicCB( transforms.data(), sizeof( XMFLOAT4X4 ) * boneCount );
+    BindDynamicCBToVertexShader( ActiveVS->GetInputIndex( "BoneTransforms" ), allocation );
+    BindDynamicCBToVertexShader( ActiveVS->GetInputIndex( "PrevBoneTransforms" ), allocation );
+}
+
+/** Draws a skeletal VOB (used for inventory) */
+void D3D11GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) {
+    if ( !vob || !vob->Vob || !vob->VisualInfo ) return;
+
+    // Still being filled in on a worker thread (GothicAPI::LoadzCModelData) - skip until the meshes are
+    // safe to iterate. The item pops in a frame or two later instead.
+    SkeletalMeshVisualInfo* visualInfo = static_cast<SkeletalMeshVisualInfo*>(vob->VisualInfo);
+    if ( !visualInfo->GetIsReady() ) return;
+
+    zCModel* model = static_cast<zCModel*>(vob->Vob->GetVisual());
+    if ( !model ) return;
+
+    Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
+
+    // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get() );
+
+    Engine::GAPI->GetRendererState().DepthState.SetDefault(); // defaul depth: buffer + write on.
+    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
+    // Set backface culling
+    Engine::GAPI->GetRendererState().RasterizerState.SetDefault(); // CULL_BACK is default.
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    UpdateRenderStates();
+
+    // Into our own buffer, not GetBoneTransforms(): we are inside one of ZenGin's own render callbacks
+    // here, and that overload writes its result into zCModelNodeInst::TrafoObjToCam, which ZenGin keeps
+    // as the *world*-space node cache.
+    static std::vector<XMFLOAT4X4> boneTransforms; // Main thread only, keeps its capacity
+    boneTransforms.clear();
+    model->GetBoneTransformsTo( boneTransforms );
+    if ( boneTransforms.size() > NUM_MAX_BONES )
+        boneTransforms.resize( NUM_MAX_BONES );
+
+    const XMFLOAT4X4 world = *vob->Vob->GetWorldMatrixPtr();
+    const XMMATRIX worldXm = XMLoadFloat4x4( &world );
+
+    // Skinned base meshes - the part the static flatten used to drop entirely.
+    if ( !visualInfo->SkeletalMeshes.empty() && !boneTransforms.empty() ) {
+        SetActivePixelShader( PShaderID::PS_Preview_Textured );
+        SetActiveVertexShader( VShaderID::VS_ExSkeletal );
+
+        SetupVS_ExMeshDrawCall();
+        SetupVS_ExConstantBuffer();
+
+        VS_ExConstantBuffer_PerInstanceSkeletal cb = {};
+        cb.World = world;
+        cb.PrevWorld = world;
+        cb.PI_ModelColor = float4( 1.f, 1.f, 1.f, 1.f );
+        cb.PI_ModelFatness = 0.f;
+        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &cb, sizeof( cb ) );
+
+        BindPreviewBoneTransforms( boneTransforms );
+        ActiveVS->Apply();
+
+        for ( auto const& itm : visualInfo->SkeletalMeshes ) {
+            zCTexture* texture;
+            if ( !itm.first || (texture = itm.first->GetAniTexture()) == nullptr ) continue;
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+            texture->Bind( 0 );
+
+            for ( auto const& mesh : itm.second ) {
+                UINT offset = 0;
+                UINT uStride = sizeof( ExSkelVertexStruct );
+                Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( mesh->MeshVertexBuffer.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+                Context->IASetIndexBuffer( D3D11VertexBuffer::From( mesh->MeshIndexBuffer.get() )->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+                Context->DrawIndexed( static_cast<UINT>(mesh->Indices.size()), 0, 0 );
+
+                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += mesh->Indices.size() / 3;
+            }
+        }
+    }
+
+    // Node attachments (a weapon in a hand, the lid of a chest, ...) - the same visuals the world path
+    // draws through VS_ExNode, just without the instancing.
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    const int numNodes = nodeList ? std::min<int>( nodeList->NumInArray, static_cast<int>(boneTransforms.size()) ) : 0;
+    if ( numNodes > 0 ) {
+        SetActivePixelShader( PShaderID::PS_Preview_Textured );
+        SetActiveVertexShader( VShaderID::VS_ExNode );
+
+        SetupVS_ExMeshDrawCall();
+        SetupVS_ExConstantBuffer();
+
+        auto& attachments = vob->NodeAttachments;
+        for ( int i = 0; i < numNodes; i++ ) {
+            zCModelNodeInst* node = nodeList->Array[i];
+            if ( !node->NodeVisual ) continue;
+
+            auto attachment = attachments.find( i );
+            // Extract on first sight, and re-extract when the node's visual changed. Gated on
+            // GetIsReady(): the worker writes Visual as it finishes, so comparing any earlier races it.
+            if ( attachment == attachments.end()
+                || (!attachment->second.empty() && attachment->second[0]->GetIsReady()
+                    && node->NodeVisual != attachment->second[0]->Visual) ) {
+                WorldConverter::ExtractNodeVisualAsync( i, node, attachments );
+                attachment = attachments.find( i );
+            }
+            if ( attachment == attachments.end() ) continue;
+
+            VS_ExConstantBuffer_PerInstanceNode cb = {};
+            XMStoreFloat4x4( &cb.World, worldXm * XMLoadFloat4x4( &boneTransforms[i] ) );
+            cb.PrevWorld = cb.World;
+            cb.Color = float4( 1.f, 1.f, 1.f, 1.f );
+            cb.Fatness = 0.f;
+            cb.Scaling = 1.f;
+
+            for ( MeshVisualInfo* mvi : attachment->second ) {
+                // Still being extracted on a worker thread - skip it for this frame rather than race it.
+                if ( !mvi->GetIsReady() || !mvi->Visual ) continue;
+
+                ActiveVS->UpdateBuffer( "Matrices_PerInstances", &cb, sizeof( cb ) );
+                ActiveVS->Apply();
+
+                for ( auto const& itm : mvi->Meshes ) {
+                    zCTexture* texture;
+                    if ( !itm.first || (texture = itm.first->GetAniTexture()) == nullptr ) continue;
+                    if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+                    texture->Bind( 0 );
+
+                    for ( auto const& mesh : itm.second ) {
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(), mesh->GetMeshIndexBuffer(), mesh->Indices.size() );
+                    }
+                }
+            }
         }
     }
 
@@ -9853,6 +10073,12 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
+    if ( ShadowMaps ) {
+        // Both are matched by POINTER: the object is on its way out, so nothing about it can be read here.
+        ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
+        ShadowMaps->ReleasePointLightSlotFor( vob );
+    }
+
     // Take out of shadowupdate queue
     for ( auto it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
         if ( (*it)->Vob == vob ) {
@@ -9874,6 +10100,29 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
 
     return XR_SUCCESS;
 }
+
+void D3D11GraphicsEngine::OnAddVob( VobInfo* vi ) {
+    // A cached static cube is only re-rendered when its light is fresh / moved / resized, so a new VOB in
+    // range has to say so. Parked rather than applied here: Gothic has often not placed the vob yet and its
+    // parent link can still be the NPC letting go of it, which are the two things the decision reads.
+    if ( ShadowMaps && vi && vi->Vob && vi->VisualInfo )
+        ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
+}
+
+
+void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
+    // It started moving (a door swinging open, a chest lid), so anything that baked it into a static cube
+    // has to let go - the animated pass draws it from now on.
+    if ( ShadowMaps ) ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
+}
+
+
+void D3D11GraphicsEngine::OnVobMoved( zCVob* vob ) {
+    // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
+    // missing from its cube. Queued because a falling item moves several times before coming to rest.
+    if ( ShadowMaps ) ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
+}
+
 
 /** Updates the occlusion for the bsp-tree */
 void D3D11GraphicsEngine::UpdateOcclusion() {
