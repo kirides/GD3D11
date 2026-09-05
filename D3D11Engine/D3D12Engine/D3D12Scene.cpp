@@ -499,6 +499,192 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 }
 
+// Same, for an inventory item whose visual is a skeletal model: skinned base meshes through the
+// PreviewSkeletal pipeline, node attachments through the plain Preview one (world = modelWorld *
+// bone[node], exactly as the scene path builds them). Mirrors D3D11GraphicsEngine's overload.
+void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) {
+    if ( !vob || !vob->VisualInfo || !vob->Vob || !m_FrameOpen
+        || !m_Pipelines.Preview.PSO || !m_Pipelines.Preview.RootSig || !m_DepthBuffer || !m_DsvHeap )
+        return;
+
+    // Still being filled in on a worker thread (GothicAPI::LoadzCModelData) - skip until the meshes are
+    // safe to iterate. The item pops in a frame or two later instead.
+    SkeletalMeshVisualInfo* visualInfo = static_cast<SkeletalMeshVisualInfo*>( vob->VisualInfo );
+    if ( !visualInfo->GetIsReady() ) return;
+
+    zCModel* model = static_cast<zCModel*>( vob->Vob->GetVisual() );
+    if ( !model ) return;
+
+    Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    // By VALUE, with the TAA jitter stripped - see DrawVobSingle(VobInfo*) above.
+    XMFLOAT4X4 projM = Engine::GAPI->GetProjectionMatrix();
+    projM._13 = 0.0f;
+    projM._23 = 0.0f;
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = GetPreviewDsv();
+    if ( !dsv.ptr ) return;
+
+    D3D12_VIEWPORT vp = m_CurrentViewport;
+    D3D12_RECT     sc = m_CurrentScissor;
+    // The scene's own depth is still in there at these pixels - clear this slot's rect back to reversed-Z
+    // far (0.0) first, same as the static preview.
+    const D3D12_RECT clearRect = {
+        static_cast<LONG>( vp.TopLeftX ), static_cast<LONG>( vp.TopLeftY ),
+        static_cast<LONG>( vp.TopLeftX + vp.Width ), static_cast<LONG>( vp.TopLeftY + vp.Height ) };
+    m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 1, &clearRect );
+
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // Into our own buffer, not GetBoneTransforms(): we are inside one of ZenGin's own render callbacks
+    // here, and that overload writes its result into zCModelNodeInst::TrafoObjToCam, which ZenGin keeps
+    // as the *world*-space node cache.
+    static std::vector<XMFLOAT4X4> boneTransforms; // Main thread only, keeps its capacity
+    boneTransforms.clear();
+    model->GetBoneTransformsTo( boneTransforms );
+    if ( boneTransforms.size() > kSkeletalMaxBones )
+        boneTransforms.resize( kSkeletalMaxBones );
+
+    const XMFLOAT4X4 world = *vob->Vob->GetWorldMatrixPtr();
+    const XMMATRIX worldXm = XMLoadFloat4x4( &world );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE fallbackSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+    auto bindDiffuse = [&]( zCMaterial* material, UINT rootParam ) -> bool {
+        zCTexture* texture = material ? material->GetAniTexture() : nullptr;
+        if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) return false;
+
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = fallbackSrv;
+        if ( MyDirectDrawSurface7* surface = texture->GetSurface() ) {
+            if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                D3D12Texture* d12 = D3D12Texture::From( gfx );
+                if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+            }
+        }
+        m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
+        return true;
+    };
+
+    // Skinned base meshes - the part a static flatten of the model would drop entirely.
+    if ( m_Pipelines.PreviewSkeletal.PSO && m_Pipelines.PreviewSkeletal.RootSig
+        && !visualInfo->SkeletalMeshes.empty() && !boneTransforms.empty() ) {
+        // Bone palette out of the per-frame skeletal ring (advance-only cursor, so the address stays
+        // valid until Present - the same promise PreviewSkeletal.RootSig's b2 is declared with).
+        const UINT frame = m_FrameIndex;
+        const UINT boneSize = static_cast<UINT>( boneTransforms.size() * sizeof( XMFLOAT4X4 ) );
+        // Reserve the full palette the shader declares, not just the poses we write: a root CBV is not
+        // bounds-checked, so a stray bone index must still land inside the ring resource.
+        const UINT boneReserve = kSkeletalMaxBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+        const UINT boneOff = AlignCB( m_SkeletalCBBufferOffset );
+        if ( m_SkeletalCBBuffer[frame] && m_SkeletalCBBufferPtr[frame]
+            && boneOff + boneReserve <= m_SkeletalCBBufferCapacity ) {
+            memcpy( m_SkeletalCBBufferPtr[frame] + boneOff, boneTransforms.data(), boneSize );
+            memset( m_SkeletalCBBufferPtr[frame] + boneOff + boneSize, 0, boneReserve - boneSize );
+            m_SkeletalCBBufferOffset = boneOff + boneReserve;
+
+            m_CmdList->SetPipelineState( m_Pipelines.PreviewSkeletal.PSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_Pipelines.PreviewSkeletal.RootSig.Get() );
+            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+            m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &world, 0 );      // b1 World
+            m_CmdList->SetGraphicsRootConstantBufferView( 2,
+                m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress() + boneOff ); // b2 bone palette
+
+            for ( auto const& [material, meshes] : visualInfo->SkeletalMeshes ) {
+                if ( !bindDiffuse( material, 3 ) ) continue;
+
+                for ( auto const& mesh : meshes ) {
+                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
+                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    m_CmdList->IASetIndexBuffer( &ibv );
+
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                    rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                }
+            }
+        } else if ( !m_SkeletalCBOverflowLogged ) {
+            LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
+                      << " bytes/frame). Skinned inventory preview dropped this frame.";
+            m_SkeletalCBOverflowLogged = true;
+        }
+    }
+
+    // Node attachments (a weapon in a hand, the lid of a chest, ...) - plain ExVertexStruct meshes, so the
+    // non-skinned Preview pipeline draws them, one root-constant world matrix per node.
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    const int numNodes = nodeList ? std::min<int>( nodeList->NumInArray, static_cast<int>( boneTransforms.size() ) ) : 0;
+    if ( numNodes > 0 ) {
+        m_CmdList->SetPipelineState( m_Pipelines.Preview.PSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.Preview.RootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+
+        auto& attachments = vob->NodeAttachments;
+        for ( int n = 0; n < numNodes; ++n ) {
+            zCModelNodeInst* node = nodeList->Array[n];
+            if ( !node || !node->NodeVisual ) continue;
+
+            // Extract on first sight, and re-extract when the node's visual changed. The visual-changed
+            // comparison is gated on Ready because the worker writes MeshVisualInfo::Visual as it finishes.
+            auto it = attachments.find( n );
+            if ( it == attachments.end() ) {
+                WorldConverter::ExtractNodeVisualAsync( n, node, attachments );
+                it = attachments.find( n );
+            } else if ( !it->second.empty() && it->second[0]
+                && it->second[0]->GetIsReady()
+                && it->second[0]->Visual != node->NodeVisual ) {
+                WorldConverter::ExtractNodeVisualAsync( n, node, attachments );
+                it = attachments.find( n );
+            }
+            if ( it == attachments.end() ) continue;
+
+            XMFLOAT4X4 attWorld;
+            XMStoreFloat4x4( &attWorld, worldXm * XMLoadFloat4x4( &boneTransforms[n] ) );
+
+            for ( MeshVisualInfo* mvi : it->second ) {
+                // Still being extracted on a worker thread - skip it for this frame rather than race it.
+                if ( !mvi || !mvi->GetIsReady() || !mvi->Visual ) continue;
+
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &attWorld, 0 );   // b1 World
+
+                for ( auto const& [material, meshes] : mvi->Meshes ) {
+                    if ( !bindDiffuse( material, 2 ) ) continue;
+
+                    for ( auto const& mesh : meshes ) {
+                        if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
+                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() );
+                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
+                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+                        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                        m_CmdList->IASetIndexBuffer( &ibv );
+
+                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                        rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                    }
+                }
+            }
+        }
+    }
+
+    // Rebind the backbuffer alone (no depth) so the following 2D UI draws aren't depth-tested.
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+}
+
+
 
 
 

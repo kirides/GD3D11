@@ -263,6 +263,11 @@ public:
 
     /** Draws a VOB (used for inventory) */
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;
+    void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;
+
+    /** Binds 'transforms' as both the current and the previous bone palette of the active skeletal VS.
+        Preview-only: an inventory item has no motion history to reproject against. */
+    void BindPreviewBoneTransforms( const std::vector<XMFLOAT4X4>& transforms );
 
     /** Draws everything around the given position */
     void ShadowPass_DrawWorldMesh_Indirect( const std::vector<WorldMeshSectionInfo*>& visibleSections, const Frustum* cullingFrustum = nullptr );

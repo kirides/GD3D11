@@ -564,6 +564,7 @@ public:
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
+    bool CreatePreviewSkeletal();   // same, for a skinned item visual (adds b2 bone palette)
     bool CreateBloom();       // prefilter/downsample/upsample compute + additive composite graphics pipeline
     bool CreateGhost();       // ghost/transparency VOBs (own root sig: b0 ViewProj, b1 World, b2 GhostAlpha, t0 diffuse)
     bool CreateGhostSkeletal(); // skeletal ghost VOBs (invisible NPCs): own root sig (b0 ViewProj, b1 inst CBV,
@@ -636,6 +637,7 @@ public:
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure
     GraphicsPipeline Preview;
+    GraphicsPipeline PreviewSkeletal;   // skinned inventory-item preview (Preview.hlsl:VSSkeletal)
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;
     GraphicsPipeline GhostSkeletal;

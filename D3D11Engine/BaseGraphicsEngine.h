@@ -338,6 +338,9 @@ public:
     /** Draws a VOB (used for inventory) */
     virtual void DrawVobSingle( VobInfo* vob, zCCamera& camera ) {};
 
+    /** Same, for an inventory item whose visual is a skeletal model (skinned meshes + node attachments) */
+    virtual void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) {};
+
     /** Called when a vob was removed from the world */
     virtual XRESULT OnVobRemovedFromWorld( zCVob* vob ) { return XR_SUCCESS; }
 

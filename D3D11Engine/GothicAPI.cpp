@@ -1961,6 +1961,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     // Attachments still holding the entry keep it alive until their "visual changed" check retires them.
     s_SharedVisualRegistry->Unregister( visual );
 
+    // An inventory preview info outlives its vob (see GInventory::OnRemovedVob), so it has to be
+    // dropped here rather than waiting for the next add to replace it.
+    Inventory->OnVisualDeleted( visual );
+
     std::vector<std::string> extv;
 
     zCClassDef* classDef = reinterpret_cast<zCObject*>(visual)->_GetClassDef();
@@ -2473,8 +2477,13 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 
             break;
         } else if ( ext == ".MDS" || ext == ".ASC" ) {
-            // Some mods use MDS/ASC models for inventory
-            if ( world != oCGame::GetGame()->_zCSession_world ) {
+            const bool isInventory = world != oCGame::GetGame()->_zCSession_world;
+
+            // Some mods use MDS/ASC models for inventory. A model without a skinned mesh is flattened
+            // into one static mesh (node attachments baked at their bind transform); one that has a
+            // skinned mesh must go through the skeletal path below, which is what the flatten drops -
+            // hence those items looking wrong in the inventory but right once dropped into the world.
+            if ( isInventory && static_cast<zCModel*>(vob->GetVisual())->GetMeshSoftSkinList()->NumInArray == 0 ) {
                 // Cast to zCProgMeshProto only to make it work with StaticMeshVisuals
                 zCProgMeshProto* pm = static_cast<zCProgMeshProto*>(vob->GetVisual());
 
@@ -2495,6 +2504,16 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 // Must be inventory
                 Inventory->OnAddVob( vi, world );
                 break;
+            }
+
+            // ZenGin adds and removes the preview vob once per slot per frame - reuse the info we
+            // already built for it instead of dropping its (asynchronously extracted) attachments.
+            if ( isInventory ) {
+                if ( SkeletalVobInfo* known = Inventory->FindSkeletal( vob, world ) ) {
+                    VobsByVisual[vob->GetVisual()].push_back( known );
+                    XMStoreFloat4x4( &known->WorldMatrix, vob->GetWorldMatrixXM() );
+                    break;
+                }
             }
 
             // Add vob to the skeletal list
@@ -2520,6 +2539,9 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 {
                     AnimatedSkeletalVobs.push_back( vi );
                 }
+            } else {
+                // Must be inventory
+                Inventory->OnAddVob( vi, world );
             }
             break;
         } else if ( ext == ".PFX" ) {

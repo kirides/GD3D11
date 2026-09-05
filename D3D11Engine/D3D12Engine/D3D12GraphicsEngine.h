@@ -228,6 +228,7 @@ public:
     void OnMeshInfoDestroyed( MeshInfo* mesh ) override { m_VobArena.Forget( mesh ); }
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
+    void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual
     D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }
 
     /** Savegame-thumbnail / screenshot readback (MyDirectDrawSurface7::Lock's DDLOCK_READONLY hack).

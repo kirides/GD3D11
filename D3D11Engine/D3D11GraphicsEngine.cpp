@@ -8879,6 +8879,165 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
 }
 
+void D3D11GraphicsEngine::BindPreviewBoneTransforms( const std::vector<XMFLOAT4X4>& transforms ) {
+    const UINT boneCount = std::min<UINT>( static_cast<UINT>(transforms.size()), NUM_MAX_BONES );
+
+    if ( !FeatureLevel10Compatibility
+        && UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, transforms, "SkeletalBoneTransformsBufferTransient" )
+        && SkeletalBoneTransformsBufferTransient ) {
+        // Same buffer for both poses - the preview never moves, so a velocity of zero is correct.
+        ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+        ActiveVS->BindResource( "PrevBoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+
+        VS_ExConstantBuffer_SkeletalBoneRange range = {};
+        range.BoneCount = boneCount;
+        range.UseStructuredBones = 1u;
+        ActiveVS->UpdateBuffer( "BoneTransformRange", &range, sizeof( range ) );
+        return;
+    }
+
+    auto allocation = AllocateDynamicCB( transforms.data(), sizeof( XMFLOAT4X4 ) * boneCount );
+    BindDynamicCBToVertexShader( ActiveVS->GetInputIndex( "BoneTransforms" ), allocation );
+    BindDynamicCBToVertexShader( ActiveVS->GetInputIndex( "PrevBoneTransforms" ), allocation );
+}
+
+/** Draws a skeletal VOB (used for inventory) */
+void D3D11GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) {
+    if ( !vob || !vob->Vob || !vob->VisualInfo ) return;
+
+    // Still being filled in on a worker thread (GothicAPI::LoadzCModelData) - skip until the meshes are
+    // safe to iterate. The item pops in a frame or two later instead.
+    SkeletalMeshVisualInfo* visualInfo = static_cast<SkeletalMeshVisualInfo*>(vob->VisualInfo);
+    if ( !visualInfo->GetIsReady() ) return;
+
+    zCModel* model = static_cast<zCModel*>(vob->Vob->GetVisual());
+    if ( !model ) return;
+
+    Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
+
+    // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get() );
+
+    Engine::GAPI->GetRendererState().DepthState.SetDefault(); // defaul depth: buffer + write on.
+    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
+    // Set backface culling
+    Engine::GAPI->GetRendererState().RasterizerState.SetDefault(); // CULL_BACK is default.
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    UpdateRenderStates();
+
+    // Into our own buffer, not GetBoneTransforms(): we are inside one of ZenGin's own render callbacks
+    // here, and that overload writes its result into zCModelNodeInst::TrafoObjToCam, which ZenGin keeps
+    // as the *world*-space node cache.
+    static std::vector<XMFLOAT4X4> boneTransforms; // Main thread only, keeps its capacity
+    boneTransforms.clear();
+    model->GetBoneTransformsTo( boneTransforms );
+    if ( boneTransforms.size() > NUM_MAX_BONES )
+        boneTransforms.resize( NUM_MAX_BONES );
+
+    const XMFLOAT4X4 world = *vob->Vob->GetWorldMatrixPtr();
+    const XMMATRIX worldXm = XMLoadFloat4x4( &world );
+
+    // Skinned base meshes - the part the static flatten used to drop entirely.
+    if ( !visualInfo->SkeletalMeshes.empty() && !boneTransforms.empty() ) {
+        SetActivePixelShader( PShaderID::PS_Preview_Textured );
+        SetActiveVertexShader( VShaderID::VS_ExSkeletal );
+
+        SetupVS_ExMeshDrawCall();
+        SetupVS_ExConstantBuffer();
+
+        VS_ExConstantBuffer_PerInstanceSkeletal cb = {};
+        cb.World = world;
+        cb.PrevWorld = world;
+        cb.PI_ModelColor = float4( 1.f, 1.f, 1.f, 1.f );
+        cb.PI_ModelFatness = 0.f;
+        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &cb, sizeof( cb ) );
+
+        BindPreviewBoneTransforms( boneTransforms );
+        ActiveVS->Apply();
+
+        for ( auto const& itm : visualInfo->SkeletalMeshes ) {
+            zCTexture* texture;
+            if ( !itm.first || (texture = itm.first->GetAniTexture()) == nullptr ) continue;
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+            texture->Bind( 0 );
+
+            for ( auto const& mesh : itm.second ) {
+                UINT offset = 0;
+                UINT uStride = sizeof( ExSkelVertexStruct );
+                Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( mesh->MeshVertexBuffer.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+                Context->IASetIndexBuffer( D3D11VertexBuffer::From( mesh->MeshIndexBuffer.get() )->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+                Context->DrawIndexed( static_cast<UINT>(mesh->Indices.size()), 0, 0 );
+
+                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += mesh->Indices.size() / 3;
+            }
+        }
+    }
+
+    // Node attachments (a weapon in a hand, the lid of a chest, ...) - the same visuals the world path
+    // draws through VS_ExNode, just without the instancing.
+    zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+    const int numNodes = nodeList ? std::min<int>( nodeList->NumInArray, static_cast<int>(boneTransforms.size()) ) : 0;
+    if ( numNodes > 0 ) {
+        SetActivePixelShader( PShaderID::PS_Preview_Textured );
+        SetActiveVertexShader( VShaderID::VS_ExNode );
+
+        SetupVS_ExMeshDrawCall();
+        SetupVS_ExConstantBuffer();
+
+        auto& attachments = vob->NodeAttachments;
+        for ( int i = 0; i < numNodes; i++ ) {
+            zCModelNodeInst* node = nodeList->Array[i];
+            if ( !node->NodeVisual ) continue;
+
+            auto attachment = attachments.find( i );
+            // Extract on first sight, and re-extract when the node's visual changed. Gated on
+            // GetIsReady(): the worker writes Visual as it finishes, so comparing any earlier races it.
+            if ( attachment == attachments.end()
+                || (!attachment->second.empty() && attachment->second[0]->GetIsReady()
+                    && node->NodeVisual != attachment->second[0]->Visual) ) {
+                WorldConverter::ExtractNodeVisualAsync( i, node, attachments );
+                attachment = attachments.find( i );
+            }
+            if ( attachment == attachments.end() ) continue;
+
+            VS_ExConstantBuffer_PerInstanceNode cb = {};
+            XMStoreFloat4x4( &cb.World, worldXm * XMLoadFloat4x4( &boneTransforms[i] ) );
+            cb.PrevWorld = cb.World;
+            cb.Color = float4( 1.f, 1.f, 1.f, 1.f );
+            cb.Fatness = 0.f;
+            cb.Scaling = 1.f;
+
+            for ( MeshVisualInfo* mvi : attachment->second ) {
+                // Still being extracted on a worker thread - skip it for this frame rather than race it.
+                if ( !mvi->GetIsReady() || !mvi->Visual ) continue;
+
+                ActiveVS->UpdateBuffer( "Matrices_PerInstances", &cb, sizeof( cb ) );
+                ActiveVS->Apply();
+
+                for ( auto const& itm : mvi->Meshes ) {
+                    zCTexture* texture;
+                    if ( !itm.first || (texture = itm.first->GetAniTexture()) == nullptr ) continue;
+                    if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+                    texture->Bind( 0 );
+
+                    for ( auto const& mesh : itm.second ) {
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(), mesh->GetMeshIndexBuffer(), mesh->Indices.size() );
+                    }
+                }
+            }
+        }
+    }
+
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+
+    // Disable culling again
+    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
+}
+
 /** Returns the data of the backbuffer */
 void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {
     if ( thumbnail ) {
