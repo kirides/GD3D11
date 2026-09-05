@@ -30,6 +30,8 @@ public:
         uint32_t MaxHiSlots = 64;                  // full-res dynamic pool size (D3D11 128 / D3D12 64)
         uint32_t MaxLowSlots = 340;                // low-res static pool size; 340 is one array's hard ceiling
         uint32_t RetentionFrames = 600;            // ~10 s at 60 fps before an absent owner loses its slot
+        uint32_t SlotStealGraceFrames = 300;       // ~5 s an absent owner's cube is off limits to newcomers
+        uint32_t HandoverMaxFrames = 120;          // ~2 s a tier switch may keep its old cube waiting on the new
         uint32_t LowStaticRendersPerFrame = 8;     // per-frame ceiling on low-tier static (re)bakes
         uint32_t AlwaysDynamicCount = 8;           // nearest winners that always get the overlay
         uint32_t DynamicRoundRobinBudget = 6;      // most-stale winners serviced per frame beyond those
@@ -104,7 +106,15 @@ public:
                                              // set; 0 while present. A slot is NOT released the moment its light
                                              // drops out (the light set is frustum-culled upstream, so merely
                                              // turning away drops it): its cached static depth is still good and
-                                             // is exactly what should be reused when the light comes back.
+                                             // is exactly what should be reused when the light comes back. Nor is
+                                             // it a donor to a newcomer until it has been gone longer than
+                                             // Config::SlotStealGraceFrames - see pickSlot.
+        // A tier switch HANDS OVER rather than hands back: until the new tier's slot has really been baked, the
+        // old one stays owned, keeps this light's depth and is what the shader samples. Such a slot is not in
+        // m_SlotByKey (the key points at its new slot) and is never a donor to anyone else.
+        bool              handoverFallback = false;
+        uint32_t          handoverTarget = 0;      // the slot being baked; the fallback dies once it holds depth
+        uint32_t          handoverFrames = 0;      // bounded, so a target that never bakes cannot pin a slot
         // Every caster identity the static bake put into this slot, in the order it gathered them. Rebuilt from
         // scratch on each static (re)render and consulted ONLY by InvalidateStaticForVobRemoved, which compares
         // pointers - by the time that fires the vob may be half torn down and unreadable.
@@ -135,6 +145,9 @@ public:
 
     /** Slot index currently owned by `key`, or -1. */
     int FindSlotOf( uint64_t key ) const;
+    /** The slot `key` is handing over FROM while its new slot bakes, or -1. It still holds that light's depth
+        and is what should be sampled meanwhile - see Slot::handoverFallback. */
+    int FindFallbackSlotOf( uint64_t key ) const;
 
     /** Hand a slot back unconditionally (the light died, the backend tore its resources down). */
     void ReleaseSlot( uint32_t slot );
@@ -189,6 +202,9 @@ private:
     // Not scratch: the persistent key -> occupied-slot index that FindSlotOf answers from. Maintained wherever
     // a slot changes hands, and rebuilt from the table at the top of every Select.
     std::unordered_map<uint64_t, uint32_t> m_SlotByKey;
+    // key -> the slot it is handing over FROM, for keys with a tier switch in flight. Rebuilt alongside
+    // m_SlotByKey, which deliberately holds the other half (the slot being handed over TO).
+    std::unordered_map<uint64_t, uint32_t> m_FallbackByKey;
     gtl::flat_hash_set<uint64_t> m_FrameKeys;
     std::vector<Assignment*> m_Eligible;
 

@@ -947,13 +947,22 @@ void D3D11ShadowMap::ReconcileTiledSlots() {
             continue;
         }
 
+        // A handover the selector has retired (its target got baked, or the wait timed out) must stop being
+        // sampled here too: that slot is back in the pool and the next light to take it would be shading
+        // against foreign depth, which reads as black rather than merely unshadowed.
+        if ( !pl->HasOwnDepthInSlot() && pl->GetSampleSlot() >= 0
+            && m_PointSlots.FindFallbackSlotOf( reinterpret_cast<uint64_t>( light->Vob ) ) < 0 ) {
+            pl->SetSlotFallback( -1, false );
+        }
+
         const bool low = m_PointSlots.IsLowSlot( static_cast<uint32_t>( global ) );
         const int local = low ? static_cast<int>( m_PointSlots.LowIndex( static_cast<uint32_t>( global ) ) ) : global;
         if ( pl->GetTiledSlot() == local && pl->IsTiledSlotLowRes() == low ) continue;
 
-        // Changing tier or slot means the depth this light held is gone: SetTiledSlot drops the bake and the
-        // has-own-depth flag, so it is shaded unshadowed (range-clamped) until its render lands rather than
-        // sampling whatever the previous occupant left in the new slot.
+        // Changing tier or slot means the new target holds nothing of this light's: SetTiledSlot drops the bake
+        // and the has-own-depth flag, so it would be shaded unshadowed (range-clamped) until its render lands.
+        // Unless the selector kept the OLD slot back for it - a tier handover - in which case that slot still
+        // holds this light's depth and is what the lit pass keeps sampling meanwhile.
         RenderToDepthStencilBuffer* target = low ? m_TiledDeferred->ClaimStaticSlot( local )
                                                  : m_TiledDeferred->ClaimSlot( local );
         if ( !target ) {
@@ -962,10 +971,24 @@ void D3D11ShadowMap::ReconcileTiledSlots() {
             if ( pl->GetTiledSlot() >= 0 ) pl->ClearTiledSlot();
             continue;
         }
+        // Captured before ClearTiledSlot wipes both, and only honoured when the selector really is holding that
+        // exact slot back for this light: anything else and the depth there is about to belong to someone else.
+        const int prevSlot = pl->GetTiledSlot();
+        const bool prevLow = pl->IsTiledSlotLowRes();
+        const bool prevHadDepth = pl->HasOwnDepthInSlot();
+        const int fbGlobal = m_PointSlots.FindFallbackSlotOf( reinterpret_cast<uint64_t>( light->Vob ) );
+
         pl->ClearTiledSlot();
         pl->ReleaseShadowMap();
         pl->SetTiledSlot( local, target, m_TiledDeferred.get(), low, &m_PointSlots );
         pl->SetCurrentResolution( low ? STATIC_SHADOW_CUBE_SIZE : SHADOW_CUBE_SIZE );
+
+        if ( prevHadDepth && prevSlot >= 0 && fbGlobal >= 0 ) {
+            const bool fbLow = m_PointSlots.IsLowSlot( static_cast<uint32_t>( fbGlobal ) );
+            const int fbLocal = fbLow ? static_cast<int>( m_PointSlots.LowIndex( static_cast<uint32_t>( fbGlobal ) ) )
+                                      : fbGlobal;
+            if ( fbLocal == prevSlot && fbLow == prevLow ) pl->SetSlotFallback( prevSlot, prevLow );
+        }
     }
 }
 

@@ -504,13 +504,15 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
             // Mirrors D3D12's "publish the cube index only once the slot holds this owner's depth" - and,
             // like that rule, it deliberately keeps advertising a slot whose bake has merely been
             // INVALIDATED: stale depth is a small artefact, no depth at all is a light that switches off.
-            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) && pl->HasOwnDepthInSlot() ) {
+            // HasSampleableDepth, not HasOwnDepthInSlot: a light mid-tier-handover has no depth in its NEW
+            // slot yet but its old one is being held back for exactly this - see SetSlotFallback.
+            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) && pl->HasSampleableDepth() ) {
                 hasShadow = true;
             }
         }
 
         // Shadowed lights need a tiled slot (assigned earlier in DrawPointlightShadows).
-        if ( hasShadow && pl->GetTiledSlot() < 0 ) {
+        if ( hasShadow && pl->GetSampleSlot() < 0 ) {
             continue;
         }
 
@@ -563,9 +565,11 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
 
         if ( hasShadow ) {
-            tl.ShadowCubeIndex = pl->GetTiledSlot()
-                | ( pl->IsTiledSlotLowRes() ? SHADOW_CUBE_TIER_LOW : 0 )
-                | ( pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
+            // The overlay bit belongs to the light's OWN slot only - the one it is handing over from was
+            // never refreshed for this frame and its dynamic twin holds somebody else's casters.
+            tl.ShadowCubeIndex = pl->GetSampleSlot()
+                | ( pl->IsSampleSlotLowRes() ? SHADOW_CUBE_TIER_LOW : 0 )
+                | ( pl->HasOwnDepthInSlot() && pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
             hasShadowedTiledLights = true;
         } else {
             tl.ShadowCubeIndex = -1;

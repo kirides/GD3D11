@@ -184,6 +184,7 @@ void D3D11PointLight::ClearTiledSlot() {
     // No free-list to give the slot back to: the shared PointLightSlotSelector owns who holds what, and this
     // only lets go of the light's end of that (it is called BECAUSE the selector reassigned the slot).
     m_SlotHasOwnDepth = false;
+    m_FallbackSlotIndex = -1;
     DropStaticBake();   // before dropping m_SlotSel, so the slot table stays the single invalidation counter
     m_HasDynamicOverlay = false;
     m_TiledSlotIndex = -1;
@@ -595,6 +596,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     LightInfo->LastRenderedPosition = vobPos;
     DrawnOnce = true;
     m_SlotHasOwnDepth = true;   // the target now holds this light's depth - see HasOwnDepthInSlot()
+    m_FallbackSlotIndex = -1;   // handover complete: the new slot is the one to sample from here on
 }
 
 /** Renders all cubemap faces at once, using the geometry shader */

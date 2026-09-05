@@ -154,8 +154,19 @@ public:
     void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes,
         PointLightSlotSelector* sel );
     void ClearTiledSlot();
+    /** Hands the slot this light is leaving OVER instead of dropping it: it still holds this light's depth, so
+        it stays what the lit pass samples until the new slot has been rendered. Called right after the
+        SetTiledSlot that moves the light, and only while the selector is holding that slot back for it.
+        Without it a tier change (low-res cache <-> full-res) shaded the light unshadowed for however long the
+        new bake took, which the range clamp in CullLights turns into the light visibly easing off. */
+    void SetSlotFallback( int slot, bool lowRes ) { m_FallbackSlotIndex = slot; m_FallbackSlotLowRes = lowRes; }
     int GetTiledSlot() const { return m_TiledSlotIndex; }
     bool IsTiledSlotLowRes() const { return m_TiledSlotLowRes; }
+    /** Which slot the lit pass should actually sample: this light's own once it holds its depth, else the one
+        being handed over from. -1 when neither does, i.e. genuinely unshadowed. */
+    int GetSampleSlot() const { return m_SlotHasOwnDepth ? m_TiledSlotIndex : m_FallbackSlotIndex; }
+    bool IsSampleSlotLowRes() const { return m_SlotHasOwnDepth ? m_TiledSlotLowRes : m_FallbackSlotLowRes; }
+    bool HasSampleableDepth() const { return GetSampleSlot() >= 0; }
     /** This light's slot in the selector's single GLOBAL index space (low-res slots sit above the full-res
         pool), or -1. The two tiers keep separate local indices in D3D11 because they are separate arrays. */
     int GetGlobalTiledSlot() const;
@@ -248,6 +259,11 @@ protected:
     // The shared slot table this slot came from - see SetTiledSlot. Non-owning; null on the legacy path.
     PointLightSlotSelector* m_SlotSel = nullptr;
     bool m_TiledSlotLowRes = false; // which of the two independent slot pools m_TiledSlotIndex indexes into
+    // The slot a tier switch is handing over FROM - see SetTiledSlot's keepAsFallback. Still holds this
+    // light's depth and stays sampleable until m_TiledSlotIndex has been rendered. The selector holds the
+    // matching half and will not give this slot to anybody else meanwhile.
+    int m_FallbackSlotIndex = -1;
+    bool m_FallbackSlotLowRes = false;
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;
 };
