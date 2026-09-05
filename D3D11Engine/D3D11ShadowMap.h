@@ -74,6 +74,9 @@ struct RenderShadowmapsParams {
     D3D11_VIEWPORT ViewportOverride = {};
     bool UseViewportOverride = false;
     bool SkipClear = false;
+
+    // Grass is not a rain blocker - the rain shadowmap must not see it (see D3D11Effect::DrawRainShadowmap)
+    bool DrawVegetation = true;
 };
 
 class D3D11ShadowMap {

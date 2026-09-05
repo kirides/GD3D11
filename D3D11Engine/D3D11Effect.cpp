@@ -600,7 +600,9 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     e->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
-    e->RenderShadowmaps( p, RainShadowmap.get(), true, false );
+    // No vegetation: grass would cover the ground in the rain map and kill both the raindrops and the
+    // wetness on it (see VS_ParticlePointShaded's IsWet).
+    e->RenderShadowmaps( p, RainShadowmap.get(), true, false, nullptr, nullptr, false );
 
     // Restore old settings
     e->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );

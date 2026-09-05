@@ -7361,7 +7361,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     if ( renderState.RendererSettings.DrawVOBs
-        && isCloseCascade ) {
+        && isCloseCascade && params.DrawVegetation ) {
         ZoneScopedN( "Shadows::DrawVegetation" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVegetation" ) );
 
@@ -8780,9 +8780,11 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowmaps( FXMVECTOR cameraPosition
     RenderToDepthStencilBuffer* target,
     bool cullFront, bool dontCull,
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite,
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV ) {
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV,
+    bool drawVegetation ) {
 
     RenderShadowmapsParams renderParams = {};
+    renderParams.DrawVegetation = drawVegetation;
     XMStoreFloat3( &renderParams.CameraPosition, cameraPosition );
     renderParams.Target = target;
     renderParams.CullFront = cullFront;
