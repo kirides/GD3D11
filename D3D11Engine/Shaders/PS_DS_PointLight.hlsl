@@ -23,7 +23,7 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	matrix PL_InvView;
 
 	float3 PL_LightScreenPos;
-	float PL_Pad3;
+	float PL_ShadowRange;
 
 	// Rain wetness, frame-constant (see ApplyPointLightWetness / RainWetnessSample.h).
 	matrix PL_RainViewProj;

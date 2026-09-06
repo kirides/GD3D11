@@ -12,7 +12,10 @@ const int GSWITCH_FOG = 1;
 const int GSWITCH_ALPHAREF = 2;
 const int GSWITCH_LIGHING = 4;
 const int GSWITCH_REFLECTIONS = 8;
-const int GSWITCH_LINEAR_DEPTH = 16;
+// A point-light shadow cube is being rendered: casters keep the rasterizer's own (hyperbolic) depth and
+// only alpha-test, so the pass wants PS_CubeShadow rather than a G-buffer pixel shader. Not read by any
+// shader, unlike the switches above.
+const int GSWITCH_CUBE_SHADOW = 16;
 // Forward+ with hardware MSAA active: alpha-tested pixel shaders sharpen their alpha test into a
 // per-pixel coverage value instead of a hard binary clip, so the MSAA alpha-to-coverage blend mode
 // can dither an anti-aliased cutout edge across subsamples.
@@ -1524,6 +1527,39 @@ private:
     unsigned long long m_Total = 0;
 };
 
+/** Why a cached static point-light cube had to be thrown away and re-rendered. One counter per cause, so
+    the ImGui overlay can name what is costing the frames instead of only reporting that something is.
+    Shared by both backends - the causes live in PointLightSlotSelector, which both drive. */
+enum EPointLightRebakeCause {
+    PLR_VOB_ADDED,      // a caster appeared, or moved into a baked light's range
+    PLR_VOB_REMOVED,    // a caster the bake covered was destroyed, or started moving
+    PLR_SLOT_TAKEN,     // the slot changed hands - a nearer light evicted the owner
+    PLR_SLOT_AGED,      // the owner left the deactivation dome, so its slots went back to the pool
+    PLR_LIGHT_MOVED,    // the cube's origin moved
+    PLR_RANGE_CHANGED,  // the cube's range changed - see D3D11PointLight::UpdateShadowRange
+    PLR_MODE_CHANGED,   // the global point-light shadow mode changed under this light
+    PLR_ASIDE_BUFFER,   // legacy composited path: the aside cube was re-allocated or given back
+    PLR_NO_CACHE,       // PLS_FULL drops the bake every frame by design - not a fault
+    PLR_BUDGET_DEFER,   // a wanted re-bake was postponed by the per-frame light budget
+    PLR_NUM_CAUSES
+};
+
+inline const char* PointLightRebakeCauseName( EPointLightRebakeCause c ) {
+    switch ( c ) {
+    case PLR_VOB_ADDED:     return "Caster added/moved in";
+    case PLR_VOB_REMOVED:   return "Baked caster removed";
+    case PLR_SLOT_TAKEN:    return "Slot changed hands";
+    case PLR_SLOT_AGED:     return "Owner left the dome";
+    case PLR_LIGHT_MOVED:   return "Light moved";
+    case PLR_RANGE_CHANGED: return "Light range changed";
+    case PLR_MODE_CHANGED:  return "Shadow mode changed";
+    case PLR_ASIDE_BUFFER:  return "Aside cube re-allocated";
+    case PLR_NO_CACHE:      return "PLS_FULL (no caching)";
+    case PLR_BUDGET_DEFER:  return "Deferred by budget";
+    default:                return "?";
+    }
+}
+
 struct GothicRendererInfo {
     GothicRendererInfo() {
         VOBVerticesDataSize = 0;
@@ -1542,6 +1578,8 @@ struct GothicRendererInfo {
         NearPlane = 0;
         FrameDrawnLights = 0;
         WorldMeshDrawCalls = 0;
+        PointLightStaticRendersWanted = 0;
+        PointLightRendersGranted = 0;
         FramePipelineStates = 0;
 
         StateChanges = 0;
@@ -1582,9 +1620,34 @@ struct GothicRendererInfo {
     int FrameDrawnLights;
     int WorldMeshDrawCalls;
 
-    // Cached static point-light shadows dropped per second. Owns its own window, so it is not reset per
-    // frame. A steady non-zero rate means cubes are being re-baked continuously instead of cached.
-    RollingSecondCounter PointLightStaticInvalidations;
+    // Lights asking for shadow work this frame (a static bake, an overlay refresh or both) and how many of
+    // them the per-frame budget actually served. Per-frame, unlike the rolling counters below: they say how
+    // often bakes are being invalidated, these say how deep the backlog is right now.
+    unsigned int PointLightStaticRendersWanted;
+    unsigned int PointLightRendersGranted;
+
+    // Cached static point-light shadows dropped per second, split by cause (see EPointLightRebakeCause).
+    // Own their own window, so they are not reset per frame. A steady non-zero rate means cubes are being
+    // re-baked continuously instead of cached; the breakdown says which of the causes is doing it.
+    RollingSecondCounter PointLightStaticInvalidations[PLR_NUM_CAUSES];
+
+    void NotePointLightRebake( EPointLightRebakeCause cause ) {
+        PointLightStaticInvalidations[cause].Note();
+    }
+
+    /** Everything except PLR_BUDGET_DEFER, which postpones a re-bake rather than causing one. */
+    unsigned int PointLightRebakesPerSecond() {
+        unsigned int sum = 0;
+        for ( int c = 0; c < PLR_NUM_CAUSES; ++c )
+            if ( c != PLR_BUDGET_DEFER ) sum += PointLightStaticInvalidations[c].PerSecond();
+        return sum;
+    }
+    unsigned long long PointLightRebakesTotal() const {
+        unsigned long long sum = 0;
+        for ( int c = 0; c < PLR_NUM_CAUSES; ++c )
+            if ( c != PLR_BUDGET_DEFER ) sum += PointLightStaticInvalidations[c].Total();
+        return sum;
+    }
 
     // Point-light shadow-cube slot occupancy per tier, as of the last frame's selection. `Starved` counts
     // lights that wanted a cube and could not be given one because their tier was full at comparable

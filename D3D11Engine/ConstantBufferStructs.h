@@ -196,7 +196,9 @@ struct DS_PointLightConstantBuffer {
     XMFLOAT4X4 PL_InvView;
 
     float3 PL_LightScreenPos;
-    float PL_Pad3;
+    // Cube far-plane basis (far = PL_ShadowRange*2), which PL_Range is NOT: that carries the per-frame light
+    // animation and the unshadowed clamp. See D3D11PointLight::GetShadowRange.
+    float PL_ShadowRange;
 
     // Rain wetness (frame-constant, re-sent with every light like PL_InvView above): lets the point-light
     // passes darken/dampen a wet pixel the same way PS_DS_AtmosphericScattering.hlsl's ApplySceneWettness

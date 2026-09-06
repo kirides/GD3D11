@@ -99,7 +99,7 @@ bool D3D12PipelineState::CreateWorld() {
     // OnStartWorldRendering, before any pass binds this root signature, and neither is touched again this
     // frame. Lets the driver hoist the per-pixel buffer load out of the light loop.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
-    // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowLowIndex, PointShadowDynIndex,
+    // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, PointShadowReserved,
     //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
     rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 per-cluster LightGrid (64-bit mask)

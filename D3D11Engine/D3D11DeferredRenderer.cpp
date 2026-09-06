@@ -161,14 +161,14 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
 
     const bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD;
     const bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-    const bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+    const bool cubeShadowPass = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
 
     if ( materialType == MaterialInfo::MT_Portal ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_PortalDiffuse );
     } else if ( materialType == MaterialInfo::MT_WaterfallFoam ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_WaterfallFoam );
-    } else if ( linZ ) {
-        newShader = shaderManager.GetPShader( PShaderID::PS_LinDepth );
+    } else if ( cubeShadowPass ) {
+        newShader = shaderManager.GetPShader( PShaderID::PS_CubeShadow );
     } else if ( blendAdd || blendBlend ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_Simple_FF );
     } else if ( texture->HasAlphaChannel() || forceAlphaTest ) {

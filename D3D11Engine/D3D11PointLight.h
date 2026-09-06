@@ -45,10 +45,6 @@ public:
     /** Called when a vob got removed from the world */
     void OnVobRemovedFromWorld( BaseVobInfo* vob ) override;
 
-    /** Drops the cached bake so the next RenderCubemap re-renders from scratch, even for an
-        already-ready PLS_STATIC_ONLY light (forceUpdate alone doesn't cover that case). */
-    void ForceRebake() { Invalidate(); }
-
     bool HasAnyShadowMap() const {
         return HasShadowMap(0) || HasShadowMap(1) || m_StaticDepthCubemap != nullptr;
     }
@@ -57,65 +53,37 @@ public:
         return m_StaticShadowReady;
     }
 
-    /** True once the target this light holds physically contains THIS light's depth - not the same question
-        as whether the bake is up to date (IsStaticShadowReady), which a world change drops. Only a slot
-        changing hands clears it. Gates advertising the cube at all: an unrendered slot holds the previous
-        occupant's depth and shades the light black rather than merely unshadowed. */
-    bool HasOwnDepthInSlot() const { return m_SlotHasOwnDepth; }
+    /** Drops the cached bake so the next render re-renders from scratch, even for an already-ready
+        PLS_STATIC_ONLY light (forceUpdate alone doesn't cover that case). */
+    void ForceRebake() { Invalidate(); }
 
     bool IsShadowReady() const override {
         return m_StaticShadowReady;
     }
 
-    /** True when this light's tiled slot in the dynamic-overlay cube array holds a valid, already-rendered set
-        of moving casters. Drives SHADOW_CUBE_HAS_DYNAMIC, i.e. whether the shader takes the second sample.
-        Only PLS_UPDATE_DYNAMIC ever refreshes that overlay, so the mode is re-checked here rather than trusted
-        to have been cleared: any other mode would otherwise keep sampling whatever the last update left in the
-        slot, freezing that NPC into the shadow. */
-    bool HasDynamicShadowOverlay() const {
-        return m_HasDynamicOverlay
-            && GetCurrentShadowMode() == GothicRendererSettings::PLS_UPDATE_DYNAMIC;
-    }
-
-    bool HasShadowMap(int shadowMapKind ) const {
+    /** 0 = the legacy per-light cubemap (tiled lighting off), 1 = a slot in the shared static cube array. */
+    bool HasShadowMap( int shadowMapKind ) const {
         if ( shadowMapKind == 0 ) return m_DepthCubemap != nullptr;
-        return m_TiledDepthTarget != nullptr;
+        return m_StaticTarget != nullptr;
     }
     int GetShadowMapResolution() const { return m_CurrentResolution; }
     ID3D11Texture2D* GetShadowCubeTexture() const { return m_DepthCubemap ? m_DepthCubemap->GetTexture().Get() : nullptr; }
 
-    /** Which tier this light would PREFER, independent of the one it sits in. Reads the preferred mode, not
-        GetCurrentShadowMode(): a spilled light reports STATIC_ONLY, which would make the spill permanent. */
-    bool WantsStaticOnlySlot() const {
-        return GetPreferredShadowMode() == GothicRendererSettings::PLS_STATIC_ONLY;
-    }
-
-    /** Fold this frame's position into the "has not moved recently" tracker; called once per frame per
-        visible light. Gothic's IsStatic() bit does not answer this: a colour-animated brazier reads as
-        non-static there while never being repositioned. */
-    void NoteStationary();
-
     /** True when this light's category is not opted into VOB/NPC casters (PointlightShadowCasterFlags), so
-        its cube holds the world mesh alone and the full-res tier would buy it nothing. */
+        its cube holds the world mesh alone and it never receives an overlay. */
     bool RestrictsCastersToWorld() const;
 
-    /** True once this light has held still long enough for its cube to be worth caching - the condition for
-        spilling it into the low-res tier, which bakes once and never runs the dynamic overlay. */
-    bool IsSpatiallyStatic() const;
+    /** The cube's far-plane basis, NOT the light's live range: DoAnimation re-animates that every frame.
+        Quantized and grow-only by PointLightSlotSelector::BuildCandidates, which is the only writer. */
+    void SetShadowRange( float range ) { if ( range > 0.0f ) m_ShadowRange = range; }
+    float GetShadowRange() const;
 
     void AcquireShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseShadowMap();
 
-    /** Called once per frame from DrawPointlightShadows for every light that currently owns shadow
-        resources. Tracks consecutive absent frames (light disabled, or dropped out of VisibleInFrame) and
-        returns true only once that streak exceeds retentionFrames - the caller should release the slot/
-        shadow map then, not on the very first absent frame. A light that merely blinks (zCVobLight
-        IsEnabled toggling for a flicker effect, or a one-frame frustum/visibility edge case) never crosses
-        the threshold and keeps its slot and baked depth. Without this, a PLS_STATIC_ONLY light that blinks
-        even occasionally can never finish a bake that STICKS: it gets evicted the instant it goes briefly
-        absent, so by the time it wins a slot again the next blink has already wiped the previous progress -
-        it lights unshadowed (bleeding through walls) forever. Mirrors D3D12PointShadows' Slot::missingFrames
-        retention in SelectShadowedLights. */
+    /** LEGACY path only. Counts consecutive absent frames and returns true once the streak exceeds
+        retentionFrames, so a light that merely blinks keeps its cubemap and can finish a bake that sticks.
+        The tiled path retains on the selector's dome instead, which cannot see visibility at all. */
     bool NoteAbsence( bool visibleThisFrame, int retentionFrames ) {
         if ( visibleThisFrame ) {
             m_MissingFrames = 0;
@@ -125,45 +93,42 @@ public:
     }
     int GetMissingFrames() const { return m_MissingFrames; }
 
-    /** In the low-res tier while preferring the full-res one. Only used by the debug window. */
-    bool IsSpilled() const { return m_TiledSlotLowRes && !WantsStaticOnlySlot(); }
-
     // Debug-visualization accessors (see ImGuiShim::RenderPointLightShadowDebugWindow).
     VobLightInfo* GetLightInfo() const { return LightInfo; }
-    ID3D11Texture2D* GetTiledShadowCubeTexture() const { return m_TiledDepthTarget ? m_TiledDepthTarget->GetTexture().Get() : nullptr; }
-    int GetTiledFaceBaseSlice() const { return m_TiledSlotIndex >= 0 ? m_TiledSlotIndex * 6 : -1; }
+    ID3D11Texture2D* GetTiledShadowCubeTexture() const { return m_StaticTarget ? m_StaticTarget->GetTexture().Get() : nullptr; }
+    int GetTiledFaceBaseSlice() const { return m_StaticSlot >= 0 ? m_StaticSlot * 6 : -1; }
     float GetDebugZNear() const { return m_DebugLastZNear; }
     float GetDebugZFar() const { return m_DebugLastZFar; }
+    /** Why this light last dropped its own bake, or PLR_NUM_CAUSES if it never has. The slot table keeps
+        its own answer (PointLightSlotSelector::StaticSlot::lastCause) for the causes it decides. */
+    EPointLightRebakeCause GetLastRebakeCause() const { return m_LastRebakeCause; }
+    /** The slot table this light's cubes live in, or null on the legacy path. Debug only. */
+    const PointLightSlotSelector* GetSlotSelector() const { return m_SlotSel; }
 
-    // Tiled deferred slot management (renders directly into a shared TextureCubeArray). `lowRes` selects
-    // which of the two independent slot pools this came from - see WantsStaticOnlySlot(). `sel` is the slot
-    // table that handed the slot out; the light reports its finished bakes back to it, which is what lets the
-    // backend-neutral world-change invalidation reach a D3D11 light. Never owned.
-    void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner, bool lowRes,
-        PointLightSlotSelector* sel );
-    void ClearTiledSlot();
-    /** Hands the slot this light is leaving OVER instead of dropping it: it still holds this light's depth
-        and stays what the lit pass samples until the new slot is rendered. Without it a tier change shaded
-        the light unshadowed until the new bake landed, which the range clamp shows as it easing off. */
-    void SetSlotFallback( int slot, bool lowRes ) { m_FallbackSlotIndex = slot; m_FallbackSlotLowRes = lowRes; }
-    int GetTiledSlot() const { return m_TiledSlotIndex; }
-    bool IsTiledSlotLowRes() const { return m_TiledSlotLowRes; }
-    /** Which slot the lit pass samples: this light's own once it holds its depth, else the one being handed
-        over from. -1 when neither, i.e. genuinely unshadowed. */
-    int GetSampleSlot() const { return m_SlotHasOwnDepth ? m_TiledSlotIndex : m_FallbackSlotIndex; }
-    bool IsSampleSlotLowRes() const { return m_SlotHasOwnDepth ? m_TiledSlotLowRes : m_FallbackSlotLowRes; }
-    bool HasSampleableDepth() const { return GetSampleSlot() >= 0; }
-    /** This light's slot in the selector's single global index space (low-res slots sit above the full-res
-        pool), or -1. D3D11's two tiers keep separate local indices because they are separate arrays. */
-    int GetGlobalTiledSlot() const;
+    // ---- Tiled slot management -----------------------------------------------------------------------------
+    // Two independent tiers, two independent slot indices - see POINTLIGHT_TWO_TIER_PLAN.md. `sel` is the slot
+    // table that handed the static slot out; the light reports its finished bakes back to it, which is what
+    // lets the backend-neutral world-change invalidation reach a D3D11 light. Never owned.
+    void SetStaticSlot( int slot, RenderToDepthStencilBuffer* target, PointLightSlotSelector* sel );
+    void ClearStaticSlot();
+    void SetDynSlot( int slot, RenderToDepthStencilBuffer* target );
+    void ClearDynSlot();
+    int GetStaticSlot() const { return m_StaticSlot; }
+    int GetDynSlot() const { return m_DynSlot; }
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
+    /** The tiled path's per-frame entry point: the selector has already decided what this light does, so
+        unlike RenderCubemap (the legacy path) this asks no questions of its own. */
+    void RenderTiledShadow( bool renderStatic, bool renderDynamic );
+
+    /** Is there a moving caster inside this light's cube at all? The same sphere test the animated pass
+        applies, run first so an empty overlay costs neither a clear nor a slot. */
+    bool HasAnimatedCastersInRange() const;
+
 protected:
-    /** The mode this light's content is rendered and sampled with: GetPreferredShadowMode(), except that a
-        low-res tier slot forces STATIC_ONLY - that array has no dynamic-overlay twin. */
+    /** The global point-light shadow mode this light renders and samples with. A static light drops to
+        PLS_STATIC_ONLY when its category is not opted into VOB/NPC casters - it has nothing to overlay. */
     int GetCurrentShadowMode() const;
-    /** The mode the light would run at on its own merits, independent of the tier it occupies. */
-    int GetPreferredShadowMode() const;
     void HandleShadowModeChange( int shadowMode );
     RenderToDepthStencilBuffer* GetActiveShadowTarget() const;
     void AcquireStaticAsideShadowMap( DepthStencilPool* pool, int resolution );
@@ -173,6 +138,9 @@ protected:
     /** Single funnel for "this light's baked static shadow is no longer valid". Counts the drop only when
         there actually was a bake to lose, and only on the legacy path - see the note in the definition. */
     void DropStaticBake();
+    /** Drops the bake AND attributes it: these are the light's own reasons, which the slot table cannot
+        see (it still reads the slot's depth as valid), so unlike the overload above they always count. */
+    void DropStaticBake( EPointLightRebakeCause cause );
     void RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
     void RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
 
@@ -193,8 +161,14 @@ protected:
     void Invalidate();
     void StartReInit();
 
-    /** Renders all cubemap faces at once, using the geometry shader */
+    /** LEGACY path: all six faces into the per-light cubemap, compositing the cached static depth out of the
+        aside cube and drawing the movers on top. */
     void RenderFullCubemap();
+
+    /** Cube face matrices + projection for this light's origin and cube range, bound for the layered VS /
+        cubemap GS; End restores what Begin changed and stamps the render. Shared by both paths. */
+    void BeginCubeRender( const XMFLOAT3& vobPos );
+    void EndCubeRender( const XMFLOAT3& vobPos );
 
     std::list<VobInfo*> VobCache;
     std::list<SkeletalVobInfo*> SkeletalVobCache;
@@ -214,35 +188,29 @@ protected:
     std::atomic<bool> InitDone;
     bool DrawnOnce;
     bool m_StaticShadowReady = false;
-    // See HasOwnDepthInSlot(). Set when a render completes, cleared when the target changes hands.
-    bool m_SlotHasOwnDepth = false;
-    /** Set once the animated pass has rendered into this light's slot of the dynamic-overlay array; cleared
-        whenever the slot changes hands or the light's caches are invalidated, so we never advertise an
-        overlay that still holds another light's (or a stale) depth. */
-    bool m_HasDynamicOverlay = false;
     int m_LastShadowMode = -1;
+    bool m_SavedDepthClip = false;   // BeginCubeRender saves it, EndCubeRender puts it back
     float m_DebugLastZNear = 0.0f;
     float m_DebugLastZFar = 0.0f;
     // Consecutive frames this light has been absent (disabled/out of VisibleInFrame) - see NoteAbsence().
     int m_MissingFrames = 0;
 
-    // "Has not moved recently" tracking - see NoteStationary()/IsSpatiallyStatic().
-    XMFLOAT3 m_StationaryPos = {};
-    int m_StationaryFrames = 0;
+    // Animation-free cube far-plane basis - see SetShadowRange().
+    float m_ShadowRange = 0.0f;
+
+    // Debug only, for the ImGui point-light overlay: why this light last dropped its own bake. The slot
+    // table records its own causes separately (PointLightSlotSelector::Slot::lastCause).
+    EPointLightRebakeCause m_LastRebakeCause = PLR_NUM_CAUSES;
 
     /** Reports a finished static bake back to the slot table: the cache stamp plus the caster identities it
         covered. No-op on the legacy per-light-cubemap path, which owns no slot. */
     void CommitStaticBakeToSlot();
 
-    // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
-    int m_TiledSlotIndex = -1;
-    // The shared slot table this slot came from - see SetTiledSlot. Non-owning; null on the legacy path.
+    // Tiled slots (non-owning; the targets are owned by D3D11TiledDeferredShading, the slots by the selector)
+    int m_StaticSlot = -1;
+    int m_DynSlot = -1;
+    RenderToDepthStencilBuffer* m_StaticTarget = nullptr;
+    RenderToDepthStencilBuffer* m_DynTarget = nullptr;
+    // The shared slot table the static slot came from - see SetStaticSlot. Non-owning; null on the legacy path.
     PointLightSlotSelector* m_SlotSel = nullptr;
-    bool m_TiledSlotLowRes = false; // which of the two independent slot pools m_TiledSlotIndex indexes into
-    // The slot a tier switch is handing over FROM - see SetSlotFallback. Stays sampleable until
-    // m_TiledSlotIndex has been rendered; the selector holds the matching half.
-    int m_FallbackSlotIndex = -1;
-    bool m_FallbackSlotLowRes = false;
-    RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
-    D3D11TiledDeferredShading* m_TiledOwner = nullptr;
 };

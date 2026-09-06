@@ -12,6 +12,7 @@
 #include "RenderToTextureBuffer.h"
 #include "zCVobLight.h"
 #include "D3D11Effect.h"
+#include "D3D11ShadowMap.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -47,101 +48,39 @@ void D3D11TiledDeferredShading::Init(
     // The clustered cull writes a bitmask straight into the grid, so it needs no flat index list and no
     // atomic allocation counter - both are gone with the old per-tile cull.
 
-    // Shadow cube array is lazy-created on the first ClaimSlot() to save memory when shadows are off
-}
-
-void D3D11TiledDeferredShading::EnsureShadowArray() {
-    if ( m_ShadowArrayCreated ) return;
-    m_ShadowArrayCreated = true;
-
-    // TextureCubeArray as depth render target + shader resource (no copies needed)
-    D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = SHADOW_CUBE_SIZE;
-    desc.Height = SHADOW_CUBE_SIZE;
-    desc.MipLevels = 1;
-    desc.ArraySize = MAX_SHADOW_CUBEMAPS * 6;
-    desc.Format = DXGI_FORMAT_R16_TYPELESS;
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE; 
-    desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
-
-    HRESULT hr;
-    LE( m_device->CreateTexture2D( &desc, nullptr, m_ShadowCubeArray.ReleaseAndGetAddressOf() ));
-    SetDebugName( m_ShadowCubeArray.Get(), "TiledDeferred_ShadowCubeArray" );
-
-    // SRV for sampling in the tiled shading CS
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = DXGI_FORMAT_R16_UNORM;
-    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
-    srvDesc.TextureCubeArray.MostDetailedMip = 0;
-    srvDesc.TextureCubeArray.MipLevels = 1;
-    srvDesc.TextureCubeArray.First2DArrayFace = 0;
-    srvDesc.TextureCubeArray.NumCubes = MAX_SHADOW_CUBEMAPS;
-
-    LE(m_device->CreateShaderResourceView( m_ShadowCubeArray.Get(), &srvDesc, m_ShadowCubeArraySRV.ReleaseAndGetAddressOf() ));
-    SetDebugName( m_ShadowCubeArraySRV.Get(), "TiledDeferred_ShadowCubeArray_SRV" );
-
-    // Per-slot DSVs (6 faces each) and RenderToDepthStencilBuffer view wrappers
-    for ( uint32_t slot = 0; slot < MAX_SHADOW_CUBEMAPS; slot++ ) {
-        D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-        dsvDesc.Format = DXGI_FORMAT_D16_UNORM;
-        dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
-        dsvDesc.Texture2DArray.FirstArraySlice = slot * 6;
-        dsvDesc.Texture2DArray.ArraySize = 6;
-        dsvDesc.Texture2DArray.MipSlice = 0;
-
-        LE(m_device->CreateDepthStencilView( m_ShadowCubeArray.Get(), &dsvDesc, m_SlotDSVs[slot].ReleaseAndGetAddressOf() ));
-
-        // Single-slice (ArraySize=1) DSV per face - the NVIDIA layered-rendering fallback (see
-        // RequiresNvidiaTiledShadowFaceFallback) binds these one at a time instead of relying on
-        // SV_RenderTargetArrayIndex to route into the multi-slice view above.
-        std::array<ComPtr<ID3D11DepthStencilView>, 6> faceDSVs;
-        D3D11_DEPTH_STENCIL_VIEW_DESC faceDsvDesc = dsvDesc;
-        faceDsvDesc.Texture2DArray.ArraySize = 1;
-        for ( uint32_t face = 0; face < 6; face++ ) {
-            faceDsvDesc.Texture2DArray.FirstArraySlice = slot * 6 + face;
-            LE(m_device->CreateDepthStencilView( m_ShadowCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() ));
-        }
-
-        // View wrapper for RenderShadowCube() interface (uses GetSizeX() and GetDepthStencilView())
-        m_SlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
-            m_ShadowCubeArray, m_SlotDSVs[slot], nullptr,
-            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE, faceDSVs.data() );
-    }
+    // Both cube arrays are lazy-created on the first Claim*Slot() to save memory when shadows are off
 }
 
 void D3D11TiledDeferredShading::EnsureDynShadowArray() {
     if ( m_ShadowDynArrayCreated ) return;
     m_ShadowDynArrayCreated = true;
 
-    // Same shape and slot indexing as m_ShadowCubeArray - the shader addresses both with one slot index.
+    // The overlay tier: MAX_DYN_SHADOW_CUBEMAPS full-res cubes holding ONLY the moving casters of their slot.
     D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = SHADOW_CUBE_SIZE;
-    desc.Height = SHADOW_CUBE_SIZE;
+    desc.Width = DYN_SHADOW_CUBE_SIZE;
+    desc.Height = DYN_SHADOW_CUBE_SIZE;
     desc.MipLevels = 1;
-    desc.ArraySize = MAX_SHADOW_CUBEMAPS * 6;
+    desc.ArraySize = MAX_DYN_SHADOW_CUBEMAPS * 6;
     desc.Format = DXGI_FORMAT_R16_TYPELESS;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
     desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
 
-    // Unlike the main array this one can be declined without losing shadows entirely: GetDynSlotTarget()
-    // then returns null and the lights fall back to the composited single-cube path. Failing quietly would
-    // be much worse - a null SRV reads as 0, i.e. every light carrying the flag goes fully shadowed.
+    // Declining this one only costs the movers: the lights keep their static cube. Failing QUIETLY would be
+    // much worse - a null SRV reads as 0, i.e. every light carrying an overlay index goes fully shadowed.
     if ( FAILED( m_device->CreateTexture2D( &desc, nullptr, m_ShadowDynCubeArray.ReleaseAndGetAddressOf() ) ) ) {
-        LogWarn() << "Failed to create the point-light dynamic shadow overlay array; falling back to the "
-            "composited static+dynamic cube path.";
+        LogWarn() << "Failed to create the point-light dynamic shadow overlay array; moving casters will not "
+            "appear in point-light shadows.";
         m_ShadowDynCubeArray.Reset();
         return;
     }
     SetDebugName( m_ShadowDynCubeArray.Get(), "TiledDeferred_ShadowDynCubeArray" );
 
-    // 32-bit address space is scarce, so log what this costs (SHADOW_CUBE_SIZE^2 * 2 bytes * 6 faces * slots).
-    LogInfo() << "Allocated point-light dynamic shadow overlay array: " << MAX_SHADOW_CUBEMAPS << " cubes @ "
-        << SHADOW_CUBE_SIZE << "^2 R16 ("
-        << ( static_cast<size_t>(SHADOW_CUBE_SIZE) * SHADOW_CUBE_SIZE * 2 * 6 * MAX_SHADOW_CUBEMAPS ) / (1024 * 1024 )
+    // 32-bit address space is scarce, so log what this costs (size^2 * 2 bytes * 6 faces * slots).
+    LogInfo() << "Allocated point-light dynamic shadow overlay array: " << MAX_DYN_SHADOW_CUBEMAPS << " cubes @ "
+        << DYN_SHADOW_CUBE_SIZE << "^2 R16 ("
+        << ( static_cast<size_t>(DYN_SHADOW_CUBE_SIZE) * DYN_SHADOW_CUBE_SIZE * 2 * 6 * MAX_DYN_SHADOW_CUBEMAPS ) / (1024 * 1024 )
         << " MB)";
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -150,13 +89,13 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
     srvDesc.TextureCubeArray.MostDetailedMip = 0;
     srvDesc.TextureCubeArray.MipLevels = 1;
     srvDesc.TextureCubeArray.First2DArrayFace = 0;
-    srvDesc.TextureCubeArray.NumCubes = MAX_SHADOW_CUBEMAPS;
+    srvDesc.TextureCubeArray.NumCubes = MAX_DYN_SHADOW_CUBEMAPS;
 
     HRESULT hr;
     LE(m_device->CreateShaderResourceView( m_ShadowDynCubeArray.Get(), &srvDesc, m_ShadowDynCubeArraySRV.ReleaseAndGetAddressOf() ));
     SetDebugName( m_ShadowDynCubeArraySRV.Get(), "TiledDeferred_ShadowDynCubeArray_SRV" );
-    
-    for ( uint32_t slot = 0; slot < MAX_SHADOW_CUBEMAPS; slot++ ) {
+
+    for ( uint32_t slot = 0; slot < MAX_DYN_SHADOW_CUBEMAPS; slot++ ) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
         dsvDesc.Format = DXGI_FORMAT_D16_UNORM;
         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
@@ -166,6 +105,8 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
 
         LE(m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() ));
 
+        // Single-slice DSV per face for the NVIDIA layered-rendering fallback (see
+        // RequiresNvidiaTiledShadowFaceFallback), which binds them one at a time.
         std::array<ComPtr<ID3D11DepthStencilView>, 6> faceDSVs;
         D3D11_DEPTH_STENCIL_VIEW_DESC faceDsvDesc = dsvDesc;
         faceDsvDesc.Texture2DArray.ArraySize = 1;
@@ -176,14 +117,34 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
 
         m_SlotDynViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowDynCubeArray, m_SlotDynDSVs[slot], nullptr,
-            SHADOW_CUBE_SIZE, SHADOW_CUBE_SIZE, faceDSVs.data() );
+            DYN_SHADOW_CUBE_SIZE, DYN_SHADOW_CUBE_SIZE, faceDSVs.data() );
+
+        // A fresh D3D11 texture holds UNDEFINED depth, and a comparison sample against 0 reads as fully
+        // OCCLUDED - a slot nothing has drawn into yet would shade its light solid black. Nothing should
+        // sample an undrawn slot (see PointLightSlotSelector::DynSlot::valid), so this is belt and braces:
+        // it makes any future hole of that class a no-op instead of a black light.
+        m_context->ClearDepthStencilView( m_SlotDynDSVs[slot].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
     }
 }
+
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimDynSlot( int slot ) {
+    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_DYN_SHADOW_CUBEMAPS ) return nullptr;
+    EnsureDynShadowArray();
+    return GetDynSlotTarget( slot );
+}
+
+RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetDynSlotTarget( int slot ) {
+    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_DYN_SHADOW_CUBEMAPS && m_ShadowDynCubeArray )
+        return m_SlotDynViews[slot].get();
+    return nullptr;
+}
+
 
 void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     if ( m_StaticShadowArrayCreated ) return;
     m_StaticShadowArrayCreated = true;
 
+    // The core tier: MAX_STATIC_SHADOW_CUBEMAPS cubes, one per light, baked once and cached.
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = STATIC_SHADOW_CUBE_SIZE;
     desc.Height = STATIC_SHADOW_CUBE_SIZE;
@@ -197,12 +158,16 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
 
     // Fail closed rather than build an SRV/DSVs from a null resource - see MAX_STATIC_SHADOW_CUBEMAPS in the header.
     if ( FAILED( m_device->CreateTexture2D( &desc, nullptr, m_ShadowStaticCubeArray.ReleaseAndGetAddressOf() ) ) ) {
-        LogWarn() << "Failed to create the low-res static-only point-light shadow array; static point lights "
-            "will render unshadowed.";
+        LogWarn() << "Failed to create the point-light static shadow array; point lights will render unshadowed.";
         m_ShadowStaticCubeArray.Reset();
         return;
     }
     SetDebugName( m_ShadowStaticCubeArray.Get(), "TiledDeferred_ShadowStaticCubeArray" );
+
+    LogInfo() << "Allocated point-light static shadow array: " << MAX_STATIC_SHADOW_CUBEMAPS << " cubes @ "
+        << STATIC_SHADOW_CUBE_SIZE << "^2 R16 ("
+        << ( static_cast<size_t>(STATIC_SHADOW_CUBE_SIZE) * STATIC_SHADOW_CUBE_SIZE * 2 * 6 * MAX_STATIC_SHADOW_CUBEMAPS ) / (1024 * 1024 )
+        << " MB)";
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_R16_UNORM;
@@ -237,6 +202,10 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
         m_StaticSlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowStaticCubeArray, m_StaticSlotDSVs[slot], nullptr,
             STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data() );
+
+        // See the identical note in EnsureDynShadowArray: undefined depth comparison-samples as fully
+        // occluded, so every slot starts at "nothing occludes".
+        m_context->ClearDepthStencilView( m_StaticSlotDSVs[slot].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
     }
 }
 
@@ -247,28 +216,9 @@ RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimStaticSlot( int slot
 }
 
 RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetStaticSlotTarget( int slot ) {
-    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_STATIC_SHADOW_CUBEMAPS && m_StaticShadowArrayCreated )
+    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_STATIC_SHADOW_CUBEMAPS && m_ShadowStaticCubeArray )
         return m_StaticSlotViews[slot].get();
     return nullptr;
-}
-
-RenderToDepthStencilBuffer* D3D11TiledDeferredShading::ClaimSlot( int slot ) {
-    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_SHADOW_CUBEMAPS ) return nullptr;
-    EnsureShadowArray();
-    return GetSlotTarget( slot );
-}
-
-RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetSlotTarget( int slot ) {
-    if ( slot >= 0 && static_cast<uint32_t>(slot) < MAX_SHADOW_CUBEMAPS && m_ShadowArrayCreated )
-        return m_SlotViews[slot].get();
-    return nullptr;
-}
-
-RenderToDepthStencilBuffer* D3D11TiledDeferredShading::GetDynSlotTarget( int slot ) {
-    if ( slot < 0 || static_cast<uint32_t>(slot) >= MAX_SHADOW_CUBEMAPS )
-        return nullptr;
-    EnsureDynShadowArray();
-    return m_SlotDynViews[slot].get();
 }
 
 void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numTilesY ) {
@@ -392,14 +342,12 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // even if the shader branches around SampleCmpLevelZero
         graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
 
-        // Static at t11, dynamic overlay at t12, low-res static-only tier at t13.
-        if ( cullResult.HasShadowedTiledLights && m_ShadowArrayCreated ) {
-            context->CSSetShaderResources( 11, 1, m_ShadowCubeArraySRV.GetAddressOf() );
-            ID3D11ShaderResourceView* dynSRV = m_ShadowDynArrayCreated ? m_ShadowDynCubeArraySRV.Get() : nullptr;
+        // Overlay tier at t12, core tier at t13; either may be null.
+        if ( cullResult.HasShadowedTiledLights ) {
+            ID3D11ShaderResourceView* dynSRV = m_ShadowDynCubeArray ? m_ShadowDynCubeArraySRV.Get() : nullptr;
             context->CSSetShaderResources( 12, 1, &dynSRV );
-        }
-        if ( cullResult.HasShadowedTiledLights && m_StaticShadowArrayCreated ) {
-            context->CSSetShaderResources( 13, 1, m_ShadowStaticCubeArraySRV.GetAddressOf() );
+            ID3D11ShaderResourceView* staticSRV = m_ShadowStaticCubeArray ? m_ShadowStaticCubeArraySRV.Get() : nullptr;
+            context->CSSetShaderResources( 13, 1, &staticSRV );
         }
 
         // Bind HDR UAV
@@ -449,9 +397,10 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
     CullResult result = {};
 
-    // Partition lights: all lights go tiled where possible.
-    // Shadowed lights with a tiled slot render directly into the shared array (no copies).
-    // Shadowed lights without a tiled slot (256x256 or overflow) fall back to legacy.
+    // The single source of truth for which cubes a light owns and may sample this frame; filled by
+    // DrawPointlightShadows earlier in the frame (PointLightSlotSelector::Select).
+    const PointLightSlotSelector& pointSlots = graphicsEngine->GetShadowMaps()->GetPointSlots();
+
     bool hasShadowedTiledLights = false;
 
     // Map light buffer
@@ -490,25 +439,11 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
         if ( !vob->IsEnabled() ) continue;
 
-        // Check if this light has shadows
-        D3D11PointLight* pl = nullptr;
-        bool hasShadow = false;
-        if ( settings.EnablePointlightShadows > 0 ) {
-            pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
-            // Owning a slot is not the same as that slot holding THIS light's depth: a freshly assigned
-            // one still holds the previous occupant's, and sampling that shades the light BLACK rather than
-            // merely unshadowed. A slot whose bake was only INVALIDATED keeps being advertised, though -
-            // stale depth beats none. HasSampleableDepth covers a light mid-handover, whose old slot is
-            // being held back for exactly this - see SetSlotFallback.
-            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) && pl->HasSampleableDepth() ) {
-                hasShadow = true;
-            }
-        }
-
-        // Shadowed lights need a tiled slot (assigned earlier in DrawPointlightShadows).
-        if ( hasShadow && pl->GetSampleSlot() < 0 ) {
-            continue;
-        }
+        // Entirely the slot table's answer: which cubes this light owns and whether they hold its own depth
+        // yet. 0 = unshadowed. A slot never rendered for this owner would shade it black, so it is withheld.
+        const int32_t shadowIndex = settings.EnablePointlightShadows > 0
+            ? pointSlots.GetEncodedIndex( reinterpret_cast<uint64_t>( vob ) ) : 0;
+        const bool hasShadow = shadowIndex != 0;
 
         if ( result.TiledLightCount >= MAX_TILED_LIGHTS )
             continue;
@@ -557,17 +492,13 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.Color = XMFLOAT4( lightColor.x, lightColor.y, lightColor.z,
             settings.PointLightSpecularScale( vob->IsStatic() ) );
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
+        // The range the cube was actually baked with, so the depth compare normalizes by the same far plane
+        // the bake used - neither the animated range read above nor its unshadowed clamp.
+        const float bakedRange = hasShadow ? pointSlots.GetCubeRangeOf( reinterpret_cast<uint64_t>( vob ) ) : 0.0f;
+        tl.ShadowRange = bakedRange > 0.0f ? bakedRange : lightRange;
 
-        if ( hasShadow ) {
-            // The overlay bit belongs to the light's OWN slot only: the one it is handing over from was
-            // never refreshed this frame.
-            tl.ShadowCubeIndex = pl->GetSampleSlot()
-                | ( pl->IsSampleSlotLowRes() ? SHADOW_CUBE_TIER_LOW : 0 )
-                | ( pl->HasOwnDepthInSlot() && pl->HasDynamicShadowOverlay() ? SHADOW_CUBE_HAS_DYNAMIC : 0 );
-            hasShadowedTiledLights = true;
-        } else {
-            tl.ShadowCubeIndex = -1;
-        }
+        tl.ShadowCubeIndex = shadowIndex;
+        if ( hasShadow ) hasShadowedTiledLights = true;
 
         result.TiledLightCount++;
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnLights++;

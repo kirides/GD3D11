@@ -1,5 +1,5 @@
 //--------------------------------------------------------------------------------------
-// World/VOB-Pixelshader for G2D3D11 by Degenerated
+// Caster pixel shader for the point-light shadow cubes (see include/PointLightShadows.h)
 //--------------------------------------------------------------------------------------
 #include <AtmosphericScattering.h>
 #include <FFFog.h>
@@ -40,26 +40,16 @@ struct PS_INPUT
 	float4 vPosition		: SV_POSITION;
 };
 
-struct PS_OUTPUT
-{
-	//float4 vColor			: SV_TARGET;
-	float fDepth			: SV_DEPTH;
-};
-
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
-PS_OUTPUT PSMain( PS_INPUT Input )
+// No SV_DEPTH: the cube stores the natural hyperbolic z of the 90-degree face projection, which keeps
+// early-Z alive. Only the alpha-tested cutouts still need a shader at all.
+void PSMain( PS_INPUT Input )
 {
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	
 	// WorldMesh can always do the alphatest
 	DoAlphaTest(color.a);
-
-	PS_OUTPUT o;
-	//o.vColor = color;
-	o.fDepth = length(Input.vViewPosition) / FF_zFar; // Linearize depth
-	
-	return o;
 }
 

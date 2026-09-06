@@ -120,7 +120,9 @@ struct TiledPointLight
     float Range;
     float4 Color;
     float3 PositionWorld;
-    int ShadowCubeIndex;
+    int ShadowCubeIndex; // 0 = no shadow, else HI-LO slot pair (see PLS_SHADOW_SLOT_SHIFT)
+    float ShadowRange;   // cube far-plane basis (far = ShadowRange*2); NOT Range - see TiledPointLight
+    float3 _pad;
 };
 
 // Clustered Forward+ grid — layout-identical to CS_LightCulling.hlsl's and the C++ LightGrid.
@@ -135,11 +137,10 @@ struct LightGrid
 
 StructuredBuffer<TiledPointLight> FP_Lights : register( t8 );
 StructuredBuffer<LightGrid> FP_LightGrid : register( t9 );
-TextureCubeArray FP_ShadowCubeArray : register( t11 );
-// Per-slot overlay holding ONLY this frame's moving (skeletal) casters; min'd with the static cube above.
-// t12/t13 are the shadow and AO masks, so this lands at t14. See PLS_SHADOW_HAS_DYNAMIC in PointLightShadows.h.
+// Overlay tier: only this frame's movers, min'd with the static core cube (HI half of ShadowCubeIndex).
+// t12/t13 are the shadow and AO masks, so this lands at t14.
 TextureCubeArray FP_ShadowDynCubeArray : register( t14 );
-TextureCubeArray FP_ShadowStaticCubeArray : register( t15 ); // low-res static-only tier, PLS_SHADOW_TIER_LOW
+TextureCubeArray FP_ShadowStaticCubeArray : register( t15 ); // core tier, LO half of ShadowCubeIndex
 
 // ============================================
 // Point Light Accumulation (matches CS_TiledShading.hlsl)
@@ -206,13 +207,13 @@ float3 FP_ComputePointLighting(
             // Don't fetch shadows if the light contribution is effectively zero. [branch]: this guards a real
             // cube-shadow sample, so forcing a branch instead of flattening avoids paying for it on every lane.
             [branch]
-            if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
+            if ( light.ShadowCubeIndex != 0 && any(lighting > 0.001f) )
             {
                 // SQ_FrameIndex is only ever incremented while camera jitter (TAA/FSR) is baked into the
                 // projection (see D3D11ShadowMap.cpp's FillSunCSMConstantBuffer) - same "is TAA active" signal
                 // GetPoissonRotationSCForCascade uses above for the sun CSM.
                 bool taaActive = SQ_FrameIndex != 0;
-                float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, FP_ShadowDynCubeArray, FP_ShadowStaticCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex, taaActive );
+                float shadow = PLS_SampleShadowCubeArray( FP_ShadowStaticCubeArray, FP_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.ShadowRange, light.ShadowCubeIndex, taaActive );
                 lighting *= shadow;
             }
 

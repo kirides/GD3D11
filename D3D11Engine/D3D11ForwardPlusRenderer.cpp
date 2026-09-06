@@ -315,17 +315,16 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                     tiledDeferred->GetLightBufferSRV(),
                     tiledDeferred->GetLightGridSRV(),
                     nullptr,
-                    tiledDeferred->IsShadowArrayCreated() ? tiledDeferred->GetShadowCubeArraySRV() : nullptr,
+                    nullptr,
                 };
                 context->PSSetShaderResources( 8, 4, lightSRVs );
 
-                // --- Dynamic point-shadow overlay array at t14 (t12/t13 are the shadow and AO masks) ---
-                // May be null: no light can carry SHADOW_CUBE_HAS_DYNAMIC before the array exists.
+                // --- Point-shadow overlay tier at t14, core tier at t15 (t12/t13 are the shadow/AO masks) ---
+                // Either may be null: a light only ever carries the half of its index whose array exists.
                 ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
                     ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
                 context->PSSetShaderResources( 14, 1, &dynCubeSRV );
 
-                // --- Low-res static-only shadow tier at t15 ---
                 ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
                     ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
                 context->PSSetShaderResources( 15, 1, &staticCubeSRV );
@@ -427,11 +426,11 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
     // Special material types fall through to deferred (non-lit) shaders
     const bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD; 
     const bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-    const bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+    const bool cubeShadowPass = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
 
     if ( materialType == MaterialInfo::MT_Portal ||
          materialType == MaterialInfo::MT_WaterfallFoam ||
-         linZ || blendAdd || blendBlend ) {
+         cubeShadowPass || blendAdd || blendBlend ) {
         // These don't participate in Forward+ lighting — use deferred fallback shaders
         return m_DeferredFallback.BindShaderForTexture( shaderManager, activePS,
             texture, forceAlphaTest, zMatAlphaFunc, materialType,
