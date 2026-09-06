@@ -426,11 +426,11 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
     // Special material types fall through to deferred (non-lit) shaders
     const bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD; 
     const bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-    const bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+    const bool cubeShadowPass = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
 
     if ( materialType == MaterialInfo::MT_Portal ||
          materialType == MaterialInfo::MT_WaterfallFoam ||
-         linZ || blendAdd || blendBlend ) {
+         cubeShadowPass || blendAdd || blendBlend ) {
         // These don't participate in Forward+ lighting — use deferred fallback shaders
         return m_DeferredFallback.BindShaderForTexture( shaderManager, activePS,
             texture, forceAlphaTest, zMatAlphaFunc, materialType,

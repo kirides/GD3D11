@@ -303,9 +303,12 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
         c.active = distSq <= activateSq && info->Vob->IsEnabled();
         c.wantsDynamic = overlayMode && allowsCasters;
         c.restrictToWorld = !allowsCasters;
-        // Standing inside a dynamic light's sphere: this is the shadow the player is actually looking at, so
-        // it is served ahead of the frame budget and without a ceiling.
-        if ( isDynamicLight && c.active && playerVob ) {
+        // Standing inside this light's sphere: this is the shadow the player is actually looking at, so it
+        // is served ahead of the frame budget and without a ceiling. Deliberately NOT gated on
+        // isDynamicLight - `isStatic` is set on virtually every pre-placed level light, so gating it there
+        // left the whole forced path dead for the wall torches and fireplaces the player walks into. The
+        // gate belongs to the portal test below, which is the only thing that needs it.
+        if ( c.active && playerVob ) {
             const float reach = c.shadowRange + playerRadius;
             const XMVECTOR d = XMVectorSubtract( XMLoadFloat3( &pos ), playerPos );
             c.forced = XMVectorGetX( XMVector3LengthSq( d ) ) <= reach * reach;
@@ -509,7 +512,12 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
         bool wantDyn = false;
         if ( dslot >= 0 && c.active ) {
             const DynSlot& ds = m_Dyn[dslot];
-            const uint32_t backoff = ds.emptyStreak == 0 ? 1u
+            // A forced light has the player standing inside it, so the premise the back-off rests on - that
+            // this cull keeps finding nothing - is known to be false, and it refreshes every frame. Without
+            // this the player walking into a light whose overlay had gone empty waited out its whole
+            // back-off (up to DynamicMaxBackoff frames) before casting a shadow, which is the one thing
+            // `forced` exists to stop.
+            const uint32_t backoff = ( c.forced || ds.emptyStreak == 0 ) ? 1u
                 : std::min( m_Cfg.DynamicMaxBackoff, 1u << std::min( ds.emptyStreak, 16u ) );
             // A slot that has never been drawn for this owner holds the PREVIOUS owner's casters and is not
             // sampled at all until it has, so it never waits its turn behind the back-off.

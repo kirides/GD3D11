@@ -17,6 +17,10 @@ static const int PLS_SHADOW_SLOT_MASK = 0xFFFF;
 // bias and PCF radius are scaled by this. Too small shows up as acne on flat walls.
 static const float PLS_STATIC_TIER_COARSE = 2.0f;
 
+// Near plane of the cube's 90-degree face projection - must match D3D11PointLight::BeginCubeRender
+// (D3D12: D3D12PointShadows' PerspectiveFovLH). zFar is the light's ShadowRange * 2.
+static const float PLS_SHADOW_ZNEAR = 15.0f;
+
 static const int PLS_SHADOW_BLUR_COUNT = 8;
 static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2( 0.076849f, -0.078216f),
@@ -29,8 +33,8 @@ static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2(-0.258169f, -0.912648f)
 };
 
-// Wider ring for the static tier, whose texels cover more world space per tap - see PLS_STATIC_TIER_COARSE.
-// The 8-tap ring above is a tight cluster and would mostly re-average the same texel neighbourhood there.
+// Denser ring for the static tier, whose texels cover more world space per tap - see PLS_STATIC_TIER_COARSE.
+// Same disk radius as the 8-tap ring above, just more taps across the tier's larger texels.
 static const int PLS_SHADOW_BLUR_TIER_LOW_COUNT = 16;
 static const float2 PLS_SHADOW_BLUR_OFFSETS_TIER_LOW[PLS_SHADOW_BLUR_TIER_LOW_COUNT] = {
     float2( 0.076849f, -0.078216f),
@@ -114,7 +118,7 @@ void PLS_PrepareShadowSampling(
     float coarse,
     bool taaActive,
     out float3 dir,
-    out float compareDistance,
+    out float compareDepth,
     out float fixedBias,
     out float fixedBlurScale,
     out float3 right,
@@ -122,40 +126,32 @@ void PLS_PrepareShadowSampling(
     out float sinA,
     out float cosA )
 {
-    float3 toPixelOriginal = wsPosition - lightPosWorld;
-    float distOriginal = length( toPixelOriginal );
-    float3 L = toPixelOriginal / distOriginal;
-
-    // Slope-Scaled Normal Bias
-    float nDotL = saturate( dot( N, -L ) );
-    float slopeScale = 1.0f - nDotL;
-    float normalOffsetScale = distOriginal * 0.02f * (slopeScale + 0.1f);
-    float3 biasedWsPosition = wsPosition + N * normalOffsetScale;
-
-    // Recalculate vectors
-    float3 toPixel = biasedWsPosition - lightPosWorld;
+    // Uniform world-space normal offset, exactly as D3D12's SamplePointShadow applies it. A slope-scaled,
+    // distance-proportional offset used to live here; it was tuned against direction-INDEPENDENT radial
+    // depth and has no counterpart in the backend this now mirrors.
+    float3 toPixel = (wsPosition + N * (lightRange * 0.01f * coarse)) - lightPosWorld;
     dir = normalize( toPixel );
 
-    float distance = length( toPixel );
+    // The caster writes no SV_Depth, so the cube holds the natural hyperbolic z of its 90-degree face
+    // projection. Depth on a cube face is driven by the DOMINANT-AXIS distance (that face's view-space z),
+    // so reconstruct it from that and re-apply the same LH projection z-map - not from the radial length.
+    // Clamped at the near plane: geometry inside it was never rasterized into the cube, so it has to read
+    // as lit, and a negative compare depth would instead fail every comparison.
     float zFar = lightRange * 2.0f;
-    compareDistance = distance / zFar;
-    float distance01 = saturate( compareDistance );
+    float3 axisDist = abs( toPixel );
+    float zView = max( max( axisDist.x, max( axisDist.y, axisDist.z ) ), PLS_SHADOW_ZNEAR );
+    compareDepth = (zFar / (zFar - PLS_SHADOW_ZNEAR)) * (1.0f - PLS_SHADOW_ZNEAR / zView);
 
-    float depthCurve = distance01 * distance01;
+    // Bias flat in hyperbolic depth (so it widens in world units with distance, which is what the
+    // coarsening D16 quantisation there needs) and an angular disk that only creeps wider with depth -
+    // both D3D12's values. The disk USED to reach 0.256 rad, ~40 texels of a 90-degree face: harmless
+    // against radial depth, but the correct compare value now varies per tap direction, so a disk that
+    // wide compares taps against badly wrong depths and makes the terminator follow the cube faces.
+    // `coarse` is this tier's texel footprint relative to the overlay's (1 = same); the caller divides
+    // both back down by it for the finer overlay sample.
+    fixedBias = 0.001f * coarse;
 
-    fixedBias = lerp( 0.002f, 0.008f, depthCurve );
-
-    float baseBlur = lerp( 0.02f, 0.08f, depthCurve );
-
-    // `coarse` is this tier's texel footprint relative to the overlay's (1 = same). Without it a coarser
-    // cube's PCF barely blurs anything and its texel edges read as visible blocks.
-    fixedBias *= coarse;
-    baseBlur *= coarse;
-
-    // Only a handful of texels span the whole penumbra there, so widen further - blur only, not bias, or
-    // light leaks through casters.
-    if ( coarse > 1.0f )
-        baseBlur *= 1.6f;
+    float baseBlur = (0.006f + 0.010f * saturate( zView / zFar )) * coarse;
 
     // The rotation/blur-scale jitter below is a spatial hash of wsPosition, not a temporal one - it exists
     // to break up the Poisson ring into dither that TAA/FSR resolves into smooth soft shadows over several
@@ -194,7 +190,7 @@ float PLS_SampleShadowCube(
     bool taaActive )
 {
     float3 dir;
-    float compareDistance;
+    float compareDepth;
     float fixedBias;
     float fixedBlurScale;
     float3 right;
@@ -204,7 +200,7 @@ float PLS_SampleShadowCube(
 
     PLS_PrepareShadowSampling(
         wsPosition, N, lightPosWorld, lightRange, 1.0f, taaActive,
-        dir, compareDistance, fixedBias, fixedBlurScale,
+        dir, compareDepth, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
     float shd = 0;
@@ -214,7 +210,7 @@ float PLS_SampleShadowCube(
         float2 rotatedKernel = float2( kernel.x * cosA - kernel.y * sinA, kernel.x * sinA + kernel.y * cosA );
         float3 perturbedDir = normalize( dir + (right * rotatedKernel.x + up * rotatedKernel.y) * fixedBlurScale );
 
-        shd += shadowCube.SampleCmpLevelZero( samplerState, perturbedDir, compareDistance - fixedBias );
+        shd += shadowCube.SampleCmpLevelZero( samplerState, perturbedDir, compareDepth - fixedBias );
     }
 
     float finalShadow = shd / PLS_SHADOW_BLUR_COUNT;
@@ -246,7 +242,7 @@ float PLS_SampleShadowCubeArray(
         return 1.0f;
 
     float3 dir;
-    float compareDistance;
+    float compareDepth;
     float fixedBias;
     float fixedBlurScale;
     float3 right;
@@ -258,7 +254,7 @@ float PLS_SampleShadowCubeArray(
     // down by the same factor.
     PLS_PrepareShadowSampling(
         wsPosition, N, lightPosWorld, lightRange, PLS_STATIC_TIER_COARSE, taaActive,
-        dir, compareDistance, fixedBias, fixedBlurScale,
+        dir, compareDepth, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
     const float dynBias = fixedBias / PLS_STATIC_TIER_COARSE;
@@ -274,13 +270,13 @@ float PLS_SampleShadowCubeArray(
 
         float3 perturbedDir = normalize( dir + offset * fixedBlurScale );
         float s = staticCubeArray.SampleCmpLevelZero( samplerState,
-            float4( perturbedDir, (float)staticSlot ), compareDistance - fixedBias );
+            float4( perturbedDir, (float)staticSlot ), compareDepth - fixedBias );
 
         if ( hasDyn )
         {
             float3 dynDir = normalize( dir + offset * dynBlur );
             s = min( s, dynShadowCubeArray.SampleCmpLevelZero( samplerState,
-                float4( dynDir, (float)dynSlot ), compareDistance - dynBias ) );
+                float4( dynDir, (float)dynSlot ), compareDepth - dynBias ) );
         }
         shd += s;
     }

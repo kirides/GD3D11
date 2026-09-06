@@ -12,7 +12,10 @@ const int GSWITCH_FOG = 1;
 const int GSWITCH_ALPHAREF = 2;
 const int GSWITCH_LIGHING = 4;
 const int GSWITCH_REFLECTIONS = 8;
-const int GSWITCH_LINEAR_DEPTH = 16;
+// A point-light shadow cube is being rendered: casters keep the rasterizer's own (hyperbolic) depth and
+// only alpha-test, so the pass wants PS_CubeShadow rather than a G-buffer pixel shader. Not read by any
+// shader, unlike the switches above.
+const int GSWITCH_CUBE_SHADOW = 16;
 // Forward+ with hardware MSAA active: alpha-tested pixel shaders sharpen their alpha test into a
 // per-pixel coverage value instead of a hard binary clip, so the MSAA alpha-to-coverage blend mode
 // can dither an anti-aliased cutout edge across subsamples.

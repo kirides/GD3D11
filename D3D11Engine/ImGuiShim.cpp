@@ -663,7 +663,7 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         } else {
             ImGui::Dummy( sz );
         }
-        ImGui::SetItemTooltip( "Face %s - raw stored linear distance (white = far/unoccluded, black = near/occluded)", faceNames[face] );
+        ImGui::SetItemTooltip( "Face %s - raw stored hyperbolic z (white = far/unoccluded, black = near/occluded)", faceNames[face] );
     };
 
     ImGui::Dummy( sz ); ImGui::SameLine();
@@ -677,7 +677,8 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
     ImGui::Dummy( sz ); ImGui::SameLine();
     imgAt( 3 ); // -Y
 
-    ImGui::TextUnformatted( "White = unoccluded/far (linear distance/zFar close to 1.0), black = near/occluded." );
+    ImGui::TextUnformatted( "White = unoccluded/far (hyperbolic z close to 1.0), black = near/occluded.\n"
+        "Non-linear: the near plane eats most of the range, so mid-range depth already reads near-white." );
     ImGui::End();
 }
 

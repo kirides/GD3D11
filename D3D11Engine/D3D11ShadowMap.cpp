@@ -1872,8 +1872,8 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
         }
     }
     if (graphicsEngine->IsCubeFaceFallbackActive()) {
-        // VS_Ex's extra outputs shift SV_POSITION's register vs. what PS_LinDepth expects; VS_ExLinDepth matches.
-        graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLinDepth );
+        // VS_Ex's extra outputs shift SV_POSITION's register vs. what PS_CubeShadow expects; VS_ExCubeFace matches.
+        graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCubeFace );
     }
 
     // Set the rendering stage
@@ -1883,11 +1883,13 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     ID3D11ShaderResourceView* nullSrv = nullptr;
     m_context->PSSetShaderResources( 3, 1, &nullSrv );
 
+    const bool oldColorWrites = Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
+
     if ( !debugRTV.Get() ) {
         m_context->OMSetRenderTargets( 0, nullptr, activeFace );
 
-        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled =
-            true;  // Should be false, but needs to be true for SV_Depth to work
+        // Depth-only now that the caster writes no SV_Depth (it used to need color writes on for that).
+        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = false;
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
     } else {
         m_context->OMSetRenderTargets( 1, debugRTV.GetAddressOf(), activeFace );
@@ -1914,6 +1916,9 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     m_context->RSSetViewports( 1, &oldVP );
     m_context->GSSetShader( nullptr, nullptr, 0 );
     graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
+
+    Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = oldColorWrites;
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     Engine::GAPI->SetFarPlane(
         Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *

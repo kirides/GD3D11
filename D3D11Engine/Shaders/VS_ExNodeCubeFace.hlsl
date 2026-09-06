@@ -1,7 +1,7 @@
 //--------------------------------------------------------------------------------------
 // Depth-only vertex shader for the NVIDIA per-face cube-shadow fallback (no GS/layered indexing -
 // see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses).
-// Used for node attachments (weapons, armor) instead of VS_ExNode - see VS_ExLinDepth.hlsl for why.
+// Used for node attachments (weapons, armor) instead of VS_ExNode - see VS_ExCubeFace.hlsl for why.
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"

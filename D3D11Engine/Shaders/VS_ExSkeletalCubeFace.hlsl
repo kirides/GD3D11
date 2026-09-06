@@ -1,7 +1,7 @@
 //--------------------------------------------------------------------------------------
 // Depth-only vertex shader for the NVIDIA per-face cube-shadow fallback (no GS/layered indexing -
 // see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses).
-// Used for NPC bodies instead of VS_ExSkeletal - see VS_ExLinDepth.hlsl for why. No previous-frame
+// Used for NPC bodies instead of VS_ExSkeletal - see VS_ExCubeFace.hlsl for why. No previous-frame
 // skinning: motion vectors aren't needed for a depth-only shadow pass.
 //--------------------------------------------------------------------------------------
 

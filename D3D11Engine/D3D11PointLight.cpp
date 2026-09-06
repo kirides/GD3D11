@@ -482,10 +482,11 @@ void D3D11PointLight::BeginCubeRender( const XMFLOAT3& vobPos ) {
     proj = XMMatrixTranspose( proj );
     XMStoreFloat4x4( &CubeMapProjMatrix, proj );
 
-    // Setup near/far-planes. We need linear viewspace depth for the cubic shadowmaps.
+    // The cube keeps the natural hyperbolic z of this projection, which PLS_PrepareShadowSampling
+    // reconstructs from the same zNear/zFar - see Shaders/include/PointLightShadows.h.
     Engine::GAPI->GetRendererState().GraphicsState.FF_zNear = zNear;
     Engine::GAPI->GetRendererState().GraphicsState.FF_zFar = zFar;
-    Engine::GAPI->GetRendererState().GraphicsState.SetGraphicsSwitch( GSWITCH_LINEAR_DEPTH, true );
+    Engine::GAPI->GetRendererState().GraphicsState.SetGraphicsSwitch( GSWITCH_CUBE_SHADOW, true );
 
     m_SavedDepthClip = Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable;
     Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = true;
@@ -504,7 +505,7 @@ void D3D11PointLight::BeginCubeRender( const XMFLOAT3& vobPos ) {
 
 void D3D11PointLight::EndCubeRender( const XMFLOAT3& vobPos ) {
     Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = m_SavedDepthClip;
-    Engine::GAPI->GetRendererState().GraphicsState.SetGraphicsSwitch( GSWITCH_LINEAR_DEPTH, false );
+    Engine::GAPI->GetRendererState().GraphicsState.SetGraphicsSwitch( GSWITCH_CUBE_SHADOW, false );
 
     LastUpdateColor = LightInfo->Vob->GetLightColor();
     LastUpdatePosition = vobPos;

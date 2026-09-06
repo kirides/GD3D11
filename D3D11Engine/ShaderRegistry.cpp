@@ -287,7 +287,7 @@ void ShaderRegistry::Build() {
         .with_macros( shadowMacroBuilder )
         .with_category( ShaderCategory::LightsAndShadows ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinDepth>( "PS_LinDepth.hlsl" )  );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_CubeShadow>( "PS_CubeShadow.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
         .with_macros(normalmappingConfigurationBuilder)
@@ -386,13 +386,13 @@ void ShaderRegistry::Build() {
     }
 
     // Always compiled - the NVIDIA fallback is a runtime driver check, not the compile-time branch above.
-    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLinDepth>( "VS_ExLinDepth.hlsl" )
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCubeFace>( "VS_ExCubeFace.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
-    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLinDepth>( "VS_ExNodeLinDepth.hlsl" )
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCubeFace>( "VS_ExNodeCubeFace.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
-    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLinDepth>( "VS_ExSkeletalLinDepth.hlsl" )
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCubeFace>( "VS_ExSkeletalCubeFace.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );

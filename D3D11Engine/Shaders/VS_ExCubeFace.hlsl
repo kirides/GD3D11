@@ -1,7 +1,7 @@
 //--------------------------------------------------------------------------------------
 // Depth-only vertex shader for the NVIDIA per-face cube-shadow fallback (no GS/layered indexing -
 // see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses). Same
-// transform as VS_Ex.hlsl, but trimmed to match PS_LinDepth's expected input register layout.
+// transform as VS_Ex.hlsl, but trimmed to match PS_CubeShadow's expected input register layout.
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"

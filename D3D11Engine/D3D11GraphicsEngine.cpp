@@ -2556,9 +2556,9 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
     // NVIDIA per-face fallback (IsCubeFaceFallbackActive) never binds GS_Cubemap, so it needs
-    // VS_ExSkeletalLinDepth's PS_LinDepth-compatible output layout instead of VS_ExSkeletalCube's.
+    // VS_ExSkeletalCubeFace's PS_CubeShadow-compatible output layout instead of VS_ExSkeletalCube's.
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        SetActiveVertexShader( IsCubeFaceFallbackActive() ? VShaderID::VS_ExSkeletalLinDepth : VShaderID::VS_ExSkeletalCube );
+        SetActiveVertexShader( IsCubeFaceFallbackActive() ? VShaderID::VS_ExSkeletalCubeFace : VShaderID::VS_ExSkeletalCube );
     } else {
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
@@ -2643,9 +2643,9 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     ActiveVS->Apply();
 
     if ( RenderingStage != DES_GHOST ) {
-        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
-        if ( linearDepth ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+        bool cubeShadowPass = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
+        if ( cubeShadowPass ) {
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
@@ -2654,7 +2654,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
         }
     }
 
@@ -2744,9 +2744,9 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     ActiveVS->Apply();
 
     if ( RenderingStage != DES_GHOST ) {
-        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
-        if ( linearDepth ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+        bool cubeShadowPass = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
+        if ( cubeShadowPass ) {
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
@@ -2755,7 +2755,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
         }
     }
 
@@ -3061,9 +3061,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     bool wantShader = true;
     if ( RenderingStage != DES_GHOST ) {
-        bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
-        if ( linearDepth ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+        bool cubeShadowPass = (graphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
+        if ( cubeShadowPass ) {
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP) {
             // Unbind PixelShader in this case
@@ -3747,9 +3747,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         if ( !isMainOrGhost && !isShadowPass ) {
             // ghost or other: keep the pixel shader whatever was set
         } else if ( isShadowPass ) {
-            bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
-            if ( linearDepth ) {
-                ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            bool cubeShadowPass = (graphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
+            if ( cubeShadowPass ) {
+                ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
                 ActivePS->Apply();
             } else {
                 D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
@@ -5862,11 +5862,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     Context->PSSetShaderResources( 0, 6, s_nullSRVs );
 
-    bool linearDepth =
+    bool cubeShadowPass =
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
-            GSWITCH_LINEAR_DEPTH) != 0;
-    if ( linearDepth ) {
-        SetActivePixelShader( PShaderID::PS_LinDepth );
+            GSWITCH_CUBE_SHADOW) != 0;
+    if ( cubeShadowPass ) {
+        SetActivePixelShader( PShaderID::PS_CubeShadow );
     }
 
     // Set constant buffer
@@ -5940,20 +5940,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         } else
                             continue;
                     } else {
-                        if ( !linearDepth ) {
-                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                        } else {
-                            if ( lastTex != WhiteTexture.get() ) {
-                                WhiteTexture->BindToPixelShader( 0 );
-                                lastTex = WhiteTexture.get();
-                            }
-                        }
+                        // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
+                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                     }
-                } else if ( linearDepth ) {
-                    if ( lastTex != WhiteTexture.get() ) {
-                        WhiteTexture->BindToPixelShader( 0 );
-                        lastTex = WhiteTexture.get();
-                    }
+                } else {
+                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                 }
 
                 // Cached range may be a cluster sub-range, not the whole mesh.
@@ -6004,20 +5995,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                             } else
                                 continue;
                         } else {
-                            if ( !linearDepth ) {
-                                D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                            } else {
-                                if ( lastTex != WhiteTexture.get() ) {
-                                    WhiteTexture->BindToPixelShader( 0 );
-                                    lastTex = WhiteTexture.get();
-                                }
-                            }
+                            // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
+                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         }
-                    } else if ( linearDepth ) {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
+                    } else {
+                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                     }
 
                     DrawVertexBufferIndexed( r.Mesh->GetMeshVertexBuffer(),
@@ -6238,11 +6220,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     Context->PSSetShaderResources( 0, 6, s_nullSRVs );
 
-    bool linearDepth =
+    bool cubeShadowPass =
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
-            GSWITCH_LINEAR_DEPTH) != 0;
-    if ( linearDepth ) {
-        SetActivePixelShader( PShaderID::PS_LinDepth );
+            GSWITCH_CUBE_SHADOW) != 0;
+    if ( cubeShadowPass ) {
+        SetActivePixelShader( PShaderID::PS_CubeShadow );
     }
 
     // Set constant buffer
@@ -6314,20 +6296,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         } else
                             continue;
                     } else {
-                        if ( !linearDepth ) {
-                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                        } else {
-                            if ( lastTex != WhiteTexture.get() ) {
-                                WhiteTexture->BindToPixelShader( 0 );
-                                lastTex = WhiteTexture.get();
-                            }
-                        }
+                        // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
+                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                     }
-                } else if ( linearDepth ) {
-                    if ( lastTex != WhiteTexture.get() ) {
-                        WhiteTexture->BindToPixelShader( 0 );
-                        lastTex = WhiteTexture.get();
-                    }
+                } else {
+                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                 }
 
                 DrawVertexBufferInstancedIndexed( r.Mesh->GetMeshVertexBuffer(),
@@ -6373,20 +6346,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             } else
                                 continue;
                         } else {
-                            if ( !linearDepth ) {
-                                D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                            } else {
-                                if ( lastTex != WhiteTexture.get() ) {
-                                    WhiteTexture->BindToPixelShader( 0 );
-                                    lastTex = WhiteTexture.get();
-                                }
-                            }
+                            // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
+                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                         }
-                    } else if ( linearDepth ) {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
+                    } else {
+                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
                     }
 
                     DrawVertexBufferInstancedIndexed( r.Mesh->GetMeshVertexBuffer(),
@@ -6597,13 +6561,9 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
     auto _scopeShadowPassIndirect = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect" ) );
 
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
-    bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
-                GSWITCH_LINEAR_DEPTH) != 0;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows && !cullingFrustum ) {
-        if ( !linearDepth ) {
-            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-        }
+        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
 
         for ( const WorldMeshSectionInfo* section : visibleSections ) {
             if ( section->FullStaticMesh ) {
@@ -6680,12 +6640,10 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
     if ( !opaqueDrawArgs.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" ) );
-        if ( !linearDepth ) {
-            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-        }
+        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
 
         // Depth-only opaque geometry needs only Position: feed the slim 12-byte stream + VS_ExDepth.
-        const bool usePositionStream = !linearDepth && wrappedWorldMesh->MeshPositionBuffer != nullptr;
+        const bool usePositionStream = wrappedWorldMesh->MeshPositionBuffer != nullptr;
         if ( usePositionStream ) {
             SetActiveVertexShader( VShaderID::VS_ExDepth );
             ActiveVS->Apply();
@@ -6693,8 +6651,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             UINT posStride = sizeof( float3 );
             Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( wrappedWorldMesh->MeshPositionBuffer.get() )->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
         } else {
-            // linearDepth keeps the PS bound and needs full attributes: the wrapped buffer is packed,
-            // so decode it with VS_ExPacked (stride 36).
+            // No position-only stream available: the wrapped buffer is packed, so decode it with
+            // VS_ExPacked (stride 36).
             SetActiveVertexShader( VShaderID::VS_ExPacked );
             ActiveVS->Apply();
             swappedToDepthVS = true;
@@ -6765,8 +6723,6 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     auto _scopeShadowPass = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh" ) );
 
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
-    bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
-                GSWITCH_LINEAR_DEPTH) != 0;
 
     static thread_local std::vector<WorldMeshInfo*> opaqueMeshes;
     static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
@@ -6820,16 +6776,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     if ( !opaqueMeshes.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh::OpaqueSubmission" ) );
-        if ( !linearDepth )  // Only unbind when not rendering linear depth
-        {
-            // Unbind PS
-            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-        }
+        // Unbind PS
+        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
 
         // For pure depth output (null PS) the transform only needs Position, so feed the slim
-        // 12-byte position-only stream + a position-only vertex shader. When rendering linear depth
-        // the pixel shader stays bound and may need the full attributes, so keep the 44-byte stream.
-        const bool usePositionStream = !linearDepth && wrappedWorldMesh->MeshPositionBuffer != nullptr;
+        // 12-byte position-only stream + a position-only vertex shader.
+        const bool usePositionStream = wrappedWorldMesh->MeshPositionBuffer != nullptr;
         if ( usePositionStream ) {
             SetActiveVertexShader( VShaderID::VS_ExDepth );
             ActiveVS->Apply();
@@ -6837,8 +6789,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             UINT posStride = sizeof( float3 );
             Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( wrappedWorldMesh->MeshPositionBuffer.get() )->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
         } else {
-            // linearDepth keeps the PS bound and needs full attributes: the wrapped buffer is packed,
-            // so decode it with VS_ExPacked (stride 36).
+            // No position-only stream available: the wrapped buffer is packed, so decode it with
+            // VS_ExPacked (stride 36).
             SetActiveVertexShader( VShaderID::VS_ExPacked );
             ActiveVS->Apply();
             swappedToDepthVS = true;
@@ -6933,13 +6885,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
     auto defaultPS = ActivePS;
     SetActiveVertexShader( VShaderID::VS_Ex );
-
-    bool linearDepth =
-        (renderState.GraphicsState.FF_GSwitches &
-            GSWITCH_LINEAR_DEPTH) != 0;
-    if ( linearDepth ) {
-        SetActivePixelShader( PShaderID::PS_LinDepth );
-    }
 
     // Set constant buffer
     renderState.GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
@@ -7142,11 +7087,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             LogError() << "Failed to map dynamic instancing buffer for vobs.";
         }
 
-        if ( !linearDepth )  // Only unbind when not rendering linear depth
-        {
-            // Unbind PS
-            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-        }
+        // Unbind PS
+        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
 
         ConstantBufferSlot windBuffer = INVALID_SHADER_CB_SLOT;
         if ( ActiveVS &&
@@ -7260,13 +7202,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 }
 
             } else {
-                if ( !linearDepth )  // Only unbind when not rendering linear depth
-                {
-                    // Unbind PS
-                    if ( currPs != nullptr ) {
-                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                        currPs = nullptr;
-                    }
+                // Unbind PS
+                if ( currPs != nullptr ) {
+                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
+                    currPs = nullptr;
                 }
             }
 
