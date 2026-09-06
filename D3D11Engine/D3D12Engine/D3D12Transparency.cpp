@@ -363,7 +363,7 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
     BindFrameLights();                                                                               // 3..5
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );                  // b3 shadow CB
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
-    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );  // t5 cubes
+    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );  // t5 cubes
     // b4 WindCB: the frame-global half (dir/time/playerPos); min/maxHeight (@4,5) are stamped per entry below,
     // exactly as the indirect commands do. Must be bound before the first draw — VSMain reads b4 for the sway.
     m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );

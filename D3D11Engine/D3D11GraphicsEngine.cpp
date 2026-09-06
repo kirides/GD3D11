@@ -9512,9 +9512,11 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             tiledDeferred->GetLightBufferSRV(),
             tiledDeferred->GetLightGridSRV(),
             nullptr,
-            tiledDeferred->IsShadowArrayCreated() ? tiledDeferred->GetShadowCubeArraySRV() : nullptr,
+            nullptr,
         };
         GetContext()->PSSetShaderResources( 8, 4, lightSRVs );
+        // Overlay tier at t14, core tier at t15; either may be null - a light only ever carries the half of
+        // its ShadowCubeIndex whose array exists.
         ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
             ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
         GetContext()->PSSetShaderResources( 14, 1, &dynCubeSRV );

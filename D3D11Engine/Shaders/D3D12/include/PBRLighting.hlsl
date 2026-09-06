@@ -18,9 +18,9 @@
 //                      float ShadowAOStrength; float WorldAOStrength; ...; }
 //   StructuredBuffer<GPULight> Lights; StructuredBuffer<LightGrid> LightGridBuf;
 //   Texture2DArray ShadowMap; SamplerComparisonState shadowCmp; TextureCubeArray PointShadowCubes;
-// The LOW-RES static cube array is not a declared binding: it is fetched bindlessly (SM6.6
-// ResourceDescriptorHeap) from LightCB's PointShadowLowIndex, so adding the second tier cost no root
-// signature changes — LightCB already had a spare 4th root constant in every one of these shaders.
+// PointShadowCubes is the STATIC (core) cube array. The DYNAMIC overlay array is not a declared binding: it
+// is fetched bindlessly (SM6.6 ResourceDescriptorHeap) from LightCB's PointShadowDynIndex, so the second tier
+// cost no root signature changes — LightCB already had a spare root constant in every one of these shaders.
 // (HLSL globals are visible by name across the whole translation unit regardless of #include position, but
 // they must be DECLARED — i.e. appear earlier in the file — before this header's functions reference them.)
 //
@@ -42,76 +42,61 @@ float3 DelightDiffuse( float3 linearAlbedo )
 // 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
 // face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
 // apply the LH projection z-map. Most acne bias is the PSO's hardware slope bias; add a small normal offset +
-// constant. 4-tap rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
-// `encodedIndex` is GPULight::ShadowCubeIndex: the low 30 bits are the cube slot, bit 30 (kShadowTierLow)
-// selects the LOW-RES static cube array (kStaticCubeSize^2, fetched bindlessly via LightCB's
-// PointShadowLowIndex) over the full-res dynamic one (PointShadowCubes). `lightPos`/`range` are the CUBE's
-// origin and far-plane basis — GPULight::ShadowOrigin /
-// ShadowRange, NOT the light's own position/range, because co-located static lights share one clustered cube.
+// constant. Rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
 //
-// The low-res tier is 4x coarser per axis, so its texels cover 4x more world space at the same distance: the
-// normal-offset bias and the PCF disk are scaled to match, otherwise a 32^2 cube acnes badly on the flat walls
-// it exists to occlude. It is deliberately blurrier — the static tier is there to stop room-to-room bleed, not
-// to resolve shadow detail.
+// `encodedIndex` is GPULight::ShadowCubeIndex, HI-LO: LO 16 bits = STATIC (core) slot + 1, HI 16 bits =
+// DYNAMIC (overlay) slot + 1, so 0 in a half means "no cube in that tier". The static cube is the declared
+// t-register PointShadowCubes; the overlay is fetched bindlessly via LightCB's PointShadowDynIndex, and min()
+// of the two is "occluded by either". `lightPos`/`range` are the CUBE's origin and far-plane basis
+// (GPULight::ShadowOrigin/ShadowRange), NOT the light's own - co-located statics share one clustered cube.
+//
+// The static tier is half the overlay's resolution per axis, so its bias and PCF disk are scaled to match or
+// it acnes on the flat walls it exists to occlude.
 float SamplePointShadow( int encodedIndex, float3 wpos, float3 N, float3 lightPos, float range )
 {
-    int   slot   = encodedIndex & kShadowSlotMask;
-    bool  lowRes = ( encodedIndex & kShadowTierLow ) != 0;
-    float coarse = lowRes ? 4.0 : 1.0;
-    // Full-res slots keep their STATIC depth in PointShadowCubes and this frame's moving (skeletal) casters in a
-    // SEPARATE array; taking the min of the two comparisons is "occluded by either", which is exactly what the
-    // old composited cube produced — minus the per-slot CopyTextureRegion that used to build it every frame.
-    // The bit is only set for slots whose overlay actually has casters, so a light with no NPC nearby pays for
-    // no extra sample at all.
-    bool  hasDyn = ( encodedIndex & kShadowHasDynamic ) != 0;
+    int staticSlot = ( encodedIndex & kShadowSlotMask ) - 1;
+    int dynSlot    = ( ( encodedIndex >> kShadowSlotShift ) & kShadowSlotMask ) - 1;
+    if ( staticSlot < 0 )
+        return 1.0;
+
+    const float coarse = 2.0;   // static-tier texel footprint relative to the overlay's
 
     float3 d  = ( wpos + N * ( range * 0.01 * coarse ) ) - lightPos;   // normal-offset bias (world-space, uniform)
     float3 ad = abs( d );
     float  zView = max( ad.x, max( ad.y, ad.z ) );            // dominant cube-axis depth = the face's view-space z
     const float n = 15.0;
     float  f = range * 2.0;
-    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001 * coarse;   // same LH hyperbolic z the caster wrote
+    float  baseDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView );        // same LH hyperbolic z the caster wrote
+    float  compareDepth    = baseDepth - 0.001 * coarse;
+    float  compareDepthDyn = baseDepth - 0.001;
     float3 L = normalize( d );
 
-    // P2.10e polish: 4-tap rotated-disk PCF on a basis perpendicular to L (cube sampling follows the offset dir,
-    // so a small angular offset lands on neighbouring texels). Softens the previously single-tap hard edges. The
-    // offset grows a little with distance so the world-space penumbra stays roughly constant across the range.
+    // 4-tap rotated-disk PCF on a basis perpendicular to L; the offset grows with distance so the world-space
+    // penumbra stays roughly constant across the range.
     float3 up = abs( L.y ) < 0.99 ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
     float3 t  = normalize( cross( up, L ) );
     float3 bt = cross( L, t );
     float  r  = ( 0.006 + 0.010 * saturate( zView / f ) ) * coarse;
     static const float2 kDisk[4] = { float2( 0.7, 0.7 ), float2( -0.7, 0.7 ), float2( 0.7, -0.7 ), float2( -0.7, -0.7 ) };
 
-    // The low-res static tier is deliberately blurry (see the header note): a 4x-coarse cube is there to stop
-    // room-to-room bleed, not to resolve edges, and its disk radius `r` is already scaled 4x to match. Four
-    // taps on it mostly re-average the same kStaticCubeSize^2 texel neighbourhood, so it takes a 2-tap
-    // diagonal (kDisk[0]/kDisk[3], opposite corners — the widest pair) for half the texture ops. The full-res
-    // tier keeps all four, and with it the optional dynamic-overlay min, where the resolution is actually
-    // there to be filtered.
-    const int  taps   = lowRes ? 2 : 4;
-    const int  stride = lowRes ? 3 : 1;
+    const bool hasDyn = dynSlot >= 0;
     float sh = 0.0;
     [loop]
-    for ( int s = 0; s < taps; ++s )
+    for ( int s = 0; s < 4; ++s )
     {
-        float3 o = normalize( L + ( kDisk[s * stride].x * t + kDisk[s * stride].y * bt ) * r );
-        if ( lowRes )
+        float3 off = kDisk[s].x * t + kDisk[s].y * bt;
+        float3 o = normalize( L + off * r );
+        float v = PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)staticSlot ), compareDepth );
+        if ( hasDyn )
         {
-            TextureCubeArray lowCubes = ResourceDescriptorHeap[PointShadowLowIndex];
-            sh += lowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
+            // The overlay's texels are finer, so it takes the un-scaled bias and a proportionally tighter disk.
+            TextureCubeArray dynCubes = ResourceDescriptorHeap[PointShadowDynIndex];
+            float3 od = normalize( L + off * ( r / coarse ) );
+            v = min( v, dynCubes.SampleCmpLevelZero( shadowCmp, float4( od, (float)dynSlot ), compareDepthDyn ) );
         }
-        else
-        {
-            float s = PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth );
-            if ( hasDyn )
-            {
-                TextureCubeArray dynCubes = ResourceDescriptorHeap[PointShadowDynIndex];
-                s = min( s, dynCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)slot ), compareDepth ) );
-            }
-            sh += s;
-        }
+        sh += v;
     }
-    return sh / (float)taps;
+    return sh * 0.25;
 }
 
 // PCF footprint, expressed as a WORLD radius rather than a texel count. The kernel used to step
@@ -596,7 +581,7 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
     float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w );
     // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
     [branch]
-    if ( L.ShadowCubeIndex >= 0 )
+    if ( L.ShadowCubeIndex != 0 )
     {
         // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube
         // centred on its cluster, while its own position/range still drive the shading above.

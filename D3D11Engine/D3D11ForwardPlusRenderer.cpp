@@ -315,17 +315,16 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                     tiledDeferred->GetLightBufferSRV(),
                     tiledDeferred->GetLightGridSRV(),
                     nullptr,
-                    tiledDeferred->IsShadowArrayCreated() ? tiledDeferred->GetShadowCubeArraySRV() : nullptr,
+                    nullptr,
                 };
                 context->PSSetShaderResources( 8, 4, lightSRVs );
 
-                // --- Dynamic point-shadow overlay array at t14 (t12/t13 are the shadow and AO masks) ---
-                // May be null: no light can carry SHADOW_CUBE_HAS_DYNAMIC before the array exists.
+                // --- Point-shadow overlay tier at t14, core tier at t15 (t12/t13 are the shadow/AO masks) ---
+                // Either may be null: a light only ever carries the half of its index whose array exists.
                 ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
                     ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
                 context->PSSetShaderResources( 14, 1, &dynCubeSRV );
 
-                // --- Low-res static-only shadow tier at t15 ---
                 ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
                     ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
                 context->PSSetShaderResources( 15, 1, &staticCubeSRV );

@@ -139,6 +139,8 @@ public:
     //  lambda in [0,1] interpolates between logarithmic (1.0) and uniform (0.0) splits.
     static std::vector<float> ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda = 0.95f, float bias = 1.0f );
     XRESULT DrawPointlightShadows(std::vector<VobLightInfo*>& lights);
+    /** Tiled lighting off: per-light DepthStencilPool cubemaps, no shared arrays and so no slot table. */
+    XRESULT DrawPointlightShadowsLegacy(std::vector<VobLightInfo*>& lights);
     XRESULT DrawWorldShadow();
     XRESULT DrawRainShadowmap();
     XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
@@ -248,6 +250,8 @@ private:
     // Which point light owns which shadow cube, and when each one's cached static depth is re-rendered.
     // Shared verbatim with the D3D12 backend - see PointLightSlotSelector.h.
     PointLightSlotSelector m_PointSlots;
+    // This frame's dome sweep. Kept across frames so its capacity is reused (32-bit address-space rule).
+    std::vector<PointLightSlotSelector::Candidate> m_PointCandidates;
     D3D11LegacyDeferredShading m_LegacyDeferred;
 
     TracyLockable(std::mutex, m_CullingJobsMutex);

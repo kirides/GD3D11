@@ -1033,24 +1033,15 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 // would invalidate the cube every time the camera turned.
 namespace {
 	// One visible point light on its way into the GPU light buffer. Built and distance-sorted by
-	// BuildFrameLightBuffer, then clustered here; it stays parallel to the filled GPULight array so the
-	// post-selection range clamp can look back at each light's static/indoor flags.
+	// BuildFrameLightBuffer; the SHADOW half of each entry (key/shadowOrigin/shadowRange) is copied off the
+	// slot selector's own dome-swept candidate for the same light, so both agree on which cube it samples.
 	struct FrameLightCand {
 		zCVobLight* vob;
 		XMFLOAT3    pos;
 		float       range;
 		float       distSq;
-		bool        isStatic;         // Gothic's true IsStatic() — governs specular scale / DisableStaticPointlights,
-		                              // unaffected by PointlightShadowCasterFlags
+		bool        isStatic;         // Gothic's true IsStatic() — governs specular scale / DisableStaticPointlights
 		bool        isIndoor;
-		bool        spatiallyStatic;  // has not MOVED for a while and does not ride a moving transform.
-		                              // Gothic's IsStatic() is NOT this: a colour-animated brazier reads as
-		                              // non-static there while never being repositioned. Gates the SPILL.
-		bool        isPFX;            // oCVisualFX-spawned (candle/torch/spell). Gates the world-mesh-only
-		                              // caster restriction below - see LightShadowKey::restrictToWorld.
-		bool        shadowRoutingStatic; // isStatic, UNLESS PLSC_STATIC_LIGHTS opted static lights into full
-		                              // dynamic-tier shadow treatment — see the PointlightShadowCasterFlags read below.
-		                              // Governs clustering eligibility and LightShadowKey::isStatic/lowRes.
 		XMFLOAT3    shadowOrigin;   // the CUBE's centre — the light's own, or its cluster's
 		float       shadowRange;    // the CUBE's far-plane basis — likewise
 		uint64_t    key;            // slot-ownership identity: the vob pointer, or a tagged cluster cell
@@ -1087,21 +1078,26 @@ namespace {
 			(c.z + 0.5f) * kStaticClusterCell );
 	}
 
-	void AssignStaticLightClusters( std::vector<FrameLightCand>& cands ) {
+	// Eligible when the cube would hold the world mesh alone anyway: a level light Gothic marks static whose
+	// category is not opted into VOB/NPC casters. One cube occludes a room's fill lights about equally.
+	bool IsClusterEligible( const PointLightSlotSelector::Candidate& c ) {
+		return c.light && c.light->IsStaticVobLight && c.restrictToWorld;
+	}
+
+	void AssignStaticLightClusters( std::vector<PointLightSlotSelector::Candidate>& cands ) {
 		// Cell coordinates are world-space, so the cache must not survive a world change (a different world would
 		// inherit another world's cluster extents). The BSP tree pointer is the cheapest available world identity.
 		static const void* s_clusterWorld = nullptr;
 		const void* world = Engine::GAPI->GetLoadedWorldInfo() ? Engine::GAPI->GetLoadedWorldInfo()->BspTree : nullptr;
 		if ( world != s_clusterWorld ) { g_StaticClusters.clear(); s_clusterWorld = world; }
 
-		// Pass 1 — fold this frame's visible static lights into the per-cell state (all grow-only). Keyed on
-		// shadowRoutingStatic, not isStatic: a light opted into PLSC_STATIC_LIGHTS skips clustering entirely and
-		// is treated as its own full dynamic-tier light (see BuildFrameLightBuffer).
+		// Pass 1 - fold this frame's candidates into the per-cell state (all grow-only). The DOME sweep, not
+		// the visible set, so a cell's extents no longer depend on where the camera looks.
 		static std::unordered_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
 		s_cellCount.clear();
-		for ( const FrameLightCand& c : cands ) {
-			if ( !c.shadowRoutingStatic ) continue;
-			const XMINT3 cell = ClusterCellOf( c.pos );
+		for ( const PointLightSlotSelector::Candidate& c : cands ) {
+			if ( !IsClusterEligible( c ) ) continue;
+			const XMINT3 cell = ClusterCellOf( c.shadowOrigin );
 			const uint64_t key = ClusterKeyOf( cell );
 			++s_cellCount[key];
 			StaticCluster& cl = g_StaticClusters[key];
@@ -1109,8 +1105,9 @@ namespace {
 			// How far the shared cube has to reach to still occlude THIS member: its distance off the cell centre
 			// plus its own radius. A member whose range vastly exceeds the cell would inflate the shared cube, but
 			// that is the safe direction — an undersized cube reads as "fully shadowed" past its far plane.
-			const float dx = c.pos.x - cl.centre.x, dy = c.pos.y - cl.centre.y, dz = c.pos.z - cl.centre.z;
-			const float reach = std::sqrt( dx * dx + dy * dy + dz * dz ) + c.range;
+			const float dx = c.shadowOrigin.x - cl.centre.x, dy = c.shadowOrigin.y - cl.centre.y,
+				dz = c.shadowOrigin.z - cl.centre.z;
+			const float reach = std::sqrt( dx * dx + dy * dy + dz * dz ) + c.shadowRange;
 			if ( reach > cl.range ) cl.range = std::ceil( reach / kClusterRangeQuantum ) * kClusterRangeQuantum;
 		}
 		for ( const auto& [key, n] : s_cellCount ) {
@@ -1121,13 +1118,12 @@ namespace {
 		// Pass 2 — redirect the members of any cell that has EVER held two or more static lights. A cell that has
 		// only ever held ONE keeps that light's own, better-centred cube: clustering a lone light would move its
 		// cube up to a half-diagonal away and inflate its range for no benefit. seenCount is monotonic, so a cell
-		// never flips back and forth as members come in and out of view.
-		for ( FrameLightCand& c : cands ) {
-			if ( !c.shadowRoutingStatic ) continue;
-			const uint64_t key = ClusterKeyOf( ClusterCellOf( c.pos ) );
-			const auto it = g_StaticClusters.find( key );
+		// never flips back and forth as members come and go.
+		for ( PointLightSlotSelector::Candidate& c : cands ) {
+			if ( !IsClusterEligible( c ) ) continue;
+			const auto it = g_StaticClusters.find( ClusterKeyOf( ClusterCellOf( c.shadowOrigin ) ) );
 			if ( it == g_StaticClusters.end() || it->second.seenCount < 2 ) continue;
-			c.key = key;
+			c.key = it->first;
 			c.shadowOrigin = it->second.centre;
 			c.shadowRange = it->second.range;
 		}
@@ -1183,10 +1179,9 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	constexpr float lightFactor = 1.2f;   // matches D3D11 CullLights RGB scale
 
 	// Parallel to dst[]: the slot-ownership identity per GPULight index, so the shadow selection below can map a
-	// chosen light back to its identity for STABLE per-light cube-slot ownership (static-aside cache, P2.10f).
-	// For a CLUSTERED static light this key is its cluster's, not its own — that is what makes several lights
-	// share one cube (see the clustering below).
-	static std::vector<D3D12PointShadows::LightShadowKey> s_lightKeys;
+	// chosen light back to its identity for STABLE per-light cube ownership. For a CLUSTERED static light this
+	// key is its cluster's, not its own — that is what makes several lights share one cube.
+	static std::vector<uint64_t> s_lightKeys;
 	s_lightKeys.clear();
 
 	// View-space transform for PositionView (consumed by the tiled light-culling CS). Mirrors D3D11
@@ -1199,8 +1194,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	//   1. DisableStaticPointlights — drop static lights outright; under HDR they stack into an over-bright
 	//      interior.
 	//   2. CLUSTERING (above) — one cube per grid cell instead of one per light.
-	//   3. The LOW-RES TIER — static/clustered cubes come from the 32^2 pool, never the 128^2 one, so they
-	//      cannot starve a dynamic torch. Static visibility is static, so they are cached forever.
+	//   3. The STATIC TIER — every light gets a cube there, baked once and cached; the scarce overlay tier
+	//      holds only the movers, so a room full of fill lights cannot starve a torch of its NPC shadow.
 	//   4. RANGE CLAMPING (below) — a static light that still gets no cube keeps its slot but has its shading
 	//      range cut, so it lights its alcove instead of reaching through a wall. An absent light is a visible
 	//      hole; a range-limited one is not.
@@ -1210,27 +1205,22 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const GothicRendererSettings& lightSettings = Engine::GAPI->GetRendererState().RendererSettings;
 	const bool dropStaticLights = lightSettings.DisableStaticPointlights;
 	const bool pointShadowsOn = lightSettings.EnablePointlightShadows != GothicRendererSettings::PLS_DISABLED;
-	// See D3D11PointLight's AllowsDynamicCasters/PointlightShadowCasterFlags (D3D11PointLight.cpp) - the same
-	// advanced setting, mirrored here. On, a static light skips the low-res clustered/cached-forever tier and
-	// is routed through the exact same pipeline as a normal dynamic light (full Phase A VOB + Phase C skeletal
-	// overlay in D3D12PointShadows) instead of world-mesh-only.
-	const bool allowStaticDynamicShadows = (lightSettings.PointlightShadowCasterFlags & GothicRendererSettings::PLSC_STATIC_LIGHTS) != 0;
 	// "Is the camera indoors" for the indoor/outdoor gate below. The player vob carries Gothic's own indoor flag
 	// (the same sector state D3D11 keys its indoor/outdoor vob filtering off).
 	const zCVob* playerVob = Engine::GAPI->GetPlayerVob();
 	const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
 
-	// At PLS_STATIC_ONLY nothing receives a dynamic overlay, so the 16x scarcer full-res tier buys only
-	// resolution. See the routing decision in the collect loop below.
-	const bool staticOnlyMode = lightSettings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
-
-	// Per-light "has not moved recently" tracking, keyed by vob. Capacity is reused; swept every 1024 frames.
-	struct StationaryState { XMFLOAT3 pos{}; UINT32 frames = 0; UINT32 lastSeen = 0; };
-	static std::unordered_map<const zCVob*, StationaryState> s_stationary;
-	static UINT32 s_stationaryFrame = 0;
-	++s_stationaryFrame;
-	constexpr float  kStationaryEps = 1.0f;     // world units; below this a light is jittering, not moving
-	constexpr UINT32 kStationaryFrames = 60;    // ~1 s of holding still before a light counts as a fixture
+	// A distance sweep of every registered light against the domes, NOT the visible set - turning away from a
+	// light must not cost it its cube. Clustering then redirects co-located static members onto one cube.
+	m_PointShadows.BuildCandidates();
+	std::vector<PointLightSlotSelector::Candidate>& shadowCands = m_PointShadows.GetCandidates();
+	AssignStaticLightClusters( shadowCands );
+	// vob -> its candidate, so the fill loop can copy the shadow half off the answer the selector will use.
+	// A visible light with no candidate is outside the dome and simply gets no cube.
+	static gtl::flat_hash_map<const zCVob*, const PointLightSlotSelector::Candidate*> s_candByVob;
+	s_candByVob.clear();
+	for ( const PointLightSlotSelector::Candidate& c : shadowCands )
+		if ( c.light && c.light->Vob ) s_candByVob.emplace( c.light->Vob, &c );
 
 	static std::vector<FrameLightCand> s_cands;   // static: capacity is reused, no per-frame allocation
 	s_cands.clear();
@@ -1246,43 +1236,24 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		const XMFLOAT3 pw = vob->GetPositionWorld();
 		const float range = vob->GetLightRange();
 		const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &pw ), camPos ) ) );
-		// Has this light held still long enough to count as a fixture? Only such a light's cube can be baked
-		// once and cached, which is the whole basis of the low-res tier. NPC-attached lights are excluded
-		// outright: an idle NPC's torch stands still for seconds and would flip tier every time they walk.
-		bool spatiallyStatic = isStatic;
-		if ( !spatiallyStatic && !D3D12PointShadows::IsNpcAttached( vob ) ) {
-			auto& st = s_stationary[vob];
-			const bool moved = std::fabs( pw.x - st.pos.x ) > kStationaryEps
-				|| std::fabs( pw.y - st.pos.y ) > kStationaryEps
-				|| std::fabs( pw.z - st.pos.z ) > kStationaryEps;
-			if ( moved ) { st.pos = pw; st.frames = 0; }
-			else if ( st.frames < kStationaryFrames ) ++st.frames;
-			st.lastSeen = s_stationaryFrame;
-			spatiallyStatic = st.frames >= kStationaryFrames;
-		}
-		// Route to the cached low-res tier when the light will not move AND could not receive a dynamic
-		// overlay anyway - which at PLS_STATIC_ONLY is every light there is. Without it, colour-animated room
-		// lights queued for the 64 full-res cubes while hundreds of static slots sat empty.
-		const bool routeStatic = !allowStaticDynamicShadows && ( isStatic || ( spatiallyStatic && staticOnlyMode ) );
-		// shadowOrigin/shadowRange start as the light's own and are redirected to a cluster's below; `key`
-		// likewise starts as the light's own identity.
-		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob, spatiallyStatic,
-			li->IsPFXVobLight, routeStatic, pw, range, reinterpret_cast<uint64_t>( vob ) } );
+
+		// The CUBE's origin and range are not the light's - DoAnimation re-animates the range every frame, and
+		// a clustered light samples a cube centred on its cluster.
+		const auto candIt = s_candByVob.find( vob );
+		const PointLightSlotSelector::Candidate* sc = candIt == s_candByVob.end() ? nullptr : candIt->second;
+		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
+			sc ? sc->shadowOrigin : pw, sc ? sc->shadowRange : range,
+			( pointShadowsOn && sc ) ? sc->key : 0ull } );
 	}
-	// Drop tracking entries for lights long out of the light set. Swept rarely; walks the whole map.
-	if ( ( s_stationaryFrame % 1024 ) == 0 )
-		std::erase_if( s_stationary, []( const auto& e ) { return s_stationaryFrame - e.second.lastSeen > 600; } );
-	// Total order, not just "by distance": the cluster cull keeps the first MAX_ACTIVE_LIGHTS candidates in BUFFER
-	// order, so the buffer order has to be a pure function of the visible light SET. std::sort is unstable, so
-	// equal distances (co-located atmospheric lights are common) would otherwise permute between frames and make
-	// the cap flicker again. The vob pointer breaks ties and is fixed for a light's lifetime.
+	// Total order, not just "by distance": the overflow cull keeps the first m_LightBufferCapacity candidates in
+	// BUFFER order, so the buffer order has to be a pure function of the visible light SET. std::sort is
+	// unstable, so equal distances (co-located atmospheric lights are common) would otherwise permute between
+	// frames and make the cap flicker. The vob pointer breaks ties and is fixed for a light's lifetime.
 	std::sort( s_cands.begin(), s_cands.end(),
 		[]( const FrameLightCand& a, const FrameLightCand& b ) {
 			if ( a.distSq != b.distSq ) return a.distSq < b.distSq;
 			return a.vob < b.vob;
 		} );
-
-	AssignStaticLightClusters( s_cands );
 
 	for ( const FrameLightCand& cand : s_cands ) {
 		zCVobLight* vob = cand.vob;
@@ -1315,20 +1286,11 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor,
 			lightSettings.PointLightSpecularScale( cand.isStatic ) );
 		L.PositionWorld = pw;
-		L.ShadowCubeIndex = -1;
+		L.ShadowCubeIndex = 0;   // 0 = unshadowed; SelectShadowedLights fills in the real HI-LO pair below
 		L.ShadowOrigin = cand.shadowOrigin;
 		L.ShadowRange = cand.shadowRange;
-		// key 0 = "never give this light a cube" — what point-shadows-off means for every light. `vob` is only
-		// passed for an UNclustered light: a cluster has no single owning vob, and the field exists purely for
-		// the dynamic-overlay exclude list, which no static/clustered slot reaches.
-		// World-mesh-only casters for an un-opted-in PFX light, mirroring D3D11's AllowsDynamicCasters. Asked
-		// of the light's OWN identity only - a clustered light is routing-static anyway.
-		const bool unclustered = cand.key == reinterpret_cast<uint64_t>( vob );
-		const bool restrictToWorld = unclustered && !cand.shadowRoutingStatic && cand.isPFX
-			&& !( lightSettings.PointlightShadowCasterFlags & GothicRendererSettings::PLSC_PARTICLE_FX );
-		s_lightKeys.push_back( { pointShadowsOn ? cand.key : 0ull,
-			unclustered ? vob : nullptr,
-			cand.shadowRoutingStatic, cand.shadowRoutingStatic, cand.spatiallyStatic, restrictToWorld } );
+		// key 0 = "never give this light a cube" — what point-shadows-off means for every light.
+		s_lightKeys.push_back( cand.key );
 		++count;
 	}
 	m_FrameLightCount = count;
@@ -1371,10 +1333,10 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.
 		const bool leakingOutdoors = s_cands[i].isIndoor && !cameraIndoors;
-		const float target = dst[i].ShadowCubeIndex >= 0 ? 1.0f
+		const float target = dst[i].ShadowCubeIndex != 0 ? 1.0f
 			: ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
 		// key 0 is "this light can never be shadowed": no identity to ease under, and nothing to ease to.
-		const uint64_t key = s_lightKeys[i].key;
+		const uint64_t key = s_lightKeys[i];
 		if ( !key ) {
 			dst[i].Range *= target;
 			dst[i].ShadowRange = dst[i].Range;
@@ -1408,16 +1370,15 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// every overlapping point light" for "brightest single light" to avoid overexposure).
 	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
-	// PointShadowLowIndex @ b*.w — the BINDLESS heap slot of the low-res static shadow-cube array. The full-res
-	// array is a declared t-register in each shader, but the second tier rides in this spare 4th root constant
-	// instead (SM6.6 ResourceDescriptorHeap), which is why adding it needed no root signature changes. Only ever
-	// read by a light whose ShadowCubeIndex carries kShadowTierLow, so the 0 fallback is never dereferenced.
-	const UINT lowCubeSrv = m_PointShadows.GetLowSrvSlot();
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, lowCubeSrv == UINT_MAX ? 0u : lowCubeSrv, 3 );
-	// PointShadowDynIndex @ b*+1.x — same trick again, for the DYNAMIC (skeletal overlay) cube array. Only read
-	// by a light whose ShadowCubeIndex carries kShadowHasDynamic, so the 0 fallback is never dereferenced.
+	// PointShadowDynIndex @ b*.w — the BINDLESS heap slot of the OVERLAY cube array. The static core array is a
+	// declared t-register in each shader (PointShadowCubes), but the second tier rides in this spare root
+	// constant instead (SM6.6 ResourceDescriptorHeap), which is why it needed no root signature changes. Only
+	// ever read by a light whose ShadowCubeIndex carries a non-zero HI half, so the 0 fallback is never
+	// dereferenced.
 	const UINT dynCubeSrv = m_PointShadows.GetDynSrvSlot();
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 4 );
+	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 3 );
+	// Spare, kept so the root signatures' 32-bit constant counts stay unchanged.
+	m_CmdList->SetGraphicsRoot32BitConstant( countParam, 0u, 4 );
 	// ProjA/ProjB/NearZ/FarZ (P2.14): let every lit pixel shader reconstruct ITS OWN cluster Z slice from its
 	// own SV_Position.z (PBRLighting.hlsl's ComputeZSlice) — must match DispatchLightCulling's CullCB exactly,
 	// or a pixel picks a different cluster than the one the compute pass culled lights into.
@@ -1820,7 +1781,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	BindFrameLights();                                                                               // 3..5
 	m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[frame] );                         // b3 shadow CB
 	m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
-	m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );  // t5 cubes
+	m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );  // t5 cubes
 	m_CmdList->SetGraphicsRoot32BitConstants( 10, 1, &m_ActiveAOMaskSrvSlot, 0 );                    // b7 AOCB
 
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -2360,7 +2321,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 			BindFrameLights( 5, 6, 7 );
 			m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );
 			m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );
-			m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );
+			m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );
 			m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b5 AOCB (simple SSAO mask)
 			m_CmdList->RSSetViewports( 1, &vp );
 			m_CmdList->RSSetScissorRects( 1, &sc );
@@ -4289,7 +4250,7 @@ void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) 
     // PIXEL_SHADER_RESOURCE by the CSM pass; the PS samples it to darken sun-occluded surfaces.
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );
-    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) );   // t5 point-shadow cubes
+    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );   // t5 point-shadow cubes
     m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
 }
 
@@ -4687,7 +4648,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — see DrawWorldMesh.
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );          // b3 shadow CB
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );      // t4 shadow map
-    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes
+    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) ); // t5 point-shadow cubes
     // Frame-global wind (b4): dir/time/playerPos bound once; each indirect command overwrites only min/maxHeight
     // (b4[4..5]) per visual. Must be bound before ExecuteIndirect (VSMain reads b4 for the sway).
     m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
@@ -5274,7 +5235,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         BindFrameLights( 4, 5, 6 );   // light SRV(t1)+count(b4)+cluster-mask(t2) — MUST set all (see BindFrameLights)
         m_CmdList->SetGraphicsRootConstantBufferView( 8, m_ShadowCBGpu[m_FrameIndex] );        // b5 shadow CB
         m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );    // t4 shadow map
-        m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes
+        m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) ); // t5 point-shadow cubes
         m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b8 AOCB (simple SSAO mask)
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
@@ -5298,7 +5259,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         BindFrameLights();
         m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );        // b3 shadow CB
         m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );    // t4 shadow map
-        m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes
+        m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) ); // t5 point-shadow cubes
         m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
         // Frame-global wind baseline for the shared VOB signature's b4[4..5] partial writes — see the prepass.
         m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );

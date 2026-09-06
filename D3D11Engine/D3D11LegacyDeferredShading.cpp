@@ -103,9 +103,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         if ( !vob->IsEnabled() ) continue;
 
         bool hasShadow = false;
+        D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
         if ( settings.EnablePointlightShadows > 0 ) {
-            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
-
             hasShadow = pl && pl->IsInited() && pl->HasShadowMap( 0 );
             if ( hasShadow ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
@@ -127,6 +126,9 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         }
         plcb.Pl_PositionWorld = vob->GetPositionWorld();
         plcb.PL_Outdoor = light->IsIndoorVob ? 0.0f : 1.0f;
+        // The range the cube was baked with, so the depth compare uses the same far plane - the animated
+        // range and the unshadowed clamp above both belong to PL_Range alone.
+        plcb.PL_ShadowRange = pl ? pl->GetShadowRange() : plcb.PL_Range;
 
         float dist;
         XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( &plcb.Pl_PositionWorld ) - Engine::GAPI->GetCameraPositionXM() ) );

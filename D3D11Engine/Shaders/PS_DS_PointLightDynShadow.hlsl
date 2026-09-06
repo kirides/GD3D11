@@ -23,7 +23,7 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	matrix PL_InvView;
 
 	float3 PL_LightScreenPos;
-	float PL_Pad3;
+	float PL_ShadowRange;   // cube far-plane basis; NOT PL_Range - see the C++ struct
 
 	// Rain wetness, frame-constant (see ApplyPointLightWetness / RainWetnessSample.h).
 	matrix PL_RainViewProj;
@@ -111,7 +111,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Apply dynamic shadow
 	bool taaActive = PL_JitterOffset.x != 0.0f || PL_JitterOffset.y != 0.0f;
-	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, wsNormal, Pl_PositionWorld, PL_Range, taaActive);
+	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, wsNormal, Pl_PositionWorld, PL_ShadowRange, taaActive);
 	//return float4(ndl.rrr,1);
 	
 	// Get rid of lighting on the backfaces of normalmapped surfaces

@@ -355,25 +355,108 @@ namespace {
     }
 }
 
-// Rate at which cached static point-light shadows are being thrown away: a cached cube costs nothing to keep
-// and a full re-bake to replace, so anything but a brief spike means something nearby is churning the cache.
+// What a re-bake cause means, and what a sustained rate of it points at. One entry per
+// EPointLightRebakeCause, in the same order.
+static const char* PointLightRebakeCauseHelp( EPointLightRebakeCause c ) {
+    switch ( c ) {
+    case PLR_VOB_ADDED:     return "A vob entered the world, or moved, inside a baked light's reach (the light's\n"
+                                   "range plus the caster's extent). A sustained rate means something keeps moving\n"
+                                   "next to cached lights: an item that never settles, a door or lid animating, an\n"
+                                   "oCMobInter. See PointLightSlotSelector::InvalidateStaticForVobAdded.";
+    case PLR_VOB_REMOVED:   return "A vob the bake actually drew (matched by pointer against Slot::bakedVobs) was\n"
+                                   "destroyed, or started moving. Pairs with the row above for a MOVE, which is both\n"
+                                   "a removal and an addition - one moving caster costs two counts, not one.";
+    case PLR_SLOT_TAKEN:    return "The cube slot changed hands: a nearer light evicted the owner. A sustained rate\n"
+                                   "is genuine oversubscription - more lights inside the dome than there are static\n"
+                                   "slots. Check the starved count below.";
+    case PLR_SLOT_AGED:     return "The owner left the DEACTIVATION dome (VisualFXDrawRadius + Config::DomeMargin)\n"
+                                   "and its slots went back to the pool. Normal while moving through a level; it\n"
+                                   "cannot fire from merely turning away, which is the point of the dome.";
+    case PLR_LIGHT_MOVED:   return "The cube's origin moved more than Config::MoveEps. Correct and unavoidable for a\n"
+                                   "light that really travels (a carried torch); a rate on lights that should be\n"
+                                   "standing still means their vob transform is being rewritten every frame.";
+    case PLR_RANGE_CHANGED: return "The cube's far-plane basis changed more than Config::RangeEps. This should sit at\n"
+                                   "zero: the cube range is quantized and grow-only (D3D11PointLight::\n"
+                                   "UpdateShadowRange) precisely so that zCVobLight::DoAnimation re-animating the\n"
+                                   "light's range every frame cannot re-bake the cube. A sustained rate here means a\n"
+                                   "path is feeding the selector the live animated range again.";
+    case PLR_MODE_CHANGED:  return "The global point-light shadow mode changed under this light, which drops every\n"
+                                   "bake at once. Expected exactly once per settings change.";
+    case PLR_ASIDE_BUFFER:  return "Legacy composited path only (no tiled cube array): the per-light aside cube was\n"
+                                   "re-allocated or handed back to the pool, taking the cached static depth with it.\n"
+                                   "Stays zero whenever tiled lighting is on.";
+    case PLR_NO_CACHE:      return "PLS_FULL re-renders everything every frame by design - it is the\n"
+                                   "no-caching-shortcuts escape hatch. Not a fault, but it is why that mode costs\n"
+                                   "what it costs. Zero in every other mode.";
+    case PLR_BUDGET_DEFER:  return "NOT an invalidation: a wanted low-tier re-bake that the per-frame budget\n"
+                                   "(Config::LowStaticRendersPerFrame) postponed to a later frame, so it is excluded\n"
+                                   "from the total above. A steady rate means the queue of wanted bakes is longer\n"
+                                   "than the budget drains - look at which cause above is filling it.";
+    default:                return "";
+    }
+}
+
+// Rate at which cached static point-light shadows are being thrown away, split by cause: a cached cube costs
+// nothing to keep and a full re-bake to replace, so anything but a brief spike means something is churning it.
 static void DrawPointLightInvalidationStat() {
-    auto& counter = Engine::GAPI->GetRendererState().RendererInfo.PointLightStaticInvalidations;
-    const unsigned int perSec = counter.PerSecond();
+    auto& info = Engine::GAPI->GetRendererState().RendererInfo;
+    const unsigned int perSec = info.PointLightRebakesPerSecond();
     const ImVec4 color = perSec == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
         : perSec < 10 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
                       : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
     // The total sits next to the rate because the rate alone cannot tell "nothing is invalidating" from
     // "it happened and the window has already let it go".
-    ImGui::TextColored( color, "Static shadow invalidations: %u / s   (%llu total)", perSec, counter.Total() );
-    ImGui::SetItemTooltip( "Baked static point-light shadows dropped in the last one-second window, across all\n"
-        "lights: a caster appearing, vanishing or starting to move inside a light's range, the light\n"
-        "itself moving or changing shadow mode, or a shadow slot changing hands. Steady zero is the\n"
-        "healthy state - every light is reusing its cached cube. A sustained non-zero rate means those\n"
-        "cubes are being re-rendered instead, which is the exact cost the cache exists to avoid; the\n"
-        "usual culprit is a caster that keeps entering and leaving the static caster set.\n"
+    ImGui::TextColored( color, "Static shadow invalidations: %u / s   (%llu total)", perSec,
+        info.PointLightRebakesTotal() );
+    ImGui::SetItemTooltip( "Baked static point-light shadows dropped in the last one-second window, across every\n"
+        "light and every cause. Steady zero is the healthy state - every light is reusing its cached\n"
+        "cube. A sustained non-zero rate means those cubes are being re-rendered instead, which is the\n"
+        "exact cost the cache exists to avoid; the breakdown below says which cause is doing it, and\n"
+        "every row carries its own explanation.\n"
         "The rate is a sliding one-second window, so it reacts within ~100ms of an event and decays\n"
         "back to 0 over the following second; the total only ever climbs." );
+
+    const ImVec4 wantedColor = info.PointLightStaticRendersWanted == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
+        : info.PointLightStaticRendersWanted < 4 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
+                                                 : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+    ImGui::TextColored( wantedColor, "Cubes wanting a re-bake this frame: %u", info.PointLightStaticRendersWanted );
+    ImGui::SetItemTooltip( "Winning lights whose cached cube the slot selection considers out of date THIS frame -\n"
+        "the cost the causes below add up to. The rate table cannot tell 40 invalidations landing on\n"
+        "one light from 40 landing on 40; this can. Each one is a full caster cull plus six faces, and\n"
+        "the renderer only drains a handful per frame, so a number that stays high means the queue\n"
+        "never empties and the cache is buying nothing." );
+
+    // Every cause, always all of them: a row reading zero rules a suspect out just as usefully as a row
+    // reading high names one.
+    if ( ImGui::TreeNodeEx( "Invalidation causes", ImGuiTreeNodeFlags_DefaultOpen ) ) {
+        if ( ImGui::BeginTable( "plRebakeCauses", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg ) ) {
+            ImGui::TableSetupColumn( "Cause", ImGuiTableColumnFlags_WidthStretch );
+            ImGui::TableSetupColumn( "/ s" );
+            ImGui::TableSetupColumn( "total" );
+            ImGui::TableHeadersRow();
+            for ( int c = 0; c < PLR_NUM_CAUSES; ++c ) {
+                const auto cause = static_cast<EPointLightRebakeCause>( c );
+                const unsigned int rate = info.PointLightStaticInvalidations[c].PerSecond();
+                const unsigned long long total = info.PointLightStaticInvalidations[c].Total();
+                // Deferrals are a queue-depth signal, not a cost - never red, so they can't be mistaken for
+                // the thing to go and fix.
+                const ImVec4 rowColor = rate == 0 ? ImVec4( 0.55f, 0.55f, 0.55f, 1.0f )
+                    : cause == PLR_BUDGET_DEFER ? ImVec4( 0.5f, 0.7f, 1.0f, 1.0f )
+                    : rate < 10 ? ImVec4( 1.0f, 1.0f, 0.2f, 1.0f )
+                                : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextColored( rowColor, "%s", PointLightRebakeCauseName( cause ) );
+                ImGui::SetItemTooltip( "%s", PointLightRebakeCauseHelp( cause ) );
+                ImGui::TableNextColumn();
+                ImGui::TextColored( rowColor, "%u", rate );
+                ImGui::TableNextColumn();
+                ImGui::TextColored( rowColor, "%llu", total );
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
 }
 
 // Shadow-cube slot occupancy per tier, plus the lights that asked for a cube and got none. Zero starved is
@@ -381,9 +464,9 @@ static void DrawPointLightInvalidationStat() {
 static void DrawPointLightSlotStat() {
     const auto& info = Engine::GAPI->GetRendererState().RendererInfo;
     if ( info.PointLightSlotsMax == 0 ) return;   // legacy per-light cubemaps: no fixed pools to report on
-    ImGui::Text( "Shadow cubes: %u/%u dynamic, %u/%u static",
-        info.PointLightSlotsUsed, info.PointLightSlotsMax,
-        info.PointLightStaticSlotsUsed, info.PointLightStaticSlotsMax );
+    ImGui::Text( "Shadow cubes: %u/%u static (core), %u/%u dynamic (overlay)",
+        info.PointLightStaticSlotsUsed, info.PointLightStaticSlotsMax,
+        info.PointLightSlotsUsed, info.PointLightSlotsMax );
     const ImVec4 color = info.PointLightSlotsStarved == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
                                                          : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
     ImGui::TextColored( color, "Lights starved of a cube: %u", info.PointLightSlotsStarved );
@@ -484,12 +567,23 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
     const float dist = sqrtf( nearestDistSq );
 
     ImGui::Text( "Nearest light: pos (%.1f, %.1f, %.1f)  range %.1f  dist-to-cam %.1f", pos.x, pos.y, pos.z, range, dist );
-    ImGui::Text( "zNear %.4f   zFar %.1f", nearest->GetDebugZNear(), nearest->GetDebugZFar() );
-    ImGui::Text( "Resolution %d   DrawnOnce %d   StaticReady %d   DynOverlay %d",
+    ImGui::Text( "zNear %.4f   zFar %.1f   ShadowRange %.1f", nearest->GetDebugZNear(), nearest->GetDebugZFar(),
+        nearest->GetShadowRange() );
+    ImGui::SetItemTooltip( "ShadowRange is the cube's far-plane basis (zFar = ShadowRange*2) and is NOT the light's\n"
+        "range printed above: zCVobLight::DoAnimation re-animates that every frame, and feeding it to the\n"
+        "selector made every animated light re-bake its whole cube every frame. It is the live range\n"
+        "snapped up to a 128-unit quantum and grown-only, so it settles on the animation's peak - see\n"
+        "D3D11PointLight::UpdateShadowRange. The shader is given it separately (TiledPointLight::\n"
+        "ShadowRange / PL_ShadowRange) so the depth compare uses the far plane the bake actually used." );
+    ImGui::Text( "Resolution %d   DrawnOnce %d   StaticReady %d",
         nearest->GetShadowMapResolution(), nearest->NotYetDrawn() ? 0 : 1,
-        nearest->IsStaticShadowReady() ? 1 : 0, nearest->HasDynamicShadowOverlay() ? 1 : 0 );
-    ImGui::Text( "Tiled slot %d (lowRes %d)   Legacy cube: %s", nearest->GetTiledSlot(),
-        nearest->IsTiledSlotLowRes() ? 1 : 0, nearest->GetShadowCubeTexture() ? "yes" : "no" );
+        nearest->IsStaticShadowReady() ? 1 : 0 );
+    ImGui::Text( "Static slot %d   Overlay slot %d   Legacy cube: %s", nearest->GetStaticSlot(),
+        nearest->GetDynSlot(), nearest->GetShadowCubeTexture() ? "yes" : "no" );
+    ImGui::SetItemTooltip( "The two tiers are independent slot spaces: the STATIC cube is this light's core\n"
+        "shadow (world mesh + static VOBs + MOBs, baked and cached), the OVERLAY holds only this frame's\n"
+        "movers and is much scarcer. -1 means it holds none of that tier. The shader gets them packed\n"
+        "HI-LO in one int (PointLightSlotSelector::EncodeIndex), where 0 in a half means no cube." );
     ImGui::Text( "IsPFXVobLight %d   IsStaticVobLight %d", nearestInfo->IsPFXVobLight ? 1 : 0,
         nearestInfo->IsStaticVobLight ? 1 : 0 );
     ImGui::Text( "Vob->IsEnabled %d   VisibleInFrame %d   MissingFrames %d", nearestInfo->Vob->IsEnabled() ? 1 : 0,
@@ -501,6 +595,27 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
         "light has been absent (disabled or out of VisibleInFrame) since its shadow resources were\n"
         "last held; it only releases its slot past the retention window in DrawPointlightShadows, so a\n"
         "light that blinks on/off keeps its progress instead of restarting its bake every time." );
+    // Why THIS light's cube was last thrown away, from both sides: the light drops its own bake for reasons
+    // the slot table cannot see (mode change, the light moving), and the slot table decides the rest.
+    {
+        const EPointLightRebakeCause ownCause = nearest->GetLastRebakeCause();
+        const char* ownName = ownCause == PLR_NUM_CAUSES ? "none" : PointLightRebakeCauseName( ownCause );
+        const char* slotName = "n/a (no slot)";
+        if ( const PointLightSlotSelector* sel = nearest->GetSlotSelector() ) {
+            const int slot = nearest->GetStaticSlot();
+            if ( slot >= 0 ) {
+                const EPointLightRebakeCause slotCause = sel->StaticSlotAt( static_cast<uint32_t>( slot ) ).lastCause;
+                slotName = slotCause == PLR_NUM_CAUSES ? "none" : PointLightRebakeCauseName( slotCause );
+            }
+        }
+        ImGui::Text( "Last re-bake cause: light \"%s\"   slot \"%s\"", ownName, slotName );
+        ImGui::SetItemTooltip( "The most recent reason each side dropped this light's cached cube - not\n"
+            "necessarily this frame, and not cleared once the bake is re-rendered. Read it together with\n"
+            "the rate table at the top: that says how often it is happening across all lights, this says\n"
+            "what happened to the one you are standing in front of. \"light\" is the light's own bake\n"
+            "(mode change, the light itself moving, the legacy aside cube); \"slot\" is the shared slot\n"
+            "table's (casters coming and going, slot churn, cube origin/range changes)." );
+    }
     ImGui::Text( "LastRenderedPosition (%.1f, %.1f, %.1f)", nearestInfo->LastRenderedPosition.x,
         nearestInfo->LastRenderedPosition.y, nearestInfo->LastRenderedPosition.z );
     ImGui::SetItemTooltip( "Set by D3D11PointLight::RenderCubemap right after a real render - if this stays\n"
