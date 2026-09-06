@@ -399,8 +399,6 @@ public:
     // TODO: Remove from here, put into D3D11ShadowMaps
     D3D11PointLight* DebugPointlight;
 
-    // Using a list here to determine which lights to update, since we don't want to update every light every frame.
-    std::list<VobLightInfo*> FrameShadowUpdateLights;
     
     /** Effects wrapper */
     std::unique_ptr<D3D11Effect> Effects;

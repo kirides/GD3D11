@@ -97,6 +97,9 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
 
     auto cbPool = graphicsEngine->GetConstantBufferPool();
+    // The active technique answers both "does this light have depth" and "bind it" - see PointShadow/.
+    IPointShadowTechnique* pointShadows = graphicsEngine->GetShadowMaps()
+        ? graphicsEngine->GetShadowMaps()->GetPointShadowTechnique() : nullptr;
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
@@ -105,7 +108,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         bool hasShadow = false;
         D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
         if ( settings.EnablePointlightShadows > 0 ) {
-            hasShadow = pl && pl->IsInited() && pl->HasShadowMap( 0 );
+            hasShadow = pl && pl->IsInited() && pointShadows && pointShadows->ProvidesShadowFor( *pl );
             if ( hasShadow ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
                     graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
@@ -185,9 +188,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         cbPool->BindPS(activePlBuf, rainBufAllocation);
         cbPool->BindVS(1, rainBufAllocation);
 
-        if ( settings.EnablePointlightShadows > 0 ) {
-            if ( light->LightShadowBuffers )
-                static_cast<D3D11PointLight*>(light->LightShadowBuffers.get())->OnRenderLight();
+        if ( settings.EnablePointlightShadows > 0 && pl && pointShadows ) {
+            pointShadows->BindPerLightSampling( *pl );
         }
 
         graphicsEngine->InverseUnitSphereMesh->DrawMesh();

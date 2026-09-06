@@ -10020,14 +10020,6 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
         ShadowMaps->ReleasePointLightSlotFor( vob );
     }
 
-    // Take out of shadowupdate queue
-    for ( auto it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
-        if ( (*it)->Vob == vob ) {
-            FrameShadowUpdateLights.erase( it );
-            break;
-        }
-    }
-
     // Spacer can delete/undo a light vob mid-frame.
     // TODO(diagnostic, remove once root-caused): log whenever this actually removes something, so a
     // crash log tells us whether this scrub path is even reached before the D3D11ShadowMap dynamic_cast
