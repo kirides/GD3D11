@@ -839,11 +839,11 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     WhiteTexture = std::make_unique<D3D11Texture>();
     uint32_t whitePixel = 0xFFFFFFFF;
-    WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, &whitePixel, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
+    WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_R8G8B8A8, 1, &whitePixel, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
 
     BlackTexture = std::make_unique<D3D11Texture>();
     uint32_t blackPixel = 0xFF000000;
-    BlackTexture->Init( { 1,1 }, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, & blackPixel, "FULL_BLACK_ALPHA_OPAQUE.static-memory" );
+    BlackTexture->Init( { 1,1 }, D3D11Texture::ETextureFormat::TF_R8G8B8A8, 1, & blackPixel, "FULL_BLACK_ALPHA_OPAQUE.static-memory" );
 
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
@@ -1122,8 +1122,8 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     OnResetBackBuffer();
 
     // actual native-resolution backbuffer for UI and copy operations !!
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
-    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0) );
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
+    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE );
 
     // Native-resolution HDR (pre-tonemap) buffer that the upscaler writes into. Post-processing B
     // (DoF, Bloom, tonemapping) runs on this at presentation resolution before the LDR Backbuffer is

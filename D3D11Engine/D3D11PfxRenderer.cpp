@@ -423,7 +423,7 @@ TextureHandle D3D11PfxRenderer::GetBackbufferTempBuffer()
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto res = engine->GetBackbufferResolution();
 
-    return m_texturePool->Acquire( TexturePool::Description{ res.x, res.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  } );
+    return m_texturePool->Acquire( TexturePool::Description{ res.x, res.y, DXGI_FORMAT_ENGINE_DEFAULT  } );
 }
 
 TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
