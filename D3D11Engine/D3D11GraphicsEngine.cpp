@@ -10106,21 +10106,29 @@ void D3D11GraphicsEngine::OnAddVob( VobInfo* vi ) {
     // range has to say so. Parked rather than applied here: Gothic has often not placed the vob yet and its
     // parent link can still be the NPC letting go of it, which are the two things the decision reads.
     if ( ShadowMaps && vi && vi->Vob && vi->VisualInfo )
-        ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
+        if (!IsAttachedToNpc(vi->Vob)) {
+            ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
+        }
 }
 
 
 void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
     // It started moving (a door swinging open, a chest lid), so anything that baked it into a static cube
     // has to let go - the animated pass draws it from now on.
-    if ( ShadowMaps ) ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
+    if ( ShadowMaps ) {
+        ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
+    }
 }
 
 
 void D3D11GraphicsEngine::OnVobMoved( zCVob* vob ) {
     // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
     // missing from its cube. Queued because a falling item moves several times before coming to rest.
-    if ( ShadowMaps ) ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
+    if ( ShadowMaps ) {
+        if (!IsAttachedToNpc(vob)) {
+            ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
+        }
+    }
 }
 
 

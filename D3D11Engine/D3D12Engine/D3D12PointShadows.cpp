@@ -310,7 +310,9 @@ bool D3D12PointShadows::Init() {
 
 
 void D3D12PointShadows::QueueVobChangedInvalidation( zCVob* vob ) {
-	m_Sel.QueueVobChangedInvalidation( vob );
+    if (!IsNpcAttached(vob)) {
+	    m_Sel.QueueVobChangedInvalidation( vob );
+    }
 }
 
 
