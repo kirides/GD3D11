@@ -4471,7 +4471,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
             if ( kInstStride == sizeof( VobInstanceInfo ) ) {
                 memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
             } else {
-                // Narrower stride: copy each instance's prefix (prevWorld, the tail, is not uploaded).
+                // Narrower stride: copy each instance's prefix, dropping the prevWorld tail.
                 uint8_t* base = m_VobInstanceBufferPtr[frame] + instOffset;
                 for ( UINT i = 0; i < numInstances; ++i )
                     memcpy( base + i * kInstStride, &visual->Instances[i], kInstStride );
@@ -4488,8 +4488,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
             UINT nearCursor = 0;
             UINT farCursor = numInstances;
             for ( const VobInstanceInfo& inst : visual->Instances ) {
-                // Written component-wise so this is visibly the same expression VobCull.hlsl evaluates:
-                // mul( world, float4(centre,1) ) — the stored rows ARE the matrix (see PackAffine3x4).
+                // Component-wise so this reads as the same expression VobCull.hlsl evaluates.
 
                 const Affine3x4& w = inst.world;
                 const float wx = cx * w.m[0][0] + cy * w.m[0][1] + cz * w.m[0][2] + w.m[0][3] - camPos.x;
@@ -5059,7 +5058,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             }
                             VobInstanceInfo vii = {};
                             PackAffine3x4( vii.world, attWorld );
-                            PackAffine3x4( vii.prevWorld, attPrevWorld );   // motion vectors — see attPrevWorld above
+                            PackAffine3x4( vii.prevWorld, attPrevWorld );
                             vii.color = groundLight.ToDWORD();
                             // Focus-highlight bit for node-attached MOBs (tree-saw trunks, beds) — mirrors Vob.hlsl's VSMainAttach.
                             vii.GP_Slot |= ( playerFocusVob && playerFocusVob == vi->Vob ) ? ( 1u << 31 ) : 0u;

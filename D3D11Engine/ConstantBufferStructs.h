@@ -5,21 +5,16 @@
 #define FFX_CPU
 #include "Shaders/FidelityFX/ffx_core.h"
 
-/** A ZenGin world matrix minus its constant last row. ZenGin matrices are column-vector (translation in
-    column 3), so the C-array row 3 is always (0,0,0,1) and carries no information. XMFLOAT3X4 is exactly
-    that shape (3 rows x 4 columns) and brings the usual _11.._34 accessors along. */
+/** ZenGin matrices are column-vector, so the C-array's row 3 is always (0,0,0,1) and can be dropped. */
 using Affine3x4 = DirectX::XMFLOAT3X4;
 
-/** Copies the meaningful rows out of a full 4x4. Deliberately a plain copy and NOT XMStoreFloat3x4: that
-    helper transposes, which is right for a row-vector DirectXMath matrix but wrong here — ZenGin's matrix
-    is already column-vector, so its first three rows are what the shader wants verbatim. */
+/** A plain copy, not XMStoreFloat3x4 — that transposes, and ZenGin's matrix is already column-vector. */
 inline void PackAffine3x4( Affine3x4& dst, const XMFLOAT4X4& src ) {
     memcpy( &dst, &src, sizeof( Affine3x4 ) );
 }
 
-/** Actual instance data for a vob.
-    prevWorld sits LAST on purpose: the motion-vector-free upload is then a byte-prefix of this struct, so
-    both strides (kVobInstanceStrideNoMotion / sizeof) share one set of field offsets and one CPU type. */
+/** Actual instance data for a vob. prevWorld sits last so the motion-free upload is a byte prefix of
+    this struct — both strides then share one set of field offsets. */
 struct VobInstanceInfo {
     Affine3x4 world;             // @0
     DWORD color;                 // @48
@@ -28,16 +23,15 @@ struct VobInstanceInfo {
     // General purpose slot. Used by instanced VOB rendering to store an index
     // into optional per-visual metadata buffers.
     DWORD GP_Slot;               // @60
-    Affine3x4 prevWorld;         // @64 — uploaded only when motion vectors are actually read
+    Affine3x4 prevWorld;         // @64
 };
 
-/** Upload stride when nothing downstream reads velocity: everything up to (not including) prevWorld. */
+/** Upload stride when nothing downstream reads velocity. */
 inline constexpr size_t kVobInstanceStrideNoMotion = offsetof( VobInstanceInfo, prevWorld );
 static_assert( sizeof( VobInstanceInfo ) == 112, "instance layouts + VobCull.hlsl mirror this" );
 static_assert( kVobInstanceStrideNoMotion == 64, "no-motion input layouts mirror this" );
 
-/** Copies `count` instances at `stride`. A stride below sizeof simply stops before prevWorld — which is the
-    entire reason that member sits last. */
+/** Copies `count` instances at `stride`; a stride below sizeof stops before prevWorld. */
 inline void CopyVobInstances( uint8_t* dst, const VobInstanceInfo* src, size_t count, size_t stride ) {
     if ( stride == sizeof( VobInstanceInfo ) ) { memcpy( dst, src, count * stride ); return; }
     for ( size_t i = 0; i < count; ++i ) memcpy( dst + i * stride, src + i, stride );
@@ -49,11 +43,8 @@ struct VobWindMetadata {
     float2 Padding;
 };
 
-/** Per-instance data for instanced node attachment rendering (D3D11 only — the D3D12 attachment path feeds
-    VobInstanceInfo). Same prevWorld-last split as VobInstanceInfo. The old float4 Color held one useful RGB
-    triple plus a .w that was always overwritten with the focus sentinel, so it splits into a packed color and
-    one DWORD: bytes 0-2 are the RGB triple, byte 3 is a flag field (bit 7 = focus highlight) rather than the
-    alpha the old .w never carried. Bound as R8G8B8A8_UINT so the shader can mask it; RGB divides by 255. */
+/** Per-instance node attachment data (D3D11 only; D3D12 attachments feed VobInstanceInfo). ColorFlags is
+    RGB in bytes 0-2 plus flags in byte 3, bound as R8G8B8A8_UINT so the shader can mask it. */
 struct NodeAttachmentInstanceData {
     Affine3x4 World;      // @0
     DWORD ColorFlags;     // @48
@@ -62,8 +53,7 @@ struct NodeAttachmentInstanceData {
 
 inline constexpr DWORD kNodeAttachFocusFlag = 0x80u << 24;   // byte 3, bit 7
 
-/** Packs the model color + flag bits. Byte 0 is RED here (read straight as .rgb), unlike the vob path's
-    GroundColor, which is a Gothic BGRA DWORD its shaders have to swizzle. */
+/** Byte 0 is RED here, unlike the vob path's GroundColor, which is BGRA and gets swizzled in-shader. */
 inline DWORD PackNodeAttachColorFlags( const float4& color, bool focused ) {
     auto b = []( float v ) -> DWORD {
         return static_cast<DWORD>( std::clamp( v, 0.0f, 1.0f ) * 255.0f + 0.5f );

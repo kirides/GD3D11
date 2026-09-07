@@ -46,7 +46,7 @@ struct VS_INPUT
     float2 vTex1        : TEXCOORD0;
     float2 vTex2        : TEXCOORD1;
     float4 vDiffuse     : DIFFUSE;
-    // VobInstanceInfo::world / ::prevWorld — three rows each, the constant (0,0,0,1) row dropped.
+    // VobInstanceInfo::world / ::prevWorld — three rows each, the (0,0,0,1) row dropped.
     float4 InstanceWorld0 : INSTANCE_WORLD_MATRIX0;
     float4 InstanceWorld1 : INSTANCE_WORLD_MATRIX1;
     float4 InstanceWorld2 : INSTANCE_WORLD_MATRIX2;

@@ -37,13 +37,13 @@ struct VobCullVisual
 // in Vob.hlsl's VS, so the four float4s below are the matrix ROWS (see BuildWorldMatrix).
 struct VobInstanceGpu
 {
-    float4 World0, World1, World2;      // VobInstanceInfo::world — 3 rows, the (0,0,0,1) row dropped
+    float4 World0, World1, World2;      // VobInstanceInfo::world — the (0,0,0,1) row dropped
     uint   Color;
     float  WindStrength;
     float  CanBeAffectedByPlayer;
     uint   GPSlot;
 #if !VOB_NO_MOTION
-    float4 PrevWorld0, PrevWorld1, PrevWorld2;   // last: the no-motion upload stops before it
+    float4 PrevWorld0, PrevWorld1, PrevWorld2;   // last — the no-motion upload stops before it
 #endif
 };
 
@@ -73,8 +73,7 @@ RWStructuredBuffer<uint>           VisibleCounts : register( u1 );
 
 float3x4 BuildWorldMatrix( VobInstanceGpu inst )
 {
-    // The rows ARE the matrix now: mul(M, float4(p,1)) is the column-vector multiply the old
-    // transpose(float4x4(...)) plus a row-vector mul was performing. See Vob.hlsl's VobWorld.
+    // The rows are the matrix; see Vob.hlsl's VobWorld.
     return float3x4( inst.World0, inst.World1, inst.World2 );
 }
 

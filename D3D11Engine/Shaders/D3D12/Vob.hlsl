@@ -46,10 +46,8 @@ SamplerState smpAoClamp : register(s1);
 // Shared by VSMain and VSDepth so the depth prepass writes EXACTLY the bit-for-bit same swayed position as the
 // color pass — any divergence here would make the reversed-Z GREATER_EQUAL depth test discard swaying geometry
 // the color pass draws in front of where the (unswayed) prepass depth said it should be.
-// The instance world matrix arrives as three row attributes (VobInstanceInfo::world drops the constant
-// (0,0,0,1) row). mul(M, float4(p,1)) reproduces exactly what mul(p, <float4x4 attribute>) used to compute:
-// a matrix vertex attribute is filled one COLUMN per semantic index, so the old float4x4 was the transpose
-// of these rows and the row-vector multiply was really a column-vector multiply by them.
+// A matrix vertex attribute is filled one COLUMN per semantic index, so these three rows are the matrix
+// itself and mul(M, float4(p,1)) is what the old mul(p, <float4x4 attribute>) already computed.
 #define VobWorld(i)     float3x4( (i).iworld0, (i).iworld1, (i).iworld2 )
 #define VobPrevWorld(i) float3x4( (i).iprev0,  (i).iprev1,  (i).iprev2  )
 
@@ -79,7 +77,7 @@ struct VS_IN
     float3   pos      : POSITION;
     float3   nrm      : NORMAL;                  // ExVertexStruct object-space float3 normal (@12)
     float2   uv       : TEXCOORD0;
-    // VobInstanceInfo::world (@0) — the ZenGin matrix's first three rows; the dropped 4th is (0,0,0,1).
+    // VobInstanceInfo::world (@0) — three rows; the dropped 4th is (0,0,0,1).
     float4   iworld0  : INSTANCE_WORLD_MATRIX0;
     float4   iworld1  : INSTANCE_WORLD_MATRIX1;
     float4   iworld2  : INSTANCE_WORLD_MATRIX2;
@@ -321,7 +319,7 @@ struct VS_GBUF_IN
     float4   iworld0   : INSTANCE_WORLD_MATRIX0;
     float4   iworld1   : INSTANCE_WORLD_MATRIX1;
     float4   iworld2   : INSTANCE_WORLD_MATRIX2;
-    float4   iprev0    : INSTANCE_PREV_WORLD_MATRIX0;  // VobInstanceInfo::prevWorld (@64)
+    float4   iprev0    : INSTANCE_PREV_WORLD_MATRIX0;   // VobInstanceInfo::prevWorld (@64)
     float4   iprev1    : INSTANCE_PREV_WORLD_MATRIX1;
     float4   iprev2    : INSTANCE_PREV_WORLD_MATRIX2;
     float2   iwind     : INSTANCE_WINDFLUENCE;

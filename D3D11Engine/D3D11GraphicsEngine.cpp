@@ -3695,7 +3695,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     // Some of them have needAlpha false, even though they share the same texture!
                     // thus we now just walk all batch items and assume if one needs alpha, all do.
                     needAlpha |= instancedDrawItems[i].needAlpha;
-                    // Strided: with TAA off the copy stops before PrevWorld (VERTEX_INPUT_LAYOUT_17).
+                    // Strided: with TAA off the copy stops before PrevWorld.
                     memcpy( destData + currentIdx * nodeInstStride, &instancedDrawItems[i].instanceData, nodeInstStride );
                     ++currentIdx;
                     ++i;

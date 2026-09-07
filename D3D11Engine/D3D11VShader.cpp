@@ -162,11 +162,8 @@ namespace {
     };
 
 
-    // --- "No motion" siblings of layout10 / layout14 ----------------------------------------------------
-    // Same elements, but the three INSTANCE_PREV_WORLD_MATRIX rows are given EXPLICIT offsets pointing back at
-    // INSTANCE_WORLD_MATRIX. The stream then stops before VobInstanceInfo::prevWorld (stride 64 / 52) and the
-    // VS reads prevWorld == world, which is the correct "no velocity" answer when TAA/FSR is off. The shader
-    // bytecode is unchanged, so this is purely an IA-side alias.
+    // Siblings of layout10 / layout14 that alias INSTANCE_PREV_WORLD_MATRIX onto INSTANCE_WORLD_MATRIX, so
+    // the stream stops before prevWorld and the VS reads zero velocity. Same bytecode, IA-side only.
     static const D3D11_INPUT_ELEMENT_DESC layout10NoMotion[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -279,8 +276,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
     LE( engine->GetDevice()->CreateInputLayout( layout->second.first, layout->second.second, vsBlob->GetBufferPointer(),
         vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
 
-    // Optional second layout over the same bytecode (see ShaderInfo::altLayout). Non-fatal: Apply() falls back
-    // to the primary layout, which is always correct, just at the wider stride.
+    // Non-fatal: Apply() falls back to the primary layout, correct at the wider stride.
     AltInputLayout.Reset();
     if ( si.altLayout != VERTEX_INPUT_LAYOUT_NONE ) {
         auto altLayout = lookupTable.find( si.altLayout );
@@ -297,8 +293,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
 XRESULT D3D11VShader::Apply() {
     auto context = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext().Get();
 
-    // With an alt layout present, TAA/FSR off means the instance stream was uploaded at the narrower stride
-    // (prevWorld omitted) — see VERTEX_INPUT_LAYOUT_16/17 and the upload sites keyed on the same predicate.
+    // The upload sites key on this same predicate to pick their stride.
     ID3D11InputLayout* activeLayout = InputLayout.Get();
     if ( AltInputLayout && !Engine::GAPI->GetRendererState().RendererSettings.GetIsTAAEnabled() )
         activeLayout = AltInputLayout.Get();

@@ -36,9 +36,8 @@ static const float kHeroAffectRange    = 100.0f;
 static const float kHeroAffectStrength = 38.0f;
 
 // Local-space displacement pushing a vertex away from the player ("hero moves the bushes").
-// float3x4 overloads for the VOB instance stream, whose world matrix arrives as three row attributes with the
-// constant (0,0,0,1) row dropped (see VobInstanceInfo::world). Vegetation keeps the float4x4 forms — its own
-// instance stream is transposed on upload and is not the same layout.
+// float3x4 overloads for the VOB instance stream. Vegetation keeps the float4x4 forms — its stream is
+// transposed on upload and is not the same layout.
 float WindInstancePhaseOffset( float3x4 instMatrix, float maxHeightValue )
 {
     float seed = dot( float3( instMatrix._11, instMatrix._22, instMatrix._33 ), float3( 12.9898, 78.233, 53.539 ) ) + maxHeightValue;
@@ -86,7 +85,6 @@ float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minH
     return displaceDirLocal * kHeroAffectStrength * influence;
 }
 
-// See the float3x4 note above.
 float3 ApplyHeroInfluence( float3 playerPosWS, float3 vertexLocalPos, float minHeightValue, float maxHeightValue, float3x4 instWorldMatrix )
 {
     float heightRange      = max( maxHeightValue - minHeightValue, 0.001 );

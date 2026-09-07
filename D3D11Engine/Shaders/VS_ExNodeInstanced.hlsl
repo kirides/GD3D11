@@ -22,8 +22,7 @@ struct VS_INPUT
 	float4 vDiffuse		: DIFFUSE;
 
 	// Per-instance data from vertex stream slot 1
-	// NodeAttachmentInstanceData: World/PrevWorld are three rows each; ColorFlags packs RGB in bytes 0-2
-	// and flag bits in byte 3 (bit 7 = focus highlight).
+	// NodeAttachmentInstanceData: three matrix rows each, ColorFlags = RGB in bytes 0-2, flags in byte 3.
 	float4 InstanceWorld0     : INSTANCE_WORLD_MATRIX0;
 	float4 InstanceWorld1     : INSTANCE_WORLD_MATRIX1;
 	float4 InstanceWorld2     : INSTANCE_WORLD_MATRIX2;
@@ -60,7 +59,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
-	// .w carried the 2.0 focus sentinel before the pack; regenerate it from the flag bit.
+	// .w is the 2.0 focus sentinel, rebuilt from the flag bit.
 	Output.vDiffuse  = float4(Input.InstanceColorFlags.rgb / 255.0,
 		(Input.InstanceColorFlags.a & 0x80) ? 2.0 : 0.0);
 	Output.vNormalVS = mul(mul((float3x3)nodeWorld, Input.vNormal), (float3x3)frame.M_View);

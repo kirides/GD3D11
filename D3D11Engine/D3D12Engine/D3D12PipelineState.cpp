@@ -3759,8 +3759,7 @@ bool D3D12PipelineState::CreateCull() {
 
     if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs,
         Cull.VobCullCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullPSO.ReleaseAndGetAddressOf() ) ) return false;
-    // Second variant for the 64-byte instance stride the engine uploads when nothing reads velocity — the
-    // struct the cull compacts has to match that stride or it strides through the buffer wrongly.
+    // The struct CSCull compacts has to match whatever stride VobInstanceStride() uploaded at.
     const D3D_SHADER_MACRO noMotionDefines[] = { { "VOB_NO_MOTION", "1" }, { nullptr, nullptr } };
     if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs,
         Cull.VobCullNoMotionCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullNoMotionPSO.ReleaseAndGetAddressOf(),

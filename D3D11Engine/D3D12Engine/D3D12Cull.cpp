@@ -361,7 +361,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     cb.LodDistance = m_VobLodDistance;
     cb.CamPosWS = Engine::GAPI->GetCameraPosition();
 
-    // The compacting cull strides the instance stream itself, so it must agree with VobInstanceStride().
+    // The cull strides the instance stream itself, so it must agree with VobInstanceStride().
     const bool motion = MotionGBufferActive();
     m_CmdList->SetPipelineState( motion ? m_Pipelines.Cull.VobCullPSO.Get()
                                         : m_Pipelines.Cull.VobCullNoMotionPSO.Get() );

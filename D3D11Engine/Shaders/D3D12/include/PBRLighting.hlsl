@@ -257,21 +257,8 @@ float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-enco
     return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
 }
 
-// ---- Half-precision lighting -------------------------------------------------------------------------
-// Intel Xe/Gen11+ and AMD RDNA issue packed fp16 at 2x VALU rate, and halved register pressure helps
-// occupancy even where they do not — the point-light accumulation loop below is the hottest arithmetic in
-// the frame. Applied ONLY to quantities bounded in roughly [0,1]: albedo, F0/Fresnel, the BRDF weights and
-// each light's contribution.
-//
-// Deliberately NOT converted, and none of it should be:
-//   * anything positional (wpos, L.PositionWorld, dir/dist before normalize, L.Range). Gothic world
-//     coordinates reach ~+-60,000 and fp16 tops out at 65504 with ~3 significant digits.
-//   * the GGX D and G terms. `(NdotH^2(a^2-1)+1)^2` is numerically delicate at low roughness and is the
-//     likeliest source of banding on smooth surfaces, so it stays fp32 until measured. This is the second
-//     half of the experiment, kept separable on purpose.
-//   * the `total` / `maxLit` accumulators — summing many fp16 terms drifts.
-// Flip to 0 (or -D USE_FP16_LIGHTING=0) to A/B the whole thing; macros feed the DXIL cache hash, so it
-// recompiles on change.
+// Half precision for the light loop's bounded [0,1] quantities only. Positions must stay fp32 (Gothic
+// world coordinates reach ~+-60,000, past fp16's usable range), as must the GGX D/G terms and accumulators.
 #ifndef USE_FP16_LIGHTING
 #define USE_FP16_LIGHTING 1
 #endif
@@ -304,9 +291,8 @@ float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
 lf_t  PBR_Pow5( lf_t x ) { lf_t x2 = x * x; return x2 * x2 * x; }
 lf_t3 PBR_FresnelSchlick( lf_t cosTheta, lf_t3 F0 ) { return F0 + ( lf_t( 1.0 ) - F0 ) * PBR_Pow5( saturate( lf_t( 1.0 ) - cosTheta ) ); }
 #if USE_FP16_LIGHTING
-// Full-precision overload for callers outside the point-light loop — chiefly the opaque-SSR weight in
-// World/Vob/Skeletal PSMain, which is not hot and whose tuning is deliberately sensitive (see
-// EvaluateOpaqueSSR). Without it those call sites silently narrow and warn.
+// Full-precision overload for callers outside the light loop, chiefly the opaque-SSR weight in PSMain —
+// without it those call sites silently narrow. See EvaluateOpaqueSSR on why that weight is sensitive.
 float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
 float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
 #endif
@@ -346,7 +332,6 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     lf_t   cm = lf_t( saturate( metallic ) );
     lf_t3  albedo16 = lf_t3( baseColor );
     lf_t3  F0 = lerp( lf_t3( 0.04, 0.04, 0.04 ), albedo16, cm );
-    // D and G stay fp32 on purpose — see the USE_FP16_LIGHTING note above.
     float  D = PBR_DistributionGGX( NdotH, cr );
     float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
     lf_t3  F = PBR_FresnelSchlick( lf_t( VdotH ), F0 );
