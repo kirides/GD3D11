@@ -1265,8 +1265,8 @@ bool D3D12PipelineState::CreateVob() {
     }
 
     // Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24); slot 1 = per-instance data
-    // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128,
-    // {windStrenth, canBeAffectedByPlayer} @132, GP_Slot @140 (bit 31 = focus highlight).
+    // read from VobInstanceInfo (stride 112): world matrix rows @0/16/32, instance color @48,
+    // {windStrenth, canBeAffectedByPlayer} @52, GP_Slot @60 (bit 31 = focus highlight).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },

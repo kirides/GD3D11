@@ -98,7 +98,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
 
 bool D3D12GraphicsEngine::CreateVobCullResources() {
     // VobCull.hlsl mirrors both of these as structured-buffer element types; a size change on either side
-    // would silently mis-index every instance. Verified against `dxc -Fc` reflection (144 B / 32 B).
+    // would silently mis-index every instance. Verified against `dxc -Fc` reflection (112 B / 36 B).
     static_assert( sizeof( VobInstanceInfo ) == 112, "VobCull.hlsl's VobInstanceGpu mirrors VobInstanceInfo" );
     static_assert( sizeof( VobCullVisual ) == 36, "VobCull.hlsl's VobCullVisual must match this layout" );
 
