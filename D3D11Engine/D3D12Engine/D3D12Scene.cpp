@@ -2794,10 +2794,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// on the finished image, and before Gothic's own 2D UI/HUD phase — the HUD must stay sharp and untinted.
 	DrawUnderwaterEffects( postFxGraph );
 
-	// Closes the post-tonemap display chain. Normally a no-op — the last chain pass already rendered into the
-	// real display target — but if one that PlanDisplayChain counted did not run, this copies the frame back so
-	// Gothic's 2D UI/HUD, the ImGui overlay and the gamma pass all find it where they expect. Rebinding the
-	// display target afterwards is what the 2D UI phase relies on.
+	// Closes the post-tonemap display chain: copies the frame back if a counted pass did not run, so the 2D
+	// UI/HUD, ImGui and the gamma pass find it where they expect. The 2D UI phase relies on the rebind.
 	postFxGraph.AddPass( RG_PASS_NAME( "Display Chain Finish" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
 		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
 			FinishDisplayChain( cmdList );

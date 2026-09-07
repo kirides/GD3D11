@@ -57,8 +57,7 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
         TexturePool::Description{ resolution.x / 4, resolution.y / 4, bbufferFormat } );
 	CreateBloom( lum, tempBufferDs4_1.get(), backbuffer, resolution );
 
-    // The scene goes in at t0 directly: output is always the LDR target, never the HDR scene the
-    // tonemap reads, so there is nothing to copy aside.
+    // Scene at t0 directly: the output is always the LDR target, never the HDR scene this reads.
     lum->BindToPixelShader( engine->GetContext().Get(), 1 );
 
     // Bind bloom

@@ -1227,9 +1227,9 @@ private:
     //   1. Edge detection      color        -> edges
     //   2. Blend-weight calc    edges+LUTs   -> blend
     //   3. Neighborhood blend   color+blend  -> swapchain
-    // The color input comes from the display chain (m_LdrScratch below), not from the swapchain — the
-    // swapchain can't be both the SMAA color SRV and the pass-3 RTV at once. The area/search LUTs are
-    // precomputed static textures loaded once. Edges/blend USED to be
+    // The color input comes from the display chain (m_LdrScratch below): the swapchain can't be both the
+    // SMAA color SRV and the pass-3 RTV at once. The area/search LUTs are precomputed static textures loaded
+    // once. Edges/blend USED to be
     // resolution-dependent members (recreated on resize like the bloom pyramid); both are purely single-frame
     // scratch (written then read once then dead, no cross-frame data dependency), so they are now
     // D3D12RenderGraph-managed transient textures acquired fresh every call inside RenderSMAA instead — same
@@ -1245,15 +1245,9 @@ private:
 
     // --- The post-tonemap DISPLAY CHAIN -------------------------------------------------------------------
     // SMAA, sharpen and the underwater FX each read the finished display image and write it back, which a
-    // texture cannot do to itself. They used to CopyResource the display target aside one at a time into a
-    // single scratch. Instead they now PING-PONG: the tonemap resolve renders into scratch 0, each pass reads
-    // the current image and renders into the other slot, and the LAST one renders into the real display
-    // target. That costs nothing per pass where each used to cost a full-res copy (read + write).
-    //
-    // Two scratches are enough for any number of passes, and both are needed as soon as two of them run: the
-    // swapchain is created RENDER_TARGET_OUTPUT only, so it can never be a chain SOURCE and every read has to
-    // come from a scratch we own. Both match the display target byte-for-byte (see CreateLdrCopyResource) and
-    // rest in RENDER_TARGET. Resolution-dependent, rebuilt on resize.
+    // texture cannot do to itself, so they ping-pong through two scratches; the LAST one renders into the real
+    // display target, which can never be a chain source (the swapchain is RENDER_TARGET_OUTPUT only).
+    // Both match the display target byte-for-byte and rest in RENDER_TARGET; rebuilt on resize.
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_LdrScratch[2];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LdrScratchAlloc[2];
     UINT m_LdrScratchSrvSlot[2] = { UINT_MAX, UINT_MAX };
@@ -1267,9 +1261,8 @@ private:
     int m_DisplayChainRemaining = 0;   // chain passes still expected this frame; the last one writes the real target
     int m_DisplayChainSrc = -1;        // scratch currently transitioned to shader-read by BeginDisplayChainStep
 
-    /** One step of the display chain. Src is the finished image (transitioned to shader-read), Dst/DstRtv the
-        target this pass must render into — never the same resource. Valid() is false when there is nothing to
-        read, in which case the caller must skip its work entirely rather than draw. */
+    /** One step of the display chain: Src is the finished image (shader-read), Dst/DstRtv the target to
+        render into - never the same resource. When Valid() is false the caller must skip its work. */
     struct DisplayChainStep {
         UINT                        SrcSrvSlot = UINT_MAX;
         ID3D12Resource*             Dst = nullptr;

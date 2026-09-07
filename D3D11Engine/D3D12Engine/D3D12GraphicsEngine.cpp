@@ -1323,9 +1323,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::RealDisplayRtv() const {
 	return rtv;
 }
 
-// While the display chain is running the finished image lives in one of the LDR scratches, so anything that
-// asks for "the display target" mid-chain gets that instead. Outside the chain (which is everything before the
-// tonemap resolve and everything from the 2D UI onwards) m_DisplaySlot is -1 and this is the plain accessor.
+// Mid-chain the finished image lives in one of the LDR scratches, so "the display target" resolves to that.
+// Outside the chain m_DisplaySlot is -1 and this is the plain accessor.
 ID3D12Resource* D3D12GraphicsEngine::GetDisplayTarget() const {
 	if ( m_DisplaySlot >= 0 && m_LdrScratch[m_DisplaySlot] ) return m_LdrScratch[m_DisplaySlot].Get();
 	return RealDisplayTarget();
@@ -1336,11 +1335,8 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetDisplayRtv() const {
 	return RealDisplayRtv();
 }
 
-/** Decides, once per frame and just before the tonemap resolve picks its render target, how many display-chain
-	passes will run. Zero means the resolve renders straight into the real display target as it always did;
-	otherwise it renders into scratch 0 and the chain hands the image along until the last pass lands it back on
-	the real target. Runs at EXECUTE time, so m_Fsr3RanThisFrame (set by the FSR pass, which is scheduled
-	earlier) is already final. */
+/** Counts the display-chain passes for this frame; zero means the tonemap resolve renders straight into the
+	real display target. Runs at EXECUTE time, so m_Fsr3RanThisFrame is already final. */
 void D3D12GraphicsEngine::PlanDisplayChain() {
 	m_DisplaySlot = -1;
 	m_DisplayChainRemaining = 0;
@@ -1357,8 +1353,8 @@ void D3D12GraphicsEngine::PlanDisplayChain() {
 	m_DisplaySlot = 0;
 }
 
-/** Opens one chain step: transitions the current image to shader-read and hands back the slot to render into —
-	the other scratch, or the real display target when this is the last step. */
+/** Opens one chain step: transitions the current image to shader-read and hands back the target to render
+	into - the other scratch, or the real display target when this is the last step. */
 D3D12GraphicsEngine::DisplayChainStep D3D12GraphicsEngine::BeginDisplayChainStep( D3D12CmdList& cmdList ) {
 	DisplayChainStep step;
 	if ( m_DisplaySlot < 0 || !m_LdrCopyReady ) return step;   // not in a chain — caller skips its work
@@ -1385,9 +1381,8 @@ void D3D12GraphicsEngine::EndDisplayChainStep( D3D12CmdList& cmdList ) {
 	m_DisplayChainSrc = -1;
 }
 
-/** Closes the chain. Normally a no-op: the last step already rendered into the real display target. It only
-	does anything if a pass PlanDisplayChain counted did not actually run, which would otherwise strand the
-	frame in a scratch that the 2D UI, ImGui and the gamma pass know nothing about. */
+/** Closes the chain. A no-op unless a pass PlanDisplayChain counted did not run, which would strand the frame
+	in a scratch the 2D UI, ImGui and the gamma pass know nothing about. */
 void D3D12GraphicsEngine::FinishDisplayChain( D3D12CmdList& cmdList ) {
 	m_DisplayChainRemaining = 0;
 	EndDisplayChainStep( cmdList );
@@ -1980,11 +1975,10 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // RTV descriptor heap: kBackBufferMax backbuffer slots (reserved at the compile-time max regardless of
     // the actually configured kBackBufferCount, so every fixed offset below stays stable) + 1 for the HDR
-    // scene-color target (slot kBackBufferMax) + 2 that USED to be the SMAA edge/blend intermediates and are
-    // now unused (slots kBackBufferMax+1 / +2 — both are graph transients with their own RTVs) + 1 for the
-    // HDR display composite target (slot kBackBufferMax+3; only populated when real HDR output is active)
-    // + 2 for the motion-vector / octahedral-normal G-buffer the depth prepass writes (slots +4 / +5,
-    // D3D12Motion.cpp) + 2 for the LDR display-chain scratches (slots +6 / +7, D3D12PostFX.cpp).
+    // scene-color target (slot kBackBufferMax) + 2 unused (slots +1 / +2) + 1 for the HDR display composite
+    // target (slot +3; only populated when real HDR output is active) + 2 for the motion-vector /
+    // octahedral-normal G-buffer the depth prepass writes (slots +4 / +5, D3D12Motion.cpp) + 2 for the LDR
+    // display-chain scratches (slots +6 / +7, D3D12PostFX.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = kBackBufferMax + 8;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;

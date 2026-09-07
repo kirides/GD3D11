@@ -22,9 +22,7 @@ void D3D11PFX_CAS::SetSharpness( float sharpness ) {
     Sharpness = std::clamp( sharpness, 0.0f, 1.0f );
 }
 
-// inputTexture and outputTexture must be DIFFERENT resources — CAS renders straight into the output. The
-// caller arranges that by feeding it the previous display-chain step's target (see the sharpen pass in
-// D3D11GraphicsEngine::OnEndFrame); this used to take an intermediate buffer and copy in and out of it.
+// inputTexture and outputTexture must be DIFFERENT resources - CAS renders straight into the output.
 XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& inputTexture, INT2 inputSize,
         const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture, INT2 outputSize ) {
     D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;

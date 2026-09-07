@@ -290,9 +290,9 @@ Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> D3D11PFX_TAA::GetVelocityBuffer
     return nullptr;
 }
 
-// The resolve: reads the scene colour + velocity + both depth buffers + last frame's history, writes this
-// frame's history via the compute UAV, then copies the result back over the scene colour (renderTarget) so the
-// pass stays transparent to bloom/HDR/tonemap downstream. Direct counterpart of D3D12GraphicsEngine::RenderTAA.
+// The resolve: reads the scene colour + velocity + both depth buffers + last frame's history and writes this
+// frame's history, plus the scene colour so the pass stays transparent to bloom/HDR/tonemap downstream.
+// Direct counterpart of D3D12GraphicsEngine::RenderTAA.
 bool D3D11PFX_TAA::RenderPostFX(
     RenderToTextureBuffer& renderTarget,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
@@ -387,8 +387,8 @@ bool D3D11PFX_TAA::RenderPostFX(
     context->CSSetShaderResources( 0, 5, nullSRVs );
     context->CSSetShader( nullptr, nullptr, 0 );
 
-    // No ping-pong partner: hand the result back to the scene colour by copy instead. Both are the backbuffer
-    // format. Nothing downstream reads scene-colour alpha, which now carries the TAA confidence weight.
+    // No ping-pong partner: hand the result back to the scene colour by copy instead. Nothing downstream
+    // reads scene-colour alpha, which carries the TAA confidence weight.
     if ( !sceneOutUAV ) {
         context->CopyResource( renderTarget.GetTexture().Get(), m_HistoryBuffer[writeIdx]->GetTexture().Get() );
     }

@@ -967,12 +967,10 @@ void D3D11GraphicsEngine::OnResetBackBuffer() {
     SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
 
     // Ping-pong partner for the HDR scene: identical desc, so SwapHDRBackBuffer() can hand either one to
-    // every consumer. Lets a full-screen pass that reads the scene and writes it render into the partner
-    // and swap, instead of copying the scene aside first (particles, SMAA, the TAA resolve).
+    // every consumer. Lets a scene-in/scene-out pass render into the partner instead of copying aside.
     HDRBackBufferSwap = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, bind );
     if ( !HDRBackBufferSwap->GetTexture() ) {
-        // Out of address space for a second full-res HDR target: every ping-pong site falls back to its
-        // old scratch-and-copy path, so drop the half-built object rather than hand out null views.
+        // Drop the half-built object rather than hand out null views; every ping-pong site then copies.
         LogWarn() << "Could not create the HDR ping-pong buffer - scene-in/scene-out passes will copy instead.";
         HDRBackBufferSwap.reset();
         return;
@@ -981,13 +979,12 @@ void D3D11GraphicsEngine::OnResetBackBuffer() {
     SetDebugName( HDRBackBufferSwap->GetRenderTargetView().Get(), "BackbufferSwap->RenderTargetView" );
 }
 
-/** Makes the ping-pong partner the scene target. Every consumer resolves HDRBackBuffer at call time, so
-    the only thing that needs telling is the render graph's imported handle. */
+/** Makes the ping-pong partner the scene target. Consumers resolve HDRBackBuffer at call time, so only
+    the render graph's imported handle needs telling. */
 void D3D11GraphicsEngine::SwapHDRBackBuffer() {
     if ( !HDRBackBufferSwap ) return;
 
-    // If the old scene is still the bound render target, the binding has to follow the swap - otherwise
-    // the next draw lands in the buffer nobody reads any more.
+    // The OM binding has to follow the swap, or the next draw lands in the buffer nobody reads any more.
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> boundRTV;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> boundDSV;
     GetContext()->OMGetRenderTargets( 1, boundRTV.GetAddressOf(), boundDSV.GetAddressOf() );
@@ -4084,8 +4081,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // TODO: Replace global Resources with RenderGraph resource
     RGResourceHandle backBufferHandle = graph.ImportResource( L"BackBuffer", HDRBackBuffer.get() );
-    // Published so SwapHDRBackBuffer() can repoint the import. Scoped to this function so no path can
-    // leave a dangling pointer to the stack-local graph behind.
+    // Published so SwapHDRBackBuffer() can repoint the import; scoped so no path leaves a dangling
+    // pointer to the stack-local graph behind.
     struct ActiveGraphScope {
         D3D11GraphicsEngine* Engine;
         ~ActiveGraphScope() { Engine->m_ActiveGraph = nullptr; }
@@ -4569,8 +4566,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render TAA" );
 
                 auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
-                // The resolve writes the ping-pong partner directly (it can't write the scene it gathers
-                // from), then the partner becomes the scene. Without one it copies back instead.
+                // The resolve can't write the scene it gathers from, so it writes the partner, which then
+                // becomes the scene. Without a partner it copies back instead.
                 RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap();
                 ID3D11UnorderedAccessView* sceneOutUAV = swapTarget ? swapTarget->GetUnorderedAccessView().Get() : nullptr;
                 const bool resolved = XR_SUCCESS == PfxRenderer->RenderTAA(
@@ -4596,13 +4593,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render SMAA" );
                 auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                // Resolve into the ping-pong partner and make it the scene; only a device without one
-                // pays for the scratch and the copy back.
+                // Resolve into the ping-pong partner and make it the scene; without one SMAA copies back.
                 RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap();
                 const bool resolved = XR_SUCCESS == PfxRenderer->RenderSMAA(
                     backbufferTex->GetShaderResView().Get(),
                     swapTarget ? swapTarget->GetRenderTargetView().Get() : nullptr );
-                // Only swap when SMAA actually wrote the partner.
                 if ( swapTarget && resolved ) SwapHDRBackBuffer();
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
@@ -4714,12 +4709,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             } );
         }
 
-        // The tonemap/copy below and the sharpen after it are a two-step display chain: sharpening cannot
-        // read and write the same texture, so it used to copy the backbuffer aside first (and CAS copied its
-        // result back on top). Instead the resolve renders into a temp and the sharpen reads that and writes
-        // the backbuffer, which costs nothing where each copy cost a full-res blit. The temp has to stay
-        // alive across BOTH passes, so it is acquired once here (the handle is move-only, hence the
-        // shared_ptr) rather than inside either lambda.
+        // Two-step display chain: sharpening can't read and write the same texture, so the resolve renders
+        // into a temp the sharpen reads. The move-only handle must outlive both lambdas, hence the shared_ptr.
         bool willSharpen = !isUpscaling
             && rendererState.RendererSettings.SharpenFactor > 0.0f
             && ( rendererState.RendererSettings.SharpeningMode == GothicRendererSettings::SHARPEN_SIMPLE
@@ -4727,8 +4718,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                     && !FeatureLevel10Compatibility ) );
         auto sharpenSrc = std::make_shared<TextureHandle>(
             willSharpen ? GetPfxRenderer()->GetBackbufferTempBuffer() : TextureHandle{} );
-        // No temp means no chain; resolve straight into the backbuffer and skip sharpening, exactly as the
-        // old code would have done (both sharpen modes needed this same buffer).
+        // No temp means no chain: resolve straight into the backbuffer and skip sharpening.
         if ( willSharpen && !*sharpenSrc ) willSharpen = false;
         RenderToTextureBuffer* ldrTarget = willSharpen ? sharpenSrc->get() : Backbuffer.get();
 
@@ -4756,10 +4746,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             } );
         }
 
-        // Sharpen: the second step of the display chain — reads what the resolve above rendered into the
-        // temp and writes the backbuffer. Skipped when an FSR upscaler is active, since FSR performs its own
-        // (RCAS) sharpening; willSharpen above carries that and every other condition, so the resolve and
-        // this pass can never disagree about who writes the backbuffer.
+        // Second display-chain step: reads the resolve's temp, writes the backbuffer. willSharpen carries
+        // every condition (incl. FSR doing its own RCAS), so the two passes can't disagree on the target.
         if ( willSharpen ) {
             graph.AddPass( RG_PASS_NAME("Sharpen"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
@@ -5708,10 +5696,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     SetDefaultStates();
 
-    // Scene behind the water surfaces. The refraction pass reads this while the water draws blended onto
-    // the scene, so a copy is unavoidable here - but the ping-pong partner is idle scratch at this point,
-    // which saves keeping a second full-res HDR texture alive in the pool. Same desc, so it's a straight
-    // resource copy rather than a full-screen blit; the RTV has to come down first.
+    // Refraction reads the scene while the water blends onto it, so a copy is unavoidable; the ping-pong
+    // partner is idle scratch here. Same desc, so a straight CopyResource - the RTV has to come down first.
     TextureHandle pooledScene;
     RenderToTextureBuffer* sceneCopy = GetHDRBackBufferSwap();
     if ( !sceneCopy ) {
@@ -10088,7 +10074,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     ActivePS->Apply();
 
     // The distortion samples the scene through a UV offset, so read and write can't be the same texture.
-    // Render into the ping-pong partner and make it the scene; only a device without one copies.
+    // Render into the ping-pong partner and make it the scene; without one, copy.
     if ( RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap() ) {
         PfxRenderer->CopyTextureToRTV(
             HDRBackBuffer->GetShaderResView(),

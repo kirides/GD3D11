@@ -236,9 +236,8 @@ public:
     /** Returns the HDRBackbuffer for regular geometry and effects */
     RenderToTextureBuffer& GetHDRBackBuffer() const { return *HDRBackBuffer; }
 
-    /** The ping-pong partner of the HDR scene target: same desc, currently holding nothing anyone reads.
-        Render a scene-in/scene-out pass into this and call SwapHDRBackBuffer() instead of copying the
-        scene aside first. Null on devices where it couldn't be created. */
+    /** The ping-pong partner of the HDR scene target: same desc, holding nothing anyone reads. Render a
+        scene-in/scene-out pass into it and call SwapHDRBackBuffer(). Null if it couldn't be created. */
     RenderToTextureBuffer* GetHDRBackBufferSwap() const { return HDRBackBufferSwap.get(); }
 
     /** Makes GetHDRBackBufferSwap() the scene target and the old scene the partner. */
@@ -390,9 +389,8 @@ public:
     /** Copies the depth stencil buffer to DepthStencilBufferCopy */
     void CopyDepthStencil();
 
-    /** Depth SRV for a pass that only reads depth. Returns the live buffer's SRV when a read-only DSV
-        exists, otherwise refreshes DepthStencilBufferCopy and returns that - so the full-res copy is
-        only paid for on devices that can't bind depth read-only. */
+    /** Depth SRV for a read-only pass: the live buffer's SRV when a read-only DSV exists, otherwise a
+        refreshed DepthStencilBufferCopy - so the full-res copy is only paid for where that's impossible. */
     ID3D11ShaderResourceView* AcquireDepthReadSRV();
 
     /** DSV to bind while AcquireDepthReadSRV()'s result is bound as an SRV. Depth writes must be off. */
@@ -557,8 +555,8 @@ protected:
     std::unique_ptr<RenderToTextureBuffer> DepthStencilBufferCopy;
     std::unique_ptr<RenderToTextureBuffer> HDRBackBufferSwap;
 
-    /** The render graph currently executing, if any, plus the handle HDRBackBuffer was imported under -
-        SwapHDRBackBuffer() repoints that import. Both only valid inside OnStartWorldRendering. */
+    /** The executing graph and the handle HDRBackBuffer was imported under, for SwapHDRBackBuffer() to
+        repoint. Only valid inside OnStartWorldRendering. */
     class RenderGraph* m_ActiveGraph = nullptr;
     RGResourceHandle m_BackBufferHandle = 0;
     // DummyShadowCubemapTexture moved into ShadowMaps

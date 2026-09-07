@@ -138,8 +138,8 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
-// Premultiplied output, blended with ONE / INV_SRC_ALPHA: dst*(1-fog.a) + fog.rgb*fog.a + godrays is
-// exactly the lerp-then-add this used to compute, so the scene is never read as a texture.
+// Premultiplied output, blended with ONE / INV_SRC_ALPHA: dst*(1-fog.a) + fog.rgb*fog.a + godrays. The
+// blend does the lerp-then-add, so the scene is never read as a texture.
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
     float3 color = 0;

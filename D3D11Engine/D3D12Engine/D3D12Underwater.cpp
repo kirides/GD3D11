@@ -112,9 +112,8 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
     RGResourceHandle blurVHandle = RG_INVALID_HANDLE;
     auto blurVSrvSlot = std::make_shared<UINT>( UINT_MAX );   // resolved by Blur V; read by Composite further down
 
-    // --- Open the display-chain step: the finished frame becomes the blur's source and the composite further
-    // down renders into the next slot. A texture cannot be its own SRV and RTV; this used to copy the whole
-    // display target aside to get around that (same shape RenderSMAA / RenderSharpen used). ---
+    // --- Open the display-chain step: a texture cannot be its own SRV and RTV, so the finished frame becomes
+    // the blur's source and the composite further down renders into the next slot. ---
     auto step = std::make_shared<DisplayChainStep>();
     graph.AddPass( RG_PASS_NAME( "Underwater Begin" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
         pass.m_executeCallback = [this, step]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
@@ -204,9 +203,8 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
             cmdList.OMSetRenderTargets( 1, &displayRtv, FALSE, nullptr );
             cmdList.DrawInstanced( 3, 1, 0, 0 );
 
-            // Source scratch back to RENDER_TARGET. The blur pair needs no explicit reset —
-            // D3D12RenderTarget::State is caller-maintained and self-correcting, same as DoF's and the
-            // god-ray textures.
+            // Source scratch back to RENDER_TARGET. The blur pair needs no explicit reset -
+            // D3D12RenderTarget::State is caller-maintained and self-correcting.
             EndDisplayChainStep( cmdList );
             };
         } );

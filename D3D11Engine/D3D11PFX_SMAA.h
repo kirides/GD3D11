@@ -20,9 +20,8 @@ public:
     /** Called on resize */
     void OnResize( const INT2& size );
 
-    /** Renders the PostFX */
-    /** output null: resolve into a scratch and copy back over the currently bound RTV. Otherwise render
-        straight into output, which the caller then makes the scene (the HDR ping-pong). */
+    /** Renders the PostFX. output null: resolve into a scratch and copy back over the currently bound
+        RTV. Otherwise render straight into output, which the caller then makes the scene. */
     bool RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& renderTargetSRV,
                        ID3D11RenderTargetView* output = nullptr );
 
