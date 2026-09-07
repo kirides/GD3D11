@@ -1106,6 +1106,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="include\imgui\imstb_textedit.h" />
     <ClInclude Include="include\imgui\imstb_truetype.h" />
     <ClInclude Include="InstructionSet.h" />
+    <ClInclude Include="LightingResourceLog.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="Logging.h" />
     <ClInclude Include="MemoryTracker.h" />

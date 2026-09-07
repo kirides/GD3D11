@@ -7,6 +7,7 @@
 #include "../D3D11ShadowMap.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../LightingResourceLog.h"
 #include "../RenderToTextureBuffer.h"
 #include "../WorldObjects.h"
 #include "../zCVobLight.h"
@@ -15,6 +16,28 @@
 
 using PointShadowCasters::CasterPass;
 using PointShadowCasters::CubeRenderScope;
+
+namespace {
+    /** The pool hands back a RenderToDepthStencilBuffer even when its own creation failed; a cube missing
+        any of its three parts comparison-samples as fully occluded, i.e. shades the light black. Reported
+        once, since the acquire is retried every frame for as long as the light wants a cube. */
+    bool ValidateCube( const RenderToDepthStencilBuffer* cube, std::string_view what, int resolution ) {
+        const bool ok = cube && cube->GetTexture() && cube->GetDepthStencilView() && cube->GetShaderResView();
+        static bool reported = false;
+        if ( ok ) {
+            reported = false;
+            return true;
+        }
+        if ( !reported ) {
+            reported = true;
+            Logging::Err( "Lighting resource MISSING: {} {}^2 (texture {}, DSV {}, SRV {})", what, resolution,
+                cube && cube->GetTexture() ? "ok" : "null",
+                cube && cube->GetDepthStencilView() ? "ok" : "null",
+                cube && cube->GetShaderResView() ? "ok" : "null" );
+        }
+        return false;
+    }
+}
 
 // ---- LegacyCubeLightState -------------------------------------------------------------------------------
 
@@ -51,6 +74,10 @@ void LegacyCubeLightState::AcquireShadowMap( DepthStencilPool* pool, int resolut
     desc.ArraySize = m_Info.FacesPerLight;
 
     m_DepthCubemap = pool->Acquire( desc );
+    if ( !ValidateCube( m_DepthCubemap.get(), "point-light shadow cube", resolution ) ) {
+        m_DepthCubemap.reset();
+        return;
+    }
     m_Light.SetCurrentResolution( resolution );
 
     // don't reset DrawnOnce here, or NPCs won't show up in the first frame a shadow gets a different LOD
@@ -84,6 +111,10 @@ void LegacyCubeLightState::AcquireStaticAsideShadowMap( DepthStencilPool* pool, 
     desc.ArraySize = m_Info.FacesPerLight;
 
     m_StaticDepthCubemap = pool->Acquire( desc );
+    if ( !ValidateCube( m_StaticDepthCubemap.get(), "point-light static aside cube", resolution ) ) {
+        m_StaticDepthCubemap.reset();
+        return;
+    }
     m_Light.DropStaticBake( PLR_ASIDE_BUFFER );
 }
 
@@ -318,6 +349,9 @@ XRESULT LegacyCubeTechnique::DrawShadows( std::vector<VobLightInfo*>& lights ) {
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
             BaseShadowedPointLight* bpl = nullptr;
             graphicsEngine->CreateShadowedPointLight( &bpl, light, /*dynamic light*/ true );
+            static bool s_createReported = false;
+            LightingLog::RequireOnce( bpl, s_createReported,
+                "D3D11PointLight for a shadow-casting light (CreateShadowedPointLight returned nothing)" );
             light->LightShadowBuffers.reset( bpl );
         }
 

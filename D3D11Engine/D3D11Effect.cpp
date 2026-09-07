@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "D3D11Effect.h"
+#include "LightingResourceLog.h"
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
 #include "D3D11ShaderManager.h"
@@ -468,10 +469,19 @@ XRESULT D3D11Effect::LoadRainResources()
 
     if ( !RainShadowmap.get() ) {
         const int s = 2048;
-        RainShadowmap = std::make_unique<RenderToDepthStencilBuffer>( e->GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_R16_UNORM );
-        SetDebugName( RainShadowmap->GetDepthStencilView().Get(), "RainShadowmap->DepthStencilView" );
-        SetDebugName( RainShadowmap->GetShaderResView().Get(), "RainShadowmap->ShaderResView" );
-        SetDebugName( RainShadowmap->GetTexture().Get(), "RainShadowmap->Texture" );
+        HRESULT rainHr = S_OK;
+        RainShadowmap = std::make_unique<RenderToDepthStencilBuffer>( e->GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, &rainHr, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_R16_UNORM );
+        // Sampled by both lit paths for wetness; a null SRV there reads as fully wet-shadowed.
+        // Retried every frame while it is missing, so the failure reports once rather than per frame.
+        static bool s_rainReported = false;
+        if ( !LightingLog::CheckOnce( rainHr, RainShadowmap->GetShaderResView().Get(), s_rainReported,
+            std::format( "Rain shadowmap {}x{} D16_UNORM", s, s ) ) ) {
+            RainShadowmap.reset();
+        } else {
+            SetDebugName( RainShadowmap->GetDepthStencilView().Get(), "RainShadowmap->DepthStencilView" );
+            SetDebugName( RainShadowmap->GetShaderResView().Get(), "RainShadowmap->ShaderResView" );
+            SetDebugName( RainShadowmap->GetTexture().Get(), "RainShadowmap->Texture" );
+        }
     }
 
     if ( !m_RainDropShadowSamplerState ) {
@@ -487,8 +497,8 @@ XRESULT D3D11Effect::LoadRainResources()
         samplerDesc.MinLOD = -FLT_MAX;
         samplerDesc.MaxLOD = FLT_MAX;
 
-        HRESULT hr;
-        LE( e->GetDevice()->CreateSamplerState(&samplerDesc, m_RainDropShadowSamplerState.GetAddressOf()));
+        HRESULT hr = e->GetDevice()->CreateSamplerState( &samplerDesc, m_RainDropShadowSamplerState.GetAddressOf() );
+        LightingLog::Check( hr, m_RainDropShadowSamplerState.Get(), "Rain-drop shadow comparison sampler" );
         SetDebugName( m_RainDropShadowSamplerState.Get(), "RainDropSamplerState" );
     }
 
@@ -502,11 +512,19 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
 
     if ( !RainShadowmap ) {
         const int s = 2048;
+        HRESULT rainHr = S_OK;
         RainShadowmap = std::make_unique<RenderToDepthStencilBuffer>( e->GetDevice().Get(), s, s,
-            DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_R16_UNORM );
-        SetDebugName( RainShadowmap->GetDepthStencilView().Get(), "RainShadowmap->DepthStencilView" );
-        SetDebugName( RainShadowmap->GetShaderResView().Get(), "RainShadowmap->ShaderResView" );
-        SetDebugName( RainShadowmap->GetTexture().Get(), "RainShadowmap->Texture" );
+            DXGI_FORMAT_R16_TYPELESS, &rainHr, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_R16_UNORM );
+        // Retried every frame while it is missing, so the failure reports once rather than per frame.
+        static bool s_rainReported = false;
+        if ( !LightingLog::CheckOnce( rainHr, RainShadowmap->GetShaderResView().Get(), s_rainReported,
+            std::format( "Rain shadowmap {}x{} D16_UNORM", s, s ) ) ) {
+            RainShadowmap.reset();
+        } else {
+            SetDebugName( RainShadowmap->GetDepthStencilView().Get(), "RainShadowmap->DepthStencilView" );
+            SetDebugName( RainShadowmap->GetShaderResView().Get(), "RainShadowmap->ShaderResView" );
+            SetDebugName( RainShadowmap->GetTexture().Get(), "RainShadowmap->Texture" );
+        }
     }
 
     if ( !RainShadowmap ) {

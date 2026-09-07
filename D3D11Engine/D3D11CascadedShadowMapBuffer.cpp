@@ -1,6 +1,9 @@
 #include "D3D11CascadedShadowMapBuffer.h"
 #include "D3D11_Helpers.h"
+#include "LightingResourceLog.h"
 #include "Logger.h"
+
+#include <format>
 
 D3D11CascadedShadowMapBuffer::D3D11CascadedShadowMapBuffer()
     : m_size( 0 )
@@ -37,16 +40,13 @@ HRESULT D3D11CascadedShadowMapBuffer::Init(
 }
 
 HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
-    if ( !m_device ) {
-        LogError() << "CascadedShadowMap::Resize - Device not initialized";
+    if ( !LightingLog::Require( m_device.Get(), "CSM: device (Resize called before Init)" ) ) {
         return E_FAIL;
     }
 
     // Clamp size to valid range
     m_size = std::max<UINT>( size, 512 );
 
-
-    HRESULT hr = S_OK;
 
     // Create the texture array
     D3D11_TEXTURE2D_DESC texDesc = {};
@@ -66,10 +66,10 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
     m_size = texDesc.Width;
     m_numCascades = texDesc.ArraySize;
 
-    LE( m_device->CreateTexture2D( &texDesc, nullptr, m_texture.GetAddressOf() ) );
-    if ( FAILED( hr ) || !m_texture ) {
-        LogError() << "CascadedShadowMap::Resize - Failed to create texture array";
-        return hr;
+    HRESULT hr = m_device->CreateTexture2D( &texDesc, nullptr, m_texture.GetAddressOf() );
+    if ( !LightingLog::Check( hr, m_texture.Get(), std::format(
+        "CSM depth array texture {}x{} R32_TYPELESS, {} cascades", m_size, m_size, m_numCascades ) ) ) {
+        return FAILED( hr ) ? hr : E_FAIL;
     }
     SetDebugName( m_texture.Get(), "CascadedShadowMap_TextureArray" );
 
@@ -83,10 +83,10 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
         dsvDesc.Texture2DArray.ArraySize = 1;
         dsvDesc.Flags = 0;
 
-        LE( m_device->CreateDepthStencilView( m_texture.Get(), &dsvDesc, m_cascadeDSVs[i].GetAddressOf() ) );
-        if ( FAILED( hr ) || !m_cascadeDSVs[i] ) {
-            LogError() << "CascadedShadowMap::Resize - Failed to create DSV for cascade " << i;
-            return hr;
+        hr = m_device->CreateDepthStencilView( m_texture.Get(), &dsvDesc, m_cascadeDSVs[i].GetAddressOf() );
+        if ( !LightingLog::Check( hr, m_cascadeDSVs[i].Get(), std::format(
+            "CSM DSV cascade {} (D32_FLOAT slice {})", i, i ) ) ) {
+            return FAILED( hr ) ? hr : E_FAIL;
         }
         SetDebugName( m_cascadeDSVs[i].Get(), "CascadedShadowMap_DSV_Cascade" + std::to_string( i ) );
     }
@@ -100,14 +100,15 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
     srvDesc.Texture2DArray.FirstArraySlice = 0;
     srvDesc.Texture2DArray.ArraySize = m_numCascades;
 
-    LE( m_device->CreateShaderResourceView( m_texture.Get(), &srvDesc, m_srv.GetAddressOf() ) );
-    if ( FAILED( hr ) || !m_srv ) {
-        LogError() << "CascadedShadowMap::Resize - Failed to create SRV";
-        return hr;
+    hr = m_device->CreateShaderResourceView( m_texture.Get(), &srvDesc, m_srv.GetAddressOf() );
+    if ( !LightingLog::Check( hr, m_srv.Get(), std::format(
+        "CSM SRV (R32_FLOAT, {} slices)", m_numCascades ) ) ) {
+        return FAILED( hr ) ? hr : E_FAIL;
     }
     SetDebugName( m_srv.Get(), "CascadedShadowMap_SRV" );
 
-    LogInfo() << "CascadedShadowMap: Created " << m_numCascades << " cascades at " << m_size << "x" << m_size;
+    Logging::Inf( "CSM: {} cascades ready at {}x{} ({} MB)", m_numCascades, m_size, m_size,
+        ( static_cast<size_t>( m_size ) * m_size * 4 * m_numCascades ) / ( 1024 * 1024 ) );
 
     return S_OK;
 }

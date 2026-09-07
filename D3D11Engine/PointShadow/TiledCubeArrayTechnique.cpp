@@ -6,6 +6,7 @@
 #include "../D3D11TiledDeferredShading.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../LightingResourceLog.h"
 #include "../RenderToTextureBuffer.h"
 #include "../WorldObjects.h"
 #include "../zCVobLight.h"
@@ -187,8 +188,11 @@ void TiledCubeArrayTechnique::ReconcileSlots() {
 
         if ( state->GetStaticSlot() != staticSlot ) {
             RenderToDepthStencilBuffer* target = m_Tiled.ClaimStaticSlot( staticSlot );
-            if ( !target ) {
-                // The array could not be created - give the slot back rather than hold it out of the pool.
+            static bool s_staticClaimReported = false;
+            if ( !LightingLog::RequireOnce( target, s_staticClaimReported, std::format(
+                "Point-light static cube slot {} (the array could not be created; the light renders unshadowed)",
+                staticSlot ) ) ) {
+                // Give the slot back rather than hold it out of the pool.
                 m_Slots.ReleaseFor( key );
                 state->ClearDynSlot();
                 state->ClearStaticSlot();
@@ -203,7 +207,10 @@ void TiledCubeArrayTechnique::ReconcileSlots() {
         if ( dynSlot < 0 ) {
             state->ClearDynSlot();
         } else if ( state->GetDynSlot() != dynSlot ) {
-            if ( RenderToDepthStencilBuffer* dynTarget = m_Tiled.ClaimDynSlot( dynSlot ) ) {
+            RenderToDepthStencilBuffer* dynTarget = m_Tiled.ClaimDynSlot( dynSlot );
+            static bool s_dynClaimReported = false;
+            if ( LightingLog::RequireOnce( dynTarget, s_dynClaimReported, std::format(
+                "Point-light dynamic overlay slot {} (the light keeps its static cube only)", dynSlot ) ) ) {
                 state->SetDynSlot( dynSlot, dynTarget );
             } else {
                 // No overlay array (creation declined): the light keeps its static cube and nothing else.
@@ -240,6 +247,9 @@ XRESULT TiledCubeArrayTechnique::DrawShadows( std::vector<VobLightInfo*>& lights
         if ( !light->LightShadowBuffers ) {
             BaseShadowedPointLight* bpl = nullptr;
             graphicsEngine->CreateShadowedPointLight( &bpl, light, /*dynamic light*/ true );
+            static bool s_createReported = false;
+            LightingLog::RequireOnce( bpl, s_createReported,
+                "D3D11PointLight for a slot owner (CreateShadowedPointLight returned nothing)" );
             light->LightShadowBuffers.reset( bpl );
         }
         // The quantized, grow-only cube range the selector decided this bake with, folded in before the

@@ -11,6 +11,7 @@
 #include "D3D11PfxRenderer.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11GraphicsEngine.h"
+#include "LightingResourceLog.h"
 #include "D3D11PipelineStateCache.h"
 #include "zCCamera.h"
 #include "zCVob.h"
@@ -276,8 +277,10 @@ void D3D11ShadowMap::RecreateShadowSampler() {
     samplerDesc.MaxLOD = FLT_MAX;
 
     m_shadowmapSampler.Reset();
-    HRESULT hr;
-    LE( m_device->CreateSamplerState( &samplerDesc, m_shadowmapSampler.GetAddressOf() ) );
+    HRESULT hr = m_device->CreateSamplerState( &samplerDesc, m_shadowmapSampler.GetAddressOf() );
+    // Without it every SampleCmp in the lit passes falls back to sampler 0 - or nothing at all.
+    LightingLog::Check( hr, m_shadowmapSampler.Get(), std::format(
+        "Shadow comparison sampler ({} addressing)", m_useAtlas ? "CLAMP" : "BORDER" ) );
     SetDebugName( m_shadowmapSampler.Get(), "ShadowmapSamplerState" );
 }
 
@@ -326,15 +329,34 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
         }
         if ( !m_shadowAtlas ) {
             m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-            m_shadowAtlas->Init( m_device, atlasCascade0Size, numCascades );
+        }
+        // Kept on failure rather than dropped: this is polled every frame, and re-attempting a
+        // multi-megabyte allocation per frame is worse than going without. The parts that failed
+        // already named themselves - this only says what the frame loses.
+        const HRESULT atlasHr = m_shadowAtlas->Init( m_device, atlasCascade0Size, numCascades );
+        static bool s_atlasReported = false;
+        if ( FAILED( atlasHr ) ) {
+            if ( !s_atlasReported ) {
+                s_atlasReported = true;
+                LightingLog::Degraded( "shadow atlas", "the sun casts no shadows" );
+            }
         } else {
-            m_shadowAtlas->Resize( atlasCascade0Size, numCascades );
+            s_atlasReported = false;
         }
     } else {
         if ( !m_cascadedShadowMap ) {
             m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
         }
-        m_cascadedShadowMap->Init( m_device, clampedSize, numCascades );
+        const HRESULT csmHr = m_cascadedShadowMap->Init( m_device, clampedSize, numCascades );
+        static bool s_csmReported = false;
+        if ( FAILED( csmHr ) ) {
+            if ( !s_csmReported ) {
+                s_csmReported = true;
+                LightingLog::Degraded( "cascaded shadow map array", "the sun casts no shadows" );
+            }
+        } else {
+            s_csmReported = false;
+        }
     }
 }
 
@@ -359,7 +381,9 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     RecreateShadowSampler();
 
     // Dummy cube RT used for fallback to satisfy pixel shader runs that expect a RTV bound
-    m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), 16, 16, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
+    HRESULT dummyHr = S_OK;
+    m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), 16, 16, DXGI_FORMAT_ENGINE_DEFAULT, &dummyHr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
+    LightingLog::Check( dummyHr, m_dummyCubeRT->GetRenderTargetView().Get(), "Point-light dummy cube RTV (16^2 x6)" );
 
     EnsureShadowMapBackend( s );
 
@@ -372,6 +396,9 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     if ( !FeatureLevel10Compatibility ) {
         m_TiledDeferred = std::make_unique<D3D11TiledDeferredShading>();
         m_TiledDeferred->Init( device, context );
+    } else {
+        LightingLog::Degraded( "tiled/clustered lighting (feature level 10)",
+            "point lights go through the legacy per-light deferred path" );
     }
 }
 
@@ -1636,6 +1663,14 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     if (graphicsEngine->IsCubeFaceFallbackActive()) {
         // VS_Ex's extra outputs shift SV_POSITION's register vs. what PS_CubeShadow expects; VS_ExCubeFace matches.
         graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCubeFace );
+    }
+
+    // No DSV means the whole cube pass would draw into nothing and the light samples stale depth.
+    static bool s_cubeFaceReported = false;
+    if ( !LightingLog::RequireOnce( activeFace, s_cubeFaceReported, std::format(
+        "Point-light shadow cube DSV ({}^2 target, layered={})", targetCube.GetSizeX(), useLayeredPath ) ) ) {
+        m_context->RSSetViewports( 1, &oldVP );
+        return;
     }
 
     // Set the rendering stage
