@@ -4655,16 +4655,34 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             } );
         }
 
-        // HDR/Tonemapping resolves the HDR scene into the LDR Backbuffer. With HDR disabled we still
-        // convert the HDR scene into the LDR backbuffer with a plain copy.
+        // The tonemap/copy below and the sharpen after it are a two-step display chain: sharpening cannot
+        // read and write the same texture, so it used to copy the backbuffer aside first (and CAS copied its
+        // result back on top). Instead the resolve renders into a temp and the sharpen reads that and writes
+        // the backbuffer, which costs nothing where each copy cost a full-res blit. The temp has to stay
+        // alive across BOTH passes, so it is acquired once here (the handle is move-only, hence the
+        // shared_ptr) rather than inside either lambda.
+        bool willSharpen = !isUpscaling
+            && rendererState.RendererSettings.SharpenFactor > 0.0f
+            && ( rendererState.RendererSettings.SharpeningMode == GothicRendererSettings::SHARPEN_SIMPLE
+                || ( rendererState.RendererSettings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS
+                    && !FeatureLevel10Compatibility ) );
+        auto sharpenSrc = std::make_shared<TextureHandle>(
+            willSharpen ? GetPfxRenderer()->GetBackbufferTempBuffer() : TextureHandle{} );
+        // No temp means no chain; resolve straight into the backbuffer and skip sharpening, exactly as the
+        // old code would have done (both sharpen modes needed this same buffer).
+        if ( willSharpen && !*sharpenSrc ) willSharpen = false;
+        RenderToTextureBuffer* ldrTarget = willSharpen ? sharpenSrc->get() : Backbuffer.get();
+
+        // HDR/Tonemapping resolves the HDR scene into the LDR target. With HDR disabled we still
+        // convert the HDR scene into the LDR target with a plain copy.
         if ( rendererState.RendererSettings.EnableHDR ) {
             graph.AddPass( RG_PASS_NAME("Render HDR"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDR, ldrTarget, sharpenSrc](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render HDR" );
-                    PfxRenderer->RenderHDR( Backbuffer->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
+                    PfxRenderer->RenderHDR( ldrTarget->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
                 };
             } );
         } else {
@@ -4672,43 +4690,38 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
-                    PfxRenderer->CopyTextureToRTV( sceneHDR->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                pass.m_executeCallback = [this, sceneHDR, ldrTarget, sharpenSrc](const RenderGraph&) {
+                    PfxRenderer->CopyTextureToRTV( sceneHDR->GetShaderResView(), ldrTarget->GetRenderTargetView(), GetBackbufferResolution() );
                 };
             } );
         }
 
-        // Sharpen the final LDR backbuffer. Skipped when an FSR upscaler is active, since FSR
-        // performs its own (RCAS) sharpening.
-        if ( !isUpscaling
-                && rendererState.RendererSettings.SharpeningMode
-                && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
-
+        // Sharpen: the second step of the display chain — reads what the resolve above rendered into the
+        // temp and writes the backbuffer. Skipped when an FSR upscaler is active, since FSR performs its own
+        // (RCAS) sharpening; willSharpen above carries that and every other condition, so the resolve and
+        // this pass can never disagree about who writes the backbuffer.
+        if ( willSharpen ) {
             graph.AddPass( RG_PASS_NAME("Sharpen"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
+                pass.m_executeCallback = [this, &rendererState, ldrTarget, sharpenSrc](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Sharpen" );
                     GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
 
                     switch ( rendererState.RendererSettings.SharpeningMode ) {
                     case GothicRendererSettings::SHARPEN_SIMPLE:
                         {
-                            // SimpleSharpen can't read and write the same texture, so sharpen a copy
-                            // of the backbuffer back into the backbuffer (which owns the UAV).
+                            // Backbuffer is the destination because it owns the UAV this writes through.
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplySimpleSharpen" ) );
-                            auto tmp = GetPfxRenderer()->GetBackbufferTempBuffer();
-                            PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), tmp->GetRenderTargetView(), GetBackbufferResolution() );
-                            PfxRenderer->RenderSimpleSharpen( tmp->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
+                            PfxRenderer->RenderSimpleSharpen( ldrTarget->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
                         }
                         break;
 
                     case GothicRendererSettings::SHARPEN_CAS:
-                        if ( !FeatureLevel10Compatibility ) {
-                            // CAS sharpens the backbuffer in place using an intermediate buffer.
+                        {
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplyCAS" ) );
-                            PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer() );
+                            PfxRenderer->RenderCAS( ldrTarget->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                         }
                         break;
                     }

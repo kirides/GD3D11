@@ -137,7 +137,7 @@ XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderRes
     return XR_SUCCESS;
 }
 
-XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
+XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize ) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     PFX_CAS->SetSharpness( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor );
@@ -145,8 +145,7 @@ XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderRe
         input ? input : engine->GetHDRBackBuffer().GetShaderResView(),
         input ? inputSize : engine->GetResolution(),
         output ? output : engine->GetHDRBackBuffer().GetRenderTargetView(),
-        output ? outputSize : engine->GetResolution(),
-        intermediateBuffer );
+        output ? outputSize : engine->GetResolution() );
     return XR_SUCCESS;
 }
 
