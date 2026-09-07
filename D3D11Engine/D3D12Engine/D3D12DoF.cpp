@@ -10,17 +10,19 @@
 // highlight bloom as the disc it has become rather than as the point it was; being after TAA keeps a moving
 // focus point from smearing through the temporal history.
 //
-// TRANSPARENCY TO THE REST OF THE CHAIN. Scene colour in, scene colour out (the composite goes to a scratch
-// texture and is copied back), so nothing downstream has to know the pass ran.
+// TRANSPARENCY TO THE REST OF THE CHAIN. Scene colour in, scene colour out: the composite is a blended
+// fullscreen draw straight into m_SceneColor, so nothing downstream has to know the pass ran. It used to
+// render into a full-res scratch texture and CopyResource it back — the blend does the same lerp for free
+// and saves a full-res read plus a full-res write every frame DoF is on.
 //
 // RENDER-GRAPH USE (first live consumer of D3D12RenderGraph's actual resource system, not just its pass
-// structure — see D3D12RenderGraph.h / D3D12AliasedTextureArena.h). The half-res blur target and the full-res
-// composite scratch are PURELY transient within one call of RenderDepthOfField — written, read once, then
-// dead — so unlike the focus ping-pong (which must survive across frames for the temporal smoothing to mean
-// anything) they are acquired fresh from a local D3D12RenderGraph each call instead of being held as members.
-// They are NOT resized/recreated explicitly on a resolution change any more either: since they are asked for
-// at the CURRENT m_Resolution every call, a resize just makes next frame's CreateTexture() ask for a
-// different size, which the graph handles the same way it handles any other description change.
+// structure — see D3D12RenderGraph.h / D3D12AliasedTextureArena.h). The half-res blur target is PURELY
+// transient within one call of RenderDepthOfField — written, read once, then dead — so unlike the focus
+// ping-pong (which must survive across frames for the temporal smoothing to mean anything) it is acquired
+// fresh from the graph each call instead of being held as a member. It is NOT resized/recreated explicitly
+// on a resolution change either: since it is asked for at the CURRENT m_Resolution every call, a resize just
+// makes next frame's CreateTexture() ask for a different size, which the graph handles the same way it
+// handles any other description change.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12ResourceCreate.h"
@@ -40,15 +42,14 @@ namespace {
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
     // D3D12RenderGraph's transient-texture flag convention (see RGTextureDesc::textureFlags / RGBuilder's
-    // consumer in D3D12RenderGraph.cpp): bit 0 requests a UAV alongside the SRV. Both DoF scratch targets are
-    // compute-written, so both need it.
+    // consumer in D3D12RenderGraph.cpp): bit 0 requests a UAV alongside the SRV. The half-res blur target is
+    // compute-written, so it needs it.
     constexpr uint32_t kRgNeedsUav = 1u;
 }
 
-/** (Re)creates the temporally-persistent focus ping-pong pair only. The half-res blur target and the
-    full-res composite scratch used to live here too; they are now D3D12RenderGraph-managed transient
-    textures acquired inside RenderDepthOfField (see the file header) and need no explicit creation or
-    resize handling.
+/** (Re)creates the temporally-persistent focus ping-pong pair only. The half-res blur target used to live
+    here too; it is now a D3D12RenderGraph-managed transient texture acquired inside RenderDepthOfField (see
+    the file header) and needs no explicit creation or resize handling.
 
     Called LAZILY from RenderDepthOfField the first time DoF is actually switched on, and from the resize path
     only if it already ran once — see the header note on why this is not built unconditionally like the bloom
@@ -199,15 +200,13 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     cb->FullResX = static_cast<float>( m_Resolution.x );
     cb->FullResY = static_cast<float>( m_Resolution.y );
 
-    auto compositeCopied = std::make_shared<bool>( false );   // did the composite pass actually run the copy-back?
-    // Plain locals, NOT shared_ptr like cb/compositeCopied above: a handle is only ever written once,
+    // Plain local, NOT shared_ptr like cb above: a handle is only ever written once,
     // synchronously, inside a pass's own setup lambda (builder.CreateTexture) — never during the deferred
     // Execute() — so by the time any lambda (this pass's own execute callback, or a LATER pass's setup/
     // execute callback) captures it by value, the assignment has already happened. Nothing here crosses
     // the "written at deferred-execution time, read at deferred-execution time" boundary the shared_ptr
-    // treatment exists for (see cb/compositeCopied, which genuinely are mutated across passes' callbacks).
+    // treatment exists for (see cb, which genuinely is mutated across passes' callbacks).
     RGResourceHandle halfHandle = RG_INVALID_HANDLE;
-    RGResourceHandle compositeHandle = RG_INVALID_HANDLE;
 
     // --- Prepare: scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus
     // UAV -> readable. The DSV/RTV must be unbound first: a resource cannot be bound as a render target while
@@ -278,60 +277,51 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             };
         } );
 
-    // --- Full-res composite into a graph-managed scratch texture, then copy back onto the scene colour ---
+    // --- Full-res composite: a blended fullscreen draw straight onto the scene colour ---
     graph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-        builder.Read( halfHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        compositeHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
-            static_cast<int>( kSceneColorFormat ), L"DoFComposite", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        // CreateTexture() already declares compositeHandle read (see D3D12RGBuilder::CreateTexture), so the
-        // resource itself is allocated. What's still missing is that its VISIBLE result leaves the graph
-        // entirely via the CopyResource onto m_SceneColor below — a plain member, not a resource the graph
-        // owns — so nothing the graph can see depends on this pass having run. Without MarkExternalEffect,
-        // Execute()'s dead-pass elimination would see a self-contained write/read pair with no visible
-        // external effect and skip the callback. See D3D12RenderPass::m_hasExternalSideEffect.
+        builder.Read( halfHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+        // The pass's only visible result is the blend into m_SceneColor — a plain member, not a resource the
+        // graph owns — so nothing the graph can see depends on it having run. Without MarkExternalEffect,
+        // Execute()'s dead-pass elimination would see a pass that reads one texture and writes nothing the
+        // graph tracks, and skip the callback. See D3D12RenderPass::m_hasExternalSideEffect.
         builder.MarkExternalEffect();
 
-        pass.m_executeCallback = [this, cb, compositeCopied, halfHandle, compositeHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
-            D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
-            D3D12RenderTarget* composite = g.GetPhysicalTexture( compositeHandle );
-            if ( !half || !composite ) return;   // scene colour / depth / focus are still restored below unconditionally
+        pass.m_executeCallback = [this, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            // Unconditional, and before the early-out below: the blur pass read the scene colour from compute
+            // and "DoF Restore" no longer touches it, so this is the only thing that puts it back.
+            cmdList.TransitionBarriers( {
+                { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+                } );
+            m_SceneColorInPixelState = false;
 
-            // composite is already UNORDERED_ACCESS here (CreateTexture()'s declared state, applied
-            // automatically by Execute() before this callback runs).
-            cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
+            D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
+            if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — leave the scene sharp
+
+            const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+            const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+            cmdList.RSSetViewports( 1, &vp );
+            cmdList.RSSetScissorRects( 1, &sc );
+            cmdList.IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+            cmdList.IASetVertexBuffers( 0, 0, nullptr );
+            cmdList.SetGraphicsRootSignature( m_Pipelines.DoF.RootSig.Get() );
             cmdList.SetPipelineState( m_Pipelines.DoF.CompositePSO.Get() );
             cb->BlurIndex = half->GetSrvSlot();
-            cb->OutIndex = composite->GetUavSlot();
-            cb->OutResX = static_cast<float>( m_Resolution.x );
-            cb->OutResY = static_cast<float>( m_Resolution.y );
-            cmdList.SetComputeRoot32BitConstants( 0, 16, cb.get(), 0 );
-            cmdList.Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
-
-            // Hand the result back to the scene colour. Both are kSceneColorFormat, so this is a straight copy.
-            cmdList.TransitionBarriers( {
-                { composite->GetResource(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE },
-                { m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
-                } );
-            cmdList.CopyResource( m_SceneColor.Get(), composite->GetResource() );
-            composite->State = D3D12_RESOURCE_STATE_COPY_SOURCE;
-            *compositeCopied = true;
+            cmdList.SetGraphicsRoot32BitConstants( 0, 16, cb.get(), 0 );
+            cmdList.OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
+            cmdList.DrawInstanced( 3, 1, 0, 0 );
             };
         } );
 
     // --- Restore: resting states for the engine-owned resources DoF borrowed — NOT graph-managed, so nothing
-    // else restores them, and this must run regardless of whether the composite pass above actually found its
-    // textures (see its early-out). Depth back to DEPTH_WRITE, scene colour back to RENDER_TARGET (from
-    // COPY_DEST if the copy-back ran, otherwise from the plain shader-read state Prepare put it in), this
-    // frame's focus texture back to its UAV resting state for whenever it becomes "prevIdx" again.
+    // else restores them. Depth back to DEPTH_WRITE and this frame's focus texture back to its UAV resting
+    // state for whenever it becomes "prevIdx" again. The scene colour is not here: the composite pass above
+    // puts it back into RENDER_TARGET itself, unconditionally, because it has to draw into it.
     graph.AddPass( RG_PASS_NAME( "DoF Restore" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-        pass.m_executeCallback = [this, curIdx, compositeCopied]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+        pass.m_executeCallback = [this, curIdx]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             cmdList.TransitionBarriers( {
                 { m_DepthBuffer.Get(), kDoFDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-                { m_SceneColor.Get(), *compositeCopied ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET },
                 { m_DoFFocus[curIdx].Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
                 } );
-            m_SceneColorInPixelState = false;
 
             // Rebind the scene colour + depth for whatever comes next in the frame (bloom re-transitions the
             // scene colour itself, but the render target must not be left unbound).

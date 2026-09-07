@@ -3409,10 +3409,11 @@ bool D3D12PipelineState::CreateDoF() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    // One root signature for all four PSOs: b0 as 16 root constants (the three tuning values, the history-valid
-    // flag, six bindless heap indices and the two resolutions — see DoF.hlsl's DoFCB). Every texture and UAV is
-    // fetched through ResourceDescriptorHeap, so there is no descriptor table — hence
-    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, same as the TAA resolve above.
+    // One root signature for all four PSOs — the three compute ones and the graphics composite: b0 as 16 root
+    // constants (the three tuning values, the history-valid flag, six bindless heap indices and the two
+    // resolutions — see DoF.hlsl's DoFCB). Every texture and UAV is fetched through ResourceDescriptorHeap, so
+    // there is no descriptor table — hence CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, same as the TAA resolve above.
+    // The composite draws a fullscreen triangle off SV_VertexID, so no ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT.
     D3D12RootLayout& rs = Layout( "DoF" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 DoFCB
     // s0 linear-clamp only. The one place the D3D11 shader deliberately avoids filtering — the half-res pass's
@@ -3429,20 +3430,21 @@ bool D3D12PipelineState::CreateDoF() {
     if ( !m_Shaders->CompileFromFile( "DoF.hlsl", "CSFocusResolve", Shadermodel_CS, DoF.FocusCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.BlurCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.GaussCsBlob.ReleaseAndGetAddressOf(), gaussMacros )
-        || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSComposite", Shadermodel_CS, DoF.CompositeCsBlob.ReleaseAndGetAddressOf() ) )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "VSFullscreen", Shadermodel_VS, DoF.CompositeVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "PSComposite", Shadermodel_PS, DoF.CompositePsBlob.ReleaseAndGetAddressOf() ) )
         return false;
     rs.ValidateShaders( {
-        { DoF.FocusCsBlob.Get(),     "DoF.hlsl:CSFocusResolve",           D3D12_SHADER_VISIBILITY_ALL },
-        { DoF.BlurCsBlob.Get(),      "DoF.hlsl:CSBlur",                   D3D12_SHADER_VISIBILITY_ALL },
-        { DoF.GaussCsBlob.Get(),     "DoF.hlsl:CSBlur (DOF_GAUSS_BLUR)",  D3D12_SHADER_VISIBILITY_ALL },
-        { DoF.CompositeCsBlob.Get(), "DoF.hlsl:CSComposite",              D3D12_SHADER_VISIBILITY_ALL },
+        { DoF.FocusCsBlob.Get(),     "DoF.hlsl:CSFocusResolve",           D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.BlurCsBlob.Get(),      "DoF.hlsl:CSBlur",                   D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.GaussCsBlob.Get(),     "DoF.hlsl:CSBlur (DOF_GAUSS_BLUR)",  D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.CompositeVsBlob.Get(), "DoF.hlsl:VSFullscreen",             D3D12_SHADER_VISIBILITY_VERTEX },
+        { DoF.CompositePsBlob.Get(), "DoF.hlsl:PSComposite",              D3D12_SHADER_VISIBILITY_PIXEL  },
         } );
 
     struct { ID3DBlob* cs; Microsoft::WRL::ComPtr<ID3D12PipelineState>* pso; const char* name; } passes[] = {
-        { DoF.FocusCsBlob.Get(),     &DoF.FocusPSO,     "focus resolve" },
-        { DoF.BlurCsBlob.Get(),      &DoF.BlurPSO,      "bokeh blur" },
-        { DoF.GaussCsBlob.Get(),     &DoF.GaussPSO,     "gaussian blur" },
-        { DoF.CompositeCsBlob.Get(), &DoF.CompositePSO, "composite" },
+        { DoF.FocusCsBlob.Get(), &DoF.FocusPSO, "focus resolve" },
+        { DoF.BlurCsBlob.Get(),  &DoF.BlurPSO,  "bokeh blur" },
+        { DoF.GaussCsBlob.Get(), &DoF.GaussPSO, "gaussian blur" },
     };
     for ( const auto& p : passes ) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
@@ -3452,6 +3454,40 @@ bool D3D12PipelineState::CreateDoF() {
             LogWarn() << "D3D12: CreateComputePipelineState failed (depth of field, " << p.name << ").";
             return false;
         }
+    }
+
+    // Composite: fullscreen triangle blended straight onto the HDR scene colour. SRC_ALPHA/INV_SRC_ALPHA is
+    // exactly the lerp(sharp, blur, coc) the pass used to compute by hand, so the scene colour never has to be
+    // read as a texture and no scratch target or copy-back is needed. Alpha is masked out of the write so the
+    // target keeps its own; the PS uses that channel for the blend factor only.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC gpso = {};
+    gpso.pRootSignature = DoF.RootSig.Get();
+    gpso.VS = { DoF.CompositeVsBlob->GetBufferPointer(), DoF.CompositeVsBlob->GetBufferSize() };
+    gpso.PS = { DoF.CompositePsBlob->GetBufferPointer(), DoF.CompositePsBlob->GetBufferSize() };
+    gpso.InputLayout = { nullptr, 0 };
+    gpso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    gpso.NumRenderTargets = 1;
+    gpso.RTVFormats[0] = kSceneColorFormat;
+    gpso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    gpso.SampleDesc.Count = 1;
+    gpso.SampleMask = UINT_MAX;
+    gpso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    gpso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    gpso.RasterizerState.DepthClipEnable = TRUE;
+    gpso.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    gpso.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    gpso.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    gpso.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    gpso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ZERO;
+    gpso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+    gpso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    gpso.BlendState.RenderTarget[0].RenderTargetWriteMask =
+        D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
+    gpso.DepthStencilState.DepthEnable = FALSE;
+    gpso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &gpso, IID_PPV_ARGS( DoF.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth of field, composite).";
+        return false;
     }
     return true;
 }

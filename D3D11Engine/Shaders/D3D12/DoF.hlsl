@@ -1,6 +1,6 @@
 //--------------------------------------------------------------------------------------
 // Depth of Field (D3D12 port of Shaders/CS_PFX_DoF_FocusResolve.hlsl, CS_PFX_DoF.hlsl and
-// CS_PFX_DoF_Composite.hlsl — the FL11+ compute path D3D11PFX_DepthOfField::RenderCS drives).
+// PS_PFX_DoF_Composite.hlsl — the path D3D11PFX_DepthOfField::RenderCS drives).
 //
 // The MATHS is unchanged from those three shaders: the same 13-tap centre-weighted focus disc with
 // the same adaptive temporal smoothing, the same 48-tap spiral bokeh kernel with luminance boost and
@@ -14,6 +14,9 @@
 //  3. RESOLUTIONS ARE PASSED, NOT QUERIED. The D3D11 shaders call GetDimensions because they had no
 //     constants to spare; here FullRes/OutRes are in the root block.
 //  4. THREE ENTRY POINTS IN ONE FILE instead of three files, since they share the constant block.
+//  5. THE COMPOSITE IS A BLENDED FULLSCREEN DRAW, not a compute pass. It only ever read the scene colour at
+//     its own texel, and lerp(sharp, blur, f) is exactly SRC_ALPHA/INV_SRC_ALPHA blending — so it writes
+//     straight into the scene-colour render target and needs neither a scratch texture nor a copy back.
 //
 // LinearizeDepth is inlined rather than pulled from ../DepthReconstruction.h — same convention as
 // TAAResolve.hlsl and SSAO.hlsl on this backend. Reversed-Z with an infinite far plane and NearClip
@@ -39,7 +42,7 @@ cbuffer DoFCB : register( b0 )
 
     float DoF_FullResX;        // full-res scene/depth dimensions
     float DoF_FullResY;
-    float DoF_OutResX;         // dispatch/output dimensions of the pass being run
+    float DoF_OutResX;         // CSBlur's dispatch/output dimensions
     float DoF_OutResY;
 };
 
@@ -160,7 +163,7 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
     // even though this pass rasterizes at half res.
     float2 texelSize = 1.0 / float2( DoF_FullResX, DoF_FullResY );
 
-    float focusDepth = focusTex.SampleLevel( SS_LinearClamp, float2( 0.5, 0.5 ), 0 );
+    float focusDepth = focusTex.Load( int3( 0, 0, 0 ) );
 
     float centerDepth = SampleCenterDepthPoint( depthTex, texcoord );
     float centerLinear = LinearizeDepth( centerDepth );
@@ -242,48 +245,49 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
 }
 
 //--------------------------------------------------------------------------------------
-// Pass 2 — full-res composite. Blends the sharp scene against the bilinearly-upsampled half-res
-// bokeh by per-pixel CoC, eroded by one pixel at depth discontinuities.
+// Pass 2 — full-res composite. Blends the bilinearly-upsampled half-res bokeh over the scene colour by
+// per-pixel CoC, eroded by one pixel at depth discontinuities.
+//
+// A fullscreen triangle with SRC_ALPHA/INV_SRC_ALPHA blending (same VS trick as Bloom_Composite.hlsl):
+// the blend unit computes lerp(dst, blur, blendFactor) for us, so the scene colour is never read as a
+// texture and the result lands in place. Alpha is masked off in the PSO, leaving the target's own.
 //--------------------------------------------------------------------------------------
-[numthreads(8, 8, 1)]
-void CSComposite( uint3 DTid : SV_DispatchThreadID )
+struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+
+VS_OUT VSFullscreen( uint vid : SV_VertexID )
 {
-    const float2 outSize = float2( DoF_OutResX, DoF_OutResY );
-    if ( DTid.x >= (uint)DoF_OutResX || DTid.y >= (uint)DoF_OutResY )
-        return;
+    VS_OUT o;
+    o.uv = float2( ( vid << 1 ) & 2, vid & 2 );
+    o.pos = float4( o.uv * float2( 2, -2 ) + float2( -1, 1 ), 0, 1 );
+    return o;
+}
 
-    Texture2D<float4>   sceneTex = ResourceDescriptorHeap[DoF_SceneIndex];
-    Texture2D<float4>   blurTex  = ResourceDescriptorHeap[DoF_BlurIndex];
-    Texture2D<float>    depthTex = ResourceDescriptorHeap[DoF_DepthIndex];
-    Texture2D<float>    focusTex = ResourceDescriptorHeap[DoF_FocusIndex];
-    RWTexture2D<float4> outComp  = ResourceDescriptorHeap[DoF_OutIndex];
+float4 PSComposite( VS_OUT i ) : SV_TARGET
+{
+    Texture2D<float4> blurTex = ResourceDescriptorHeap[DoF_BlurIndex];
+    Texture2D<float>  depthTex = ResourceDescriptorHeap[DoF_DepthIndex];
+    Texture2D<float>  focusTex = ResourceDescriptorHeap[DoF_FocusIndex];
 
-    float2 texcoord = ( float2( DTid.xy ) + 0.5 ) / outSize;
+    // The five erosion taps land on exact texel centres, so they are Loads off the pixel coordinate; that
+    // also drops the uv round-trip the bilinear samples went through. Load has no address clamping.
+    const int2 maxPx = int2( DoF_FullResX, DoF_FullResY ) - int2( 1, 1 );
+    const int2 px = min( int2( i.pos.xy ), maxPx );
 
-    float3 sharpColor = sceneTex.SampleLevel( SS_LinearClamp, texcoord, 0 ).rgb;
+    // ComputeCoC is monotonically decreasing in raw reversed-Z depth (CoC rises with 1/d), so the minimum
+    // CoC over the cross is the CoC of the maximum depth — one linearize and one CoC instead of five.
+    float d = depthTex.Load( int3( px, 0 ) );
+    d = max( d, depthTex.Load( int3( max( px.x - 1, 0 ), px.y, 0 ) ) );
+    d = max( d, depthTex.Load( int3( min( px.x + 1, maxPx.x ), px.y, 0 ) ) );
+    d = max( d, depthTex.Load( int3( px.x, max( px.y - 1, 0 ), 0 ) ) );
+    d = max( d, depthTex.Load( int3( px.x, min( px.y + 1, maxPx.y ), 0 ) ) );
 
-    float focusDepth = focusTex.SampleLevel( SS_LinearClamp, float2( 0.5, 0.5 ), 0 );
+    float focusDepth = focusTex.Load( int3( 0, 0, 0 ) );
+    float minCoC = ComputeCoC( LinearizeDepth( d ), focusDepth );
 
-    // Compute CoC at centre and 4 neighbours, use the minimum. This erodes the blur zone by one pixel
-    // at depth discontinuities, which is what keeps a sharp foreground from bleeding outwards.
-    float2 dtexel = 1.0 / float2( DoF_FullResX, DoF_FullResY );
+    // Fully sharp — the blend would be a no-op, so skip the blur fetch and leave the target untouched.
+    if ( minCoC <= 0.0 )
+        discard;
 
-    float cocC = ComputeCoC( LinearizeDepth( depthTex.SampleLevel( SS_LinearClamp, texcoord, 0 ) ), focusDepth );
-    float cocL = ComputeCoC( LinearizeDepth( depthTex.SampleLevel( SS_LinearClamp, texcoord + float2( -dtexel.x, 0 ), 0 ) ), focusDepth );
-    float cocR = ComputeCoC( LinearizeDepth( depthTex.SampleLevel( SS_LinearClamp, texcoord + float2(  dtexel.x, 0 ), 0 ) ), focusDepth );
-    float cocU = ComputeCoC( LinearizeDepth( depthTex.SampleLevel( SS_LinearClamp, texcoord + float2( 0, -dtexel.y ), 0 ) ), focusDepth );
-    float cocD = ComputeCoC( LinearizeDepth( depthTex.SampleLevel( SS_LinearClamp, texcoord + float2( 0,  dtexel.y ), 0 ) ), focusDepth );
-
-    float minCoC = min( min( cocC, cocL ), min( cocR, min( cocU, cocD ) ) );
-
-    // Bilinear-upsampled half-res bokeh blur
-    float4 blurSample = blurTex.SampleLevel( SS_LinearClamp, texcoord, 0 );
-
-    float blendFactor = smoothstep( 0.0, 1.0, minCoC );
-    float3 finalColor = lerp( sharpColor, blurSample.rgb, blendFactor );
-
-    // Alpha: the scene colour target's alpha is not read by anything downstream on this backend
-    // (bloom, luminance reduce and the tonemap all take .rgb), and the D3D11 composite writes 1.0
-    // here too.
-    outComp[DTid.xy] = float4( finalColor, 1.0 );
+    float4 blurSample = blurTex.SampleLevel( SS_LinearClamp, i.uv, 0 );
+    return float4( blurSample.rgb, smoothstep( 0.0, 1.0, minCoC ) );
 }
