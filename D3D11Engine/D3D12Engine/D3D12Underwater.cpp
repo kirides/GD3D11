@@ -71,21 +71,29 @@ namespace {
     read once then dead, no cross-frame data dependency), so they are now D3D12RenderGraph-managed transient
     textures acquired fresh every call instead — same conversion DoF's and the god-ray mask/zoom textures got
     (see D3D12DoF.cpp / D3D12Fog.cpp). */
-void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
-    if ( !Engine::GAPI->IsUnderWater() ) return;
-    if ( !m_FrameOpen || !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady ) return;
+bool D3D12GraphicsEngine::WillRunUnderwaterFX() const {
+    if ( !Engine::GAPI->IsUnderWater() ) return false;
+    if ( !m_FrameOpen || !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady ) return false;
     if ( !m_Pipelines.Underwater.BlurRootSig || !m_Pipelines.Underwater.BlurPSO
         || !m_Pipelines.Underwater.CompositeRootSig || !m_Pipelines.Underwater.CompositePSO )
-        return;
+        return false;
+    return UnderwaterDistortionTexture() != nullptr;
+}
 
-    // distortion2.dds drives both UV offsets. If it failed to load, fall back to the 1x1 white texture: that
-    // degrades the animated distortion to a constant sub-pixel shift instead of dropping the blue blur too.
+/** distortion2.dds drives both UV offsets. If it failed to load, fall back to the 1x1 white texture: that
+    degrades the animated distortion to a constant sub-pixel shift instead of dropping the blue blur too. */
+const D3D12Texture* D3D12GraphicsEngine::UnderwaterDistortionTexture() const {
+    if ( m_DistortionTexture && m_DistortionTexture->HasSRV() ) return m_DistortionTexture.get();
+    if ( m_WhiteTexture && m_WhiteTexture->HasSRV() ) return m_WhiteTexture.get();
+    return nullptr;
+}
+
+void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
+    if ( !WillRunUnderwaterFX() ) return;
+
     // A raw pointer is fine to capture by value below: both candidates are persistent engine members, not
     // stack locals.
-    const D3D12Texture* distortion = ( m_DistortionTexture && m_DistortionTexture->HasSRV() )
-        ? m_DistortionTexture.get()
-        : ( ( m_WhiteTexture && m_WhiteTexture->HasSRV() ) ? m_WhiteTexture.get() : nullptr );
-    if ( !distortion ) return;
+    const D3D12Texture* distortion = UnderwaterDistortionTexture();
 
     const INT2 blurSize = { std::max( 1, m_BackbufferResolution.x / 4 ), std::max( 1, m_BackbufferResolution.y / 4 ) };
     const UINT groupsX = ( static_cast<UINT>( blurSize.x ) + 7 ) / 8;
@@ -104,20 +112,14 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
     RGResourceHandle blurVHandle = RG_INVALID_HANDLE;
     auto blurVSrvSlot = std::make_shared<UINT>( UINT_MAX );   // resolved by Blur V; read by Composite further down
 
-    // --- Copy the finished display image into m_LdrCopy (the blur's source). A texture cannot be its own
-    // SRV and RTV, and the composite pass writes the display target — same copy-then-read shape RenderSMAA /
-    // RenderSharpen use. m_LdrCopy rests in COPY_DEST. ---
-    graph.AddPass( RG_PASS_NAME( "Underwater Copy" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-        pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+    // --- Open the display-chain step: the finished frame becomes the blur's source and the composite further
+    // down renders into the next slot. A texture cannot be its own SRV and RTV; this used to copy the whole
+    // display target aside to get around that (same shape RenderSMAA / RenderSharpen used). ---
+    auto step = std::make_shared<DisplayChainStep>();
+    graph.AddPass( RG_PASS_NAME( "Underwater Begin" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+        pass.m_executeCallback = [this, step]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Underwater FX" );
-            ID3D12Resource* displayTarget = GetDisplayTarget();
-            cmdList.TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-            cmdList.CopyResource( m_LdrCopy.Get(), displayTarget );
-            // NON_PIXEL: the two blur passes read it from compute.
-            cmdList.TransitionBarriers( {
-                { m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-                { displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-                } );
+            *step = BeginDisplayChainStep( cmdList );
             };
         } );
 
@@ -128,11 +130,11 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
         blurHHandle = builder.CreateTexture( { static_cast<uint32_t>( blurSize.x ), static_cast<uint32_t>( blurSize.y ),
             static_cast<int>( kUnderwaterBlurFormat ), L"UnderwaterBlurH", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
-        pass.m_executeCallback = [this, cb, groupsX, groupsY, blurHHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+        pass.m_executeCallback = [this, cb, step, groupsX, groupsY, blurHHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
             D3D12RenderTarget* blurH = g.GetPhysicalTexture( blurHHandle );
-            if ( !blurH ) return;
+            if ( !blurH || !step->Valid() ) return;   // no chain step means no source image to blur
 
-            cb->SrcIndex = m_LdrCopySrvSlot;
+            cb->SrcIndex = step->SrcSrvSlot;
             cb->OutIndex = blurH->GetUavSlot();
             cb->TexelStepX = 1.0f / blurH->GetWidth();
             cb->TexelStepY = 0.0f;
@@ -175,7 +177,8 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
 
     // --- Full-res distorted composite back over the display target. ---
     graph.AddPass( RG_PASS_NAME( "Underwater Composite" ), [&, distortion]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-        pass.m_executeCallback = [this, distortion, blurVSrvSlot]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+        pass.m_executeCallback = [this, distortion, step, blurVSrvSlot]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+            if ( !step->Valid() ) return;
             struct CompositeConsts {
                 uint32_t BlurIndex;
                 uint32_t DistortionIndex;
@@ -188,8 +191,7 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
             comp.DistortionIndex = distortion->GetSrvSlot();
             comp.Time = Engine::GAPI->GetTimeSeconds();   // D3D11's RI_Time
 
-            ID3D12Resource* displayTarget = GetDisplayTarget();
-            D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = GetDisplayRtv();
+            D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = step->DstRtv;
             const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
             const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
             cmdList.RSSetViewports( 1, &vp );
@@ -202,11 +204,10 @@ void D3D12GraphicsEngine::DrawUnderwaterEffects( D3D12RenderGraph& graph ) {
             cmdList.OMSetRenderTargets( 1, &displayRtv, FALSE, nullptr );
             cmdList.DrawInstanced( 3, 1, 0, 0 );
 
-            // Resting state for the next frame: the scratch copy back to COPY_DEST (SMAA/sharpen expect to
-            // find it there). The display target stays RENDER_TARGET and bound, ready for Gothic's 2D UI/HUD
-            // to composite on top. The blur pair needs no explicit reset — D3D12RenderTarget::State is
-            // caller-maintained and self-correcting, same as DoF's and the god-ray textures.
-            cmdList.TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+            // Source scratch back to RENDER_TARGET. The blur pair needs no explicit reset —
+            // D3D12RenderTarget::State is caller-maintained and self-correcting, same as DoF's and the
+            // god-ray textures.
+            EndDisplayChainStep( cmdList );
             };
         } );
 }

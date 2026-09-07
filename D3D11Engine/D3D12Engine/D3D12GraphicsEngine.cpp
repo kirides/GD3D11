@@ -30,6 +30,10 @@ namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
     constexpr UINT kSrvHeapCapacity = 65536;
+    // The display chain reads its source from both pixel shaders (SMAA, sharpen) and compute (the underwater
+    // blur), so the scratches take one combined read state rather than a per-pass one.
+    constexpr D3D12_RESOURCE_STATES kDisplayChainReadState =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 }
 
 D3D12GraphicsEngine::D3D12GraphicsEngine() {
@@ -1308,15 +1312,101 @@ float D3D12GraphicsEngine::GetHdrPaperWhiteNits() const {
 }
 
 
-ID3D12Resource* D3D12GraphicsEngine::GetDisplayTarget() const {
+ID3D12Resource* D3D12GraphicsEngine::RealDisplayTarget() const {
 	return m_HdrDisplay ? m_HdrDisplay.Get() : m_BackBuffers[m_FrameIndex].Get();
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetDisplayRtv() const {
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::RealDisplayRtv() const {
 	if ( m_HdrDisplay ) return m_HdrDisplayRtv;
 	D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
 	return rtv;
+}
+
+// While the display chain is running the finished image lives in one of the LDR scratches, so anything that
+// asks for "the display target" mid-chain gets that instead. Outside the chain (which is everything before the
+// tonemap resolve and everything from the 2D UI onwards) m_DisplaySlot is -1 and this is the plain accessor.
+ID3D12Resource* D3D12GraphicsEngine::GetDisplayTarget() const {
+	if ( m_DisplaySlot >= 0 && m_LdrScratch[m_DisplaySlot] ) return m_LdrScratch[m_DisplaySlot].Get();
+	return RealDisplayTarget();
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetDisplayRtv() const {
+	if ( m_DisplaySlot >= 0 && m_LdrScratch[m_DisplaySlot] ) return m_LdrScratchRtv[m_DisplaySlot];
+	return RealDisplayRtv();
+}
+
+/** Decides, once per frame and just before the tonemap resolve picks its render target, how many display-chain
+	passes will run. Zero means the resolve renders straight into the real display target as it always did;
+	otherwise it renders into scratch 0 and the chain hands the image along until the last pass lands it back on
+	the real target. Runs at EXECUTE time, so m_Fsr3RanThisFrame (set by the FSR pass, which is scheduled
+	earlier) is already final. */
+void D3D12GraphicsEngine::PlanDisplayChain() {
+	m_DisplaySlot = -1;
+	m_DisplayChainRemaining = 0;
+	m_DisplayChainSrc = -1;
+	if ( !m_LdrCopyReady ) return;
+
+	int passes = 0;
+	if ( WillRunSMAA() ) ++passes;
+	if ( WillRunSharpen() ) ++passes;
+	if ( WillRunUnderwaterFX() ) ++passes;
+	if ( passes == 0 ) return;
+
+	m_DisplayChainRemaining = passes;
+	m_DisplaySlot = 0;
+}
+
+/** Opens one chain step: transitions the current image to shader-read and hands back the slot to render into —
+	the other scratch, or the real display target when this is the last step. */
+D3D12GraphicsEngine::DisplayChainStep D3D12GraphicsEngine::BeginDisplayChainStep( D3D12CmdList& cmdList ) {
+	DisplayChainStep step;
+	if ( m_DisplaySlot < 0 || !m_LdrCopyReady ) return step;   // not in a chain — caller skips its work
+
+	const int src = m_DisplaySlot;
+	const int dst = ( m_DisplayChainRemaining <= 1 ) ? -1 : ( 1 - src );
+
+	step.SrcSrvSlot = m_LdrScratchSrvSlot[src];
+	step.Dst = ( dst < 0 ) ? RealDisplayTarget() : m_LdrScratch[dst].Get();
+	step.DstRtv = ( dst < 0 ) ? RealDisplayRtv() : m_LdrScratchRtv[dst];
+
+	cmdList.TransitionBarrier( m_LdrScratch[src].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, kDisplayChainReadState );
+	m_DisplayChainSrc = src;
+	m_DisplaySlot = dst;
+	--m_DisplayChainRemaining;
+	return step;
+}
+
+/** Closes the step opened above: the source scratch goes back to its RENDER_TARGET resting state so it can be
+	the next step's destination. Safe to call when no step is open. */
+void D3D12GraphicsEngine::EndDisplayChainStep( D3D12CmdList& cmdList ) {
+	if ( m_DisplayChainSrc < 0 ) return;
+	cmdList.TransitionBarrier( m_LdrScratch[m_DisplayChainSrc].Get(), kDisplayChainReadState, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_DisplayChainSrc = -1;
+}
+
+/** Closes the chain. Normally a no-op: the last step already rendered into the real display target. It only
+	does anything if a pass PlanDisplayChain counted did not actually run, which would otherwise strand the
+	frame in a scratch that the 2D UI, ImGui and the gamma pass know nothing about. */
+void D3D12GraphicsEngine::FinishDisplayChain( D3D12CmdList& cmdList ) {
+	m_DisplayChainRemaining = 0;
+	EndDisplayChainStep( cmdList );
+	if ( m_DisplaySlot < 0 ) return;
+
+	ID3D12Resource* src = m_LdrScratch[m_DisplaySlot].Get();
+	ID3D12Resource* dst = RealDisplayTarget();
+	m_DisplaySlot = -1;
+	if ( !src || !dst ) return;
+	LogWarn() << "D3D12: a display-chain pass did not run after being counted; copying the frame back.";
+	cmdList.TransitionBarriers( {
+		{ src, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE },
+		{ dst, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST },
+		} );
+	cmdList.CopyResource( dst, src );
+	cmdList.TransitionBarriers( {
+		{ src, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+		{ dst, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET },
+		} );
 }
 
 
@@ -1330,6 +1420,9 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		m_SceneColorInPixelState = true;
 	}
+
+	// Decides whether this lands in the real display target or opens the display chain in scratch 0.
+	PlanDisplayChain();
 
 	D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 	m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );   // no depth for the fullscreen resolve
@@ -1799,7 +1892,7 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     own resources); the underwater pair is lazily built, so it is only re-sized here if it is already up. */
 void D3D12GraphicsEngine::CreateDisplayResolutionTargets( INT2 displaySize ) {
     ReleaseFsr3();                          // display size is half of the pair the FFX context is built for
-    CreateLdrCopyResource( displaySize );   // shared LDR scratch for SMAA/sharpen; both no-op without it
+    CreateLdrCopyResource( displaySize );   // display-chain scratches; SMAA/sharpen/underwater no-op without them
     // SMAA's edges/blend and the underwater blur pair no longer need a resize hook — both are
     // D3D12RenderGraph-managed transients acquired fresh at the current resolution every call (see
     // D3D12PostFX.cpp's RenderSMAA / D3D12Underwater.cpp's DrawUnderwaterEffects).
@@ -1887,12 +1980,13 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // RTV descriptor heap: kBackBufferMax backbuffer slots (reserved at the compile-time max regardless of
     // the actually configured kBackBufferCount, so every fixed offset below stays stable) + 1 for the HDR
-    // scene-color target (slot kBackBufferMax) + 2 for the SMAA edge/blend intermediates (slots
-    // kBackBufferMax+1 / +2) + 1 for the HDR display composite target (slot kBackBufferMax+3; only
-    // populated when real HDR output is active) + 2 for the motion-vector / octahedral-normal G-buffer the
-    // depth prepass writes (slots +4 / +5, D3D12Motion.cpp).
+    // scene-color target (slot kBackBufferMax) + 2 that USED to be the SMAA edge/blend intermediates and are
+    // now unused (slots kBackBufferMax+1 / +2 — both are graph transients with their own RTVs) + 1 for the
+    // HDR display composite target (slot kBackBufferMax+3; only populated when real HDR output is active)
+    // + 2 for the motion-vector / octahedral-normal G-buffer the depth prepass writes (slots +4 / +5,
+    // D3D12Motion.cpp) + 2 for the LDR display-chain scratches (slots +6 / +7, D3D12PostFX.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferMax + 6;
+    rtvHeapDesc.NumDescriptors = kBackBufferMax + 8;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )
@@ -1964,6 +2058,12 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         && ( m_NewResolution.x != m_BackbufferResolution.x || m_NewResolution.y != m_BackbufferResolution.y ) ) {
         OnResize( m_NewResolution );
     }
+
+    // The display chain lives entirely inside the post-FX block; reset it here so an abnormally ended frame
+    // (a resize, a failed present) can never leave GetDisplayTarget() pointing at a scratch.
+    m_DisplaySlot = -1;
+    m_DisplayChainRemaining = 0;
+    m_DisplayChainSrc = -1;
 
     // Same spot, same reasoning, for a render-scale change (ImGui slider / ini).
     ApplyPendingResolutionScale();
