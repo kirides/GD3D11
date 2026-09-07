@@ -99,13 +99,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
             TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Light Culling" );
-            // CopyDepthStencil so depth can be read as SRV
-            engine.CopyDepthStencil();
-
             auto* tiledDeferred = engine.GetShadowMaps()->GetTiledDeferred();
             if ( tiledDeferred ) {
-                tiledDeferred->CullLights(
-                    engine.GetFrameLights(), *engine.GetDepthBufferCopy() );
+                tiledDeferred->CullLights( engine.GetFrameLights() );
             }
         };
     } );
@@ -157,9 +153,8 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
                 engine.BindDynamicCBToPixelShader( 0, engine.AllocateDynamicCB( &scb, sizeof( scb ) ) );
 
-                // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
-                auto* depthCopy = engine.GetDepthBufferCopy();
-                ID3D11ShaderResourceView* depthSRV = depthCopy ? depthCopy->GetShaderResView().Get() : nullptr;
+                // Depth at t2. No DSV is bound here, so this reads the live depth buffer.
+                ID3D11ShaderResourceView* depthSRV = engine.AcquireDepthReadSRV();
                 context->PSSetShaderResources( 2, 1, &depthSRV );
 
                 // Bind CSM shadow map at t3 and comparison sampler at s2

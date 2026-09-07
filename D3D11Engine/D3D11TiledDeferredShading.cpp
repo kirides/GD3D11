@@ -352,14 +352,14 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy ) {
+    ID3D11ShaderResourceView* depthSRV ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "TiledPointlightLights" ) );
     auto& context = graphicsEngine->GetContext();
 
     // ---- Pass 1: Pack lights + cull ----
-    auto cullResult = CullLights( lights, depthCopy );
+    auto cullResult = CullLights( lights );
 
     INT2 resolution = Engine::GraphicsEngine->GetResolution();
     uint32_t numTilesX = (resolution.x + TILE_SIZE - 1) / TILE_SIZE;
@@ -385,7 +385,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             // Only the tiled dispatch is broken - the lights that already fall back still get drawn.
             if ( !cullResult.LegacyLights.empty() ) {
                 D3D11LegacyDeferredShading legacy;
-                legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthCopy );
+                legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthSRV );
             }
             return XR_SUCCESS;
         }
@@ -424,7 +424,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // Bind GBuffer SRVs to CS
         context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );
         context->CSSetShaderResources( 1, 1, normals.GetShaderResView().GetAddressOf() );
-        context->CSSetShaderResources( 2, 1, depthCopy.GetShaderResView().GetAddressOf() );
+        context->CSSetShaderResources( 2, 1, &depthSRV );
         context->CSSetShaderResources( 7, 1, specular.GetShaderResView().GetAddressOf() );
 
         // Bind linear sampler to CS slot 0 (required for GBuffer SampleLevel calls)
@@ -471,23 +471,22 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         context->CSSetShaderResources( 0, 14, nullSRVs ); // t0-t13
         context->CSSetShader( nullptr, nullptr, 0 );
 
-        // Restore HDR as RTV
+        // Restore HDR as RTV. Read-only DSV, since depthSRV may be the live depth buffer.
         context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
-            graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
+            graphicsEngine->GetDepthReadOnlyDSV() );
     }
 
     // Draw lights that couldn't go through the tiled path (mismatched shadow cube size, overflow)
     if ( !cullResult.LegacyLights.empty() ) {
         D3D11LegacyDeferredShading legacy;
-        legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthCopy );
+        legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthSRV );
     }
 
     return XR_SUCCESS;
 }
 
 D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
-    std::vector<VobLightInfo*>& lights,
-    RenderToTextureBuffer& depthCopy ) {
+    std::vector<VobLightInfo*>& lights ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "CullLights" ) );

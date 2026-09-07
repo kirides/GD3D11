@@ -236,6 +236,14 @@ public:
     /** Returns the HDRBackbuffer for regular geometry and effects */
     RenderToTextureBuffer& GetHDRBackBuffer() const { return *HDRBackBuffer; }
 
+    /** The ping-pong partner of the HDR scene target: same desc, currently holding nothing anyone reads.
+        Render a scene-in/scene-out pass into this and call SwapHDRBackBuffer() instead of copying the
+        scene aside first. Null on devices where it couldn't be created. */
+    RenderToTextureBuffer* GetHDRBackBufferSwap() const { return HDRBackBufferSwap.get(); }
+
+    /** Makes GetHDRBackBufferSwap() the scene target and the old scene the partner. */
+    void SwapHDRBackBuffer();
+
     /** MSAA resources for the Forward+ renderer's opaque geometry pass (null/1 sample when MSAA is off or Deferred is active) */
     RenderToTextureBuffer* GetMSAAColorBuffer() const { return MSAAColorBuffer.get(); }
     RenderToDepthStencilBuffer* GetMSAADepthBuffer() const { return MSAADepthStencilBuffer.get(); }
@@ -381,6 +389,14 @@ public:
 
     /** Copies the depth stencil buffer to DepthStencilBufferCopy */
     void CopyDepthStencil();
+
+    /** Depth SRV for a pass that only reads depth. Returns the live buffer's SRV when a read-only DSV
+        exists, otherwise refreshes DepthStencilBufferCopy and returns that - so the full-res copy is
+        only paid for on devices that can't bind depth read-only. */
+    ID3D11ShaderResourceView* AcquireDepthReadSRV();
+
+    /** DSV to bind while AcquireDepthReadSRV()'s result is bound as an SRV. Depth writes must be off. */
+    ID3D11DepthStencilView* GetDepthReadOnlyDSV() const;
 
     /** Adds a pass that fills an R8_UNORM screen-space AO mask (HBAO+/ASSAO/SAO per AoMode),
         white-cleared so it reads as "no occlusion" when AO is disabled. The mask is later
@@ -539,6 +555,12 @@ protected:
     /** Swapchain buffers */
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackbufferRTV;
     std::unique_ptr<RenderToTextureBuffer> DepthStencilBufferCopy;
+    std::unique_ptr<RenderToTextureBuffer> HDRBackBufferSwap;
+
+    /** The render graph currently executing, if any, plus the handle HDRBackBuffer was imported under -
+        SwapHDRBackBuffer() repoints that import. Both only valid inside OnStartWorldRendering. */
+    class RenderGraph* m_ActiveGraph = nullptr;
+    RGResourceHandle m_BackBufferHandle = 0;
     // DummyShadowCubemapTexture moved into ShadowMaps
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
 

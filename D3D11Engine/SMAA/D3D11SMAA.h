@@ -38,7 +38,8 @@ public:
     // Main Render Function
     // inputSRV: The scene color texture (Gamma space usually required for Luma Edge Detect)
     // outputRTV: Where the anti-aliased image will be written
-    void Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetView* outputRTV, TexturePool* pool);
+    /** False when nothing ran (no size yet, or Init failed) - outputRTV is then untouched. */
+    bool Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetView* outputRTV, TexturePool* pool);
     void ReleaseResources();
 
 private:

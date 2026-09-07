@@ -149,7 +149,7 @@ public:
     XRESULT DrawWorldShadow();
     XRESULT DrawRainShadowmap();
     XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                                 & specular, RenderToTextureBuffer& depthCopy);
+                                 & specular, ID3D11ShaderResourceView* depthSRV);
 
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
@@ -157,7 +157,7 @@ public:
     XRESULT DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV = nullptr );
     DS_ScreenQuadConstantBuffer FillSunCSMConstantBuffer() const;
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                         & specular, RenderToTextureBuffer& depthCopy, ID3D11ShaderResourceView* aoMaskSRV = nullptr);
+                         & specular, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* aoMaskSRV = nullptr);
 
     D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 

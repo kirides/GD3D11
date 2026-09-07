@@ -57,13 +57,8 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
         TexturePool::Description{ resolution.x / 4, resolution.y / 4, bbufferFormat } );
 	CreateBloom( lum, tempBufferDs4_1.get(), backbuffer, resolution );
 
-    auto tempBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ resolution.x, resolution.y, bbufferFormat } );
-	// Copy the original image to our temp-buffer
-    FxRenderer->CopyTextureToRTV( backbuffer, tempBuffer->GetRenderTargetView(), resolution );
-
-    // Bind scene and luminance
-    tempBuffer->BindToPixelShader( engine->GetContext().Get(), 0 );
+    // The scene goes in at t0 directly: output is always the LDR target, never the HDR scene the
+    // tonemap reads, so there is nothing to copy aside.
     lum->BindToPixelShader( engine->GetContext().Get(), 1 );
 
     // Bind bloom
@@ -80,7 +75,7 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
     hcb.HDR_BloomStrength = Engine::GAPI->GetRendererState().RendererSettings.BloomStrength;
     hps->UpdateBuffer("HDR_Settings", &hcb, sizeof(hcb));
 
-    FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), output, resolution, true );
+    FxRenderer->CopyTextureToRTV( backbuffer, output, resolution, true );
 
 	// Show lumBuffer
 	//FxRenderer->CopyTextureToRTV(currentLum->GetShaderResView(), oldRTV, INT2(LUM_SIZE,LUM_SIZE), false);

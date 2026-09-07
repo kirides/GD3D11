@@ -11,9 +11,9 @@ public:
     XRESULT Init();
 
     /** Renders the HBAO-Effect onto the given RTV */
-    XRESULT Render(const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& pOutputColorRTV, const Microsoft::WRL::ComPtr<
-                   ID3D11ShaderResourceView>
-                   & pFullResDepthTexSRV, const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV);
+    XRESULT Render(const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& pOutputColorRTV,
+                   ID3D11ShaderResourceView* pFullResDepthTexSRV,
+                   const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV);
 
     void ReleaseResources();
 private:

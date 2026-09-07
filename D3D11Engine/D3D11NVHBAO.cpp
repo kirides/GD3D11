@@ -33,7 +33,7 @@ XRESULT D3D11NVHBAO::Init() {
 /** Renders the HBAO-Effect onto the given RTV */
 XRESULT D3D11NVHBAO::Render( 
     const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& pOutputColorRTV,
-    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV,
+    ID3D11ShaderResourceView* pFullResDepthTexSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV
     ) {
     
@@ -54,7 +54,7 @@ XRESULT D3D11NVHBAO::Render(
 
     GFSDK_SSAO_InputData_D3D11 Input;
     Input.DepthData.DepthTextureType = GFSDK_SSAO_HARDWARE_DEPTHS;
-    Input.DepthData.pFullResDepthTextureSRV = pFullResDepthTexSRV.Get();
+    Input.DepthData.pFullResDepthTextureSRV = pFullResDepthTexSRV;
     Input.DepthData.ProjectionMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&Engine::GAPI->GetProjectionMatrix()) );
     Input.DepthData.ProjectionMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
     Input.DepthData.MetersToViewSpaceUnits = settings.MetersToViewSpaceUnits;

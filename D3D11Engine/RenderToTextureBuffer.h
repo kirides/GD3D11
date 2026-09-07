@@ -280,6 +280,16 @@ struct RenderToDepthStencilBuffer {
 
         LE( device->CreateDepthStencilView( Texture.Get(), &DescDSV, DepthStencilView.GetAddressOf() ) );
 
+        // Read-only DSV: lets a pass depth-test against this buffer while sampling it as an SRV, which is
+        // what makes the full-res depth copy unnecessary. Needs feature level 11_0, so it may stay null.
+        {
+            D3D11_DEPTH_STENCIL_VIEW_DESC DescRO = DescDSV;
+            DescRO.Flags = D3D11_DSV_READ_ONLY_DEPTH;
+            if ( DescRO.Format == DXGI_FORMAT_D24_UNORM_S8_UINT || DescRO.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT )
+                DescRO.Flags |= D3D11_DSV_READ_ONLY_STENCIL;
+            device->CreateDepthStencilView( Texture.Get(), &DescRO, DepthStencilViewReadOnly.GetAddressOf() );
+        }
+
         if ( arraySize > 1 ) {
             // Create the one-face render target views
             DescDSV.Texture2DArray.ArraySize = 1;
@@ -328,6 +338,8 @@ struct RenderToDepthStencilBuffer {
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& GetTexture() const { return Texture; }
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetShaderResView() const { return ShaderResView; }
     const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetDepthStencilView() const { return DepthStencilView; }
+    /** Null when the device couldn't provide one; callers must fall back to a depth copy then. */
+    const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetDepthStencilViewReadOnly() const { return DepthStencilViewReadOnly; }
     UINT GetSizeX() const { return SizeX; }
     UINT GetSizeY() const { return SizeY; }
     UINT GetSampleCount() const { return SampleCount; }
@@ -350,6 +362,7 @@ private:
     // Shader and rendertarget resource views
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ShaderResView;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> DepthStencilView;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> DepthStencilViewReadOnly;
 
     // Rendertargets for the cubemap-faces, if this is a cubemap
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> CubeMapDSVs[6];

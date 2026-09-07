@@ -293,14 +293,15 @@ Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> D3D11PFX_TAA::GetVelocityBuffer
 // The resolve: reads the scene colour + velocity + both depth buffers + last frame's history, writes this
 // frame's history via the compute UAV, then copies the result back over the scene colour (renderTarget) so the
 // pass stays transparent to bloom/HDR/tonemap downstream. Direct counterpart of D3D12GraphicsEngine::RenderTAA.
-void D3D11PFX_TAA::RenderPostFX(
+bool D3D11PFX_TAA::RenderPostFX(
     RenderToTextureBuffer& renderTarget,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
-    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV) {
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV,
+    ID3D11UnorderedAccessView* sceneOutUAV) {
 
     if (m_recreate) {
         if (!Init()) {
-            return;
+            return false;
         }
         m_recreate = false;
     }
@@ -372,21 +373,25 @@ void D3D11PFX_TAA::RenderPostFX(
     ID3D11SamplerState* samplers[2] = { m_samplerLinear.Get(), m_samplerPoint.Get() };
     context->CSSetSamplers( 0, 2, samplers );
 
-    context->CSSetUnorderedAccessViews( 0, 1, m_HistoryBuffer[writeIdx]->GetUnorderedAccessView().GetAddressOf(), nullptr );
+    // u0 = next frame's history, u1 = the scene the rest of the frame reads. Writing both here is what
+    // removes the copy back; u1 is the ping-pong partner, never renderTarget (bound as t0 below).
+    ID3D11UnorderedAccessView* uavs[2] = { m_HistoryBuffer[writeIdx]->GetUnorderedAccessView().Get(), sceneOutUAV };
+    context->CSSetUnorderedAccessViews( 0, 2, uavs, nullptr );
 
     context->Dispatch( ( m_Width + 7 ) / 8, ( m_Height + 7 ) / 8, 1 );
 
-    // Unbind: the write target becomes a CopyResource source next, and the read SRVs may be rebound elsewhere.
-    ID3D11UnorderedAccessView* nullUAV = nullptr;
-    context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+    // Unbind: the write targets are read right after, and the read SRVs may be rebound elsewhere.
+    ID3D11UnorderedAccessView* nullUAVs[2] = {};
+    context->CSSetUnorderedAccessViews( 0, 2, nullUAVs, nullptr );
     ID3D11ShaderResourceView* nullSRVs[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
     context->CSSetShaderResources( 0, 5, nullSRVs );
     context->CSSetShader( nullptr, nullptr, 0 );
 
-    // Hand the result back to the scene colour for bloom/tonemap. Both are the backbuffer format, so this is a
-    // straight CopyResource; nothing downstream reads scene-colour alpha, which now carries the TAA confidence
-    // weight instead.
-    context->CopyResource( renderTarget.GetTexture().Get(), m_HistoryBuffer[writeIdx]->GetTexture().Get() );
+    // No ping-pong partner: hand the result back to the scene colour by copy instead. Both are the backbuffer
+    // format. Nothing downstream reads scene-colour alpha, which now carries the TAA confidence weight.
+    if ( !sceneOutUAV ) {
+        context->CopyResource( renderTarget.GetTexture().Get(), m_HistoryBuffer[writeIdx]->GetTexture().Get() );
+    }
 
     // Snapshot this frame's depth for the NEXT frame's disocclusion test. Must be our own copy rather than
     // DepthStencilBufferCopy: that buffer is refilled with THIS frame's depth later in the frame (for
@@ -401,4 +406,5 @@ void D3D11PFX_TAA::RenderPostFX(
     m_HistoryIndex = readIdx;   // ping-pong
     m_HistoryValid = true;
     m_FirstFrame = false;
+    return true;
 }

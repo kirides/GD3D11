@@ -13,5 +13,5 @@ public:
         RenderToTextureBuffer& color,
         RenderToTextureBuffer& normals,
         RenderToTextureBuffer& specular,
-        RenderToTextureBuffer& depthCopy );
+        ID3D11ShaderResourceView* depthSRV );
 };

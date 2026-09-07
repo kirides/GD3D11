@@ -960,10 +960,45 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 /** Reset BackBuffer */
 void D3D11GraphicsEngine::OnResetBackBuffer() {
     auto res = GetResolution();
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
-        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0));
+    const UINT bind = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
+        | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0);
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, bind );
     SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
     SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
+
+    // Ping-pong partner for the HDR scene: identical desc, so SwapHDRBackBuffer() can hand either one to
+    // every consumer. Lets a full-screen pass that reads the scene and writes it render into the partner
+    // and swap, instead of copying the scene aside first (particles, SMAA, the TAA resolve).
+    HDRBackBufferSwap = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, bind );
+    if ( !HDRBackBufferSwap->GetTexture() ) {
+        // Out of address space for a second full-res HDR target: every ping-pong site falls back to its
+        // old scratch-and-copy path, so drop the half-built object rather than hand out null views.
+        LogWarn() << "Could not create the HDR ping-pong buffer - scene-in/scene-out passes will copy instead.";
+        HDRBackBufferSwap.reset();
+        return;
+    }
+    SetDebugName( HDRBackBufferSwap->GetShaderResView().Get(), "BackbufferSwap->ShaderResourceView" );
+    SetDebugName( HDRBackBufferSwap->GetRenderTargetView().Get(), "BackbufferSwap->RenderTargetView" );
+}
+
+/** Makes the ping-pong partner the scene target. Every consumer resolves HDRBackBuffer at call time, so
+    the only thing that needs telling is the render graph's imported handle. */
+void D3D11GraphicsEngine::SwapHDRBackBuffer() {
+    if ( !HDRBackBufferSwap ) return;
+
+    // If the old scene is still the bound render target, the binding has to follow the swap - otherwise
+    // the next draw lands in the buffer nobody reads any more.
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> boundRTV;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> boundDSV;
+    GetContext()->OMGetRenderTargets( 1, boundRTV.GetAddressOf(), boundDSV.GetAddressOf() );
+    const bool sceneWasBound = boundRTV.Get() == HDRBackBuffer->GetRenderTargetView().Get();
+
+    HDRBackBuffer.swap( HDRBackBufferSwap );
+    if ( m_ActiveGraph ) m_ActiveGraph->UpdateImportedResource( m_BackBufferHandle, HDRBackBuffer.get() );
+
+    if ( sceneWasBound ) {
+        GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), boundDSV.Get() );
+    }
 }
 
 /** Get BackBuffer Format */
@@ -4049,6 +4084,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // TODO: Replace global Resources with RenderGraph resource
     RGResourceHandle backBufferHandle = graph.ImportResource( L"BackBuffer", HDRBackBuffer.get() );
+    // Published so SwapHDRBackBuffer() can repoint the import. Scoped to this function so no path can
+    // leave a dangling pointer to the stack-local graph behind.
+    struct ActiveGraphScope {
+        D3D11GraphicsEngine* Engine;
+        ~ActiveGraphScope() { Engine->m_ActiveGraph = nullptr; }
+    } activeGraphScope{ this };
+    m_ActiveGraph = &graph;
+    m_BackBufferHandle = backBufferHandle;
     RGResourceHandle velocityBufferHandle = graph.ImportResource( L"VelocityBuffer", VelocityBuffer.get() );
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_WORLD;
@@ -4476,16 +4519,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
                 auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
-                // Copy backbuffer to a temp texture — we need to read it as SRV while writing to RTV
-                auto tempBuffer = PfxRenderer->GetTempBuffer();
-                GetContext()->CopyResource( tempBuffer->GetTexture().Get(), backBuffer->GetTexture().Get() );
-
-                // Gather SRVs for composition (AO is applied in the lighting pass now)
+                // Blended in place - no scene copy. (AO is applied in the lighting pass now.)
                 ID3D11ShaderResourceView* depthSRV = compositionHeightFog ? GetDepthBuffer()->GetShaderResView().Get() : nullptr;
 
                 PfxRenderer->RenderPostFXComposition(
                     backBuffer->GetRenderTargetView().Get(),
-                    tempBuffer->GetShaderResView().Get(),
                     nullptr,
                     compositionGodRaysSRV,
                     depthSRV );
@@ -4531,9 +4569,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render TAA" );
 
                 auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
-                PfxRenderer->RenderTAA( rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
-                    ? nullptr
-                    : velocityBufferTex->GetShaderResView() );
+                // The resolve writes the ping-pong partner directly (it can't write the scene it gathers
+                // from), then the partner becomes the scene. Without one it copies back instead.
+                RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap();
+                ID3D11UnorderedAccessView* sceneOutUAV = swapTarget ? swapTarget->GetUnorderedAccessView().Get() : nullptr;
+                const bool resolved = XR_SUCCESS == PfxRenderer->RenderTAA(
+                    rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
+                        ? nullptr
+                        : velocityBufferTex->GetShaderResView(), sceneOutUAV );
+                // Only swap when the dispatch actually wrote the partner.
+                if ( sceneOutUAV && resolved ) SwapHDRBackBuffer();
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         } );
@@ -4551,7 +4596,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render SMAA" );
                 auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                PfxRenderer->RenderSMAA(backbufferTex->GetShaderResView().Get());
+                // Resolve into the ping-pong partner and make it the scene; only a device without one
+                // pays for the scratch and the copy back.
+                RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap();
+                const bool resolved = XR_SUCCESS == PfxRenderer->RenderSMAA(
+                    backbufferTex->GetShaderResView().Get(),
+                    swapTarget ? swapTarget->GetRenderTargetView().Get() : nullptr );
+                // Only swap when SMAA actually wrote the partner.
+                if ( swapTarget && resolved ) SwapHDRBackBuffer();
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         } );
@@ -4609,7 +4661,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         //   - scaled but no FSR upscaler  -> bilinear (re)scale HDRBackBuffer into UpscaledHDRBuffer
         //   - 100% and no upscaling       -> operate directly on the render-res HDRBackBuffer
         const bool scaled = rendererState.RendererSettings.ResolutionScalePercent != 100;
-        RenderToTextureBuffer* sceneHDR = (isUpscaling || scaled) ? UpscaledHDRBuffer.get() : HDRBackBuffer.get();
+        // Resolved per pass at EXECUTE time, not captured here: TAA/SMAA/particles can swap the HDR scene
+        // target after this line runs but before any of the passes below do.
+        const bool sceneIsUpscaled = isUpscaling || scaled;
+        auto sceneHDRAt = [this, sceneIsUpscaled]() {
+            return sceneIsUpscaled ? UpscaledHDRBuffer.get() : HDRBackBuffer.get();
+        };
 
         if ( !isUpscaling && scaled ) {
             graph.AddPass( RG_PASS_NAME("Scale into HDR buffer"), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -4631,8 +4688,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDRAt](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw DepthOfField" );
+                    RenderToTextureBuffer* sceneHDR = sceneHDRAt();
                     // Depth is render-resolution; DoF samples it with normalized UVs.
                     PfxRenderer->RenderDepthOfField(
                         sceneHDR->GetRenderTargetView().Get(),
@@ -4648,7 +4706,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDRAt](const RenderGraph&) {
+                    RenderToTextureBuffer* sceneHDR = sceneHDRAt();
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render Bloom" );
                     PfxRenderer->RenderBloom( sceneHDR->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
                 };
@@ -4680,8 +4739,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR, ldrTarget, sharpenSrc](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDRAt, ldrTarget, sharpenSrc](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render HDR" );
+                    RenderToTextureBuffer* sceneHDR = sceneHDRAt();
                     PfxRenderer->RenderHDR( ldrTarget->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
                 };
             } );
@@ -4690,8 +4750,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR, ldrTarget, sharpenSrc](const RenderGraph&) {
-                    PfxRenderer->CopyTextureToRTV( sceneHDR->GetShaderResView(), ldrTarget->GetRenderTargetView(), GetBackbufferResolution() );
+                pass.m_executeCallback = [this, sceneHDRAt, ldrTarget, sharpenSrc](const RenderGraph&) {
+                    PfxRenderer->CopyTextureToRTV( sceneHDRAt()->GetShaderResView(), ldrTarget->GetRenderTargetView(), GetBackbufferResolution() );
                 };
             } );
         }
@@ -5648,13 +5708,18 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     SetDefaultStates();
 
-    auto tempBuffer = PfxRenderer->GetTempBuffer();
-
-    // Copy backbuffer
-    PfxRenderer->CopyTextureToRTV(
-        HDRBackBuffer->GetShaderResView(),
-        tempBuffer->GetRenderTargetView(),
-        GetResolution() );
+    // Scene behind the water surfaces. The refraction pass reads this while the water draws blended onto
+    // the scene, so a copy is unavoidable here - but the ping-pong partner is idle scratch at this point,
+    // which saves keeping a second full-res HDR texture alive in the pool. Same desc, so it's a straight
+    // resource copy rather than a full-screen blit; the RTV has to come down first.
+    TextureHandle pooledScene;
+    RenderToTextureBuffer* sceneCopy = GetHDRBackBufferSwap();
+    if ( !sceneCopy ) {
+        pooledScene = PfxRenderer->GetTempBuffer();
+        sceneCopy = pooledScene.get();
+    }
+    GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
+    GetContext()->CopyResource( sceneCopy->GetTexture().Get(), HDRBackBuffer->GetTexture().Get() );
     CopyDepthStencil();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -5773,7 +5838,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
         // Bind copied backbuffer
         GetContext()->PSSetShaderResources(
-            5, 1, tempBuffer->GetShaderResView().GetAddressOf() );
+            5, 1, sceneCopy->GetShaderResView().GetAddressOf() );
 
         // Bind depth to the shader
         DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 2 );
@@ -9568,6 +9633,20 @@ void D3D11GraphicsEngine::CopyDepthStencil() {
     GetContext()->CopyResource( DepthStencilBufferCopy->GetTexture().Get(), DepthStencilBuffer->GetTexture().Get() );
 }
 
+ID3D11ShaderResourceView* D3D11GraphicsEngine::AcquireDepthReadSRV() {
+    if ( DepthStencilBuffer && DepthStencilBuffer->GetDepthStencilViewReadOnly() ) {
+        return DepthStencilBuffer->GetShaderResView().Get();
+    }
+    CopyDepthStencil();
+    return DepthStencilBufferCopy->GetShaderResView().Get();
+}
+
+ID3D11DepthStencilView* D3D11GraphicsEngine::GetDepthReadOnlyDSV() const {
+    if ( !DepthStencilBuffer ) return nullptr;
+    const auto& ro = DepthStencilBuffer->GetDepthStencilViewReadOnly();
+    return ro ? ro.Get() : DepthStencilBuffer->GetDepthStencilView().Get();
+}
+
 /** Resolves MSAADepthStencilBuffer (sample 0) into the single-sample DepthStencilBuffer via a
     fullscreen pixel shader writing SV_Depth. No-op when MSAA isn't active. */
 void D3D11GraphicsEngine::ResolveMSAADepth() {
@@ -9621,8 +9700,8 @@ RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& gr
             const auto& context = GetContext();
             auto res = GetResolution();
 
-            // Depth copy must reflect the current frame's depth prepass.
-            CopyDepthStencil();
+            // Depth is read as an SRV below, so it must not still be bound as the OM depth target.
+            context->OMSetRenderTargets( 0, nullptr, nullptr );
 
             auto* normalsTex = graph.GetPhysicalTexture( normalsHandle );
 
@@ -9636,7 +9715,7 @@ RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& gr
             cs->UpdateBuffer("AONormalsConstantBuffer", &cb, sizeof(cb));
 
             context->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            ID3D11ShaderResourceView* depthSRV = GetDepthBufferCopy()->GetShaderResView().Get();
+            ID3D11ShaderResourceView* depthSRV = AcquireDepthReadSRV();
             context->CSSetShaderResources( 0, 1, &depthSRV );
             context->CSSetUnorderedAccessViews( 0, 1, normalsTex->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
@@ -9668,8 +9747,8 @@ RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResou
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::AO Mask" );
             auto* aoTex = graph.GetPhysicalTexture( aoMask );
 
-            // Ensure the depth copy is current (deferred hasn't copied it yet at this point).
-            CopyDepthStencil();
+            // Depth is read as an SRV below, so it must not still be bound as the OM depth target.
+            GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
 
             // White-clear: "no occlusion" default. HBAO+/ASSAO modulate into this, and when
             // AO is disabled the mask stays white so the lighting multiply is a no-op.
@@ -9681,7 +9760,7 @@ RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResou
                 auto* n = graph.GetPhysicalTexture( normalsResource );
                 normalsSRV = n ? n->GetShaderResView().Get() : nullptr;
             }
-            const auto& depthSRV = GetDepthBufferCopy()->GetShaderResView();
+            ID3D11ShaderResourceView* depthSRV = AcquireDepthReadSRV();
 
             switch ( aoMode ) {
             case AOMode::AO_HBAO: {
@@ -9693,10 +9772,10 @@ RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResou
             case AOMode::AO_ASSAO:
                 // Null normals => ASSAO generates them from depth (depth-only fallback).
                 PfxRenderer->RenderASSAO( aoTex->GetRenderTargetView().Get(),
-                    depthSRV.Get(), depthOnlyNormals ? nullptr : normalsSRV );
+                    depthSRV, depthOnlyNormals ? nullptr : normalsSRV );
                 break;
             case AOMode::AO_SAO:
-                PfxRenderer->RenderSAOCompute( depthSRV.Get(), normalsSRV,
+                PfxRenderer->RenderSAOCompute( depthSRV, normalsSRV,
                     aoTex->GetUnorderedAccessView().Get(), depthOnlyNormals );
                 break;
             default:
@@ -10005,21 +10084,26 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     bufferParticleColor->BindToPixelShader( Context.Get(), 1 );
     bufferParticleDistortion->BindToPixelShader( Context.Get(), 2 );
 
-    // Copy scene behind the particle systems 
-    auto tempBuffer = PfxRenderer->GetTempBuffer();
-    PfxRenderer->CopyTextureToRTV(
-        HDRBackBuffer->GetShaderResView(),
-        tempBuffer->GetRenderTargetView(),
-        GetResolution() );
-
     SetActivePixelShader( PShaderID::PS_PFX_ApplyParticleDistortion );
     ActivePS->Apply();
 
-    // Copy it back, putting distortion behind it
-    PfxRenderer->CopyTextureToRTV(
-        tempBuffer->GetShaderResView(),
-        HDRBackBuffer->GetRenderTargetView(),
-        GetResolution(), true );
+    // The distortion samples the scene through a UV offset, so read and write can't be the same texture.
+    // Render into the ping-pong partner and make it the scene; only a device without one copies.
+    if ( RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap() ) {
+        PfxRenderer->CopyTextureToRTV(
+            HDRBackBuffer->GetShaderResView(),
+            swapTarget->GetRenderTargetView(),
+            GetResolution(), true );
+        SwapHDRBackBuffer();
+    } else {
+        auto tempBuffer = PfxRenderer->GetTempBuffer();
+        Context->OMSetRenderTargets( 0, nullptr, nullptr );
+        Context->CopyResource( tempBuffer->GetTexture().Get(), HDRBackBuffer->GetTexture().Get() );
+        PfxRenderer->CopyTextureToRTV(
+            tempBuffer->GetShaderResView(),
+            HDRBackBuffer->GetRenderTargetView(),
+            GetResolution(), true );
+    }
 
     GetContext()->PSSetShaderResources( 1, 2, s_nullSRVs );
 }

@@ -1167,15 +1167,15 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy
+    ID3D11ShaderResourceView* depthSRV
     ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     if ( m_TiledDeferred && settings.EnableTiledLighting ) {
-        return m_TiledDeferred->DrawPointlightLights( lights, color, normals, specular, depthCopy );
+        return m_TiledDeferred->DrawPointlightLights( lights, color, normals, specular, depthSRV );
     }
 
-    return m_LegacyDeferred.DrawPointlightLights( lights, color, normals, specular, depthCopy );
+    return m_LegacyDeferred.DrawPointlightLights( lights, color, normals, specular, depthSRV );
 }
 
 XRESULT D3D11ShadowMap::DrawLighting(
@@ -1183,7 +1183,7 @@ XRESULT D3D11ShadowMap::DrawLighting(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy,
+    ID3D11ShaderResourceView* depthSRV,
     ID3D11ShaderResourceView* aoMaskSRV) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -1203,7 +1203,7 @@ XRESULT D3D11ShadowMap::DrawLighting(
 
     Engine::GAPI->SetFarPlane(static_cast<float>(settings.SectionDrawRadius) * WORLD_SECTION_SIZE );
 
-    DrawPointlightLights(lights, color, normals, specular, depthCopy);
+    DrawPointlightLights(lights, color, normals, specular, depthSRV);
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         nullptr );
@@ -1211,7 +1211,7 @@ XRESULT D3D11ShadowMap::DrawLighting(
     ID3D11ShaderResourceView* srvs[3] = {
         color.GetShaderResView().Get(),
         normals.GetShaderResView().Get(),
-        depthCopy.GetShaderResView().Get(),
+        depthSRV,
     };
     m_context->PSSetShaderResources( 0, 3, srvs );
 
@@ -1219,6 +1219,10 @@ XRESULT D3D11ShadowMap::DrawLighting(
     m_context->PSSetShaderResources( 7, 1, srvs );
 
     DrawWorldLights( aoMaskSRV );
+
+    // depthSRV may be the live depth buffer, so it has to go before the writable DSV comes back.
+    ID3D11ShaderResourceView* nullSRVs[3] = {};
+    m_context->PSSetShaderResources( 0, 3, nullSRVs );
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );

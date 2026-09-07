@@ -85,7 +85,7 @@ public:
         RenderToTextureBuffer& color,
         RenderToTextureBuffer& normals,
         RenderToTextureBuffer& specular,
-        RenderToTextureBuffer& depthCopy );
+        ID3D11ShaderResourceView* depthSRV );
 
     /** Packs lights into the structured buffer and dispatches CS_LightCulling.
         After this call, GetLightBufferSRV/GetLightGridSRV
@@ -97,9 +97,8 @@ public:
         bool HasShadowedTiledLights = false;
         std::vector<VobLightInfo*> LegacyLights;
     };
-    CullResult CullLights(
-        std::vector<VobLightInfo*>& lights,
-        RenderToTextureBuffer& depthCopy );
+    /** Frustum-only cluster cull - takes no depth input, see the comment at its dispatch. */
+    CullResult CullLights( std::vector<VobLightInfo*>& lights );
 
     /** SRVs for reading culled light data in pixel shaders (valid after CullLights). */
     ID3D11ShaderResourceView* GetLightBufferSRV() const { return m_LightBufferSRV.Get(); }

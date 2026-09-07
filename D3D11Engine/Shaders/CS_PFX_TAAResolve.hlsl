@@ -95,6 +95,7 @@ Texture2D<float>  DepthTex    : register( t3 );  // R32_FLOAT reversed-Z depth (
 Texture2D<float>  PrevDepthTex: register( t4 );  // R32_FLOAT reversed-Z depth (previous frame)
 
 RWTexture2D<float4> OutTexture : register( u0 ); // becomes next frame's history
+RWTexture2D<float4> OutScene   : register( u1 ); // the scene colour downstream reads (unbound = ignored)
 
 SamplerState MinMagLinearMipPointClamp : register( s0 );
 SamplerState MinMagMipPointClamp       : register( s1 );
@@ -604,6 +605,7 @@ void CSMain( uint3 inDispatchIdx : SV_DispatchThreadID, uint3 inGroupID : SV_Gro
     }
 
     OutTexture[ inDispatchIdx.xy ] = float4( finalColour );
+    OutScene[ inDispatchIdx.xy ] = float4( finalColour );
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
