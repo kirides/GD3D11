@@ -728,7 +728,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         ? ResolvedDrawMultiIndexedInstancedIndirect
         : Stub_DrawMultiIndexedInstancedIndirect;
 
-    RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
+    RequiresNvidiaTiledShadowFaceFallback = false; // Do not enable by default
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
