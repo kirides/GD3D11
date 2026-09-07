@@ -15,8 +15,8 @@ void D3D12RenderQueue::PushStaticVob(VobInfo* vobInfo)
 {
     const auto it = vobInfo;
     VobInstanceInfo vii = {};
-    vii.world = it->WorldMatrix;
-    vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+    PackAffine3x4( vii.world, it->WorldMatrix );
+    PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
     vii.color = it->GroundColor;
     vii.windStrenth = 0.0f;
     vii.canBeAffectedByPlayer = 0;

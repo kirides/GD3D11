@@ -99,7 +99,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
 bool D3D12GraphicsEngine::CreateVobCullResources() {
     // VobCull.hlsl mirrors both of these as structured-buffer element types; a size change on either side
     // would silently mis-index every instance. Verified against `dxc -Fc` reflection (144 B / 32 B).
-    static_assert( sizeof( VobInstanceInfo ) == 144, "VobCull.hlsl's VobInstanceGpu mirrors VobInstanceInfo" );
+    static_assert( sizeof( VobInstanceInfo ) == 112, "VobCull.hlsl's VobInstanceGpu mirrors VobInstanceInfo" );
     static_assert( sizeof( VobCullVisual ) == 36, "VobCull.hlsl's VobCullVisual must match this layout" );
 
     m_VobCullReady = false;
@@ -187,7 +187,8 @@ bool D3D12GraphicsEngine::EvaluateGpuVobCulling() const {
     // dispatch), so it is evaluated ONCE per frame in OnStartWorldRendering and cached in m_GpuVobCullActive.
     if ( !Engine::GAPI->GetRendererState().RendererSettings.GpuVobCulling ) return false;
     if ( !m_VobCullReady || !m_VobIndirectCmdSig ) return false;
-    if ( !m_Pipelines.Cull.VobCullPSO || !m_Pipelines.Cull.VobCullRootSig ) return false;
+    if ( !m_Pipelines.Cull.VobCullPSO || !m_Pipelines.Cull.VobCullNoMotionPSO
+        || !m_Pipelines.Cull.VobCullRootSig ) return false;
     if ( !m_Pipelines.Cull.PatchPSO || !m_Pipelines.Cull.PatchRootSig ) return false;
     // The Hi-Z pipeline is only needed for the occlusion half; frustum-only culling still works without it
     // (CullVobsGPU passes EnableOcclusion=0), so a failed Hi-Z build must not disable culling wholesale.
@@ -360,7 +361,10 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     cb.LodDistance = m_VobLodDistance;
     cb.CamPosWS = Engine::GAPI->GetCameraPosition();
 
-    m_CmdList->SetPipelineState( m_Pipelines.Cull.VobCullPSO.Get() );
+    // The compacting cull strides the instance stream itself, so it must agree with VobInstanceStride().
+    const bool motion = MotionGBufferActive();
+    m_CmdList->SetPipelineState( motion ? m_Pipelines.Cull.VobCullPSO.Get()
+                                        : m_Pipelines.Cull.VobCullNoMotionPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
     m_CmdList->SetComputeRoot32BitConstants( 0, 27, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, m_VobCullVisuals[m_FrameIndex]->GetGPUVirtualAddress() );

@@ -37,12 +37,14 @@ struct VobCullVisual
 // in Vob.hlsl's VS, so the four float4s below are the matrix ROWS (see BuildWorldMatrix).
 struct VobInstanceGpu
 {
-    float4 World0, World1, World2, World3;
-    float4 PrevWorld0, PrevWorld1, PrevWorld2, PrevWorld3;
+    float4 World0, World1, World2;      // VobInstanceInfo::world — 3 rows, the (0,0,0,1) row dropped
     uint   Color;
     float  WindStrength;
     float  CanBeAffectedByPlayer;
     uint   GPSlot;
+#if !VOB_NO_MOTION
+    float4 PrevWorld0, PrevWorld1, PrevWorld2;   // last: the no-motion upload stops before it
+#endif
 };
 
 //--------------------------------------------------------------------------------------
@@ -69,11 +71,11 @@ StructuredBuffer<VobInstanceGpu>   InInstances   : register( t1 );
 RWStructuredBuffer<VobInstanceGpu> OutInstances  : register( u0 );
 RWStructuredBuffer<uint>           VisibleCounts : register( u1 );
 
-float4x4 BuildWorldMatrix( VobInstanceGpu inst )
+float3x4 BuildWorldMatrix( VobInstanceGpu inst )
 {
-    // float4x4(a,b,c,d) fills ROWS, but Vob.hlsl reads the same bytes as a matrix vertex ATTRIBUTE, which
-    // HLSL fills one COLUMN per slot — so the constructor alone yields the transpose of the VS's matrix.
-    return transpose( float4x4( inst.World0, inst.World1, inst.World2, inst.World3 ) );
+    // The rows ARE the matrix now: mul(M, float4(p,1)) is the column-vector multiply the old
+    // transpose(float4x4(...)) plus a row-vector mul was performing. See Vob.hlsl's VobWorld.
+    return float3x4( inst.World0, inst.World1, inst.World2 );
 }
 
 bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
@@ -83,7 +85,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     if ( any( v.BBoxMin > v.BBoxMax ) )
         return true;
 
-    float4x4 wvp = mul( BuildWorldMatrix( inst ), CullViewProj );
+    const float3x4 world = BuildWorldMatrix( inst );
 
     // Frustum reject: a box is outside only when ALL EIGHT corners fall outside the SAME clip plane. (Testing
     // per-plane like this can keep a box that is outside the frustum but not outside any single plane — that
@@ -105,7 +107,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
             ( c & 2 ) ? v.BBoxMax.y : v.BBoxMin.y,
             ( c & 4 ) ? v.BBoxMax.z : v.BBoxMin.z );
 
-        float4 clip = mul( float4( corner, 1.0 ), wvp );
+        float4 clip = mul( float4( mul( world, float4( corner, 1.0 ) ), 1.0 ), CullViewProj );
 
         outNegX = outNegX && ( clip.x < -clip.w );
         outPosX = outPosX && ( clip.x >  clip.w );
@@ -200,7 +202,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 // Bbox centre, not the origin: Gothic vob pivots are often off the mesh entirely (a door's
                 // hinge, a banner's mount point).
                 const float3 centreLocal = ( v.BBoxMin + v.BBoxMax ) * 0.5;
-                const float3 centreWorld = mul( float4( centreLocal, 1.0 ), BuildWorldMatrix( inst ) ).xyz;
+                const float3 centreWorld = mul( BuildWorldMatrix( inst ), float4( centreLocal, 1.0 ) );
                 const float  dist  = distance(centreWorld, CullCamPosWS);
                 const float  splitDist = ( v.SplitMode == VOB_SPLIT_LOD ) ? LodDistance : 0.0;
                 isFar = ( splitDist > 0.0 ) && ( dist > splitDist );

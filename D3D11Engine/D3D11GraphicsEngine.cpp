@@ -3582,10 +3582,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     // Skipped entirely when reusing the Z-prepass' already-built batch list below.
                     if ( !reuseNodeAttachments ) {
                         NodeAttachmentInstanceData instData;
-                        instData.World = finalWorld;
-                        instData.PrevWorld = finalPrevWorld;
-                        instData.Color = modelColor;
-                        instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
+                        PackAffine3x4( instData.World, finalWorld );
+                        PackAffine3x4( instData.PrevWorld, finalPrevWorld );
+                        instData.ColorFlags = PackNodeAttachColorFlags( modelColor, vi->Vob == playerFocusVob );
 
                         // Any .MMS reaching here is out of morph range (the branch above took the rest),
                         // so it draws the shared rest mesh - its own copy still holds the deformation from
@@ -3651,7 +3650,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         return a.mesh < b.mesh;
                 } );
 
-            const unsigned int neededBytes = static_cast<unsigned int>(instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData ));
+            const unsigned int nodeInstStride = NodeAttachmentUploadStride();
+            const unsigned int neededBytes = static_cast<unsigned int>(instancedDrawItems.size() * nodeInstStride);
             FrameInstancingBufferPool& nodeAttachmentPool = isShadowPass
                 ? m_ShadowNodeAttachmentInstancingPool
                 : m_MainNodeAttachmentInstancingPool;
@@ -3675,7 +3675,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 return;
             }
 
-            auto* destData = reinterpret_cast<NodeAttachmentInstanceData*>(static_cast<byte*>(mappedData) + nodeAttachmentBufferOffset);
+            auto* destData = static_cast<byte*>(mappedData) + nodeAttachmentBufferOffset;
             unsigned int currentIdx = 0;
 
             for ( size_t i = 0; i < instancedDrawItems.size(); ) {
@@ -3695,7 +3695,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     // Some of them have needAlpha false, even though they share the same texture!
                     // thus we now just walk all batch items and assume if one needs alpha, all do.
                     needAlpha |= instancedDrawItems[i].needAlpha;
-                    destData[currentIdx] = instancedDrawItems[i].instanceData;
+                    // Strided: with TAA off the copy stops before PrevWorld (VERTEX_INPUT_LAYOUT_17).
+                    memcpy( destData + currentIdx * nodeInstStride, &instancedDrawItems[i].instanceData, nodeInstStride );
                     ++currentIdx;
                     ++i;
                 }
@@ -3739,7 +3740,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         // Bind instance buffer to slot 1 (persists across batches)
         UINT instOffset = nodeAttachmentBufferOffset;
-        UINT instStride = sizeof( NodeAttachmentInstanceData );
+        UINT instStride = NodeAttachmentUploadStride();
         Context->IASetVertexBuffers( 1, 1, nodeAttachmentBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
 
         wantShader = true;
@@ -7005,8 +7006,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             // process any vobs only visible in this cascade
             VobInstanceInfo vii = {};
-            vii.world = it->WorldMatrix;
-            vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+            PackAffine3x4( vii.world, it->WorldMatrix );
+            PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
@@ -7026,8 +7027,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVOBs" ) );
 
         const size_t shadowInstanceCount = vobs.empty() ? 1 : vobs.size();
+        const unsigned int vobInstStride = VobInstanceUploadStride();
         const unsigned int shadowInstancingBytes = static_cast<unsigned int>(
-            shadowInstanceCount * sizeof( VobInstanceInfo ));
+            shadowInstanceCount * vobInstStride );
         FrameInstancingAllocation shadowInstancingAlloc = AcquireFrameInstancingAllocation(
             m_ShadowVobInstancingPool, shadowInstancingBytes, "ShadowVobInstancingBuffer" );
         D3D11VertexBuffer* shadowInstancingBuffer = shadowInstancingAlloc.Buffer;
@@ -7078,8 +7080,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             UINT loc = 0;
             for ( auto const& staticMeshVisual : activeVisuals ) {
                 staticMeshVisual->StartInstanceNum = loc;
-                memcpy( data + shadowInstancingAlloc.OffsetInBytes + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
-                    sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
+                CopyVobInstances( data + shadowInstancingAlloc.OffsetInBytes + loc * vobInstStride,
+                    staticMeshVisual->Instances.data(), staticMeshVisual->Instances.size(), vobInstStride );
                 loc += staticMeshVisual->Instances.size();
             }
             shadowInstancingBuffer->Unmap();
@@ -7103,7 +7105,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         UINT dynOffset[] = { shadowInstancingAlloc.OffsetInBytes };
-        UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
+        UINT dynuStride[] = { vobInstStride };
 
         ID3D11Buffer* buffers[1] = {
             shadowInstancingBuffer->GetVertexBuffer().Get()
@@ -7627,8 +7629,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     totalInstances += static_cast<unsigned int>(cv.Instances.size());
                 }
 
-                const unsigned int requiredBytes = (totalInstances > 0 ? totalInstances : 1u)
-                    * static_cast<unsigned int>(sizeof( VobInstanceInfo ));
+                const unsigned int vobInstStride = VobInstanceUploadStride();
+                const unsigned int requiredBytes = (totalInstances > 0 ? totalInstances : 1u) * vobInstStride;
                 FrameInstancingAllocation mainInstancingAlloc = AcquireFrameInstancingAllocation( m_MainVobInstancingPool,
                     requiredBytes, "MainVobInstancingBuffer" );
                 instancingBuffer = mainInstancingAlloc.Buffer;
@@ -7643,9 +7645,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 if ( SUCCEEDED( instancingBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
                     reinterpret_cast<void**>(&data), &size ) ) ) {
                     for ( auto const& cv : cache.vobVisuals ) {
-                        memcpy( data + mainInstancingAlloc.OffsetInBytes + cv.StartInstanceNum * sizeof( VobInstanceInfo ),
-                            cv.Instances.data(),
-                            sizeof( VobInstanceInfo ) * cv.Instances.size() );
+                        CopyVobInstances( data + mainInstancingAlloc.OffsetInBytes + cv.StartInstanceNum * vobInstStride,
+                            cv.Instances.data(), cv.Instances.size(), vobInstStride );
                     }
                     instancingBuffer->Unmap();
                 } else {
@@ -7816,7 +7817,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
                             const uint32_t batchKey = TransparencyQueue::MakeBatchKey( meshKey.Material );
                             for ( size_t i = 0; i < alphaMesh.instances.size(); ++i ) {
-                                const XMFLOAT4X4& world = alphaMesh.instances[i].world;
+                                const Affine3x4& world = alphaMesh.instances[i].world;
                                 const XMFLOAT3 position( world._14, world._24, world._34 );
                                 queue.AddAlphaVob( TransparencyQueue::DistanceSqFromCamera( position ),
                                     batchIndex, static_cast<uint32_t>(i), batchKey );
@@ -7962,7 +7963,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     // Draw batch
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
-                        sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
+                        VobInstanceUploadStride(), cachedVisual->Instances.size(),
                         sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum, 0,
                         cache.MainVobInstancingBufferOffset );
                 }
@@ -8217,7 +8218,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
 
             // StartInstanceLocation is absolute in the shared instancing buffer
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
-                instancingBuffer, sizeof( VobInstanceInfo ),
+                instancingBuffer, VobInstanceUploadStride(),
                 instanceCount, sizeof( ExVertexStruct ),
                 alphaMesh.StartInstanceNum + first.InstanceIndex, 0,
                 m_FrameGeometryCache.MainVobInstancingBufferOffset );

@@ -94,6 +94,7 @@ void ShaderRegistry::Build() {
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObj>( "VS_ExInstancedObj.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_10_VS_ExInstancedObj )
+        .with_alt_layout( VERTEX_INPUT_LAYOUT_16_VS_ExInstancedObj_NoMotion )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -399,7 +400,8 @@ void ShaderRegistry::Build() {
         } ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeInstanced>( "VS_ExNodeInstanced.hlsl" )
-        .with_layout( VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced )
+        .with_alt_layout( VERTEX_INPUT_LAYOUT_17_VS_ExNodeInstanced_NoMotion ) );
 
     Shaders.push_back( ShaderInfo::make<GShaderID::GS_ParticleStreamOut>( "VS_AdvanceRain.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_13 ) );

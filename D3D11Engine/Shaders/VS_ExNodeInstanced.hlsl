@@ -22,9 +22,15 @@ struct VS_INPUT
 	float4 vDiffuse		: DIFFUSE;
 
 	// Per-instance data from vertex stream slot 1
-	float4x4 InstanceWorld     : INSTANCE_WORLD_MATRIX;
-	float4x4 InstancePrevWorld : INSTANCE_PREV_WORLD_MATRIX;
-	float4   InstanceColor     : INSTANCE_COLOR;
+	// NodeAttachmentInstanceData: World/PrevWorld are three rows each; ColorFlags packs RGB in bytes 0-2
+	// and flag bits in byte 3 (bit 7 = focus highlight).
+	float4 InstanceWorld0     : INSTANCE_WORLD_MATRIX0;
+	float4 InstanceWorld1     : INSTANCE_WORLD_MATRIX1;
+	float4 InstanceWorld2     : INSTANCE_WORLD_MATRIX2;
+	uint4  InstanceColorFlags : INSTANCE_COLOR;
+	float4 InstancePrevWorld0 : INSTANCE_PREV_WORLD_MATRIX0;
+	float4 InstancePrevWorld1 : INSTANCE_PREV_WORLD_MATRIX1;
+	float4 InstancePrevWorld2 : INSTANCE_PREV_WORLD_MATRIX2;
 };
 
 struct VS_OUTPUT
@@ -48,18 +54,21 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	VS_OUTPUT Output;
 	
 	// Non-MorphMesh: Fatness=0, Scaling=1
-	float3 positionWorld = mul(float4(Input.vPosition, 1), Input.InstanceWorld).xyz;
+	float3x4 nodeWorld = float3x4(Input.InstanceWorld0, Input.InstanceWorld1, Input.InstanceWorld2);
+	float3 positionWorld = mul(nodeWorld, float4(Input.vPosition, 1));
 	
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
-	Output.vDiffuse  = Input.InstanceColor;
-	Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(Input.InstanceWorld, frame.M_View));
+	// .w carried the 2.0 focus sentinel before the pack; regenerate it from the flag bit.
+	Output.vDiffuse  = float4(Input.InstanceColorFlags.rgb / 255.0,
+		(Input.InstanceColorFlags.a & 0x80) ? 2.0 : 0.0);
+	Output.vNormalVS = mul(mul((float3x3)nodeWorld, Input.vNormal), (float3x3)frame.M_View);
 	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View);
 	
 	// Motion Vectors - use UNJITTERED matrices for correct velocity
 	Output.vCurrClipPos = mul(float4(positionWorld, 1), frame.M_UnjitteredViewProj);
-	float3 prevPositionWorld = mul(float4(Input.vPosition, 1), Input.InstancePrevWorld).xyz;
+	float3 prevPositionWorld = mul(float3x4(Input.InstancePrevWorld0, Input.InstancePrevWorld1, Input.InstancePrevWorld2), float4(Input.vPosition, 1));
 	Output.vPrevClipPos = mul(float4(prevPositionWorld, 1), frame.M_PrevViewProj);
 	Output.vTangent = float4(0,0,0,0);
 

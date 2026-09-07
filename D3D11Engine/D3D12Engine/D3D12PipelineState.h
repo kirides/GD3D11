@@ -463,6 +463,9 @@ public:
         Microsoft::WRL::ComPtr<ID3D12RootSignature> VobCullRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            VobCullCsBlob;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> VobCullPSO;
+        // Same shader at the no-motion instance stride (VOB_NO_MOTION) — see VobInstanceStride().
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobCullNoMotionPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullNoMotionCsBlob;
         // Indirect-arg patch: b0 4 root consts, t0 root SRV (per-visual counts), u0 root UAV (arg buffer).
         Microsoft::WRL::ComPtr<ID3D12RootSignature> PatchRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            PatchCsBlob;

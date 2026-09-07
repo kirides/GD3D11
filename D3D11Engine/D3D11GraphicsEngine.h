@@ -38,6 +38,18 @@ const unsigned int MORPHEDMESH_HIGH_BUFFER_SIZE = 20480 * sizeof( ExVertexStruct
 const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
+/** Per-instance upload stride. VobInstanceInfo::prevWorld is last, so with TAA/FSR off the upload stops
+    before it and VERTEX_INPUT_LAYOUT_16/17 alias prevWorld onto world (zero velocity). Must stay in lockstep
+    with D3D11VShader::Apply's identical predicate. */
+inline unsigned int VobInstanceUploadStride() {
+    return static_cast<unsigned int>( Engine::GAPI->GetRendererState().RendererSettings.GetIsTAAEnabled()
+        ? sizeof( VobInstanceInfo ) : kVobInstanceStrideNoMotion );
+}
+inline unsigned int NodeAttachmentUploadStride() {
+    return static_cast<unsigned int>( Engine::GAPI->GetRendererState().RendererSettings.GetIsTAAEnabled()
+        ? sizeof( NodeAttachmentInstanceData ) : kNodeAttachmentStrideNoMotion );
+}
+
 class D3D11PointLight;
 class D3D11VShader;
 class D3D11PShader;

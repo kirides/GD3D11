@@ -1448,6 +1448,12 @@ private:
     // the tail of CreateSkeletal), so a partial success is genuinely reachable — hence one gate, tested by
     // BeginMotionGBuffer and by each of the three prepass draws.
     bool MotionGBufferActive() const;
+    /** Per-instance upload stride. VobInstanceInfo::prevWorld is last, so when no pass reads velocity the
+        upload simply stops before it — no *GBuf PSO (the only layouts declaring prevWorld) is bound then, and
+        CSCull switches to its VOB_NO_MOTION variant so the compacted stream matches. */
+    UINT VobInstanceStride() const {
+        return static_cast<UINT>( MotionGBufferActive() ? sizeof( VobInstanceInfo ) : kVobInstanceStrideNoMotion );
+    }
     bool MotionGBufferNeeded() const;   // does any pass actually read velocity/normals this frame? see the impl
 
     // ---- Temporal anti-aliasing (D3D12Taa.cpp) --------------------------------------------------------------
