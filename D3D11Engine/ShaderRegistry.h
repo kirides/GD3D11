@@ -28,6 +28,8 @@ public:
     std::string entryPoint;			//Shader's entry point function name
     size_t shaderIndex;				//Per-type enum index (e.g. VShaderID/PShaderID cast to size_t)
     EVERTEX_INPUT_LAYOUT layout;						//Shader's input layout
+    //Optional second layout over the same bytecode; see VERTEX_INPUT_LAYOUT_16/17
+    EVERTEX_INPUT_LAYOUT altLayout = VERTEX_INPUT_LAYOUT_NONE;
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
     size_t compiledHash = 0;			//Hash of last successful compilation (file timestamp + macros)
@@ -54,6 +56,7 @@ public:
 
     /** Chainable setters for builder pattern */
     ShaderInfo& with_layout( EVERTEX_INPUT_LAYOUT l ) { layout = l; return *this; }
+    ShaderInfo& with_alt_layout( EVERTEX_INPUT_LAYOUT l ) { altLayout = l; return *this; }
     ShaderInfo& with_macros( std::vector<D3D_SHADER_MACRO> m ) { shaderMakros = std::move(m); return *this; }
     ShaderInfo& with_macros( MacroBuilder b ) {
         if (macroBuilder) {

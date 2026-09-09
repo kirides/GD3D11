@@ -1,6 +1,9 @@
 #include "D3D11ShadowAtlas.h"
 #include "D3D11_Helpers.h"
+#include "LightingResourceLog.h"
 #include "Logger.h"
+
+#include <format>
 
 D3D11ShadowAtlas::D3D11ShadowAtlas() = default;
 D3D11ShadowAtlas::~D3D11ShadowAtlas() { Release(); }
@@ -97,8 +100,7 @@ HRESULT D3D11ShadowAtlas::Init(
 }
 
 HRESULT D3D11ShadowAtlas::ResizeInternal( UINT cascade0Size, UINT numCascades ) {
-    if ( !m_device ) {
-        LogError() << "ShadowAtlas::Resize - Device not initialized";
+    if ( !LightingLog::Require( m_device.Get(), "ShadowAtlas: device (Resize called before Init)" ) ) {
         return E_FAIL;
     }
 
@@ -113,8 +115,6 @@ HRESULT D3D11ShadowAtlas::ResizeInternal( UINT cascade0Size, UINT numCascades ) 
 
     Release();
     ComputeLayout();
-
-    HRESULT hr = S_OK;
 
     // Create atlas texture (single Texture2D)
     D3D11_TEXTURE2D_DESC texDesc = {};
@@ -133,11 +133,10 @@ HRESULT D3D11ShadowAtlas::ResizeInternal( UINT cascade0Size, UINT numCascades ) 
     texDesc.CPUAccessFlags = 0;
     texDesc.MiscFlags = 0;
 
-    LE( m_device->CreateTexture2D( &texDesc, nullptr, m_texture.GetAddressOf() ) );
-    if ( FAILED( hr ) || !m_texture ) {
-        LogError() << "ShadowAtlas::Resize - Failed to create atlas texture "
-            << m_atlasWidth << "x" << m_atlasHeight;
-        return hr;
+    HRESULT hr = m_device->CreateTexture2D( &texDesc, nullptr, m_texture.GetAddressOf() );
+    if ( !LightingLog::Check( hr, m_texture.Get(), std::format(
+        "ShadowAtlas texture {}x{} R32_TYPELESS, {} cascades", m_atlasWidth, m_atlasHeight, m_numCascades ) ) ) {
+        return FAILED( hr ) ? hr : E_FAIL;
     }
     SetDebugName( m_texture.Get(), "ShadowAtlas_Texture" );
 
@@ -148,10 +147,10 @@ HRESULT D3D11ShadowAtlas::ResizeInternal( UINT cascade0Size, UINT numCascades ) 
     dsvDesc.Texture2D.MipSlice = 0;
     dsvDesc.Flags = 0;
 
-    LE( m_device->CreateDepthStencilView( m_texture.Get(), &dsvDesc, m_dsv.GetAddressOf() ) );
-    if ( FAILED( hr ) || !m_dsv ) {
-        LogError() << "ShadowAtlas::Resize - Failed to create DSV";
-        return hr;
+    hr = m_device->CreateDepthStencilView( m_texture.Get(), &dsvDesc, m_dsv.GetAddressOf() );
+    if ( !LightingLog::Check( hr, m_dsv.Get(), std::format(
+        "ShadowAtlas DSV (D32_FLOAT, {}x{})", m_atlasWidth, m_atlasHeight ) ) ) {
+        return FAILED( hr ) ? hr : E_FAIL;
     }
     SetDebugName( m_dsv.Get(), "ShadowAtlas_DSV" );
 
@@ -162,20 +161,17 @@ HRESULT D3D11ShadowAtlas::ResizeInternal( UINT cascade0Size, UINT numCascades ) 
     srvDesc.Texture2D.MostDetailedMip = 0;
     srvDesc.Texture2D.MipLevels = 1;
 
-    LE( m_device->CreateShaderResourceView( m_texture.Get(), &srvDesc, m_srv.GetAddressOf() ) );
-    if ( FAILED( hr ) || !m_srv ) {
-        LogError() << "ShadowAtlas::Resize - Failed to create SRV";
-        return hr;
+    hr = m_device->CreateShaderResourceView( m_texture.Get(), &srvDesc, m_srv.GetAddressOf() );
+    if ( !LightingLog::Check( hr, m_srv.Get(), "ShadowAtlas SRV (R32_FLOAT)" ) ) {
+        return FAILED( hr ) ? hr : E_FAIL;
     }
     SetDebugName( m_srv.Get(), "ShadowAtlas_SRV" );
 
-    LogInfo() << "ShadowAtlas: Created " << m_numCascades << " cascades, atlas "
-        << m_atlasWidth << "x" << m_atlasHeight
-        << " (C0=" << m_cascades[0].size
-        << (m_numCascades > 1 ? ", C1=" + std::to_string( m_cascades[1].size ) : "")
-        << (m_numCascades > 2 ? ", C2=" + std::to_string( m_cascades[2].size ) : "")
-        << (m_numCascades > 3 ? ", C3=" + std::to_string( m_cascades[3].size ) : "")
-        << ")";
+    Logging::Inf( "ShadowAtlas: {} cascades ready in one {}x{} texture ({} MB), C0={} C1={} C2={} C3={}",
+        m_numCascades, m_atlasWidth, m_atlasHeight,
+        ( static_cast<size_t>( m_atlasWidth ) * m_atlasHeight * 4 ) / ( 1024 * 1024 ),
+        m_cascades[0].size, m_numCascades > 1 ? m_cascades[1].size : 0u,
+        m_numCascades > 2 ? m_cascades[2].size : 0u, m_numCascades > 3 ? m_cascades[3].size : 0u );
 
     return S_OK;
 }

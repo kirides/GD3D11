@@ -46,7 +46,12 @@ SamplerState smpAoClamp : register(s1);
 // Shared by VSMain and VSDepth so the depth prepass writes EXACTLY the bit-for-bit same swayed position as the
 // color pass — any divergence here would make the reversed-Z GREATER_EQUAL depth test discard swaying geometry
 // the color pass draws in front of where the (unswayed) prepass depth said it should be.
-float3 ApplyVobWind( float3 pos, float2 iwind, float4x4 iworld, float time )
+// A matrix vertex attribute is filled one COLUMN per semantic index, so these three rows are the matrix
+// itself and mul(M, float4(p,1)) is what the old mul(p, <float4x4 attribute>) already computed.
+#define VobWorld(i)     float3x4( (i).iworld0, (i).iworld1, (i).iworld2 )
+#define VobPrevWorld(i) float3x4( (i).iprev0,  (i).iprev1,  (i).iprev2  )
+
+float3 ApplyVobWind( float3 pos, float2 iwind, float3x4 iworld, float time )
 {
     float3 localPos = pos;
 
@@ -72,7 +77,10 @@ struct VS_IN
     float3   pos      : POSITION;
     float3   nrm      : NORMAL;                  // ExVertexStruct object-space float3 normal (@12)
     float2   uv       : TEXCOORD0;
-    float4x4 iworld   : INSTANCE_WORLD_MATRIX;
+    // VobInstanceInfo::world (@0) — three rows; the dropped 4th is (0,0,0,1).
+    float4   iworld0  : INSTANCE_WORLD_MATRIX0;
+    float4   iworld1  : INSTANCE_WORLD_MATRIX1;
+    float4   iworld2  : INSTANCE_WORLD_MATRIX2;
     float4   icolor   : INSTANCE_COLOR;
     // VobInstanceInfo::{windStrenth, canBeAffectedByPlayer} (@132/@136) — 0 for non-wind-flagged vobs, so the
     // branches below are no-ops for ordinary instances (matches D3D11's per-instance InstanceWind.x/y > 0 gate).
@@ -85,14 +93,14 @@ struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : T
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, VobWorld( i ), WindGlobalTime );
 
-    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    float3 worldPos = mul( VobWorld( i ), float4( localPos, 1.0 ) );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.icolor;
     o.wpos = worldPos;
-    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.wnrm = mul( (float3x3)VobWorld( i ), i.nrm );
     o.fogDist = distance(worldPos, CamPosWS);
     o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
@@ -137,13 +145,15 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 
 // Same per-instance wind fields as VS_IN (see ApplyVobWind) — the depth prepass must sway identically to VSMain,
 // or the color pass's swayed fragments fail the GREATER_EQUAL depth test against an unswayed prepass depth.
-struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; float2 iwind : INSTANCE_WINDFLUENCE; };
+struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0;
+    float4 iworld0 : INSTANCE_WORLD_MATRIX0; float4 iworld1 : INSTANCE_WORLD_MATRIX1; float4 iworld2 : INSTANCE_WORLD_MATRIX2;
+    float2 iwind : INSTANCE_WINDFLUENCE; };
 struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
 {
     VS_DEPTH_OUT o;
-    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
-    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, VobWorld( i ), WindGlobalTime );
+    float3 worldPos = mul( VobWorld( i ), float4( localPos, 1.0 ) );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv = i.uv;
     return o;
@@ -178,12 +188,12 @@ VS_OUT VSMainAttach( VS_IN i )
     VS_OUT o;
     float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
 
-    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    float3 worldPos = mul( VobWorld( i ), float4( localPos, 1.0 ) );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.icolor;
     o.wpos = worldPos;
-    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.wnrm = mul( (float3x3)VobWorld( i ), i.nrm );
     o.fogDist = distance(worldPos, CamPosWS);
     o.focus = ( i.igpslot >> 31u ) ? 2.0f : 0.0f;
     return o;
@@ -193,7 +203,7 @@ VS_DEPTH_OUT VSDepthAttach( VS_IN i )
 {
     VS_DEPTH_OUT o;
     float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
-    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    float3 worldPos = mul( VobWorld( i ), float4( localPos, 1.0 ) );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv = i.uv;
     return o;
@@ -306,8 +316,12 @@ struct VS_GBUF_IN
     float3   pos       : POSITION;
     float3   nrm       : NORMAL;
     float2   uv        : TEXCOORD0;
-    float4x4 iworld    : INSTANCE_WORLD_MATRIX;
-    float4x4 iprevworld: INSTANCE_PREV_WORLD_MATRIX;   // VobInstanceInfo::prevWorld (@64)
+    float4   iworld0   : INSTANCE_WORLD_MATRIX0;
+    float4   iworld1   : INSTANCE_WORLD_MATRIX1;
+    float4   iworld2   : INSTANCE_WORLD_MATRIX2;
+    float4   iprev0    : INSTANCE_PREV_WORLD_MATRIX0;   // VobInstanceInfo::prevWorld (@64)
+    float4   iprev1    : INSTANCE_PREV_WORLD_MATRIX1;
+    float4   iprev2    : INSTANCE_PREV_WORLD_MATRIX2;
     float2   iwind     : INSTANCE_WINDFLUENCE;
 };
 struct VS_GBUF_OUT
@@ -322,11 +336,11 @@ struct VS_GBUF_OUT
 VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
 {
     VS_GBUF_OUT o;
-    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindGlobalTime );
-    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, VobWorld( i ), WindGlobalTime );
+    float3 worldPos = mul( VobWorld( i ), float4( localPos, 1.0 ) );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv   = i.uv;
-    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.wnrm = mul( (float3x3)VobWorld( i ), i.nrm );
     o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
     // Re-evaluate the sway at last frame's wind phase (WindPrevGlobalTime) rather than reusing this frame's
     // swayed `localPos` — for a static instance (iprevworld == iworld) that reuse made the entire sway term
@@ -334,8 +348,8 @@ VS_GBUF_OUT VSDepthGBuf( VS_GBUF_IN i )
     // swaying tree/bush reported only its rigid (usually zero) motion and TAA/FSR resolved the sway as smeared
     // foliage. The hero-push term still uses the CURRENT WindPlayerPos for both evaluations (no previous-frame
     // player position is tracked), which under-reports motion only very close to the player.
-    float3 prevLocalPos = ApplyVobWind( i.pos, i.iwind, i.iworld, WindPrevGlobalTime );
-    o.prevClip = mul( float4( prevLocalPos, 1.0 ), mul( i.iprevworld, PrevViewProj ) );
+    float3 prevLocalPos = ApplyVobWind( i.pos, i.iwind, VobWorld( i ), WindPrevGlobalTime );
+    o.prevClip = mul( float4( mul( VobPrevWorld( i ), float4( prevLocalPos, 1.0 ) ), 1.0 ), PrevViewProj );
     return o;
 }
 
@@ -343,14 +357,14 @@ VS_GBUF_OUT VSDepthAttachGBuf( VS_GBUF_IN i )
 {
     VS_GBUF_OUT o;
     float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
-    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    float3 worldPos = mul( VobWorld( i ), float4( localPos, 1.0 ) );
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv   = i.uv;
-    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.wnrm = mul( (float3x3)VobWorld( i ), i.nrm );
     o.currClip = mul( float4( worldPos, 1.0 ), UnjitteredViewProj );
     // Attachments (weapons/heads/held items) ride the bone they hang off, so their prevWorld is a genuinely
     // different matrix each frame — this is what gives a swung sword real motion vectors.
-    o.prevClip = mul( float4( localPos, 1.0 ), mul( i.iprevworld, PrevViewProj ) );
+    o.prevClip = mul( float4( mul( VobPrevWorld( i ), float4( localPos, 1.0 ) ), 1.0 ), PrevViewProj );
     return o;
 }
 

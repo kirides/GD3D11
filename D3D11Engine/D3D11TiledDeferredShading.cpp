@@ -9,6 +9,7 @@
 #include "ConstantBufferStructs.h"
 #include "D3D11PfxRenderer.h"
 #include "D3D11_Helpers.h"
+#include "LightingResourceLog.h"
 #include "RenderToTextureBuffer.h"
 #include "zCVobLight.h"
 #include "D3D11Effect.h"
@@ -33,7 +34,13 @@ void D3D11TiledDeferredShading::Init(
         desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
         desc.StructureByteStride = sizeof( TiledPointLight );
 
-        m_device->CreateBuffer( &desc, nullptr, m_LightBuffer.ReleaseAndGetAddressOf() );
+        HRESULT hr = m_device->CreateBuffer( &desc, nullptr, m_LightBuffer.ReleaseAndGetAddressOf() );
+        if ( !LightingLog::Check( hr, m_LightBuffer.Get(), std::format(
+            "Tiled light buffer ({} lights x {} bytes)", MAX_TILED_LIGHTS, sizeof( TiledPointLight ) ) ) ) {
+            // Every point light goes through this buffer; without it the tiled path draws nothing.
+            m_LightBuffer.Reset();
+            return;
+        }
         SetDebugName( m_LightBuffer.Get(), "TiledDeferred_LightBuffer" );
 
         D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -41,7 +48,12 @@ void D3D11TiledDeferredShading::Init(
         srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
         srvDesc.Buffer.ElementWidth = MAX_TILED_LIGHTS;
 
-        m_device->CreateShaderResourceView( m_LightBuffer.Get(), &srvDesc, m_LightBufferSRV.ReleaseAndGetAddressOf() );
+        hr = m_device->CreateShaderResourceView( m_LightBuffer.Get(), &srvDesc, m_LightBufferSRV.ReleaseAndGetAddressOf() );
+        if ( !LightingLog::Check( hr, m_LightBufferSRV.Get(), "Tiled light buffer SRV" ) ) {
+            m_LightBufferSRV.Reset();
+            m_LightBuffer.Reset();
+            return;
+        }
         SetDebugName( m_LightBufferSRV.Get(), "TiledDeferred_LightBuffer_SRV" );
     }
 
@@ -69,19 +81,20 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
 
     // Declining this one only costs the movers: the lights keep their static cube. Failing QUIETLY would be
     // much worse - a null SRV reads as 0, i.e. every light carrying an overlay index goes fully shadowed.
-    if ( FAILED( m_device->CreateTexture2D( &desc, nullptr, m_ShadowDynCubeArray.ReleaseAndGetAddressOf() ) ) ) {
-        LogWarn() << "Failed to create the point-light dynamic shadow overlay array; moving casters will not "
-            "appear in point-light shadows.";
+    HRESULT hr = m_device->CreateTexture2D( &desc, nullptr, m_ShadowDynCubeArray.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_ShadowDynCubeArray.Get(), std::format(
+        "Point-light dynamic overlay cube array ({} cubes @ {}^2 R16)", MAX_DYN_SHADOW_CUBEMAPS, DYN_SHADOW_CUBE_SIZE ) ) ) {
+        LightingLog::Degraded( "point-light dynamic shadow overlay array",
+            "moving casters will not appear in point-light shadows" );
         m_ShadowDynCubeArray.Reset();
         return;
     }
     SetDebugName( m_ShadowDynCubeArray.Get(), "TiledDeferred_ShadowDynCubeArray" );
 
     // 32-bit address space is scarce, so log what this costs (size^2 * 2 bytes * 6 faces * slots).
-    LogInfo() << "Allocated point-light dynamic shadow overlay array: " << MAX_DYN_SHADOW_CUBEMAPS << " cubes @ "
-        << DYN_SHADOW_CUBE_SIZE << "^2 R16 ("
-        << ( static_cast<size_t>(DYN_SHADOW_CUBE_SIZE) * DYN_SHADOW_CUBE_SIZE * 2 * 6 * MAX_DYN_SHADOW_CUBEMAPS ) / (1024 * 1024 )
-        << " MB)";
+    Logging::Inf( "Point-light dynamic overlay array allocated: {} cubes @ {}^2 R16 ({} MB)",
+        MAX_DYN_SHADOW_CUBEMAPS, DYN_SHADOW_CUBE_SIZE,
+        ( static_cast<size_t>( DYN_SHADOW_CUBE_SIZE ) * DYN_SHADOW_CUBE_SIZE * 2 * 6 * MAX_DYN_SHADOW_CUBEMAPS ) / ( 1024 * 1024 ) );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_R16_UNORM;
@@ -91,9 +104,31 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
     srvDesc.TextureCubeArray.First2DArrayFace = 0;
     srvDesc.TextureCubeArray.NumCubes = MAX_DYN_SHADOW_CUBEMAPS;
 
-    HRESULT hr;
-    LE(m_device->CreateShaderResourceView( m_ShadowDynCubeArray.Get(), &srvDesc, m_ShadowDynCubeArraySRV.ReleaseAndGetAddressOf() ));
+    hr = m_device->CreateShaderResourceView( m_ShadowDynCubeArray.Get(), &srvDesc, m_ShadowDynCubeArraySRV.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_ShadowDynCubeArraySRV.Get(), std::format(
+        "Point-light dynamic overlay cube array SRV (TEXTURECUBEARRAY, {} cubes)", MAX_DYN_SHADOW_CUBEMAPS ) ) ) {
+        // A null SRV reads as 0 in the shader, i.e. fully occluded - drop the whole tier instead.
+        LightingLog::Degraded( "point-light dynamic shadow overlay array SRV",
+            "the overlay tier is disabled; point lights keep their static cubes only" );
+        m_ShadowDynCubeArraySRV.Reset();
+        m_ShadowDynCubeArray.Reset();
+        return;
+    }
     SetDebugName( m_ShadowDynCubeArraySRV.Get(), "TiledDeferred_ShadowDynCubeArray_SRV" );
+
+    // The absolute-slice path draws through this; the clear stays on the slot's own window below.
+    {
+        D3D11_DEPTH_STENCIL_VIEW_DESC arrayDsvDesc = {};
+        arrayDsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        arrayDsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        arrayDsvDesc.Texture2DArray.FirstArraySlice = 0;
+        arrayDsvDesc.Texture2DArray.ArraySize = MAX_DYN_SHADOW_CUBEMAPS * 6;
+        arrayDsvDesc.Texture2DArray.MipSlice = 0;
+        hr = m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &arrayDsvDesc, m_ShadowDynArrayDSV.ReleaseAndGetAddressOf() );
+        LightingLog::Check( hr, m_ShadowDynArrayDSV.Get(), "Point-light dynamic overlay whole-array DSV" );
+    }
+
+    uint32_t dynSlotFailures = 0;
 
     for ( uint32_t slot = 0; slot < MAX_DYN_SHADOW_CUBEMAPS; slot++ ) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
@@ -103,7 +138,12 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
         dsvDesc.Texture2DArray.ArraySize = 6;
         dsvDesc.Texture2DArray.MipSlice = 0;
 
-        LE(m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() ));
+        hr = m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &dsvDesc, m_SlotDynDSVs[slot].ReleaseAndGetAddressOf() );
+        if ( !LightingLog::CheckQuiet( hr, m_SlotDynDSVs[slot].Get(), std::format(
+            "Point-light dynamic overlay DSV, slot {} (slices {}..{})", slot, slot * 6, slot * 6 + 5 ) ) ) {
+            dynSlotFailures++;
+            continue;   // no target for this slot: ClaimDynSlot hands out nothing and the light stays static-only
+        }
 
         // Single-slice DSV per face for the NVIDIA layered-rendering fallback (see
         // RequiresNvidiaTiledShadowFaceFallback), which binds them one at a time.
@@ -112,18 +152,31 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
         faceDsvDesc.Texture2DArray.ArraySize = 1;
         for ( uint32_t face = 0; face < 6; face++ ) {
             faceDsvDesc.Texture2DArray.FirstArraySlice = slot * 6 + face;
-            LE(m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() ));
+            hr = m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() );
+            if ( !LightingLog::CheckQuiet( hr, faceDSVs[face].Get(), std::format(
+                "Point-light dynamic overlay face DSV, slot {} face {}", slot, face ) ) ) {
+                dynSlotFailures++;
+            }
         }
 
         m_SlotDynViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowDynCubeArray, m_SlotDynDSVs[slot], nullptr,
-            DYN_SHADOW_CUBE_SIZE, DYN_SHADOW_CUBE_SIZE, faceDSVs.data() );
+            DYN_SHADOW_CUBE_SIZE, DYN_SHADOW_CUBE_SIZE, faceDSVs.data(),
+            m_ShadowDynArrayDSV, slot * 6 );
 
         // A fresh D3D11 texture holds UNDEFINED depth, and a comparison sample against 0 reads as fully
         // OCCLUDED - a slot nothing has drawn into yet would shade its light solid black. Nothing should
         // sample an undrawn slot (see PointLightSlotSelector::DynSlot::valid), so this is belt and braces:
         // it makes any future hole of that class a no-op instead of a black light.
         m_context->ClearDepthStencilView( m_SlotDynDSVs[slot].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+    }
+
+    if ( dynSlotFailures > 0 ) {
+        LightingLog::Degraded( "some point-light dynamic overlay slot views",
+            "the lights holding those slots get no moving-caster shadows" );
+    } else {
+        Logging::Inf( "Point-light dynamic overlay views ready: {} slot DSVs + {} face DSVs.",
+            MAX_DYN_SHADOW_CUBEMAPS, MAX_DYN_SHADOW_CUBEMAPS * 6 );
     }
 }
 
@@ -157,17 +210,18 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
 
     // Fail closed rather than build an SRV/DSVs from a null resource - see MAX_STATIC_SHADOW_CUBEMAPS in the header.
-    if ( FAILED( m_device->CreateTexture2D( &desc, nullptr, m_ShadowStaticCubeArray.ReleaseAndGetAddressOf() ) ) ) {
-        LogWarn() << "Failed to create the point-light static shadow array; point lights will render unshadowed.";
+    HRESULT hr = m_device->CreateTexture2D( &desc, nullptr, m_ShadowStaticCubeArray.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_ShadowStaticCubeArray.Get(), std::format(
+        "Point-light static shadow cube array ({} cubes @ {}^2 R16)", MAX_STATIC_SHADOW_CUBEMAPS, STATIC_SHADOW_CUBE_SIZE ) ) ) {
+        LightingLog::Degraded( "point-light static shadow array", "point lights will render unshadowed" );
         m_ShadowStaticCubeArray.Reset();
         return;
     }
     SetDebugName( m_ShadowStaticCubeArray.Get(), "TiledDeferred_ShadowStaticCubeArray" );
 
-    LogInfo() << "Allocated point-light static shadow array: " << MAX_STATIC_SHADOW_CUBEMAPS << " cubes @ "
-        << STATIC_SHADOW_CUBE_SIZE << "^2 R16 ("
-        << ( static_cast<size_t>(STATIC_SHADOW_CUBE_SIZE) * STATIC_SHADOW_CUBE_SIZE * 2 * 6 * MAX_STATIC_SHADOW_CUBEMAPS ) / (1024 * 1024 )
-        << " MB)";
+    Logging::Inf( "Point-light static shadow array allocated: {} cubes @ {}^2 R16 ({} MB)",
+        MAX_STATIC_SHADOW_CUBEMAPS, STATIC_SHADOW_CUBE_SIZE,
+        ( static_cast<size_t>( STATIC_SHADOW_CUBE_SIZE ) * STATIC_SHADOW_CUBE_SIZE * 2 * 6 * MAX_STATIC_SHADOW_CUBEMAPS ) / ( 1024 * 1024 ) );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_R16_UNORM;
@@ -177,9 +231,29 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     srvDesc.TextureCubeArray.First2DArrayFace = 0;
     srvDesc.TextureCubeArray.NumCubes = MAX_STATIC_SHADOW_CUBEMAPS;
 
-    HRESULT hr;
-    LE(m_device->CreateShaderResourceView( m_ShadowStaticCubeArray.Get(), &srvDesc, m_ShadowStaticCubeArraySRV.ReleaseAndGetAddressOf() ));
+    hr = m_device->CreateShaderResourceView( m_ShadowStaticCubeArray.Get(), &srvDesc, m_ShadowStaticCubeArraySRV.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_ShadowStaticCubeArraySRV.Get(), std::format(
+        "Point-light static shadow cube array SRV (TEXTURECUBEARRAY, {} cubes)", MAX_STATIC_SHADOW_CUBEMAPS ) ) ) {
+        // A null SRV comparison-samples as fully occluded, which would shade every point light black.
+        LightingLog::Degraded( "point-light static shadow array SRV", "point lights will render unshadowed" );
+        m_ShadowStaticCubeArraySRV.Reset();
+        m_ShadowStaticCubeArray.Reset();
+        return;
+    }
     SetDebugName( m_ShadowStaticCubeArraySRV.Get(), "TiledDeferred_ShadowStaticCubeArray_SRV" );
+
+    {
+        D3D11_DEPTH_STENCIL_VIEW_DESC arrayDsvDesc = {};
+        arrayDsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        arrayDsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        arrayDsvDesc.Texture2DArray.FirstArraySlice = 0;
+        arrayDsvDesc.Texture2DArray.ArraySize = MAX_STATIC_SHADOW_CUBEMAPS * 6;
+        arrayDsvDesc.Texture2DArray.MipSlice = 0;
+        hr = m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &arrayDsvDesc, m_ShadowStaticArrayDSV.ReleaseAndGetAddressOf() );
+        LightingLog::Check( hr, m_ShadowStaticArrayDSV.Get(), "Point-light static shadow whole-array DSV" );
+    }
+
+    uint32_t staticSlotFailures = 0;
 
     for ( uint32_t slot = 0; slot < MAX_STATIC_SHADOW_CUBEMAPS; slot++ ) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
@@ -189,23 +263,41 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
         dsvDesc.Texture2DArray.ArraySize = 6;
         dsvDesc.Texture2DArray.MipSlice = 0;
 
-        LE(m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &dsvDesc, m_StaticSlotDSVs[slot].ReleaseAndGetAddressOf() ));
+        hr = m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &dsvDesc, m_StaticSlotDSVs[slot].ReleaseAndGetAddressOf() );
+        if ( !LightingLog::CheckQuiet( hr, m_StaticSlotDSVs[slot].Get(), std::format(
+            "Point-light static shadow DSV, slot {} (slices {}..{})", slot, slot * 6, slot * 6 + 5 ) ) ) {
+            staticSlotFailures++;
+            continue;   // ClaimStaticSlot hands out nothing for this slot; the light shades unshadowed
+        }
 
         std::array<ComPtr<ID3D11DepthStencilView>, 6> faceDSVs;
         D3D11_DEPTH_STENCIL_VIEW_DESC faceDsvDesc = dsvDesc;
         faceDsvDesc.Texture2DArray.ArraySize = 1;
         for ( uint32_t face = 0; face < 6; face++ ) {
             faceDsvDesc.Texture2DArray.FirstArraySlice = slot * 6 + face;
-            LE(m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() ));
+            hr = m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &faceDsvDesc, faceDSVs[face].ReleaseAndGetAddressOf() );
+            if ( !LightingLog::CheckQuiet( hr, faceDSVs[face].Get(), std::format(
+                "Point-light static shadow face DSV, slot {} face {}", slot, face ) ) ) {
+                staticSlotFailures++;
+            }
         }
 
         m_StaticSlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowStaticCubeArray, m_StaticSlotDSVs[slot], nullptr,
-            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data() );
+            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data(),
+            m_ShadowStaticArrayDSV, slot * 6 );
 
         // See the identical note in EnsureDynShadowArray: undefined depth comparison-samples as fully
         // occluded, so every slot starts at "nothing occludes".
         m_context->ClearDepthStencilView( m_StaticSlotDSVs[slot].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+    }
+
+    if ( staticSlotFailures > 0 ) {
+        LightingLog::Degraded( "some point-light static shadow slot views",
+            "the lights holding those slots render unshadowed" );
+    } else {
+        Logging::Inf( "Point-light static shadow views ready: {} slot DSVs + {} face DSVs.",
+            MAX_STATIC_SHADOW_CUBEMAPS, MAX_STATIC_SHADOW_CUBEMAPS * 6 );
     }
 }
 
@@ -242,9 +334,17 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
     desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     desc.StructureByteStride = sizeof( LightGrid );
 
-    HRESULT hr;
-
-    LE(m_device->CreateBuffer( &desc, nullptr, m_LightGrid.ReleaseAndGetAddressOf() ));
+    HRESULT hr = m_device->CreateBuffer( &desc, nullptr, m_LightGrid.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_LightGrid.Get(), std::format(
+        "Cluster light grid ({}x{} tiles x {} z-slices = {} clusters, {} KB)",
+        numTilesX, numTilesY, CLUSTER_Z_SLICES, totalClusters,
+        ( totalClusters * sizeof( LightGrid ) ) / 1024 ) ) ) {
+        // Without the grid nothing is culled into a cluster: every tiled light goes dark this resolution.
+        m_LightGrid.Reset();
+        m_LightGridSRV.Reset();
+        m_LightGridUAV.Reset();
+        return;
+    }
     SetDebugName( m_LightGrid.Get(), "TiledDeferred_LightGrid" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -252,7 +352,11 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     srvDesc.Buffer.ElementWidth = totalClusters;
 
-    LE(m_device->CreateShaderResourceView( m_LightGrid.Get(), &srvDesc, m_LightGridSRV.ReleaseAndGetAddressOf() ));
+    hr = m_device->CreateShaderResourceView( m_LightGrid.Get(), &srvDesc, m_LightGridSRV.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_LightGridSRV.Get(), std::format(
+        "Cluster light grid SRV ({} clusters)", totalClusters ) ) ) {
+        m_LightGridSRV.Reset();
+    }
     SetDebugName( m_LightGridSRV.Get(), "TiledDeferred_LightGrid_SRV" );
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
@@ -260,7 +364,11 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
     uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
     uavDesc.Buffer.NumElements = totalClusters;
 
-    LE(m_device->CreateUnorderedAccessView( m_LightGrid.Get(), &uavDesc, m_LightGridUAV.ReleaseAndGetAddressOf() ));
+    hr = m_device->CreateUnorderedAccessView( m_LightGrid.Get(), &uavDesc, m_LightGridUAV.ReleaseAndGetAddressOf() );
+    if ( !LightingLog::Check( hr, m_LightGridUAV.Get(), std::format(
+        "Cluster light grid UAV ({} clusters)", totalClusters ) ) ) {
+        m_LightGridUAV.Reset();
+    }
     SetDebugName( m_LightGridUAV.Get(), "TiledDeferred_LightGrid_UAV" );
 }
 
@@ -269,14 +377,14 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy ) {
+    ID3D11ShaderResourceView* depthSRV ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "TiledPointlightLights" ) );
     auto& context = graphicsEngine->GetContext();
 
     // ---- Pass 1: Pack lights + cull ----
-    auto cullResult = CullLights( lights, depthCopy );
+    auto cullResult = CullLights( lights );
 
     INT2 resolution = Engine::GraphicsEngine->GetResolution();
     uint32_t numTilesX = (resolution.x + TILE_SIZE - 1) / TILE_SIZE;
@@ -287,11 +395,30 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
         XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
 
+        // Everything the dispatch needs, checked before the render targets come down so a hole costs the
+        // point lights and nothing else.
+        auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
+        auto& hdrUAV = graphicsEngine->GetHDRBackBuffer().GetUnorderedAccessView();
+        static bool s_shadeShaderReported = false;
+        static bool s_shadeGridReported = false;
+        static bool s_hdrUavReported = false;
+        if ( !LightingLog::RequireOnce( csTiledShading.get(), s_shadeShaderReported, "CS_TiledShading shader" )
+            || !LightingLog::RequireOnce( m_LightGridSRV.Get(), s_shadeGridReported,
+                "Cluster light grid SRV (shading input - every tiled light would read cluster 0)" )
+            || !LightingLog::RequireOnce( hdrUAV.Get(), s_hdrUavReported,
+                "HDR back buffer UAV (tiled shading output - no point light reaches the screen)" ) ) {
+            // Only the tiled dispatch is broken - the lights that already fall back still get drawn.
+            if ( !cullResult.LegacyLights.empty() ) {
+                D3D11LegacyDeferredShading legacy;
+                legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthSRV );
+            }
+            return XR_SUCCESS;
+        }
+
         // Unbind HDR as RTV before binding as UAV
         ID3D11RenderTargetView* nullRTV = nullptr;
         context->OMSetRenderTargets( 1, &nullRTV, nullptr );
 
-        auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
         csTiledShading->Apply();
 
         // Fill and bind shading constant buffer
@@ -322,7 +449,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // Bind GBuffer SRVs to CS
         context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );
         context->CSSetShaderResources( 1, 1, normals.GetShaderResView().GetAddressOf() );
-        context->CSSetShaderResources( 2, 1, depthCopy.GetShaderResView().GetAddressOf() );
+        context->CSSetShaderResources( 2, 1, &depthSRV );
         context->CSSetShaderResources( 7, 1, specular.GetShaderResView().GetAddressOf() );
 
         // Bind linear sampler to CS slot 0 (required for GBuffer SampleLevel calls)
@@ -348,10 +475,16 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             context->CSSetShaderResources( 12, 1, &dynSRV );
             ID3D11ShaderResourceView* staticSRV = m_ShadowStaticCubeArray ? m_ShadowStaticCubeArraySRV.Get() : nullptr;
             context->CSSetShaderResources( 13, 1, &staticSRV );
+            // A shadowed light sampling a null array reads fully occluded, i.e. shades solid black.
+            static bool s_staticSrvReported = false;
+            static bool s_dynSrvReported = false;
+            LightingLog::RequireOnce( staticSRV, s_staticSrvReported,
+                "Point-light static cube array SRV at t13 (shadowed lights bound this frame)" );
+            LightingLog::RequireOnce( dynSRV, s_dynSrvReported,
+                "Point-light dynamic overlay SRV at t12 (shadowed lights bound this frame)" );
         }
 
         // Bind HDR UAV
-        auto& hdrUAV = graphicsEngine->GetHDRBackBuffer().GetUnorderedAccessView();
         context->CSSetUnorderedAccessViews( 0, 1, hdrUAV.GetAddressOf(), nullptr );
 
         context->Dispatch( numTilesX, numTilesY, 1 );
@@ -363,23 +496,22 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         context->CSSetShaderResources( 0, 14, nullSRVs ); // t0-t13
         context->CSSetShader( nullptr, nullptr, 0 );
 
-        // Restore HDR as RTV
+        // Restore HDR as RTV. Read-only DSV, since depthSRV may be the live depth buffer.
         context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
-            graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
+            graphicsEngine->GetDepthReadOnlyDSV() );
     }
 
     // Draw lights that couldn't go through the tiled path (mismatched shadow cube size, overflow)
     if ( !cullResult.LegacyLights.empty() ) {
         D3D11LegacyDeferredShading legacy;
-        legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthCopy );
+        legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthSRV );
     }
 
     return XR_SUCCESS;
 }
 
 D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
-    std::vector<VobLightInfo*>& lights,
-    RenderToTextureBuffer& depthCopy ) {
+    std::vector<VobLightInfo*>& lights ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "CullLights" ) );
@@ -404,9 +536,16 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     bool hasShadowedTiledLights = false;
 
     // Map light buffer
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if ( !SUCCEEDED( context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped ) ) ) {
-        LogError() << "Failed to map light buffer.";
+    static bool s_lightBufferReported = false;
+    if ( !LightingLog::RequireOnce( m_LightBuffer.Get(), s_lightBufferReported,
+        "Tiled light buffer (never created - no point light can be shaded)" ) ) {
+        return result;
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    HRESULT mapHr = context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped );
+    static bool s_lightBufferMapReported = false;
+    if ( !LightingLog::CheckOnce( mapHr, mapped.pData, s_lightBufferMapReported,
+        "Tiled light buffer map (WRITE_DISCARD)" ) ) {
         return result;
     }
     TiledPointLight* lightData = reinterpret_cast<TiledPointLight*>(mapped.pData);
@@ -509,6 +648,14 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     // Dispatch CS_LightCulling if we have lights
     if ( result.TiledLightCount > 0 ) {
         auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
+        static bool s_cullShaderReported = false;
+        static bool s_cullGridReported = false;
+        if ( !LightingLog::RequireOnce( csLightCull.get(), s_cullShaderReported, "CS_LightCulling shader" )
+            || !LightingLog::RequireOnce( m_LightGridUAV.Get(), s_cullGridReported,
+                "Cluster light grid UAV (cull target - every tiled light stays unlit)" ) ) {
+            result.TiledLightCount = 0;
+            return result;
+        }
         csLightCull->Apply();
 
         const XMFLOAT4X4& proj = Engine::GAPI->GetProjectionMatrix();

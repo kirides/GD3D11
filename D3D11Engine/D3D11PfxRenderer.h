@@ -43,10 +43,12 @@ public:
     XRESULT RenderHDR(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, INT2 resolution);
 
     /** Renders the SMAA-Effect */
-    XRESULT RenderSMAA(ID3D11ShaderResourceView* backbuffer);
+    XRESULT RenderSMAA(ID3D11ShaderResourceView* backbuffer, ID3D11RenderTargetView* output = nullptr);
 
-    XRESULT RenderTAA(const ComPtr<ID3D11ShaderResourceView>& velocityBuffer);
-    XRESULT RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
+    XRESULT RenderTAA(const ComPtr<ID3D11ShaderResourceView>& velocityBuffer,
+                      ID3D11UnorderedAccessView* sceneOutUAV = nullptr);
+    // input and output must be different resources; CAS renders straight into output.
+    XRESULT RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize );
     XRESULT RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source, INT2 sourceSize, RenderToTextureBuffer* dest, INT2 destSize );
 
     /** Renders the godrays-Effect */
@@ -69,8 +71,8 @@ public:
     XRESULT DrawFullScreenQuad();
 
     /** Draws the HBAO-Effect to the given buffer */
-    XRESULT DrawHBAO(const ComPtr<ID3D11RenderTargetView>& rtv, const ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV, const ComPtr<
-                     ID3D11ShaderResourceView>& pFullResNormalTexSRV);
+    XRESULT DrawHBAO(const ComPtr<ID3D11RenderTargetView>& rtv, ID3D11ShaderResourceView* pFullResDepthTexSRV,
+                     const ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV);
 
     /** Renders the SAO effect */
     XRESULT RenderSAO( ID3D11ShaderResourceView* depthSRV,
@@ -94,7 +96,6 @@ public:
 
     /** Renders the PostFX composition uber pass (SAO + HeightFog + GodRays) */
     XRESULT RenderPostFXComposition( ID3D11RenderTargetView* outputRTV,
-                                     ID3D11ShaderResourceView* backbufferSRV,
                                      ID3D11ShaderResourceView* saoSRV,
                                      ID3D11ShaderResourceView* godraysSRV,
                                      ID3D11ShaderResourceView* depthSRV );

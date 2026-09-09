@@ -63,6 +63,10 @@ enum EVERTEX_INPUT_LAYOUT : std::uint8_t {
     VERTEX_INPUT_LAYOUT_13,
     VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced,
     VERTEX_INPUT_LAYOUT_15_VS_DecalInstanced,
+    // Siblings of 10/14 aliasing INSTANCE_PREV_WORLD_MATRIX onto INSTANCE_WORLD_MATRIX, so the stride drops
+    // to the prefix before prevWorld. Picked by D3D11VShader::Apply when TAA/FSR is off.
+    VERTEX_INPUT_LAYOUT_16_VS_ExInstancedObj_NoMotion,
+    VERTEX_INPUT_LAYOUT_17_VS_ExNodeInstanced_NoMotion,
     VERTEX_INPUT_LAYOUT_POS_ONLY,
     VERTEX_INPUT_LAYOUT_PACKED_EX,
     _VERTEX_INPUT_LAYOUT_COUNT,

@@ -45,11 +45,14 @@ public:
     /** Called on resize */
     void OnResize(const INT2& size);
 
-    /** Renders the TAA effect (Intel Graphics Optimized TAA resolve, compute-dispatched) */
-    void RenderPostFX(
+    /** Renders the TAA effect (Intel Graphics Optimized TAA resolve, compute-dispatched). sceneOutUAV,
+        when given, receives the resolve alongside the history so no copy back is needed; it must NOT be
+        renderTarget, which is bound as the SRV this gathers from. False when nothing ran. */
+    bool RenderPostFX(
         RenderToTextureBuffer& renderTarget,
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
-        const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV);
+        const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV,
+        ID3D11UnorderedAccessView* sceneOutUAV = nullptr);
 
     /** Gets current jitter offset for camera, scaled by resolution */
     XMFLOAT2 GetJitterOffset() const { return m_CurrentJitter; }

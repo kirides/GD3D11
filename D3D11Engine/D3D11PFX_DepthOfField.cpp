@@ -63,8 +63,6 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
         rendererSettings.DoFGaussBlur
             ? PShaderID::PS_PFX_DoF_Gauss
             : PShaderID::PS_PFX_DoF );
-    auto compositePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_Composite );
-
     vs->Apply();
 
 
@@ -128,32 +126,46 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
     engine->GetContext()->PSSetShaderResources( 0, 4, nullSRVs );
     engine->GetContext()->RSSetViewports( 1, &oldVP );
 
-    // --- Pass 2: Full-res composite (render to temp, then blit to avoid read-write hazard) ---
-    auto compositeBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ res.x, res.y, bbufferFormat } );
-
-    compositePS->Apply();
-    compositePS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
-
-    engine->GetContext()->OMSetRenderTargets( 1, compositeBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
-
-    // t0 = scene, t1 = half-res blur, t2 = depth (normalized-UV sampled), t3 = focus (1x1)
-    engine->GetContext()->PSSetShaderResources( 0, 1, &backbuffer );
-    ID3D11ShaderResourceView* halfSRV = halfBuffer->GetShaderResView().Get();
-    engine->GetContext()->PSSetShaderResources( 1, 1, &halfSRV );
-    engine->GetContext()->PSSetShaderResources( 2, 1, &depthSrv );
-    engine->GetContext()->PSSetShaderResources( 3, 1, m_FocusSRV[m_FocusIndex].GetAddressOf() );
-
-    FxRenderer->DrawFullScreenQuad();
-
-    engine->GetContext()->PSSetShaderResources( 0, 4, nullSRVs );
-
-    // Blit composite result to the output RTV
-    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), output, res );
+    // --- Pass 2: Full-res composite, blended straight onto the output ---
+    DrawComposite( output, halfBuffer->GetShaderResView().Get(), depthSrv, res, cb );
 
     engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
 
     return XR_SUCCESS;
+}
+
+/** Full-screen alpha-blended draw of the half-res blur onto output. SRC_ALPHA/INV_SRC_ALPHA is exactly
+    the lerp(sharp, blur, coc) the shader used to compute by hand, so the scene is never read as a texture
+    and the pass writes in place — no scratch target, no blit back. */
+void D3D11PFX_DepthOfField::DrawComposite( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* halfBlurSrv,
+    ID3D11ShaderResourceView* depthSrv, INT2 resolution, const DepthOfFieldConstantBuffer& cb ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& context = engine->GetContext();
+
+    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    auto compositePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_Composite );
+    compositePS->Apply();
+    compositePS->UpdateBuffer( "DepthOfFieldConstantBuffer", &cb, sizeof( cb ) );
+
+    D3D11_VIEWPORT vp = { 0, 0, static_cast<float>(resolution.x), static_cast<float>(resolution.y), 0, 1 };
+    context->RSSetViewports( 1, &vp );
+    context->OMSetRenderTargets( 1, &output, nullptr );
+
+    // t1 = half-res blur, t2 = depth (normalized-UV sampled), t3 = focus (1x1). t0 stays unbound: the scene
+    // is the render target here, and reading it is exactly what the blend replaces.
+    context->PSSetShaderResources( 1, 1, &halfBlurSrv );
+    context->PSSetShaderResources( 2, 1, &depthSrv );
+    context->PSSetShaderResources( 3, 1, m_FocusSRV[m_FocusIndex].GetAddressOf() );
+
+    Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+
+    FxRenderer->DrawFullScreenQuad();
+
+    ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
+    context->PSSetShaderResources( 0, 4, nullSRVs );
+    Engine::GAPI->GetRendererState().BlendState.SetDefault();
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 }
 
 /** Compute shader path for FL11+ */
@@ -240,35 +252,12 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 3, nullSRVs );
 
-    // --- Pass 2: Full-res composite ---
-    auto compositeBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ res.x, res.y, bbufferFormat,
-            D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
-
-    auto compositeCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_Composite );
-    compositeCS->Apply();
-    compositeCS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
-
-    context->CSSetSamplers( 0, 1, &defaultSampler );
-
-    // t0 = scene, t1 = half-res blur, t2 = depth (normalized-UV sampled), t3 = focus (1x1)
-    ID3D11ShaderResourceView* compositeSRVs[4] = {
-        backbuffer,
-        halfBuffer->GetShaderResView().Get(),
-        depthSrv,
-        m_FocusSRV[m_FocusIndex].Get()
-    };
-    context->CSSetShaderResources( 0, 4, compositeSRVs );
-    context->CSSetUnorderedAccessViews( 0, 1, compositeBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
-
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
-
-    context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
-    context->CSSetShaderResources( 0, 4, nullSRVs );
     context->CSSetShader( nullptr, nullptr, 0 );
 
-    // Blit composite result to the output RTV
-    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), output, res );
+    // --- Pass 2: Full-res composite, blended straight onto the output ---
+    // A pixel shader even on this path: the blend unit supplies the sharp half of lerp(sharp, blur, coc),
+    // which is what removes the full-res scratch texture and the blit this used to need.
+    DrawComposite( output, halfBuffer->GetShaderResView().Get(), depthSrv, res, cb );
 
     engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
 

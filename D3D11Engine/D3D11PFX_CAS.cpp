@@ -22,8 +22,9 @@ void D3D11PFX_CAS::SetSharpness( float sharpness ) {
     Sharpness = std::clamp( sharpness, 0.0f, 1.0f );
 }
 
+// inputTexture and outputTexture must be DIFFERENT resources - CAS renders straight into the output.
 XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& inputTexture, INT2 inputSize,
-        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
+        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture, INT2 outputSize ) {
     D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
     auto context = engine->GetContext();
 
@@ -37,11 +38,6 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
 
     ID3D11RenderTargetView* nullRTVs[6] { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
     context->OMSetRenderTargets( 6, nullRTVs, nullptr );
-
-    RenderToTextureBuffer& tempBuffer = intermediateBuffer;
-
-    // update the temp buffer with the latest backbuffer data
-    Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), outputSize );
 
     // Get shader
     auto casPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_CAS );
@@ -75,16 +71,13 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     engine->SetViewport( ViewportInfo( 0, 0, outputSize.x, outputSize.y ) );
 
     // Set render target
-    context->OMSetRenderTargets( 1, tempBuffer.GetRenderTargetView().GetAddressOf(), nullptr );
+    context->OMSetRenderTargets( 1, outputTexture.GetAddressOf(), nullptr );
 
     // Bind input texture
     context->PSSetShaderResources( 0, 1, inputTexture.GetAddressOf() );
 
     // Draw fullscreen quad
     Renderer->DrawFullScreenQuad();
-
-    // Copy result to output render target
-    Renderer->CopyTextureToRTV( tempBuffer.GetShaderResView(), outputTexture );
 
     // unbind resources
     static ID3D11ShaderResourceView* nullSRV[1] = { nullptr };

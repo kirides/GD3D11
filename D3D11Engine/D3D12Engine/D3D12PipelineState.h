@@ -298,13 +298,13 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
     };
 
-    // Depth of field (Shaders/D3D12/DoF.hlsl — the compute port of D3D11PFX_DepthOfField::RenderCS). Three
-    // compute passes over ONE root signature (b0 16 root constants, fully bindless like the TAA resolve):
-    // the 1x1 focus resolve, the half-res blur, and the full-res composite. The blur has two variants,
-    // selected at runtime by RendererSettings.DoFGaussBlur exactly as on D3D11 — the 48-tap bokeh spiral
-    // (BlurPSO) or the cheap 16-tap Gaussian (GaussPSO, the DOF_GAUSS_BLUR macro). The focus ping-pong pair,
-    // the half-res blur target and the full-res composite scratch are GPU resources and live in the engine
-    // (D3D12DoF.cpp), like the bloom pyramid / TAA history.
+    // Depth of field (Shaders/D3D12/DoF.hlsl — the port of D3D11PFX_DepthOfField::RenderCS). Three passes
+    // over ONE root signature (b0 16 root constants, fully bindless like the TAA resolve): the 1x1 focus
+    // resolve and the half-res blur in compute, then the full-res composite as a blended fullscreen draw
+    // into the scene-colour target. The blur has two variants, selected at runtime by
+    // RendererSettings.DoFGaussBlur exactly as on D3D11 — the 48-tap bokeh spiral (BlurPSO) or the cheap
+    // 16-tap Gaussian (GaussPSO, the DOF_GAUSS_BLUR macro). The focus ping-pong pair and the half-res blur
+    // target are GPU resources and live in the engine (D3D12DoF.cpp), like the bloom pyramid / TAA history.
     struct DoFPipeline {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            FocusCsBlob;
@@ -313,8 +313,9 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            GaussCsBlob;      // DOF_GAUSS_BLUR: 16-tap Gaussian
         Microsoft::WRL::ComPtr<ID3D12PipelineState> GaussPSO;
-        Microsoft::WRL::ComPtr<ID3DBlob>            CompositeCsBlob;
-        Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositeVsBlob;  // fullscreen triangle
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositePsBlob;  // blends over the scene colour
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;     // graphics, not compute
     };
 
     struct MotionPipeline {
@@ -463,6 +464,9 @@ public:
         Microsoft::WRL::ComPtr<ID3D12RootSignature> VobCullRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            VobCullCsBlob;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> VobCullPSO;
+        // Same shader at the no-motion instance stride; see VobInstanceStride().
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobCullNoMotionPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullNoMotionCsBlob;
         // Indirect-arg patch: b0 4 root consts, t0 root SRV (per-visual counts), u0 root UAV (arg buffer).
         Microsoft::WRL::ComPtr<ID3D12RootSignature> PatchRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            PatchCsBlob;
@@ -590,7 +594,7 @@ public:
     bool CreateGtao();        // Intel XeGTAO compute pipelines (AO_ASSAO on D3D12); textures stay in engine
     bool CreateMotion();      // motion-vector fill compute + debug-overlay pipelines; textures stay in engine
     bool CreateTaa();         // Intel TAA resolve compute pipeline; history buffers stay in engine
-    bool CreateDoF();         // depth-of-field focus/blur/composite compute pipelines; textures stay in engine
+    bool CreateDoF();         // depth-of-field focus/blur compute + composite graphics; textures stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateSky();         // procedural scattering sky dome (own bindless root sig + inner/outer PSOs); dome mesh is GSky's
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO

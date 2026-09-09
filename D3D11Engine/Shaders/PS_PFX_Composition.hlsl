@@ -38,8 +38,6 @@ cbuffer PFXBuffer : register( b0 )
 //--------------------------------------------------------------------------------------
 SamplerState SS_Linear : register( s0 );
 
-Texture2D TX_Backbuffer : register( t0 );
-
 #if COMPOSE_SAO
 Texture2D TX_SAO : register( t1 );
 #endif
@@ -140,22 +138,25 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
+// Premultiplied output, blended with ONE / INV_SRC_ALPHA: dst*(1-fog.a) + fog.rgb*fog.a + godrays. The
+// blend does the lerp-then-add, so the scene is never read as a texture.
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
-    float4 color = TX_Backbuffer.Sample( SS_Linear, Input.vTexcoord );
+    float3 color = 0;
+    float coverage = 0;
 
     // Composition order: HeightFog (alpha blend) -> GodRays (additive)
     // (Ambient occlusion is applied in the lighting pass, on indirect light only.)
 
 #if COMPOSE_HEIGHTFOG
     float4 fog = ComputeHeightFog( Input.vTexcoord );
-    color.rgb = lerp( color.rgb, fog.rgb, fog.a );
+    color = fog.rgb * fog.a;
+    coverage = fog.a;
 #endif
 
 #if COMPOSE_GODRAYS
-    float3 godrays = TX_GodRays.Sample( SS_Linear, Input.vTexcoord ).rgb;
-    color.rgb += godrays;
+    color += TX_GodRays.Sample( SS_Linear, Input.vTexcoord ).rgb;
 #endif
 
-    return color;
+    return float4( color, coverage );
 }

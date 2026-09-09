@@ -20,8 +20,10 @@ public:
     /** Called on resize */
     void OnResize( const INT2& size );
 
-    /** Renders the PostFX */
-    void RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& renderTargetSRV );
+    /** Renders the PostFX. output null: resolve into a scratch and copy back over the currently bound
+        RTV. Otherwise render straight into output, which the caller then makes the scene. */
+    bool RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& renderTargetSRV,
+                       ID3D11RenderTargetView* output = nullptr );
 
     /** Draws this effect to the given buffer */
     XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_SUCCESS; };

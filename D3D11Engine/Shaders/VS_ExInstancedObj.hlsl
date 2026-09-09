@@ -46,12 +46,20 @@ struct VS_INPUT
     float2 vTex1        : TEXCOORD0;
     float2 vTex2        : TEXCOORD1;
     float4 vDiffuse     : DIFFUSE;
-    float4x4 InstanceWorldMatrix : INSTANCE_WORLD_MATRIX;
-    float4x4 InstancePrevWorldMatrix : INSTANCE_PREV_WORLD_MATRIX;
+    // VobInstanceInfo::world / ::prevWorld — three rows each, the (0,0,0,1) row dropped.
+    float4 InstanceWorld0 : INSTANCE_WORLD_MATRIX0;
+    float4 InstanceWorld1 : INSTANCE_WORLD_MATRIX1;
+    float4 InstanceWorld2 : INSTANCE_WORLD_MATRIX2;
+    float4 InstancePrevWorld0 : INSTANCE_PREV_WORLD_MATRIX0;
+    float4 InstancePrevWorld1 : INSTANCE_PREV_WORLD_MATRIX1;
+    float4 InstancePrevWorld2 : INSTANCE_PREV_WORLD_MATRIX2;
     float4 InstanceColor : INSTANCE_COLOR;
     float2 InstanceWind : INSTANCE_WINDFLUENCE;
     uint InstanceWindMetaIndex : INSTANCE_WIND_META_INDEX; // first 31 bits are index into structure buffer, 32 bit is flag if its "focused"
 };
+
+#define InstWorld(I)     float3x4((I).InstanceWorld0, (I).InstanceWorld1, (I).InstanceWorld2)
+#define InstPrevWorld(I) float3x4((I).InstancePrevWorld0, (I).InstancePrevWorld1, (I).InstancePrevWorld2)
 
 struct VS_OUTPUT
 {
@@ -75,7 +83,7 @@ static const float phaseVariation = 0.40f;
 static const float windStrengMult = 16.0f; // original engine uses [0.1 -> 5] range, we use higher values in formulas 
 static const float PI_2 = 6.283185; // 2 * PI
 
-float GetInstancePhaseOffset(float4x4 objMatrix, float maxHeightValue)
+float GetInstancePhaseOffset(float3x4 objMatrix, float maxHeightValue)
 {
     // Random seed by object's matrix
     // Combine object matrix and maxHeight for more stable randomness
@@ -83,7 +91,7 @@ float GetInstancePhaseOffset(float4x4 objMatrix, float maxHeightValue)
     return frac(sin(seed) * 43758.5453) * phaseVariation;
 }
 
-float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float4x4 instMatrix, float maxHeightValue, float windStrength)
+float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float3x4 instMatrix, float maxHeightValue, float windStrength)
 {
     // Calculate if vertex should be affected (1 if heightNorm >= trunkStiffness, 0 otherwise)
     float shouldAffect = saturate(sign(heightNorm - trunkStiffness + 0.0001f));
@@ -132,7 +140,7 @@ float3 CalculatePlayerInfluence(
     float3 vertexLocalPos,
     float minHeight,
     float maxHeight,
-    float4x4 instWorldMatrix
+    float3x4 instWorldMatrix
 )
 {
     float heightRange = max(maxHeight - minHeight, 0.001);
@@ -141,7 +149,7 @@ float3 CalculatePlayerInfluence(
     // 15% of object height check
     float heightMask = smoothstep(0.14, 0.16, vertexHeightNorm);
     
-    float3 vertexWorldPos = mul(float4(vertexLocalPos, 1.0), instWorldMatrix).xyz;
+    float3 vertexWorldPos = mul(instWorldMatrix, float4(vertexLocalPos, 1.0));
     float3 toVertex = vertexWorldPos - playerPos;
 
     // Branch instead of lerp: normalize(toVertex) is Inf/NaN when toVertex is ~0
@@ -158,7 +166,7 @@ float3 CalculatePlayerInfluence(
     float randomOffset = frac(sin(dot(vertexLocalPos.xz, float2(12.9898, 78.233))) * 43758.5453);
     influence *= 0.9 + 0.1 * randomOffset;
 
-    float3 displaceDirLocal = normalize(mul(displaceDirWorld, (float3x3)instWorldMatrix));
+    float3 displaceDirLocal = normalize(mul((float3x3)instWorldMatrix, displaceDirWorld));
     return displaceDirLocal * heroAffectStrength * influence;
 }
 #endif
@@ -196,8 +204,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
         // previous-frame player position is tracked). Time-independent, so it cancels correctly out of
         // the velocity when the player hasn't moved; omitting it (as before) leaked the WHOLE push
         // offset as bogus motion every frame the effect was active, regardless of what actually moved.
-        position += CalculatePlayerInfluence(playerPos, position, localMinHeight, localMaxHeight, Input.InstanceWorldMatrix);
-        prevPosition += CalculatePlayerInfluence(playerPos, prevPosition, localMinHeight, localMaxHeight, Input.InstanceWorldMatrix);
+        position += CalculatePlayerInfluence(playerPos, position, localMinHeight, localMaxHeight, InstWorld(Input));
+        prevPosition += CalculatePlayerInfluence(playerPos, prevPosition, localMinHeight, localMaxHeight, InstWorld(Input));
     }
 #endif
 
@@ -216,7 +224,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
             normalize(windDir),
             vertexHeightNorm,
             globalTime,
-            Input.InstanceWorldMatrix,
+            InstWorld(Input),
             localMaxHeight,
             Input.InstanceWind.x
         );
@@ -226,7 +234,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
             normalize(windDir),
             vertexHeightNorm,
             prevGlobalTime,
-            Input.InstanceWorldMatrix,
+            InstWorld(Input),
             localMaxHeight,
             Input.InstanceWind.x
         );
@@ -234,10 +242,10 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 #endif
 
     // Common processing for both cases
-    float3 worldPos = mul(float4(position, 1.0), Input.InstanceWorldMatrix).xyz;
+    float3 worldPos = mul(InstWorld(Input), float4(position, 1.0));
 
     // Calculate previous world position for motion vectors
-    float3 prevWorldPos = mul(float4(prevPosition, 1.0), Input.InstancePrevWorldMatrix).xyz;
+    float3 prevWorldPos = mul(InstPrevWorld(Input), float4(prevPosition, 1.0));
 
     Output.vPosition = mul(float4(worldPos, 1.0), frame.M_ViewProj);
     Output.vTexcoord = Input.vTex1;
@@ -246,7 +254,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     // 2.0 = focused, 0.0 = not focused. Value >1.0 is impossible from UNORM hardware inputs,
     // so step(1.5) in the PS can distinguish this from other shaders that output alpha=1.0.
     Output.vDiffuse.w = (Input.InstanceWindMetaIndex >> 31u) ? 2.0f : 0.0f;
-    Output.vNormalVS = mul(Input.vNormal, mul((float3x3)Input.InstanceWorldMatrix, (float3x3)frame.M_View));
+    Output.vNormalVS = mul(mul((float3x3)InstWorld(Input), Input.vNormal), (float3x3)frame.M_View);
     Output.vViewPosition = mul(float4(worldPos, 1.0), frame.M_View);
     
     // Store clip positions for velocity calculation in pixel shader

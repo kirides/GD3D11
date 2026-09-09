@@ -1080,8 +1080,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
 
     // pso still carries the depth-only state (color mask 0, GREATER_EQUAL depth-write) — only swap VS/PS/layout.
@@ -1115,11 +1114,10 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         // VSDepthAttach takes the full VS_IN (Vob.hlsl), which declares INSTANCE_GP_SLOT — required here too.
-        { "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 140, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
     pso.VS = { World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
     pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
@@ -1231,15 +1229,13 @@ bool D3D12PipelineState::CreateDepthPrepassGBuf() {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "INSTANCE_WORLD_MATRIX",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX",      1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX",      2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX",      3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_PREV_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_PREV_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  80, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_PREV_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  96, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_PREV_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 112, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WINDFLUENCE",       0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX",      0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX",      1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX",      2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",       0, DXGI_FORMAT_R32G32_FLOAT,       1, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 80, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_PREV_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 96, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
     pso.PS = { World.DepthPrepassVobGBufPsBlob->GetBufferPointer(), World.DepthPrepassVobGBufPsBlob->GetBufferSize() };
     pso.InputLayout = { vobLayout, _countof( vobLayout ) };
@@ -1269,19 +1265,18 @@ bool D3D12PipelineState::CreateVob() {
     }
 
     // Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24); slot 1 = per-instance data
-    // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128,
-    // {windStrenth, canBeAffectedByPlayer} @132, GP_Slot @140 (bit 31 = focus highlight).
+    // read from VobInstanceInfo (stride 112): world matrix rows @0/16/32, instance color @48,
+    // {windStrenth, canBeAffectedByPlayer} @52, GP_Slot @60 (bit 31 = focus highlight).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 140, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 52, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_GP_SLOT",      0, DXGI_FORMAT_R32_UINT,           1, 60, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
 
     // Reuse the world root signature (b0 ViewProj + t0 SRV + static sampler s0 — identical needs).
@@ -3414,10 +3409,11 @@ bool D3D12PipelineState::CreateDoF() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    // One root signature for all four PSOs: b0 as 16 root constants (the three tuning values, the history-valid
-    // flag, six bindless heap indices and the two resolutions — see DoF.hlsl's DoFCB). Every texture and UAV is
-    // fetched through ResourceDescriptorHeap, so there is no descriptor table — hence
-    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, same as the TAA resolve above.
+    // One root signature for all four PSOs — the three compute ones and the graphics composite: b0 as 16 root
+    // constants (the three tuning values, the history-valid flag, six bindless heap indices and the two
+    // resolutions — see DoF.hlsl's DoFCB). Every texture and UAV is fetched through ResourceDescriptorHeap, so
+    // there is no descriptor table — hence CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED, same as the TAA resolve above.
+    // The composite draws a fullscreen triangle off SV_VertexID, so no ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT.
     D3D12RootLayout& rs = Layout( "DoF" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 DoFCB
     // s0 linear-clamp only. The one place the D3D11 shader deliberately avoids filtering — the half-res pass's
@@ -3434,20 +3430,21 @@ bool D3D12PipelineState::CreateDoF() {
     if ( !m_Shaders->CompileFromFile( "DoF.hlsl", "CSFocusResolve", Shadermodel_CS, DoF.FocusCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.BlurCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.GaussCsBlob.ReleaseAndGetAddressOf(), gaussMacros )
-        || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSComposite", Shadermodel_CS, DoF.CompositeCsBlob.ReleaseAndGetAddressOf() ) )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "VSFullscreen", Shadermodel_VS, DoF.CompositeVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "PSComposite", Shadermodel_PS, DoF.CompositePsBlob.ReleaseAndGetAddressOf() ) )
         return false;
     rs.ValidateShaders( {
-        { DoF.FocusCsBlob.Get(),     "DoF.hlsl:CSFocusResolve",           D3D12_SHADER_VISIBILITY_ALL },
-        { DoF.BlurCsBlob.Get(),      "DoF.hlsl:CSBlur",                   D3D12_SHADER_VISIBILITY_ALL },
-        { DoF.GaussCsBlob.Get(),     "DoF.hlsl:CSBlur (DOF_GAUSS_BLUR)",  D3D12_SHADER_VISIBILITY_ALL },
-        { DoF.CompositeCsBlob.Get(), "DoF.hlsl:CSComposite",              D3D12_SHADER_VISIBILITY_ALL },
+        { DoF.FocusCsBlob.Get(),     "DoF.hlsl:CSFocusResolve",           D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.BlurCsBlob.Get(),      "DoF.hlsl:CSBlur",                   D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.GaussCsBlob.Get(),     "DoF.hlsl:CSBlur (DOF_GAUSS_BLUR)",  D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.CompositeVsBlob.Get(), "DoF.hlsl:VSFullscreen",             D3D12_SHADER_VISIBILITY_VERTEX },
+        { DoF.CompositePsBlob.Get(), "DoF.hlsl:PSComposite",              D3D12_SHADER_VISIBILITY_PIXEL  },
         } );
 
     struct { ID3DBlob* cs; Microsoft::WRL::ComPtr<ID3D12PipelineState>* pso; const char* name; } passes[] = {
-        { DoF.FocusCsBlob.Get(),     &DoF.FocusPSO,     "focus resolve" },
-        { DoF.BlurCsBlob.Get(),      &DoF.BlurPSO,      "bokeh blur" },
-        { DoF.GaussCsBlob.Get(),     &DoF.GaussPSO,     "gaussian blur" },
-        { DoF.CompositeCsBlob.Get(), &DoF.CompositePSO, "composite" },
+        { DoF.FocusCsBlob.Get(), &DoF.FocusPSO, "focus resolve" },
+        { DoF.BlurCsBlob.Get(),  &DoF.BlurPSO,  "bokeh blur" },
+        { DoF.GaussCsBlob.Get(), &DoF.GaussPSO, "gaussian blur" },
     };
     for ( const auto& p : passes ) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
@@ -3457,6 +3454,40 @@ bool D3D12PipelineState::CreateDoF() {
             LogWarn() << "D3D12: CreateComputePipelineState failed (depth of field, " << p.name << ").";
             return false;
         }
+    }
+
+    // Composite: fullscreen triangle blended straight onto the HDR scene colour. SRC_ALPHA/INV_SRC_ALPHA is
+    // exactly the lerp(sharp, blur, coc) the pass used to compute by hand, so the scene colour never has to be
+    // read as a texture and no scratch target or copy-back is needed. Alpha is masked out of the write so the
+    // target keeps its own; the PS uses that channel for the blend factor only.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC gpso = {};
+    gpso.pRootSignature = DoF.RootSig.Get();
+    gpso.VS = { DoF.CompositeVsBlob->GetBufferPointer(), DoF.CompositeVsBlob->GetBufferSize() };
+    gpso.PS = { DoF.CompositePsBlob->GetBufferPointer(), DoF.CompositePsBlob->GetBufferSize() };
+    gpso.InputLayout = { nullptr, 0 };
+    gpso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    gpso.NumRenderTargets = 1;
+    gpso.RTVFormats[0] = kSceneColorFormat;
+    gpso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    gpso.SampleDesc.Count = 1;
+    gpso.SampleMask = UINT_MAX;
+    gpso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    gpso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    gpso.RasterizerState.DepthClipEnable = TRUE;
+    gpso.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    gpso.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    gpso.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    gpso.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    gpso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ZERO;
+    gpso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+    gpso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    gpso.BlendState.RenderTarget[0].RenderTargetWriteMask =
+        D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
+    gpso.DepthStencilState.DepthEnable = FALSE;
+    gpso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &gpso, IID_PPV_ARGS( DoF.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth of field, composite).";
+        return false;
     }
     return true;
 }
@@ -3722,8 +3753,8 @@ bool D3D12PipelineState::CreateCull() {
     if ( !device ) return false;
 
     auto makeComputePSO = [&]( const char* file, const char* entry, const D3D12RootLayout& rs,
-        ID3DBlob** blob, ID3D12PipelineState** pso ) -> bool {
-        if ( !m_Shaders->CompileFromFile( file, entry, Shadermodel_CS, blob ) ) return false;
+        ID3DBlob** blob, ID3D12PipelineState** pso, const D3D_SHADER_MACRO* defines = nullptr ) -> bool {
+        if ( !m_Shaders->CompileFromFile( file, entry, Shadermodel_CS, blob, defines ) ) return false;
         rs.ValidateShaders( { { *blob, entry, D3D12_SHADER_VISIBILITY_ALL } } );
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
         desc.pRootSignature = rs.Get();
@@ -3764,6 +3795,11 @@ bool D3D12PipelineState::CreateCull() {
 
     if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs,
         Cull.VobCullCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullPSO.ReleaseAndGetAddressOf() ) ) return false;
+    // The struct CSCull compacts has to match whatever stride VobInstanceStride() uploaded at.
+    const D3D_SHADER_MACRO noMotionDefines[] = { { "VOB_NO_MOTION", "1" }, { nullptr, nullptr } };
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs,
+        Cull.VobCullNoMotionCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullNoMotionPSO.ReleaseAndGetAddressOf(),
+        noMotionDefines ) ) return false;
 
     // --- Indirect-arg patch root sig: b0 7 consts (count/stride/offsets), t0 counts + t1 visuals SRVs, u0 raw arg UAV ---
     D3D12RootLayout& patchRs = Layout( "CullPatch" );

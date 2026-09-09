@@ -196,17 +196,19 @@ struct RenderToDepthStencilBuffer {
     ~RenderToDepthStencilBuffer() {
     }
 
-    /** Wraps pre-existing resources without allocating — used for views into a shared TextureCubeArray.
-        faceDSVs, if given, is 6 single-slice DSVs for the NVIDIA per-face fallback (see
-        RequiresNvidiaTiledShadowFaceFallback) windowed onto the same 6-slice range as dsv. */
+    /** Wraps pre-existing views into a shared TextureCubeArray. faceDSVs = 6 single-slice DSVs over the
+        same range as dsv; arrayDSV = the whole array as one FirstArraySlice=0 view. */
     RenderToDepthStencilBuffer(
         Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
         Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsv,
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv,
         UINT SizeX, UINT SizeY,
-        const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>* faceDSVs = nullptr )
-        : Texture( std::move( texture ) ), DepthStencilView( std::move( dsv ) ),
-          ShaderResView( std::move( srv ) ), SizeX( SizeX ), SizeY( SizeY ) {
+        const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>* faceDSVs = nullptr,
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> arrayDSV = nullptr,
+        UINT baseArraySlice = 0 )
+        : Texture( std::move( texture ) ), SizeX( SizeX ), SizeY( SizeY ),
+          BaseArraySlice( baseArraySlice ), ShaderResView( std::move( srv ) ),
+          DepthStencilView( std::move( dsv ) ), ArrayDepthStencilView( std::move( arrayDSV ) ) {
         if ( faceDSVs ) {
             for ( int i = 0; i < 6; ++i ) CubeMapDSVs[i] = faceDSVs[i];
         }
@@ -280,6 +282,16 @@ struct RenderToDepthStencilBuffer {
 
         LE( device->CreateDepthStencilView( Texture.Get(), &DescDSV, DepthStencilView.GetAddressOf() ) );
 
+        // Read-only DSV: lets a pass depth-test against this buffer while sampling it as an SRV, which is
+        // what makes the full-res depth copy unnecessary. Needs feature level 11_0, so it may stay null.
+        {
+            D3D11_DEPTH_STENCIL_VIEW_DESC DescRO = DescDSV;
+            DescRO.Flags = D3D11_DSV_READ_ONLY_DEPTH;
+            if ( DescRO.Format == DXGI_FORMAT_D24_UNORM_S8_UINT || DescRO.Format == DXGI_FORMAT_D32_FLOAT_S8X24_UINT )
+                DescRO.Flags |= D3D11_DSV_READ_ONLY_STENCIL;
+            device->CreateDepthStencilView( Texture.Get(), &DescRO, DepthStencilViewReadOnly.GetAddressOf() );
+        }
+
         if ( arraySize > 1 ) {
             // Create the one-face render target views
             DescDSV.Texture2DArray.ArraySize = 1;
@@ -328,6 +340,12 @@ struct RenderToDepthStencilBuffer {
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& GetTexture() const { return Texture; }
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetShaderResView() const { return ShaderResView; }
     const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetDepthStencilView() const { return DepthStencilView; }
+    /** Null when the device couldn't provide one; callers must fall back to a depth copy then. */
+    const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetDepthStencilViewReadOnly() const { return DepthStencilViewReadOnly; }
+    /** The whole shared array as one view, or null for a buffer that owns its texture. */
+    const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetArrayDepthStencilView() const { return ArrayDepthStencilView; }
+    /** Slice of face 0 inside the shared array; 0 when this buffer owns its texture. */
+    UINT GetBaseArraySlice() const { return BaseArraySlice; }
     UINT GetSizeX() const { return SizeX; }
     UINT GetSizeY() const { return SizeY; }
     UINT GetSampleCount() const { return SampleCount; }
@@ -346,10 +364,13 @@ private:
     UINT SizeX;
     UINT SizeY;
     UINT SampleCount = 1;
+    UINT BaseArraySlice = 0;
 
     // Shader and rendertarget resource views
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ShaderResView;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> DepthStencilView;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> DepthStencilViewReadOnly;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> ArrayDepthStencilView;
 
     // Rendertargets for the cubemap-faces, if this is a cubemap
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> CubeMapDSVs[6];

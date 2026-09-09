@@ -85,7 +85,7 @@ public:
         RenderToTextureBuffer& color,
         RenderToTextureBuffer& normals,
         RenderToTextureBuffer& specular,
-        RenderToTextureBuffer& depthCopy );
+        ID3D11ShaderResourceView* depthSRV );
 
     /** Packs lights into the structured buffer and dispatches CS_LightCulling.
         After this call, GetLightBufferSRV/GetLightGridSRV
@@ -97,9 +97,8 @@ public:
         bool HasShadowedTiledLights = false;
         std::vector<VobLightInfo*> LegacyLights;
     };
-    CullResult CullLights(
-        std::vector<VobLightInfo*>& lights,
-        RenderToTextureBuffer& depthCopy );
+    /** Frustum-only cluster cull - takes no depth input, see the comment at its dispatch. */
+    CullResult CullLights( std::vector<VobLightInfo*>& lights );
 
     /** SRVs for reading culled light data in pixel shaders (valid after CullLights). */
     ID3D11ShaderResourceView* GetLightBufferSRV() const { return m_LightBufferSRV.Get(); }
@@ -142,6 +141,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowDynCubeArraySRV;
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_DYN_SHADOW_CUBEMAPS> m_SlotDynDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_DYN_SHADOW_CUBEMAPS> m_SlotDynViews;
+    // Whole array as one FirstArraySlice=0 view (UseAbsoluteCubeSliceIndexing); null is tolerated.
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_ShadowDynArrayDSV;
     bool m_ShadowDynArrayCreated = false;
 
     // Static (core) cube array. Lazy-created like the overlay above.
@@ -149,6 +150,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowStaticCubeArraySRV;
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotViews;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_ShadowStaticArrayDSV;
     bool m_StaticShadowArrayCreated = false;
 
     uint32_t m_lastNumTilesX = 0;

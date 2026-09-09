@@ -30,6 +30,8 @@ public:
 private:
     Microsoft::WRL::ComPtr<ID3D11VertexShader> VertexShader;
     Microsoft::WRL::ComPtr<ID3D11InputLayout> InputLayout;
+    // Null unless the shader declares ShaderInfo::altLayout.
+    Microsoft::WRL::ComPtr<ID3D11InputLayout> AltInputLayout;
 #ifdef DEBUG_D3D11
     std::string filePath;
 #endif

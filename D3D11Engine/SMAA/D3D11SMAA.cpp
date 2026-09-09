@@ -99,16 +99,16 @@ void D3D11SMAA::OnResize(int width, int height)
     m_height = height;
 }
 
-void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
+bool D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
     ID3D11RenderTargetView* outputRTV,
     TexturePool* pool )
 {
-    if (!m_width || !m_height) return;
+    if (!m_width || !m_height) return false;
     
     if (m_recreate)
     {
         if (!Init()) {
-            return;
+            return false;
         }
         
         // Update Constant Buffer
@@ -206,6 +206,7 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
     // (it owns its own m_vsEdge/m_psLumaEdge/... rather than the engine's ShaderManager shaders), so
     // the cache has no idea any of this happened. Forget what it believed was bound.
     D3D11PipelineStateCache::InvalidateAll();
+    return true;
 }
 
 void D3D11SMAA::ReleaseResources() {

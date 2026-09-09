@@ -17,7 +17,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy ) {
+    ID3D11ShaderResourceView* depthSRV ) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "LegacyPointlightLights" ) );
     auto& context = graphicsEngine->GetContext();
@@ -50,7 +50,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     graphicsEngine->SetupVS_ExMeshDrawCall();
     graphicsEngine->SetupVS_ExConstantBuffer();
 
-    context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(), graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
+    // Read-only DSV: depth writes are off here and depthSRV may be the live depth buffer.
+    context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(), graphicsEngine->GetDepthReadOnlyDSV() );
 
     DS_PointLightConstantBuffer plcb = {};
 
@@ -76,7 +77,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     color.BindToPixelShader( context.Get(), 0 );
     normals.BindToPixelShader( context.Get(), 1 );
     specular.BindToPixelShader( context.Get(), 7 );
-    depthCopy.BindToPixelShader( context.Get(), 2 );
+    context->PSSetShaderResources( 2, 1, &depthSRV );
     // Same texture/slot PS_DS_AtmosphericScattering.hlsl binds it to (D3D11ShadowMap.h's TX_RainShadowmap
     // slot); SS_Comp (s2) is already bound for the whole frame by that same earlier pass.
     if ( RenderToDepthStencilBuffer* rainShadowmap = graphicsEngine->Effects->GetRainShadowmap() )
@@ -97,6 +98,9 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     const bool cameraIndoors = playerVob && playerVob->IsIndoorVob();
 
     auto cbPool = graphicsEngine->GetConstantBufferPool();
+    // The active technique answers both "does this light have depth" and "bind it" - see PointShadow/.
+    IPointShadowTechnique* pointShadows = graphicsEngine->GetShadowMaps()
+        ? graphicsEngine->GetShadowMaps()->GetPointShadowTechnique() : nullptr;
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
@@ -105,7 +109,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         bool hasShadow = false;
         D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
         if ( settings.EnablePointlightShadows > 0 ) {
-            hasShadow = pl && pl->IsInited() && pl->HasShadowMap( 0 );
+            hasShadow = pl && pl->IsInited() && pointShadows && pointShadows->ProvidesShadowFor( *pl );
             if ( hasShadow ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
                     graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
@@ -185,9 +189,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         cbPool->BindPS(activePlBuf, rainBufAllocation);
         cbPool->BindVS(1, rainBufAllocation);
 
-        if ( settings.EnablePointlightShadows > 0 ) {
-            if ( light->LightShadowBuffers )
-                static_cast<D3D11PointLight*>(light->LightShadowBuffers.get())->OnRenderLight();
+        if ( settings.EnablePointlightShadows > 0 && pl && pointShadows ) {
+            pointShadows->BindPerLightSampling( *pl );
         }
 
         graphicsEngine->InverseUnitSphereMesh->DrawMesh();

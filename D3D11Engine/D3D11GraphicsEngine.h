@@ -38,6 +38,17 @@ const unsigned int MORPHEDMESH_HIGH_BUFFER_SIZE = 20480 * sizeof( ExVertexStruct
 const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
+/** Per-instance upload stride. Must stay in lockstep with D3D11VShader::Apply, which picks the matching
+    input layout off the same predicate. */
+inline unsigned int VobInstanceUploadStride() {
+    return static_cast<unsigned int>( Engine::GAPI->GetRendererState().RendererSettings.GetIsTAAEnabled()
+        ? sizeof( VobInstanceInfo ) : kVobInstanceStrideNoMotion );
+}
+inline unsigned int NodeAttachmentUploadStride() {
+    return static_cast<unsigned int>( Engine::GAPI->GetRendererState().RendererSettings.GetIsTAAEnabled()
+        ? sizeof( NodeAttachmentInstanceData ) : kNodeAttachmentStrideNoMotion );
+}
+
 class D3D11PointLight;
 class D3D11VShader;
 class D3D11PShader;
@@ -225,6 +236,13 @@ public:
     /** Returns the HDRBackbuffer for regular geometry and effects */
     RenderToTextureBuffer& GetHDRBackBuffer() const { return *HDRBackBuffer; }
 
+    /** The ping-pong partner of the HDR scene target: same desc, holding nothing anyone reads. Render a
+        scene-in/scene-out pass into it and call SwapHDRBackBuffer(). Null if it couldn't be created. */
+    RenderToTextureBuffer* GetHDRBackBufferSwap() const { return HDRBackBufferSwap.get(); }
+
+    /** Makes GetHDRBackBufferSwap() the scene target and the old scene the partner. */
+    void SwapHDRBackBuffer();
+
     /** MSAA resources for the Forward+ renderer's opaque geometry pass (null/1 sample when MSAA is off or Deferred is active) */
     RenderToTextureBuffer* GetMSAAColorBuffer() const { return MSAAColorBuffer.get(); }
     RenderToDepthStencilBuffer* GetMSAADepthBuffer() const { return MSAADepthStencilBuffer.get(); }
@@ -371,6 +389,13 @@ public:
     /** Copies the depth stencil buffer to DepthStencilBufferCopy */
     void CopyDepthStencil();
 
+    /** Depth SRV for a read-only pass: the live buffer's SRV when a read-only DSV exists, otherwise a
+        refreshed DepthStencilBufferCopy - so the full-res copy is only paid for where that's impossible. */
+    ID3D11ShaderResourceView* AcquireDepthReadSRV();
+
+    /** DSV to bind while AcquireDepthReadSRV()'s result is bound as an SRV. Depth writes must be off. */
+    ID3D11DepthStencilView* GetDepthReadOnlyDSV() const;
+
     /** Adds a pass that fills an R8_UNORM screen-space AO mask (HBAO+/ASSAO/SAO per AoMode),
         white-cleared so it reads as "no occlusion" when AO is disabled. The mask is later
         sampled in the lighting pass and applied to indirect light only.
@@ -399,8 +424,6 @@ public:
     // TODO: Remove from here, put into D3D11ShadowMaps
     D3D11PointLight* DebugPointlight;
 
-    // Using a list here to determine which lights to update, since we don't want to update every light every frame.
-    std::list<VobLightInfo*> FrameShadowUpdateLights;
     
     /** Effects wrapper */
     std::unique_ptr<D3D11Effect> Effects;
@@ -530,6 +553,12 @@ protected:
     /** Swapchain buffers */
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackbufferRTV;
     std::unique_ptr<RenderToTextureBuffer> DepthStencilBufferCopy;
+    std::unique_ptr<RenderToTextureBuffer> HDRBackBufferSwap;
+
+    /** The executing graph and the handle HDRBackBuffer was imported under, for SwapHDRBackBuffer() to
+        repoint. Only valid inside OnStartWorldRendering. */
+    class RenderGraph* m_ActiveGraph = nullptr;
+    RGResourceHandle m_BackBufferHandle = 0;
     // DummyShadowCubemapTexture moved into ShadowMaps
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
 

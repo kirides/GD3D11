@@ -19,6 +19,8 @@
 #include "D3D11RenderQueue.h"
 #include "D3D11TiledDeferredShading.h"
 #include "D3D11LegacyDeferredShading.h"
+#include "PointLightSlotSelector.h"
+#include "PointShadow/IPointShadowTechnique.h"
 
 struct RenderToDepthStencilBuffer;
 struct RenderToTextureBuffer;
@@ -139,12 +141,15 @@ public:
     //  lambda in [0,1] interpolates between logarithmic (1.0) and uniform (0.0) splits.
     static std::vector<float> ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda = 0.95f, float bias = 1.0f );
     XRESULT DrawPointlightShadows(std::vector<VobLightInfo*>& lights);
-    /** Tiled lighting off: per-light DepthStencilPool cubemaps, no shared arrays and so no slot table. */
-    XRESULT DrawPointlightShadowsLegacy(std::vector<VobLightInfo*>& lights);
+
+    /** Installs the point-light shadowing technique, invalidating every existing bake when it actually
+        changes. Which one is implied by tiled lighting - shared cube arrays only exist there. */
+    void SelectPointShadowTechnique( EPointShadowTechnique want );
+    IPointShadowTechnique* GetPointShadowTechnique() const { return m_PointTechnique.get(); }
     XRESULT DrawWorldShadow();
     XRESULT DrawRainShadowmap();
     XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                                 & specular, RenderToTextureBuffer& depthCopy);
+                                 & specular, ID3D11ShaderResourceView* depthSRV);
 
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
@@ -152,7 +157,7 @@ public:
     XRESULT DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV = nullptr );
     DS_ScreenQuadConstantBuffer FillSunCSMConstantBuffer() const;
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                         & specular, RenderToTextureBuffer& depthCopy, ID3D11ShaderResourceView* aoMaskSRV = nullptr);
+                         & specular, ID3D11ShaderResourceView* depthSRV, ID3D11ShaderResourceView* aoMaskSRV = nullptr);
 
     D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 
@@ -198,13 +203,6 @@ public:
     void ReleasePointLightSlotFor( const zCVob* lightVob );
 
 private:
-    /** Sizes the shared slot table for this backend on first use. Idempotent. */
-    void ConfigurePointSlots();
-
-    /** Makes every light's tiled slot agree with the selector. Walks the whole light map, not this frame's
-        visible set: a queued background update must not render into a slot that changed hands. */
-    void ReconcileTiledSlots();
-
     // Per-cascade size cap for the multi-cascade atlas, which packs all cascades into one
     // (2*S) x (1.5*S) texture. 2048 keeps the biggest atlas at 4096x3072.
     static const int MAX_ATLAS_CASCADE_SIZE = 2048;
@@ -250,8 +248,8 @@ private:
     // Which point light owns which shadow cube, and when each one's cached static depth is re-rendered.
     // Shared verbatim with the D3D12 backend - see PointLightSlotSelector.h.
     PointLightSlotSelector m_PointSlots;
-    // This frame's dome sweep. Kept across frames so its capacity is reused (32-bit address-space rule).
-    std::vector<PointLightSlotSelector::Candidate> m_PointCandidates;
+    // Where point-light depth lives and how it is drawn - see PointShadow/IPointShadowTechnique.h.
+    std::unique_ptr<IPointShadowTechnique> m_PointTechnique;
     D3D11LegacyDeferredShading m_LegacyDeferred;
 
     TracyLockable(std::mutex, m_CullingJobsMutex);

@@ -103,13 +103,13 @@ XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11Shade
 }
 
 /** Renders the SMAA-Effect */
-XRESULT D3D11PfxRenderer::RenderSMAA(ID3D11ShaderResourceView* backbuffer) {
-    FX_SMAA->RenderPostFX( backbuffer );
-    return XR_SUCCESS;
+XRESULT D3D11PfxRenderer::RenderSMAA(ID3D11ShaderResourceView* backbuffer, ID3D11RenderTargetView* output) {
+    return FX_SMAA->RenderPostFX( backbuffer, output ) ? XR_SUCCESS : XR_FAILED;
 }
 
 /** Renders the TAA-Effect */
-XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocityBuffer) {
+XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocityBuffer,
+    ID3D11UnorderedAccessView* sceneOutUAV) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
 
@@ -126,18 +126,19 @@ XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderRes
     }
     
     // Then render TAA using the velocity buffer
-    FX_TAA->RenderPostFX(
+    const bool resolved = FX_TAA->RenderPostFX(
         engine->GetHDRBackBuffer(),
         engine->GetDepthBuffer()->GetShaderResView(),
-        velocityBuffer.Get() ? velocityBuffer : FX_TAA->GetVelocityBufferSRV()
+        velocityBuffer.Get() ? velocityBuffer : FX_TAA->GetVelocityBufferSRV(),
+        sceneOutUAV
     );
 
     // Stelle den DSV wieder her falls nötig
     context->OMSetRenderTargets(1, currentRTV.GetAddressOf(), currentDSV.Get());
-    return XR_SUCCESS;
+    return resolved ? XR_SUCCESS : XR_FAILED;
 }
 
-XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
+XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize ) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     PFX_CAS->SetSharpness( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor );
@@ -145,8 +146,7 @@ XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderRe
         input ? input : engine->GetHDRBackBuffer().GetShaderResView(),
         input ? inputSize : engine->GetResolution(),
         output ? output : engine->GetHDRBackBuffer().GetRenderTargetView(),
-        output ? outputSize : engine->GetResolution(),
-        intermediateBuffer );
+        output ? outputSize : engine->GetResolution() );
     return XR_SUCCESS;
 }
 
@@ -246,7 +246,7 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
 /** Draws the HBAO-Effect to the given buffer */
 XRESULT D3D11PfxRenderer::DrawHBAO(
     const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv,
-    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV,
+    ID3D11ShaderResourceView* pFullResDepthTexSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV) {
     return NvHBAO->Render( rtv.Get(), pFullResDepthTexSRV, pFullResNormalTexSRV);
 }
@@ -282,7 +282,6 @@ XRESULT D3D11PfxRenderer::RenderGodRaysToTexture(
 
 XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     ID3D11RenderTargetView* outputRTV,
-    ID3D11ShaderResourceView* backbufferSRV,
     ID3D11ShaderResourceView* saoSRV,
     ID3D11ShaderResourceView* godraysSRV,
     ID3D11ShaderResourceView* depthSRV ) {
@@ -372,13 +371,19 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     // Bind output RTV (no depth)
     context->OMSetRenderTargets( 1, &outputRTV, nullptr );
 
-    // Bind SRVs: t0=backbuffer, t1=SAO, t2=GodRays, t3=Depth
-    ID3D11ShaderResourceView* srvs[4] = { backbufferSRV, saoSRV, godraysSRV, depthSRV };
+    // Bind SRVs: t1=SAO, t2=GodRays, t3=Depth. t0 stays unbound - the scene is the render target
+    // here, and the blend below replaces reading it.
+    ID3D11ShaderResourceView* srvs[4] = { nullptr, saoSRV, godraysSRV, depthSRV };
     context->PSSetShaderResources( 0, 4, srvs );
 
-    // No blending — direct overwrite
-    Engine::GAPI->GetRendererState().BlendState.SetDefault();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    // Premultiplied blend: the shader outputs fog.rgb*fog.a + godrays with fog.a as coverage.
+    auto& blend = Engine::GAPI->GetRendererState().BlendState;
+    blend.SetAlphaBlending();
+    blend.SrcBlend = GothicBlendStateInfo::BF_ONE;
+    // Leave the target's alpha alone; only the colour channels are composited here.
+    blend.SrcBlendAlpha = GothicBlendStateInfo::BF_ZERO;
+    blend.DestBlendAlpha = GothicBlendStateInfo::BF_ONE;
+    blend.SetDirty();
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc =
         GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
     Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
@@ -391,6 +396,8 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     context->PSSetShaderResources( 0, 4, nullSRVs );
 
     // Restore default states
+    blend.SetDefault();
+    blend.SetDirty();
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc =
         GothicDepthBufferStateInfo::DEFAULT_DEPTH_COMP_STATE;
     Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = true;

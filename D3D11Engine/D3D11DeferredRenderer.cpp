@@ -119,13 +119,11 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
                 ? graph.GetPhysicalTexture( aoMaskResource ) : nullptr;
             ID3D11ShaderResourceView* aoMaskSRV = aoMaskTexture ? aoMaskTexture->GetShaderResView().Get() : nullptr;
 
-            engine.CopyDepthStencil(); // always needed due to depth testing!
-
             engine.GetShadowMaps()->DrawLighting( frameLights,
                 *colorTexture,
                 *normalsTexture,
                 *specularTexture,
-                *engine.GetDepthBufferCopy(),
+                engine.AcquireDepthReadSRV(),
                 aoMaskSRV );
 
             if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {

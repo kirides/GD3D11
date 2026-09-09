@@ -48,6 +48,13 @@ public:
     // Bring an existing engine resource (like the DX11 BackBuffer) into the graph
     RGResourceHandle ImportResource( const std::wstring& name, RenderToTextureBuffer* externalBuffer );
 
+    /** Repoints an imported resource at a different physical buffer, so passes resolving the handle at
+        execute time see a ping-pong of an engine-owned target. */
+    void UpdateImportedResource( RGResourceHandle handle, RenderToTextureBuffer* externalBuffer ) {
+        if ( !IsExternalHandle( handle ) ) return;
+        m_externalTextures[GetHandleIndex( handle )] = externalBuffer;
+    }
+
     // Add a pass using modern C++ lambdas
     template<typename SetupFunc>
         requires std::invocable<SetupFunc, RGBuilder&, RenderPass&>

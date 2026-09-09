@@ -2794,6 +2794,16 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// on the finished image, and before Gothic's own 2D UI/HUD phase — the HUD must stay sharp and untinted.
 	DrawUnderwaterEffects( postFxGraph );
 
+	// Closes the post-tonemap display chain: copies the frame back if a counted pass did not run, so the 2D
+	// UI/HUD, ImGui and the gamma pass find it where they expect. The 2D UI phase relies on the rebind.
+	postFxGraph.AddPass( RG_PASS_NAME( "Display Chain Finish" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+			FinishDisplayChain( cmdList );
+			const D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
+			cmdList.OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+			};
+		} );
+
 	// Developer view of the motion-vector / normal G-buffer, over the finished image (before Gothic's 2D UI and
 	// the ImGui overlay composite, so both stay readable on top of it). No-op unless one of the shared
 	// DebugSettings.TAA.Display* flags is on. This is currently the ONLY consumer of either target — TAA, FSR3
@@ -3409,7 +3419,7 @@ bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, ID3D12Resource*
     const D3D12_VERTEX_BUFFER_VIEW views[2] = {
         { m_VobArena.GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetVertexBytes(),
           D3D12VobArena::VertexStride() },
-        { instances->GetGPUVirtualAddress(), instanceBytes, static_cast<UINT>( sizeof( VobInstanceInfo ) ) },
+        { instances->GetGPUVirtualAddress(), instanceBytes, VobInstanceStride() },
     };
     const D3D12_INDEX_BUFFER_VIEW ibv = {
         m_VobArena.GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetIndexBytes(), DXGI_FORMAT_R16_UINT };
@@ -4001,7 +4011,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             if ( b.members.empty() || !b.head ) continue;
             if ( count + alphaAttachCmds.size() >= kMaxAttachDrawCommands ) { logOverflow( "attachment", kMaxAttachDrawCommands ); break; }
 
-            const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+            const UINT instBytes = VobInstanceStride();
             const UINT need = instBytes * static_cast<UINT>( b.members.size() );
             if ( m_VobInstanceBufferOffset + need > m_VobInstanceBufferCapacity ) {
                 if ( !m_VobInstanceOverflowLogged ) {
@@ -4332,7 +4342,7 @@ bool D3D12GraphicsEngine::UploadVobs(
     // Rounded up to a whole instance: with the VOB arena a command addresses its instances by ELEMENT index
     // (StartInstanceLocation), so every block must start at an exact multiple of the stride — and the slice
     // size is a round byte count, not a round instance count.
-    constexpr UINT kInstStride = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+    const UINT kInstStride = VobInstanceStride();
     const UINT sliceBase = ( ( ringSlot * m_ShadowInstanceSliceCapacity + kInstStride - 1 ) / kInstStride ) * kInstStride;
     const UINT sliceCapacity = m_ShadowInstanceSliceCapacity - ( sliceBase - ringSlot * m_ShadowInstanceSliceCapacity );
     UINT sliceCursor = 0;
@@ -4450,7 +4460,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         if ( visual->Instances.empty() ) continue;
 
         const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
-        constexpr UINT kInstStride = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+        const UINT kInstStride = VobInstanceStride();
         const UINT instBytes = numInstances * kInstStride;
 
         // Keep every block's start a whole number of instances into the ring — see the note above.
@@ -4468,28 +4478,34 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
         const UINT instOffset = m_VobInstanceBufferOffset;
         UINT nearInstances = numInstances;
         if ( !cpuLodSplit ) {
-            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+            if ( kInstStride == sizeof( VobInstanceInfo ) ) {
+                memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+            } else {
+                // Narrower stride: copy each instance's prefix, dropping the prevWorld tail.
+                uint8_t* base = m_VobInstanceBufferPtr[frame] + instOffset;
+                for ( UINT i = 0; i < numInstances; ++i )
+                    memcpy( base + i * kInstStride, &visual->Instances[i], kInstStride );
+            }
         } else {
             // One pass: near packs forward from the start of the block, far backward from its end. Nothing is
             // dropped here (the CPU frustum cull already ran), so the two runs are adjacent and the far one
             // begins at exactly nearInstances — which is what lets a single StartInstanceLocation address it.
             // Packing far backward reverses its order; nothing downstream cares.
-            VobInstanceInfo* dst = reinterpret_cast<VobInstanceInfo*>( m_VobInstanceBufferPtr[frame] + instOffset );
+            uint8_t* dst = m_VobInstanceBufferPtr[frame] + instOffset;
             const float cx = ( visual->BBox.Min.x + visual->BBox.Max.x ) * 0.5f;
             const float cy = ( visual->BBox.Min.y + visual->BBox.Max.y ) * 0.5f;
             const float cz = ( visual->BBox.Min.z + visual->BBox.Max.z ) * 0.5f;
             UINT nearCursor = 0;
             UINT farCursor = numInstances;
             for ( const VobInstanceInfo& inst : visual->Instances ) {
-                // The instance matrix is uploaded row-major and read COLUMN-major by the shaders, so the
-                // stored XMFLOAT4X4 is the transpose of what HLSL multiplies with. Written component-wise so
-                // this is visibly the same expression VobCull.hlsl evaluates: mul( float4(centre,1), world ).
-                const XMFLOAT4X4& w = inst.world;
+                // Component-wise so this reads as the same expression VobCull.hlsl evaluates.
+
+                const Affine3x4& w = inst.world;
                 const float wx = cx * w.m[0][0] + cy * w.m[0][1] + cz * w.m[0][2] + w.m[0][3] - camPos.x;
                 const float wy = cx * w.m[1][0] + cy * w.m[1][1] + cz * w.m[1][2] + w.m[1][3] - camPos.y;
                 const float wz = cx * w.m[2][0] + cy * w.m[2][1] + cz * w.m[2][2] + w.m[2][3] - camPos.z;
-                if ( wx * wx + wy * wy + wz * wz > lodDistSq ) dst[--farCursor] = inst;
-                else                                          dst[nearCursor++] = inst;
+                const UINT slot = ( wx * wx + wy * wy + wz * wz > lodDistSq ) ? --farCursor : nearCursor++;
+                memcpy( dst + slot * kInstStride, &inst, kInstStride );
             }
             nearInstances = nearCursor;
         }
@@ -4497,7 +4513,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
 
         FrameVobUpload up;
         up.visual = visual;
-        up.instView = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+        up.instView = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, kInstStride };
         up.culledInstView = up.instView;
         up.numInstances = numInstances;
         up.instanceBase = instOffset / kInstStride;   // exact — the ring offset was just stride-aligned above
@@ -5042,7 +5058,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             if ( !attMesh || attMesh->Indices.empty() ) continue;
                             if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
 
-                            const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+                            const UINT instBytes = VobInstanceStride();
                             if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
                                 if ( !m_VobInstanceOverflowLogged ) {
                                     LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
@@ -5051,8 +5067,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                                 break;
                             }
                             VobInstanceInfo vii = {};
-                            vii.world = attWorld;
-                            vii.prevWorld = attPrevWorld;   // motion vectors — see attPrevWorld above
+                            PackAffine3x4( vii.world, attWorld );
+                            PackAffine3x4( vii.prevWorld, attPrevWorld );
                             vii.color = groundLight.ToDWORD();
                             // Focus-highlight bit for node-attached MOBs (tree-saw trunks, beds) — mirrors Vob.hlsl's VSMainAttach.
                             vii.GP_Slot |= ( playerFocusVob && playerFocusVob == vi->Vob ) ? ( 1u << 31 ) : 0u;
@@ -5062,7 +5078,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
                             m_VobInstanceBufferOffset += instBytes;
                             const D3D12_VERTEX_BUFFER_VIEW attInstView = {
-                                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+                                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, instBytes };
                             // Diffuse SRV heap slot resolved HERE (main thread) so the MT shadow-cascade recorder
                             // never has to read Gothic texture state; the main-view prepass/color paths still use
                             // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately

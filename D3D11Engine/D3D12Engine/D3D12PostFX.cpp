@@ -479,15 +479,13 @@ bool D3D12GraphicsEngine::LoadSmaaTextures() {
 
 
 bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
-	// (Re)builds the shared LDR scratch copy of the tonemapped swapchain image — the read side of every
-	// post-tonemap pass that also writes the swapchain (SMAA's color input, the sharpen source). One texture
-	// serves both because they run in sequence, never concurrently. The SRV heap slot is allocated ONCE and
-	// re-pointed at the fresh resource on resize (like the bloom pyramid / m_SceneColor). Non-fatal — both
-	// consumers guard on m_LdrCopyReady. Created in its resting state, COPY_DEST.
+	// (Re)builds both LDR display-chain scratches; readiness is all-or-nothing, since two enabled chain passes
+	// already need both slots. SRV heap slots are allocated ONCE and re-pointed at the fresh resources on
+	// resize (like the bloom pyramid / m_SceneColor); the RTVs live in fixed heap slots. Rest in RENDER_TARGET.
 	m_LdrCopyReady = false;
 	if ( size.x < 4 || size.y < 4 ) return false;
 	ID3D12Device* device = m_Device.GetDevice();
-	if ( !device ) return false;
+	if ( !device || !m_RtvHeap ) return false;
 
 	D3D12MA::ALLOCATION_DESC heapDefault = {};
 	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -498,31 +496,63 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	dd.Height = static_cast<UINT>( size.y );
 	dd.DepthOrArraySize = 1;
 	dd.MipLevels = 1;
-	// Must match the display target byte-for-byte: this is a CopyResource destination, and with real HDR
-	// output the display target is the FP16 extended-sRGB buffer rather than the R10G10B10A2 swapchain.
+	// Must match the display target byte-for-byte - a scratch stands in for it; with real HDR output that
+	// target is the FP16 extended-sRGB buffer rather than the R10G10B10A2 swapchain.
 	dd.Format = m_Pipelines.DisplayFormat;
 	dd.SampleDesc.Count = 1;
 	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	dd.Flags = D3D12_RESOURCE_FLAG_NONE;
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-		m_LdrCopyAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrCopy.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the LDR post-FX scratch copy (SMAA/sharpen will be unavailable).";
-		return false;
-	}
-	m_LdrCopy->SetName( L"LdrPostFxCopy" );
-
-	if ( m_LdrCopySrvSlot == UINT_MAX ) m_LdrCopySrvSlot = AllocateSrvSlot();
-	if ( m_LdrCopySrvSlot == UINT_MAX ) return false;
+	dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
 	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srv.Texture2D.MipLevels = 1;
 	srv.Format = m_Pipelines.DisplayFormat;
-	device->CreateShaderResourceView( m_LdrCopy.Get(), &srv, GetSrvCpuHandle( m_LdrCopySrvSlot ) );
 
+	for ( UINT i = 0; i < 2; ++i ) {
+		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+			m_LdrScratchAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrScratch[i].ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: failed to create LDR display-chain scratch " << i << " (SMAA/sharpen/underwater will be unavailable).";
+			return false;
+		}
+		m_LdrScratch[i]->SetName( i == 0 ? L"LdrDisplayScratch0" : L"LdrDisplayScratch1" );
+
+		if ( m_LdrScratchSrvSlot[i] == UINT_MAX ) m_LdrScratchSrvSlot[i] = AllocateSrvSlot();
+		if ( m_LdrScratchSrvSlot[i] == UINT_MAX ) return false;
+		device->CreateShaderResourceView( m_LdrScratch[i].Get(), &srv, GetSrvCpuHandle( m_LdrScratchSrvSlot[i] ) );
+
+		// RTV heap slots kBackBufferMax+6 / +7; see CreateFrameResources rtvHeapDesc.NumDescriptors.
+		m_LdrScratchRtv[i] = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+		m_LdrScratchRtv[i].ptr += static_cast<SIZE_T>( kBackBufferMax + 6 + i ) * m_RtvDescriptorSize;
+		device->CreateRenderTargetView( m_LdrScratch[i].Get(), nullptr, m_LdrScratchRtv[i] );
+	}
+
+	m_DisplaySlot = -1;
+	m_DisplayChainRemaining = 0;
+	m_DisplayChainSrc = -1;
 	m_LdrCopyReady = true;
 	return true;
+}
+
+// The guards of the three display-chain passes, factored out so PlanDisplayChain counts exactly the passes
+// that will run. Nothing they read changes during graph execution.
+bool D3D12GraphicsEngine::WillRunSMAA() const {
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	return settings.AntiAliasingMode == GothicRendererSettings::AA_SMAA
+		&& m_CmdList && m_SwapChainReady && m_LdrCopyReady
+		&& m_SmaaAreaTex && m_SmaaAreaTex->HasSRV() && m_SmaaSearchTex && m_SmaaSearchTex->HasSRV()
+		&& m_Pipelines.Smaa.RootSig && m_Pipelines.Smaa.EdgePSO && m_Pipelines.Smaa.BlendPSO && m_Pipelines.Smaa.NeighborPSO;
+}
+
+bool D3D12GraphicsEngine::WillRunSharpen() const {
+	// m_Fsr3RanThisFrame: FSR's own RCAS pass already sharpened off the same SharpenFactor.
+	if ( m_Fsr3RanThisFrame ) return false;
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_NONE || settings.SharpenFactor <= 0.0f ) return false;
+	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady || !m_Pipelines.Sharpen.RootSig ) return false;
+	return ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS )
+		? m_Pipelines.Sharpen.CasPSO != nullptr
+		: m_Pipelines.Sharpen.SimplePSO != nullptr;
 }
 
 
@@ -549,35 +579,29 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 	// crisp). Runtime toggle: only runs when AntiAliasingMode == AA_SMAA and every resource/PSO is present.
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) return;
-	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady
-		|| !m_SmaaAreaTex || !m_SmaaAreaTex->HasSRV() || !m_SmaaSearchTex || !m_SmaaSearchTex->HasSRV()
-		|| !m_Pipelines.Smaa.RootSig || !m_Pipelines.Smaa.EdgePSO || !m_Pipelines.Smaa.BlendPSO || !m_Pipelines.Smaa.NeighborPSO )
-		return;
+	if ( !WillRunSMAA() ) return;
 
 	auto consts = std::make_shared<SmaaConsts>( SmaaConsts{
 		{ 1.0f / m_BackbufferResolution.x, 1.0f / m_BackbufferResolution.y, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ) },
-		m_LdrCopySrvSlot, 0, 0,
+		UINT_MAX, 0, 0,
 		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
 		} );
+	// Filled by the chain step below and read by the neighborhood-blend pass, both at execute time - hence a
+	// shared_ptr (see D3D12DoF.cpp's file header).
+	auto step = std::make_shared<DisplayChainStep>();
 	// Plain locals (not shared_ptr): a handle is only ever written once, synchronously, inside a pass's own
 	// setup lambda — never during the deferred Execute() — so by-value capture in any later lambda already
 	// sees the final value. See D3D12DoF.cpp's file header for the full explanation.
 	RGResourceHandle edgesHandle = RG_INVALID_HANDLE;
 	RGResourceHandle blendHandle = RG_INVALID_HANDLE;
 
-	// --- Copy the tonemapped display image into m_LdrCopy (the SMAA color input). Display target:
-	// RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST. Not graph-managed (shared with Sharpen/
-	// Underwater — see the header comment). ---
-	graph.AddPass( RG_PASS_NAME( "SMAA Copy" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+	// --- Open the display-chain step: the finished frame becomes the SMAA color SRV and the neighborhood
+	// blend further down renders into the next slot. ---
+	graph.AddPass( RG_PASS_NAME( "SMAA Begin" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
+		pass.m_executeCallback = [this, consts, step]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
 			DX_ZONE( cmdList.Get(), "SMAA" );
-			ID3D12Resource* backBuffer = GetDisplayTarget();
-			cmdList.TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-			cmdList.CopyResource( m_LdrCopy.Get(), backBuffer );
-			cmdList.TransitionBarriers( {
-				{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-				{ backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-				} );
+			*step = BeginDisplayChainStep( cmdList );
+			consts->ColorIdx = step->SrcSrvSlot;
 			};
 		} );
 
@@ -588,9 +612,9 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 		edgesHandle = builder.CreateTexture( { static_cast<uint32_t>( m_BackbufferResolution.x ), static_cast<uint32_t>( m_BackbufferResolution.y ),
 			static_cast<int>( DXGI_FORMAT_R8G8B8A8_UNORM ), L"SmaaEdges", 0u }, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
-		pass.m_executeCallback = [this, consts, edgesHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+		pass.m_executeCallback = [this, consts, step, edgesHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
 			D3D12RenderTarget* edges = g.GetPhysicalTexture( edgesHandle );
-			if ( !edges ) return;
+			if ( !edges || !step->Valid() ) return;   // no chain step means no color SRV to detect edges in
 
 			consts->EdgesIdx = edges->GetSrvSlot();
 			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
@@ -621,9 +645,9 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 		// shared value — not a graph Read(), so mark the side effect explicitly.
 		builder.MarkExternalEffect();
 
-		pass.m_executeCallback = [this, consts, blendHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+		pass.m_executeCallback = [this, consts, step, blendHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
 			D3D12RenderTarget* blend = g.GetPhysicalTexture( blendHandle );
-			if ( !blend ) return;
+			if ( !blend || !step->Valid() ) return;
 
 			consts->BlendIdx = blend->GetSrvSlot();
 			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
@@ -645,11 +669,11 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 			};
 		} );
 
-	// --- Neighborhood blending (color + blend -> swapchain). ---
+	// --- Neighborhood blending (color + blend -> the chain's next slot). ---
 	graph.AddPass( RG_PASS_NAME( "SMAA Neighborhood Blend" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {
-		pass.m_executeCallback = [this, consts]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
-			ID3D12Resource* backBuffer = GetDisplayTarget();
-			D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
+		pass.m_executeCallback = [this, consts, step]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
+			if ( !step->Valid() ) return;
+			D3D12_CPU_DESCRIPTOR_HANDLE backRtv = step->DstRtv;
 			const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
 			const D3D12_RECT     sc = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 			cmdList.RSSetViewports( 1, &vp );
@@ -662,11 +686,9 @@ void D3D12GraphicsEngine::RenderSMAA( D3D12RenderGraph& graph ) {
 			cmdList.OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
 			cmdList.DrawInstanced( 3, 1, 0, 0 );
 
-			// Resting state for next frame: color -> COPY_DEST. Swapchain stays RENDER_TARGET (bound above),
-			// ready for Gothic's 2D UI/HUD to composite on top. Edges/blend need no explicit reset —
-			// D3D12RenderTarget::State is caller-maintained and self-correcting, same as DoF's and the
-			// god-ray/underwater textures.
-			cmdList.TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+			// Source scratch back to RENDER_TARGET so it can be the next step's destination. Edges/blend need
+			// no explicit reset - D3D12RenderTarget::State is caller-maintained and self-correcting.
+			EndDisplayChainStep( cmdList );
 			};
 		} );
 }
@@ -683,33 +705,19 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	// SharpenFactor, and doing both would double-sharpen. D3D11's pass has the identical guard (its
 	// `!isUpscaling` condition). A FAILED FSR dispatch leaves m_Fsr3RanThisFrame false, so the frame that fell
 	// back to a bilinear resolve still gets sharpened here.
-	if ( m_Fsr3RanThisFrame ) return;
+	if ( !WillRunSharpen() ) return;
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-	if ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_NONE || settings.SharpenFactor <= 0.0f ) return;
-	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady || !m_Pipelines.Sharpen.RootSig ) return;
-
 	ID3D12PipelineState* pso = ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS )
 		? m_Pipelines.Sharpen.CasPSO.Get()
 		: m_Pipelines.Sharpen.SimplePSO.Get();
-	if ( !pso ) return;
 
 	DX_ZONE( m_CmdList.Get(), "Sharpen" );
 
-	ID3D12Resource* backBuffer = GetDisplayTarget();
-	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = GetDisplayRtv();
-
-	// A texture can't be its own SRV and RTV, so sharpen a copy of the display target back onto itself.
-	// Same shape as D3D11 (both of its modes copy into the pfx temp buffer first). m_LdrCopy rests in COPY_DEST.
-	{
-		m_CmdList->TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-	}
-	m_CmdList->CopyResource( m_LdrCopy.Get(), backBuffer );
-	{
-		m_CmdList->TransitionBarriers( {
-			{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-			{ backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-		} );
-	}
+	// A texture can't be its own SRV and RTV, so one display-chain step: read the current image, render the
+	// sharpened result into the next slot.
+	const DisplayChainStep step = BeginDisplayChainStep( m_CmdList );
+	if ( !step.Valid() ) return;
+	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = step.DstRtv;
 
 	// b0: { uint4 CasConst0; uint4 CasConst1; uint SrcIndex; float SharpenStrength; float2 TextureSize }.
 	// The CAS constants come from ffxCasSetup with input == output size (sharpening-only mode), exactly as
@@ -725,7 +733,7 @@ void D3D12GraphicsEngine::RenderSharpen() {
 		std::clamp( settings.SharpenFactor, 0.0f, 1.0f ),
 		static_cast<FfxFloat32>( m_BackbufferResolution.x ), static_cast<FfxFloat32>( m_BackbufferResolution.y ),
 		static_cast<FfxFloat32>( m_BackbufferResolution.x ), static_cast<FfxFloat32>( m_BackbufferResolution.y ) );
-	consts.SrcIndex = m_LdrCopySrvSlot;
+	consts.SrcIndex = step.SrcSrvSlot;
 	consts.SharpenStrength = settings.SharpenFactor;
 	consts.TextureSize[0] = static_cast<float>( m_BackbufferResolution.x );
 	consts.TextureSize[1] = static_cast<float>( m_BackbufferResolution.y );
@@ -743,11 +751,8 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 
-	// Back to the resting state so the next user of the scratch copy (next frame's SMAA/sharpen) finds it in
-	// COPY_DEST. The swapchain stays RENDER_TARGET for Gothic's 2D UI/HUD.
-	{
-		m_CmdList->TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
-	}
+	// Source scratch back to RENDER_TARGET so it can serve as the next step's destination.
+	EndDisplayChainStep( m_CmdList );
 }
 
 
@@ -769,17 +774,21 @@ void D3D12GraphicsEngine::ApplyDisplayGammaCorrection() {
 	ID3D12Resource* displayTarget = GetDisplayTarget();
 	D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = GetDisplayRtv();
 
-	// A texture can't be its own SRV and RTV, so correct a copy of the display target back onto itself —
-	// same shape as RenderSharpen above. m_LdrCopy rests in COPY_DEST and is restored to it below.
-	m_CmdList->TransitionBarrier( displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
-	m_CmdList->CopyResource( m_LdrCopy.Get(), displayTarget );
+	// A texture can't be its own SRV and RTV, so correct a copy of the display target back onto itself. Can't
+	// join the display chain: this runs in Present, after the 2D UI/HUD drew into the real display target, so
+	// the source must be that target. Scratch 0 is free by then and rests in RENDER_TARGET.
 	m_CmdList->TransitionBarriers( {
-		{ m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+		{ displayTarget, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE },
+		{ m_LdrScratch[0].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST },
+	} );
+	m_CmdList->CopyResource( m_LdrScratch[0].Get(), displayTarget );
+	m_CmdList->TransitionBarriers( {
+		{ m_LdrScratch[0].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
 		{ displayTarget, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
 	} );
 
 	struct GammaConsts { UINT SrcIndex; float Brightness; float Gamma; float EncodedMax; } consts = {};
-	consts.SrcIndex = m_LdrCopySrvSlot;
+	consts.SrcIndex = m_LdrScratchSrvSlot[0];
 	consts.Brightness = brightness;
 	consts.Gamma = gamma;
 	// SDR stores plain [0,1]; the HDR display buffer stores extended-sRGB with headroom, so hand the shader that
@@ -804,5 +813,5 @@ void D3D12GraphicsEngine::ApplyDisplayGammaCorrection() {
 	m_CmdList->OMSetRenderTargets( 1, &displayRtv, FALSE, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 
-	m_CmdList->TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+	m_CmdList->TransitionBarrier( m_LdrScratch[0].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 }

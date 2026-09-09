@@ -26,7 +26,8 @@ bool D3D11PFX_SMAA::Init() {
 }
 
 /** Renders the PostFX */
-void D3D11PFX_SMAA::RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& renderTargetSRV ) {
+bool D3D11PFX_SMAA::RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& renderTargetSRV,
+    ID3D11RenderTargetView* output ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     ID3D11DeviceContext* pContext = engine->GetContext().Get();
 
@@ -38,15 +39,16 @@ void D3D11PFX_SMAA::RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResou
 
     pContext->OMGetRenderTargets( 1, OldRTV.GetAddressOf(), OldDSV.GetAddressOf() );
 
-    auto TempRTV = FxRenderer->GetTempBuffer();
-
-    // update the temp buffer with the latest backbuffer data
-    FxRenderer->CopyTextureToRTV( renderTargetSRV, TempRTV->GetRenderTargetView(), engine->GetResolution() );
-
-    m_Native->Render( renderTargetSRV.Get(), TempRTV->GetRenderTargetView().Get(), FxRenderer->GetTexturePool() );
-
-    // Copy result back to acutal RTV
-    FxRenderer->CopyTextureToRTV( TempRTV->GetShaderResView(), OldRTV );
+    // No pre-fill in either path: SMAA's neighbourhood-blending pass writes every pixel of its target
+    // with blending off.
+    bool resolved;
+    if ( output ) {
+        resolved = m_Native->Render( renderTargetSRV.Get(), output, FxRenderer->GetTexturePool() );
+    } else {
+        auto TempRTV = FxRenderer->GetTempBuffer();
+        resolved = m_Native->Render( renderTargetSRV.Get(), TempRTV->GetRenderTargetView().Get(), FxRenderer->GetTexturePool() );
+        if ( resolved ) FxRenderer->CopyTextureToRTV( TempRTV->GetShaderResView(), OldRTV );
+    }
 
     pContext->OMSetRenderTargets( 1, OldRTV.GetAddressOf(), OldDSV.Get() );
 
@@ -54,6 +56,7 @@ void D3D11PFX_SMAA::RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResou
     pContext->PSSetShaderResources( 0, 1, NoSRV );
 
     engine->SetDefaultStates( true );
+    return resolved;
 }
 
 /** Called on resize */

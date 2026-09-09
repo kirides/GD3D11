@@ -25,6 +25,12 @@ private:
     /** Compute shader path for FL11+ */
     XRESULT RenderCS( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution );
 
+    /** Final composite, shared by both paths: a full-screen alpha-blended draw of the half-res blur
+        straight onto output. Always a pixel shader — the blend unit is what supplies the sharp half,
+        so this is the one pass that cannot be compute. */
+    void DrawComposite( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* halfBlurSrv,
+        ID3D11ShaderResourceView* depthSrv, INT2 resolution, const struct DepthOfFieldConstantBuffer& cb );
+
     // Ping-pong 1x1 R32_FLOAT textures for temporal focus smoothing
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_FocusTexture[2];
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_FocusSRV[2];

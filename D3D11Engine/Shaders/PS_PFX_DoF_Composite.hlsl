@@ -1,7 +1,12 @@
 //--------------------------------------------------------------------------------------
 // Depth of Field - Full-res composite pass
-// Reads full-res scene + depth, upsampled half-res bokeh blur, and focus texture
-// Blends sharp and blurred based on per-pixel CoC
+// Reads depth, the upsampled half-res bokeh blur and the focus texture, and blends the blur
+// over the scene by per-pixel CoC.
+//
+// The scene itself is NOT read: lerp(sharp, blur, coc) is exactly SRC_ALPHA/INV_SRC_ALPHA
+// blending, so this draws straight onto the scene target with alpha blending enabled and the
+// blend unit supplies the sharp half. That is what lets the caller skip the full-res scratch
+// texture and the blit back that used to exist only to dodge the read-write hazard.
 //--------------------------------------------------------------------------------------
 
 #include "DepthReconstruction.h"
@@ -21,7 +26,6 @@ cbuffer DepthOfFieldConstantBuffer : register( b0 )
 };
 
 SamplerState SS_Linear : register( s0 );
-Texture2D TX_Scene : register( t0 );   // Full-res sharp scene
 Texture2D TX_Blur  : register( t1 );   // Half-res bokeh (rgb=blur, a=CoC)
 Texture2D TX_Depth : register( t2 );   // Full-res hardware depth
 Texture2D TX_Focus : register( t3 );   // 1x1 smoothed focus depth
@@ -40,31 +44,31 @@ float LinearizeDepth( float d )
 
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
-    float3 sharpColor = TX_Scene.Sample( SS_Linear, Input.vTexcoord ).rgb;
+    float focusDepth = TX_Focus.Load( int3( 0, 0, 0 ) ).r;
 
-    float focusDepth = TX_Focus.SampleLevel( SS_Linear, float2( 0.5, 0.5 ), 0 ).r;
-
-    // Compute CoC at center and 4 neighbours, use the minimum.
-    // This erodes the blur zone by 1 pixel at depth discontinuities,
-    // preventing bilinear upsample of the half-res blur from fattening
-    // thin features like leaves and fences.
+    // Minimum CoC over the centre and its 4 neighbours. This erodes the blur zone by 1 pixel at depth
+    // discontinuities, preventing bilinear upsample of the half-res blur from fattening thin features
+    // like leaves and fences.
+    // CoC rises monotonically with 1/depth, so the minimum CoC is the CoC of the MAXIMUM raw depth -
+    // one linearize and one saturate instead of five. The depth buffer may be lower-res than this pass,
+    // so the taps stay normalized-UV samples off its own dimensions.
     float2 depthSize;
     TX_Depth.GetDimensions( depthSize.x, depthSize.y );
     float2 dtexel = 1.0 / depthSize;
 
-    float cocC = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r ) - focusDepth ) / DoF_FocusRange );
-    float cocL = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( -dtexel.x, 0 ) ).r ) - focusDepth ) / DoF_FocusRange );
-    float cocR = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2(  dtexel.x, 0 ) ).r ) - focusDepth ) / DoF_FocusRange );
-    float cocU = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0, -dtexel.y ) ).r ) - focusDepth ) / DoF_FocusRange );
-    float cocD = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0,  dtexel.y ) ).r ) - focusDepth ) / DoF_FocusRange );
+    float d = TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r;
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( -dtexel.x, 0 ) ).r );
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2(  dtexel.x, 0 ) ).r );
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0, -dtexel.y ) ).r );
+    d = max( d, TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0,  dtexel.y ) ).r );
 
-    float minCoC = min( min( cocC, cocL ), min( cocR, min( cocU, cocD ) ) );
+    float minCoC = saturate( ( LinearizeDepth( d ) - focusDepth ) / DoF_FocusRange );
 
-    // Bilinear-upsampled half-res bokeh blur
+    // Fully sharp - the blend would be a no-op, so skip the blur fetch and leave the target untouched.
+    if ( minCoC <= 0.0 )
+        discard;
+
+    // Bilinear-upsampled half-res bokeh blur; alpha carries the blend factor for the blend unit.
     float4 blurSample = TX_Blur.Sample( SS_Linear, Input.vTexcoord );
-
-    float blendFactor = smoothstep( 0.0, 1.0, minCoC );
-    float3 finalColor = lerp( sharpColor, blurSample.rgb, blendFactor );
-
-    return float4( finalColor, 1.0 );
+    return float4( blurSample.rgb, smoothstep( 0.0, 1.0, minCoC ) );
 }

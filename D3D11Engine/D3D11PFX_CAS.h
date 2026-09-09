@@ -10,10 +10,10 @@ public:
     D3D11PFX_CAS( D3D11PfxRenderer* renderer );
     ~D3D11PFX_CAS();
 
-    /** Applies CAS sharpening */
+    /** Applies CAS sharpening. input and target must be different resources - the draw goes straight
+        into target. */
     XRESULT Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize,
-        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>&  target, INT2 outputSize,
-        RenderToTextureBuffer& intermediateBuffer );
+        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>&  target, INT2 outputSize );
     /** Sets sharpening intensity (0.0 = no sharpening, 1.0 = max sharpening) */
     void SetSharpness( float sharpness );
 

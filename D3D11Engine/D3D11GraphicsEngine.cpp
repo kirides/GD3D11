@@ -94,6 +94,10 @@ bool FeatureRTArrayIndexFromAnyShader = false;
 // see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
 bool RequiresNvidiaTiledShadowFaceFallback = false;
 
+// Binds the whole cube array as one FirstArraySlice=0 DSV and has the layered VS/GS write an absolute
+// slice (PCR_SliceBase + face), so no view is ever offset. Alternative to the 6-pass fallback above.
+bool UseAbsoluteCubeSliceIndexing = false;
+
 VS_ExConstantBuffer_Wind g_windBuffer;
 
 typedef void( __cdecl* PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT )(ID3D11DeviceContext* context, unsigned int drawCount,
@@ -728,7 +732,14 @@ XRESULT D3D11GraphicsEngine::Init() {
         ? ResolvedDrawMultiIndexedInstancedIndirect
         : Stub_DrawMultiIndexedInstancedIndirect;
 
-    RequiresNvidiaTiledShadowFaceFallback = false; // Do not enable by default
+    // DXVK gets the sub-range DSV right, and the fallback costs 6 draw passes per cube.
+    RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
+    if ( RequiresNvidiaTiledShadowFaceFallback ) {
+        LogInfo() << "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays";
+    }
+
+    // Opt-in until an NVIDIA run confirms it; takes precedence over the fallback above.
+    UseAbsoluteCubeSliceIndexing = false;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
@@ -960,10 +971,42 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 /** Reset BackBuffer */
 void D3D11GraphicsEngine::OnResetBackBuffer() {
     auto res = GetResolution();
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
-        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0));
+    const UINT bind = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
+        | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0);
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, bind );
     SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
     SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
+
+    // Ping-pong partner for the HDR scene: identical desc, so SwapHDRBackBuffer() can hand either one to
+    // every consumer. Lets a scene-in/scene-out pass render into the partner instead of copying aside.
+    HDRBackBufferSwap = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, bind );
+    if ( !HDRBackBufferSwap->GetTexture() ) {
+        // Drop the half-built object rather than hand out null views; every ping-pong site then copies.
+        LogWarn() << "Could not create the HDR ping-pong buffer - scene-in/scene-out passes will copy instead.";
+        HDRBackBufferSwap.reset();
+        return;
+    }
+    SetDebugName( HDRBackBufferSwap->GetShaderResView().Get(), "BackbufferSwap->ShaderResourceView" );
+    SetDebugName( HDRBackBufferSwap->GetRenderTargetView().Get(), "BackbufferSwap->RenderTargetView" );
+}
+
+/** Makes the ping-pong partner the scene target. Consumers resolve HDRBackBuffer at call time, so only
+    the render graph's imported handle needs telling. */
+void D3D11GraphicsEngine::SwapHDRBackBuffer() {
+    if ( !HDRBackBufferSwap ) return;
+
+    // The OM binding has to follow the swap, or the next draw lands in the buffer nobody reads any more.
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> boundRTV;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> boundDSV;
+    GetContext()->OMGetRenderTargets( 1, boundRTV.GetAddressOf(), boundDSV.GetAddressOf() );
+    const bool sceneWasBound = boundRTV.Get() == HDRBackBuffer->GetRenderTargetView().Get();
+
+    HDRBackBuffer.swap( HDRBackBufferSwap );
+    if ( m_ActiveGraph ) m_ActiveGraph->UpdateImportedResource( m_BackBufferHandle, HDRBackBuffer.get() );
+
+    if ( sceneWasBound ) {
+        GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), boundDSV.Get() );
+    }
 }
 
 /** Get BackBuffer Format */
@@ -3582,10 +3625,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     // Skipped entirely when reusing the Z-prepass' already-built batch list below.
                     if ( !reuseNodeAttachments ) {
                         NodeAttachmentInstanceData instData;
-                        instData.World = finalWorld;
-                        instData.PrevWorld = finalPrevWorld;
-                        instData.Color = modelColor;
-                        instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
+                        PackAffine3x4( instData.World, finalWorld );
+                        PackAffine3x4( instData.PrevWorld, finalPrevWorld );
+                        instData.ColorFlags = PackNodeAttachColorFlags( modelColor, vi->Vob == playerFocusVob );
 
                         // Any .MMS reaching here is out of morph range (the branch above took the rest),
                         // so it draws the shared rest mesh - its own copy still holds the deformation from
@@ -3651,7 +3693,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         return a.mesh < b.mesh;
                 } );
 
-            const unsigned int neededBytes = static_cast<unsigned int>(instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData ));
+            const unsigned int nodeInstStride = NodeAttachmentUploadStride();
+            const unsigned int neededBytes = static_cast<unsigned int>(instancedDrawItems.size() * nodeInstStride);
             FrameInstancingBufferPool& nodeAttachmentPool = isShadowPass
                 ? m_ShadowNodeAttachmentInstancingPool
                 : m_MainNodeAttachmentInstancingPool;
@@ -3675,7 +3718,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 return;
             }
 
-            auto* destData = reinterpret_cast<NodeAttachmentInstanceData*>(static_cast<byte*>(mappedData) + nodeAttachmentBufferOffset);
+            auto* destData = static_cast<byte*>(mappedData) + nodeAttachmentBufferOffset;
             unsigned int currentIdx = 0;
 
             for ( size_t i = 0; i < instancedDrawItems.size(); ) {
@@ -3695,7 +3738,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     // Some of them have needAlpha false, even though they share the same texture!
                     // thus we now just walk all batch items and assume if one needs alpha, all do.
                     needAlpha |= instancedDrawItems[i].needAlpha;
-                    destData[currentIdx] = instancedDrawItems[i].instanceData;
+                    // Strided: with TAA off the copy stops before PrevWorld.
+                    memcpy( destData + currentIdx * nodeInstStride, &instancedDrawItems[i].instanceData, nodeInstStride );
                     ++currentIdx;
                     ++i;
                 }
@@ -3739,7 +3783,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         // Bind instance buffer to slot 1 (persists across batches)
         UINT instOffset = nodeAttachmentBufferOffset;
-        UINT instStride = sizeof( NodeAttachmentInstanceData );
+        UINT instStride = NodeAttachmentUploadStride();
         Context->IASetVertexBuffers( 1, 1, nodeAttachmentBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
 
         wantShader = true;
@@ -4048,6 +4092,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // TODO: Replace global Resources with RenderGraph resource
     RGResourceHandle backBufferHandle = graph.ImportResource( L"BackBuffer", HDRBackBuffer.get() );
+    // Published so SwapHDRBackBuffer() can repoint the import; scoped so no path leaves a dangling
+    // pointer to the stack-local graph behind.
+    struct ActiveGraphScope {
+        D3D11GraphicsEngine* Engine;
+        ~ActiveGraphScope() { Engine->m_ActiveGraph = nullptr; }
+    } activeGraphScope{ this };
+    m_ActiveGraph = &graph;
+    m_BackBufferHandle = backBufferHandle;
     RGResourceHandle velocityBufferHandle = graph.ImportResource( L"VelocityBuffer", VelocityBuffer.get() );
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_WORLD;
@@ -4475,16 +4527,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
                 auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
-                // Copy backbuffer to a temp texture — we need to read it as SRV while writing to RTV
-                auto tempBuffer = PfxRenderer->GetTempBuffer();
-                GetContext()->CopyResource( tempBuffer->GetTexture().Get(), backBuffer->GetTexture().Get() );
-
-                // Gather SRVs for composition (AO is applied in the lighting pass now)
+                // Blended in place - no scene copy. (AO is applied in the lighting pass now.)
                 ID3D11ShaderResourceView* depthSRV = compositionHeightFog ? GetDepthBuffer()->GetShaderResView().Get() : nullptr;
 
                 PfxRenderer->RenderPostFXComposition(
                     backBuffer->GetRenderTargetView().Get(),
-                    tempBuffer->GetShaderResView().Get(),
                     nullptr,
                     compositionGodRaysSRV,
                     depthSRV );
@@ -4530,9 +4577,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render TAA" );
 
                 auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
-                PfxRenderer->RenderTAA( rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
-                    ? nullptr
-                    : velocityBufferTex->GetShaderResView() );
+                // The resolve can't write the scene it gathers from, so it writes the partner, which then
+                // becomes the scene. Without a partner it copies back instead.
+                RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap();
+                ID3D11UnorderedAccessView* sceneOutUAV = swapTarget ? swapTarget->GetUnorderedAccessView().Get() : nullptr;
+                const bool resolved = XR_SUCCESS == PfxRenderer->RenderTAA(
+                    rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
+                        ? nullptr
+                        : velocityBufferTex->GetShaderResView(), sceneOutUAV );
+                // Only swap when the dispatch actually wrote the partner.
+                if ( sceneOutUAV && resolved ) SwapHDRBackBuffer();
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         } );
@@ -4550,7 +4604,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render SMAA" );
                 auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                PfxRenderer->RenderSMAA(backbufferTex->GetShaderResView().Get());
+                // Resolve into the ping-pong partner and make it the scene; without one SMAA copies back.
+                RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap();
+                const bool resolved = XR_SUCCESS == PfxRenderer->RenderSMAA(
+                    backbufferTex->GetShaderResView().Get(),
+                    swapTarget ? swapTarget->GetRenderTargetView().Get() : nullptr );
+                if ( swapTarget && resolved ) SwapHDRBackBuffer();
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         } );
@@ -4608,7 +4667,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         //   - scaled but no FSR upscaler  -> bilinear (re)scale HDRBackBuffer into UpscaledHDRBuffer
         //   - 100% and no upscaling       -> operate directly on the render-res HDRBackBuffer
         const bool scaled = rendererState.RendererSettings.ResolutionScalePercent != 100;
-        RenderToTextureBuffer* sceneHDR = (isUpscaling || scaled) ? UpscaledHDRBuffer.get() : HDRBackBuffer.get();
+        // Resolved per pass at EXECUTE time, not captured here: TAA/SMAA/particles can swap the HDR scene
+        // target after this line runs but before any of the passes below do.
+        const bool sceneIsUpscaled = isUpscaling || scaled;
+        auto sceneHDRAt = [this, sceneIsUpscaled]() {
+            return sceneIsUpscaled ? UpscaledHDRBuffer.get() : HDRBackBuffer.get();
+        };
 
         if ( !isUpscaling && scaled ) {
             graph.AddPass( RG_PASS_NAME("Scale into HDR buffer"), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -4630,8 +4694,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDRAt](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw DepthOfField" );
+                    RenderToTextureBuffer* sceneHDR = sceneHDRAt();
                     // Depth is render-resolution; DoF samples it with normalized UVs.
                     PfxRenderer->RenderDepthOfField(
                         sceneHDR->GetRenderTargetView().Get(),
@@ -4647,23 +4712,38 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDRAt](const RenderGraph&) {
+                    RenderToTextureBuffer* sceneHDR = sceneHDRAt();
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render Bloom" );
                     PfxRenderer->RenderBloom( sceneHDR->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
                 };
             } );
         }
 
-        // HDR/Tonemapping resolves the HDR scene into the LDR Backbuffer. With HDR disabled we still
-        // convert the HDR scene into the LDR backbuffer with a plain copy.
+        // Two-step display chain: sharpening can't read and write the same texture, so the resolve renders
+        // into a temp the sharpen reads. The move-only handle must outlive both lambdas, hence the shared_ptr.
+        bool willSharpen = !isUpscaling
+            && rendererState.RendererSettings.SharpenFactor > 0.0f
+            && ( rendererState.RendererSettings.SharpeningMode == GothicRendererSettings::SHARPEN_SIMPLE
+                || ( rendererState.RendererSettings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS
+                    && !FeatureLevel10Compatibility ) );
+        auto sharpenSrc = std::make_shared<TextureHandle>(
+            willSharpen ? GetPfxRenderer()->GetBackbufferTempBuffer() : TextureHandle{} );
+        // No temp means no chain: resolve straight into the backbuffer and skip sharpening.
+        if ( willSharpen && !*sharpenSrc ) willSharpen = false;
+        RenderToTextureBuffer* ldrTarget = willSharpen ? sharpenSrc->get() : Backbuffer.get();
+
+        // HDR/Tonemapping resolves the HDR scene into the LDR target. With HDR disabled we still
+        // convert the HDR scene into the LDR target with a plain copy.
         if ( rendererState.RendererSettings.EnableHDR ) {
             graph.AddPass( RG_PASS_NAME("Render HDR"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                pass.m_executeCallback = [this, sceneHDRAt, ldrTarget, sharpenSrc](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render HDR" );
-                    PfxRenderer->RenderHDR( Backbuffer->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
+                    RenderToTextureBuffer* sceneHDR = sceneHDRAt();
+                    PfxRenderer->RenderHDR( ldrTarget->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
                 };
             } );
         } else {
@@ -4671,43 +4751,36 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
-                    PfxRenderer->CopyTextureToRTV( sceneHDR->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                pass.m_executeCallback = [this, sceneHDRAt, ldrTarget, sharpenSrc](const RenderGraph&) {
+                    PfxRenderer->CopyTextureToRTV( sceneHDRAt()->GetShaderResView(), ldrTarget->GetRenderTargetView(), GetBackbufferResolution() );
                 };
             } );
         }
 
-        // Sharpen the final LDR backbuffer. Skipped when an FSR upscaler is active, since FSR
-        // performs its own (RCAS) sharpening.
-        if ( !isUpscaling
-                && rendererState.RendererSettings.SharpeningMode
-                && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
-
+        // Second display-chain step: reads the resolve's temp, writes the backbuffer. willSharpen carries
+        // every condition (incl. FSR doing its own RCAS), so the two passes can't disagree on the target.
+        if ( willSharpen ) {
             graph.AddPass( RG_PASS_NAME("Sharpen"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
+                pass.m_executeCallback = [this, &rendererState, ldrTarget, sharpenSrc](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Sharpen" );
                     GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
 
                     switch ( rendererState.RendererSettings.SharpeningMode ) {
                     case GothicRendererSettings::SHARPEN_SIMPLE:
                         {
-                            // SimpleSharpen can't read and write the same texture, so sharpen a copy
-                            // of the backbuffer back into the backbuffer (which owns the UAV).
+                            // Backbuffer is the destination because it owns the UAV this writes through.
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplySimpleSharpen" ) );
-                            auto tmp = GetPfxRenderer()->GetBackbufferTempBuffer();
-                            PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), tmp->GetRenderTargetView(), GetBackbufferResolution() );
-                            PfxRenderer->RenderSimpleSharpen( tmp->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
+                            PfxRenderer->RenderSimpleSharpen( ldrTarget->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
                         }
                         break;
 
                     case GothicRendererSettings::SHARPEN_CAS:
-                        if ( !FeatureLevel10Compatibility ) {
-                            // CAS sharpens the backbuffer in place using an intermediate buffer.
+                        {
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplyCAS" ) );
-                            PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer() );
+                            PfxRenderer->RenderCAS( ldrTarget->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                         }
                         break;
                     }
@@ -5634,13 +5707,16 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     SetDefaultStates();
 
-    auto tempBuffer = PfxRenderer->GetTempBuffer();
-
-    // Copy backbuffer
-    PfxRenderer->CopyTextureToRTV(
-        HDRBackBuffer->GetShaderResView(),
-        tempBuffer->GetRenderTargetView(),
-        GetResolution() );
+    // Refraction reads the scene while the water blends onto it, so a copy is unavoidable; the ping-pong
+    // partner is idle scratch here. Same desc, so a straight CopyResource - the RTV has to come down first.
+    TextureHandle pooledScene;
+    RenderToTextureBuffer* sceneCopy = GetHDRBackBufferSwap();
+    if ( !sceneCopy ) {
+        pooledScene = PfxRenderer->GetTempBuffer();
+        sceneCopy = pooledScene.get();
+    }
+    GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
+    GetContext()->CopyResource( sceneCopy->GetTexture().Get(), HDRBackBuffer->GetTexture().Get() );
     CopyDepthStencil();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -5759,7 +5835,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
         // Bind copied backbuffer
         GetContext()->PSSetShaderResources(
-            5, 1, tempBuffer->GetShaderResView().GetAddressOf() );
+            5, 1, sceneCopy->GetShaderResView().GetAddressOf() );
 
         // Bind depth to the shader
         DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 2 );
@@ -7005,8 +7081,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             // process any vobs only visible in this cascade
             VobInstanceInfo vii = {};
-            vii.world = it->WorldMatrix;
-            vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+            PackAffine3x4( vii.world, it->WorldMatrix );
+            PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
@@ -7026,8 +7102,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVOBs" ) );
 
         const size_t shadowInstanceCount = vobs.empty() ? 1 : vobs.size();
+        const unsigned int vobInstStride = VobInstanceUploadStride();
         const unsigned int shadowInstancingBytes = static_cast<unsigned int>(
-            shadowInstanceCount * sizeof( VobInstanceInfo ));
+            shadowInstanceCount * vobInstStride );
         FrameInstancingAllocation shadowInstancingAlloc = AcquireFrameInstancingAllocation(
             m_ShadowVobInstancingPool, shadowInstancingBytes, "ShadowVobInstancingBuffer" );
         D3D11VertexBuffer* shadowInstancingBuffer = shadowInstancingAlloc.Buffer;
@@ -7078,8 +7155,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             UINT loc = 0;
             for ( auto const& staticMeshVisual : activeVisuals ) {
                 staticMeshVisual->StartInstanceNum = loc;
-                memcpy( data + shadowInstancingAlloc.OffsetInBytes + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
-                    sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
+                CopyVobInstances( data + shadowInstancingAlloc.OffsetInBytes + loc * vobInstStride,
+                    staticMeshVisual->Instances.data(), staticMeshVisual->Instances.size(), vobInstStride );
                 loc += staticMeshVisual->Instances.size();
             }
             shadowInstancingBuffer->Unmap();
@@ -7103,7 +7180,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         UINT dynOffset[] = { shadowInstancingAlloc.OffsetInBytes };
-        UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
+        UINT dynuStride[] = { vobInstStride };
 
         ID3D11Buffer* buffers[1] = {
             shadowInstancingBuffer->GetVertexBuffer().Get()
@@ -7627,8 +7704,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     totalInstances += static_cast<unsigned int>(cv.Instances.size());
                 }
 
-                const unsigned int requiredBytes = (totalInstances > 0 ? totalInstances : 1u)
-                    * static_cast<unsigned int>(sizeof( VobInstanceInfo ));
+                const unsigned int vobInstStride = VobInstanceUploadStride();
+                const unsigned int requiredBytes = (totalInstances > 0 ? totalInstances : 1u) * vobInstStride;
                 FrameInstancingAllocation mainInstancingAlloc = AcquireFrameInstancingAllocation( m_MainVobInstancingPool,
                     requiredBytes, "MainVobInstancingBuffer" );
                 instancingBuffer = mainInstancingAlloc.Buffer;
@@ -7643,9 +7720,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 if ( SUCCEEDED( instancingBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
                     reinterpret_cast<void**>(&data), &size ) ) ) {
                     for ( auto const& cv : cache.vobVisuals ) {
-                        memcpy( data + mainInstancingAlloc.OffsetInBytes + cv.StartInstanceNum * sizeof( VobInstanceInfo ),
-                            cv.Instances.data(),
-                            sizeof( VobInstanceInfo ) * cv.Instances.size() );
+                        CopyVobInstances( data + mainInstancingAlloc.OffsetInBytes + cv.StartInstanceNum * vobInstStride,
+                            cv.Instances.data(), cv.Instances.size(), vobInstStride );
                     }
                     instancingBuffer->Unmap();
                 } else {
@@ -7816,7 +7892,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             TransparencyQueue& queue = Engine::GAPI->GetTransparencyQueue();
                             const uint32_t batchKey = TransparencyQueue::MakeBatchKey( meshKey.Material );
                             for ( size_t i = 0; i < alphaMesh.instances.size(); ++i ) {
-                                const XMFLOAT4X4& world = alphaMesh.instances[i].world;
+                                const Affine3x4& world = alphaMesh.instances[i].world;
                                 const XMFLOAT3 position( world._14, world._24, world._34 );
                                 queue.AddAlphaVob( TransparencyQueue::DistanceSqFromCamera( position ),
                                     batchIndex, static_cast<uint32_t>(i), batchKey );
@@ -7962,7 +8038,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     // Draw batch
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
-                        sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
+                        VobInstanceUploadStride(), cachedVisual->Instances.size(),
                         sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum, 0,
                         cache.MainVobInstancingBufferOffset );
                 }
@@ -8217,7 +8293,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
 
             // StartInstanceLocation is absolute in the shared instancing buffer
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
-                instancingBuffer, sizeof( VobInstanceInfo ),
+                instancingBuffer, VobInstanceUploadStride(),
                 instanceCount, sizeof( ExVertexStruct ),
                 alphaMesh.StartInstanceNum + first.InstanceIndex, 0,
                 m_FrameGeometryCache.MainVobInstancingBufferOffset );
@@ -9554,6 +9630,20 @@ void D3D11GraphicsEngine::CopyDepthStencil() {
     GetContext()->CopyResource( DepthStencilBufferCopy->GetTexture().Get(), DepthStencilBuffer->GetTexture().Get() );
 }
 
+ID3D11ShaderResourceView* D3D11GraphicsEngine::AcquireDepthReadSRV() {
+    if ( DepthStencilBuffer && DepthStencilBuffer->GetDepthStencilViewReadOnly() ) {
+        return DepthStencilBuffer->GetShaderResView().Get();
+    }
+    CopyDepthStencil();
+    return DepthStencilBufferCopy->GetShaderResView().Get();
+}
+
+ID3D11DepthStencilView* D3D11GraphicsEngine::GetDepthReadOnlyDSV() const {
+    if ( !DepthStencilBuffer ) return nullptr;
+    const auto& ro = DepthStencilBuffer->GetDepthStencilViewReadOnly();
+    return ro ? ro.Get() : DepthStencilBuffer->GetDepthStencilView().Get();
+}
+
 /** Resolves MSAADepthStencilBuffer (sample 0) into the single-sample DepthStencilBuffer via a
     fullscreen pixel shader writing SV_Depth. No-op when MSAA isn't active. */
 void D3D11GraphicsEngine::ResolveMSAADepth() {
@@ -9607,8 +9697,8 @@ RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& gr
             const auto& context = GetContext();
             auto res = GetResolution();
 
-            // Depth copy must reflect the current frame's depth prepass.
-            CopyDepthStencil();
+            // Depth is read as an SRV below, so it must not still be bound as the OM depth target.
+            context->OMSetRenderTargets( 0, nullptr, nullptr );
 
             auto* normalsTex = graph.GetPhysicalTexture( normalsHandle );
 
@@ -9622,7 +9712,7 @@ RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& gr
             cs->UpdateBuffer("AONormalsConstantBuffer", &cb, sizeof(cb));
 
             context->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            ID3D11ShaderResourceView* depthSRV = GetDepthBufferCopy()->GetShaderResView().Get();
+            ID3D11ShaderResourceView* depthSRV = AcquireDepthReadSRV();
             context->CSSetShaderResources( 0, 1, &depthSRV );
             context->CSSetUnorderedAccessViews( 0, 1, normalsTex->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
@@ -9654,8 +9744,8 @@ RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResou
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::AO Mask" );
             auto* aoTex = graph.GetPhysicalTexture( aoMask );
 
-            // Ensure the depth copy is current (deferred hasn't copied it yet at this point).
-            CopyDepthStencil();
+            // Depth is read as an SRV below, so it must not still be bound as the OM depth target.
+            GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
 
             // White-clear: "no occlusion" default. HBAO+/ASSAO modulate into this, and when
             // AO is disabled the mask stays white so the lighting multiply is a no-op.
@@ -9667,7 +9757,7 @@ RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResou
                 auto* n = graph.GetPhysicalTexture( normalsResource );
                 normalsSRV = n ? n->GetShaderResView().Get() : nullptr;
             }
-            const auto& depthSRV = GetDepthBufferCopy()->GetShaderResView();
+            ID3D11ShaderResourceView* depthSRV = AcquireDepthReadSRV();
 
             switch ( aoMode ) {
             case AOMode::AO_HBAO: {
@@ -9679,10 +9769,10 @@ RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResou
             case AOMode::AO_ASSAO:
                 // Null normals => ASSAO generates them from depth (depth-only fallback).
                 PfxRenderer->RenderASSAO( aoTex->GetRenderTargetView().Get(),
-                    depthSRV.Get(), depthOnlyNormals ? nullptr : normalsSRV );
+                    depthSRV, depthOnlyNormals ? nullptr : normalsSRV );
                 break;
             case AOMode::AO_SAO:
-                PfxRenderer->RenderSAOCompute( depthSRV.Get(), normalsSRV,
+                PfxRenderer->RenderSAOCompute( depthSRV, normalsSRV,
                     aoTex->GetUnorderedAccessView().Get(), depthOnlyNormals );
                 break;
             default:
@@ -9991,21 +10081,26 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     bufferParticleColor->BindToPixelShader( Context.Get(), 1 );
     bufferParticleDistortion->BindToPixelShader( Context.Get(), 2 );
 
-    // Copy scene behind the particle systems 
-    auto tempBuffer = PfxRenderer->GetTempBuffer();
-    PfxRenderer->CopyTextureToRTV(
-        HDRBackBuffer->GetShaderResView(),
-        tempBuffer->GetRenderTargetView(),
-        GetResolution() );
-
     SetActivePixelShader( PShaderID::PS_PFX_ApplyParticleDistortion );
     ActivePS->Apply();
 
-    // Copy it back, putting distortion behind it
-    PfxRenderer->CopyTextureToRTV(
-        tempBuffer->GetShaderResView(),
-        HDRBackBuffer->GetRenderTargetView(),
-        GetResolution(), true );
+    // The distortion samples the scene through a UV offset, so read and write can't be the same texture.
+    // Render into the ping-pong partner and make it the scene; without one, copy.
+    if ( RenderToTextureBuffer* swapTarget = GetHDRBackBufferSwap() ) {
+        PfxRenderer->CopyTextureToRTV(
+            HDRBackBuffer->GetShaderResView(),
+            swapTarget->GetRenderTargetView(),
+            GetResolution(), true );
+        SwapHDRBackBuffer();
+    } else {
+        auto tempBuffer = PfxRenderer->GetTempBuffer();
+        Context->OMSetRenderTargets( 0, nullptr, nullptr );
+        Context->CopyResource( tempBuffer->GetTexture().Get(), HDRBackBuffer->GetTexture().Get() );
+        PfxRenderer->CopyTextureToRTV(
+            tempBuffer->GetShaderResView(),
+            HDRBackBuffer->GetRenderTargetView(),
+            GetResolution(), true );
+    }
 
     GetContext()->PSSetShaderResources( 1, 2, s_nullSRVs );
 }
@@ -10018,14 +10113,6 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
         // Both are matched by POINTER: the object is on its way out, so nothing about it can be read here.
         ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
         ShadowMaps->ReleasePointLightSlotFor( vob );
-    }
-
-    // Take out of shadowupdate queue
-    for ( auto it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
-        if ( (*it)->Vob == vob ) {
-            FrameShadowUpdateLights.erase( it );
-            break;
-        }
     }
 
     // Spacer can delete/undo a light vob mid-frame.

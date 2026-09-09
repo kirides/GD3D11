@@ -257,6 +257,19 @@ float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-enco
     return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
 }
 
+// Half precision for the light loop's bounded [0,1] quantities only. Positions must stay fp32 (Gothic
+// world coordinates reach ~+-60,000, past fp16's usable range), as must the GGX D/G terms and accumulators.
+#ifndef USE_FP16_LIGHTING
+#define USE_FP16_LIGHTING 1
+#endif
+#if USE_FP16_LIGHTING
+typedef float16_t  lf_t;
+typedef float16_t3 lf_t3;
+#else
+typedef float  lf_t;
+typedef float3 lf_t3;
+#endif
+
 float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
 float  PBR_DistributionGGX( float NdotH, float roughness )
 {
@@ -275,8 +288,14 @@ float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
 {
     return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
 }
+lf_t  PBR_Pow5( lf_t x ) { lf_t x2 = x * x; return x2 * x2 * x; }
+lf_t3 PBR_FresnelSchlick( lf_t cosTheta, lf_t3 F0 ) { return F0 + ( lf_t( 1.0 ) - F0 ) * PBR_Pow5( saturate( lf_t( 1.0 ) - cosTheta ) ); }
+#if USE_FP16_LIGHTING
+// Full-precision overload for callers outside the light loop, chiefly the opaque-SSR weight in PSMain —
+// without it those call sites silently narrow. See EvaluateOpaqueSSR on why that weight is sensitive.
 float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
 float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
+#endif
 
 // Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
 // specularScale scales ONLY the specular lobe (diffuse is untouched): 0 turns the light into a pure area-brightener.
@@ -310,15 +329,16 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     // ComputeSpecularOcclusion all correctly take perceptual roughness untouched). Reported 2026-08-28 by
     // the maintainer testing the DefaultMaterialRoughness debug slider.
     float  cr = PBR_SafeRoughness( roughness );
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    lf_t   cm = lf_t( saturate( metallic ) );
+    lf_t3  albedo16 = lf_t3( baseColor );
+    lf_t3  F0 = lerp( lf_t3( 0.04, 0.04, 0.04 ), albedo16, cm );
     float  D = PBR_DistributionGGX( NdotH, cr );
     float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 ) * specularScale;
-    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
-    float3 diffuse = kD * baseColor / PBR_PI;
-    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
+    lf_t3  F = PBR_FresnelSchlick( lf_t( VdotH ), F0 );
+    lf_t3  specular = lf_t3( F * lf_t( ( D * G ) / max( 4.0 * NdotV * NdotL, 1e-4 ) * specularScale ) );
+    lf_t3  kD = ( lf_t( 1.0 ) - F ) * ( lf_t( 1.0 ) - cm );
+    lf_t3  diffuse = kD * albedo16 * lf_t( 1.0 / PBR_PI );
+    return float3( ( diffuse + specular ) * lf_t3( lightColor ) ) * ( NdotL * attenuation );
 }
 
 // --- Sky image-based lighting (indirect diffuse + specular) -----------------------------------------------
