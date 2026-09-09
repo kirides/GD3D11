@@ -402,6 +402,9 @@ struct DefaultHullShaderConstantBuffer {
 struct CubemapGSConstantBuffer {
     XMFLOAT4X4 PCR_View[6]; // View matrices for cube map rendering
     XMFLOAT4X4 PCR_ViewProj[6];
+    // Absolute slice of face 0 when the whole cube array is bound as one DSV; 0 for a 6-slice window view.
+    uint32_t PCR_SliceBase;
+    uint32_t PCR_Pad[3];
 };
 
 struct ParticleGSInfoConstantBuffer {

@@ -4,6 +4,9 @@ cbuffer cbPerCubeRender : register( b2 )
 {
 	matrix PCR_View[6]; // View matrices for cube map rendering
 	matrix PCR_ViewProj[6];
+	// Slice of face 0 when the whole cube array is bound as one view; 0 for a 6-slice window.
+	uint PCR_SliceBase;
+	uint3 PCR_Pad;
 };
 
 struct PS_INPUT
@@ -36,7 +39,7 @@ void GSMain(triangle VS_OUTPUT input[3], inout TriangleStream<PS_INPUT> OutputSt
     {
         // Compute screen coordinates
         PS_INPUT output;
-        output.RTIndex = f;
+        output.RTIndex = PCR_SliceBase + f;
         [unroll]
         for( int v = 0; v < 3; v++ )
         {

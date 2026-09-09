@@ -4,6 +4,7 @@
 // fallback). Nothing here knows WHERE the depth ends up - that is the technique's business.
 
 #include "../pch.h"
+#include "../ConstantBufferStructs.h"
 #include <list>
 #include <vector>
 
@@ -24,6 +25,10 @@ namespace PointShadowCasters {
         applies, run first so an empty overlay costs neither a clear nor a slot. */
     bool HasAnimatedCastersInRange( const VobLightInfo* info, float shadowRange );
 
+    /** Draws through the whole-array DSV with absolute slice indices; false for a target that owns
+        its own cube. */
+    bool UsesAbsoluteSliceIndexing( const RenderToDepthStencilBuffer* target );
+
     /** The 6 face view matrices and the shared projection for one light, bound for the layered VS /
         cubemap GS for as long as it lives. The CB comes from the per-frame ring pool, so a scope may
         never outlive the frame that made it. */
@@ -39,7 +44,12 @@ namespace PointShadowCasters {
         float ZNear() const { return m_ZNear; }
         float ZFar() const { return m_ZFar; }
 
+        /** Uploads the face matrices for one pass; sliceBase is what the layered VS/GS adds to the
+            face index. */
+        void BindCubeCB( unsigned int sliceBase ) const;
+
     private:
+        CubemapGSConstantBuffer m_GCB{};
         XMFLOAT4X4 m_View[6];
         XMFLOAT4X4 m_Proj;
         float m_ZNear = 0.0f;

@@ -141,6 +141,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowDynCubeArraySRV;
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_DYN_SHADOW_CUBEMAPS> m_SlotDynDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_DYN_SHADOW_CUBEMAPS> m_SlotDynViews;
+    // Whole array as one FirstArraySlice=0 view (UseAbsoluteCubeSliceIndexing); null is tolerated.
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_ShadowDynArrayDSV;
     bool m_ShadowDynArrayCreated = false;
 
     // Static (core) cube array. Lazy-created like the overlay above.
@@ -148,6 +150,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_ShadowStaticCubeArraySRV;
     std::array<Microsoft::WRL::ComPtr<ID3D11DepthStencilView>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotDSVs;
     std::array<std::unique_ptr<RenderToDepthStencilBuffer>, MAX_STATIC_SHADOW_CUBEMAPS> m_StaticSlotViews;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_ShadowStaticArrayDSV;
     bool m_StaticShadowArrayCreated = false;
 
     uint32_t m_lastNumTilesX = 0;

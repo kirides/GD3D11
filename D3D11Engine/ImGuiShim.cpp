@@ -35,6 +35,7 @@ namespace ImGui {
 extern bool haveWindAnimations;
 #endif
 extern bool RequiresNvidiaTiledShadowFaceFallback;
+extern bool UseAbsoluteCubeSliceIndexing;
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
 extern float* ShadowMapLambda;
@@ -1944,6 +1945,13 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                         "Existing bakes are cached, so toggling this alone won't visibly change anything until a\n"
                         "light re-renders - use the button below, or watch the raw cube faces in the point light\n"
                         "shadow debug window above." );
+
+                    ImGui::Checkbox( "Absolute cube slice indexing", &UseAbsoluteCubeSliceIndexing );
+                    ImGui::SetItemTooltip(
+                        "Binds the whole tiled cube array as one FirstArraySlice=0 view and writes an absolute\n"
+                        "slice, so no view is ever offset - one draw per cube instead of the six above, and it\n"
+                        "wins when both are on. Only helps if the driver reads the index as absolute into the\n"
+                        "resource. Re-bake after toggling." );
 
                     if ( ImGui::Button( "Force re-bake all point light shadows" ) ) {
                         for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {

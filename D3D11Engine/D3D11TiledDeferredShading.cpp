@@ -116,6 +116,18 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
     }
     SetDebugName( m_ShadowDynCubeArraySRV.Get(), "TiledDeferred_ShadowDynCubeArray_SRV" );
 
+    // The absolute-slice path draws through this; the clear stays on the slot's own window below.
+    {
+        D3D11_DEPTH_STENCIL_VIEW_DESC arrayDsvDesc = {};
+        arrayDsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        arrayDsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        arrayDsvDesc.Texture2DArray.FirstArraySlice = 0;
+        arrayDsvDesc.Texture2DArray.ArraySize = MAX_DYN_SHADOW_CUBEMAPS * 6;
+        arrayDsvDesc.Texture2DArray.MipSlice = 0;
+        hr = m_device->CreateDepthStencilView( m_ShadowDynCubeArray.Get(), &arrayDsvDesc, m_ShadowDynArrayDSV.ReleaseAndGetAddressOf() );
+        LightingLog::Check( hr, m_ShadowDynArrayDSV.Get(), "Point-light dynamic overlay whole-array DSV" );
+    }
+
     uint32_t dynSlotFailures = 0;
 
     for ( uint32_t slot = 0; slot < MAX_DYN_SHADOW_CUBEMAPS; slot++ ) {
@@ -149,7 +161,8 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
 
         m_SlotDynViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowDynCubeArray, m_SlotDynDSVs[slot], nullptr,
-            DYN_SHADOW_CUBE_SIZE, DYN_SHADOW_CUBE_SIZE, faceDSVs.data() );
+            DYN_SHADOW_CUBE_SIZE, DYN_SHADOW_CUBE_SIZE, faceDSVs.data(),
+            m_ShadowDynArrayDSV, slot * 6 );
 
         // A fresh D3D11 texture holds UNDEFINED depth, and a comparison sample against 0 reads as fully
         // OCCLUDED - a slot nothing has drawn into yet would shade its light solid black. Nothing should
@@ -229,6 +242,17 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
     }
     SetDebugName( m_ShadowStaticCubeArraySRV.Get(), "TiledDeferred_ShadowStaticCubeArray_SRV" );
 
+    {
+        D3D11_DEPTH_STENCIL_VIEW_DESC arrayDsvDesc = {};
+        arrayDsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        arrayDsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
+        arrayDsvDesc.Texture2DArray.FirstArraySlice = 0;
+        arrayDsvDesc.Texture2DArray.ArraySize = MAX_STATIC_SHADOW_CUBEMAPS * 6;
+        arrayDsvDesc.Texture2DArray.MipSlice = 0;
+        hr = m_device->CreateDepthStencilView( m_ShadowStaticCubeArray.Get(), &arrayDsvDesc, m_ShadowStaticArrayDSV.ReleaseAndGetAddressOf() );
+        LightingLog::Check( hr, m_ShadowStaticArrayDSV.Get(), "Point-light static shadow whole-array DSV" );
+    }
+
     uint32_t staticSlotFailures = 0;
 
     for ( uint32_t slot = 0; slot < MAX_STATIC_SHADOW_CUBEMAPS; slot++ ) {
@@ -260,7 +284,8 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
 
         m_StaticSlotViews[slot] = std::make_unique<RenderToDepthStencilBuffer>(
             m_ShadowStaticCubeArray, m_StaticSlotDSVs[slot], nullptr,
-            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data() );
+            STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data(),
+            m_ShadowStaticArrayDSV, slot * 6 );
 
         // See the identical note in EnsureDynShadowArray: undefined depth comparison-samples as fully
         // occluded, so every slot starts at "nothing occludes".

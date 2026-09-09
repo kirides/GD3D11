@@ -21,6 +21,9 @@ cbuffer cbPerCubeRender : register( b3 )
 {
     matrix PCR_View[6];
     matrix PCR_ViewProj[6];
+    // Slice of face 0 when the whole cube array is bound as one view; 0 for a 6-slice window.
+    uint PCR_SliceBase;
+    uint3 PCR_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -59,7 +62,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
     float3 positionWorld = mul(float4(Input.vPosition, 1), M_World).xyz;
 
-    Output.RTIndex = Input.instanceID;
+    Output.RTIndex = PCR_SliceBase + Input.instanceID;
     Output.vPosition = mul(float4(positionWorld, 1), PCR_ViewProj[Input.instanceID]);
     Output.vTexcoord2 = Input.vTex2;
     Output.vTexcoord = Input.vTex1;

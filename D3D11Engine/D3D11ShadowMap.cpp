@@ -1,5 +1,6 @@
 ﻿#include "D3D11ShadowMap.h"
 #include "PointShadow/LegacyCubeTechnique.h"
+#include "PointShadow/PointShadowCasters.h"
 #include "PointShadow/TiledCubeArrayTechnique.h"
 #include <algorithm>
 #include <cmath>
@@ -1669,6 +1670,12 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
         graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCubeFace );
     }
 
+    // Drawing through the whole array leaves no view offset; the clear stays on this light's window.
+    ID3D11DepthStencilView* clearTarget = activeFace;
+    if ( !face.Get() && activeFace && PointShadowCasters::UsesAbsoluteSliceIndexing( &targetCube ) ) {
+        activeFace = targetCube.GetArrayDepthStencilView().Get();
+    }
+
     // No DSV means the whole cube pass would draw into nothing and the light samples stale depth.
     static bool s_cubeFaceReported = false;
     if ( !LightingLog::RequireOnce( activeFace, s_cubeFaceReported, std::format(
@@ -1700,7 +1707,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     }
 
     if ( clearDepth ) {
-        m_context->ClearDepthStencilView( activeFace, D3D11_CLEAR_DEPTH, 1.0f, 0 );
+        m_context->ClearDepthStencilView( clearTarget, D3D11_CLEAR_DEPTH, 1.0f, 0 );
     }
 
     // Draw the world mesh without textures

@@ -12,6 +12,7 @@
 #include "../zCVobLight.h"
 
 extern bool RequiresNvidiaTiledShadowFaceFallback;
+extern bool UseAbsoluteCubeSliceIndexing;
 
 namespace {
     std::unordered_set<const zCVob*> vobsToExclude = {};
@@ -122,6 +123,10 @@ namespace PointShadowCasters {
         return !AllowsDynamicCasters( info );
     }
 
+    bool UsesAbsoluteSliceIndexing( const RenderToDepthStencilBuffer* target ) {
+        return UseAbsoluteCubeSliceIndexing && target && target->GetArrayDepthStencilView();
+    }
+
     bool HasAnimatedCastersInRange( const VobLightInfo* info, float shadowRange ) {
         if ( !info || !info->Vob ) return false;
         if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) return false;
@@ -139,8 +144,6 @@ namespace PointShadowCasters {
     }
 
     CubeRenderScope::CubeRenderScope( VobLightInfo* info, float shadowRange ) {
-        D3D11GraphicsEngine* engine = AsD3D11Engine( Engine::GraphicsEngine );
-
         const XMFLOAT3 vobPos = info->Vob->GetPositionWorld();
         const XMVECTOR vEyePt = XMLoadFloat3( &vobPos );
         const XMVECTOR c_XM_Right = XMVectorSet( 1.f, 0.f, 0.f, 0.f );
@@ -188,13 +191,19 @@ namespace PointShadowCasters {
         m_SavedDepthClip = Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable;
         Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = true;
 
-        CubemapGSConstantBuffer gcb;
         for ( int i = 0; i < 6; i++ ) {
-            gcb.PCR_View[i] = m_View[i];
-            XMStoreFloat4x4( &gcb.PCR_ViewProj[i], proj * XMLoadFloat4x4( &m_View[i] ) );
+            m_GCB.PCR_View[i] = m_View[i];
+            XMStoreFloat4x4( &m_GCB.PCR_ViewProj[i], proj * XMLoadFloat4x4( &m_View[i] ) );
         }
+    }
 
-        // Allocate the cubemap view-matrices CB from the per-frame dynamic ring pool
+    void CubeRenderScope::BindCubeCB( unsigned int sliceBase ) const {
+        D3D11GraphicsEngine* engine = AsD3D11Engine( Engine::GraphicsEngine );
+
+        // The ring is per-frame, so this re-allocates per pass rather than holding one from the ctor.
+        CubemapGSConstantBuffer gcb = m_GCB;
+        gcb.PCR_SliceBase = sliceBase;
+
         ConstantBufferAllocation viewMatricesCB = engine->AllocateDynamicCB( &gcb, sizeof( gcb ) );
         engine->BindDynamicCBToVertexShader( 3, viewMatricesCB ); // Layered vertex shader
         engine->BindDynamicCBToGeometryShader( 2, viewMatricesCB ); // Cubemap geometry shader
@@ -215,7 +224,11 @@ namespace PointShadowCasters {
             SetupVobsToExclude( pass.Light );
         }
 
-        if ( RequiresNvidiaTiledShadowFaceFallback && pass.TargetIsSharedArray ) {
+        // Already keeps every view at FirstArraySlice=0, so it replaces the fallback instead of stacking.
+        const bool absoluteSlice = UsesAbsoluteSliceIndexing( pass.Target );
+        scope.BindCubeCB( absoluteSlice ? pass.Target->GetBaseArraySlice() : 0u );
+
+        if ( !absoluteSlice && RequiresNvidiaTiledShadowFaceFallback && pass.TargetIsSharedArray ) {
             RenderFacePasses( scope, pass, excludeSelf ? &excludeVobsToExclude : nullptr );
         } else if ( excludeSelf ) {
             engine->RenderShadowCube( pass.Light->Vob->GetPositionWorldXM(), pass.Range, *pass.Target,

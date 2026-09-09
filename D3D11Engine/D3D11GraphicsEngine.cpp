@@ -94,6 +94,10 @@ bool FeatureRTArrayIndexFromAnyShader = false;
 // see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
 bool RequiresNvidiaTiledShadowFaceFallback = false;
 
+// Binds the whole cube array as one FirstArraySlice=0 DSV and has the layered VS/GS write an absolute
+// slice (PCR_SliceBase + face), so no view is ever offset. Alternative to the 6-pass fallback above.
+bool UseAbsoluteCubeSliceIndexing = false;
+
 VS_ExConstantBuffer_Wind g_windBuffer;
 
 typedef void( __cdecl* PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT )(ID3D11DeviceContext* context, unsigned int drawCount,
@@ -728,12 +732,14 @@ XRESULT D3D11GraphicsEngine::Init() {
         ? ResolvedDrawMultiIndexedInstancedIndirect
         : Stub_DrawMultiIndexedInstancedIndirect;
 
-    // Real NVIDIA D3D11 driver only: under DXVK the layered write into a sub-range DSV is correct, and the
-    // fallback costs 6 draw passes per cube. Only the tiled technique's shared array target is affected.
+    // DXVK gets the sub-range DSV right, and the fallback costs 6 draw passes per cube.
     RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
     if ( RequiresNvidiaTiledShadowFaceFallback ) {
         LogInfo() << "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays";
     }
+
+    // Opt-in until an NVIDIA run confirms it; takes precedence over the fallback above.
+    UseAbsoluteCubeSliceIndexing = false;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
