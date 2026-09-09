@@ -728,7 +728,12 @@ XRESULT D3D11GraphicsEngine::Init() {
         ? ResolvedDrawMultiIndexedInstancedIndirect
         : Stub_DrawMultiIndexedInstancedIndirect;
 
-    RequiresNvidiaTiledShadowFaceFallback = false; // Do not enable by default
+    // Real NVIDIA D3D11 driver only: under DXVK the layered write into a sub-range DSV is correct, and the
+    // fallback costs 6 draw passes per cube. Only the tiled technique's shared array target is affected.
+    RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
+    if ( RequiresNvidiaTiledShadowFaceFallback ) {
+        LogInfo() << "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays";
+    }
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
