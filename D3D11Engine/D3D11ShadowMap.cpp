@@ -1,6 +1,7 @@
 ﻿#include "D3D11ShadowMap.h"
 #include "PointShadow/LegacyCubeTechnique.h"
 #include "PointShadow/PointShadowCasters.h"
+#include "PointShadow/SkeletalCubeCasters.h"
 #include "PointShadow/TiledCubeArrayTechnique.h"
 #include <algorithm>
 #include <cmath>
@@ -1005,6 +1006,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         ? EPointShadowTechnique::TiledCubeArray
         : EPointShadowTechnique::LegacyPerLightCube );
 
+    SkeletalCubeCasters::BeginPass();
     return m_PointTechnique->DrawShadows( lights );
 }
 

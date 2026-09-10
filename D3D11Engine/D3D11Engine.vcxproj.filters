@@ -420,6 +420,9 @@
     <ClInclude Include="D3D11PointLight.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11SkeletalPoseCache.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
     <ClInclude Include="GothicMemoryLocations2_6_fix_Spacer.h">
       <Filter>ZenGin</Filter>
     </ClInclude>
@@ -1205,6 +1208,9 @@
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PointLight.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11SkeletalPoseCache.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="WidgetContainer.cpp">
