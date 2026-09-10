@@ -101,8 +101,7 @@ public:
     int HandleShadowModeChange( int shadowMode );
     int GetLastShadowMode() const { return m_LastShadowMode; }
 
-    /** Stamps a finished render: position, colour and DrawnOnce. Pairs with the caster scope, which
-        restores the graphics state it changed. */
+    /** Stamps a queued render: position, colour and DrawnOnce. The draws land in PointShadowBatch::Flush. */
     void NoteRendered( const XMFLOAT3& vobPos );
     bool HasMoved() const;
     const XMFLOAT3& GetLastUpdatePosition() const { return LastUpdatePosition; }

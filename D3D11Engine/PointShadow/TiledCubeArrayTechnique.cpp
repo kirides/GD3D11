@@ -92,7 +92,6 @@ void TiledCubeLightState::Render( bool renderStatic, bool renderDynamic ) {
         m_Light.DropStaticBake( PLR_LIGHT_MOVED );
     }
 
-    auto _ = AsD3D11Engine( Engine::GraphicsEngine )->RecordGraphicsEvent( GE_NAME( "RenderTiledShadow" ) );
     CubeRenderScope scope( info, m_Light.GetShadowRange() );
     m_Light.NoteDebugCubePlanes( scope.ZNear(), scope.ZFar() );
 
@@ -109,7 +108,7 @@ void TiledCubeLightState::Render( bool renderStatic, bool renderDynamic ) {
         staticPass.VobCache = &m_Light.VobCache;
         staticPass.MobCache = &m_Light.SkeletalVobCache;
         staticPass.WorldMeshCache = &m_Light.WorldMeshCache;
-        PointShadowCasters::RenderStatic( scope, staticPass );
+        PointShadowCasters::QueueStatic( scope, staticPass );
         m_Light.MarkStaticBakeReady();
         CommitStaticBakeToSlot();
     }
@@ -119,7 +118,7 @@ void TiledCubeLightState::Render( bool renderStatic, bool renderDynamic ) {
         if ( hasCasters ) {
             CasterPass dynPass = pass;
             dynPass.Target = m_DynTarget;
-            PointShadowCasters::RenderAnimated( scope, dynPass );
+            PointShadowCasters::QueueAnimated( scope, dynPass );
         }
         if ( m_SlotSel && m_DynSlot >= 0 ) m_SlotSel->CommitDynamic( static_cast<uint32_t>( m_DynSlot ), hasCasters );
     }

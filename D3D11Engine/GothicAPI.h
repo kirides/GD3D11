@@ -447,8 +447,6 @@ public:
     /** Draws a skeletal mesh-vob */
     void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
 
-    void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
-
     /** Shared state for a run of ghost draws; per run, since the queue interleaves kinds. */
     void BeginTransparencyVobRun();
 
@@ -467,7 +465,6 @@ public:
 
     /** Draws a morphmesh */
     void DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes );
-    void DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes );
 
     /** Locks the resource CriticalSection */
     void EnterResourceCriticalSection();

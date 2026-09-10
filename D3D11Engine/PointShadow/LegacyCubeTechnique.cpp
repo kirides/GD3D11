@@ -11,6 +11,7 @@
 #include "../RenderToTextureBuffer.h"
 #include "../WorldObjects.h"
 #include "../zCVobLight.h"
+#include "PointShadowBatch.h"
 #include "PointShadowCasters.h"
 #include "PointShadowPolicy.h"
 
@@ -207,7 +208,7 @@ void LegacyCubeLightState::RenderFullCubemap( const CubeRenderScope& scope ) {
     pass.WorldMeshCache = &m_Light.WorldMeshCache;
 
     if ( !m_Light.IsStaticShadowReady() && shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
-        PointShadowCasters::RenderStatic( scope, pass );
+        PointShadowCasters::QueueStatic( scope, pass );
         m_Light.MarkStaticBakeReady();
         return;
     }
@@ -220,23 +221,25 @@ void LegacyCubeLightState::RenderFullCubemap( const CubeRenderScope& scope ) {
             if ( m_StaticDepthCubemap ) {
                 CasterPass aside = pass;
                 aside.Target = m_StaticDepthCubemap.get();
-                PointShadowCasters::RenderStatic( scope, aside );
+                PointShadowCasters::QueueStatic( scope, aside );
                 m_Light.MarkStaticBakeReady();
             } else {
                 // No aside buffer, we can't cache the static shadows.
-                PointShadowCasters::RenderStatic( scope, pass );
+                PointShadowCasters::QueueStatic( scope, pass );
             }
         }
 
         if ( m_StaticDepthCubemap ) {
-            CopyStaticAsideToCube();
+            // The aside bake draws in phase 0, so the copy and the movers wait for it.
+            PointShadowBatch::AtPhaseBoundary( [this] { CopyStaticAsideToCube(); } );
         }
 
         // A world-mesh-only light has no animated casters to add.
         if ( !m_Light.RestrictsCastersToWorld() ) {
             CasterPass animated = pass;
-            animated.ClearDepth = false;   // composited on top of the static depth just copied in
-            PointShadowCasters::RenderAnimated( scope, animated );
+            animated.ClearDepth = false;   // composited on top of the static depth copied in at the boundary
+            animated.Phase = 1;
+            PointShadowCasters::QueueAnimated( scope, animated );
         }
         return;
     }
@@ -244,7 +247,7 @@ void LegacyCubeLightState::RenderFullCubemap( const CubeRenderScope& scope ) {
     if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
         ReleaseStaticAsideShadowMap();
         m_Light.DropStaticBake( PLR_NO_CACHE );
-        PointShadowCasters::RenderAll( scope, pass );
+        PointShadowCasters::QueueAll( scope, pass );
     }
 }
 
@@ -404,11 +407,8 @@ XRESULT LegacyCubeTechnique::DrawShadows( std::vector<VobLightInfo*>& lights ) {
     info.PointLightStaticSlotsMax = 0;
     info.PointLightSlotsStarved = 0;
 
-    // Render the immediate priority lights - but never more than a handful in one frame.
-    //
-    // Each rebuild keeps its view-matrix CB bound at VS b3 / GS b2 across every draw of both its passes while
-    // those draws keep allocating from the same per-frame ring; once it wraps, earlier lights finish rendering
-    // with another light's projection. Overflow drains through the round-robin below instead.
+    // Render the immediate priority lights - but never more than a handful in one frame; overflow drains
+    // through the round-robin below.
     std::sort( importantUpdates.begin(), importantUpdates.end(), []( const auto& a, const auto& b ) {
         return a.first < b.first;
     } );

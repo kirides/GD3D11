@@ -154,6 +154,7 @@ void D3D11PointLight::NoteRendered( const XMFLOAT3& vobPos ) {
 void D3D11PointLight::ClearCasterCaches() {
     VobCache.clear();
     SkeletalVobCache.clear();
+    WorldMeshCache.clear();
 }
 
 void D3D11PointLight::DropStaticBake( EPointLightRebakeCause cause ) {

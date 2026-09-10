@@ -91,7 +91,7 @@ bool FeatureRTArrayIndexFromAnyShader = false;
 // NVIDIA driver bug: a DSV windowed onto a non-zero-offset sub-range of a larger Texture2DArray/
 // TextureCubeArray mis-routes SV_RenderTargetArrayIndex writes, so a point light in any slot but 0 of
 // the shared tiled shadow cube array only gets one of its six faces. DXVK/AMD/Intel are unaffected -
-// see D3D11PointLight::IsTiledArrayTarget / RenderShadowCubeFacePasses.
+// see PointShadowBatch's PerFace rasterization.
 bool RequiresNvidiaTiledShadowFaceFallback = false;
 
 // Binds the whole cube array as one FirstArraySlice=0 DSV and has the layered VS/GS write an absolute
@@ -738,11 +738,10 @@ XRESULT D3D11GraphicsEngine::Init() {
     // DXVK gets the sub-range DSV right, and the fallback costs 6 draw passes per cube.
     RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
     if ( RequiresNvidiaTiledShadowFaceFallback ) {
-        LogInfo() << "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays";
+        UseAbsoluteCubeSliceIndexing = RequiresNvidiaTiledShadowFaceFallback;
+        Logging::Inf( "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays and UseAbsoluteCubeSliceIndexing" );
     }
 
-    // Opt-in until an NVIDIA run confirms it; takes precedence over the fallback above.
-    UseAbsoluteCubeSliceIndexing = false;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
@@ -2590,10 +2589,8 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
-    // NVIDIA per-face fallback (IsCubeFaceFallbackActive) never binds GS_Cubemap, so it needs
-    // VS_ExSkeletalCubeFace's PS_CubeShadow-compatible output layout instead of VS_ExSkeletalCube's.
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        SetActiveVertexShader( IsCubeFaceFallbackActive() ? VShaderID::VS_ExSkeletalCubeFace : VShaderID::VS_ExSkeletalCube );
+        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
     } else {
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
@@ -2615,36 +2612,15 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
-        const size_t boneCount = std::min<size_t>( transforms.size(), NUM_MAX_BONES );
-        std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + boneCount );
-        std::vector<XMFLOAT4X4> packedPrev;
-        packedPrev.reserve( boneCount );
-
-        if ( vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty() ) {
-            const size_t copyCount = std::min<size_t>( vi->PrevBoneTransforms.size(), boneCount );
-            packedPrev.insert( packedPrev.end(), vi->PrevBoneTransforms.begin(), vi->PrevBoneTransforms.begin() + copyCount );
-            if ( copyCount < boneCount ) {
-                packedPrev.insert( packedPrev.end(), packedCurrent.begin() + static_cast<std::ptrdiff_t>(copyCount), packedCurrent.end() );
-            }
-        } else {
-            packedPrev = packedCurrent;
-        }
-
-        if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
-            || !UploadStructuredMatrixBuffer( SkeletalPrevBoneTransformsBufferTransient, packedPrev, "SkeletalPrevBoneTransformsBufferTransient" )
-            || !SkeletalBoneTransformsBufferTransient
-            || !SkeletalPrevBoneTransformsBufferTransient
-            || !SkeletalBoneTransformsBufferTransient
-            || !SkeletalPrevBoneTransformsBufferTransient ) {
+        const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses.Acquire( vi, static_cast<zCModel*>( vi->Vob->GetVisual() ) );
+        if ( pose.Count == 0 || !m_SkeletalPoses.Flush() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
-            ActiveVS->BindResource( "PrevBoneTransforms", SkeletalPrevBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses.GetBonesSRV() );
+            ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses.GetPrevBonesSRV() );
 
-            VS_ExConstantBuffer_SkeletalBoneRange range = {};
-            range.BoneCount = static_cast<unsigned int>(boneCount);
-            range.UseStructuredBones = 1u;
-            ActiveVS->UpdateBuffer("BoneTransformRange", &range, sizeof(range));
+            const VS_ExConstantBuffer_SkeletalBoneRange range = { pose.Offset, pose.Offset, pose.Count, 1u };
+            ActiveVS->UpdateBuffer( "BoneTransformRange", &range, sizeof( range ) );
         }
     }
 
@@ -2732,130 +2708,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     return XR_SUCCESS;
 }
 
-XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
-    const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
-    SetActiveVertexShader( VShaderID::VS_ExSkeletalLayered );
-
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-    VS_ExConstantBuffer_PerInstanceSkeletal cb2;
-    cb2.World = world;
-    cb2.PrevWorld = world;
-    cb2.PI_ModelColor = color;
-    cb2.PI_ModelFatness = fatness;
-    ActiveVS->UpdateBuffer("Matrices_PerInstances", &cb2, sizeof(cb2));
-
-    bool useStructuredBones = !FeatureLevel10Compatibility;
-    if ( useStructuredBones ) {
-        const std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + std::min<size_t>( transforms.size(), NUM_MAX_BONES ) );
-        if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
-            || !SkeletalBoneTransformsBufferTransient ) {
-            useStructuredBones = false;
-        } else {
-            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
-            VS_ExConstantBuffer_SkeletalBoneRange range = {};
-            range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
-            range.UseStructuredBones = 1u;
-            ActiveVS->UpdateBuffer("BoneTransformRange", &range, sizeof(range));
-        }
-    }
-
-    if ( !useStructuredBones ) {
-        // Copy bones
-        ActiveVS->UpdateBuffer("BoneTransforms", &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
-    }
-
-    // Note: Slot b3 is used for cbPerCubeRender in VS_ExSkeletalLayered, not PrevBoneTransforms
-    // Motion vectors are not needed for shadow map rendering
-
-    if ( transforms.size() >= NUM_MAX_BONES ) {
-        LogWarn() << "SkeletalMesh has more than "
-            << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
-    }
-
-    ActiveVS->Apply();
-
-    if ( RenderingStage != DES_GHOST ) {
-        bool cubeShadowPass = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_CUBE_SHADOW) != 0;
-        if ( cubeShadowPass ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
-            ActivePS->Apply();
-        } else if ( RenderingStage == DES_SHADOWMAP ) {
-            // Unbind PixelShader in this case
-            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-            ActivePS = nullptr;
-        } else {
-            // It is only to indicate that we want pixel shader(to populate gbuffer)
-            // the actual shader will be activated before drawing
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_CubeShadow );
-        }
-    }
-
-    if ( RenderingStage == DES_MAIN ) {
-        if ( ActiveHDS ) {
-            Context->DSSetShader( nullptr, nullptr, 0 );
-            Context->HSSetShader( nullptr, nullptr, 0 );
-            ActiveHDS = nullptr;
-        }
-    }
-
-    void* lastTex = nullptr;
-
-    GetWhiteTexture()->BindToPixelShader( 0 );
-    lastTex = GetWhiteTexture();
-
-    for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
-        if ( zCMaterial* mat = itm.first ) {
-            zCTexture* tex = nullptr;
-            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
-                if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    // Texture still streaming in (async load) - we can't determine if it needs alpha
-                    // testing yet, so draw with a black placeholder instead of skipping this submesh
-                    // (which would make it vanish/flash the clear color for a frame).
-                    if ( lastTex != BlackTexture.get() ) {
-                        BlackTexture->BindToPixelShader( 0 );
-                        lastTex = BlackTexture.get();
-                    }
-                    continue;
-                }
-                const bool needTex =  tex != lastTex
-                    && (tex->HasAlphaChannel() || mat->HasAlphaTest());
-
-                if ( needTex ) {
-                    tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                    lastTex = tex;
-                } else if ( lastTex != GetWhiteTexture() ) {
-                    GetWhiteTexture()->BindToPixelShader( 0 );
-                    lastTex = GetWhiteTexture();
-                }
-            }
-        }
-        for ( auto& mesh : itm.second ) {
-
-            auto& vb = mesh->MeshVertexBuffer;
-            auto& ib = mesh->MeshIndexBuffer;
-            unsigned int numIndices = mesh->Indices.size();
-
-            UINT offset = 0;
-            UINT uStride = sizeof( ExSkelVertexStruct );
-            Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( vb.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-
-            Context->IASetIndexBuffer( D3D11VertexBuffer::From( ib.get() )->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-
-            // Draw the mesh
-            Context->DrawIndexedInstanced( numIndices, 6, 0, 0, 0 );
-
-            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                numIndices / 3;
-        }
-    }
-
-    return XR_SUCCESS;
-}
-
 /** Draws a batch of instanced geometry */
 XRESULT D3D11GraphicsEngine::DrawInstanced(
     GfxVertexBuffer* vbGfx, GfxVertexBuffer* ibGfx, unsigned int numIndices,
@@ -2913,8 +2765,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     struct TempVobDrawInfo {
         SkeletalVobInfo* VobInfo;
         zCModel* Model;
-        int BoneIdx;
-        int NumBones;
+        D3D11SkeletalPoseCache::Pose Pose;
         float4 ModelColor;
         float Fatness;
         XMMATRIX World;
@@ -2925,8 +2776,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         TempVobDrawInfo(
             SkeletalVobInfo* VobInfo,
             zCModel* Model,
-            int BoneIdx,
-            int NumBones,
+            D3D11SkeletalPoseCache::Pose Pose,
             float4 ModelColor,
             float Fatness,
             XMMATRIX World,
@@ -2934,8 +2784,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         ) : 
             VobInfo(VobInfo),
             Model( Model),
-            BoneIdx( BoneIdx ),
-            NumBones( NumBones ),
+            Pose( Pose ),
             ModelColor( ModelColor),
             Fatness( Fatness),
             World( World),
@@ -2945,10 +2794,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     static std::vector<TempVobDrawInfo> tempVobList;
     tempVobList.clear();
-    BoneTransformCache.clear();
-    BoneTransformCache.reserve( 150 );
-    static std::vector<XMFLOAT4X4> packedPrevBoneTransforms;
-    packedPrevBoneTransforms.clear();
     
     GothicGraphicsState& graphicsState = Engine::GAPI->GetRendererState().GraphicsState;
 
@@ -2957,27 +2802,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const bool isMainReuseStage = isZPrepass || isMainStage;
     bool useStructuredBones = !FeatureLevel10Compatibility;
 
-    std::vector<VS_ExConstantBuffer_SkeletalBoneRange> structuredBoneRanges( vis.size() );
-    bool reuseMainPackedUpload = false;
-
-    if ( useStructuredBones
-        && isMainStage
-        && m_FrameGeometryCache.skeletalBonesUploaded
-        && m_FrameGeometryCache.skeletalBoneRanges.size() == vis.size()
-        && HasMatchingSkeletalVisOrder( vis, m_FrameGeometryCache.skeletalBoneVisOrder ) ) {
-        structuredBoneRanges = m_FrameGeometryCache.skeletalBoneRanges;
-        reuseMainPackedUpload = true;
-    }
-
-    if ( useStructuredBones && !reuseMainPackedUpload ) {
-        BoneTransformCache.clear();
-        packedPrevBoneTransforms.clear();
-
-        int packedBoneOffset = 0;
-        for ( size_t i = 0; i < vis.size(); ++i ) {
-            SkeletalVobInfo* vi = vis[i];
-            auto& range = structuredBoneRanges[i];
-
+    if ( useStructuredBones ) {
+        // One packed pose per vob per frame: vobs an earlier pass already skinned upload nothing here.
+        for ( SkeletalVobInfo* vi : vis ) {
             if ( !vi || !vi->Vob ) {
                 continue;
             }
@@ -2988,67 +2815,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 continue;
             }
             vi->UpdateState();
-
-            const int currentBegin = static_cast<int>(BoneTransformCache.size());
-            model->GetBoneTransforms( &BoneTransformCache );
-            int numBones = static_cast<int>(BoneTransformCache.size()) - currentBegin;
-            if ( numBones <= 0 ) {
-                continue;
-            }
-
-            numBones = std::min<int>( numBones, NUM_MAX_BONES );
-            BoneTransformCache.resize( currentBegin + numBones );
-
-            range.BoneOffset = static_cast<unsigned int>(packedBoneOffset);
-            range.BoneCount = static_cast<unsigned int>(numBones);
-            range.PrevBoneOffset = static_cast<unsigned int>(packedPrevBoneTransforms.size());
-            range.UseStructuredBones = 1u;
-
-            const auto transforms = std::span( &BoneTransformCache[currentBegin], numBones );
-            if ( vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty() ) {
-                const size_t copyCount = std::min<size_t>( vi->PrevBoneTransforms.size(), static_cast<size_t>(numBones) );
-                packedPrevBoneTransforms.insert(
-                    packedPrevBoneTransforms.end(),
-                    vi->PrevBoneTransforms.begin(),
-                    vi->PrevBoneTransforms.begin() + copyCount );
-
-                if ( copyCount < static_cast<size_t>(numBones) ) {
-                    packedPrevBoneTransforms.insert(
-                        packedPrevBoneTransforms.end(),
-                        transforms.begin() + static_cast<std::ptrdiff_t>(copyCount),
-                        transforms.end() );
-                }
-            } else {
-                packedPrevBoneTransforms.insert( packedPrevBoneTransforms.end(), transforms.begin(), transforms.end() );
-            }
-
-            packedBoneOffset += numBones;
+            m_SkeletalPoses.Acquire( vi, model );
         }
-
-        auto& currentBuffer = isMainReuseStage ? SkeletalBoneTransformsBuffer : SkeletalBoneTransformsBufferTransient;
-        auto& prevBuffer = isMainReuseStage ? SkeletalPrevBoneTransformsBuffer : SkeletalPrevBoneTransformsBufferTransient;
-
-        const bool uploadedCurrent = UploadStructuredMatrixBuffer(
-            currentBuffer,
-            BoneTransformCache,
-            isMainReuseStage ? "SkeletalBoneTransformsBuffer" : "SkeletalBoneTransformsBufferTransient" );
-        const bool uploadedPrevious = UploadStructuredMatrixBuffer(
-            prevBuffer,
-            packedPrevBoneTransforms,
-            isMainReuseStage ? "SkeletalPrevBoneTransformsBuffer" : "SkeletalPrevBoneTransformsBufferTransient" );
-
-        if ( !uploadedCurrent || !uploadedPrevious ) {
-            useStructuredBones = false;
-        } else if ( isMainReuseStage ) {
-            m_FrameGeometryCache.skeletalBonesUploaded = true;
-            m_FrameGeometryCache.skeletalBoneVisOrder = vis;
-            m_FrameGeometryCache.skeletalBoneRanges = structuredBoneRanges;
-        }
+        useStructuredBones = m_SkeletalPoses.Flush();
     }
 
-    BoneTransformCache.clear();
-
-    int boneOffset = 0;
     
     // Setup drawing of SkeletalMeshes, attachments are deferred, to reduce api calls
     
@@ -3071,17 +2842,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     ConstantBufferSlot prevBoneTransformsCb = INVALID_SHADER_CB_SLOT;
 
     if ( useStructuredBones ) {
-        auto& currentBuffer = isMainReuseStage ? SkeletalBoneTransformsBuffer : SkeletalBoneTransformsBufferTransient;
-        auto& prevBuffer = isMainReuseStage ? SkeletalPrevBoneTransformsBuffer : SkeletalPrevBoneTransformsBufferTransient;
-
-        if ( !currentBuffer || !prevBuffer
-            || !currentBuffer
-            || !prevBuffer ) {
-            useStructuredBones = false;
-        } else {
-            ActiveVS->BindResource( "BoneTransforms", currentBuffer->GetShaderResourceView().Get() );
-            ActiveVS->BindResource( "PrevBoneTransforms", prevBuffer->GetShaderResourceView().Get() );
-        }
+        ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses.GetBonesSRV() );
+        ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses.GetPrevBonesSRV() );
     }
 
     if ( !useStructuredBones ) {
@@ -3200,9 +2962,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     {
         auto _scopeBaseMeshes = RecordGraphicsEvent( GE_NAME( "DrawSkeletalMeshVobs::BaseMeshes" ) );
         TracyD3D11ZoneCGX( "DrawSkeletalMeshVobs::BaseMeshes" );
-        size_t drawIndex = 0;
         for ( SkeletalVobInfo* vi : vis ) {
-            const size_t currentDrawIndex = drawIndex++;
             zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
             if ( !model ) {
                 continue;
@@ -3254,11 +3014,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
             float fatness = model->GetModelFatness();
 
-            // Get the bone transforms
-            model->GetBoneTransforms( &BoneTransformCache );
-            auto numBones = BoneTransformCache.size() - boneOffset;
-            auto boneIdx = boneOffset;
-            boneOffset += numBones;
+            const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses.Acquire( vi, model );
+            if ( pose.Count == 0 ) {
+                continue; // no nodes to skin with
+            }
 
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
@@ -3267,7 +3026,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #else
                 if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                    const auto transforms = std::span( &BoneTransformCache[boneIdx], numBones );
+                    const auto transforms = m_SkeletalPoses.Bones( pose );
                     const auto color = modelColor;
 
                     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
@@ -3281,17 +3040,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     BindDynamicCBToVertexShader(perInstanceCb, AllocateDynamicCB(&cb2));
 
                     if ( useStructuredBones ) {
-                        VS_ExConstantBuffer_SkeletalBoneRange range = {};
-                        if ( currentDrawIndex < structuredBoneRanges.size() ) {
-                            range = structuredBoneRanges[currentDrawIndex];
-                        }
-
-                        if ( range.BoneCount == 0 ) {
-                            range.BoneOffset = static_cast<unsigned int>(boneIdx);
-                            range.PrevBoneOffset = static_cast<unsigned int>(boneIdx);
-                            range.BoneCount = static_cast<unsigned int>(std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
-                        }
-                        range.UseStructuredBones = 1u;
+                        const VS_ExConstantBuffer_SkeletalBoneRange range = { pose.Offset, pose.Offset, pose.Count, 1u };
                         BindDynamicCBToVertexShader(boneRangeCb, AllocateDynamicCB(&range));
                     } else {
                         // Copy bones
@@ -3384,7 +3133,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
 
             if ( drawAttachments ) {
-                tempVobList.emplace_back( vi, model, boneIdx, numBones, modelColor, fatness, xmWorld, vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world );
+                tempVobList.emplace_back( vi, model, pose, modelColor, fatness, xmWorld, vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world );
             }
 
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
@@ -3465,7 +3214,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             auto vi = data.VobInfo;
             auto model = data.Model;
             auto modelColor = data.ModelColor;
-            auto transforms = std::span( &BoneTransformCache[data.BoneIdx], data.NumBones );
+            auto transforms = m_SkeletalPoses.Bones( data.Pose );
             auto fatness = data.Fatness;
             auto& world = data.World;
             auto& prevWorld = data.PrevWorld;
@@ -4146,6 +3895,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
     m_FrameGeometryCache.Reset();
+    m_SkeletalPoses.BeginFrame();
 
     // Producers push all through the frame; the transparency pass drains it.
     Engine::GAPI->GetTransparencyQueue().BeginFrame();
@@ -5904,719 +5654,21 @@ namespace {
     }
 }
 
-/** Draws everything around the given position */
-void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
-    FXMVECTOR position, float range, bool cullFront, bool indoor,
-    bool noNPCs, std::list<VobInfo*>* renderedVobs,
-    std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<MeshDrawRange>* worldMeshCache,
-    unsigned int casterMask,
-    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
-
-    // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode =
-        cullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
-        : GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = true;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-    Engine::GAPI->GetRendererState().DepthState.SetDefault();
-    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::ECompareFunc::CF_COMPARISON_LESS_EQUAL;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-    Context->PSSetShaderResources( 0, 6, s_nullSRVs );
-
-    bool cubeShadowPass =
-        (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
-            GSWITCH_CUBE_SHADOW) != 0;
-    if ( cubeShadowPass ) {
-        SetActivePixelShader( PShaderID::PS_CubeShadow );
+namespace ShadowCasting {
+    GfxVertexBuffer* ShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha ) {
+        return GetShadowAwareIndexBuffer( mesh, isAlpha );
     }
 
-    // Set constant buffer
-    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
-
-    GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
-
-    // Init drawcalls
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    constexpr float identityMatrix[16] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
-
-    // Update and bind buffer of PS
-    PerObjectState ocb;
-    ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->UpdateBuffer("POS_MaterialInfo", &ocb, sizeof(ocb));
-
-    WhiteTexture->BindToPixelShader( 0 );
-    void* lastTex = WhiteTexture.get();
-
-    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
-
-    UpdateRenderStates();
-
-    float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
-    bool isOutdoor = (Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR);
-
-    std::vector<WorldMeshSectionInfo*> drawnSections;
-
-    auto rangeSquared = range * range;
-    auto vRangeSquared = XMVectorReplicate(rangeSquared);    
-
-    const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
-    const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
-    const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
-    const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
-
-    if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
-        // Only use cache if we haven't already collected the vobs
-        // TODO: Collect vobs in a different way than using the drawn sections!
-        //		 The current solution won't use the cache at all when there are
-        // no vobs near!
-        if ( worldMeshCache && !worldMeshCache->empty() ) {
-            for ( const MeshDrawRange& r : *worldMeshCache ) {
-                bool isAlpha = false;
-                if ( r.Key.Material && r.Key.Material->GetTextureSingle() ) {
-
-                    if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
-                        continue;
-                    }
-
-                    if ( r.Key.Material->HasAlphaTest() || r.Key.Material->GetTextureSingle()->HasAlphaChannel() ) {
-                        zCTexture* aniTex = alphaRef > 0.0f ? r.Key.Material->GetAniTexture() : nullptr;
-                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
-                            void* engineTex = aniTex->GetSurface()->GetEngineTexture();
-                            if ( lastTex != engineTex ) {
-                                aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                lastTex = engineTex;
-                            }
-                            ActivePS->Apply();
-                            isAlpha = true;
-                        } else
-                            continue;
-                    } else {
-                        // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
-                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                    }
-                } else {
-                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                }
-
-                // Cached range may be a cluster sub-range, not the whole mesh.
-                DrawVertexBufferIndexed( r.Mesh->GetMeshVertexBuffer(),
-                    GetShadowAwareIndexBuffer( r.Mesh, isAlpha ),
-                    r.IndexCount, r.IndexOffset );
-            }
-        } else {
-            auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::WorldMesh" ) );
-            Frustum f;
-            f.BuildCubemapFace( position, range, 0 );
-
-            // Section-granularity: needed for the VOB-caster gathering below (drawnSections[i]->Vobs).
-            std::vector<WorldMeshSectionInfo*> sections = {};
-            Engine::GAPI->CollectVisibleSections( sections, &f, true );
-            for ( auto* section : sections ) {
-                drawnSections.emplace_back( section );
-            }
-
-            if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows ) {
-                for ( auto* section : sections ) {
-                    if ( section->FullStaticMesh )
-                        Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
-                }
-            } else {
-                // Finer-grained than `sections`: only the clusters actually within `f`.
-                std::vector<MeshDrawRange> ranges;
-                Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );
-
-                for ( const MeshDrawRange& r : ranges ) {
-                    if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
-                        continue;
-                    }
-
-                    bool isAlpha = false;
-                    if ( r.Key.Material && r.Key.Material->GetTexture() ) {
-                        if ( r.Key.Material->HasAlphaTest() || r.Key.Material->GetTexture()->HasAlphaChannel() ) {
-                            if ( alphaRef > 0.0f &&
-                                r.Key.Material->GetTexture()->GetCacheState() ==
-                                zRES_CACHED_IN ) {
-                                void* engineTex = r.Key.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                                if ( lastTex != engineTex ) {
-                                    r.Key.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                    lastTex = engineTex;
-                                }
-                                ActivePS->Apply();
-                                isAlpha = true;
-                            } else
-                                continue;
-                        } else {
-                            // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
-                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                        }
-                    } else {
-                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                    }
-
-                    DrawVertexBufferIndexed( r.Mesh->GetMeshVertexBuffer(),
-                        GetShadowAwareIndexBuffer( r.Mesh, isAlpha ),
-                        r.IndexCount, r.IndexOffset );
-
-                    if ( worldMeshCache ) {
-                        worldMeshCache->push_back( r );
-                    }
-                }
-            }
-        }
+    unsigned int ShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha ) {
+        return GetShadowAwareIndexCount( mesh, isAlpha );
     }
 
-    if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::Vobs" ) );
-        // Draw visible vobs here
-        std::list<VobInfo*> rndVob;
-        // construct new renderedvob list or fake one
-        if ( !renderedVobs || renderedVobs->empty() ) {
-            for ( size_t i = 0; i < drawnSections.size(); i++ ) {
-                for ( auto it : drawnSections[i]->Vobs ) {
-                    if ( !it->VisualInfo ) {
-                        continue;  // Seems to happen in Gothic 1
-                    }
-
-                    // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
-                    // item invalidate every nearby light's static cube when it despawned.
-                    if ( IsAttachedToNpc( it->Vob ) ) {
-                        continue;
-                    }
-
-                    if ( !it->Vob->GetShowVisual() ) {
-                        continue;
-                    }
-
-                    // Check vob range
-                    if ( XMVector3Greater( XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
-                        continue;
-                    }
-
-                    // Check for inside vob. Don't render inside-vobs when the light is
-                    // outside and vice-versa.
-                    if ( isOutdoor && it->IsIndoorVob != indoor ) {
-                        continue;
-                    }
-
-                    if ( ignoreVob != nullptr && ignoreVob( it->Vob ) ) {
-                        continue;
-                    }
-                    rndVob.emplace_back( it );
-                }
-            }
-
-            if ( renderedVobs )*renderedVobs = rndVob;
-        }
-
-        // At this point either renderedVobs or rndVob is filled with something
-        GfxTexture* lastBoundTexture = nullptr;
-        std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
-        VS_ExConstantBuffer_PerInstance cb;
-
-        for ( auto const& vobInfo : rl ) {
-            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
-            // Extract3DSMeshFromVisual2Async) - skip until Meshes/MeshesByTexture are safe to iterate.
-            if ( !vobInfo->VisualInfo->GetIsReady() ) continue;
-
-            // Bind per-instance buffer
-            vobInfo->UpdateVobConstantBuffer( cb );
-
-            BindDynamicCBToVertexShader( 1, AllocateDynamicCB( &cb ) );
-
-            // Draw the vob
-            for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
-                bool isAlpha = false;
-                if ( materialMesh.first && materialMesh.first->GetTextureSingle() ) {
-                    if ( (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
-                            || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
-                        ) {
-                        zCTexture* aniTex = materialMesh.first->GetAniTexture();
-                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
-                            isAlpha = true;
-                            if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
-                                lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
-                                lastBoundTexture->BindToPixelShader( 0 );
-                            }
-                        }
-                    }
-                    if ( !isAlpha ) {
-                        if ( lastBoundTexture != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastBoundTexture = WhiteTexture.get();
-                        }
-                    }
-                }
-                for ( auto const& meshInfo : materialMesh.second ) {
-                    const auto mesh = meshInfo.get();
-                    DrawVertexBufferIndexed(
-                        meshInfo->GetMeshVertexBuffer(),
-                        GetShadowAwareIndexBuffer( mesh, isAlpha ),
-                        GetShadowAwareIndexCount( mesh, isAlpha ) );
-                }
-            }
-        }
+    bool IsAttachedToNpc( const zCVob* vob ) {
+        return ::IsAttachedToNpc( vob );
     }
 
-    bool renderNPCs = !noNPCs && drawAnimatedCasters;
-    if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
-        auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::MOBs" ) );
-        // Draw visible vobs here
-        std::list<SkeletalVobInfo*> rndVob;
-
-        // construct new renderedvob list or fake one
-        if ( !renderedMobs || renderedMobs->empty() ) {
-            for ( auto it : Engine::GAPI->GetSkeletalMeshVobs() ) {
-                if ( !it->VisualInfo ) {
-                    continue;  // Seems to happen in Gothic 1
-                }
-
-                // Animated or NPC-attached MOBs belong to the animated pass - see IsAnimatedShadowCaster.
-                if ( IsAnimatedShadowCaster( it ) ) {
-                    continue;
-                }
-
-                if ( !it->Vob->GetShowVisual() ) {
-                    continue;
-                }
-
-                // Check for inside vob. Don't render inside-vobs when the light is
-                // outside and vice-versa.
-                if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
-                    continue;
-                }
-
-                // Assume everything that doesn't have a skeletal-mesh won't move very
-                // much This applies to usable things like chests, chairs, beds, etc
-                if ( auto skelInfo = dynamic_cast<SkeletalMeshVisualInfo*>(it->VisualInfo) ) {
-                    if ( !skelInfo->SkeletalMeshes.empty() ) {
-                        continue;
-                    }
-                }
-
-                // Check vob range
-                if ( XMVector3Greater( XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
-                    continue;
-                }
-                
-                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
-                    continue;
-                }
-
-                rndVob.emplace_back( it );
-            }
-
-            if ( renderedMobs ) {
-                *renderedMobs = rndVob;
-            }
-        }
-
-        // At this point eiter renderedMobs or rndVob is filled with something
-        std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
-        for ( auto it : rl ) {
-            Engine::GAPI->DrawSkeletalMeshVob( it, FLT_MAX, true, ignoreVob );
-        }
-    }
-
-    if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
-        // Draw animated skeletal meshes if wanted
-        if ( renderNPCs ) {
-            auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldAround::NPCs" ) );
-            for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
-                if ( !skeletalMeshVob->VisualInfo ) {
-                    // Seems to happen in Gothic 1
-                    continue;
-                }
-
-                // Ghosts shouldn't have shadows
-                if ( skeletalMeshVob->Vob->GetVisualAlpha() && skeletalMeshVob->Vob->GetVobTransparency() < 0.7f ) {
-                    continue;
-                }
-
-                // Check vob range
-                if ( XMVector3Greater( XMVector3LengthSq( position - skeletalMeshVob->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
-                    continue;
-                }
-
-                // Check for inside vob. Don't render inside-vobs when the light is
-                // outside and vice-versa.
-                if ( isOutdoor && skeletalMeshVob->Vob->IsIndoorVob() != indoor ) {
-                    continue;
-                }
-
-                Engine::GAPI->DrawSkeletalMeshVob( skeletalMeshVob, FLT_MAX, true, ignoreVob );
-            }
-        }
-    }
-}
-
-void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
-    FXMVECTOR position, float range, bool cullFront, bool indoor,
-    bool noNPCs, std::list<VobInfo*>* renderedVobs,
-    std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<MeshDrawRange>* worldMeshCache,
-    unsigned int casterMask,
-    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
-
-    // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode =
-        cullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
-        : GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = true;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-    Engine::GAPI->GetRendererState().DepthState.SetDefault();
-    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::ECompareFunc::CF_COMPARISON_LESS_EQUAL;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-    Context->PSSetShaderResources( 0, 6, s_nullSRVs );
-
-    bool cubeShadowPass =
-        (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
-            GSWITCH_CUBE_SHADOW) != 0;
-    if ( cubeShadowPass ) {
-        SetActivePixelShader( PShaderID::PS_CubeShadow );
-    }
-
-    // Set constant buffer
-    ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof( Engine::GAPI->GetRendererState().GraphicsState ) );
-
-    GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->UpdateBuffer( "Atmosphere", &sky->GetAtmosphereCB(), sizeof( sky->GetAtmosphereCB() ) );
-
-    // Init drawcalls
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
-
-    // Update and bind buffer of PS
-    PerObjectState ocb;
-    ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->UpdateBuffer( "POS_MaterialInfo", &ocb, sizeof( ocb ) );
-
-    float3 pos; XMStoreFloat3( &pos, position );
-    INT2 s = WorldConverter::GetSectionOfPos( pos );
-
-    DistortionTexture->BindToPixelShader( 0 );
-
-    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
-
-    UpdateRenderStates();
-
-    bool colorWritesEnabled =
-        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
-    float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
-    bool isOutdoor = (Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR);
-
-    std::vector<WorldMeshSectionInfo*> drawnSections;
-
-    auto rangeSquared = range * range;
-    auto vRangeSquared = XMVectorReplicate( rangeSquared );
-
-    const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
-    const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
-    const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
-    const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
-
-    void* lastTex = nullptr;
-    if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        ActiveVS->UpdateBuffer( "Matrices_PerInstances", &identityMatrix, sizeof( identityMatrix ) );
-        auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::Layered" ) );
-        // Only use cache if we haven't already collected the vobs
-        // TODO: Collect vobs in a different way than using the drawn sections!
-        //		 The current solution won't use the cache at all when there are
-        // no vobs near!
-        if ( worldMeshCache && !worldMeshCache->empty() ) {
-            for ( const MeshDrawRange& r : *worldMeshCache ) {
-                bool isAlpha = false;
-                if ( r.Key.Material && r.Key.Material->GetTextureSingle() ) {
-
-                    if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
-                        continue;
-                    }
-
-                    if ( r.Key.Material->HasAlphaTest() || r.Key.Material->GetTextureSingle()->HasAlphaChannel() ) {
-                        zCTexture* aniTex = alphaRef > 0.0f ? r.Key.Material->GetAniTexture() : nullptr;
-                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
-                            lastTex = aniTex->GetSurface()->GetEngineTexture();
-                            aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            ActivePS->Apply();
-                            isAlpha = true;
-                        } else
-                            continue;
-                    } else {
-                        // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
-                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                    }
-                } else {
-                    D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                }
-
-                DrawVertexBufferInstancedIndexed( r.Mesh->GetMeshVertexBuffer(),
-                    GetShadowAwareIndexBuffer( r.Mesh, isAlpha ),
-                    r.IndexCount,
-                    6,
-                    r.IndexOffset );
-            }
-        } else {
-            Frustum f;
-            f.BuildCubemapFace( position, range, 0 );
-
-            std::vector<WorldMeshSectionInfo*> sections = {};
-            Engine::GAPI->CollectVisibleSections( sections, &f, true );
-            for ( auto section : sections ) {
-                drawnSections.emplace_back( section );
-            }
-
-            if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows ) {
-                for ( auto section : sections ) {
-                    if ( section->FullStaticMesh )
-                        Engine::GAPI->DrawMeshInfo_Layered( nullptr, section->FullStaticMesh );
-                }
-            } else {
-                std::vector<MeshDrawRange> ranges;
-                Engine::GAPI->CollectVisibleMeshRanges( f, true, ranges );
-                for ( const MeshDrawRange& r : ranges ) {
-                    if ( r.Key.Info->MaterialType != MaterialInfo::MT_None ) {
-                        continue;
-                    }
-
-                    bool isAlpha = false;
-                    if ( r.Key.Material && r.Key.Material->GetTexture() ) {
-                        if ( r.Key.Material ->HasAlphaTest() || r.Key.Material->GetTexture()->HasAlphaChannel()) {
-                            if ( alphaRef > 0.0f &&
-                                r.Key.Material->GetTexture()->GetCacheState() ==
-                                zRES_CACHED_IN ) {
-
-                                lastTex = r.Key.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                                r.Key.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                ActivePS->Apply();
-                                isAlpha = true;
-                            } else
-                                continue;
-                        } else {
-                            // Opaque: nothing left for a pixel shader to do, the cube keeps the rasterizer's own depth.
-                            D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                        }
-                    } else {
-                        D3D11PipelineStateCache::SetPixelShader( Context.Get(), nullptr );
-                    }
-
-                    DrawVertexBufferInstancedIndexed( r.Mesh->GetMeshVertexBuffer(),
-                        GetShadowAwareIndexBuffer( r.Mesh, isAlpha ),
-                        r.IndexCount,
-                        6,
-                        r.IndexOffset );
-
-                    if ( worldMeshCache ) {
-                        worldMeshCache->push_back( r );
-                    }
-                }
-            }
-        }
-    }
-    
-    if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        // Draw visible vobs here
-        std::list<VobInfo*> rndVob;
-        // construct new renderedvob list or fake one
-        if ( !renderedVobs || renderedVobs->empty() ) {
-            for ( size_t i = 0; i < drawnSections.size(); i++ ) {
-                for ( auto it : drawnSections[i]->Vobs ) {
-                    if ( !it->VisualInfo ) {
-                        continue;  // Seems to happen in Gothic 1
-                    }
-
-                    // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
-                    // item invalidate every nearby light's static cube when it despawned.
-                    if ( IsAttachedToNpc( it->Vob ) ) {
-                        continue;
-                    }
-
-                    if ( !it->Vob->GetShowVisual() ) {
-                        continue;
-                    }
-
-                    // Check for inside vob. Don't render inside-vobs when the light is
-                    // outside and vice-versa.
-                    if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
-                        continue;
-                    }
-
-                    // Check vob range
-                    if ( XMVector3Greater( XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
-                        continue;
-                    }
-                
-                    if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
-                        continue;
-                    }
-                    rndVob.emplace_back( it );
-                }
-            }
-
-            if ( renderedVobs )*renderedVobs = rndVob;
-        }
-
-        // At this point either renderedVobs or rndVob is filled with something
-        std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
-        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw vobs (layered)" ) );
-
-        VS_ExConstantBuffer_PerInstance cb;
-
-        SetActiveVertexShader( VShaderID::VS_ExLayered );
-        ActiveVS->Apply();
-
-        GfxTexture* lastBoundTexture = nullptr;
-        for ( auto const& vobInfo : rl ) {
-            // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
-            // Extract3DSMeshFromVisual2Async) - skip until Meshes/MeshesByTexture are safe to iterate.
-            if ( !vobInfo->VisualInfo->GetIsReady() ) continue;
-
-            // Bind per-instance buffer
-            vobInfo->UpdateVobConstantBuffer( cb );
-            BindDynamicCBToVertexShader( 1, AllocateDynamicCB( &cb ) );
-
-            // Draw the vob1
-            for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
-                bool isAlpha = false;
-                if ( materialMesh.first && materialMesh.first->GetTextureSingle() ) {
-                    if ( (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
-                            || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
-                        ) {
-                        zCTexture* aniTex = materialMesh.first->GetAniTexture();
-                        if ( aniTex && aniTex->GetCacheState() == zRES_CACHED_IN ) {
-                            isAlpha = true;
-                            if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
-                                lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
-                                lastBoundTexture->BindToPixelShader( 0 );
-                            }
-                        }
-                    }
-                    if ( !isAlpha ) {
-                        if ( lastBoundTexture != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastBoundTexture = WhiteTexture.get();
-                        }
-                    }
-                }
-                for ( auto const& meshInfo : materialMesh.second ) {
-                    const auto mesh = meshInfo.get();
-
-                    DrawVertexBufferInstancedIndexed(
-                        meshInfo->GetMeshVertexBuffer(),
-                        GetShadowAwareIndexBuffer( mesh, isAlpha ),
-                        GetShadowAwareIndexCount( mesh, isAlpha ),
-                        6 );
-                }
-            }
-        }
-    }
-
-    bool renderNPCs = !noNPCs && drawAnimatedCasters;
-    if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
-        // Draw visible vobs here
-        std::list<SkeletalVobInfo*> rndVob;
-
-        // construct new renderedvob list or fake one
-        if ( !renderedMobs || renderedMobs->empty() ) {
-            for ( auto it : Engine::GAPI->GetSkeletalMeshVobs() ) {
-                if ( !it->VisualInfo ) {
-                    continue;  // Seems to happen in Gothic 1
-                }
-
-                // Animated or NPC-attached MOBs belong to the animated pass - see IsAnimatedShadowCaster.
-                if ( IsAnimatedShadowCaster( it ) ) {
-                    continue;
-                }
-
-                if ( !it->Vob->GetShowVisual() ) {
-                    continue;
-                }
-
-                // Check for inside vob. Don't render inside-vobs when the light is
-                // outside and vice-versa.
-                if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
-                    continue;
-                }
-
-                // Assume everything that doesn't have a skeletal-mesh won't move very
-                // much This applies to usable things like chests, chairs, beds, etc
-                if ( auto skelInfo = dynamic_cast<SkeletalMeshVisualInfo*>(it->VisualInfo) ) {
-                    if ( !skelInfo->SkeletalMeshes.empty() ) {
-                        continue;
-                    }
-                }
-
-                // Check vob range
-                if ( XMVector3Greater( XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
-                    continue;
-                }
-                
-                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
-                    continue;
-                }
-
-                rndVob.emplace_back( it );
-            }
-
-            if ( renderedMobs ) {
-                *renderedMobs = rndVob;
-            }
-        }
-
-        // At this point eiter renderedMobs or rndVob is filled with something
-        std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
-        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw static skeletal meshes (layered)" ) );
-        for ( auto it : rl ) {
-            Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX, true, ignoreVob );
-        }
-    }
-
-    if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
-        // Draw animated skeletal meshes if wanted
-        if ( renderNPCs ) {
-            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw animated skeletal meshes (layered)" ) );
-            for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
-                if ( !skeletalMeshVob->VisualInfo ) {
-                    // Seems to happen in Gothic 1
-                    continue;
-                }
-
-                // Ghosts shouldn't have shadows
-                if ( skeletalMeshVob->Vob->GetVisualAlpha() && skeletalMeshVob->Vob->GetVobTransparency() < 0.7f ) {
-                    continue;
-                }
-
-                // Check vob range
-                if ( XMVector3Greater( XMVector3LengthSq( position - skeletalMeshVob->Vob->GetPositionWorldXM() ), vRangeSquared ) ) {
-                    continue;
-                }
-                // Check for inside vob. Don't render inside-vobs when the light is
-                // outside and vice-versa.
-                if ( isOutdoor && skeletalMeshVob->Vob->IsIndoorVob() != indoor ) {
-                    continue;
-                }
-
-                Engine::GAPI->DrawSkeletalMeshVob_Layered( skeletalMeshVob, FLT_MAX, true, ignoreVob );
-            }
-        }
+    bool IsAnimatedShadowCaster( const SkeletalVobInfo* vob ) {
+        return ::IsAnimatedShadowCaster( vob );
     }
 }
 
@@ -8756,23 +7808,6 @@ BaseLineRenderer* D3D11GraphicsEngine::GetLineRenderer() {
     return LineRenderer.get();
 }
 
-/** Renders the shadowmaps for a pointlight */
-void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
-    FXMVECTOR position, float range,
-    const RenderToDepthStencilBuffer& targetCube, const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& face,
-    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& debugRTV, bool cullFront, bool indoor, bool noNPCs,
-    std::list<VobInfo*>* renderedVobs,
-    std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<MeshDrawRange>* worldMeshCache,
-    bool clearDepth,
-    unsigned int casterMask,
-    const std::move_only_function<bool( const zCVob* ) const>& ignoreVob ) {
-    
-    ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
-        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask,
-        ignoreVob);
-}
-
 /** Renders the shadowmaps for the sun */
 void XM_CALLCONV D3D11GraphicsEngine::RenderShadowmaps( FXMVECTOR cameraPosition,
     RenderToDepthStencilBuffer* target,
@@ -10112,17 +9147,6 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     return XR_SUCCESS;
 }
 
-void D3D11GraphicsEngine::OnAddVob( VobInfo* vi ) {
-    // A cached static cube is only re-rendered when its light is fresh / moved / resized, so a new VOB in
-    // range has to say so. Parked rather than applied here: Gothic has often not placed the vob yet and its
-    // parent link can still be the NPC letting go of it, which are the two things the decision reads.
-    if ( ShadowMaps && vi && vi->Vob && vi->VisualInfo )
-        if (!IsAttachedToNpc(vi->Vob)) {
-            ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
-        }
-}
-
-
 void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
     // It started moving (a door swinging open, a chest lid), so anything that baked it into a static cube
     // has to let go - the animated pass draws it from now on.
@@ -10133,12 +9157,10 @@ void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
 
 
 void D3D11GraphicsEngine::OnVobMoved( zCVob* vob ) {
-    // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
-    // missing from its cube. Queued because a falling item moves several times before coming to rest.
-    if ( ShadowMaps ) {
-        if (!IsAttachedToNpc(vob)) {
-            ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
-        }
+    // GothicAPI::OnVobMoved has already made it dynamic, so static cubes only need to drop an old bake of it;
+    // the overlay draws it wherever it is now. Vobs added after load are dynamic too, hence no OnAddVob.
+    if ( ShadowMaps && !IsAttachedToNpc( vob ) ) {
+        ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
     }
 }
 

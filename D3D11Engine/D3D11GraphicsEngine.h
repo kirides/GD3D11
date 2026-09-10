@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11SkeletalPoseCache.h"
 #include <functional>
 #include <array>
 #include "D3D11TracyDebug.h"
@@ -29,6 +30,22 @@ enum ShadowCubeCasterMask : unsigned int {
     SHADOW_CASTER_ANIMATED = 1u << 3,
     SHADOW_CASTER_ALL = SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS | SHADOW_CASTER_ANIMATED,
 };
+
+class GfxVertexBuffer;
+class zCVob;
+struct MeshInfo;
+struct SkeletalVobInfo;
+
+/** Caster rules shared by the sun cascades and the point-light cubes. */
+namespace ShadowCasting {
+    /** Opaque draws take the welded shadow indices when a mesh has them; alpha-tested ones need the full set's UVs. */
+    GfxVertexBuffer* ShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha );
+    unsigned int ShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha );
+    /** Rides an NPC's transform, so it moves every frame and never enters a cached caster set. */
+    bool IsAttachedToNpc( const zCVob* vob );
+    /** MOB counterpart: on the animated list or riding an NPC, so the animated pass draws it. */
+    bool IsAnimatedShadowCaster( const SkeletalVobInfo* vob );
+}
 
 const unsigned int DRAWVERTEXARRAY_BUFFER_SIZE = 4096 * sizeof( ExVertexStruct );
 const unsigned int POLYS_BUFFER_SIZE = 1024 * sizeof( ExVertexStruct );
@@ -177,7 +194,6 @@ public:
     XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness =
                                           1.0f) override;
     XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) override;
-    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f) override;
 
     /** Draws a batch of skeletal mesh vobs */
     void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments ) override;
@@ -199,7 +215,6 @@ public:
 
     // World changes that can invalidate a point light's cached static shadow cube; all three resolve
     // through the shared PointLightSlotSelector, exactly as the D3D12 backend does.
-    void OnAddVob( VobInfo* vi ) override;
     void OnVobBecameDynamic( zCVob* vob ) override;
     void OnVobMoved( zCVob* vob ) override;
 
@@ -293,23 +308,6 @@ public:
 
     void XM_CALLCONV DrawWorldAroundForWorldShadow( FXMVECTOR position, float sectionRange, const RenderShadowmapsParams& params );
     void DrawVegetationGeometryPass(const std::list<GVegetationBox*>& vegetationBoxes);
-    void XM_CALLCONV DrawWorldAround( FXMVECTOR position,
-                                      float range,
-                                      bool cullFront = true,
-                                      bool indoor = false,
-                                      bool noNPCs = false,
-                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-                                      unsigned int casterMask = SHADOW_CASTER_ALL,
-                                      const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
-    void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
-        float range,
-        bool cullFront = true,
-        bool indoor = false,
-        bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-        unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
-
     /** Update morph mesh visual */
     void UpdateMorphMeshVisual();
 
@@ -337,20 +335,6 @@ public:
     /** Renders the shadowmaps for the sun */
     void XM_CALLCONV RenderShadowmaps( FXMVECTOR cameraPosition, RenderToDepthStencilBuffer* target = nullptr, bool cullFront = true, bool dontCull = false, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite = nullptr, Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = nullptr, bool drawVegetation = true );
 
-    /** Renders the shadowmaps for a pointlight */
-    void XM_CALLCONV RenderShadowCube( FXMVECTOR position,
-        float range,
-        const RenderToDepthStencilBuffer& targetCube,
-        const ComPtr<ID3D11DepthStencilView>& face,
-        const ComPtr<ID3D11RenderTargetView>& debugRTV,
-        bool cullFront = true,
-        bool indoor = false,
-        bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-        bool clearDepth = true,
-        unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr);
-
     /** Updates the occlusion for the bsp-tree */
     void UpdateOcclusion();
 
@@ -366,10 +350,8 @@ public:
     /** Returns the current rendering stage */
     D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
 
-    /** True while the NVIDIA per-face shadow fallback is drawing (no GS bound); shader-selection sites
-        must skip the *Cube-suffixed (GS-dependent) vertex shaders while this is set. */
-    void SetCubeFaceFallbackActive( bool active ) { CubeFaceFallbackActive = active; }
-    bool IsCubeFaceFallbackActive() const { return CubeFaceFallbackActive; }
+    /** Every skeletal vob's bone pose this frame, shared by all passes that skin it. */
+    D3D11SkeletalPoseCache& GetSkeletalPoseCache() { return m_SkeletalPoses; }
 
     /** Reloads shaders */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All) override;
@@ -594,8 +576,6 @@ protected:
     /** The current rendering stage */
     D3D11ENGINE_RENDER_STAGE RenderingStage;
 
-    /** See SetCubeFaceFallbackActive(). */
-    bool CubeFaceFallbackActive = false;
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;
@@ -709,7 +689,6 @@ private:
         bool worldMeshBuilt    = false;  ///< CollectVisibleSections + MDI arg build + buffer upload done
         bool vobInstancesUploaded = false; ///< CollectVisibleVobs + DynamicInstancingBuffer upload done
         bool vobWindMetadataPrepared = false; ///< Wind metadata prepared for cached vob visuals
-        bool skeletalBonesUploaded = false; ///< FL11 packed skeletal bone buffers uploaded for main/z-prepass reuse
         bool nodeAttachmentInstancesUploaded = false; ///< Node-attachment instance buffer uploaded for main/z-prepass reuse
 
         // Cluster-granularity ranges over the main-view frustum (see GothicAPI::CollectVisibleMeshRanges),
@@ -724,8 +703,6 @@ private:
         std::vector<CachedVobVisual>    vobVisuals;
         std::vector<CachedInstancedMeshDraw> sortedInstancedMeshes;
         std::vector<SkeletalVobInfo*>   cachedMobs;
-        std::vector<SkeletalVobInfo*> skeletalBoneVisOrder;
-        std::vector<VS_ExConstantBuffer_SkeletalBoneRange> skeletalBoneRanges;
         std::vector<SkeletalVobInfo*> nodeAttachmentVisOrder;
         std::vector<CachedNodeAttachmentBatch> nodeAttachmentBatches;
         D3D11VertexBuffer*             NodeAttachmentInstancingBuffer = nullptr;
@@ -735,7 +712,6 @@ private:
             worldMeshBuilt      = false;
             vobInstancesUploaded = false;
             vobWindMetadataPrepared = false;
-            skeletalBonesUploaded = false;
             nodeAttachmentInstancesUploaded = false;
             visibleMeshRanges.clear();
             drawIndirectArgs.clear();
@@ -747,8 +723,6 @@ private:
             vobVisuals.clear();
             sortedInstancedMeshes.clear();
             cachedMobs.clear();
-            skeletalBoneVisOrder.clear();
-            skeletalBoneRanges.clear();
             nodeAttachmentVisOrder.clear();
             nodeAttachmentBatches.clear();
             NodeAttachmentInstancingBuffer = nullptr;
@@ -772,16 +746,10 @@ private:
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;
 
-    /** FL11 packed structured buffers for skeletal skinning (main/z-prepass reusable path). */
-    std::unique_ptr<D3D11VertexBuffer> SkeletalBoneTransformsBuffer;
-    std::unique_ptr<D3D11VertexBuffer> SkeletalPrevBoneTransformsBuffer;
+    D3D11SkeletalPoseCache m_SkeletalPoses;
 
-    /** FL11 packed structured buffers for non-reusable stages (shadow/cube/debug paths). */
+    /** FL11 bone buffer for draws without a per-frame pose: the inventory preview and the vertex-normal debug view. */
     std::unique_ptr<D3D11VertexBuffer> SkeletalBoneTransformsBufferTransient;
-    std::unique_ptr<D3D11VertexBuffer> SkeletalPrevBoneTransformsBufferTransient;
-
-    /** Cached bone transforms for batched skeletal mesh drawing */
-    std::vector<XMFLOAT4X4> BoneTransformCache;
 
     /** View-distance constant buffers. These are re-allocated from the per-frame
         dynamic ring each frame (bound at many draw sites, updated rarely), so the

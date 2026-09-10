@@ -275,7 +275,6 @@ public:
 
     /** Skeletal-mesh draws. */
     virtual XRESULT DrawSkeletalVertexNormals( SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness = 1.0f ) { return XR_SUCCESS; };
-    virtual XRESULT DrawSkeletalMesh_Layered( SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f ) { return XR_SUCCESS; };
     virtual void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments ) {};
 
     /** Unbinds the active pixel shader object. */

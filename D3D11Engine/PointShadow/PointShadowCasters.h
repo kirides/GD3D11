@@ -1,13 +1,14 @@
 #pragma once
-// The caster machinery every point-shadow technique shares: the cube's view/projection basis, the
-// self-exclusion rules, and the two rasterization strategies (one layered draw vs. the NVIDIA per-face
-// fallback). Nothing here knows WHERE the depth ends up - that is the technique's business.
+// The caster machinery every point-shadow technique shares: the cube's view/projection basis, the self-exclusion
+// rules, and the caster sets techniques queue into PointShadowBatch. Nothing here knows WHERE the depth ends up -
+// that is the technique's business.
 
 #include "../pch.h"
 #include "../ConstantBufferStructs.h"
 #include <list>
 #include <vector>
 
+class zCVob;
 struct VobLightInfo;
 struct VobInfo;
 struct SkeletalVobInfo;
@@ -29,13 +30,13 @@ namespace PointShadowCasters {
         its own cube. */
     bool UsesAbsoluteSliceIndexing( const RenderToDepthStencilBuffer* target );
 
-    /** The 6 face view matrices and the shared projection for one light, bound for the layered VS /
-        cubemap GS for as long as it lives. The CB comes from the per-frame ring pool, so a scope may
-        never outlive the frame that made it. */
+    /** Appends the vobs a light riding an item must not shadow itself with: the item's vob chain. */
+    void CollectExcludedVobs( const VobLightInfo* info, std::vector<const zCVob*>& out );
+
+    /** The 6 face view matrices and the shared projection for one light. */
     class CubeRenderScope {
     public:
         CubeRenderScope( VobLightInfo* info, float shadowRange );
-        ~CubeRenderScope();
         CubeRenderScope( const CubeRenderScope& ) = delete;
         CubeRenderScope& operator=( const CubeRenderScope& ) = delete;
 
@@ -44,9 +45,8 @@ namespace PointShadowCasters {
         float ZNear() const { return m_ZNear; }
         float ZFar() const { return m_ZFar; }
 
-        /** Uploads the face matrices for one pass; sliceBase is what the layered VS/GS adds to the face
-            index, face is the one the per-face fallback VS draws. */
-        void BindCubeCB( unsigned int sliceBase, unsigned int face = 0 ) const;
+        /** The cube CB with PCR_SliceBase and PCR_Face left zero for the batch to fill per target. */
+        const CubemapGSConstantBuffer& Constants() const { return m_GCB; }
 
     private:
         CubemapGSConstantBuffer m_GCB{};
@@ -54,7 +54,6 @@ namespace PointShadowCasters {
         XMFLOAT4X4 m_Proj;
         float m_ZNear = 0.0f;
         float m_ZFar = 0.0f;
-        bool m_SavedDepthClip = false;
     };
 
     /** Where one caster pass draws, and what it is allowed to draw. */
@@ -67,19 +66,18 @@ namespace PointShadowCasters {
         /** Target is a window into a shared cube array rather than its own cube - the only thing the
             NVIDIA per-face fallback keys on (IPointShadowTechnique::Info().UsesSharedArrayTargets). */
         bool TargetIsSharedArray = false;
+        /** Phase 1 draws after every phase 0 pass and PointShadowBatch::AtPhaseBoundary action. */
+        uint8_t Phase = 0;
         std::list<VobInfo*>* VobCache = nullptr;
         std::list<SkeletalVobInfo*>* MobCache = nullptr;
         std::vector<MeshDrawRange>* WorldMeshCache = nullptr;
     };
 
-    /** Picks the rasterization strategy and applies the light's self-exclusion. The one place either
-        decision is made. */
-    void Render( const CubeRenderScope& scope, const CasterPass& pass );
-
-    // The three caster sets techniques compose from. Each fills in CasterPass::CasterMask and calls Render.
-    void RenderStatic( const CubeRenderScope& scope, CasterPass pass );
-    void RenderAnimated( const CubeRenderScope& scope, CasterPass pass );
+    // The three caster sets techniques compose from. Each fills in CasterPass::CasterMask and queues the pass;
+    // nothing draws until PointShadowBatch::Flush.
+    void QueueStatic( const CubeRenderScope& scope, CasterPass pass );
+    void QueueAnimated( const CubeRenderScope& scope, CasterPass pass );
     /** PLS_FULL: static and animated in one uncached pass. */
-    void RenderAll( const CubeRenderScope& scope, CasterPass pass );
+    void QueueAll( const CubeRenderScope& scope, CasterPass pass );
 
 } // namespace PointShadowCasters

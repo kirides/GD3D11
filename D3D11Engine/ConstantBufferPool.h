@@ -76,4 +76,7 @@ public:
     void EndFrame();
 
     ID3D11Buffer* GetBuffer() const { return m_frames[m_frameIndex].Buffer.Get(); }
+
+    /** Changes whenever earlier allocations may have been overwritten: a new frame, or the ring wrapped. */
+    uint32_t GetGeneration() const { return m_cacheStamp; }
 };
