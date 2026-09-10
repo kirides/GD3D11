@@ -148,7 +148,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= mad(wetness, 0.8 - 1.0, 1.0);   // D3D11 dims the SUN light color 20% where the surface is wet
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wetness );
     // No fixed-direction wet sheen here — see ApplySceneWetness's header comment for why D3D12 drops that
     // D3D11 hack in favor of the real Cook-Torrance sun specular (already fed by the roughness dip above)
     // plus the opaque-surface SSR below.

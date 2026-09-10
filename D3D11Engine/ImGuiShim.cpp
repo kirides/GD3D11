@@ -1867,6 +1867,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "RainUseInitialSet", &settings.RainUseInitialSet );
         ImGui::DragFloat3( "RainGlobalVelocity", &settings.RainGlobalVelocity.x, 1.0f, -5000.0f, 5000.0f, "%.0f" );
         ImGui::DragFloat( "RainSceneWettness", &settings.RainSceneWettness, 0.01f );
+        ImGui::SliderFloat( "RainWetLightReflections", &settings.RainWetLightReflections, 0.0f, 4.0f, "%.2f" );
+        ImGui::SetItemTooltip( "Strength of point-light reflection streaks on wet ground and puddles. 0 = off." );
         ImGui::DragFloat( "RainSunLightStrength", &settings.RainSunLightStrength, 0.01f, 0.0f, 0.0f, "%.2f" );
         ImGui::DragFloat( "RainFogDensity", &settings.RainFogDensity, 0.001f );
         ImGui::ColorEdit3( "RainFogColor", &settings.RainFogColor.x );

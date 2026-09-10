@@ -242,7 +242,8 @@ struct DS_PointLightConstantBuffer {
     // ApplyPointLightWetness (Shaders/include/RainWetnessSample.h).
     XMFLOAT4X4 PL_RainViewProj;
     float PL_SceneWettness;
-    float3 PL_Pad4;
+    float PL_WetLightReflections;
+    float2 PL_Pad4;
 };
 static_assert( sizeof( DS_PointLightConstantBuffer ) == 240,
     "DS_PointLightConstantBuffer (b0) layout must match PS_DS_PointLight.hlsl / PS_DS_PointLightDynShadow.hlsl" );
@@ -525,7 +526,8 @@ struct TiledShadingConstantBuffer {
     // ambient term. See ApplyPointLightWetness (Shaders/include/RainWetnessSample.h).
     XMFLOAT4X4 RainViewProj;
     float SceneWettness;
-    float3 WetnessPad;
+    float WetLightReflections;
+    float2 WetnessPad;
 };
 static_assert( sizeof( TiledShadingConstantBuffer ) == 192,
     "TiledShadingConstantBuffer (b0) layout must match CS_TiledShading.hlsl" );

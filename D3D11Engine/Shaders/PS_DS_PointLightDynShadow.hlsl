@@ -28,7 +28,8 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	// Rain wetness, frame-constant (see ApplyPointLightWetness / RainWetnessSample.h).
 	matrix PL_RainViewProj;
 	float PL_SceneWettness;
-	float3 PL_Pad4;
+	float PL_WetLightReflections;
+	float2 PL_Pad4;
 };
 
 //--------------------------------------------------------------------------------------
@@ -88,7 +89,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Rain wetness: darken/dampen this light's contribution consistently with what
 	// PS_DS_AtmosphericScattering.hlsl already did for the sun/ambient term, instead of adding
 	// un-wetted brightness on top of it (see RainWetnessSample.h's header for the bug this fixes).
-	ApplyPointLightWetness(wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness,
+	float wet = ApplyPointLightWetness(wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness,
 		diffuse.rgb, specIntensity, specPower);
 
 	//return float4(normalize(wsPosition - Pl_PositionWorld), 1.0f);
@@ -126,7 +127,12 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float spec = PLS_CalcBlinnPhongLighting(normal, H) * PL_Color.w;
 	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
 	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
-	
+
+	// Wet ground: water-film reflection streak (see WetCoatSpecular in RainWetnessSample.h).
+	[branch]
+	if (wet > 0.0f && PL_WetLightReflections > 0.0f)
+		lighting += PL_Color.rgb * (WetCoatSpecular(normal, V, lightDir, distance) * falloff * wet * PL_Color.w * PL_WetLightReflections);
+
 	lighting *= shadow;
 	
 	//lighting = GetShadow(uv);

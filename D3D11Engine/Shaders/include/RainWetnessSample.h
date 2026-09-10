@@ -72,21 +72,22 @@ float ComputeRainWetnessLite( float3 wsPosition, Texture2D rainMap, SamplerCompa
 
 // Darkens/desaturates diffuse and dampens specular for a wet surface -- the point-light-pass analogue of
 // PS_DS_AtmosphericScattering.hlsl's ApplySceneWettness. Deliberately skips that function's tri-planar
-// ripple normal deformation and reflection-cube sheen (an extra texture + per-axis blend that would be
-// paid once per overlapping light instead of once per pixel); the diffuse darkening below is what
+// ripple normal deformation (a per-axis blend that would be paid once per overlapping light instead of
+// once per pixel); the diffuse darkening below is what
 // actually reads as "wet" and is the part this bug report is about.
 //
 // `wsNormal` must be the UNDEFORMED world-space surface normal (no ripple applied here, so nothing to
 // deform it with) and `sceneWetness` is GothicAPI::GetSceneWetness() (the sustained wetness level, same
 // split as AC_SceneWettness/AC_RainFXWeight elsewhere).
-void ApplyPointLightWetness( float3 wsPosition, float3 wsNormal, Texture2D rainMap,
+// Returns the pixel's wetness [0,1] for WetCoatSpecular below.
+float ApplyPointLightWetness( float3 wsPosition, float3 wsNormal, Texture2D rainMap,
     SamplerComparisonState samplerState, matrix rainViewProj, float sceneWetness,
     inout float3 diffuse, inout float specIntensity, inout float specPower )
 {
-    if ( sceneWetness <= 0.0f ) return;
+    if ( sceneWetness <= 0.0f ) return 0.0f;
 
     float wetness = ComputeRainWetnessLite( wsPosition, rainMap, samplerState, rainViewProj ) * sceneWetness;
-    if ( wetness < 0.001f ) return;
+    if ( wetness < 0.001f ) return 0.0f;
 
     // Rain mostly settles on upward-facing, unsheltered surfaces -- same exposure test as
     // ApplySceneWettness (undeformed normal here, since there is no ripple to deform it with).
@@ -95,7 +96,7 @@ void ApplyPointLightWetness( float3 wsPosition, float3 wsNormal, Texture2D rainM
     wetness *= 1.0f - ( wDot2 * wDot2 );
     float exposure = saturate( wsNormal.y );
     wetness *= exposure * exposure;
-    if ( wetness <= 0.0f ) return;
+    if ( wetness <= 0.0f ) return 0.0f;
 
     specIntensity = lerp( specIntensity, 0.0f, wetness );
     specPower = lerp( specPower, 150.0f, wetness );
@@ -103,6 +104,48 @@ void ApplyPointLightWetness( float3 wsPosition, float3 wsNormal, Texture2D rainM
     float diffuseLum = dot( diffuse, float3( 0.3333f, 0.3333f, 0.3333f ) );
     float3 wetDiffuse = lerp( diffuseLum, diffuse, 0.75f ) * 0.75f;   // desaturate + darken, matches ApplySceneWettness's wetPixel
     diffuse = lerp( diffuse, wetDiffuse, wetness );
+    return wetness;
+}
+
+// Water-film specular under a point light: anisotropic GGX stretched toward the viewer (wet-street streaks),
+// widened by an assumed flame size. Mirrors D3D12 PBRLighting.hlsl; N/V/L must share one space.
+static const float WET_COAT_ROUGHNESS      = 0.12f;
+static const float WET_COAT_STREAK         = 6.0f;
+static const float WET_LIGHT_SOURCE_RADIUS = 15.0f;   // world units (~15 cm flame)
+
+float WetCoatSpecular( float3 N, float3 V, float3 L, float lightDist )
+{
+    float NdotL = saturate( dot( N, L ) );
+    if ( NdotL <= 0.0f ) return 0.0f;
+    float NdotV = saturate( dot( N, V ) );
+    float3 H = normalize( V + L );
+
+    // Karis sphere-light widening.
+    float a = saturate( WET_COAT_ROUGHNESS * WET_COAT_ROUGHNESS + WET_LIGHT_SOURCE_RADIUS / ( 2.0f * max( lightDist, 1.0f ) ) );
+
+    // Tangent = view projected onto the surface; the stretch fades out when looking straight down.
+    float3 vt = V - N * dot( N, V );
+    float vtLen = length( vt );
+    float3 T = vtLen > 1e-3f ? vt / vtLen : normalize( cross( N, abs( N.x ) < 0.9f ? float3( 1, 0, 0 ) : float3( 0, 0, 1 ) ) );
+    float3 B = cross( N, T );
+    float at = min( a * lerp( 1.0f, WET_COAT_STREAK, vtLen ), 1.0f );
+    float ab = a;
+
+    float ht = dot( H, T ) / at;
+    float hb = dot( H, B ) / ab;
+    float hn = dot( N, H );
+    float s = ht * ht + hb * hb + hn * hn;
+    float D = 1.0f / ( 3.14159265f * at * ab * s * s );
+
+    // Height-correlated anisotropic Smith visibility.
+    float lv = NdotL * length( float3( at * dot( T, V ), ab * dot( B, V ), NdotV ) );
+    float ll = NdotV * length( float3( at * dot( T, L ), ab * dot( B, L ), NdotL ) );
+    float vis = 0.5f / max( lv + ll, 1e-4f );
+
+    float f = saturate( 1.0f - dot( V, H ) );
+    float f2 = f * f;
+    float F = 0.02f + 0.98f * f2 * f2 * f;   // water F0
+    return D * vis * F * NdotL;
 }
 
 #endif // RAIN_WETNESS_SAMPLE_H

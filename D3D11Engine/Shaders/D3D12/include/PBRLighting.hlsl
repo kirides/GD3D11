@@ -583,9 +583,50 @@ uint ComputeZSlice( float hwDepth )
     return (uint)clamp( floor( t * (float)NUM_Z_SLICES ), 0.0, (float)( NUM_Z_SLICES - 1 ) );
 }
 
+// Water-film specular under a point light: anisotropic GGX stretched toward the viewer (wet-street streaks),
+// widened by an assumed flame size so the reflection isn't a sub-pixel dot. Mirrored in RainWetnessSample.h.
+static const float WET_COAT_STREAK         = 6.0;    // lobe width multiplier along the view direction at grazing view
+static const float WET_COAT_MIN_ROUGHNESS  = 0.06;
+static const float WET_LIGHT_SOURCE_RADIUS = 15.0;   // world units (~15 cm flame)
+
+float WetCoatSpecular( float3 N, float3 V, float3 L, float lightDist, float roughness )
+{
+    float NdotL = saturate( dot( N, L ) );
+    if ( NdotL <= 0.0 ) return 0.0;
+    float NdotV = saturate( dot( N, V ) );
+    float3 H = normalize( V + L );
+
+    // Karis sphere-light widening.
+    float r = max( roughness, WET_COAT_MIN_ROUGHNESS );
+    float a = saturate( r * r + WET_LIGHT_SOURCE_RADIUS / ( 2.0 * max( lightDist, 1.0 ) ) );
+
+    // Tangent = view projected onto the surface; the stretch fades out when looking straight down.
+    float3 vt = V - N * dot( N, V );
+    float vtLen = length( vt );
+    float3 T = vtLen > 1e-3 ? vt / vtLen : normalize( cross( N, abs( N.x ) < 0.9 ? float3( 1, 0, 0 ) : float3( 0, 0, 1 ) ) );
+    float3 B = cross( N, T );
+    float at = min( a * lerp( 1.0, WET_COAT_STREAK, vtLen ), 1.0 );
+    float ab = a;
+
+    float ht = dot( H, T ) / at, hb = dot( H, B ) / ab, hn = dot( N, H );
+    float s = ht * ht + hb * hb + hn * hn;
+    float D = 1.0 / ( PBR_PI * at * ab * s * s );
+
+    // Height-correlated anisotropic Smith visibility.
+    float lv = NdotL * length( float3( at * dot( T, V ), ab * dot( B, V ), NdotV ) );
+    float ll = NdotV * length( float3( at * dot( T, L ), ab * dot( B, L ), NdotL ) );
+    float vis = 0.5 / max( lv + ll, 1e-4 );
+
+    float f = saturate( 1.0 - dot( V, H ) );
+    float f2 = f * f;
+    float F = 0.02 + 0.98 * f2 * f2 * f;   // water F0
+    return D * vis * F * NdotL;
+}
+
 // Applies one light's contribution (direct BRDF + its shadow, if any) and folds it into `total`/`maxLit`.
+// `wet` is ApplySceneWetness's result; the water-film lobe replaces the base specular in proportion.
 void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 albedo, float roughness,
-                       float metallic, inout float3 total, inout float3 maxLit )
+                       float metallic, float wet, inout float3 total, inout float3 maxLit )
 {
     GPULight L = Lights[lightIndex];
     float3 dir = L.PositionWorld - wpos;
@@ -598,7 +639,11 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
     // specular scale: an isStatic() zCVobLight is one of the "atmospheric" fill lights Gothic pre-places to
     // brighten a room, not a physical source, so it must contribute diffuse only — a highlight from it reads as a
     // phantom lamp. Same suppression D3D11 does with light.Color.w.
-    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w );
+    float coat = wet * saturate( WetLightReflections );
+    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w * ( 1.0 - coat ) );
+    [branch]
+    if ( coat > 0.0 && L.Color.w > 0.0 )
+        lit += L.Color.rgb * ( WetCoatSpecular( N, V, dir, dist, roughness ) * falloff * wet * L.Color.w * WetLightReflections );
     // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
     [branch]
     if ( L.ShadowCubeIndex != 0 )
@@ -623,7 +668,7 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
 // Cook-Torrance BRDF per light, additive. Bit-scanning a fixed-width mask (rather than looping an
 // {Offset,Count} index slice) can never spin away on a garbage grid entry — the loop bound is the popcount of
 // the mask, not an unclamped Count. Most words are 0 for a typical cluster, so the per-word while() is cheap.
-float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, float wet = 0.0 )
 {
     uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
@@ -648,7 +693,7 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
         {
             uint bit = firstbitlow( m );
             m &= m - 1;   // clear the lowest set bit
-            ApplyTiledLight( w * 32u + bit, wpos, N, V, albedo, roughness, metallic, total, maxLit );
+            ApplyTiledLight( w * 32u + bit, wpos, N, V, albedo, roughness, metallic, wet, total, maxLit );
         }
     }
     // LimitLightIntensity: swap "sum of every light" for "brightest single light" (mirrors D3D11's

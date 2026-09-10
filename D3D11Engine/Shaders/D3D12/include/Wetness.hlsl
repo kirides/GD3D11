@@ -199,6 +199,44 @@ float ComputePuddleMask( float3 geomN, float3 wsPosition, float wetness )
     return pooled * flatness;
 }
 
+// Rain-drop rings on puddles: one expanding ring per cell on two offset grids, re-seeded every cycle.
+static const float PUDDLE_RIPPLE_CELL      = 70.0;    // world units per drop cell
+static const float PUDDLE_RIPPLE_PERIOD    = 0.9;     // seconds from impact to fade-out
+static const float PUDDLE_RIPPLE_STRENGTH  = 0.5;
+static const float PUDDLE_RIPPLE_FADE_DIST = 2500.0;  // rings fade out by this camera distance (they alias beyond it)
+
+uint PuddleHash( int2 c )
+{
+    uint h = ( uint( c.x ) * 0x8DA6B343u ) ^ ( uint( c.y ) * 0xD8163841u );
+    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+    return h;
+}
+
+// World-XZ surface slope of the ripple field at p.
+float2 PuddleRippleSlope( float2 p, float time )
+{
+    float2 slope = 0.0;
+    [unroll] for ( int layer = 0; layer < 2; ++layer )
+    {
+        float2 q = p / PUDDLE_RIPPLE_CELL + float2( 0.5, 0.37 ) * layer;
+        int2 cell = int2( floor( q ) );
+        float phase = float( PuddleHash( cell + int2( 0, 7919 * layer ) ) & 0xFFFFu ) / 65535.0;
+        float cycle = time / PUDDLE_RIPPLE_PERIOD + phase;
+        uint h = PuddleHash( cell + int2( int( floor( cycle ) ) * 131, 7919 * layer + 17 ) );
+        if ( float( h >> 24 ) / 255.0 > RainFxWeight ) continue;   // lighter rain, fewer drops
+
+        float t = frac( cycle );
+        float2 center = 0.3 + 0.4 * float2( h & 0xFFu, ( h >> 8 ) & 0xFFu ) / 255.0;
+        float2 d = frac( q ) - center;
+        float r = length( d );
+        // 1.5 wavelengths either side of the expanding front, calm inside and outside it.
+        float x = clamp( ( r - t * 0.28 ) * 160.0, -3.0 * PBR_PI, 3.0 * PBR_PI );
+        float wave = sin( x ) * ( 1.0 - abs( x ) / ( 3.0 * PBR_PI ) );
+        slope += d / max( r, 1e-4 ) * ( wave * ( 1.0 - t ) * ( 1.0 - t ) );
+    }
+    return slope * PUDDLE_RIPPLE_STRENGTH;
+}
+
 // Applies scene wetness at one fragment. N / albedo / roughness are modified in place. Returns
 // localWettness [0,1] — 0 means "nothing was changed", which callers use to skip the remaining wetness
 // work. Call with the UNPERTURBED-by-wetness normal and BEFORE the sun shadow lookup, matching D3D11 (it
@@ -244,6 +282,15 @@ float ApplySceneWetness( float3 wpos, inout float3 N, inout float3 albedo, inout
     // water stays closer to a flat mirror than a rippling wet wall, so puddle pixels get less of the
     // tri-planar ripple deformation blended in.
     N = normalize( lerp( N, wetNormal, RainFxWeight * wetness * 0.5 * ( 1.0 - puddle * 0.8 ) ) );
+
+    // Rain-drop rings on pooled water; they break up the light streaks and SSR like real puddles do.
+    float rippleFade = saturate( 1.0 - distance( wpos, CamPosWS ) / PUDDLE_RIPPLE_FADE_DIST );
+    [branch]
+    if ( puddle > 0.0 && RainFxWeight > 0.0 && rippleFade > 0.0 )
+    {
+        float2 slope = PuddleRippleSlope( wpos.xz, RainTime ) * ( puddle * rippleFade );
+        N = normalize( N + float3( -slope.x, 0.0, -slope.y ) );
+    }
 
     // PBR stand-in for D3D11's "specPower -> 150, specIntensity -> 0": water is smooth, so pull
     // roughness toward glossy and let Cook-Torrance tighten the existing highlights. Puddle pixels go all

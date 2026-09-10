@@ -606,7 +606,6 @@ public:
     GMesh* InverseUnitSphereMesh;
     /** Reflection */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube2;
 private:
     bool PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals );
     void UnbindWindMetadata();
@@ -796,6 +795,9 @@ private:
         we can't otherwise be sure what any given draw path last bound. Checked via
         MaterialInfo::IsSame() to skip re-allocating/re-binding an identical buffer. */
     MaterialInfo* m_LastMaterialInfo = nullptr;
+
+    /** Shared stand-in bound for non-normalmapped materials while the scene is wet (distortion noise as normalmap). */
+    MaterialInfo m_RainMaterialInfo;
 
     /** Per-frame ring for small per-draw/per-object dynamic constant buffers
         (grass, and other buffers migrated off their own ID3D11Buffer). */

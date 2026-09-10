@@ -1904,7 +1904,7 @@ private:
     struct WetnessCBData {
         XMFLOAT4X4 RainViewProj;
         float SceneWetness; float RainFxWeight; float RainTime; UINT RainShadowIndex;
-        UINT  DistortionIndex; float RainShadowMapSize; float _pad0; float _pad1;
+        UINT  DistortionIndex; float RainShadowMapSize; float WetLightReflections; float _pad1;
     };
     void UploadWetnessConstants();
 

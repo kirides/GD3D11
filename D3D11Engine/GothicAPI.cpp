@@ -1201,6 +1201,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     s.RainNumParticles = GetPrivateProfileIntA( "Rain", "NumParticles", s.RainNumParticles, ini.c_str() );
     GetPrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, &s.RainGlobalVelocity.x, ini );
     s.RainSceneWettness = GetPrivateProfileFloatA( "Rain", "SceneWettness", s.RainSceneWettness, ini );
+    s.RainWetLightReflections = std::clamp( GetPrivateProfileFloatA( "Rain", "WetLightReflections", s.RainWetLightReflections, ini ), 0.0f, 4.0f );
     s.RainSunLightStrength = GetPrivateProfileFloatA( "Rain", "SunLightStrength", s.RainSunLightStrength, ini );
     GetPrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
     s.RainFogDensity = GetPrivateProfileFloatA( "Rain", "FogDensity", s.RainFogDensity, ini );
@@ -1269,6 +1270,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "Rain", "NumParticles", to_string_locale_independent( s.RainNumParticles ).c_str(), ini.c_str() );
     WritePrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, ini.c_str() );
     WritePrivateProfileStringA( "Rain", "SceneWettness", to_string_locale_independent( s.RainSceneWettness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "WetLightReflections", to_string_locale_independent( s.RainWetLightReflections ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Rain", "SunLightStrength", to_string_locale_independent( s.RainSunLightStrength ).c_str(), ini.c_str() );
     WritePrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
     WritePrivateProfileStringA( "Rain", "FogDensity", to_string_locale_independent( s.RainFogDensity ).c_str(), ini.c_str() );
@@ -2181,6 +2183,16 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
     if ( !world || world == LoadedWorldInfo->MainWorld )
         Engine::GraphicsEngine->OnVobRemovedFromWorld( vob );
 
+    // Before the RegisteredVobs early-out: a zCVobLight has no visual, so OnAddVob never registers it.
+    if ( tearDownLight ) {
+        if ( auto lit = VobLightMap.find( static_cast<zCVobLight*>(vob) ); lit != VobLightMap.end() ) {
+            VobLightInfo* li = lit->second;
+            VobLightMap.erase( lit );
+            ++LightMirrorEpoch;   // BspInfo::Lights mirrors may still hold li
+            delete li;
+        }
+    }
+
     auto it = RegisteredVobs.find( vob );
     if ( it == RegisteredVobs.end() ) {
         // Not registered
@@ -2233,13 +2245,6 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
             vlit.second->LightShadowBuffers->OnVobRemovedFromWorld( svi );
     }
 
-    // A disabled zCVobLight keeps its slot in the BSP leaf's LightVobList (that array mirrors the
-    // world's static light layout, not enabled state) and can be re-enabled with the same zCVob*.
-    // Tearing its VobLightInfo down here would delete state that CollectLeafVobs' mirror
-    // (base->Lights) and VobLightMap still expect to find, and that the vob's own IsEnabled() check
-    // is what's supposed to filter out of rendering - not us deleting and recreating it every toggle.
-    VobLightInfo* li = tearDownLight ? VobLightMap[static_cast<zCVobLight*>(vob)] : nullptr;
-
     // Erase it from the particle-effect list
     auto pit = std::ranges::find(ParticleEffectVobs, vob );
     if ( pit != ParticleEffectVobs.end() ) {
@@ -2253,17 +2258,10 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
         DecalVobs.pop_back();
     }
 
-    // Erase it from the list of lights - only on a real removal (see tearDownLight comment above).
-    if ( tearDownLight ) {
-        VobLightMap.erase( static_cast<zCVobLight*>(vob) );
-    }
-
     // Remove from BSP-Cache
     std::vector<BspInfo*>* nodes = nullptr;
     if ( vi )
         nodes = &vi->ParentBSPNodes;
-    else if ( li )
-        nodes = &li->ParentBSPNodes;
     else if ( svi )
         nodes = &svi->ParentBSPNodes;
 
@@ -2274,24 +2272,6 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
                 EraseVobFromLeafList( node->IndoorVobs, vi );
                 EraseVobFromLeafList( node->Vobs, vi );
                 EraseVobFromLeafList( node->SmallVobs, vi );
-            }
-
-            if ( li && nodes ) {
-                for ( auto bit = node->Lights.begin(); bit != node->Lights.end(); ++bit ) {
-                    if ( (*bit)->Vob == static_cast<zCVobLight*>(vob) ) {
-                        (*bit) = node->Lights.back();
-                        node->Lights.pop_back();
-                        break;
-                    }
-                }
-
-                for ( auto bit = node->IndoorLights.begin(); bit != node->IndoorLights.end(); ++bit ) {
-                    if ( (*bit)->Vob == static_cast<zCVobLight*>(vob) ) {
-                        (*bit) = node->IndoorLights.back();
-                        node->IndoorLights.pop_back();
-                        break;
-                    }
-                }
             }
 
             if ( svi && nodes ) {
@@ -2354,9 +2334,6 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
         delete (*svit).second;
         SkeletalVobMap.erase( svit );
     }
-
-    // delete light info, if valid
-    if ( li ) delete li;
 }
 
 /** Called on a SetVisual-Call of a vob */
@@ -5344,6 +5321,7 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
         }
 
         bvi.NumStaticLights = leaf->LightVobList.NumInArray;
+        bvi.LightsEpoch = LightMirrorEpoch;
     } else {
         zCBspNode* node = static_cast<zCBspNode*>(base);
 
@@ -7098,10 +7076,13 @@ static void CollectLeafVobs(
         // before the range and frustum tests so a light pays for those exactly once per frame.
         const int numLights = leaf->LightVobList.NumInArray;
 
-        // base->Lights mirrors LightVobList index-for-index (filled in BuildBspVobMapCacheHelper).
-        // It can go stale when the game adds or removes a light at runtime, so each entry is checked
-        // with one pointer compare; a miss falls back to the map and repairs the slot.
+        // base->Lights mirrors LightVobList index-for-index; each entry is pointer-checked and repaired from the map.
+        // An older epoch means a VobLightInfo was deleted since, so the entries are dropped unread.
         const bool mirrorUsable = static_cast<int>(base->Lights.size()) == numLights;
+        if ( mirrorUsable && base->LightsEpoch != Engine::GAPI->LightMirrorEpoch ) {
+            std::ranges::fill( base->Lights, nullptr );
+            base->LightsEpoch = Engine::GAPI->LightMirrorEpoch;
+        }
 
         const bool dropStaticLights = Engine::GAPI->GetRendererState().RendererSettings.DisableStaticPointlights;
 

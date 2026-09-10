@@ -816,7 +816,7 @@ struct GothicRendererSettings {
         SkyIblIntensity = 0.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
         SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
         SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
-        DefaultMaterialRoughness = 0.80f; // D3D12 only: roughness for materials with no _FX/_ORM map
+        DefaultMaterialRoughness = 0.50f; // D3D12 only: roughness for materials with no _FX/_ORM map
 
         BloomStrength = 1.0f;
         EnableBloom = false;
@@ -872,6 +872,7 @@ struct GothicRendererSettings {
         RainGlobalVelocity = XMFLOAT3( 250, -1000, 0 );
         RainUseInitialSet = false;
         RainSceneWettness = 0.0f;
+        RainWetLightReflections = 1.0f;
         RainSunLightStrength = 0.50f;
         RainFogColor = XMFLOAT3( 0.28f, 0.28f, 0.28f );
         RainFogDensity = 0.00050f;
@@ -1294,6 +1295,8 @@ struct GothicRendererSettings {
     bool RainUseInitialSet;
     XMFLOAT3 RainGlobalVelocity;
     float RainSceneWettness;
+    // Strength of the point-light reflection streaks on wet ground (0 = off, the old dull look).
+    float RainWetLightReflections;
 
     float RainSunLightStrength;
     XMFLOAT3 RainFogColor;

@@ -408,6 +408,7 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
     cb.RainFxWeight  = Engine::GAPI->GetRainFXWeight();
     cb.RainTime      = Engine::GAPI->GetTimeSeconds();   // same clock D3D11 feeds AC_Time (GSky.cpp)
     cb.RainShadowMapSize = static_cast<float>( kRainShadowMapSize );
+    cb.WetLightReflections = std::max( 0.0f, Engine::GAPI->GetRendererState().RendererSettings.RainWetLightReflections );
 
     // 0xFFFFFFFF on either index disables the effect in the shader. The rain map needs both its resources
     // AND a computed camera; the distortion texture is an optional asset (distortion2.dds).
