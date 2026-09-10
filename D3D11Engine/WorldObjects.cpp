@@ -9,6 +9,7 @@
 #include "D3D11_Helpers.h"
 #include "SharedVisualRegistry.h"
 #include "WorldConverter.h"
+#include "MorphGpu.h"
 
 MeshVisualInfo::~MeshVisualInfo() {
     // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
@@ -75,6 +76,8 @@ MeshInfo::~MeshInfo() {
     // Drop any raw MeshInfo* a backend cached outside this object's own owner (D3D12's VOB arena
     // mega-buffer) BEFORE Vertices/Indices below are torn down - see OnMeshInfoDestroyed's comment.
     if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->OnMeshInfoDestroyed( this );
+    // Queued morph-fold jobs hold this pointer; the flag keeps every other mesh off MorphGpu's lock.
+    if ( MorphFoldQueued ) MorphGpu::Forget( this );
 
     MeshVertexBuffer.reset();
     MeshPositionBuffer.reset();

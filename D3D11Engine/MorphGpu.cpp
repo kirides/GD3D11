@@ -287,15 +287,30 @@ namespace MorphGpu {
         if ( s_Jobs.size() == jobFirst ) {
             s_Channels.resize( channelFirst );   // nothing to fold (all submeshes empty) - not a failure
         }
+        // Flagged only once the instance is committed, so a rolled-back registration never costs ~MeshInfo a lock.
+        for ( size_t i = jobFirst; i < s_Jobs.size(); ++i ) {
+            s_Jobs[i].Mesh->MorphFoldQueued = true;
+        }
         return true;
     }
 
     void TakeJobs( std::vector<Job>& outJobs, std::vector<ChannelRecord>& outChannels ) {
         std::scoped_lock lock( s_Mutex );
+        // Every queued mesh is alive here (Forget purged the dying ones), so clearing through the pointer is safe.
+        for ( const Job& job : s_Jobs ) {
+            job.Mesh->MorphFoldQueued = false;
+        }
         outJobs.clear();
         outChannels.clear();
         s_Jobs.swap( outJobs );
         s_Channels.swap( outChannels );
+    }
+
+    void Forget( MeshInfo* mesh ) {
+        std::scoped_lock lock( s_Mutex );
+        // Channels stay: survivors index them by ChannelFirst, and TakeJobs clears the orphans next frame.
+        std::erase_if( s_Jobs, [mesh]( const Job& job ) { return job.Mesh == mesh; } );
+        mesh->MorphFoldQueued = false;
     }
 
     size_t ResidentTableBytes() { return s_TableBytes; }

@@ -109,6 +109,10 @@ namespace MorphGpu {
      *  Reuse the same two vectors every frame; they come back with their capacity intact. */
     void TakeJobs( std::vector<Job>& outJobs, std::vector<ChannelRecord>& outChannels );
 
+    /** Drops every queued Job targeting this mesh. ~MeshInfo calls it when MorphFoldQueued is set: a job can
+        outlive its mesh (late ghost-pass registrations wait a frame), and the dispatch would read freed memory. */
+    void Forget( MeshInfo* mesh );
+
     /** Total bytes of prototype tables built so far, for the diagnostic log. */
     size_t ResidentTableBytes();
 }
