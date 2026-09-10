@@ -28,7 +28,8 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	// Rain wetness, frame-constant (see ApplyPointLightWetness / RainWetnessSample.h).
 	matrix PL_RainViewProj;
 	float PL_SceneWettness;
-	float3 PL_Pad4;
+	float PL_WetLightReflections;
+	float2 PL_Pad4;
 };
 
 //--------------------------------------------------------------------------------------
@@ -126,7 +127,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Rain wetness: darken/dampen this light's contribution consistently with what
 	// PS_DS_AtmosphericScattering.hlsl already did for the sun/ambient term, instead of adding
 	// un-wetted brightness on top of it (see RainWetnessSample.h's header for the bug this fixes).
-	ApplyPointLightWetness(wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness,
+	float wet = ApplyPointLightWetness(wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness,
 		diffuse.rgb, specIntensity, specPower);
 
 	// Get direction and distance from the light to that position
@@ -149,7 +150,12 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
 	// Blend this with the light color, world diffuse and specular term.
 	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
-	
+
+	// Wet ground: water-film reflection streak (see WetCoatSpecular in RainWetnessSample.h).
+	[branch]
+	if (wet > 0.0f && PL_WetLightReflections > 0.0f)
+		lighting += PL_Color.rgb * (WetCoatSpecular(normal, V, lightDir, distance) * falloff * wet * PL_Color.w * PL_WetLightReflections);
+
 	return float4(saturate(lighting),1);
 }
 

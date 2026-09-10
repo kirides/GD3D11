@@ -1201,6 +1201,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     s.RainNumParticles = GetPrivateProfileIntA( "Rain", "NumParticles", s.RainNumParticles, ini.c_str() );
     GetPrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, &s.RainGlobalVelocity.x, ini );
     s.RainSceneWettness = GetPrivateProfileFloatA( "Rain", "SceneWettness", s.RainSceneWettness, ini );
+    s.RainWetLightReflections = std::clamp( GetPrivateProfileFloatA( "Rain", "WetLightReflections", s.RainWetLightReflections, ini ), 0.0f, 4.0f );
     s.RainSunLightStrength = GetPrivateProfileFloatA( "Rain", "SunLightStrength", s.RainSunLightStrength, ini );
     GetPrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
     s.RainFogDensity = GetPrivateProfileFloatA( "Rain", "FogDensity", s.RainFogDensity, ini );
@@ -1269,6 +1270,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "Rain", "NumParticles", to_string_locale_independent( s.RainNumParticles ).c_str(), ini.c_str() );
     WritePrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, ini.c_str() );
     WritePrivateProfileStringA( "Rain", "SceneWettness", to_string_locale_independent( s.RainSceneWettness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "WetLightReflections", to_string_locale_independent( s.RainWetLightReflections ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Rain", "SunLightStrength", to_string_locale_independent( s.RainSunLightStrength ).c_str(), ini.c_str() );
     WritePrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
     WritePrivateProfileStringA( "Rain", "FogDensity", to_string_locale_independent( s.RainFogDensity ).c_str(), ini.c_str() );

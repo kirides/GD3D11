@@ -443,6 +443,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
             XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
         shadeCB.SceneWettness = Engine::GAPI->GetSceneWetness();
+        shadeCB.WetLightReflections = std::max( 0.0f, settings.RainWetLightReflections );
 
         csTiledShading->UpdateBuffer("TiledShadingConstantBuffer", &shadeCB, sizeof(shadeCB));
 

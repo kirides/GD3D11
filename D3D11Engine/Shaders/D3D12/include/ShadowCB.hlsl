@@ -33,7 +33,7 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     // rain shadowmap / distortion2.dds isn't available, which disables the effect entirely.
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
-    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
+    uint     DistortionIndex;   float RainShadowMapSize; float WetLightReflections; float _wetpad;
     // --- Screen-space AO / opaque-SSR-reprojection block, 80 bytes, written by UploadAoScreenConstants
     // (kAoReprojCbOffset). AoInvRes: 1/screen-size, which SampleScreenSpaceAO turns SV_Position into a mask
     // UV with. SsrPrevColorIndex/SsrPrevDepthIndex + SsrPrevViewProj: the previous-frame opaque scene

@@ -872,6 +872,7 @@ struct GothicRendererSettings {
         RainGlobalVelocity = XMFLOAT3( 250, -1000, 0 );
         RainUseInitialSet = false;
         RainSceneWettness = 0.0f;
+        RainWetLightReflections = 1.0f;
         RainSunLightStrength = 0.50f;
         RainFogColor = XMFLOAT3( 0.28f, 0.28f, 0.28f );
         RainFogDensity = 0.00050f;
@@ -1294,6 +1295,8 @@ struct GothicRendererSettings {
     bool RainUseInitialSet;
     XMFLOAT3 RainGlobalVelocity;
     float RainSceneWettness;
+    // Strength of the point-light reflection streaks on wet ground (0 = off, the old dull look).
+    float RainWetLightReflections;
 
     float RainSunLightStrength;
     XMFLOAT3 RainFogColor;

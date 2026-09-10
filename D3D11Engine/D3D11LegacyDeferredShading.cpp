@@ -73,6 +73,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
         XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
     plcb.PL_SceneWettness = Engine::GAPI->GetSceneWetness();
+    plcb.PL_WetLightReflections = std::max( 0.0f, Engine::GAPI->GetRendererState().RendererSettings.RainWetLightReflections );
 
     color.BindToPixelShader( context.Get(), 0 );
     normals.BindToPixelShader( context.Get(), 1 );

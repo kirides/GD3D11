@@ -37,7 +37,8 @@ cbuffer TiledShadingConstantBuffer : register( b0 ) {
     // Rain wetness, frame-constant (see ApplyPointLightWetness / RainWetnessSample.h).
     matrix RainViewProj;
     float SceneWettness;
-    float3 WetnessPad;
+    float WetLightReflections;
+    float2 WetnessPad;
 };
 
 SamplerComparisonState SS_Comp : register( s2 );
@@ -89,7 +90,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     // additively blending un-wetted brightness on top of it (see RainWetnessSample.h's header for the
     // bug this fixes; this is the primary point-light path lights use, PS_DS_PointLight.hlsl only
     // handles the shadow-cube-overflow fallback).
-    ApplyPointLightWetness( wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, RainViewProj, SceneWettness,
+    float wet = ApplyPointLightWetness( wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, RainViewProj, SceneWettness,
         diffuse.rgb, specIntensity, specPower );
 
     // Compute tile index
@@ -136,6 +137,11 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
             float3 H = normalize( lightDir + V );
             float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
             float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
+
+            // Wet ground: water-film reflection streak (see WetCoatSpecular in RainWetnessSample.h).
+            [branch]
+            if ( wet > 0.0f && WetLightReflections > 0.0f )
+                lighting += light.Color.rgb * ( WetCoatSpecular( normal, V, lightDir, distance ) * falloff * wet * light.Color.w * WetLightReflections );
 
             // Apply shadow if this light has a shadow cubemap and contribution is non-negligible.
             // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
