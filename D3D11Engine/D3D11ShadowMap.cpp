@@ -1,7 +1,7 @@
 ﻿#include "D3D11ShadowMap.h"
 #include "PointShadow/LegacyCubeTechnique.h"
 #include "PointShadow/PointShadowCasters.h"
-#include "PointShadow/SkeletalCubeCasters.h"
+#include "PointShadow/PointShadowBatch.h"
 #include "PointShadow/TiledCubeArrayTechnique.h"
 #include <algorithm>
 #include <cmath>
@@ -1006,8 +1006,10 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         ? EPointShadowTechnique::TiledCubeArray
         : EPointShadowTechnique::LegacyPerLightCube );
 
-    SkeletalCubeCasters::BeginPass();
-    return m_PointTechnique->DrawShadows( lights );
+    PointShadowBatch::Begin();
+    const XRESULT result = m_PointTechnique->DrawShadows( lights );
+    PointShadowBatch::Flush();
+    return result;
 }
 
 
@@ -1618,119 +1620,3 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
 }
 
 
-/** Renders the shadowmaps for a pointlight */
-void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
-    FXMVECTOR position, float range,
-    const RenderToDepthStencilBuffer& targetCube,
-    const ComPtr<ID3D11DepthStencilView>& face,
-    const ComPtr<ID3D11RenderTargetView>& debugRTV, bool cullFront, bool indoor, bool noNPCs,
-    std::list<VobInfo*>* renderedVobs,
-    std::list<SkeletalVobInfo*>* renderedMobs,
-    std::vector<MeshDrawRange>* worldMeshCache,
-    bool clearDepth,
-    unsigned int casterMask,
-    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
-
-    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-
-    D3D11_VIEWPORT oldVP;
-    UINT n = 1;
-    m_context->RSGetViewports( &n, &oldVP );
-
-    // Apply new viewport
-    D3D11_VIEWPORT vp;
-    vp.TopLeftX = 0;
-    vp.TopLeftY = 0;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(targetCube.GetSizeX());
-    vp.Height = static_cast<float>(targetCube.GetSizeX());
-    m_context->RSSetViewports( 1, &vp );
-
-    ID3D11DepthStencilView*  activeFace = face.Get();
-    bool useLayeredPath = false;
-    if ( !activeFace ) {
-        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering ) {
-            useLayeredPath = true;
-            activeFace = targetCube.GetDepthStencilView().Get();
-
-            // Set layered shader
-            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayered );
-        } else if (!graphicsEngine->IsCubeFaceFallbackActive()) {
-            // Set cubemap shader
-            graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
-            graphicsEngine->GetActiveGS()->Apply();
-            activeFace = targetCube.GetDepthStencilView().Get();
-
-            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCube );
-        }
-    }
-    if (graphicsEngine->IsCubeFaceFallbackActive()) {
-        // VS_Ex's extra outputs shift SV_POSITION's register vs. what PS_CubeShadow expects; VS_ExCubeFace matches.
-        graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCubeFace );
-    }
-
-    // Drawing through the whole array leaves no view offset; the clear stays on this light's window.
-    ID3D11DepthStencilView* clearTarget = activeFace;
-    if ( !face.Get() && activeFace && PointShadowCasters::UsesAbsoluteSliceIndexing( &targetCube ) ) {
-        activeFace = targetCube.GetArrayDepthStencilView().Get();
-    }
-
-    // No DSV means the whole cube pass would draw into nothing and the light samples stale depth.
-    static bool s_cubeFaceReported = false;
-    if ( !LightingLog::RequireOnce( activeFace, s_cubeFaceReported, std::format(
-        "Point-light shadow cube DSV ({}^2 target, layered={})", targetCube.GetSizeX(), useLayeredPath ) ) ) {
-        m_context->RSSetViewports( 1, &oldVP );
-        return;
-    }
-
-    // Set the rendering stage
-    D3D11ENGINE_RENDER_STAGE oldStage = graphicsEngine->GetRenderingStage();
-    graphicsEngine->SetRenderingStage( DES_SHADOWMAP_CUBE );
-
-    ID3D11ShaderResourceView* nullSrv = nullptr;
-    m_context->PSSetShaderResources( 3, 1, &nullSrv );
-
-    const bool oldColorWrites = Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
-
-    if ( !debugRTV.Get() ) {
-        m_context->OMSetRenderTargets( 0, nullptr, activeFace );
-
-        // Depth-only now that the caster writes no SV_Depth (it used to need color writes on for that).
-        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = false;
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
-    } else {
-        m_context->OMSetRenderTargets( 1, debugRTV.GetAddressOf(), activeFace );
-
-        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
-    }
-
-    if ( clearDepth ) {
-        m_context->ClearDepthStencilView( clearTarget, D3D11_CLEAR_DEPTH, 1.0f, 0 );
-    }
-
-    // Draw the world mesh without textures
-    if ( useLayeredPath ) {
-        graphicsEngine->DrawWorldAround_Layered( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache, casterMask, ignoreVob );
-    } else {
-        graphicsEngine->DrawWorldAround( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache, casterMask, ignoreVob );
-    }
-
-    // Restore state
-    graphicsEngine->SetRenderingStage( oldStage );
-    m_context->RSSetViewports( 1, &oldVP );
-    m_context->GSSetShader( nullptr, nullptr, 0 );
-    graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
-
-    Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = oldColorWrites;
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
-
-    Engine::GAPI->SetFarPlane(
-        Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
-        WORLD_SECTION_SIZE );
-
-    graphicsEngine->SetRenderingStage( DES_MAIN );
-}

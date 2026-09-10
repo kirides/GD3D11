@@ -31,6 +31,22 @@ enum ShadowCubeCasterMask : unsigned int {
     SHADOW_CASTER_ALL = SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS | SHADOW_CASTER_ANIMATED,
 };
 
+class GfxVertexBuffer;
+class zCVob;
+struct MeshInfo;
+struct SkeletalVobInfo;
+
+/** Caster rules shared by the sun cascades and the point-light cubes. */
+namespace ShadowCasting {
+    /** Opaque draws take the welded shadow indices when a mesh has them; alpha-tested ones need the full set's UVs. */
+    GfxVertexBuffer* ShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha );
+    unsigned int ShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha );
+    /** Rides an NPC's transform, so it moves every frame and never enters a cached caster set. */
+    bool IsAttachedToNpc( const zCVob* vob );
+    /** MOB counterpart: on the animated list or riding an NPC, so the animated pass draws it. */
+    bool IsAnimatedShadowCaster( const SkeletalVobInfo* vob );
+}
+
 const unsigned int DRAWVERTEXARRAY_BUFFER_SIZE = 4096 * sizeof( ExVertexStruct );
 const unsigned int POLYS_BUFFER_SIZE = 1024 * sizeof( ExVertexStruct );
 const unsigned int PARTICLES_BUFFER_SIZE = 3072 * sizeof( ParticleInstanceInfo );
@@ -293,23 +309,6 @@ public:
 
     void XM_CALLCONV DrawWorldAroundForWorldShadow( FXMVECTOR position, float sectionRange, const RenderShadowmapsParams& params );
     void DrawVegetationGeometryPass(const std::list<GVegetationBox*>& vegetationBoxes);
-    void XM_CALLCONV DrawWorldAround( FXMVECTOR position,
-                                      float range,
-                                      bool cullFront = true,
-                                      bool indoor = false,
-                                      bool noNPCs = false,
-                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-                                      unsigned int casterMask = SHADOW_CASTER_ALL,
-                                      const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
-    void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
-        float range,
-        bool cullFront = true,
-        bool indoor = false,
-        bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-        unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
-
     /** Update morph mesh visual */
     void UpdateMorphMeshVisual();
 
@@ -337,20 +336,6 @@ public:
     /** Renders the shadowmaps for the sun */
     void XM_CALLCONV RenderShadowmaps( FXMVECTOR cameraPosition, RenderToDepthStencilBuffer* target = nullptr, bool cullFront = true, bool dontCull = false, Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite = nullptr, Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = nullptr, bool drawVegetation = true );
 
-    /** Renders the shadowmaps for a pointlight */
-    void XM_CALLCONV RenderShadowCube( FXMVECTOR position,
-        float range,
-        const RenderToDepthStencilBuffer& targetCube,
-        const ComPtr<ID3D11DepthStencilView>& face,
-        const ComPtr<ID3D11RenderTargetView>& debugRTV,
-        bool cullFront = true,
-        bool indoor = false,
-        bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-        bool clearDepth = true,
-        unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr);
-
     /** Updates the occlusion for the bsp-tree */
     void UpdateOcclusion();
 
@@ -365,11 +350,6 @@ public:
 
     /** Returns the current rendering stage */
     D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
-
-    /** True while the NVIDIA per-face shadow fallback is drawing (no GS bound); shader-selection sites
-        must skip the *Cube-suffixed (GS-dependent) vertex shaders while this is set. */
-    void SetCubeFaceFallbackActive( bool active ) { CubeFaceFallbackActive = active; }
-    bool IsCubeFaceFallbackActive() const { return CubeFaceFallbackActive; }
 
     /** Every skeletal vob's bone pose this frame, shared by all passes that skin it. */
     D3D11SkeletalPoseCache& GetSkeletalPoseCache() { return m_SkeletalPoses; }
@@ -597,8 +577,6 @@ protected:
     /** The current rendering stage */
     D3D11ENGINE_RENDER_STAGE RenderingStage;
 
-    /** See SetCubeFaceFallbackActive(). */
-    bool CubeFaceFallbackActive = false;
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;

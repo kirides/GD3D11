@@ -25,7 +25,7 @@ enum class EPointShadowTechnique {
 };
 
 /** What a technique brings with it besides its resources. Caster-side shader selection is deliberately
-    NOT here: it lives in D3D11ShadowMap::RenderShadowCube, shared with the sun and rain shadow paths. */
+    NOT here: PointShadowBatch picks it per pass. */
 struct PointShadowTechniqueInfo {
     // The deferred point-light PS pair the legacy lit pass picks between. Unused by a technique whose
     // lighting runs through the tiled/forward+ shaders instead.

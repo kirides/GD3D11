@@ -2,11 +2,8 @@
 #include "SkeletalCubeCasters.h"
 
 #include "../D3D11GraphicsEngine.h"
-#include "../D3D11VShader.h"
 #include "../D3D11VertexBuffer.h"
-#include "../D3D7/MyDirectDrawSurface7.h"
 #include "../Engine.h"
-#include "../GfxTexture.h"
 #include "../GothicAPI.h"
 #include "../WorldConverter.h"
 #include "../WorldObjects.h"
@@ -18,45 +15,21 @@
 #include "../zCVisual.h"
 #include "../zCVob.h"
 
+using SkeletalCubeCasters::AttachmentDraw;
+using SkeletalCubeCasters::Record;
+using SkeletalCubeCasters::kNoRecord;
+
 namespace {
-    struct MeshDraw {
-        ID3D11Buffer* VertexBuffer = nullptr;
-        ID3D11Buffer* IndexBuffer = nullptr;   // null: a non-indexed attachment mesh
-        UINT Count = 0;
-        zCTexture* AlphaTexture = nullptr;     // null: opaque, drawn with the white texture
-    };
-
-    struct AttachmentDraw {
-        VS_ExConstantBuffer_PerInstanceNode Instance;
-        const zCVob* SlotVob = nullptr;        // the inventory item hanging on this node, for self-exclusion
-        uint32_t FirstMesh = 0;
-        uint32_t NumMeshes = 0;
-    };
-
-    struct CasterRecord {
-        D3D11SkeletalPoseCache::Pose Pose;
-        VS_ExConstantBuffer_PerInstanceSkeletal Instance;
-        uint32_t FirstBodyMesh = 0;
-        uint32_t NumBodyMeshes = 0;
-        uint32_t FirstAttachment = 0;
-        uint32_t NumAttachments = 0;
-    };
-
     struct RecordRef {
         zCModel* Model = nullptr;
-        uint32_t Index = 0;
+        uint32_t Index = kNoRecord;
     };
 
-    constexpr uint32_t kNoRecord = UINT32_MAX;
-    constexpr DXGI_FORMAT VERTEX_INDEX_DXGI_FORMAT = sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
-
     gtl::flat_hash_map<SkeletalVobInfo*, RecordRef> s_RecordOf;
-    std::vector<CasterRecord> s_Records;
-    std::vector<MeshDraw> s_BodyMeshes;
-    std::vector<MeshDraw> s_AttachmentMeshes;
+    std::vector<Record> s_Records;
+    std::vector<CasterMeshDraw> s_BodyMeshes;
+    std::vector<CasterMeshDraw> s_AttachmentMeshes;
     std::vector<AttachmentDraw> s_Attachments;
-    std::vector<uint32_t> s_Drawn;
-    size_t s_PassFrame = static_cast<size_t>( -1 );
 
     /** False while the texture streams in: whether it needs the alpha test isn't known until it has. */
     bool ResolveAlphaTexture( zCMaterial* mat, zCTexture*& alphaTexture ) {
@@ -80,7 +53,7 @@ namespace {
     void RecordAttachmentMeshes( MeshVisualInfo* mvi, AttachmentDraw& attachment ) {
         attachment.FirstMesh = static_cast<uint32_t>( s_AttachmentMeshes.size() );
         for ( auto const& [mat, meshes] : mvi->Meshes ) {
-            MeshDraw draw;
+            CasterMeshDraw draw;
             if ( !ResolveAlphaTexture( mat, draw.AlphaTexture ) ) continue;
             for ( auto const& mesh : meshes ) {
                 GfxVertexBuffer* vb = mesh->GetMeshVertexBuffer();
@@ -121,7 +94,7 @@ namespace {
         float4 white;
         white = 0xFFFFFFFF;
 
-        CasterRecord rec;
+        Record rec;
         rec.Pose = pose;
         XMStoreFloat4x4( &rec.Instance.World, world );
         rec.Instance.PrevWorld = rec.Instance.World;
@@ -141,7 +114,7 @@ namespace {
         } else if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
             for ( auto const& [mat, meshes] : visual->SkeletalMeshes ) {
-                MeshDraw draw;
+                CasterMeshDraw draw;
                 if ( !ResolveAlphaTexture( mat, draw.AlphaTexture ) ) continue;
                 for ( auto const& mesh : meshes ) {
                     if ( !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
@@ -222,6 +195,17 @@ namespace {
         s_Records.push_back( rec );
         return static_cast<uint32_t>( s_Records.size() - 1 );
     }
+}
+
+namespace SkeletalCubeCasters {
+
+    void BeginPass() {
+        s_RecordOf.clear();
+        s_Records.clear();
+        s_BodyMeshes.clear();
+        s_AttachmentMeshes.clear();
+        s_Attachments.clear();
+    }
 
     uint32_t RecordFor( SkeletalVobInfo* vi ) {
         zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
@@ -242,149 +226,21 @@ namespace {
         s_RecordOf[vi] = RecordRef{ model, index };
         return index;
     }
-}
 
-namespace SkeletalCubeCasters {
-
-    void BeginPass() {
-        s_RecordOf.clear();
-        s_Records.clear();
-        s_BodyMeshes.clear();
-        s_AttachmentMeshes.clear();
-        s_Attachments.clear();
-        s_PassFrame = Engine::GAPI->GetFrameNumber();
+    const Record& GetRecord( uint32_t index ) {
+        return s_Records[index];
     }
 
-    void Draw( std::span<SkeletalVobInfo* const> vobs, bool layered,
-        const std::move_only_function<bool( const zCVob* ) const>& ignoreVob ) {
-        if ( vobs.empty() ) return;
-        ZoneScopedN( "SkeletalCubeCasters::Draw" );
-        if ( s_PassFrame != Engine::GAPI->GetFrameNumber() ) {
-            BeginPass();
-        }
+    std::span<const CasterMeshDraw> BodyMeshes( const Record& record ) {
+        return std::span<const CasterMeshDraw>( s_BodyMeshes.data() + record.FirstBodyMesh, record.NumBodyMeshes );
+    }
 
-        D3D11GraphicsEngine* g = AsD3D11Engine( Engine::GraphicsEngine );
-        auto _ = g->RecordGraphicsEvent( GE_NAME( "SkeletalCubeCasters::Draw" ) );
+    std::span<const AttachmentDraw> Attachments( const Record& record ) {
+        return std::span<const AttachmentDraw>( s_Attachments.data() + record.FirstAttachment, record.NumAttachments );
+    }
 
-        s_Drawn.clear();
-        for ( SkeletalVobInfo* vi : vobs ) {
-            if ( !vi || !vi->Vob ) continue;
-            if ( ignoreVob != nullptr && ignoreVob( vi->Vob ) ) continue;
-            const uint32_t index = RecordFor( vi );
-            if ( index != kNoRecord ) s_Drawn.push_back( index );
-        }
-        if ( s_Drawn.empty() ) return;
-
-        D3D11SkeletalPoseCache& poses = g->GetSkeletalPoseCache();
-        const bool structuredBones = !FeatureLevel10Compatibility;
-        // The structured-bone shaders have no cbuffer fallback, so a failed upload drops the bodies.
-        const bool bonesReady = !structuredBones || poses.Flush();
-
-        ID3D11DeviceContext* context = g->GetContext().Get();
-        auto& rendererInfo = Engine::GAPI->GetRendererState().RendererInfo;
-        const UINT instanceCount = layered ? 6 : 1;
-        const UINT offset = 0;
-
-        GfxTexture* const white = g->GetWhiteTexture();
-        GfxTexture* boundTexture = nullptr;
-        auto bindTexture = [&]( zCTexture* alphaTexture ) {
-            MyDirectDrawSurface7* surface = alphaTexture ? alphaTexture->GetSurface() : nullptr;
-            GfxTexture* tex = surface ? surface->GetEngineTexture() : white;
-            if ( !tex ) tex = white;
-            if ( tex != boundTexture ) {
-                tex->BindToPixelShader( 0 );
-                boundTexture = tex;
-            }
-        };
-
-        g->SetActivePixelShader( PShaderID::PS_CubeShadow );
-
-        if ( bonesReady ) {
-            g->SetActiveVertexShader( layered ? VShaderID::VS_ExSkeletalLayered : VShaderID::VS_ExSkeletalCubeFace );
-            g->SetupVS_ExMeshDrawCall();
-            g->SetupVS_ExConstantBuffer();
-
-            auto& vs = g->GetActiveVS();
-            const int instanceSlot = vs->GetInputIndex( "Matrices_PerInstances" );
-            const int boneRangeSlot = vs->GetInputIndex( "BoneTransformRange" );
-            const int bonesSlot = vs->GetInputIndex( "BoneTransforms" );
-            if ( structuredBones && bonesSlot >= 0 ) {
-                ID3D11ShaderResourceView* bonesSRV = poses.GetBonesSRV();
-                context->VSSetShaderResources( bonesSlot, 1, &bonesSRV );
-            }
-
-            const UINT stride = sizeof( ExSkelVertexStruct );
-            ID3D11Buffer* lastVB = nullptr;
-            ID3D11Buffer* lastIB = nullptr;
-            for ( uint32_t index : s_Drawn ) {
-                const CasterRecord& rec = s_Records[index];
-                if ( rec.NumBodyMeshes == 0 ) continue;
-
-                // Same bytes on every light and face, so past the first these are pool cache hits.
-                g->BindDynamicCBToVertexShader( instanceSlot, g->AllocateDynamicCB( &rec.Instance ) );
-                if ( structuredBones ) {
-                    const VS_ExConstantBuffer_SkeletalBoneRange range = { rec.Pose.Offset, rec.Pose.Offset, rec.Pose.Count, 1u };
-                    g->BindDynamicCBToVertexShader( boneRangeSlot, g->AllocateDynamicCB( &range ) );
-                } else {
-                    const std::span<const XMFLOAT4X4> bones = poses.Bones( rec.Pose );
-                    g->BindDynamicCBToVertexShader( bonesSlot, g->AllocateDynamicCB( bones.data(),
-                        sizeof( XMFLOAT4X4 ) * std::min<uint32_t>( rec.Pose.Count, NUM_MAX_BONES ) ) );
-                }
-
-                for ( uint32_t m = rec.FirstBodyMesh; m < rec.FirstBodyMesh + rec.NumBodyMeshes; ++m ) {
-                    const MeshDraw& draw = s_BodyMeshes[m];
-                    bindTexture( draw.AlphaTexture );
-                    if ( draw.VertexBuffer != lastVB ) {
-                        context->IASetVertexBuffers( 0, 1, &draw.VertexBuffer, &stride, &offset );
-                        lastVB = draw.VertexBuffer;
-                    }
-                    if ( draw.IndexBuffer != lastIB ) {
-                        context->IASetIndexBuffer( draw.IndexBuffer, VERTEX_INDEX_DXGI_FORMAT, 0 );
-                        lastIB = draw.IndexBuffer;
-                    }
-                    context->DrawIndexedInstanced( draw.Count, instanceCount, 0, 0, 0 );
-                    rendererInfo.FrameDrawnTriangles += draw.Count / 3;
-                }
-            }
-        }
-
-        g->SetActiveVertexShader( layered ? VShaderID::VS_ExNodeLayered : VShaderID::VS_ExNodeCubeFace );
-        g->SetupVS_ExMeshDrawCall();
-        g->SetupVS_ExConstantBuffer();
-        const int nodeInstanceSlot = g->GetActiveVS()->GetInputIndex( "Matrices_PerInstances" );
-
-        const UINT nodeStride = sizeof( ExVertexStruct );
-        ID3D11Buffer* lastVB = nullptr;
-        ID3D11Buffer* lastIB = nullptr;
-        for ( uint32_t index : s_Drawn ) {
-            const CasterRecord& rec = s_Records[index];
-            for ( uint32_t a = rec.FirstAttachment; a < rec.FirstAttachment + rec.NumAttachments; ++a ) {
-                const AttachmentDraw& attachment = s_Attachments[a];
-                if ( ignoreVob != nullptr && attachment.SlotVob && ignoreVob( attachment.SlotVob ) ) continue;
-
-                g->BindDynamicCBToVertexShader( nodeInstanceSlot, g->AllocateDynamicCB( &attachment.Instance ) );
-                for ( uint32_t m = attachment.FirstMesh; m < attachment.FirstMesh + attachment.NumMeshes; ++m ) {
-                    const MeshDraw& draw = s_AttachmentMeshes[m];
-                    bindTexture( draw.AlphaTexture );
-                    if ( draw.VertexBuffer != lastVB ) {
-                        context->IASetVertexBuffers( 0, 1, &draw.VertexBuffer, &nodeStride, &offset );
-                        lastVB = draw.VertexBuffer;
-                    }
-                    if ( draw.IndexBuffer ) {
-                        if ( draw.IndexBuffer != lastIB ) {
-                            context->IASetIndexBuffer( draw.IndexBuffer, VERTEX_INDEX_DXGI_FORMAT, 0 );
-                            lastIB = draw.IndexBuffer;
-                        }
-                        context->DrawIndexedInstanced( draw.Count, instanceCount, 0, 0, 0 );
-                    } else {
-                        context->DrawInstanced( draw.Count, instanceCount, 0, 0 );
-                    }
-                    rendererInfo.FrameDrawnTriangles += draw.Count / 3;
-                }
-            }
-        }
-
-        rendererInfo.FrameDrawnVobs += static_cast<int>( s_Drawn.size() );
+    std::span<const CasterMeshDraw> AttachmentMeshes( const AttachmentDraw& attachment ) {
+        return std::span<const CasterMeshDraw>( s_AttachmentMeshes.data() + attachment.FirstMesh, attachment.NumMeshes );
     }
 
 } // namespace SkeletalCubeCasters

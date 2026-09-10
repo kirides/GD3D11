@@ -2898,10 +2898,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         }
     }
 
-    // NVIDIA per-face fallback never binds GS_Cubemap, so node attachments need VS_ExNodeCubeFace's
-    // PS_CubeShadow-compatible output layout instead of VS_ExNodeCube's.
     if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
-        g->SetActiveVertexShader( g->IsCubeFaceFallbackActive() ? VShaderID::VS_ExNodeCubeFace : VShaderID::VS_ExNodeCube );
+        g->SetActiveVertexShader( VShaderID::VS_ExNodeCube );
     else
         g->SetActiveVertexShader( VShaderID::VS_ExNode );
 

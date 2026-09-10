@@ -524,7 +524,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
                     // The source world mesh only keeps the slim CPU copy (see WorldVertexCPU), so the caster
                     // vertices are rebuilt with Normal/Color/Tangent zeroed. Lossless here: these meshes are
-                    // only drawn by RenderShadowCube, which writes depth and alpha-tests on TexCoord.
+                    // only drawn into point-light cubes, which write depth and alpha-test on TexCoord.
                     const std::vector<WorldVertexCPU>& src = it.second->CpuVertices;
                     if ( src.empty() ) {
                         continue;

@@ -160,20 +160,6 @@ public:
 
     D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 
-    void XM_CALLCONV RenderShadowCube( DirectX::FXMVECTOR position,
-        float range,
-        const RenderToDepthStencilBuffer& targetCube,
-        const ComPtr<ID3D11DepthStencilView>& face,
-        const ComPtr<ID3D11RenderTargetView>& debugRTV,
-        bool cullFront = true,
-        bool indoor = false,
-        bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, 
-        std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
-        std::vector<MeshDrawRange>* worldMeshCache = nullptr,
-        bool clearDepth = true,
-        unsigned int casterMask = 0xFFFFFFFFu,
-        const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
 
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
