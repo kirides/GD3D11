@@ -145,6 +145,7 @@ struct BspInfo {
         IndoorVobs = std::move( other.IndoorVobs );
         SmallVobs = std::move( other.SmallVobs );
         Lights = std::move( other.Lights );
+        LightsEpoch = other.LightsEpoch;
         IndoorLights = std::move( other.IndoorLights );
         Mobs = std::move( other.Mobs );
         NodePolygons = std::move( other.NodePolygons );
@@ -172,6 +173,7 @@ struct BspInfo {
     std::vector<LeafVobEntry> IndoorVobs;
     std::vector<LeafVobEntry> SmallVobs;
     std::vector<VobLightInfo*> Lights;
+    uint32_t LightsEpoch = 0;   // GothicAPI::LightMirrorEpoch the Lights entries were last valid for
     std::vector<VobLightInfo*> IndoorLights;
     std::vector<SkeletalVobInfo*> Mobs;
 
@@ -1209,6 +1211,8 @@ private:
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
     gtl::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
+    // Bumped on every VobLightInfo delete; a BspInfo::Lights stamped with an older value may dangle.
+    uint32_t LightMirrorEpoch = 0;
     // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
     BspLeafLinearCache LeafLinearCache;
 private:
