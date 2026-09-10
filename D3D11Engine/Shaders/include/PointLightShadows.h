@@ -21,6 +21,15 @@ static const float PLS_STATIC_TIER_COARSE = 2.0f;
 // (D3D12: D3D12PointShadows' PerspectiveFovLH). zFar is the light's ShadowRange * 2.
 static const float PLS_SHADOW_ZNEAR = 15.0f;
 
+// PCF disk radius in cube-face tangent units per `coarse`, plus the part that grows toward zFar. At the static
+// tier's coarse 2 that spans ~3-4 of its 64^2 texels: a deliberately soft penumbra over fine detail.
+static const float PLS_SHADOW_SOFTNESS_NEAR = 0.045f;
+static const float PLS_SHADOW_SOFTNESS_FAR = 0.03f;
+
+// Lowest fraction of the receiver's own depth the tangent plane may pull a tap to; caps the light leak a
+// normal-mapped normal can cause by tilting that plane.
+static const float PLS_RECEIVER_PLANE_MIN_SCALE = 0.5f;
+
 static const int PLS_SHADOW_BLUR_COUNT = 8;
 static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2( 0.076849f, -0.078216f),
@@ -117,8 +126,9 @@ void PLS_PrepareShadowSampling(
     float lightRange,
     float coarse,
     bool taaActive,
+    out float3 toPixel,
+    out float planeNd,
     out float3 dir,
-    out float compareDepth,
     out float fixedBias,
     out float fixedBlurScale,
     out float3 right,
@@ -126,32 +136,22 @@ void PLS_PrepareShadowSampling(
     out float sinA,
     out float cosA )
 {
-    // Uniform world-space normal offset, exactly as D3D12's SamplePointShadow applies it. A slope-scaled,
-    // distance-proportional offset used to live here; it was tuned against direction-INDEPENDENT radial
-    // depth and has no counterpart in the backend this now mirrors.
-    float3 toPixel = (wsPosition + N * (lightRange * 0.01f * coarse)) - lightPosWorld;
+    // Uniform world-space normal offset, as D3D12's SamplePointShadow applies it.
+    toPixel = (wsPosition + N * (lightRange * 0.01f * coarse)) - lightPosWorld;
     dir = normalize( toPixel );
 
-    // The caster writes no SV_Depth, so the cube holds the natural hyperbolic z of its 90-degree face
-    // projection. Depth on a cube face is driven by the DOMINANT-AXIS distance (that face's view-space z),
-    // so reconstruct it from that and re-apply the same LH projection z-map - not from the radial length.
-    // Clamped at the near plane: geometry inside it was never rasterized into the cube, so it has to read
-    // as lit, and a negative compare depth would instead fail every comparison.
-    float zFar = lightRange * 2.0f;
-    float3 axisDist = abs( toPixel );
-    float zView = max( max( axisDist.x, max( axisDist.y, axisDist.z ) ), PLS_SHADOW_ZNEAR );
-    compareDepth = (zFar / (zFar - PLS_SHADOW_ZNEAR)) * (1.0f - PLS_SHADOW_ZNEAR / zView);
+    // Tangent-plane numerator for PLS_TapCompareDepth; a receiver facing away gets no plane to lower toward.
+    float nd = dot( toPixel, N );
+    planeNd = nd < 0.0f ? nd : -1e20f;
 
-    // Bias flat in hyperbolic depth (so it widens in world units with distance, which is what the
-    // coarsening D16 quantisation there needs) and an angular disk that only creeps wider with depth -
-    // both D3D12's values. The disk USED to reach 0.256 rad, ~40 texels of a 90-degree face: harmless
-    // against radial depth, but the correct compare value now varies per tap direction, so a disk that
-    // wide compares taps against badly wrong depths and makes the terminator follow the cube faces.
-    // `coarse` is this tier's texel footprint relative to the overlay's (1 = same); the caller divides
-    // both back down by it for the finer overlay sample.
+    // Flat in hyperbolic depth, so it widens in world units where D16 quantisation coarsens. `coarse` is this
+    // tier's texel footprint relative to the overlay's; the caller divides bias and disk back down for it.
     fixedBias = 0.001f * coarse;
 
-    float baseBlur = (0.006f + 0.010f * saturate( zView / zFar )) * coarse;
+    float zFar = lightRange * 2.0f;
+    float3 axisDist = abs( toPixel );
+    float zView = max( axisDist.x, max( axisDist.y, axisDist.z ) );
+    float baseBlur = (PLS_SHADOW_SOFTNESS_NEAR + PLS_SHADOW_SOFTNESS_FAR * saturate( zView / zFar )) * coarse;
 
     // The rotation/blur-scale jitter below is a spatial hash of wsPosition, not a temporal one - it exists
     // to break up the Poisson ring into dither that TAA/FSR resolves into smooth soft shadows over several
@@ -180,6 +180,21 @@ void PLS_PrepareShadowSampling(
     up = cross( dir, right );
 }
 
+// Hyperbolic compare depth for one PCF tap: the receiver's own z in the cube face `tapDir` selects (so a wide
+// disk crossing a seam stays correct), lowered to the tangent-plane hit when nearer (so grazing receivers don't
+// self-shadow). Clamped at the near plane, inside which nothing was rasterized.
+float PLS_TapCompareDepth( float3 toPixel, float3 N, float planeNd, float3 tapDir, float lightRange )
+{
+    float3 a = abs( tapDir );
+    float3 face = ( a.x >= a.y && a.x >= a.z ) ? float3( 1, 0, 0 ) : ( ( a.y >= a.z ) ? float3( 0, 1, 0 ) : float3( 0, 0, 1 ) );
+    float zOwn = dot( abs( toPixel ), face );
+    float zPlane = planeNd / min( dot( tapDir, N ), -1e-4f ) * dot( a, face );
+    float zView = max( max( min( zPlane, zOwn ), zOwn * PLS_RECEIVER_PLANE_MIN_SCALE ), PLS_SHADOW_ZNEAR );
+
+    float zFar = lightRange * 2.0f;
+    return (zFar / (zFar - PLS_SHADOW_ZNEAR)) * (1.0f - PLS_SHADOW_ZNEAR / zView);
+}
+
 float PLS_SampleShadowCube(
     TextureCube shadowCube,
     SamplerComparisonState samplerState,
@@ -189,8 +204,9 @@ float PLS_SampleShadowCube(
     float lightRange,
     bool taaActive )
 {
+    float3 toPixel;
+    float planeNd;
     float3 dir;
-    float compareDepth;
     float fixedBias;
     float fixedBlurScale;
     float3 right;
@@ -200,7 +216,7 @@ float PLS_SampleShadowCube(
 
     PLS_PrepareShadowSampling(
         wsPosition, N, lightPosWorld, lightRange, 1.0f, taaActive,
-        dir, compareDepth, fixedBias, fixedBlurScale,
+        toPixel, planeNd, dir, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
     float shd = 0;
@@ -210,6 +226,7 @@ float PLS_SampleShadowCube(
         float2 rotatedKernel = float2( kernel.x * cosA - kernel.y * sinA, kernel.x * sinA + kernel.y * cosA );
         float3 perturbedDir = normalize( dir + (right * rotatedKernel.x + up * rotatedKernel.y) * fixedBlurScale );
 
+        float compareDepth = PLS_TapCompareDepth( toPixel, N, planeNd, perturbedDir, lightRange );
         shd += shadowCube.SampleCmpLevelZero( samplerState, perturbedDir, compareDepth - fixedBias );
     }
 
@@ -241,8 +258,9 @@ float PLS_SampleShadowCubeArray(
     if ( staticSlot < 0 )
         return 1.0f;
 
+    float3 toPixel;
+    float planeNd;
     float3 dir;
-    float compareDepth;
     float fixedBias;
     float fixedBlurScale;
     float3 right;
@@ -254,7 +272,7 @@ float PLS_SampleShadowCubeArray(
     // down by the same factor.
     PLS_PrepareShadowSampling(
         wsPosition, N, lightPosWorld, lightRange, PLS_STATIC_TIER_COARSE, taaActive,
-        dir, compareDepth, fixedBias, fixedBlurScale,
+        toPixel, planeNd, dir, fixedBias, fixedBlurScale,
         right, up, sinA, cosA );
 
     const float dynBias = fixedBias / PLS_STATIC_TIER_COARSE;
@@ -269,14 +287,14 @@ float PLS_SampleShadowCubeArray(
         float3 offset = right * rotatedKernel.x + up * rotatedKernel.y;
 
         float3 perturbedDir = normalize( dir + offset * fixedBlurScale );
-        float s = staticCubeArray.SampleCmpLevelZero( samplerState,
-            float4( perturbedDir, (float)staticSlot ), compareDepth - fixedBias );
+        float s = staticCubeArray.SampleCmpLevelZero( samplerState, float4( perturbedDir, (float)staticSlot ),
+            PLS_TapCompareDepth( toPixel, N, planeNd, perturbedDir, lightRange ) - fixedBias );
 
         if ( hasDyn )
         {
             float3 dynDir = normalize( dir + offset * dynBlur );
-            s = min( s, dynShadowCubeArray.SampleCmpLevelZero( samplerState,
-                float4( dynDir, (float)dynSlot ), compareDepth - dynBias ) );
+            s = min( s, dynShadowCubeArray.SampleCmpLevelZero( samplerState, float4( dynDir, (float)dynSlot ),
+                PLS_TapCompareDepth( toPixel, N, planeNd, dynDir, lightRange ) - dynBias ) );
         }
         shd += s;
     }
