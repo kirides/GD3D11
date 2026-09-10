@@ -69,6 +69,13 @@ namespace Logging {
         Detail::Write( Level::Warn, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
     }
 
+    /** Warn attributed to an explicit call site, for helpers that forward their caller's location. */
+    template<class... Args>
+    void WrnAt( const std::source_location& where, std::format_string<Args...> fmt, Args&&... args ) {
+        if ( !IsEnabled( Level::Warn ) ) return;
+        Detail::Write( Level::Warn, where, fmt.get(), std::make_format_args( args... ) );
+    }
+
     template<class... Args>
     void Err( Site<Args...> site, Args&&... args ) {
         if ( !IsEnabled( Level::Error ) ) return;

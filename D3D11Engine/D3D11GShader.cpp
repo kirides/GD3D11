@@ -84,14 +84,14 @@ void D3D11GShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->GSSetSamplers( GetInputIndex(name), 1, &sampler );
 }
 
-void D3D11GShader::UpdateBuffer(StringID name, const void* data, size_t size) {
+void D3D11GShader::UpdateBuffer(StringID name, const void* data, size_t size, std::source_location where) {
     if (const auto idx = GetInputIndex(name); idx != -1) {
         const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
-        pool->BindGS(idx, pool->Allocate(data, size));
+        pool->BindGS(idx, pool->Allocate(data, size, where));
     }
 }
 
-void D3D11GShader::UpdateBuffer(UINT slot, const void* data, size_t size) {
+void D3D11GShader::UpdateBuffer(UINT slot, const void* data, size_t size, std::source_location where) {
     const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
-    pool->BindGS(slot, pool->Allocate(data, size));
+    pool->BindGS(slot, pool->Allocate(data, size, where));
 }

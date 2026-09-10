@@ -3,6 +3,8 @@
 #include <d3d11_1.h>
 #include <cstdint>
 #include <array>
+#include <source_location>
+#include <string>
 
 struct ConstantBufferAllocation {
     ID3D11Buffer* pBuffer = nullptr;
@@ -36,6 +38,7 @@ private:
     uint32_t m_currentOffset = 0;
     uint32_t m_frameIndex = 0;   // slot currently being written to
     bool m_wrapWarned = false;   // warn only once if the ring wraps mid-frame
+    std::string m_debugName;
 
     void WaitForSlot( FrameSlot& slot );
 
@@ -43,7 +46,8 @@ public:
     void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024, const char* debugName = nullptr );
 
     void BeginFrame();
-    ConstantBufferAllocation Allocate( const void* pData, uint32_t sizeInBytes );
+    ConstantBufferAllocation Allocate( const void* pData, uint32_t sizeInBytes,
+        std::source_location where = std::source_location::current() );
     void BindPS( uint32_t slot, const ConstantBufferAllocation& allocation );
     void BindVS( uint32_t slot, const ConstantBufferAllocation& allocation );
     void BindCS( uint32_t slot, const ConstantBufferAllocation& allocation );

@@ -56,14 +56,14 @@ void D3D11CShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetSamplers( GetInputIndex(name), 1, &sampler );
 }
 
-void D3D11CShader::UpdateBuffer(StringID name, const void* data, size_t size) {
+void D3D11CShader::UpdateBuffer(StringID name, const void* data, size_t size, std::source_location where) {
     if (const auto idx = GetInputIndex(name); idx != -1) {
         const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
-        pool->BindCS(idx, pool->Allocate(data, size));
+        pool->BindCS(idx, pool->Allocate(data, size, where));
     }
 }
 
-void D3D11CShader::UpdateBuffer(UINT slot, const void* data, size_t size) {
+void D3D11CShader::UpdateBuffer(UINT slot, const void* data, size_t size, std::source_location where) {
     const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
-    pool->BindCS(slot, pool->Allocate(data, size));
+    pool->BindCS(slot, pool->Allocate(data, size, where));
 }

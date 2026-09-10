@@ -436,14 +436,15 @@ public:
     // sub-allocates a transient slot from a per-frame ring (DYNAMIC buffer mapped
     // with DISCARD/NO_OVERWRITE) and binds it by offset, so callers don't need their
     // own ID3D11Buffer. The allocation is only valid for the current frame.
-    ConstantBufferAllocation AllocateDynamicCB( const void* data, uint32_t size ) {
-        return DynamicConstantBufferPool->Allocate( data, size );
+    ConstantBufferAllocation AllocateDynamicCB( const void* data, uint32_t size,
+        std::source_location where = std::source_location::current() ) {
+        return DynamicConstantBufferPool->Allocate( data, size, where );
     }
-    
+
     template<typename T>
         requires (!std::is_pointer_v<T> && std::is_trivially_copyable_v<T>)
-    ConstantBufferAllocation AllocateDynamicCB( const T* data ) {
-        return DynamicConstantBufferPool->Allocate( data, sizeof(T) );
+    ConstantBufferAllocation AllocateDynamicCB( const T* data, std::source_location where = std::source_location::current() ) {
+        return DynamicConstantBufferPool->Allocate( data, sizeof(T), where );
     }
     
     ConstantBufferPool* GetConstantBufferPool() override {

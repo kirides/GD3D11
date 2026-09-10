@@ -1,5 +1,5 @@
 #include "ConstantBufferPool.h"
-#include "Logger.h"
+#include "Logging.h"
 #include "D3D11_Helpers.h"
 
 void ConstantBufferPool::Initialize( ID3D11Device* device, uint32_t totalSizeInBytes, const char* debugName ) {
@@ -7,6 +7,7 @@ void ConstantBufferPool::Initialize( ID3D11Device* device, uint32_t totalSizeInB
     m_currentOffset = 0;
     m_frameIndex = 0;
     m_wrapWarned = false;
+    m_debugName = debugName ? debugName : "ConstantBufferPool";
 
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
     device->GetImmediateContext( &context );
@@ -27,8 +28,7 @@ void ConstantBufferPool::Initialize( ID3D11Device* device, uint32_t totalSizeInB
         device->CreateQuery( &queryDesc, &frameSlot.FrameFence );
         frameSlot.FencePending = false;
 
-        SetDebugName( frameSlot.Buffer.Get(),
-            std::string( debugName ? debugName : "ConstantBufferPool" ) + "_frame" + std::to_string( i ) );
+        SetDebugName( frameSlot.Buffer.Get(), m_debugName + "_frame" + std::to_string( i ) );
     }
 }
 
@@ -53,7 +53,7 @@ void ConstantBufferPool::BeginFrame() {
     m_wrapWarned = false;
 }
 
-ConstantBufferAllocation ConstantBufferPool::Allocate( const void* pData, uint32_t sizeInBytes ) {
+ConstantBufferAllocation ConstantBufferPool::Allocate( const void* pData, uint32_t sizeInBytes, std::source_location where ) {
     uint32_t alignedSize = (sizeInBytes + 255) & ~255;
 
     FrameSlot& slot = m_frames[m_frameIndex];
@@ -62,8 +62,10 @@ ConstantBufferAllocation ConstantBufferPool::Allocate( const void* pData, uint32
         m_currentOffset = 0; // wrap within this frame's own buffer
         if ( !m_wrapWarned ) {
             m_wrapWarned = true;
-            LogWarn() << "ConstantBufferPool wrapped mid-frame (size " << m_bufferSize
-                << " bytes); increase the pool size to avoid potential overwrite hazards.";
+            // Attributed to the allocation that overflowed, not to this file.
+            Logging::WrnAt( where, "{} wrapped mid-frame (size {} bytes) allocating {} bytes in {}; "
+                "increase the pool size to avoid potential overwrite hazards.",
+                m_debugName, m_bufferSize, sizeInBytes, where.function_name() );
         }
     }
 
