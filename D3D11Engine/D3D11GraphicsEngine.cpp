@@ -738,11 +738,10 @@ XRESULT D3D11GraphicsEngine::Init() {
     // DXVK gets the sub-range DSV right, and the fallback costs 6 draw passes per cube.
     RequiresNvidiaTiledShadowFaceFallback = ( adpDesc.VendorId == 0x10DE ) && !dxvkAvailable;
     if ( RequiresNvidiaTiledShadowFaceFallback ) {
-        LogInfo() << "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays";
+        UseAbsoluteCubeSliceIndexing = RequiresNvidiaTiledShadowFaceFallback;
+        Logging::Inf( "NVIDIA native driver: enabling per-face point-light cube fallback for tiled shadow arrays and UseAbsoluteCubeSliceIndexing" );
     }
 
-    // Opt-in until an NVIDIA run confirms it; takes precedence over the fallback above.
-    UseAbsoluteCubeSliceIndexing = false;
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
