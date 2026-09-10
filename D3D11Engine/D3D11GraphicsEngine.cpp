@@ -292,6 +292,9 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() :
     // Initialize previous view-proj matrix to identity for motion vectors
     XMStoreFloat4x4(&m_PrevViewProjMatrix, XMMatrixIdentity());
 
+    m_RainMaterialInfo.buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
+    m_RainMaterialInfo.buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
+
     // Match the resolution with the current desktop resolution
     Resolution = m_scaledResolution =
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
@@ -2474,12 +2477,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool 
             srvs[1] = GetSrvFromGfx( nrm );
         } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
             srvs[1] = DistortionTexture->GetShaderResourceView().Get();
-            if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( mat ); }
-            if (info) {
-                // Value override for non-normalmapped textures in case of rain
-                info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
-                info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
-            }
+            info = &m_RainMaterialInfo;
         }
     }
 
@@ -5654,11 +5652,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     updatePSBuffers();
                 }
 
-                if ( info &&
-                    needDefaultNormalsStrength ) {
-                    // Value override for non-normalmapped textures in case of rain
-                    info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
-                    info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
+                if ( needDefaultNormalsStrength ) {
+                    info = &m_RainMaterialInfo;
                 }
 
                 auto materialInfoBufferAllocation = lastMatCbAllocation;
@@ -7988,13 +7983,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         // Bind a default normalmap in case the scene is wet and we
                         // currently have none
                         if ( !srv[1] && (wantShader && !isZPrepass) && sceneIsWet) {
-                            // Modify the strength of that default normalmap for the
-                            // material info
-                            if ( info ) {
-                                // update values for distortion texture
-                                info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
-                                info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
-                            }
+                            info = &m_RainMaterialInfo;
                             srv[1] = GetSrvFromGfx(DistortionTexture);
                         }
                         if ( lastTex != tx
