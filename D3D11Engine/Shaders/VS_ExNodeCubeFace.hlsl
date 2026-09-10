@@ -1,19 +1,21 @@
 //--------------------------------------------------------------------------------------
-// Depth-only vertex shader for the NVIDIA per-face cube-shadow fallback (no GS/layered indexing -
-// see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses).
-// Used for node attachments (weapons, armor) instead of VS_ExNode - see VS_ExCubeFace.hlsl for why.
+// VS_ExCubeFace for node attachments (weapons, armor) instead of VS_ExNode - see VS_ExCubeFace.hlsl.
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
 
-cbuffer Matrices_PerFrame : register( b0 )
-{
-	VS_ExConstantBuffer_PerFrame frame;
-};
-
 cbuffer Matrices_PerInstances : register( b1 )
 {
 	VS_ExConstantBuffer_PerInstanceNode cbInstance;
+};
+
+cbuffer cbPerCubeRender : register( b3 )
+{
+	matrix PCR_View[6];
+	matrix PCR_ViewProj[6];
+	uint PCR_SliceBase;
+	uint PCR_Face;
+	uint2 PCR_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -45,15 +47,16 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
 
+	matrix view = PCR_View[PCR_Face];
 	float3 localPos = (Input.vPosition + cbInstance.M_Fatness * Input.vNormal) * cbInstance.M_Scaling;
 	float3 positionWorld = mul(float4(localPos, 1), cbInstance.M_World).xyz;
 
-	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
+	Output.vPosition = mul( float4(positionWorld,1), PCR_ViewProj[PCR_Face]);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = cbInstance.M_Color;
-	Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, frame.M_View));
-	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View).xyz;
+	Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, view));
+	Output.vViewPosition = mul(float4(positionWorld,1), view).xyz;
 
 	return Output;
 }

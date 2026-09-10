@@ -405,7 +405,9 @@ struct CubemapGSConstantBuffer {
     XMFLOAT4X4 PCR_ViewProj[6];
     // Absolute slice of face 0 when the whole cube array is bound as one DSV; 0 for a 6-slice window view.
     uint32_t PCR_SliceBase;
-    uint32_t PCR_Pad[3];
+    // Face the NVIDIA per-face fallback VS draws; the layered VS/GS ignore it.
+    uint32_t PCR_Face;
+    uint32_t PCR_Pad[2];
 };
 
 struct ParticleGSInfoConstantBuffer {

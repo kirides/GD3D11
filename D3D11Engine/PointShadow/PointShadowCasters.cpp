@@ -88,13 +88,16 @@ namespace {
         cr.frustum = f;
         XMStoreFloat3( &cr.PositionReplacement, lightPos );
         cr.ProjectionReplacement = scope.Proj();
+        // The *CubeFace VS read the face's matrices from the cube CB, so the camera stays put and every other
+        // CB is byte-identical across faces - the pool hands those back instead of uploading them 6 times.
+        cr.ViewReplacement = scope.View( 0 );
+        Engine::GAPI->SetCameraReplacementPtr( &cr );
 
         // No GS bound on this path, so skeletal draws must skip VS_ExSkeletalCube/VS_ExNodeCube (GS-dependent).
         engine->SetCubeFaceFallbackActive( true );
 
         for ( UINT face = 0; face < 6; ++face ) {
-            cr.ViewReplacement = scope.View( face );
-            Engine::GAPI->SetCameraReplacementPtr( &cr );
+            scope.BindCubeCB( 0u, face );
 
             const auto& faceDsv = pass.Target->GetDSVCubemapFace( face );
             if ( ignoreVob ) {
@@ -197,12 +200,13 @@ namespace PointShadowCasters {
         }
     }
 
-    void CubeRenderScope::BindCubeCB( unsigned int sliceBase ) const {
+    void CubeRenderScope::BindCubeCB( unsigned int sliceBase, unsigned int face ) const {
         D3D11GraphicsEngine* engine = AsD3D11Engine( Engine::GraphicsEngine );
 
         // The ring is per-frame, so this re-allocates per pass rather than holding one from the ctor.
         CubemapGSConstantBuffer gcb = m_GCB;
         gcb.PCR_SliceBase = sliceBase;
+        gcb.PCR_Face = face;
 
         ConstantBufferAllocation viewMatricesCB = engine->AllocateDynamicCB( &gcb, sizeof( gcb ) );
         engine->BindDynamicCBToVertexShader( 3, viewMatricesCB ); // Layered vertex shader
