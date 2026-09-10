@@ -3852,7 +3852,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 if ( lastSwitches != graphicsState.FF_GSwitches ) {
                     lastSwitches = graphicsState.FF_GSwitches;
-                    BindDynamicCBToPixelShader(cbFFPipelineConstantBuffer, AllocateDynamicCB(&lastSwitches));
+                    BindDynamicCBToPixelShader(cbFFPipelineConstantBuffer, AllocateDynamicCB(&graphicsState, sizeof(graphicsState)));
                     UpdateRenderStates();
                 }
             }

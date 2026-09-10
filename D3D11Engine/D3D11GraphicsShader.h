@@ -26,8 +26,11 @@ public:
 
     virtual void BindResource(StringID name, ID3D11ShaderResourceView* srv) = 0;
     virtual void BindSampler(StringID name, ID3D11SamplerState* sampler) = 0;
-    virtual void UpdateBuffer( StringID name, const void* data, size_t size) = 0;
-    virtual void UpdateBuffer( UINT slot, const void* data, size_t size) = 0;
+    // `where` defaults to the caller so a pool wrap is logged at the real call site.
+    virtual void UpdateBuffer( StringID name, const void* data, size_t size,
+        std::source_location where = std::source_location::current() ) = 0;
+    virtual void UpdateBuffer( UINT slot, const void* data, size_t size,
+        std::source_location where = std::source_location::current() ) = 0;
     
     virtual XRESULT Apply() = 0;
 protected:

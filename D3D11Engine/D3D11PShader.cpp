@@ -68,17 +68,17 @@ void D3D11PShader::BindSampler(StringID name, ID3D11SamplerState* sampler)
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetSamplers( inputIndex, 1, &sampler );
 }
 
-void D3D11PShader::UpdateBuffer(StringID name, const void* data, size_t size) {
+void D3D11PShader::UpdateBuffer(StringID name, const void* data, size_t size, std::source_location where) {
     if (const auto idx = GetInputIndex(name); idx != -1) {
         const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
-        pool->BindPS(idx, pool->Allocate(data, size));
+        pool->BindPS(idx, pool->Allocate(data, size, where));
     }
 }
 
-void D3D11PShader::UpdateBuffer(UINT slot, const void* data, size_t size) {
+void D3D11PShader::UpdateBuffer(UINT slot, const void* data, size_t size, std::source_location where) {
     if (slot > 16) {
         return; // likely went negative
     }
     const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
-    pool->BindPS(slot, pool->Allocate(data, size));
+    pool->BindPS(slot, pool->Allocate(data, size, where));
 }

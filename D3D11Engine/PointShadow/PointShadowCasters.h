@@ -44,9 +44,9 @@ namespace PointShadowCasters {
         float ZNear() const { return m_ZNear; }
         float ZFar() const { return m_ZFar; }
 
-        /** Uploads the face matrices for one pass; sliceBase is what the layered VS/GS adds to the
-            face index. */
-        void BindCubeCB( unsigned int sliceBase ) const;
+        /** Uploads the face matrices for one pass; sliceBase is what the layered VS/GS adds to the face
+            index, face is the one the per-face fallback VS draws. */
+        void BindCubeCB( unsigned int sliceBase, unsigned int face = 0 ) const;
 
     private:
         CubemapGSConstantBuffer m_GCB{};

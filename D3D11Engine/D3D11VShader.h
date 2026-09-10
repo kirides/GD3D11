@@ -24,8 +24,8 @@ public:
 
     void BindResource(StringID name, ID3D11ShaderResourceView* srv) override;
     void BindSampler(StringID name, ID3D11SamplerState* sampler) override;
-    void UpdateBuffer( StringID name, const void* data, size_t size) override;
-    void UpdateBuffer(UINT slot, const void* data, size_t size) override;
+    void UpdateBuffer( StringID name, const void* data, size_t size, std::source_location where = std::source_location::current() ) override;
+    void UpdateBuffer(UINT slot, const void* data, size_t size, std::source_location where = std::source_location::current() ) override;
 
 private:
     Microsoft::WRL::ComPtr<ID3D11VertexShader> VertexShader;

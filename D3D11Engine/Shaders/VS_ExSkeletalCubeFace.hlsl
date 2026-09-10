@@ -1,22 +1,24 @@
 //--------------------------------------------------------------------------------------
-// Depth-only vertex shader for the NVIDIA per-face cube-shadow fallback (no GS/layered indexing -
-// see RequiresNvidiaTiledShadowFaceFallback / D3D11PointLight::RenderShadowCubeFacePasses).
-// Used for NPC bodies instead of VS_ExSkeletal - see VS_ExCubeFace.hlsl for why. No previous-frame
-// skinning: motion vectors aren't needed for a depth-only shadow pass.
+// VS_ExCubeFace for NPC bodies instead of VS_ExSkeletal - see VS_ExCubeFace.hlsl. No previous-frame
+// skinning: a depth-only shadow pass needs no motion vectors.
 //--------------------------------------------------------------------------------------
 
 static const int NUM_MAX_BONES = 96;
 
 #include "Globals_VS_ExConstants.h"
 
-cbuffer Matrices_PerFrame : register( b0 )
-{
-	VS_ExConstantBuffer_PerFrame frame;
-};
-
 cbuffer Matrices_PerInstances : register( b1 )
 {
 	VS_ExConstantBuffer_PerInstanceSkeletal cbInstance;
+};
+
+cbuffer cbPerCubeRender : register( b3 )
+{
+	matrix PCR_View[6];
+	matrix PCR_ViewProj[6];
+	uint PCR_SliceBase;
+	uint PCR_Face;
+	uint2 PCR_Pad;
 };
 
 #if SKINNING_STRUCTURED
@@ -84,14 +86,15 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	}
 
 	float3 positionWorld = mul(float4(position + cbInstance.PI_ModelFatness * normal, 1), cbInstance.M_World).xyz;
+	matrix view = PCR_View[PCR_Face];
 
-	Output.vPosition = mul(float4(positionWorld,1), frame.M_ViewProj);
+	Output.vPosition = mul(float4(positionWorld,1), PCR_ViewProj[PCR_Face]);
 	Output.vTexcoord2 = Input.vTex1;
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = cbInstance.PI_ModelColor;
 	Output.vDiffuse.w  = cbInstance.PI_Pad1.x;
-	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(cbInstance.M_World, frame.M_View));
-	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View).xyz;
+	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(cbInstance.M_World, view));
+	Output.vViewPosition = mul(float4(positionWorld,1), view).xyz;
 
 	return Output;
 }
