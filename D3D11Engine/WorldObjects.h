@@ -142,6 +142,10 @@ struct MeshInfo {
         while holding different geometry. Attachment batching keys on the MeshInfo pointer for that
         reason; only the static-vob sort still uses this, where StaticMeshVisuals rules out the case. */
     uint16_t meshId;
+
+    /** True while MorphGpu's queue holds a job for this mesh. Written under MorphGpu's lock; ~MeshInfo reads
+        it unlocked so only queued meshes pay for the purge. */
+    bool MorphFoldQueued = false;
 };
 
 /** A spatially-coherent, contiguous triangle range within a WorldMeshInfo's index buffer - the leaf

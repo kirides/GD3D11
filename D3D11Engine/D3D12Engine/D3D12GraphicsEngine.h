@@ -224,8 +224,8 @@ public:
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
     void OnVobBecameDynamic( zCVob* vob ) override;
     void OnVobMoved( zCVob* vob ) override;
-    // Purges the VOB arena and the morph-fold queue of this MeshInfo* before it's freed - see BaseGraphicsEngine.
-    void OnMeshInfoDestroyed( MeshInfo* mesh ) override;
+    // Purges the VOB arena's cache of this MeshInfo* before it's freed - see BaseGraphicsEngine's doc comment.
+    void OnMeshInfoDestroyed( MeshInfo* mesh ) override { m_VobArena.Forget( mesh ); }
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual

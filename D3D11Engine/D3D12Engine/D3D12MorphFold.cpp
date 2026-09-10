@@ -96,16 +96,6 @@ bool D3D12GraphicsEngine::CreateMorphFoldResources() {
 }
 
 
-void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) {
-    m_VobArena.Forget( mesh );
-    // Only fold targets can be queued; the buffer is still alive here (~MeshInfo resets it after this call).
-    GfxVertexBuffer* vb = mesh->GetMeshVertexBuffer();
-    if ( vb && D3D12VertexBuffer::From( vb )->IsUavCapable() ) {
-        MorphGpu::Forget( mesh );
-    }
-}
-
-
 void D3D12GraphicsEngine::DispatchMorphFold() {
     if ( !m_MorphFoldReady || !m_FrameOpen ) return;
     if ( !m_Pipelines.MorphFold.PSO || !m_Pipelines.MorphFold.RootSig ) return;
