@@ -875,12 +875,6 @@ XRESULT D3D11GraphicsEngine::Init() {
         LogWarn()
         << "Failed to load file: system\\GD3D11\\Textures\\reflect_cube.dds";
 
-    if ( S_OK != CreateDDSTextureFromFile(
-        GetDevice().Get(), L"system\\GD3D11\\Textures\\SkyCubemap2.dds",
-        nullptr, ReflectionCube2.GetAddressOf() ) )
-        LogWarn()
-        << "Failed to load file: system\\GD3D11\\Textures\\SkyCubemap2.dds";
-
     // Init quad buffers
     ExVertexStruct vx[6];
     ZeroMemory( vx, sizeof( vx ) );

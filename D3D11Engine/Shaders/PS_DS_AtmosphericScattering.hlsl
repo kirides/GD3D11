@@ -59,7 +59,6 @@ Texture2D TX_ShadowmapAtlas : register(t3);
 Texture2DArray TX_ShadowmapArray : register(t3);
 #endif
 Texture2D TX_RainShadowmap : register(t4);
-TextureCube TX_ReflectionCube : register(t5);
 Texture2D TX_Distortion : register(t6);
 Texture2D TX_SI_SP : register(t7);
 Texture2D TX_ShadowBlueNoise : register(t8);
@@ -167,7 +166,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 }
 
 /** Returns new diffusecolor (rgb)*/
-void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float specAdd, out float localWettness)
+void ApplySceneWettness(float3 wsPosition, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float localWettness)
 {
 	// Ask the rain-shadowmap if we can hit this pixel. Wide, world-sized soft filter (see
 	// ComputeRainWetness) so occluders fade the ground damp instead of stamping their outline.
@@ -196,50 +195,14 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
     localWettness = pixelWettnes;
 	
     vsNormal = lerp(vsNormal, nrm, AC_RainFXWeight * pixelWettnes * 0.5f); // Only apply deformation if it's actually raining
-	
-	// Get fresnel-effect
-    // float fresnel = pow(1.0f - max(0.0f, dot(vsNormal, -vsDir)), 160.0f);
-    
-    	
-	//vsNormalCpy.z *= 0.3f;
-	//vsNormalCpy = normalize(vsNormalCpy);
-	
-	// Scale specular intensity and power
+
+	// Scale specular intensity and power. No additive reflection-cube/fixed-direction sheen (removed, D3D12 parity).
     specIntensity = lerp(specIntensity, 0.0, pixelWettnes);
     specPower = lerp(specPower, 150.0f, pixelWettnes);
-	
-	// Reflection
-    float3 reflect_vec = reflect(-vsDir.xyz, vsNormal.xyz);
-	
-	// sample reflection cube
-    float4 refCube = TX_ReflectionCube.Sample(SS_Linear, reflect_vec);
-    float3 reflection = refCube.rgb * refCube.a;
-	
-    float3 l1 = normalize(float3(0.0f, 0.5f, -1.0f));
-    float3 l2 = normalize(mul(normalize(float3(-0.333f, 0.533f, 0.333f)), (float3x3) SQ_View));
-    float3 l3 = normalize(mul(normalize(float3(0, 0.566f, -0.666f)), (float3x3) SQ_View));
-	
-    float3 H_1 = normalize(l1 + vsDir);
-    float3 H_2 = normalize(l2 + vsDir);
-    float3 H_3 = normalize(l3 + vsDir);
-    float spec1 = CalcBlinnPhongLighting(vsNormal, H_1);
-    float spec2 = CalcBlinnPhongLighting(vsNormal, H_2);
-    float spec3 = CalcBlinnPhongLighting(vsNormal, H_3);
-		
-	// power the reflection 
-    reflection = pow(reflection, 2.5f);
-    //reflection += fresnel * 0.1f;
-	
-    reflection += pow(spec1, specPower) * 0.7f + pow(spec2, specPower) * 0.7f + pow(spec3, specPower) * 0.6f;
-	
+
 	// Compute wet pixel color
     float diffuseLum = dot(diffuse, float3(0.3333f, 0.3333f, 0.3333f));
     float3 wetPixel = lerp(diffuseLum, diffuse, 0.75f) * 0.75f; // Desaturate and darken the scene a bit
-	
-	
-	
-		// Scale the total amount of spec-lighting by the wetness factor and whether the scene is currently drying out or it's still raining
-    specAdd = reflection * pixelWettnes * mad(AC_RainFXWeight, 0.10f - 0.08f, 0.08f);
     diffuse = lerp(diffuse, wetPixel, pixelWettnes);
 }
 
@@ -312,14 +275,10 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 #endif
 
 	// Compute wettness
-    float specWet = 0.0f;
     float localWettness = 0.0f;
-	
+
 #ifdef APPLY_RAIN_EFFECTS
-    ApplySceneWettness(wsPosition, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet, localWettness);
-	
-	// Boost specWet when not in shadow
-	specWet += specWet * shadow;
+    ApplySceneWettness(wsPosition, normal, diffuse.rgb, specIntensity, specPower, localWettness);
 #endif
 	// Compute specular lighting
 	
@@ -347,7 +306,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float ssao = TX_AO.Sample(SS_Linear, uv).r;
 
     spec = pow(spec, specPower) * specIntensity * SQ_SunSpecularEnabled;
-    float3 specBare = spec * lightColor.rgb * sun + specWet * lightColor.rgb;
+    float3 specBare = spec * lightColor.rgb * sun;
     float3 specColored = saturate(lerp(specBare, specBare * diffuse.rgb, specMod));
 	
     float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength);

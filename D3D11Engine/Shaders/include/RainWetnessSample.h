@@ -72,8 +72,8 @@ float ComputeRainWetnessLite( float3 wsPosition, Texture2D rainMap, SamplerCompa
 
 // Darkens/desaturates diffuse and dampens specular for a wet surface -- the point-light-pass analogue of
 // PS_DS_AtmosphericScattering.hlsl's ApplySceneWettness. Deliberately skips that function's tri-planar
-// ripple normal deformation and reflection-cube sheen (an extra texture + per-axis blend that would be
-// paid once per overlapping light instead of once per pixel); the diffuse darkening below is what
+// ripple normal deformation (a per-axis blend that would be paid once per overlapping light instead of
+// once per pixel); the diffuse darkening below is what
 // actually reads as "wet" and is the part this bug report is about.
 //
 // `wsNormal` must be the UNDEFORMED world-space surface normal (no ripple applied here, so nothing to
