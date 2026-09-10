@@ -266,8 +266,8 @@ struct MaterialInfo {
 
         void SetDefault() {
             // -- Defaults for NON Normalmapped, NON FX-Mapped materials
-            SpecularIntensity = 0.1f;
-            SpecularPower = 5.0f;
+            SpecularIntensity = 0.3f;
+            SpecularPower = 60.0f;
             // ---
             
             NormalmapStrength = 1.0f;
