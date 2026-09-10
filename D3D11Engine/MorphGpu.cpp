@@ -298,5 +298,11 @@ namespace MorphGpu {
         s_Channels.swap( outChannels );
     }
 
+    void Forget( const MeshInfo* mesh ) {
+        std::scoped_lock lock( s_Mutex );
+        // Channels stay: survivors index them by ChannelFirst, and TakeJobs clears the orphans next frame.
+        std::erase_if( s_Jobs, [mesh]( const Job& job ) { return job.Mesh == mesh; } );
+    }
+
     size_t ResidentTableBytes() { return s_TableBytes; }
 }
