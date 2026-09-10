@@ -9148,17 +9148,6 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     return XR_SUCCESS;
 }
 
-void D3D11GraphicsEngine::OnAddVob( VobInfo* vi ) {
-    // A cached static cube is only re-rendered when its light is fresh / moved / resized, so a new VOB in
-    // range has to say so. Parked rather than applied here: Gothic has often not placed the vob yet and its
-    // parent link can still be the NPC letting go of it, which are the two things the decision reads.
-    if ( ShadowMaps && vi && vi->Vob && vi->VisualInfo )
-        if (!IsAttachedToNpc(vi->Vob)) {
-            ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vi->Vob );
-        }
-}
-
-
 void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
     // It started moving (a door swinging open, a chest lid), so anything that baked it into a static cube
     // has to let go - the animated pass draws it from now on.
@@ -9169,12 +9158,10 @@ void D3D11GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
 
 
 void D3D11GraphicsEngine::OnVobMoved( zCVob* vob ) {
-    // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
-    // missing from its cube. Queued because a falling item moves several times before coming to rest.
-    if ( ShadowMaps ) {
-        if (!IsAttachedToNpc(vob)) {
-            ShadowMaps->GetPointSlots().QueueVobChangedInvalidation( vob );
-        }
+    // GothicAPI::OnVobMoved has already made it dynamic, so static cubes only need to drop an old bake of it;
+    // the overlay draws it wherever it is now. Vobs added after load are dynamic too, hence no OnAddVob.
+    if ( ShadowMaps && !IsAttachedToNpc( vob ) ) {
+        ShadowMaps->GetPointSlots().InvalidateStaticForVobRemoved( vob );
     }
 }
 

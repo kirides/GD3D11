@@ -215,7 +215,6 @@ public:
 
     // World changes that can invalidate a point light's cached static shadow cube; all three resolve
     // through the shared PointLightSlotSelector, exactly as the D3D12 backend does.
-    void OnAddVob( VobInfo* vi ) override;
     void OnVobBecameDynamic( zCVob* vob ) override;
     void OnVobMoved( zCVob* vob ) override;
 

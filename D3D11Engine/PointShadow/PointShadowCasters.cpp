@@ -57,16 +57,26 @@ namespace PointShadowCasters {
 
     bool HasAnimatedCastersInRange( const VobLightInfo* info, float shadowRange ) {
         if ( !info || !info->Vob ) return false;
-        if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) return false;
+        const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
         // Mirrors the animated pass's per-vob tests, minus the indoor/outdoor one - being wrong there only
         // costs one empty overlay render.
         const XMVECTOR pos = info->Vob->GetPositionWorldXM();
-        const XMVECTOR rangeSq = XMVectorReplicate( shadowRange * shadowRange );
-        for ( const SkeletalVobInfo* vob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
-            if ( !vob || !vob->VisualInfo || !vob->Vob ) continue;
-            if ( vob->Vob->GetVisualAlpha() && vob->Vob->GetVobTransparency() < 0.7f ) continue;   // ghosts
-            if ( XMVector3Greater( XMVector3LengthSq( pos - vob->Vob->GetPositionWorldXM() ), rangeSq ) ) continue;
-            return true;
+        if ( settings.DrawSkeletalMeshes ) {
+            const XMVECTOR rangeSq = XMVectorReplicate( shadowRange * shadowRange );
+            for ( const SkeletalVobInfo* vob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
+                if ( !vob || !vob->VisualInfo || !vob->Vob ) continue;
+                if ( vob->Vob->GetVisualAlpha() && vob->Vob->GetVobTransparency() < 0.7f ) continue;   // ghosts
+                if ( XMVector3Greater( XMVector3LengthSq( pos - vob->Vob->GetPositionWorldXM() ), rangeSq ) ) continue;
+                return true;
+            }
+        }
+        if ( settings.DrawVOBs ) {
+            for ( const VobInfo* vob : Engine::GAPI->GetDynamicallyAddedVobs() ) {
+                if ( !vob || !vob->VisualInfo || !vob->Vob || !vob->Vob->GetShowVisual() ) continue;
+                const float reach = shadowRange + vob->VisualInfo->MeshSize * 0.5f;
+                if ( XMVector3Greater( XMVector3LengthSq( pos - vob->Vob->GetPositionWorldXM() ), XMVectorReplicate( reach * reach ) ) ) continue;
+                return true;
+            }
         }
         return false;
     }

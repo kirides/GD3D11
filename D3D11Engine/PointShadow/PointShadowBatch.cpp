@@ -312,14 +312,21 @@ namespace {
             }
         }
 
+        // Only vobs still in the BSP lists are static: anything added after load or moved since draws in the
+        // overlay, or every step it takes would invalidate the cube that just baked it.
+        auto isDynamicVob = []( const VobInfo* vob ) { return vob->ParentBSPNodes.empty(); };
+
         if ( ( pass.CasterMask & SHADOW_CASTER_VOBS ) && rs.RendererSettings.DrawVOBs ) {
             std::list<VobInfo*>* cache = pass.VobCache;
+            // The slot's baked-vob list is built from this cache, so a caster that has started moving leaves it.
+            if ( cache ) cache->remove_if( isDynamicVob );
             const bool useCache = cache && !cache->empty();
             if ( !useCache ) {
                 s_VobScratch.clear();
                 for ( WorldMeshSectionInfo* section : sections() ) {
                     for ( VobInfo* vob : section->Vobs ) {
                         if ( !vob->VisualInfo ) continue;  // Seems to happen in Gothic 1
+                        if ( isDynamicVob( vob ) ) continue;
                         // Rides an NPC - the animated pass owns it, and caching it here let a throwaway held
                         // item invalidate every nearby light's static cube when it despawned.
                         if ( ShadowCasting::IsAttachedToNpc( vob->Vob ) ) continue;
@@ -353,6 +360,8 @@ namespace {
 
         if ( ( pass.CasterMask & SHADOW_CASTER_MOBS ) && rs.RendererSettings.DrawMobs ) {
             std::list<SkeletalVobInfo*>* cache = pass.MobCache;
+            // Same for a MOB that started moving (a door, a chest lid): the animated pass draws it from then on.
+            if ( cache ) cache->remove_if( []( const SkeletalVobInfo* mob ) { return ShadowCasting::IsAnimatedShadowCaster( mob ); } );
             const bool useCache = cache && !cache->empty();
             if ( !useCache ) {
                 s_MobScratch.clear();
@@ -385,6 +394,19 @@ namespace {
                 if ( isOutdoor && vi->Vob->IsIndoorVob() != indoor ) continue;
                 if ( isExcluded( vi->Vob ) ) continue;
                 addSkeletal( vi );
+            }
+        }
+
+        // Dropped, carried and moved items - the static gather leaves them out, so they cast here.
+        if ( ( pass.CasterMask & SHADOW_CASTER_ANIMATED ) && rs.RendererSettings.DrawVOBs ) {
+            for ( VobInfo* vi : Engine::GAPI->GetDynamicallyAddedVobs() ) {
+                if ( !vi || !vi->Vob || !vi->VisualInfo || !vi->VisualInfo->GetIsReady() ) continue;
+                if ( !vi->Vob->GetShowVisual() ) continue;
+                const float reach = pass.Range + vi->VisualInfo->MeshSize * 0.5f;
+                if ( XMVector3Greater( XMVector3LengthSq( position - vi->Vob->GetPositionWorldXM() ), XMVectorReplicate( reach * reach ) ) ) continue;
+                if ( isOutdoor && vi->Vob->IsIndoorVob() != indoor ) continue;
+                if ( isExcluded( vi->Vob ) ) continue;
+                phase.Vobs.push_back( { AddVob( vi ), passIndex, faceMaskOf( vi->Vob, 0.0f ), raster } );
             }
         }
     }
