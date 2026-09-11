@@ -29,7 +29,11 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	matrix PL_RainViewProj;
 	float PL_SceneWettness;
 	float PL_WetLightReflections;
-	float2 PL_Pad4;
+	float PL_RainTime;
+	float PL_RainFxWeight;
+
+	float PL_WetCoatScale;   // wet-ground reflection gate; PL_Color.w only gates material highlights
+	float3 PL_Pad5;
 };
 
 //--------------------------------------------------------------------------------------
@@ -43,6 +47,7 @@ Texture2D	TX_Nrm : register( t1 );
 Texture2D	TX_Depth : register( t2 );
 Texture2D	TX_SI_SP : register( t7 );
 Texture2D	TX_RainShadowmap : register( t4 );
+Texture2D	TX_Distortion : register( t6 );
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -71,28 +76,28 @@ float GetShadow(float2 uv)
 	float2 lightDir = PL_LightScreenPos.xy - uv;
 	float distance = length(lightDir);
 	lightDir /= distance; // Normalize the direction
-	
+
 	// Calculate ray steps size
 	const int numSteps = 100;
 	float stepSize = distance / numSteps;
-	
+
 	//float depthLight = TX_Depth.Sample(SS_Linear, PL_LightScreenPos).r;
 	float depthTarget = TX_Depth.Sample(SS_Linear, uv).r;
-	
+
 	float dx = ddx(uv.xy);
 	float dy = ddy(uv.xy);
-	
+
 	float2 ray = PL_LightScreenPos.xy;
 	for(int i=0;i<numSteps;i++)
 	{
 		ray += lightDir * stepSize;
-		
+
 		float depthRay = TX_Depth.SampleGrad(SS_Linear,ray, dx, dy);
-		
+
 		if(depthRay < PL_LightScreenPos.z)
 			return 0;
 	}
-	
+
 	return 1;
 }
 
@@ -103,32 +108,33 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
 	// Get screen UV
 	float2 uv = Input.vPosition.xy / PL_ViewportSize;
-	
+
 	// Look up the diffuse color
 	float4 diffuse = TX_Diffuse.Sample(SS_Linear, uv);
-	
+
 	// Get the second GBuffer
 	float2 gb2 = TX_Nrm.Sample(SS_Linear, uv).xy;
-	
+
 	// Decode the view-space normal from octahedral R16G16_SNORM
 	float3 normal = DecodeNormalGBuffer(gb2);
-	
+
 	// Get specular parameters
 	float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
 	float specIntensity = gb3.x;
 	float specPower = gb3.y;
-	
+
 	// Reconstruct VS World Position from depth
 	float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
 	float3 vsPosition = VSPositionFromDepth(expDepth, uv);
 	float3 wsPosition = mul(float4(vsPosition, 1), PL_InvView).xyz;
 	float3 wsNormal = normalize(mul(float4(normal, 0), PL_InvView).xyz);
+	float3 wsGeomNormal = normalize(mul(float4(GeomNormalFromDerivativesVS(vsPosition, normal), 0), PL_InvView).xyz);
 
-	// Rain wetness: darken/dampen this light's contribution consistently with what
-	// PS_DS_AtmosphericScattering.hlsl already did for the sun/ambient term, instead of adding
-	// un-wetted brightness on top of it (see RainWetnessSample.h's header for the bug this fixes).
-	float wet = ApplyPointLightWetness(wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness,
+	// Rain wetness: the same wet surface (albedo, puddles, water film) the sun pass shaded.
+	WetSurface wet = ApplyPointLightWetness(wsPosition, wsNormal, wsGeomNormal, length(vsPosition),
+		TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness, TX_Distortion, SS_Linear, PL_RainTime, PL_RainFxWeight,
 		diffuse.rgb, specIntensity, specPower);
+	float3 litN = normalize(mul((float3x3)PL_InvView, wet.rippleN));   // G-buffer normal plus rain ripples/drop rings
 
 	// Get direction and distance from the light to that position
 	float3 lightDir = Pl_PositionView - vsPosition;
@@ -136,7 +142,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	lightDir /= distance; // Normalize the direction
 
 	// Do some simple NdL-Lighting
-	float ndl = max(0, dot(lightDir, normal));
+	float ndl = max(0, dot(lightDir, litN));
 
 	// Compute range falloff
 	float falloff = PLS_ComputeRangeFalloff(distance, PL_Range);
@@ -145,17 +151,21 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Compute specular lighting
 	float3 V = normalize(-vsPosition);
 	float3 H = normalize(lightDir + V);
-	float spec = PLS_CalcBlinnPhongLighting(normal, H) * PL_Color.w;
+	float spec = PLS_CalcBlinnPhongLighting(litN, H) * PL_Color.w;
 	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
 
 	// Blend this with the light color, world diffuse and specular term.
-	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
+	float3 lighting = saturate(PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod));
 
-	// Wet ground: water-film reflection streak (see WetCoatSpecular in RainWetnessSample.h).
+	// Wet ground: water-film reflection, kept out of the clamp above so it can go HDR.
 	[branch]
-	if (wet > 0.0f && PL_WetLightReflections > 0.0f)
-		lighting += PL_Color.rgb * (WetCoatSpecular(normal, V, lightDir, distance) * falloff * wet * PL_Color.w * PL_WetLightReflections);
+	if (wet.wetness > 0.0f && PL_WetLightReflections > 0.0f)
+	{
+		float3 coatN = normalize(mul((float3x3)PL_InvView, wet.coatN));
+		lighting += PL_Color.rgb * WetCoatRolloff(WetCoatSpecular(coatN, V, lightDir, distance, wet.roughness)
+			* falloff * wet.wetness * PL_WetCoatScale * PL_WetLightReflections);
+	}
 
-	return float4(saturate(lighting),1);
+	return float4(lighting, 1);
 }
 

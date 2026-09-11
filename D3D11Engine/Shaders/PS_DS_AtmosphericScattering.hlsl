@@ -45,6 +45,8 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
 
     // Rain: rgb = sky tint reflected by wet ground, w = RainWetLightReflections.
     float4 SQ_WetSky;
+    // xyz = view-space moon direction, w = above-horizon fade.
+    float4 SQ_MoonDir;
 };
 
 //--------------------------------------------------------------------------------------
@@ -71,8 +73,10 @@ Texture2D TX_AO : register(t9);
 #include "ShadowSampling.h"
 #include "include/RainWetnessSample.h"
 
-static const float WET_SUN_DISTANCE = 1000.0f; // WetCoatSpecular source widening: sun disk softened by rain haze
-static const float WET_SUN_MAX      = 8.0f;    // caps the streak peak so rippled normals don't sparkle under TAA
+static const float WET_SUN_DISTANCE     = 1000.0f;  // WetCoatSpecular source widening: sun disk softened by rain haze
+static const float WET_MOON_DISTANCE    = 60.0f;    // much wider: moonlight diffused by the rain clouds
+static const float3 WET_MOON_COLOR      = float3( 0.06f, 0.075f, 0.1f );
+static const float WET_NIGHT_SKY_DARKEN = 1.0f;     // the fog's day divisor is 2; at night the reflection skips it to stay readable
 
 
 //--------------------------------------------------------------------------------------
@@ -101,116 +105,26 @@ float CalcBlinnPhongLighting(float3 N, float3 H)
 }
 
 
-static const float WEIGHT_BIAS = -0.55;
-static const float WEIGHT_MUL = 0.7;
-
-/** Applys normal-deformation for the rain */
-void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout float3 diffuse, out float3 wsNormal)
+/** Rain wetness for the sun/ambient term: rippled normal, darker albedo, and the water-film surface for PSMain. */
+WetSurface ApplySceneWettness(float3 wsPosition, float3 vsPosition, inout float3 vsNormal, inout float3 diffuse, inout float specIntensity, inout float specPower)
 {
-	// Need worldspace normal for this
-    wsNormal = mul(vsNormal, (float3x3) SQ_InvView).xyz;
-	
-    float2 groundDir = normalize(float2(0.1f, 0.1f) + saturate(float3(-wsNormal.z, 0, wsNormal.x).xz));
-	
-    const float scale = 1000.0f;
-    float2 uv[4] =
+    float3 wsNormal = normalize(mul(vsNormal, (float3x3)SQ_InvView));
+    float3 wsGeomNormal = normalize(mul(GeomNormalFromDerivativesVS(vsPosition, vsNormal), (float3x3)SQ_InvView));
+
+    // Wide, world-sized soft filter so occluders fade the ground damp instead of stamping their outline.
+    float reach = ComputeRainWetness(wsPosition, TX_RainShadowmap, SS_Comp, SQ_RainViewProj) * AC_SceneWettness;
+    WetSurface wet = EvaluateWetSurface(reach, wsNormal, wsGeomNormal, wsPosition, length(vsPosition),
+        TX_Distortion, SS_Linear, AC_Time, AC_RainFXWeight);
+
+    if (wet.wetness > 0.0f)
     {
-        wsPosition.zy / scale,
-					wsPosition.xz / (scale * 2),
-					wsPosition.xz / (scale * 2),
-					wsPosition.xy / scale
-    };
-	
-    float groundSpeed = 0.1f * AC_RainFXWeight;
-    float downSpeed = 0.2f * AC_RainFXWeight;
-    uv[0] += float2(0, AC_Time * downSpeed);
-    uv[1] += float2(AC_Time * groundSpeed, AC_Time * groundSpeed);
-    uv[2] = uv[2] * float2(0.8f, 1.2f) + float2(-AC_Time * groundSpeed * 0.7f, AC_Time * groundSpeed * 0.4f);
-    uv[3] += float2(0, AC_Time * downSpeed);
-	
-	// Create weights for all 3 axis
-    float3 weights = float3(abs(wsNormal.x),
-							abs(wsNormal.y),
-							abs(wsNormal.z));
-							
-	// Tighten up the blending zone:
-    weights = (weights + WEIGHT_BIAS) * WEIGHT_MUL;
-    weights = max(weights, 0);
-							
-    weights /= (weights.x + weights.y +
-				weights.z).xxx;
-				
-    weights.xz *= 0.6f;
-    weights.y *= 0.7f;
-		
-    float3 dist[3] =
-    {
-        normalize((TX_Distortion.Sample(SS_Linear, uv[0]).zyx * 2 - 1)),
-					  normalize((TX_Distortion.Sample(SS_Linear, uv[1]).xzy * 2 - 1)) * 0.5f +
-					  normalize((TX_Distortion.Sample(SS_Linear, uv[2]).xzy * 2 - 1)) * 0.5f,
-					  normalize((TX_Distortion.Sample(SS_Linear, uv[3]).xyz * 2 - 1))
-    };
-		
-	// weights = pow(weights, 4.0f);
-	// inline "pow 4"
-	weights *= weights;
-	weights *= weights;
-		
-    const float distWeight = 0.9f;
-	
-	// Sample the distortion-texture for all 3 axis
-    [unroll]
-    for (int i = 0; i < 3; i++)
-    {
-		// Add to normal
-        wsNormal = lerp(wsNormal, dist[i], weights[i] * distWeight); //distWeight * weights[i]); 
+        vsNormal = normalize(mul(wet.rippleN, (float3x3)SQ_View));
+        // Blinn-Phong sun spec fades out; PSMain adds the water-film lobe and sky reflection instead.
+        specIntensity = lerp(specIntensity, 0.0f, wet.wetness);
+        specPower = lerp(specPower, 150.0f, wet.wetness);
+        ApplyWetAlbedo(diffuse, wet);
     }
-
-    wsNormal = normalize(wsNormal);
-	//diffuse.xyz = wsNormal;
-
-    vsNormal = normalize(mul(wsNormal, (float3x3) SQ_View).xyz);
-}
-
-/** Returns new diffusecolor (rgb)*/
-void ApplySceneWettness(float3 wsPosition, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float localWettness)
-{
-	// Ask the rain-shadowmap if we can hit this pixel. Wide, world-sized soft filter (see
-	// ComputeRainWetness) so occluders fade the ground damp instead of stamping their outline.
-    float pixelWettnes = ComputeRainWetness(wsPosition, TX_RainShadowmap, SS_Comp, SQ_RainViewProj) * AC_SceneWettness;
-    pixelWettnes = pixelWettnes < 0.001f ? 0 : pixelWettnes;
-    
-    //IsWet(wsPosition, TX_RainShadowmap, SS_Comp) * AC_SceneWettness;
-
-    float3 vsNormalCpy = vsNormal;
-	
-	// Apply water-effects
-    float3 nrm = vsNormal;
-    float3 wsNormal;
-    ApplyRainNormalDeformation(nrm, wsPosition, diffuse.rgb, wsNormal);
-
-    // pixelWettnes *= 1 - pow(saturate(dot(wsNormal, float3(0, -1, 0))), 4.0f);
-	// simplify pow
-	float wDot = saturate(dot(wsNormal, float3(0, -1, 0))); 
-	float wDot2 = wDot * wDot;
-	pixelWettnes *= 1.0f - (wDot2 * wDot2);
-
-    // Rain mostly settles on upward-facing surfaces.
-    float surfaceExposure = saturate(wsNormal.y);
-    surfaceExposure *= surfaceExposure;
-    pixelWettnes *= surfaceExposure;
-    localWettness = pixelWettnes;
-	
-    vsNormal = lerp(vsNormal, nrm, AC_RainFXWeight * pixelWettnes * 0.5f); // Only apply deformation if it's actually raining
-
-	// Blinn-Phong sun spec fades out; PSMain adds the water-film lobe and sky reflection instead.
-    specIntensity = lerp(specIntensity, 0.0, pixelWettnes);
-    specPower = lerp(specPower, 150.0f, pixelWettnes);
-
-	// Compute wet pixel color
-    float diffuseLum = dot(diffuse, float3(0.3333f, 0.3333f, 0.3333f));
-    float3 wetPixel = lerp(diffuseLum, diffuse, 0.75f) * 0.75f; // Desaturate and darken the scene a bit
-    diffuse = lerp(diffuse, wetPixel, pixelWettnes);
+    return wet;
 }
 
 //--------------------------------------------------------------------------------------
@@ -285,7 +199,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float localWettness = 0.0f;
 
 #ifdef APPLY_RAIN_EFFECTS
-    ApplySceneWettness(wsPosition, normal, diffuse.rgb, specIntensity, specPower, localWettness);
+    WetSurface wet = ApplySceneWettness(wsPosition, vsPosition, normal, diffuse.rgb, specIntensity, specPower);
+    localWettness = wet.wetness;
 #endif
 	// Compute specular lighting
 	
@@ -333,22 +248,30 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
 
 #ifdef APPLY_RAIN_EFFECTS
-    // Water film on the rippled normal: sun streak plus the overcast sky reflected at grazing angles.
+    // Water film: sun and moon streaks plus the sky reflected at grazing angles.
     [branch]
     if (localWettness > 0.0f && gb3.y > 0.0f) // grass writes spec power 0 and stays matte
     {
-        float wetSun = WetCoatSpecular(normal, V, normalize(SQ_LightDirectionVS), WET_SUN_DISTANCE);
-        wetSun = min(wetSun * shadow * SQ_SunSpecularEnabled * SQ_WetSky.w, WET_SUN_MAX);
+        float3 coatN = normalize(mul(wet.coatN, (float3x3)SQ_View));
+        float nightBlend = saturate(-AC_LightPos.y * 4.0f);
+        float skyOcclusion = worldAO * ssao;
+
+        // Not gated by SQ_SunSpecularEnabled: that toggles material highlights, not rain reflections.
+        float wetSun = WetCoatSpecular(coatN, V, normalize(SQ_LightDirectionVS), WET_SUN_DISTANCE, wet.roughness) * shadow;
+        // Moonlight diffused by the clouds, so wet ground still reads at night without torches.
+        float wetMoon = WetCoatSpecular(coatN, V, SQ_MoonDir.xyz, WET_MOON_DISTANCE, wet.roughness)
+                      * SQ_MoonDir.w * nightBlend * skyOcclusion;
+        float3 wetLight = WetCoatRolloff((lightColor.rgb * (lightColor.a * wetSun) + WET_MOON_COLOR * wetMoon)
+                                         * (SQ_WetSky.w * localWettness));
 
         // PS_PFX_Heightfog's night blend and darkening, so the reflection matches the fog it fades into.
-        float3 wetSky = lerp(SQ_WetSky.rgb, float3(0.12f, 0.18f, 0.27f), saturate(-AC_LightPos.y * 4.0f))
-                      / (2.0f - 0.8f * saturate(AC_LightPos.y));
-        float wf = 1.0f - saturate(dot(normal, V));
+        float3 wetSky = lerp(SQ_WetSky.rgb, float3(0.12f, 0.18f, 0.27f), nightBlend)
+                      / lerp(2.0f - 0.8f * saturate(AC_LightPos.y), WET_NIGHT_SKY_DARKEN, nightBlend);
+        float wf = 1.0f - saturate(dot(coatN, V));
         float wf2 = wf * wf;
         float skyFresnel = (0.02f + 0.98f * wf2 * wf2 * wf) * localWettness;
 
-        litPixel = lerp(litPixel, wetSky * worldAO * ssao, skyFresnel)
-                 + lightColor.rgb * (lightColor.a * wetSun * localWettness);
+        litPixel = lerp(litPixel, wetSky * skyOcclusion, skyFresnel) + wetLight;
     }
 #endif
 

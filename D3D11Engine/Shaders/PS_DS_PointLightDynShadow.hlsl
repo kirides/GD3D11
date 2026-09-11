@@ -29,7 +29,11 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	matrix PL_RainViewProj;
 	float PL_SceneWettness;
 	float PL_WetLightReflections;
-	float2 PL_Pad4;
+	float PL_RainTime;
+	float PL_RainFxWeight;
+
+	float PL_WetCoatScale;   // wet-ground reflection gate; PL_Color.w only gates material highlights
+	float3 PL_Pad5;
 };
 
 //--------------------------------------------------------------------------------------
@@ -44,6 +48,7 @@ Texture2D	TX_Depth : register( t2 );
 TextureCube	TX_ShadowCube : register( t3 );
 Texture2D	TX_SI_SP : register( t7 );
 Texture2D	TX_RainShadowmap : register( t4 );
+Texture2D	TX_Distortion : register( t6 );
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -86,10 +91,10 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float3 wsPosition = mul(float4(vsPosition, 1), PL_InvView).xyz;
 	float3 wsNormal = normalize(mul(float4(normal, 0), PL_InvView).xyz);
 
-	// Rain wetness: darken/dampen this light's contribution consistently with what
-	// PS_DS_AtmosphericScattering.hlsl already did for the sun/ambient term, instead of adding
-	// un-wetted brightness on top of it (see RainWetnessSample.h's header for the bug this fixes).
-	float wet = ApplyPointLightWetness(wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness,
+	// Rain wetness: the same wet surface (albedo, puddles, water film) the sun pass shaded.
+	float3 wsGeomNormal = normalize(mul(float4(GeomNormalFromDerivativesVS(vsPosition, normal), 0), PL_InvView).xyz);
+	WetSurface wet = ApplyPointLightWetness(wsPosition, wsNormal, wsGeomNormal, length(vsPosition),
+		TX_RainShadowmap, SS_Comp, PL_RainViewProj, PL_SceneWettness, TX_Distortion, SS_Linear, PL_RainTime, PL_RainFxWeight,
 		diffuse.rgb, specIntensity, specPower);
 
 	//return float4(normalize(wsPosition - Pl_PositionWorld), 1.0f);
@@ -108,7 +113,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	lightDir /= distance; // Normalize the direction
 	
 	// Do some simple NdL-Lighting
-	float ndl = max(0, dot(lightDir, normal));
+	float3 litN = normalize(mul((float3x3)PL_InvView, wet.rippleN));   // G-buffer normal plus rain ripples/drop rings
+	float ndl = max(0, dot(lightDir, litN));
 	
 	// Apply dynamic shadow
 	bool taaActive = PL_JitterOffset.x != 0.0f || PL_JitterOffset.y != 0.0f;
@@ -124,14 +130,18 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Compute specular lighting
 	float3 V = normalize(-vsPosition);
 	float3 H = normalize(lightDir + V);
-	float spec = PLS_CalcBlinnPhongLighting(normal, H) * PL_Color.w;
+	float spec = PLS_CalcBlinnPhongLighting(litN, H) * PL_Color.w;
 	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
-	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
+	float3 lighting = saturate(PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod));
 
-	// Wet ground: water-film reflection streak (see WetCoatSpecular in RainWetnessSample.h).
+	// Wet ground: water-film reflection, kept out of the clamp above so it can go HDR.
 	[branch]
-	if (wet > 0.0f && PL_WetLightReflections > 0.0f)
-		lighting += PL_Color.rgb * (WetCoatSpecular(normal, V, lightDir, distance) * falloff * wet * PL_Color.w * PL_WetLightReflections);
+	if (wet.wetness > 0.0f && PL_WetLightReflections > 0.0f)
+	{
+		float3 coatN = normalize(mul((float3x3)PL_InvView, wet.coatN));
+		lighting += PL_Color.rgb * WetCoatRolloff(WetCoatSpecular(coatN, V, lightDir, distance, wet.roughness)
+			* falloff * wet.wetness * PL_WetCoatScale * PL_WetLightReflections);
+	}
 
 	lighting *= shadow;
 	
@@ -145,6 +155,6 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	//return float4(0.2f,0.2f,0.2f,1);
 	//return float4(ndl.rrr,1);
-	return float4(saturate(lighting),1);
+	return float4(lighting,1);
 }
 

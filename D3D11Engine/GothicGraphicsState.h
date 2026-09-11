@@ -1472,6 +1472,12 @@ struct GothicRendererSettings {
         const int flag = isStatic ? SH_ATMOSPHERIC : SH_POINTLIGHTS;
         return ( SpecularHighlightsFlags & flag ) ? 1.0f : 0.0f;
     }
+
+    // Wet-ground reflection scale (0/1). Not tied to material highlights: real light sources always reflect in
+    // rain; static fill lights still follow SH_ATMOSPHERIC so they don't reflect as phantom lamps.
+    float PointLightWetReflectionScale( bool isStatic ) const {
+        return ( !isStatic || ( SpecularHighlightsFlags & SH_ATMOSPHERIC ) ) ? 1.0f : 0.0f;
+    }
 };
 
 /** Event rate over a SLIDING one-second window, as ten 100 ms buckets that PerSecond() sums - a tumbling

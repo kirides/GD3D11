@@ -444,6 +444,8 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
         shadeCB.SceneWettness = Engine::GAPI->GetSceneWetness();
         shadeCB.WetLightReflections = std::max( 0.0f, settings.RainWetLightReflections );
+        shadeCB.RainTime = Engine::GAPI->GetTimeSeconds();
+        shadeCB.RainFxWeight = Engine::GAPI->GetRainFXWeight();
 
         csTiledShading->UpdateBuffer("TiledShadingConstantBuffer", &shadeCB, sizeof(shadeCB));
 
@@ -465,6 +467,10 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         // at D3D11ShadowMap.h's TX_RainShadowmap slot, here on the CS stage instead of PS.
         if ( RenderToDepthStencilBuffer* rainShadowmap = graphicsEngine->Effects->GetRainShadowmap() )
             context->CSSetShaderResources( TX_RainShadowmap, 1, rainShadowmap->GetShaderResView().GetAddressOf() );
+
+        // Rain ripples and puddle mask; s0 already holds the wrapping default sampler.
+        if ( D3D11Texture* distortion = graphicsEngine->GetDistortionTexture() )
+            context->CSSetShaderResources( TX_Distortion, 1, distortion->GetShaderResourceView().GetAddressOf() );
 
         // Bind comparison sampler unconditionally — the runtime validates at Dispatch
         // even if the shader branches around SampleCmpLevelZero
@@ -631,6 +637,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         tl.Range = lightRange;
         tl.Color = XMFLOAT4( lightColor.x, lightColor.y, lightColor.z,
             settings.PointLightSpecularScale( vob->IsStatic() ) );
+        tl.WetCoatScale = settings.PointLightWetReflectionScale( vob->IsStatic() );
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
         // The range the cube was actually baked with, so the depth compare normalizes by the same far plane
         // the bake used - neither the animated range read above nor its unshadowed clamp.
