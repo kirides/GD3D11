@@ -992,6 +992,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // [kWetnessCbOffset, ..) UploadWetnessConstants        — scene wetness (needs the rain-shadow camera first)
     // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
+    // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};

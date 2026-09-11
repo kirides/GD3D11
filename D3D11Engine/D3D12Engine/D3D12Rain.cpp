@@ -12,6 +12,7 @@
 #include "../WorldObjects.h"
 #include "../WorldConverter.h"
 #include "../oCGame.h"
+#include "../GSky.h"
 #include "../zCSkyController_Outdoor.h"
 #include "../DDSArrayLoader.h"
 #include "../Toolbox.h"
@@ -419,6 +420,28 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
         ? m_DistortionTexture->GetSrvSlot() : 0xFFFFFFFFu;
 
     memcpy( m_ShadowCBMapped[m_FrameIndex] + kWetnessCbOffset, &cb, sizeof( cb ) );
+
+    // Wet-sky block: same values as D3D11ShadowMap::DrawWorldLights' SQ_WetSky / SQ_MoonDir, in world space.
+    static_assert( kSkyIblCbOffset + sizeof( SkyIblCBData ) == kWetSkyCbOffset, "wet-sky CB block must follow the sky-IBL block" );
+    static_assert( kWetSkyCbOffset + sizeof( WetSkyCBData ) <= 512, "shadow CB overflow" );
+    const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
+    WetSkyCBData sky = {};
+    XMVECTOR tint = XMLoadFloat3( &set.FogColorMod );
+    if ( Engine::GAPI->GetFogOverride() > 0.0f )
+        tint = Engine::GAPI->GetFogColor();
+    tint = XMVectorLerp( tint, XMLoadFloat3( &set.RainFogColor ), std::min( 1.0f, cb.RainFxWeight * 2.0f ) );
+    XMStoreFloat3( &sky.SkyTint, tint );
+    if ( GSky* gsky = Engine::GAPI->GetSky() ) {
+        sky.SunHeight = gsky->GetAtmosphereCB().AC_LightPos.y;
+        zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
+            ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+        if ( sc ) {
+            const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( gsky->GetAtmoshpereSettings().SkyTimeScale );
+            XMStoreFloat3( &sky.MoonDir, XMVector3Normalize( XMLoadFloat3( &moonWS ) ) );
+            sky.MoonFade = std::clamp( sky.MoonDir.y * 4.0f, 0.0f, 1.0f );
+        }
+    }
+    memcpy( m_ShadowCBMapped[m_FrameIndex] + kWetSkyCbOffset, &sky, sizeof( sky ) );
 }
 
 bool D3D12GraphicsEngine::CreateRainShadowResources() {

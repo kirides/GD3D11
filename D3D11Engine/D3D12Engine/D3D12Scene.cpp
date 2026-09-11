@@ -1289,6 +1289,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		L.ShadowCubeIndex = 0;   // 0 = unshadowed; SelectShadowedLights fills in the real HI-LO pair below
 		L.ShadowOrigin = cand.shadowOrigin;
 		L.ShadowRange = cand.shadowRange;
+		L.WetCoatScale = lightSettings.PointLightWetReflectionScale( cand.isStatic );
 		// key 0 = "never give this light a cube" — what point-shadows-off means for every light.
 		s_lightKeys.push_back( cand.key );
 		++count;

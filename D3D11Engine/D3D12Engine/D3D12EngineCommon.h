@@ -96,7 +96,7 @@ struct FrameAttachDraw {
 // GPULight (per-frame GPU point light) and its shadow-tier bit constants now live in
 // Shaders/D3D12/include/GPULightShared.h (#included above) — one definition compiled as both C++ here
 // and HLSL in ForwardPlusTypes.hlsl/LightCull.hlsl, instead of three hand-synced copies.
-static_assert( sizeof( GPULight ) == 64, "GPULight must match the HLSL GPULight in GPULightShared.h" );
+static_assert( sizeof( GPULight ) == 80,"GPULight must match the HLSL GPULight in GPULightShared.h" );
 
 // This frame's visible-VOB instance-ring snapshot (UploadFrameVobInstances) — the depth prepass, the color
 // pass AND the point-shadow static-VOB gather all draw from it. Defined in D3D12Scene.cpp.

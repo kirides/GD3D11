@@ -1,5 +1,5 @@
-// Rain wetness shared by the D3D11 deferred passes (PS_DS_AtmosphericScattering, CS_TiledShading,
-// PS_DS_PointLight*), so the sun/ambient and point-light terms shade the same wet surface.
+// Rain wetness shared by the D3D11 deferred passes (PS_DS_AtmosphericScattering, CS_TiledShading, PS_DS_PointLight*)
+// and the D3D12 Forward+ passes (D3D12/include/PBRLighting.hlsl, Wetness.hlsl), so all shade the same wet surface.
 #ifndef RAIN_WETNESS_SAMPLE_H
 #define RAIN_WETNESS_SAMPLE_H
 
@@ -254,7 +254,7 @@ float WetCoatRolloff( float x ) { return x / ( 1.0f + x / WET_COAT_MAX ); }
 float3 WetCoatRolloff( float3 x ) { return x / ( 1.0f + x / WET_COAT_MAX ); }
 
 // Water-film specular: anisotropic GGX stretched toward the viewer (wet-street streaks), widened by an assumed
-// source size. N/V/L must share one space. Brighter than the D3D12 twin in PBRLighting.hlsl (WET_COAT_GAIN).
+// source size. N/V/L must share one space.
 float WetCoatSpecular( float3 N, float3 V, float3 L, float lightDist, float roughness )
 {
     float NdotL = saturate( dot( N, L ) );
@@ -288,6 +288,28 @@ float WetCoatSpecular( float3 N, float3 V, float3 L, float lightDist, float roug
     float f2 = f * f;
     float F = 0.02f + 0.98f * f2 * f2 * f;   // water F0
     return D * vis * F * NdotL * WET_COAT_GAIN;
+}
+
+static const float WET_SUN_DISTANCE      = 1000.0f;  // WetCoatSpecular source widening: sun disk softened by rain haze
+static const float WET_MOON_DISTANCE     = 60.0f;    // much wider: moonlight diffused by the rain clouds
+static const float3 WET_MOON_COLOR       = float3( 0.06f, 0.075f, 0.1f );
+static const float3 WET_NIGHT_SKY_COLOR  = float3( 0.12f, 0.18f, 0.27f );   // PS_PFX_Heightfog's night fog colour
+static const float WET_NIGHT_SKY_DARKEN  = 1.0f;     // the fog's day divisor is 2; at night the reflection skips it to stay readable
+
+// Sky colour wet ground reflects: the height-fog tint with PS_PFX_Heightfog's night blend and darkening.
+float3 WetSkyReflectionColor( float3 fogTint, float sunHeight )
+{
+    float nightBlend = saturate( -sunHeight * 4.0f );
+    return lerp( fogTint, WET_NIGHT_SKY_COLOR, nightBlend )
+         / lerp( 2.0f - 0.8f * saturate( sunHeight ), WET_NIGHT_SKY_DARKEN, nightBlend );
+}
+
+// Water Fresnel (F0 0.02) weighting the sky reflection.
+float WetSkyFresnel( float3 N, float3 V )
+{
+    float f = 1.0f - saturate( dot( N, V ) );
+    float f2 = f * f;
+    return 0.02f + 0.98f * f2 * f2 * f;
 }
 
 #endif // RAIN_WETNESS_SAMPLE_H

@@ -73,11 +73,6 @@ Texture2D TX_AO : register(t9);
 #include "ShadowSampling.h"
 #include "include/RainWetnessSample.h"
 
-static const float WET_SUN_DISTANCE     = 1000.0f;  // WetCoatSpecular source widening: sun disk softened by rain haze
-static const float WET_MOON_DISTANCE    = 60.0f;    // much wider: moonlight diffused by the rain clouds
-static const float3 WET_MOON_COLOR      = float3( 0.06f, 0.075f, 0.1f );
-static const float WET_NIGHT_SKY_DARKEN = 1.0f;     // the fog's day divisor is 2; at night the reflection skips it to stay readable
-
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -264,12 +259,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
         float3 wetLight = WetCoatRolloff((lightColor.rgb * (lightColor.a * wetSun) + WET_MOON_COLOR * wetMoon)
                                          * (SQ_WetSky.w * localWettness));
 
-        // PS_PFX_Heightfog's night blend and darkening, so the reflection matches the fog it fades into.
-        float3 wetSky = lerp(SQ_WetSky.rgb, float3(0.12f, 0.18f, 0.27f), nightBlend)
-                      / lerp(2.0f - 0.8f * saturate(AC_LightPos.y), WET_NIGHT_SKY_DARKEN, nightBlend);
-        float wf = 1.0f - saturate(dot(coatN, V));
-        float wf2 = wf * wf;
-        float skyFresnel = (0.02f + 0.98f * wf2 * wf2 * wf) * localWettness;
+        // Matches the height fog the reflection fades into.
+        float3 wetSky = WetSkyReflectionColor(SQ_WetSky.rgb, AC_LightPos.y);
+        float skyFresnel = WetSkyFresnel(coatN, V) * localWettness;
 
         litPixel = lerp(litPixel, wetSky * skyOcclusion, skyFresnel) + wetLight;
     }

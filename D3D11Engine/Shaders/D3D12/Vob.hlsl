@@ -111,6 +111,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
+    float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
@@ -123,12 +124,12 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
+    WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb *= mad(wetness, 0.8 - 1.0, 1.0);
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wetness );
-    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao, WetBaseSpecularScale( wet ) );
+    rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);
+    rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet );
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {
@@ -220,6 +221,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
+    float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
@@ -232,12 +234,12 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
-    float wetness = ApplySceneWetness( i.wpos, N, albedo, orm.g );
+    WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
-    rgb *= mad(wetness, 0.8 - 1.0, 1.0);
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wetness );
-    // No fixed-direction wet sheen here — see Wetness.hlsl's ApplySceneWetness header comment.
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao, WetBaseSpecularScale( wet ) );
+    rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);
+    rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet );
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {
