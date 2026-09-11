@@ -244,9 +244,9 @@ float3 GeomNormalFromDerivativesVS( float3 vsPosition, float3 N )
     return dot( n, N ) >= 0.5f ? n : N;   // also catches NaN from sky neighbours
 }
 
-static const float WET_COAT_STREAK         = 2.5f;    // elongation toward the viewer at grazing view; higher = thinner beam
+static const float WET_COAT_STREAK         = 1.0f;    // elongation toward the viewer at grazing view; higher = thinner beam
 static const float WET_LIGHT_SOURCE_RADIUS = 15.0f;   // world units (~15 cm flame)
-static const float WET_COAT_GAIN           = 5.0f;    // light colours are LDR-scaled; a physical 2% water reflection is invisible
+static const float WET_COAT_GAIN           = 3.0f;    // light colours are LDR-scaled; a physical 2% water reflection is invisible
 static const float WET_COAT_MAX            = 1.5f;    // asymptote of the per-light HDR shoulder below
 
 // Soft HDR shoulder instead of a hard clamp, so a hot highlight doesn't flatten into a blown-out plateau.
