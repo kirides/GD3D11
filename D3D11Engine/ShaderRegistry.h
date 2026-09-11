@@ -32,7 +32,7 @@ public:
     EVERTEX_INPUT_LAYOUT altLayout = VERTEX_INPUT_LAYOUT_NONE;
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
-    size_t compiledHash = 0;			//Hash of last successful compilation (file timestamp + macros)
+    size_t compiledHash = 0;			//Hash of last successful compilation (shader-tree timestamp + macros)
 
     // Optional: builds per-shader dynamic macros (renderer-settings-dependent) at compile/hash time.
     // Only macros this shader actually uses should be emitted — keeps hashing precise.
@@ -108,9 +108,12 @@ public:
     std::vector<ShaderInfo>& Shaders() noexcept { return m_Shaders; }
     const std::vector<ShaderInfo>& Shaders() const noexcept { return m_Shaders; }
 
-    /** Hash of a shader's compile inputs (source file timestamp + static + dynamic macros).
+    /** Hash of a shader's compile inputs (shader-tree timestamp + static + dynamic macros).
         Used by consumers to skip recompilation when nothing relevant changed. */
-    static size_t ComputeShaderHash( const ShaderInfo& si );
+    static size_t ComputeShaderHash( const ShaderInfo& si, uint64_t sourceTreeStamp );
+
+    /** Newest write time under system\GD3D11\shaders, so editing an #include also defeats the skip. */
+    static uint64_t ComputeSourceTreeStamp();
 
 private:
     std::vector<ShaderInfo> m_Shaders;   // Initial shader declaration list for loading

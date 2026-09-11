@@ -558,16 +558,27 @@ static size_t HashCombine( size_t seed, size_t val ) noexcept {
     return seed ^ (val + 0x9e3779b9 + (seed << 6) + (seed >> 2));
 }
 
-size_t ShaderRegistry::ComputeShaderHash( const ShaderInfo& si ) {
+uint64_t ShaderRegistry::ComputeSourceTreeStamp() {
+    // Newest write time of any file under the shaders directory. #includes aren't tracked per shader, so a header
+    // edit has to invalidate every shader's skip; the D3D11 disk cache then recompiles only the real dependents.
+    const std::filesystem::path dir = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shaders";
+    std::error_code ec;
+    int64_t newest = 0;
+    for ( std::filesystem::recursive_directory_iterator it( dir, ec ), end; !ec && it != end; it.increment( ec ) ) {
+        std::error_code fileEc;
+        if ( !it->is_regular_file( fileEc ) ) continue;
+        const auto lwt = it->last_write_time( fileEc );
+        if ( !fileEc && lwt.time_since_epoch().count() > newest ) newest = lwt.time_since_epoch().count();
+    }
+    return static_cast<uint64_t>( newest );
+}
+
+size_t ShaderRegistry::ComputeShaderHash( const ShaderInfo& si, uint64_t sourceTreeStamp ) {
     size_t h = 0;
 
-    // Hash file last-modified timestamp
-    std::string fullPath = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shaders\\" + si.fileName;
-    std::error_code ec;
-    auto lwt = std::filesystem::last_write_time( std::filesystem::path( fullPath ), ec );
-    if ( !ec ) {
-        h = HashCombine( h, static_cast<size_t>(lwt.time_since_epoch().count()) );
-    }
+    // size_t is 32-bit in this process, so fold in both halves of the 64-bit timestamp.
+    h = HashCombine( h, static_cast<size_t>( sourceTreeStamp ) );
+    h = HashCombine( h, static_cast<size_t>( sourceTreeStamp >> 32 ) );
 
     // Hash per-shader macros
     for ( const auto& macro : si.shaderMakros ) {
