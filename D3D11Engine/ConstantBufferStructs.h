@@ -243,9 +243,13 @@ struct DS_PointLightConstantBuffer {
     XMFLOAT4X4 PL_RainViewProj;
     float PL_SceneWettness;
     float PL_WetLightReflections;
-    float2 PL_Pad4;
+    float PL_RainTime;       // AC_Time: rain ripples and puddle drop rings
+    float PL_RainFxWeight;
+
+    float PL_WetCoatScale;   // wet-ground reflection gate; PL_Color.w only gates material highlights
+    float3 PL_Pad5;
 };
-static_assert( sizeof( DS_PointLightConstantBuffer ) == 240,
+static_assert( sizeof( DS_PointLightConstantBuffer ) == 256,
     "DS_PointLightConstantBuffer (b0) layout must match PS_DS_PointLight.hlsl / PS_DS_PointLightDynShadow.hlsl" );
 
 constexpr int MAX_CSM_CASCADES = 4;
@@ -287,6 +291,12 @@ struct DS_ScreenQuadConstantBuffer {
     // Packed into a float4 (x=cascade0 ... w=cascade3) to avoid cbuffer array padding.
     // Replaces per-fragment GetCascadeWorldTexelSize() matrix math in shaders.
     float4 SQ_CascadeTexelSize;
+
+    // Rain: rgb = sky tint wet ground reflects (the height-fog color), w = RainWetLightReflections.
+    // Only DrawWorldLights fills it; appended last so shorter HLSL declarations of this CB stay valid.
+    float4 SQ_WetSky;
+    // Rain: xyz = view-space moon direction for the night wet-ground glint, w = above-horizon fade.
+    float4 SQ_MoonDir;
 };
 
 struct CloudConstantBuffer {
@@ -529,7 +539,8 @@ struct TiledShadingConstantBuffer {
     XMFLOAT4X4 RainViewProj;
     float SceneWettness;
     float WetLightReflections;
-    float2 WetnessPad;
+    float RainTime;       // AC_Time: rain ripples and puddle drop rings
+    float RainFxWeight;
 };
 static_assert( sizeof( TiledShadingConstantBuffer ) == 192,
     "TiledShadingConstantBuffer (b0) layout must match CS_TiledShading.hlsl" );

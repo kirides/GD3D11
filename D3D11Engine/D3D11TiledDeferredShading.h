@@ -49,7 +49,8 @@ struct TiledPointLight {
     // per-frame light animation plus the unshadowed clamp, and normalizing the depth compare by either of
     // those against a cube baked at neither is what makes the shadow detach from its caster.
     float ShadowRange;
-    float Pad[3];
+    float WetCoatScale;   // wet-ground reflection gate (PointLightWetReflectionScale); Color.w only gates material highlights
+    float Pad[2];
 };
 // StructuredBuffer stride - a mismatch with the HLSL copies (CS_LightCulling.hlsl, CS_TiledShading.hlsl,
 // ForwardPlusLighting.hlsl) silently misindexes every light.

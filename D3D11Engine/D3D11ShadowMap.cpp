@@ -1591,6 +1591,28 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
+    // Wet ground reflects the color the height fog fades distant geometry into (same formula as D3D11PfxRenderer).
+    {
+        XMVECTOR skyColor = XMLoadFloat3( &settings.FogColorMod );
+        if ( Engine::GAPI->GetFogOverride() > 0.0f )
+            skyColor = Engine::GAPI->GetFogColor();
+        skyColor = XMVectorLerp( skyColor, XMLoadFloat3( &settings.RainFogColor ), std::min( 1.0f, rain * 2.0f ) );
+        XMFLOAT3 skyRgb;
+        XMStoreFloat3( &skyRgb, skyColor );
+        scb.SQ_WetSky = float4( skyRgb.x, skyRgb.y, skyRgb.z, std::max( 0.0f, settings.RainWetLightReflections ) );
+
+        // Moon direction (view space) for the night glint on wet ground; w fades it out below the horizon.
+        zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
+            ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+        if ( sc ) {
+            const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( sky->GetAtmoshpereSettings().SkyTimeScale );
+            const XMVECTOR moonDir = XMVector3Normalize( XMLoadFloat3( &moonWS ) );
+            XMFLOAT3 moonVS;
+            XMStoreFloat3( &moonVS, XMVector3TransformNormal( moonDir, view ) );
+            scb.SQ_MoonDir = float4( moonVS.x, moonVS.y, moonVS.z, std::clamp( XMVectorGetY( moonDir ) * 4.0f, 0.0f, 1.0f ) );
+        }
+    }
+
     psAtmo->UpdateBuffer("DS_ScreenQuadConstantBuffer", &scb, sizeof(scb));
 
     // CSM: Bind the cascade array to a single slot (Texture2DArray)

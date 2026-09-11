@@ -74,6 +74,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
     plcb.PL_SceneWettness = Engine::GAPI->GetSceneWetness();
     plcb.PL_WetLightReflections = std::max( 0.0f, Engine::GAPI->GetRendererState().RendererSettings.RainWetLightReflections );
+    plcb.PL_RainTime = Engine::GAPI->GetTimeSeconds();
+    plcb.PL_RainFxWeight = Engine::GAPI->GetRainFXWeight();
 
     color.BindToPixelShader( context.Get(), 0 );
     normals.BindToPixelShader( context.Get(), 1 );
@@ -83,6 +85,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     // slot); SS_Comp (s2) is already bound for the whole frame by that same earlier pass.
     if ( RenderToDepthStencilBuffer* rainShadowmap = graphicsEngine->Effects->GetRainShadowmap() )
         rainShadowmap->BindToPixelShader( context.Get(), TX_RainShadowmap );
+    graphicsEngine->GetDistortionTexture()->BindToPixelShader( TX_Distortion );   // rain ripples and puddle mask
 
     // Mirrors D3D12 BuildFrameLightBuffer's post-selection range clamp (D3D12Scene.cpp): a light that
     // ends up with no shadow cube shades unshadowed and bleeds through walls. Clamping its range to a
@@ -124,6 +127,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
 
         plcb.PL_Color = float4( vob->GetLightColor() );
         plcb.PL_Color.w = settings.PointLightSpecularScale( vob->IsStatic() );
+        plcb.PL_WetCoatScale = settings.PointLightWetReflectionScale( vob->IsStatic() );
         plcb.PL_Range = vob->GetLightRange();
         if ( !hasShadow && ( vob->IsStatic() || light->IsIndoorVob ) ) {
             const bool leakingOutdoors = light->IsIndoorVob && !cameraIndoors;

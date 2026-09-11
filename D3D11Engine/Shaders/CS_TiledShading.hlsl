@@ -12,7 +12,8 @@ struct TiledPointLight {
     float3 PositionWorld;
     int ShadowCubeIndex; // 0 = no shadow, else HI-LO slot pair (see PLS_SHADOW_SLOT_SHIFT)
     float ShadowRange;   // cube far-plane basis (far = ShadowRange*2); NOT Range - see TiledPointLight
-    float3 _pad;
+    float WetCoatScale;  // wet-ground reflection gate; Color.w only gates material highlights
+    float2 _pad;
 };
 
 // Clustered grid - layout-identical to CS_LightCulling.hlsl's and the C++ LightGrid.
@@ -38,15 +39,18 @@ cbuffer TiledShadingConstantBuffer : register( b0 ) {
     matrix RainViewProj;
     float SceneWettness;
     float WetLightReflections;
-    float2 WetnessPad;
+    float RainTime;
+    float RainFxWeight;
 };
 
+SamplerState SS_Linear : register( s0 );
 SamplerComparisonState SS_Comp : register( s2 );
 Texture2D TX_Diffuse : register( t0 );
 Texture2D TX_Nrm : register( t1 );
 Texture2D TX_Depth : register( t2 );
 Texture2D TX_SI_SP : register( t7 );
 Texture2D TX_RainShadowmap : register( t4 );
+Texture2D TX_Distortion : register( t6 );
 
 StructuredBuffer<TiledPointLight> SB_Lights : register( t8 );
 StructuredBuffer<LightGrid> SB_LightGrid : register( t9 );
@@ -61,6 +65,24 @@ float3 VSPositionFromDepth( float depth, uint2 pixelCoord ) {
     // Remove camera jitter (TAA/FSR) baked into the depth buffer's projection.
     float2 texcoord = (float2( pixelCoord ) + 0.5f) / ViewportSize - JitterOffset;
     return ReconstructVSPositionFromDepthReverseZInfinite( depth, texcoord, ProjParams.xy );
+}
+
+float3 LoadVSPosition( int2 p ) {
+    p = clamp( p, int2( 0, 0 ), int2( ViewportSize ) - 1 );
+    return VSPositionFromDepth( TX_Depth.Load( int3( p, 0 ) ).r, uint2( p ) );
+}
+
+// Geometric view-space normal from the depth neighbours, taking the smaller depth step per axis.
+float3 GeomNormalFromDepthVS( int2 p, float3 vsPosition, float3 N ) {
+    float3 r = LoadVSPosition( p + int2( 1, 0 ) ) - vsPosition;
+    float3 l = vsPosition - LoadVSPosition( p - int2( 1, 0 ) );
+    float3 d = LoadVSPosition( p + int2( 0, 1 ) ) - vsPosition;
+    float3 u = vsPosition - LoadVSPosition( p - int2( 0, 1 ) );
+    float3 dx = abs( r.z ) < abs( l.z ) ? r : l;
+    float3 dy = abs( d.z ) < abs( u.z ) ? d : u;
+    float3 n = cross( dx, dy );
+    n = normalize( n * sign( dot( n, N ) ) );
+    return dot( n, N ) >= 0.5f ? n : N;   // also catches NaN from sky neighbours
 }
 
 [numthreads( TILE_SIZE, TILE_SIZE, 1 )]
@@ -84,14 +106,16 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     float3 wsPosition = mul( float4( vsPosition, 1 ), InvView ).xyz;
     float3 wsNormal = normalize( mul( float4( normal, 0 ), InvView ).xyz );
 
-    // Rain wetness: darken/dampen this pixel's diffuse/specular ONCE, before the light loop below, so
-    // every overlapping light shades against wet ground consistently with what
-    // PS_DS_AtmosphericScattering.hlsl already did for the sun/ambient term — instead of each light
-    // additively blending un-wetted brightness on top of it (see RainWetnessSample.h's header for the
-    // bug this fixes; this is the primary point-light path lights use, PS_DS_PointLight.hlsl only
-    // handles the shadow-cube-overflow fallback).
-    float wet = ApplyPointLightWetness( wsPosition, wsNormal, TX_RainShadowmap, SS_Comp, RainViewProj, SceneWettness,
+    // Rain wetness, once per pixel: the same wet surface (albedo, puddles, water film) the sun pass shaded.
+    float3 wsGeomNormal = wsNormal;
+    [branch]
+    if ( SceneWettness > 0.0f )
+        wsGeomNormal = normalize( mul( float4( GeomNormalFromDepthVS( int2( pixelCoord ), vsPosition, normal ), 0 ), InvView ).xyz );
+    WetSurface wet = ApplyPointLightWetness( wsPosition, wsNormal, wsGeomNormal, length( vsPosition ),
+        TX_RainShadowmap, SS_Comp, RainViewProj, SceneWettness, TX_Distortion, SS_Linear, RainTime, RainFxWeight,
         diffuse.rgb, specIntensity, specPower );
+    float3 litN = normalize( mul( (float3x3)InvView, wet.rippleN ) );   // G-buffer normal plus rain ripples/drop rings
+    float3 coatN = normalize( mul( (float3x3)InvView, wet.coatN ) );
 
     // Compute tile index
     uint tileX = pixelCoord.x / TILE_SIZE;
@@ -131,17 +155,18 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
             lightDir /= distance;
 
-            float ndl = max( 0, dot( lightDir, normal ) );
+            float ndl = max( 0, dot( lightDir, litN ) );
             float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
             float3 H = normalize( lightDir + V );
-            float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
-            float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
+            float spec = PLS_CalcBlinnPhongLighting( litN, H ) * light.Color.w;
+            float3 lighting = saturate( PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod ) );
 
-            // Wet ground: water-film reflection streak (see WetCoatSpecular in RainWetnessSample.h).
+            // Wet ground: water-film reflection, kept out of the clamp above so it can go HDR.
             [branch]
-            if ( wet > 0.0f && WetLightReflections > 0.0f )
-                lighting += light.Color.rgb * ( WetCoatSpecular( normal, V, lightDir, distance ) * falloff * wet * light.Color.w * WetLightReflections );
+            if ( wet.wetness > 0.0f && WetLightReflections > 0.0f )
+                lighting += light.Color.rgb * WetCoatRolloff( WetCoatSpecular( coatN, V, lightDir, distance, wet.roughness )
+                    * falloff * wet.wetness * light.WetCoatScale * WetLightReflections );
 
             // Apply shadow if this light has a shadow cubemap and contribution is non-negligible.
             // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
@@ -151,8 +176,6 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
                 float shadow = PLS_SampleShadowCubeArray( TX_ShadowStaticCubeArray, TX_ShadowDynCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.ShadowRange, light.ShadowCubeIndex, taaActive );
                 lighting *= shadow;
             }
-
-            lighting = saturate( lighting );
 
             totalLighting += lighting;
             maxLighting = max( maxLighting, lighting );

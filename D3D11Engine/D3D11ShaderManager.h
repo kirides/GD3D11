@@ -81,4 +81,7 @@ private:
 
     /** Shader categories to reload next frame (OR-ed together from multiple calls) */
     ShaderCategory ShaderCategoriesToReloadNextFrame;
+
+    /** ShaderRegistry::ComputeSourceTreeStamp, taken once per LoadShaders pass */
+    uint64_t m_SourceTreeStamp = 0;
 };

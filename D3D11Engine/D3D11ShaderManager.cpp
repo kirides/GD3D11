@@ -285,9 +285,9 @@ XRESULT D3D11ShaderManager::Init() {
 }
 
 XRESULT D3D11ShaderManager::CompileShader( ShaderInfo& si ) {
-    // Compute hash (file timestamp + per-shader macros + global renderer macros).
+    // Hash (shader-tree timestamp + per-shader macros + global renderer macros).
     // Skip recompilation when the shader is already loaded and nothing has changed.
-    size_t newHash = ShaderRegistry::ComputeShaderHash( si );
+    size_t newHash = ShaderRegistry::ComputeShaderHash( si, m_SourceTreeStamp );
 
     auto IsKnown = [&]() -> bool {
         switch ( si.type ) {
@@ -448,6 +448,7 @@ XRESULT D3D11ShaderManager::LoadShaders( ShaderCategory categories ) {
     LogInfo() << "Compiling/Reloading shaders with " << compilationTP->getNumThreads() << " threads";
     */
     LogInfo() << "Compiling/Reloading shaders";
+    m_SourceTreeStamp = ShaderRegistry::ComputeSourceTreeStamp();
     for ( ShaderInfo& si : m_Registry.Shaders() ) {
         // Determine shader type category
         ShaderCategory shaderTypeCategory = ShaderCategory::None;
