@@ -287,6 +287,10 @@ struct DS_ScreenQuadConstantBuffer {
     // Packed into a float4 (x=cascade0 ... w=cascade3) to avoid cbuffer array padding.
     // Replaces per-fragment GetCascadeWorldTexelSize() matrix math in shaders.
     float4 SQ_CascadeTexelSize;
+
+    // Rain: rgb = sky tint wet ground reflects (the height-fog color), w = RainWetLightReflections.
+    // Only DrawWorldLights fills it; appended last so shorter HLSL declarations of this CB stay valid.
+    float4 SQ_WetSky;
 };
 
 struct CloudConstantBuffer {

@@ -107,8 +107,8 @@ float ApplyPointLightWetness( float3 wsPosition, float3 wsNormal, Texture2D rain
     return wetness;
 }
 
-// Water-film specular under a point light: anisotropic GGX stretched toward the viewer (wet-street streaks),
-// widened by an assumed flame size. Mirrors D3D12 PBRLighting.hlsl; N/V/L must share one space.
+// Water-film specular (point lights and the sun): anisotropic GGX stretched toward the viewer (wet-street streaks),
+// widened by an assumed source size. Mirrors D3D12 PBRLighting.hlsl; N/V/L must share one space.
 static const float WET_COAT_ROUGHNESS      = 0.12f;
 static const float WET_COAT_STREAK         = 6.0f;
 static const float WET_LIGHT_SOURCE_RADIUS = 15.0f;   // world units (~15 cm flame)

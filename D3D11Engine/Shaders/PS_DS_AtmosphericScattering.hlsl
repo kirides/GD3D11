@@ -42,6 +42,9 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
 
     // World-space units per texel, precomputed on CPU (x=cascade0 ... w=cascade3).
     float4 SQ_CascadeTexelSize;
+
+    // Rain: rgb = sky tint reflected by wet ground, w = RainWetLightReflections.
+    float4 SQ_WetSky;
 };
 
 //--------------------------------------------------------------------------------------
@@ -66,6 +69,10 @@ Texture2D TX_ShadowBlueNoise : register(t8);
 Texture2D TX_AO : register(t9);
 
 #include "ShadowSampling.h"
+#include "include/RainWetnessSample.h"
+
+static const float WET_SUN_DISTANCE = 1000.0f; // WetCoatSpecular source widening: sun disk softened by rain haze
+static const float WET_SUN_MAX      = 8.0f;    // caps the streak peak so rippled normals don't sparkle under TAA
 
 
 //--------------------------------------------------------------------------------------
@@ -196,7 +203,7 @@ void ApplySceneWettness(float3 wsPosition, inout float3 vsNormal, in out float3 
 	
     vsNormal = lerp(vsNormal, nrm, AC_RainFXWeight * pixelWettnes * 0.5f); // Only apply deformation if it's actually raining
 
-	// Scale specular intensity and power. No additive reflection-cube/fixed-direction sheen (removed, D3D12 parity).
+	// Blinn-Phong sun spec fades out; PSMain adds the water-film lobe and sky reflection instead.
     specIntensity = lerp(specIntensity, 0.0, pixelWettnes);
     specPower = lerp(specPower, 150.0f, pixelWettnes);
 
@@ -324,7 +331,27 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float f8 = f4*f4; 
 	float fresnel = f8*f2;
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
-	
+
+#ifdef APPLY_RAIN_EFFECTS
+    // Water film on the rippled normal: sun streak plus the overcast sky reflected at grazing angles.
+    [branch]
+    if (localWettness > 0.0f && gb3.y > 0.0f) // grass writes spec power 0 and stays matte
+    {
+        float wetSun = WetCoatSpecular(normal, V, normalize(SQ_LightDirectionVS), WET_SUN_DISTANCE);
+        wetSun = min(wetSun * shadow * SQ_SunSpecularEnabled * SQ_WetSky.w, WET_SUN_MAX);
+
+        // PS_PFX_Heightfog's night blend and darkening, so the reflection matches the fog it fades into.
+        float3 wetSky = lerp(SQ_WetSky.rgb, float3(0.12f, 0.18f, 0.27f), saturate(-AC_LightPos.y * 4.0f))
+                      / (2.0f - 0.8f * saturate(AC_LightPos.y));
+        float wf = 1.0f - saturate(dot(normal, V));
+        float wf2 = wf * wf;
+        float skyFresnel = (0.02f + 0.98f * wf2 * wf2 * wf) * localWettness;
+
+        litPixel = lerp(litPixel, wetSky * worldAO * ssao, skyFresnel)
+                 + lightColor.rgb * (lightColor.a * wetSun * localWettness);
+    }
+#endif
+
 	// Run scattering
     litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel.rgb);
 

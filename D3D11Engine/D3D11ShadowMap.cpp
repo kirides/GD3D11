@@ -1591,6 +1591,17 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
+    // Wet ground reflects the color the height fog fades distant geometry into (same formula as D3D11PfxRenderer).
+    {
+        XMVECTOR skyColor = XMLoadFloat3( &settings.FogColorMod );
+        if ( Engine::GAPI->GetFogOverride() > 0.0f )
+            skyColor = Engine::GAPI->GetFogColor();
+        skyColor = XMVectorLerp( skyColor, XMLoadFloat3( &settings.RainFogColor ), std::min( 1.0f, rain * 2.0f ) );
+        XMFLOAT3 sky;
+        XMStoreFloat3( &sky, skyColor );
+        scb.SQ_WetSky = float4( sky.x, sky.y, sky.z, std::max( 0.0f, settings.RainWetLightReflections ) );
+    }
+
     psAtmo->UpdateBuffer("DS_ScreenQuadConstantBuffer", &scb, sizeof(scb));
 
     // CSM: Bind the cascade array to a single slot (Texture2DArray)
