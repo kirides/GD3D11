@@ -50,6 +50,25 @@ namespace {
         return true;
     }
 
+#if defined(BUILD_GOTHIC_1_CLASSIC)
+    // Read straight from the file: zCOption::ReadReal would add the section to every Gothic.ini.
+    float ReadAdvInventoryScale( const char* key ) {
+        const std::string ini = Engine::GAPI->GetStartDirectory() + "\\system\\Gothic.ini";
+        char buffer[32];
+        if ( !::GetPrivateProfileStringA( "ADV_INVENTORY", key, "", buffer, sizeof( buffer ), ini.c_str() ) ) return 1.0f;
+        const float scale = static_cast<float>( std::atof( buffer ) );
+        LogInfo() << "InventoryRenderer: [ADV_INVENTORY] " << key << " = " << scale;
+        return scale > 0.0f ? scale : 1.0f;
+    }
+
+    /** G1's counterpart of G2's zInventoryItemsDistanceScale, applied by Union's inventory inside the RenderItem we skip. */
+    float GetItemDistanceScale( float addon ) {
+        static const float itemScale = ReadAdvInventoryScale( "renderItemScaleMultiplier" );
+        static const float activeScale = ReadAdvInventoryScale( "renderActiveItemScaleMultiplier" );
+        return addon != 0.0f ? activeScale : itemScale;
+    }
+#endif
+
     /** Places the camera exactly like oCItem::RenderItem does, without activating it. */
     bool PlaceCamera( void* item, void* viewItem, float addon, XMMATRIX& clipFromWorld, zTViewportData& viewport ) {
         EnsureCamera();
@@ -65,6 +84,15 @@ namespace {
         zTViewportData& vp = Field<zTViewportData>( s_Camera, GothicMemoryLocations::zCCamera::Offset_VpData );
         vp.xDim = 0;
         reinterpret_cast<void( __thiscall* )( void*, void*, float )>( GothicMemoryLocations::oCItem::RenderItemPlaceCamera )( item, s_Camera, addon );
+
+#if defined(BUILD_GOTHIC_1_CLASSIC)
+        // The camera sits at (x, y, -dist) looking at the origin; scaling z is G2's dist *= scale.
+        if ( const float distanceScale = GetItemDistanceScale( addon ); distanceScale != 1.0f ) {
+            XMFLOAT3 position = s_CameraVob->GetPositionWorld();
+            position.z *= distanceScale;
+            reinterpret_cast<void( __thiscall* )( void*, const XMFLOAT3& )>( GothicMemoryLocations::zCVob::SetPositionWorld )( s_CameraVob, position );
+        }
+#endif
 
         Field<void*>( s_Camera, GothicMemoryLocations::zCCamera::Offset_TargetView ) = viewItem;
         HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport( s_Camera );
