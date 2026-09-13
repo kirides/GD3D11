@@ -7,7 +7,8 @@
 //   [0,   256) D3D12ShadowMap::Prepare       — CSM cascades + sun dir/color/ambient (head, below)
 //   [256, 352) UploadWetnessConstants        — WetnessCBData (D3D12GraphicsEngine.h)
 //   [352, 432) UploadAoScreenConstants       — AoScreenCBData (kAoReprojCbOffset = 352)
-//   [432, ...) UploadSkyIblConstants         — SkyIblCBData   (kSkyIblCbOffset  = 432)
+//   [432, 448) UploadSkyIblConstants         — SkyIblCBData   (kSkyIblCbOffset  = 432)
+//   [448, 480) UploadWetnessConstants        — WetSkyCBData   (kWetSkyCbOffset  = 448)
 // Vegetation.hlsl applies no wetness/SSR and reads no ShadowMap.hlsl helpers for those fields, but must
 // still declare them so its copy of this same 512-byte resource keeps the sky-IBL tail at the right
 // offset — three (four, with Decal) disjoint writers into one layout.
@@ -51,6 +52,10 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     // normalization x an UNHALVED ShadowStrength), premultiplied by UploadSkyIblConstants. The IBL branch
     // must not also apply AmbientStrength — that one still belongs to the flat fallback branch only.
     uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
+    // --- Wet-sky block (kWetSkyCbOffset = 448): height-fog tint wet ground reflects (sRGB) + AC_LightPos.y,
+    // and the world-space moon direction + above-horizon fade for the night glint.
+    float3   WetSkyTint;         float WetSunHeight;
+    float3   WetMoonDir;         float WetMoonFade;
 };
 
 #endif // D3D12_SHADOWCB_HLSL

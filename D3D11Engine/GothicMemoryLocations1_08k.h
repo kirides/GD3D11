@@ -106,6 +106,12 @@ struct GothicMemoryLocations {
 
         static const unsigned int Offset_RenderState = 0x34;
         static const unsigned int Offset_BoundTexture = 0x80E38;
+        // xd3d_actStatus and the fields DrawPolySimple reads from it
+        static const unsigned int Offset_ActStatus = 0x434;
+        static const unsigned int ActStatus_Offset_Filter = 0x10;
+        static const unsigned int ActStatus_Offset_AlphaFunc = 0x2C;
+        static const unsigned int ActStatus_Offset_AlphaSource = 0x30;
+        static const unsigned int ActStatus_Offset_AlphaFactor = 0x34;
         static const unsigned int Offset_Width = 0x984;
         static const unsigned int Offset_Height = 0x988;
 

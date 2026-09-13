@@ -9,6 +9,7 @@
 #include "GraphicsDeviceCapabilities.h"
 #include "fpslimiter.h"
 #include "widenarrow.h"
+#include "UIRenderer2D.h"
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
@@ -373,6 +374,19 @@ public:
 
     virtual void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {};
 
+    /** Draws recorded 2D UI batches (UIRenderer2D). Vertices are in Gothic UI pixels. */
+    virtual void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) {}
+    /** Bindless SRV index for a UI texture, or UINT_MAX when the backend binds textures per batch. */
+    virtual UINT GetUITextureIndex( GfxTexture* texture ) { return UINT_MAX; }
+    /** Whether DrawUI2D works; without it the ZenGin 2D hooks keep the fixed-function path. */
+    virtual bool SupportsUI2D() const { return false; }
+
+    /** True when ZenGin's 2D draws should be recorded into GetUIRenderer2D(). */
+    bool UseUIRenderer2D() const;
+    UIRenderer2D& GetUIRenderer2D() { return m_UIRenderer2D; }
+    /** Draws pending UI; call before anything else draws so painter's order holds. */
+    void FlushUI2D() { m_UIRenderer2D.Flush(); }
+
     /** Union's font-scaling plugins set this through the ddraw export of the same name. Backend-neutral so
         every renderer's DrawString scales its glyphs by it. Returns the previous value. */
     float UpdateCustomFontMultiplierFontRendering( float multiplier ) {
@@ -445,6 +459,8 @@ protected:
 
     /** Glyph-scale multiplier set by Union's font plugins. 1 = untouched. */
     float m_CustomFontMultiplier = 1.0f;
+
+    UIRenderer2D m_UIRenderer2D{ *this };
 
     HWND m_OutputWindow = nullptr;
     bool m_IsWindowActive = false;

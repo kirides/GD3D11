@@ -140,6 +140,12 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
     // Sometimes gothic doesn't unlock a surface or this is a movie-buffer
     delete[] LockedData;
 
+    // A pending UI batch may still reference this texture.
+    if ( EngineTexture && Engine::GraphicsEngine && Engine::GAPI
+        && GetCurrentThreadId() == Engine::GAPI->GetMainThreadID()
+        && Engine::GraphicsEngine->GetUIRenderer2D().HasPending() ) {
+        Engine::GraphicsEngine->FlushUI2D();
+    }
     delete EngineTexture;
 
     // The maps themselves belong to the shared cache — dropping our share is all that's needed, and
@@ -586,6 +592,7 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         INT2 buffersize;
         int pixelSize;
         Engine::GraphicsEngine->ResetPresentPending();
+        Engine::GraphicsEngine->FlushUI2D();
         Engine::GraphicsEngine->OnStartWorldRendering();
         Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
         Engine::GraphicsEngine->ResetPresentPending();

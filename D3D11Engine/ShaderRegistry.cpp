@@ -82,6 +82,9 @@ void ShaderRegistry::Build() {
         .with_layout( VERTEX_INPUT_LAYOUT_1 )
         .with_macros( { {"OVERRIDE_MAX_Z", "1"} } ) );
 
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_UI2D>( "VS_UI2D.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_UI2D ) );
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPointLight>( "VS_ExPointLight.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
@@ -225,6 +228,8 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_AtmosphereOuter>( "PS_AtmosphereOuter.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_FixedFunctionPipe>( "PS_FixedFunctionPipe.hlsl" )  );
+
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_UI2D>( "PS_UI2D.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Video>( "PS_Video.hlsl" )  );
 

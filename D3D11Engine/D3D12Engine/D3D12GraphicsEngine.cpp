@@ -168,6 +168,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline." );
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreateUI2D() ) {
+        // Non-fatal: SupportsUI2D() stays false and the 2D UI keeps the fixed-function path.
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the native 2D UI pipeline." );
+    }
     if ( !CreateWhiteTexture() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the white fallback texture." );
         return XR_FAILED;
@@ -992,6 +996,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     // [kWetnessCbOffset, ..) UploadWetnessConstants        — scene wetness (needs the rain-shadow camera first)
     // [kAoReprojCbOffset,..) UNUSED HOLE                   — was the AO-mask reprojection block; see the header
     // [kSkyIblCbOffset,  ..) UploadSkyIblConstants         — sky-IBL cube indices + intensity
+    // [kWetSkyCbOffset,  ..) UploadWetnessConstants        — wet-sky tint + moon direction
     // Each writer static_asserts its own block size against these offsets; keep them in sync with the HLSL
     // ShadowCB declaration.
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -2195,6 +2200,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
+    FlushUI2D();
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;

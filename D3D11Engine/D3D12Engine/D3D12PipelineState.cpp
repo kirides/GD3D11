@@ -3964,6 +3964,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     if ( hdrEncodeActive ) runFatal( "HdrEncode", &D3D12PipelineState::CreateHdrEncode );
     runFatal( "UI", &D3D12PipelineState::CreateUI );
     UI.Pipelines.clear();   // blend-keyed cache; entries were built from the blobs CreateUI() just replaced
+    runOptional( "UI2D", &D3D12PipelineState::CreateUI2D );
     runFatal( "World", &D3D12PipelineState::CreateWorld );
     World.QuadMarkPipelines.clear();
     runFatal( "DepthPrepass", &D3D12PipelineState::CreateDepthPrepass );

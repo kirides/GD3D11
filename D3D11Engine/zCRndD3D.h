@@ -50,6 +50,10 @@ public:
         if ( color.bgra.alpha == 0 ) {
             color.bgra.alpha = 255;
         }
+        if ( Engine::GraphicsEngine->UseUIRenderer2D() ) {
+            Engine::GraphicsEngine->GetUIRenderer2D().AddLine( x1, y1, x2, y2, color.dword );
+            return;
+        }
         auto lineRenderer = Engine::GraphicsEngine->GetLineRenderer();
         if ( lineRenderer ) {
             lineRenderer->AddLineScreenSpace( LineVertex( XMFLOAT3( x1, y1, 1.f ), color.dword, 1.f ), LineVertex( XMFLOAT3( x2, y2, 1.f ), color.dword, 1.f ) );
@@ -81,15 +85,33 @@ public:
         hook_outfunc
     }
 
-    static void __fastcall hooked_zCRndD3DDrawPolySimple( void* thisptr, void* unknwn, zCTexture* texture, zTRndSimpleVertex* zTRndSimpleVertex, int iVal ) {
+    static void __fastcall hooked_zCRndD3DDrawPolySimple( void* thisptr, void* unknwn, zCTexture* texture, zTRndSimpleVertex* vertices, int numVertices ) {
         hook_infunc
 
-            HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPolySimple( thisptr, texture, zTRndSimpleVertex, iVal );
+            // The sky pass keeps the fixed-function path; D3D12 draws it into the HDR scene target.
+            if ( Engine::GraphicsEngine->UseUIRenderer2D()
+                && Engine::GAPI->GetRendererState().RendererInfo.RenderStage != STAGE_DRAW_SKY ) {
+                Engine::GraphicsEngine->GetUIRenderer2D().AddPolygon( texture, vertices, numVertices, ReadPolygonState( thisptr ) );
+            } else {
+                HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPolySimple( thisptr, texture, vertices, numVertices );
+            }
 
         hook_outfunc
     }
 
+    /** The zCRnd_D3D::xd3d_actStatus fields DrawPolySimple reads. */
+    static UIPolygonState ReadPolygonState( void* renderer ) {
+        const DWORD status = reinterpret_cast<DWORD>( renderer ) + GothicMemoryLocations::zCRndD3D::Offset_ActStatus;
+        UIPolygonState state;
+        state.Bilinear = *reinterpret_cast<int*>( status + GothicMemoryLocations::zCRndD3D::ActStatus_Offset_Filter ) != 0;
+        state.AlphaFunc = *reinterpret_cast<int*>( status + GothicMemoryLocations::zCRndD3D::ActStatus_Offset_AlphaFunc );
+        state.AlphaSourceConstant = *reinterpret_cast<int*>( status + GothicMemoryLocations::zCRndD3D::ActStatus_Offset_AlphaSource ) == 1; // zRND_ALPHA_SOURCE_CONSTANT
+        state.AlphaFactor = *reinterpret_cast<float*>( status + GothicMemoryLocations::zCRndD3D::ActStatus_Offset_AlphaFactor );
+        return state;
+    }
+
     static void __fastcall hooked_zCCameraRenderScreenFade( void* thisptr ) {
+        Engine::GraphicsEngine->FlushUI2D();
         Engine::GraphicsEngine->DrawScreenFade( thisptr );
     }
 

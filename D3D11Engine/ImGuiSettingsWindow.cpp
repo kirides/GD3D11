@@ -631,6 +631,8 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     CheckRow( "Fast Inventory Rendering", &settings.FastInventoryRendering,
         "Skips ZenGin's per-slot pseudo-world render for inventory items." );
+    CheckRow( "Native UI renderer", &settings.NativeUIRenderer,
+        "Draws Gothic's 2D UI through the batched native renderer.\nOff = the old fixed-function emulation, for comparison.");
     CheckRow( "Allow Numpad Keys", &settings.AllowNumpadKeys,
         "Lets the mod's debug hotkeys on the numpad through to the engine." );
 
@@ -646,9 +648,8 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         const bool d3d12 = IsD3D12();
         const bool uavOk = Engine::GraphicsEngine->GetDeviceCapabilities().TypedUAVLoadAdditionalFormats;
         std::string tip =
-            "Halves the backbuffer's memory cost at a small quality loss. This is a 32-bit\n"
-            "process, so on a large resolution it can be the difference between running and\n"
-            "running out of address space.";
+            "Halves the backbuffer's memory and bandwidth cost at a small quality loss.\n"
+            "Recommended for APUs and low end GPUs";
         if ( d3d12 ) {
             tip += uavOk ? "\n\nTakes effect after a restart."
                          : "\n\nUnavailable: this device can't use R11G11B10 as a typed UAV.";

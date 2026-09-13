@@ -197,6 +197,11 @@ public:
         them through the validated 2D/UI path (VS_TransformedEx + FF-stage PS + alpha blend). */
     void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
 
+    /** Native 2D UI (D3D12UI2D.cpp): UIRenderer2D batches with bindless textures, one draw per blend class. */
+    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) override;
+    UINT GetUITextureIndex( GfxTexture* texture ) override;
+    bool SupportsUI2D() const override;
+
     /** Render resolution; same split D3D11 has between m_scaledResolution and Resolution. */
     INT2 GetResolution() override { return m_Resolution; }
     /** Native swapchain/window size. */
@@ -1157,7 +1162,7 @@ private:
     // Per-frame-in-flight shadow constant buffer, bound by every lit pass. Three disjoint byte ranges written by
     // three owners: D3D12ShadowMap::Prepare owns the head [0, kWetnessCbOffset) (cascade view-projs + sun dir +
     // strength + texel sizes), then UploadWetnessConstants and UploadSkyIblConstants each own a tail block —
-    // with an unused 80-byte hole between them (kAoReprojCbOffset). The buffer lives here because it is shared.
+    // with an unused 80-byte hole between them (kAoReprojCbOffset) — and the wet-sky block (kWetSkyCbOffset) ends it.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferMax];
     uint8_t* m_ShadowCBMapped[kBackBufferMax] = {};
@@ -1651,7 +1656,7 @@ private:
     };
     SkyIblParams m_SkyLastParams;
     bool m_SkyEnvInReadState = false;              // tracks the rest state of m_SkyEnvCube (see RenderSkyIBL's barriers)
-    // Sky-IBL tail of the shared shadow CB — the last byte range of m_ShadowCB, after the D3D12ShadowMap::Prepare
+    // Sky-IBL block of the shared shadow CB — before the wet-sky block (kWetSkyCbOffset), after the D3D12ShadowMap::Prepare
     // head [0,256), UploadWetnessConstants [256,352) and the unused AO-reprojection hole [352,432).
     // Riding the CB the lit shaders already bind is what keeps this feature free of root-signature churn:
     // World/Vob/Skeletal/Vegetation all declare ShadowCB at their own register and just gained four fields.
@@ -1905,6 +1910,13 @@ private:
         XMFLOAT4X4 RainViewProj;
         float SceneWetness; float RainFxWeight; float RainTime; UINT RainShadowIndex;
         UINT  DistortionIndex; float RainShadowMapSize; float WetLightReflections; float _pad1;
+    };
+    // Also written by UploadWetnessConstants, after the sky-IBL block: the height-fog tint wet ground reflects,
+    // AC_LightPos.y, and the world-space moon direction + above-horizon fade (Wetness.hlsl ApplyWetCoat).
+    static constexpr UINT kWetSkyCbOffset = 448;
+    struct WetSkyCBData {
+        XMFLOAT3 SkyTint; float SunHeight;
+        XMFLOAT3 MoonDir; float MoonFade;
     };
     void UploadWetnessConstants();
 

@@ -105,18 +105,7 @@ void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, co
 	if ( tx->CacheIn( FONT_CACHE_PRIO ) != zRES_CACHED_IN )
 		return;
 
-	// UIScale mirrors D3D11 DrawString: swim-bar width / 180, and only while that bar exists — the cached
-	// size must not keep scaling glyphs once it is gone, or D3D12 lays text out differently than D3D11.
-	float UIScale = 1.0f;
-	static int savedBarSize = -1;
-	if ( auto game = oCGame::GetGame(); game && game->swimBar ) {
-		if ( savedBarSize == -1 ) {
-			savedBarSize = game->swimBar->psizex;
-		}
-		UIScale = static_cast<float>(savedBarSize) / 180.f;
-	}
-
-	UIScale *= GetCustomFontMultiplier();
+	const float UIScale = UIRenderer2D::ComputeFontScale( *this );
 
 	// Build glyph quads over the font atlas (screen-space xyzrhw ExVertexStruct triangle list).
 	static std::vector<ExVertexStruct> vertices;

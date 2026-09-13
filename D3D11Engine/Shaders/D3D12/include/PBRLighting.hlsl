@@ -29,6 +29,9 @@
 // layout) and `SamplerState smpAoClamp` declared before this include — the same sampler
 // include/ScreenSpaceAO.hlsl already requires, reused rather than adding a second clamp sampler.
 
+// Rain wet surface and water-film lobes (WetSurface, WetCoatSpecular), shared with the D3D11 deferred passes.
+#include "../../include/RainWetnessSample.h"
+
 // De-lights diffuse textures by lifting baked shadows and softening baked highlights
 float3 DelightDiffuse( float3 linearAlbedo )
 {
@@ -506,7 +509,7 @@ float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex
 
 // PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao, float ssao )
+                              float roughness, float metallic, float ao, float ssao, float sunSpecScale = 1.0 )
 {
     float3 V = normalize( CamPosWS - wpos );
     float3 L = SunDirWS;                            // dir toward the sun (world space)
@@ -565,7 +568,7 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     // sun-facing slopes hard (e.g. NdotL 0.75 -> 0.56, a 25% cut on top of an already-dim baked-light gate) —
     // which is exactly the "sloped roofs go dark under full sun, no shadow, no normal map involved" symptom.
     float sunAtten = shadow * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, SunSpecularEnabled );
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, SunSpecularEnabled * sunSpecScale );
 
     return ambientSun + directSun;
 }
@@ -583,50 +586,15 @@ uint ComputeZSlice( float hwDepth )
     return (uint)clamp( floor( t * (float)NUM_Z_SLICES ), 0.0, (float)( NUM_Z_SLICES - 1 ) );
 }
 
-// Water-film specular under a point light: anisotropic GGX stretched toward the viewer (wet-street streaks),
-// widened by an assumed flame size so the reflection isn't a sub-pixel dot. Mirrored in RainWetnessSample.h.
-static const float WET_COAT_STREAK         = 6.0;    // lobe width multiplier along the view direction at grazing view
-static const float WET_COAT_MIN_ROUGHNESS  = 0.06;
-static const float WET_LIGHT_SOURCE_RADIUS = 15.0;   // world units (~15 cm flame)
-
-float WetCoatSpecular( float3 N, float3 V, float3 L, float lightDist, float roughness )
+// Share of a material's direct specular left under the rain water film, whose own lobes replace the rest.
+float WetBaseSpecularScale( WetSurface wet )
 {
-    float NdotL = saturate( dot( N, L ) );
-    if ( NdotL <= 0.0 ) return 0.0;
-    float NdotV = saturate( dot( N, V ) );
-    float3 H = normalize( V + L );
-
-    // Karis sphere-light widening.
-    float r = max( roughness, WET_COAT_MIN_ROUGHNESS );
-    float a = saturate( r * r + WET_LIGHT_SOURCE_RADIUS / ( 2.0 * max( lightDist, 1.0 ) ) );
-
-    // Tangent = view projected onto the surface; the stretch fades out when looking straight down.
-    float3 vt = V - N * dot( N, V );
-    float vtLen = length( vt );
-    float3 T = vtLen > 1e-3 ? vt / vtLen : normalize( cross( N, abs( N.x ) < 0.9 ? float3( 1, 0, 0 ) : float3( 0, 0, 1 ) ) );
-    float3 B = cross( N, T );
-    float at = min( a * lerp( 1.0, WET_COAT_STREAK, vtLen ), 1.0 );
-    float ab = a;
-
-    float ht = dot( H, T ) / at, hb = dot( H, B ) / ab, hn = dot( N, H );
-    float s = ht * ht + hb * hb + hn * hn;
-    float D = 1.0 / ( PBR_PI * at * ab * s * s );
-
-    // Height-correlated anisotropic Smith visibility.
-    float lv = NdotL * length( float3( at * dot( T, V ), ab * dot( B, V ), NdotV ) );
-    float ll = NdotV * length( float3( at * dot( T, L ), ab * dot( B, L ), NdotL ) );
-    float vis = 0.5 / max( lv + ll, 1e-4 );
-
-    float f = saturate( 1.0 - dot( V, H ) );
-    float f2 = f * f;
-    float F = 0.02 + 0.98 * f2 * f2 * f;   // water F0
-    return D * vis * F * NdotL;
+    return 1.0 - wet.wetness * saturate( WetLightReflections );
 }
 
 // Applies one light's contribution (direct BRDF + its shadow, if any) and folds it into `total`/`maxLit`.
-// `wet` is ApplySceneWetness's result; the water-film lobe replaces the base specular in proportion.
 void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 albedo, float roughness,
-                       float metallic, float wet, inout float3 total, inout float3 maxLit )
+                       float metallic, WetSurface wet, inout float3 total, inout float3 maxLit )
 {
     GPULight L = Lights[lightIndex];
     float3 dir = L.PositionWorld - wpos;
@@ -635,15 +603,13 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
     dir /= dist;
     float nd  = saturate( 1.0 - dist / L.Range );
     float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
-    // Color.w is the 0/1 "not static" flag BuildFrameLightBuffer packs (D3D12Scene.cpp), fed straight in as the
-    // specular scale: an isStatic() zCVobLight is one of the "atmospheric" fill lights Gothic pre-places to
-    // brighten a room, not a physical source, so it must contribute diffuse only — a highlight from it reads as a
-    // phantom lamp. Same suppression D3D11 does with light.Color.w.
-    float coat = wet * saturate( WetLightReflections );
-    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w * ( 1.0 - coat ) );
+    // Color.w = PointLightSpecularScale: static "atmospheric" fill lights get no material highlight (phantom lamps).
+    float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w * WetBaseSpecularScale( wet ) );
+    // Water-film reflection has its own gate, so real light sources still reflect in rain with highlights off.
     [branch]
-    if ( coat > 0.0 && L.Color.w > 0.0 )
-        lit += L.Color.rgb * ( WetCoatSpecular( N, V, dir, dist, roughness ) * falloff * wet * L.Color.w * WetLightReflections );
+    if ( wet.wetness > 0.0 && WetLightReflections > 0.0 && L.WetCoatScale > 0.0 )
+        lit += L.Color.rgb * WetCoatRolloff( WetCoatSpecular( wet.coatN, V, dir, dist, wet.roughness )
+            * falloff * wet.wetness * L.WetCoatScale * WetLightReflections );
     // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
     [branch]
     if ( L.ShadowCubeIndex != 0 )
@@ -668,7 +634,7 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
 // Cook-Torrance BRDF per light, additive. Bit-scanning a fixed-width mask (rather than looping an
 // {Offset,Count} index slice) can never spin away on a garbage grid entry — the loop bound is the popcount of
 // the mask, not an unclamped Count. Most words are 0 for a typical cluster, so the per-word while() is cheap.
-float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, float wet = 0.0 )
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, WetSurface wet )
 {
     uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
@@ -700,6 +666,13 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     // ForwardPlusLighting.hlsl / CS_TiledShading.hlsl MAX-blend mode) to avoid overexposure where many
     // point lights overlap.
     return LimitLightIntensity != 0 ? maxLit : total;
+}
+
+// Dry surfaces (vegetation, decals, alpha-blended VOBs).
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
+{
+    WetSurface dry = (WetSurface)0;
+    return AccumTiledPointLights( svpos, wpos, N, albedo, roughness, metallic, dry );
 }
 
 // --- Opaque-surface screen-space reflections (TEMPORAL) ------------------------------------------------

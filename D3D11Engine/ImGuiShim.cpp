@@ -1431,6 +1431,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 #endif
         
         ImGui::Checkbox( "Enable DebugLog", &settings.EnableDebugLog );
+        ImGui::Checkbox( "Native UI renderer", &settings.NativeUIRenderer );
+        ImGui::SetItemTooltip( "Draws Gothic's 2D UI through the batched native renderer.\nOff = the old fixed-function emulation, for comparison." );
         ImGui::Checkbox( "Toggle frame stats", &m_FrameStatisticsVisible );
         if ( ImGui::Button( "Save ZEN-Resources", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             gapi->SaveCustomZENResources();

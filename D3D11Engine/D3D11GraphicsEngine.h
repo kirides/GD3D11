@@ -201,6 +201,10 @@ public:
     /** Draws a screen fade effects */
     XRESULT DrawScreenFade( void* camera ) override;
 
+    /** Native 2D UI batches from UIRenderer2D (D3D11UI2D.cpp). */
+    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) override;
+    bool SupportsUI2D() const override { return true; }
+
     /** Draws a vertexarray, non-indexed */
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
@@ -742,6 +746,8 @@ private:
     // removed); every DrawPrimitive-driven UI draw forced a fresh driver-side rename. This pool gets
     // the same fenced-ring/NO_OVERWRITE treatment as the instancing pools above instead.
     FrameInstancingBufferPool m_UIVertexPool;
+    std::array<Microsoft::WRL::ComPtr<ID3D11SamplerState>, 4> m_UI2DSamplers;   // linear | wrap << 1, see PS_UI2D.hlsl
+    void CreateUI2DSamplers();
 
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;

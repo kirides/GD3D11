@@ -24,6 +24,8 @@ struct GPULight {
     int    ShadowCubeIndex; // 44  0 = unshadowed, else the HI-LO slot pair below
     float3 ShadowOrigin;    // 48  cube centre — == PositionWorld unless this light is clustered
     float  ShadowRange;     // 60  cube far-plane basis (far = ShadowRange*2) — == Range unless clustered
+    float  WetCoatScale;    // 64  wet-ground reflection gate (PointLightWetReflectionScale); Color.w gates material highlights
+    float3 WetPad;          // 68
 };
 
 // ShadowCubeIndex encoding, HI-LO with 0 meaning invalid in each half:
