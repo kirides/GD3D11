@@ -905,6 +905,9 @@ void GothicAPI::ReloadPlayerVob() {
 /** Resets only the vobs */
 void GothicAPI::ResetVobs() {
     
+    // Pending UI item previews hold raw mesh pointers into what gets deleted below.
+    if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->FlushUI2D();
+
     // complete what ever is currently working, and clear everything else.
     Engine::WorkerThreadPool->clearAndFlush();
     
@@ -2336,6 +2339,42 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
     }
 }
 
+MeshVisualInfo* GothicAPI::GetOrCreateProgMeshVisual( zCVisual* visual, bool morphMesh ) {
+    zCProgMeshProto* pm = morphMesh
+        ? reinterpret_cast<zCMorphMesh*>(visual)->GetMorphMesh()
+        : static_cast<zCProgMeshProto*>(visual);
+
+    if ( auto it = StaticMeshVisuals.find( pm ); it != StaticMeshVisuals.end() )
+        return it->second;
+    if ( pm->GetNumSubmeshes() == 0 )
+        return nullptr;
+
+    MeshVisualInfo* mi = new MeshVisualInfo;
+    if ( morphMesh ) {
+        mi->MorphMeshVisual = reinterpret_cast<void*>(visual);
+        zCObject_AddRef( mi->MorphMeshVisual );
+    }
+
+    // Vertex unpacking + buffer creation run on a worker (blocking here stutters world load); 'mi' stays
+    // Ready==false until then, so draw sites must skip it.
+    WorldConverter::Extract3DSMeshFromVisual2Async( visual, pm, mi );
+    StaticMeshVisuals[pm] = mi;
+    return mi;
+}
+
+MeshVisualInfo* GothicAPI::GetOrCreateFlattenedModelVisual( zCVisual* model ) {
+    // Cast to zCProgMeshProto only to make it work with StaticMeshVisuals
+    zCProgMeshProto* pm = static_cast<zCProgMeshProto*>(model);
+
+    if ( auto it = StaticMeshVisuals.find( pm ); it != StaticMeshVisuals.end() )
+        return it->second;
+
+    MeshVisualInfo* mi = new MeshVisualInfo;
+    WorldConverter::ExtractProgMeshProtoFromModel( static_cast<zCModel*>(model), mi );
+    StaticMeshVisuals[pm] = mi;
+    return mi;
+}
+
 /** Called on a SetVisual-Call of a vob */
 void GothicAPI::OnSetVisual( zCVob* vob ) {
     if ( !oCGame::GetGame() || !oCGame::GetGame()->_zCSession_world || !vob->GetHomeWorld() )
@@ -2396,24 +2435,8 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             else
                 pm = reinterpret_cast<zCMorphMesh*>(vob->GetVisual())->GetMorphMesh();
 
-            if ( StaticMeshVisuals.count( pm ) == 0 ) {
-                if ( pm->GetNumSubmeshes() == 0 )
-                    return; // Empty mesh?
-
-                // Load the new visual
-                MeshVisualInfo* mi = new MeshVisualInfo;
-                if ( ext == ".MMS" ) {
-                    mi->MorphMeshVisual = reinterpret_cast<void*>(vob->GetVisual());
-                    zCObject_AddRef( mi->MorphMeshVisual );
-                }
-
-                // Hand the expensive part (vertex unpacking + GPU buffer creation) to a worker thread -
-                // this fires once per distinct mesh during world load, and blocking here for every one of
-                // them is what makes loading (and mass-PFX-spawn) stutter. 'mi' is inserted below already
-                // Ready==false; draw sites must skip it until the job flips that back to true.
-                WorldConverter::Extract3DSMeshFromVisual2Async( vob->GetVisual(), pm, mi );
-                StaticMeshVisuals[pm] = mi;
-            }
+            if ( !GetOrCreateProgMeshVisual( vob->GetVisual(), ext == ".MMS" ) )
+                return; // Empty mesh?
 
             INT2 section = WorldConverter::GetSectionOfPos( vob->GetPositionWorld() );
 
@@ -2461,19 +2484,9 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             // skinned mesh must go through the skeletal path below, which is what the flatten drops -
             // hence those items looking wrong in the inventory but right once dropped into the world.
             if ( isInventory && static_cast<zCModel*>(vob->GetVisual())->GetMeshSoftSkinList()->NumInArray == 0 ) {
-                // Cast to zCProgMeshProto only to make it work with StaticMeshVisuals
-                zCProgMeshProto* pm = static_cast<zCProgMeshProto*>(vob->GetVisual());
-
-                if ( StaticMeshVisuals.count( pm ) == 0 ) {
-                    // Load the new visual
-                    MeshVisualInfo* mi = new MeshVisualInfo;
-                    WorldConverter::ExtractProgMeshProtoFromModel( static_cast<zCModel*>(vob->GetVisual()), mi );
-                    StaticMeshVisuals[pm] = mi;
-                }
-
                 VobInfo* vi = new VobInfo;
                 vi->Vob = vob;
-                vi->VisualInfo = StaticMeshVisuals[pm];
+                vi->VisualInfo = GetOrCreateFlattenedModelVisual( vob->GetVisual() );
 
                 // Add to map
                 VobsByVisual[vob->GetVisual()].push_back( vi );
@@ -5816,6 +5829,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "NativeUIRenderer", to_string_locale_independent( s.NativeUIRenderer ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Inventory", "FastInventoryRendering", to_string_locale_independent( s.FastInventoryRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Inventory", "RenderMode", to_string_locale_independent( static_cast<int>( s.InventoryRenderMode ) ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6059,6 +6073,14 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.NativeUIRenderer = GetPrivateProfileBoolA( "Display", "NativeUIRenderer", ds.NativeUIRenderer, ini );
 
         s.FastInventoryRendering = GetPrivateProfileBoolA( "Inventory", "FastInventoryRendering", ds.FastInventoryRendering, ini );
+        s.InventoryRenderMode = static_cast<GothicRendererSettings::E_InventoryRenderMode>( std::clamp(
+            static_cast<int>( GetPrivateProfileIntA( "Inventory", "RenderMode", ds.InventoryRenderMode, ini.c_str() ) ),
+            static_cast<int>( GothicRendererSettings::INVENTORY_RENDER_ORIGINAL ), static_cast<int>( GothicRendererSettings::INVENTORY_RENDER_FULL ) ) );
+        // Full is not implemented yet; RenderItem is the closest mode.
+        if ( s.InventoryRenderMode == GothicRendererSettings::INVENTORY_RENDER_FULL ) {
+            LogWarn() << "Inventory RenderMode=Full is not implemented yet, using RenderItem.";
+            s.InventoryRenderMode = GothicRendererSettings::INVENTORY_RENDER_RENDERITEM;
+        }
 
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );

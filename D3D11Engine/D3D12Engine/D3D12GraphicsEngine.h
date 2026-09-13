@@ -198,9 +198,15 @@ public:
     void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
 
     /** Native 2D UI (D3D12UI2D.cpp): UIRenderer2D batches with bindless textures, one draw per blend class. */
-    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) override;
+    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items ) override;
+    /** One item-preview batch (D3D12InventoryItems.cpp); leaves root sig, PSO, IA and viewport changed. */
+    void DrawUIItems( const UIItemFrame& items, const UIBatch2D& batch );
+    void OnInventoryVisualUsed( MeshVisualInfo* visual ) override { m_VobArena.QueueVisual( visual ); }
     UINT GetUITextureIndex( GfxTexture* texture ) override;
     bool SupportsUI2D() const override;
+
+    /** Marker scope on m_CmdList; empty outside an open frame, where the list may be closed. */
+    GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) override;
 
     /** Render resolution; same split D3D11 has between m_scaledResolution and Resolution. */
     INT2 GetResolution() override { return m_Resolution; }

@@ -9,6 +9,7 @@
 #include "zCVob.h"
 #include "zCSkyController_Outdoor.h"
 #include "ThreadPool.h"
+#include "InventoryRenderer.h"
 
 class zCSkyController_Outdoor;
 class zCSkyController;
@@ -58,7 +59,16 @@ public:
 
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Inventory World" ) );
 
+        // Tiles and labels batch with the item previews only if they are recorded too.
+        const bool native = InventoryRenderer::IsActive();
+        if ( native ) Engine::GraphicsEngine->BeginUI2DScope();
+
         HookedFunctions::OriginalFunctions.original_ContainerDraw();
+
+        if ( native ) {
+            Engine::GraphicsEngine->EndUI2DScope();
+            Engine::GraphicsEngine->FlushUI2D();
+        }
 
         isDrawingContainers = false;
     }

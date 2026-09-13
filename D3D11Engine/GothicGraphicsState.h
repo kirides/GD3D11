@@ -674,6 +674,13 @@ struct GothicRendererSettings {
         RM_ForwardPlus = 1,
     };
 
+    /** How inventory item previews are drawn. Full (reimplemented container layout) is not built yet. */
+    enum E_InventoryRenderMode {
+        INVENTORY_RENDER_ORIGINAL = 0,
+        INVENTORY_RENDER_RENDERITEM = 1,
+        INVENTORY_RENDER_FULL = 2,
+    };
+
     /** Selects which graphics backend the engine creates on startup. Read very early
         (before the full settings load) in Engine::CreateGraphicsEngine(). D3D12 is inert
         until the D3D12 backend lands; requesting it currently falls back to D3D11. */
@@ -915,6 +922,7 @@ struct GothicRendererSettings {
         EnableCustomFontRendering = true;
         NativeUIRenderer = true;
         FastInventoryRendering = true;
+        InventoryRenderMode = INVENTORY_RENDER_ORIGINAL;
 
         ForceFOV = false;
 
@@ -1318,6 +1326,8 @@ struct GothicRendererSettings {
     /** Skips ZenGin's per-inventory-slot pseudo-world render (see zCWorld::hooked_Render). Off = fall back to
         the original oCItem::RenderItem path, for comparing against vanilla behavior. */
     bool FastInventoryRendering;
+    /** RenderItem = batched item previews through UIRenderer2D (InventoryRenderer.cpp). Original leaves ZenGin in charge. */
+    E_InventoryRenderMode InventoryRenderMode;
     bool ForceFOV;
     bool DisplayFlip;
     bool LowLatency;

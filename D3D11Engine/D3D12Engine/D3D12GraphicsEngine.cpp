@@ -286,6 +286,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline." );
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreateInventoryItem() ) {
+        // Non-fatal: RenderItem-mode item previews are skipped; Original mode keeps using the Preview pipeline.
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the batched inventory item pipeline." );
+    }
     if ( !m_Pipelines.CreateBloom() ) {
         // Non-fatal: bloom is an opt-in visual enhancement (RendererSettings.EnableBloom, default off), not a
         // required resource any other PSO samples unconditionally — unlike tonemap/shadow/point-shadow above.
@@ -2197,6 +2201,16 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     return XR_SUCCESS;
 }
 
+
+GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName region ) {
+    // Present closes the list and the next OnBeginFrame resets it; a scope ending in between is dropped.
+    if ( !m_FrameOpen || !m_CmdList ) return GraphicsEventRecord{};
+    BeginDXMarker( m_CmdList.Get(), region.wide, region.len_wide );
+    return GraphicsEventRecord( this, []( void* context ) {
+        D3D12GraphicsEngine* engine = static_cast<D3D12GraphicsEngine*>( context );
+        if ( engine->m_FrameOpen && engine->m_CmdList ) EndDXMarker( engine->m_CmdList.Get() );
+    } );
+}
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;

@@ -266,6 +266,22 @@ inline thread_local UINT g_CurrentRecordingOpIndex = 0;
 #define DX_MARKER_VALUE(x) x, std::sizeof(x)
 #define SetMarkerStr(x) SetMarker(x, std::sizeof(x))
 
+// text must outlive the frame: the breadcrumb ring keeps the pointer.
+inline void BeginDXMarker( ID3D12GraphicsCommandList* c, const wchar_t* text, size_t len ) {
+    // Track exactly what string context we are assigning to the CURRENT command slot
+    if ( g_CurrentRecordingOpIndex < g_CpuContextHistory.size() ) {
+        g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
+    }
+    c->BeginEvent( 0, text, static_cast<UINT>( (len + 1) * sizeof( wchar_t ) ) );
+    // Increment tracking slot to match what DRED maps under the hood
+    g_CurrentRecordingOpIndex++;
+}
+
+inline void EndDXMarker( ID3D12GraphicsCommandList* c ) {
+    c->EndEvent();
+    g_CurrentRecordingOpIndex++;
+}
+
 struct DXMarker {
     DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const WideNarrowChars& text ) :
         DXMarker( commandList.Get(), text.wide, text.len_wide )
@@ -292,25 +308,11 @@ struct DXMarker {
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text, size_t len ) :
         c( commandList )
     {
-        if ( c && text ) {
-            // Track exactly what string context we are assigning to the CURRENT command slot
-            if ( g_CurrentRecordingOpIndex < g_CpuContextHistory.size() ) {
-                g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
-            }
-
-            UINT byteSize = static_cast<UINT>( (len + 1) * sizeof( wchar_t ) );
-            c->BeginEvent( 0, text, byteSize );
-
-            // Increment tracking slot to match what DRED maps under the hood
-            g_CurrentRecordingOpIndex++;
-        }
+        if ( c && text ) BeginDXMarker( c, text, len );
     }
 
     ~DXMarker() {
-        if ( c ) {
-            c->EndEvent();
-            g_CurrentRecordingOpIndex++;
-        }
+        if ( c ) EndDXMarker( c );
     }
 
     DXMarker( const DXMarker& ) = delete;

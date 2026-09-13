@@ -14,4 +14,8 @@ void GraphicsEventRecord::End() {
         m_Annotation->EndEvent();
         m_Annotation = nullptr;
     }
+    if ( m_EndCallback ) {
+        m_EndCallback( m_EndContext );
+        m_EndCallback = nullptr;
+    }
 }

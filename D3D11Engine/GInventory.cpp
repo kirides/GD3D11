@@ -3,6 +3,8 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "zCMaterial.h"
+#include "zCModel.h"
+#include "BaseGraphicsEngine.h"
 
 GInventory::GInventory() {}
 
@@ -35,6 +37,28 @@ SkeletalVobInfo* GInventory::FindSkeletal( zCVob* vob, zCWorld* world ) {
     return it->second.Info.get();
 }
 
+SkeletalVobInfo* GInventory::GetOrCreateSkeletal( zCVob* vob ) {
+    SkeletalEntry& entry = SkeletalVobs[vob];
+    if ( entry.Info && entry.Visual == vob->GetVisual() ) {
+        entry.LastUsed = ++UseCounter;
+        return entry.Info.get();
+    }
+
+    // Pending UI item draws may still point into the info being replaced.
+    if ( entry.Info ) Engine::GraphicsEngine->FlushUI2D();
+
+    SkeletalVobInfo* vi = new SkeletalVobInfo;
+    vi->Vob = vob;
+    vi->VisualInfo = Engine::GAPI->LoadzCModelData( static_cast<zCModel*>(vob->GetVisual()) );
+    XMStoreFloat4x4( &vi->WorldMatrix, vob->GetWorldMatrixXM() );
+
+    entry.Info.reset( vi );
+    entry.Visual = vob->GetVisual();
+    entry.LastUsed = ++UseCounter;
+    TrimSkeletalCache();
+    return vi;
+}
+
 /** Called when a VOB got removed from the world */
 bool GInventory::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     auto it = CurrentVobs.find( world );
@@ -50,6 +74,9 @@ bool GInventory::OnRemovedVob( zCVob* vob, zCWorld* world ) {
 
 /** Drops every entry built from this visual - Gothic frees it once we return */
 void GInventory::OnVisualDeleted( zCVisual* visual ) {
+    // Pending UI item draws hold raw mesh pointers.
+    Engine::GraphicsEngine->FlushUI2D();
+
     for ( auto it = SkeletalVobs.begin(); it != SkeletalVobs.end(); ) {
         if ( it->second.Visual != visual ) { ++it; continue; }
 
@@ -75,6 +102,7 @@ void GInventory::TrimSkeletalCache() {
         if ( oldest == SkeletalVobs.end() )
             break; // Everything in there is live
 
+        Engine::GraphicsEngine->FlushUI2D();
         SkeletalVobs.erase( oldest );
     }
 }

@@ -43,6 +43,8 @@ enum class VShaderID : size_t {
     VS_ExNodeCubeFace,
     VS_ExSkeletalCubeFace,
     VS_UI2D,
+    VS_InventoryItem,
+    VS_InventoryItemSkinned,
     COUNT
 };
 

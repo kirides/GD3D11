@@ -202,7 +202,9 @@ public:
     XRESULT DrawScreenFade( void* camera ) override;
 
     /** Native 2D UI batches from UIRenderer2D (D3D11UI2D.cpp). */
-    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) override;
+    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items ) override;
+    /** One item-preview batch onto `rtv` (D3D11InventoryItems.cpp); leaves VS/PS/IA/OM changed. */
+    void DrawUIItems( const UIItemFrame& items, const UIBatch2D& batch, ID3D11RenderTargetView* rtv, UINT targetWidth, UINT targetHeight );
     bool SupportsUI2D() const override { return true; }
 
     /** Draws a vertexarray, non-indexed */
