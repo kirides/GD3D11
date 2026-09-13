@@ -17,6 +17,9 @@ public:
         info every frame would mean they never get to finish (and would re-create their buffers every frame). */
     SkeletalVobInfo* FindSkeletal( zCVob* vob, zCWorld* world );
 
+    /** The native inventory's skeletal preview for this vob, built on first use. Same cache as FindSkeletal. */
+    SkeletalVobInfo* GetOrCreateSkeletal( zCVob* vob );
+
     /** Called when a VOB got removed from the world */
     bool OnRemovedVob( zCVob* vob, zCWorld* world );
 

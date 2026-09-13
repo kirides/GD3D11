@@ -29,6 +29,10 @@ namespace {
         c[2] = static_cast<float>( (color >> 16) & 0xFF );
         c[3] = static_cast<float>( (color >> 24) & 0xFF );
     }
+
+    bool RectsOverlap( float minX, float minY, float maxX, float maxY, float bMinX, float bMinY, float bMaxX, float bMaxY ) {
+        return minX < bMaxX && maxX > bMinX && minY < bMaxY && maxY > bMinY;
+    }
 }
 
 float UIRenderer2D::ComputeFontScale( const BaseGraphicsEngine& engine ) {
@@ -225,6 +229,65 @@ void UIRenderer2D::AddGlyphRun( std::string_view str, float x, float y, const zF
     }
 }
 
+void UIRenderer2D::BeginItemPreview( float x, float y, float width, float height ) {
+    m_OpenItem = {};
+    m_OpenItem.FirstDraw = static_cast<uint32_t>( m_ItemDraws.size() );
+    m_OpenItem.RectX = x;
+    m_OpenItem.RectY = y;
+    m_OpenItem.RectW = width;
+    m_OpenItem.RectH = height;
+    m_OpenItemInstances = static_cast<uint32_t>( m_ItemInstances.size() );
+    m_OpenItemBones = static_cast<uint32_t>( m_ItemBones.size() );
+    m_ItemOpen = true;
+}
+
+uint32_t UIRenderer2D::AddItemInstance( const DirectX::XMFLOAT4X4& clipFromObject ) {
+    m_ItemInstances.push_back( { clipFromObject, m_OpenItem.RectX, m_OpenItem.RectY, m_OpenItem.RectW, m_OpenItem.RectH } );
+    return static_cast<uint32_t>( m_ItemInstances.size() - 1 );
+}
+
+uint32_t UIRenderer2D::AddItemBones( std::span<const DirectX::XMFLOAT4X4> bones ) {
+    const uint32_t offset = static_cast<uint32_t>( m_ItemBones.size() );
+    m_ItemBones.insert( m_ItemBones.end(), bones.begin(), bones.end() );
+    return offset;
+}
+
+void UIRenderer2D::AddItemDraw( const UIItemDraw& draw ) {
+    // A flush in between (Discard) closed the preview; its draws would reference dropped instances.
+    if ( m_ItemOpen ) m_ItemDraws.push_back( draw );
+}
+
+void UIRenderer2D::EndItemPreview() {
+    if ( !m_ItemOpen ) return;
+    m_ItemOpen = false;
+
+    m_OpenItem.DrawCount = static_cast<uint32_t>( m_ItemDraws.size() ) - m_OpenItem.FirstDraw;
+    if ( m_OpenItem.DrawCount == 0 || m_OpenItem.RectW <= 0.0f || m_OpenItem.RectH <= 0.0f ) {
+        m_ItemDraws.resize( m_OpenItem.FirstDraw );
+        m_ItemInstances.resize( m_OpenItemInstances );
+        m_ItemBones.resize( m_OpenItemBones );
+        return;
+    }
+
+    if ( m_Batches.empty() && m_BeforeFirstRecord ) {
+        m_BeforeFirstRecord( m_BeforeFirstRecordContext );
+    }
+
+    const float minX = m_OpenItem.RectX, minY = m_OpenItem.RectY;
+    const float maxX = minX + m_OpenItem.RectW, maxY = minY + m_OpenItem.RectH;
+    const uint32_t target = PlaceInBatch( nullptr, EUIBlend2D::Premultiplied, true, minX, minY, maxX, maxY );
+
+    const uint32_t index = static_cast<uint32_t>( m_Items.size() );
+    m_Items.push_back( m_OpenItem );
+    m_Batches[target].ItemCount += 1;
+
+    if ( !m_ItemPrimitives.empty() && m_ItemPrimitives.back().Batch == target ) {
+        m_ItemPrimitives.back().Count += 1;
+    } else {
+        m_ItemPrimitives.push_back( { target, index, 1 } );
+    }
+}
+
 void UIRenderer2D::EmitPolygon( ClipVertex* poly, int count, GfxTexture* texture, EUIBlend2D blend, uint32_t params ) {
     ClipVertex scratch[kMaxClippedVertices];
     ClipVertex* src = poly;
@@ -298,16 +361,43 @@ void UIRenderer2D::Append( GfxTexture* texture, EUIBlend2D blend, const UIVertex
         Flush();
     }
 
+    const uint32_t target = PlaceInBatch( texture, blend, false, minX, minY, maxX, maxY );
+
+    const uint32_t first = static_cast<uint32_t>( m_Vertices.size() );
+    m_Vertices.insert( m_Vertices.end(), vertices, vertices + count );
+    m_Batches[target].VertexCount += count;
+
+    if ( !m_Primitives.empty() && m_Primitives.back().Batch == target ) {
+        m_Primitives.back().Count += count;
+    } else {
+        m_Primitives.push_back( { target, first, count } );
+    }
+}
+
+uint32_t UIRenderer2D::PlaceInBatch( GfxTexture* texture, EUIBlend2D blend, bool items, float minX, float minY, float maxX, float maxY ) {
+    // Items in one batch share a depth clear, so an item can only join a batch none of its items overlaps.
+    auto itemOverlaps = [&]( uint32_t batch ) {
+        for ( const Primitive& p : m_ItemPrimitives ) {
+            if ( p.Batch != batch ) continue;
+            for ( uint32_t i = p.First; i < p.First + p.Count; ++i ) {
+                const UIItemPreview& item = m_Items[i];
+                if ( RectsOverlap( minX, minY, maxX, maxY, item.RectX, item.RectY, item.RectX + item.RectW, item.RectY + item.RectH ) )
+                    return true;
+            }
+        }
+        return false;
+    };
+
     // Join the newest same-key batch that nothing drawn after it overlaps; disjoint rects commute.
     int target = -1;
     const int newest = static_cast<int>( m_Batches.size() ) - 1;
     for ( int i = newest; i >= 0 && i > newest - kMergeLookback; --i ) {
         const UIBatch2D& b = m_Batches[i];
-        if ( b.Texture == texture && b.Blend == blend ) {
-            target = i;
+        if ( b.Items == items && b.Texture == texture && b.Blend == blend ) {
+            if ( !items || !itemOverlaps( static_cast<uint32_t>( i ) ) ) target = i;
             break;
         }
-        if ( minX < b.MaxX && maxX > b.MinX && minY < b.MaxY && maxY > b.MinY ) {
+        if ( RectsOverlap( minX, minY, maxX, maxY, b.MinX, b.MinY, b.MaxX, b.MaxY ) ) {
             break;
         }
     }
@@ -316,30 +406,24 @@ void UIRenderer2D::Append( GfxTexture* texture, EUIBlend2D blend, const UIVertex
         UIBatch2D batch;
         batch.Texture = texture;
         batch.Blend = blend;
+        batch.Items = items;
         batch.MinX = minX;
         batch.MinY = minY;
         batch.MaxX = maxX;
         batch.MaxY = maxY;
         m_Batches.push_back( batch );
-        target = static_cast<int>( m_Batches.size() ) - 1;
-    } else {
-        UIBatch2D& b = m_Batches[target];
-        b.MinX = std::min( b.MinX, minX );
-        b.MinY = std::min( b.MinY, minY );
-        b.MaxX = std::max( b.MaxX, maxX );
-        b.MaxY = std::max( b.MaxY, maxY );
-        if ( target != newest ) m_InOrder = false;
+        return static_cast<uint32_t>( m_Batches.size() - 1 );
     }
 
-    const uint32_t first = static_cast<uint32_t>( m_Vertices.size() );
-    m_Vertices.insert( m_Vertices.end(), vertices, vertices + count );
-    m_Batches[target].VertexCount += count;
-
-    if ( !m_Primitives.empty() && m_Primitives.back().Batch == static_cast<uint32_t>( target ) ) {
-        m_Primitives.back().Count += count;
-    } else {
-        m_Primitives.push_back( { static_cast<uint32_t>( target ), first, count } );
+    UIBatch2D& b = m_Batches[target];
+    b.MinX = std::min( b.MinX, minX );
+    b.MinY = std::min( b.MinY, minY );
+    b.MaxX = std::max( b.MaxX, maxX );
+    b.MaxY = std::max( b.MaxY, maxY );
+    if ( target != newest ) {
+        (items ? m_ItemsInOrder : m_InOrder) = false;
     }
+    return static_cast<uint32_t>( target );
 }
 
 void UIRenderer2D::Flush() {
@@ -348,9 +432,15 @@ void UIRenderer2D::Flush() {
     m_Flushing = true;
 
     uint32_t offset = 0;
+    uint32_t itemOffset = 0;
     for ( UIBatch2D& b : m_Batches ) {
-        b.FirstVertex = offset;
-        offset += b.VertexCount;
+        if ( b.Items ) {
+            b.FirstItem = itemOffset;
+            itemOffset += b.ItemCount;
+        } else {
+            b.FirstVertex = offset;
+            offset += b.VertexCount;
+        }
     }
 
     std::span<const UIVertex2D> stream = m_Vertices;
@@ -366,7 +456,21 @@ void UIRenderer2D::Flush() {
         stream = m_Upload;
     }
 
-    m_Engine.DrawUI2D( stream, m_Batches );
+    std::span<const UIItemPreview> items = m_Items;
+    if ( !m_ItemsInOrder ) {
+        m_ItemUpload.resize( itemOffset );
+        for ( UIBatch2D& b : m_Batches ) {
+            if ( b.Items ) b.ItemCount = 0;
+        }
+        for ( const Primitive& p : m_ItemPrimitives ) {
+            UIBatch2D& b = m_Batches[p.Batch];
+            std::copy_n( m_Items.begin() + p.First, p.Count, m_ItemUpload.begin() + b.FirstItem + b.ItemCount );
+            b.ItemCount += p.Count;
+        }
+        items = m_ItemUpload;
+    }
+
+    m_Engine.DrawUI2D( stream, m_Batches, UIItemFrame{ items, m_ItemDraws, m_ItemInstances, m_ItemBones } );
 
     m_Flushing = false;
     Discard();
@@ -378,4 +482,13 @@ void UIRenderer2D::Discard() {
     m_Primitives.clear();
     m_Batches.clear();
     m_InOrder = true;
+
+    m_Items.clear();
+    m_ItemUpload.clear();
+    m_ItemPrimitives.clear();
+    m_ItemDraws.clear();
+    m_ItemInstances.clear();
+    m_ItemBones.clear();
+    m_ItemOpen = false;
+    m_ItemsInOrder = true;
 }

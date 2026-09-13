@@ -249,6 +249,16 @@ struct GothicMemoryLocations {
         static const unsigned int SetFOV = 0x00536720;
         static const unsigned int GetFOV_f2 = 0x005366B0;
 
+        // Inventory preview camera (InventoryRenderer.cpp)
+        static const unsigned int Constructor = 0x00535DE0;
+        static const unsigned int Var_ActiveCam = 0x00873240;
+        static const unsigned int Offset_VpData = 0x68;
+        static const unsigned int Offset_TargetView = 0xA0;
+        static const unsigned int Offset_FovH = 0x8FC;
+        static const unsigned int Offset_FovV = 0x900;
+        static const unsigned int Offset_ConnectedVob = 0x904;
+        static const unsigned int StructSize = 0x918;
+
         static const unsigned int Offset_FarPlane = 0x8E0;
         static const unsigned int Offset_NearPlane = 0x8E4;
         static const unsigned int Offset_ScreenFadeEnabled = 0x8C0;
@@ -300,6 +310,10 @@ struct GothicMemoryLocations {
 
         static const unsigned int EndMovement = 0x005F0B60;
         static const unsigned int SetSleeping = 0x005D7250;
+
+        static const unsigned int Constructor = 0x005D3030;
+        static const unsigned int SetPositionWorld = 0x005EE650;
+        static const unsigned int StructSize = 0x100;
     };
 
     struct oCMob {
@@ -779,6 +793,13 @@ struct GothicMemoryLocations {
 
     struct oCItemContainer {
         static const unsigned int s_Container_Draw = 0x00666250;
+    };
+
+    struct oCItem {
+        static const unsigned int RenderItem = 0x00672F70;             // (zCWorld*, zCViewBase*, float)
+        static const unsigned int RenderItemPlaceCamera = 0x00672D80;
+        static const unsigned int RotateForInventory = 0x00672560;
+        static const unsigned int RotateInInventory = 0x00672910;
     };
 
     class VobTypes // vftables

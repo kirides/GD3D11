@@ -6,7 +6,7 @@
 #include <string>
 
 bool BaseGraphicsEngine::UseUIRenderer2D() const {
-    return SupportsUI2D() && Engine::GAPI->GetRendererState().RendererSettings.NativeUIRenderer;
+    return SupportsUI2D() && (Engine::GAPI->GetRendererState().RendererSettings.NativeUIRenderer || m_UI2DScopeDepth > 0);
 }
 
 /** Resolves the limit for the frame about to start; see BaseGraphicsEngine.h. */

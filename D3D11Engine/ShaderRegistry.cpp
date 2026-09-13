@@ -85,6 +85,15 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_UI2D>( "VS_UI2D.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_UI2D ) );
 
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_InventoryItem>( "VS_InventoryItem.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_INVENTORY_ITEM ) );
+
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_InventoryItemSkinned>( "VS_InventoryItemSkinned.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_INVENTORY_ITEM_SKINNED )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
+        } ) );
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPointLight>( "VS_ExPointLight.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 

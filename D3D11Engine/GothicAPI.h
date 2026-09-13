@@ -404,6 +404,11 @@ public:
     /** Called when a VOB got added to the BSP-Tree or the world */
     void OnAddVob( zCVob* vob, zCWorld* world );
 
+    /** Shared mesh visual of a .3DS (or the morph mesh of an .MMS), extracted asynchronously. Null for an empty mesh. */
+    MeshVisualInfo* GetOrCreateProgMeshVisual( zCVisual* visual, bool morphMesh );
+    /** A zCModel without softskin flattened into one static mesh (node attachments at bind pose), as inventories draw it. */
+    MeshVisualInfo* GetOrCreateFlattenedModelVisual( zCVisual* model );
+
     /** Called when a VOB got removed from the world. tearDownLight=false is for vobs that are merely
         being hidden (zCVobLight can be enabled/disabled at will, reusing the same zCVob* both times)
         rather than actually destroyed - the light's VobLightInfo/shadow buffers must survive that, since

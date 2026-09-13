@@ -280,6 +280,12 @@
     <ClInclude Include="GInventory.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
+    <ClInclude Include="InventoryRenderer.h">
+      <Filter>Engine\GAPI\Objects</Filter>
+    </ClInclude>
+    <ClInclude Include="oCItem.h">
+      <Filter>Engine\GAPI\Objects</Filter>
+    </ClInclude>
     <ClInclude Include="zCInput.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -1044,7 +1050,16 @@
     <ClCompile Include="D3D11UI2D.cpp">
       <Filter>Engine</Filter>
     </ClCompile>
+    <ClCompile Include="D3D11InventoryItems.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="InventoryRenderer.cpp">
+      <Filter>Engine\GAPI\Objects</Filter>
+    </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12UI2D.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12InventoryItems.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="TransparencyQueue.cpp">

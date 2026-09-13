@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "BaseGraphicsEngine.h"
 #include "ConstantBufferStructs.h"
+#include "InventoryRenderer.h"
 #include "Toolbox.h"
 
 #include <sstream>
@@ -629,8 +630,20 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
 
     ImGui::SeparatorText( "Interface" );
 
+    constexpr ListItem<GothicRendererSettings::E_InventoryRenderMode> inventoryModes[] = {
+        { "Original", GothicRendererSettings::INVENTORY_RENDER_ORIGINAL, "ZenGin renders every slot's item on its own." },
+        { "RenderItem", GothicRendererSettings::INVENTORY_RENDER_RENDERITEM,
+            "Batched item previews, tiles and labels.\nBypasses plugins that hook oCItem::RenderItem." },
+    };
+    ImGui::BeginDisabled( !InventoryRenderer::IsSupported() );
+    ComboRow( "Inventory Rendering", "##InventoryRenderMode", inventoryModes, &settings.InventoryRenderMode,
+        "How item previews in inventories, chests and trade screens are drawn.\nA fully reimplemented container layout (Full) is planned." );
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled( settings.InventoryRenderMode != GothicRendererSettings::INVENTORY_RENDER_ORIGINAL );
     CheckRow( "Fast Inventory Rendering", &settings.FastInventoryRendering,
-        "Skips ZenGin's per-slot pseudo-world render for inventory items." );
+        "Skips ZenGin's per-slot pseudo-world render for inventory items. Original mode only." );
+    ImGui::EndDisabled();
     CheckRow( "Native UI renderer", &settings.NativeUIRenderer,
         "Draws Gothic's 2D UI through the batched native renderer.\nOff = the old fixed-function emulation, for comparison.");
     CheckRow( "Allow Numpad Keys", &settings.AllowNumpadKeys,

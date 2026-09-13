@@ -142,15 +142,15 @@ UINT D3D12GraphicsEngine::GetUITextureIndex( GfxTexture* texture ) {
     return m_WhiteTexture ? m_WhiteTexture->GetSrvSlot() : 0;
 }
 
-void D3D12GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) {
-    if ( !m_SwapChainReady || !m_FrameOpen || !m_Pipelines.UI2D.RootSig || vertices.empty() || batches.empty() )
+void D3D12GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items ) {
+    if ( !m_SwapChainReady || !m_FrameOpen || !m_Pipelines.UI2D.RootSig || batches.empty() || (vertices.empty() && items.Items.empty()) )
         return;
     ZoneScoped;
 
     const UINT bytes = static_cast<UINT>( vertices.size_bytes() );
     D3D12_GPU_VIRTUAL_ADDRESS gpuVA = 0;
-    if ( !AllocateUIVertices( vertices.data(), bytes, gpuVA ) )
-        return;
+    if ( !vertices.empty() && !AllocateUIVertices( vertices.data(), bytes, gpuVA ) )
+        gpuVA = 0;
 
     // Same target selection SubmitUIDraw's PSO key uses.
     const bool rtvIsHdr = m_ColorTargetIsHDR;
@@ -162,22 +162,37 @@ void D3D12GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::s
         2.0f / static_cast<float>( target.x ), 2.0f / static_cast<float>( target.y ),
         std::max( 0.001f, rs.RendererSettings.GothicUIScale ), 0.0f };
 
-    m_CmdList->SetGraphicsRootSignature( m_Pipelines.UI2D.RootSig.Get() );
-    m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, &consts, 0 );
+    // Item batches in between switch root sig, IA and viewport, so this runs again after each.
+    auto bindUIState = [&]() {
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.UI2D.RootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, &consts, 0 );
 
-    // Clipping already happened on the CPU, so the whole target is the viewport.
-    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( target.x ), static_cast<float>( target.y ), 0.0f, 1.0f };
-    const D3D12_RECT sc = { 0, 0, target.x, target.y };
-    m_CmdList->RSSetViewports( 1, &vp );
-    m_CmdList->RSSetScissorRects( 1, &sc );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        // Clipping already happened on the CPU, so the whole target is the viewport.
+        const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( target.x ), static_cast<float>( target.y ), 0.0f, 1.0f };
+        const D3D12_RECT sc = { 0, 0, target.x, target.y };
+        m_CmdList->RSSetViewports( 1, &vp );
+        m_CmdList->RSSetScissorRects( 1, &sc );
+        m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, sizeof( UIVertex2D ) };
-    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+        const D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, sizeof( UIVertex2D ) };
+        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    };
 
+    bool needsBind = true;
     ID3D12PipelineState* bound = nullptr;
     for ( const UIBatch2D& batch : batches ) {
-        if ( batch.VertexCount == 0 ) continue;
+        if ( batch.Items ) {
+            if ( batch.ItemCount == 0 ) continue;
+            DrawUIItems( items, batch );
+            needsBind = true;
+            bound = nullptr;
+            continue;
+        }
+        if ( batch.VertexCount == 0 || !gpuVA ) continue;
+        if ( needsBind ) {
+            bindUIState();
+            needsBind = false;
+        }
         ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUI2DPipeline( batch.Blend, rtvIsHdr );
         if ( !pso ) continue;
         if ( pso != bound ) {

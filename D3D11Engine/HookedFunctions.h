@@ -6,6 +6,13 @@
 #include "HookExceptionFilter.h"
 #include <cstring>
 
+/** Native inventory rendering needs oCItem/zCCamera addresses, known for G1 1.08k and G2 2.6 only. */
+#if !defined(BUILD_SPACER) && !defined(BUILD_SPACER_NET) && ((defined(BUILD_GOTHIC_2_6_fix)) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)))
+#define GD3D11_INVENTORY_RENDERER 1
+#else
+#define GD3D11_INVENTORY_RENDERER 0
+#endif
+
 /** This file stores the original versions of the hooked functions and the function declerations */
 
 class zCFileBIN;
@@ -105,6 +112,7 @@ typedef void( __thiscall* zCVobEndMovement )(void*, int);
 typedef void( __cdecl* oCItemContainer__Container_Draw )();
 typedef void( __thiscall* zCCamera__Activate )(void*);
 typedef void( __thiscall* zCCamera__UpdateViewport )(void*);
+typedef void( __thiscall* oCItem__RenderItem )(void*, void* world, void* viewItem, float addon);
 
 typedef void( __thiscall* zCSkyControler_ClearBackground )(void*, zColor);
 typedef void( __thiscall* zCSkyControler_Outdoor_RenderSkyPre )(void*);
@@ -180,6 +188,9 @@ struct HookedFunctionInfo {
 #endif
     zCCamera__Activate original_zCCamera__Activate = reinterpret_cast<zCCamera__Activate>(GothicMemoryLocations::zCCamera::Activate);
     zCCamera__UpdateViewport original_zCCamera__UpdateViewport = reinterpret_cast<zCCamera__UpdateViewport>(GothicMemoryLocations::zCCamera::UpdateViewport);
+#if GD3D11_INVENTORY_RENDERER
+    oCItem__RenderItem original_oCItem__RenderItem = reinterpret_cast<oCItem__RenderItem>(GothicMemoryLocations::oCItem::RenderItem);
+#endif
     //CGameManagerExitGame original_CGameManagerExitGame = reinterpret_cast<CGameManagerExitGame>(GothicMemoryLocations::CGameManager::ExitGame);
     //GenericThiscall original_zCWorldDisposeWorld = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCWorld::DisposeWorld);
     zCWorldDisposeVobs original_zCWorldDisposeVobs = reinterpret_cast<zCWorldDisposeVobs>(GothicMemoryLocations::zCWorld::DisposeVobs);
@@ -245,6 +256,8 @@ struct HookedFunctionInfo {
 #if defined(BUILD_GOTHIC_1_CLASSIC)
     void InitAnimatedInventoryHooks();
     static void __fastcall hooked_RotateInInventory( DWORD oCItem );
+    /** SystemPack's animated inventory was found and rerouted to hooked_RotateInInventory. */
+    static inline bool AnimatedInventoryPatched = false;
 #endif
 };
 

@@ -3987,6 +3987,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     runFatal( "LumAdapt", &D3D12PipelineState::CreateLumAdapt );
     runFatal( "Preview", &D3D12PipelineState::CreatePreview );
     runOptional( "PreviewSkeletal", &D3D12PipelineState::CreatePreviewSkeletal );
+    runOptional( "InventoryItem", &D3D12PipelineState::CreateInventoryItem );
     runOptional( "Bloom", &D3D12PipelineState::CreateBloom );
     runOptional( "Ghost", &D3D12PipelineState::CreateGhost );
     runOptional( "GhostSkeletal", &D3D12PipelineState::CreateGhostSkeletal );

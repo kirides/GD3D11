@@ -163,6 +163,16 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlobHdr;   // LINEARIZE_OUTPUT, for UI drawn into the HDR scene target
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = EUIBlend2D | RtvIsHdr<<8
     };
+    // Inventory item previews (UIRenderer2D item batches): one bindless root sig, static/skinned PSOs, and the
+    // indirect signature the static sub-meshes are submitted through.
+    struct InventoryItemPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature>    RootSig;
+        Microsoft::WRL::ComPtr<ID3D12CommandSignature> CmdSig;   // b0 { instance, texture } + DrawIndexed
+        Microsoft::WRL::ComPtr<ID3DBlob>               VsStaticBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>               VsSkinnedBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>               PsBlob;
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = skinned
+    };
     // Particle (PFX) billboards: one root sig + one VS/PS pair; PSOs built per BlendKey on demand.
     // Instance ring buffers stay in the engine.
     struct ParticlePipeline {
@@ -581,6 +591,8 @@ public:
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreatePreviewSkeletal();   // same, for a skinned item visual (adds b2 bone palette)
+    bool CreateInventoryItem();     // batched inventory item previews (D3D12InventoryItems.cpp); warms the static PSO
+    ID3D12PipelineState* GetOrCreateInventoryItemPipeline( bool skinned );
     bool CreateBloom();       // prefilter/downsample/upsample compute + additive composite graphics pipeline
     bool CreateGhost();       // ghost/transparency VOBs (own root sig: b0 ViewProj, b1 World, b2 GhostAlpha, t0 diffuse)
     bool CreateGhostSkeletal(); // skeletal ghost VOBs (invisible NPCs): own root sig (b0 ViewProj, b1 inst CBV,
@@ -655,6 +667,7 @@ public:
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure
     GraphicsPipeline Preview;
     GraphicsPipeline PreviewSkeletal;   // skinned inventory-item preview (Preview.hlsl:VSSkeletal)
+    InventoryItemPipeline InventoryItem;
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;
     GraphicsPipeline GhostSkeletal;

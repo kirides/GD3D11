@@ -55,8 +55,8 @@ void D3D11GraphicsEngine::CreateUI2DSamplers() {
     }
 }
 
-void D3D11GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) {
-    if ( vertices.empty() || batches.empty() ) return;
+void D3D11GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items ) {
+    if ( batches.empty() || (vertices.empty() && items.Items.empty()) ) return;
     ZoneScoped;
 
     const auto& context = GetContext();
@@ -72,14 +72,19 @@ void D3D11GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::s
     D3D11_TEXTURE2D_DESC rtDesc;
     rtTexture->GetDesc( &rtDesc );
 
-    const UINT bytes = static_cast<UINT>( vertices.size_bytes() );
-    FrameInstancingAllocation alloc = AcquireFrameInstancingAllocation( m_UIVertexPool, bytes, "UIVertexRing" );
-    if ( !alloc.Buffer ) return;
-    void* mapped;
-    UINT mappedSize;
-    if ( XR_SUCCESS != alloc.Buffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE, &mapped, &mappedSize ) ) return;
-    memcpy( static_cast<byte*>( mapped ) + alloc.OffsetInBytes, vertices.data(), bytes );
-    alloc.Buffer->Unmap();
+    FrameInstancingAllocation alloc = {};
+    if ( !vertices.empty() ) {
+        const UINT bytes = static_cast<UINT>( vertices.size_bytes() );
+        alloc = AcquireFrameInstancingAllocation( m_UIVertexPool, bytes, "UIVertexRing" );
+        void* mapped;
+        UINT mappedSize;
+        if ( alloc.Buffer && XR_SUCCESS == alloc.Buffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE, &mapped, &mappedSize ) ) {
+            memcpy( static_cast<byte*>( mapped ) + alloc.OffsetInBytes, vertices.data(), bytes );
+            alloc.Buffer->Unmap();
+        } else {
+            alloc.Buffer = nullptr;
+        }
+    }
 
     if ( !m_UI2DSamplers[0] ) CreateUI2DSamplers();
 
@@ -97,40 +102,55 @@ void D3D11GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::s
     ID3D11ShaderResourceView* savedSrv = nullptr;
     context->PSGetShaderResources( 0, 1, &savedSrv );
 
-    rs.DepthState.DepthBufferEnabled = false;
-    rs.DepthState.DepthWriteEnabled = false;
-    rs.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
-    rs.DepthState.SetDirty();
-    rs.RasterizerState.SetDefault();
-    rs.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    rs.RasterizerState.SetDirty();
-
-    SetActiveVertexShader( VShaderID::VS_UI2D );
-    SetActivePixelShader( PShaderID::PS_UI2D );
-    ActiveVS->Apply();
-    ActivePS->Apply();
-
     const UI2DConstants constants = {
         2.0f / static_cast<float>( rtDesc.Width ), 2.0f / static_cast<float>( rtDesc.Height ),
         std::max( 0.001f, rs.RendererSettings.GothicUIScale ), 0.0f };
-    BindDynamicCBToVertexShader( 0, AllocateDynamicCB( &constants ) );
 
-    // Clipping already happened on the CPU, so the whole target is the viewport.
-    const D3D11_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( rtDesc.Width ), static_cast<float>( rtDesc.Height ), 0.0f, 1.0f };
-    context->RSSetViewports( 1, &viewport );
-    ID3D11SamplerState* samplers[4] = { m_UI2DSamplers[0].Get(), m_UI2DSamplers[1].Get(), m_UI2DSamplers[2].Get(), m_UI2DSamplers[3].Get() };
-    context->PSSetSamplers( 0, 4, samplers );
-    D3D11PipelineStateCache::SetPrimitiveTopology( context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    // Item batches in between change shaders, IA, depth and samplers, so this runs again after each.
+    auto bindUIState = [&]() {
+        rs.DepthState.DepthBufferEnabled = false;
+        rs.DepthState.DepthWriteEnabled = false;
+        rs.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+        rs.DepthState.SetDirty();
+        rs.RasterizerState.SetDefault();
+        rs.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+        rs.RasterizerState.SetDirty();
 
-    UINT stride = sizeof( UIVertex2D );
-    UINT offset = alloc.OffsetInBytes;
-    context->IASetVertexBuffers( 0, 1, alloc.Buffer->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+        SetActiveVertexShader( VShaderID::VS_UI2D );
+        SetActivePixelShader( PShaderID::PS_UI2D );
+        ActiveVS->Apply();
+        ActivePS->Apply();
+        BindDynamicCBToVertexShader( 0, AllocateDynamicCB( &constants ) );
 
-    bool first = true;
+        // Clipping already happened on the CPU, so the whole target is the viewport.
+        const D3D11_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>( rtDesc.Width ), static_cast<float>( rtDesc.Height ), 0.0f, 1.0f };
+        context->RSSetViewports( 1, &viewport );
+        ID3D11SamplerState* samplers[4] = { m_UI2DSamplers[0].Get(), m_UI2DSamplers[1].Get(), m_UI2DSamplers[2].Get(), m_UI2DSamplers[3].Get() };
+        context->PSSetSamplers( 0, 4, samplers );
+        D3D11PipelineStateCache::SetPrimitiveTopology( context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+        UINT stride = sizeof( UIVertex2D );
+        UINT offset = alloc.OffsetInBytes;
+        context->IASetVertexBuffers( 0, 1, alloc.Buffer->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+    };
+
+    bool needsBind = true;
     EUIBlend2D currentBlend = EUIBlend2D::Premultiplied;
     GfxTexture* currentTexture = nullptr;
     for ( const UIBatch2D& batch : batches ) {
-        if ( batch.VertexCount == 0 ) continue;
+        if ( batch.Items ) {
+            if ( batch.ItemCount == 0 ) continue;
+            DrawUIItems( items, batch, rtv.Get(), rtDesc.Width, rtDesc.Height );
+            needsBind = true;
+            continue;
+        }
+        if ( batch.VertexCount == 0 || !alloc.Buffer ) continue;
+
+        const bool first = needsBind;
+        if ( needsBind ) {
+            bindUIState();
+            needsBind = false;
+        }
         if ( first || batch.Blend != currentBlend ) {
             SetUIBlend( rs.BlendState, batch.Blend );
             UpdateRenderStates();
@@ -141,7 +161,6 @@ void D3D11GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::s
             context->PSSetShaderResources( 0, 1, &srv );
             currentTexture = batch.Texture;
         }
-        first = false;
 
         context->Draw( batch.VertexCount, batch.FirstVertex );
         rs.RendererInfo.FrameDrawnTriangles += batch.VertexCount / 3;

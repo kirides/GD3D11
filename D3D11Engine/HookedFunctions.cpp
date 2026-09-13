@@ -26,6 +26,7 @@
 #include "oCNPC.h"
 #include "zCSkyController_Outdoor.h"
 #include "zCInput_Win32.h"
+#include "oCItem.h"
 
 #include "zQuat.h"
 #include "zMat4.h"
@@ -79,7 +80,8 @@ void HookedFunctionInfo::InitHooks() {
     zCSkyController_Outdoor::Hook();
     zCInput_Win32::Hook();
     zCCamera::Hook();
-    
+    oCItem::Hook();
+
 //G1 patches
 #ifdef BUILD_GOTHIC_1_08k
 #ifdef BUILD_1_12F
@@ -449,6 +451,7 @@ void HookedFunctionInfo::InitAnimatedInventoryHooks() {
             PatchJMP( 0x673049, FixAnimation );
             PatchJMP( 0x67304E, FixAnimation + 12 );
             PatchAddr( 0x673048, "\x0F\x8A" );
+            AnimatedInventoryPatched = true;
         }
     }
 }
