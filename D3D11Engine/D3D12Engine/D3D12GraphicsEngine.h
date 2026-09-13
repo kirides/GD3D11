@@ -205,6 +205,9 @@ public:
     UINT GetUITextureIndex( GfxTexture* texture ) override;
     bool SupportsUI2D() const override;
 
+    /** Marker scope on m_CmdList; empty outside an open frame, where the list may be closed. */
+    GraphicsEventRecord RecordGraphicsEvent( GraphicsEventName region ) override;
+
     /** Render resolution; same split D3D11 has between m_scaledResolution and Resolution. */
     INT2 GetResolution() override { return m_Resolution; }
     /** Native swapchain/window size. */

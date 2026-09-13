@@ -2202,6 +2202,16 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 }
 
 
+GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName region ) {
+    // Present closes the list and the next OnBeginFrame resets it; a scope ending in between is dropped.
+    if ( !m_FrameOpen || !m_CmdList ) return GraphicsEventRecord{};
+    BeginDXMarker( m_CmdList.Get(), region.wide, region.len_wide );
+    return GraphicsEventRecord( this, []( void* context ) {
+        D3D12GraphicsEngine* engine = static_cast<D3D12GraphicsEngine*>( context );
+        if ( engine->m_FrameOpen && engine->m_CmdList ) EndDXMarker( engine->m_CmdList.Get() );
+    } );
+}
+
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
     FlushUI2D();

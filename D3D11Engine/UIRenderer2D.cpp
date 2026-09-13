@@ -14,6 +14,8 @@ namespace {
     // Flushed early past this, which keeps order; well under D3D12's 16 MiB per-frame UI ring.
     constexpr size_t kMaxPendingVertices = 256 * 1024;
     constexpr int kMergeLookback = 16;
+    // A region rect absorbs a primitive while the union adds at most this fraction of their areas as empty space.
+    constexpr float kRegionMaxWaste = 0.25f;
     constexpr int kMaxPolygonVertices = 32;
     // Sutherland-Hodgman against a rectangle adds at most one vertex per plane.
     constexpr int kMaxClippedVertices = kMaxPolygonVertices + 4;
@@ -275,7 +277,7 @@ void UIRenderer2D::EndItemPreview() {
 
     const float minX = m_OpenItem.RectX, minY = m_OpenItem.RectY;
     const float maxX = minX + m_OpenItem.RectW, maxY = minY + m_OpenItem.RectH;
-    const uint32_t target = PlaceInBatch( nullptr, EUIBlend2D::Premultiplied, true, minX, minY, maxX, maxY );
+    const uint32_t target = PlaceInBatch( nullptr, EUIBlend2D::Premultiplied, true, { minX, minY, maxX, maxY } );
 
     const uint32_t index = static_cast<uint32_t>( m_Items.size() );
     m_Items.push_back( m_OpenItem );
@@ -361,7 +363,7 @@ void UIRenderer2D::Append( GfxTexture* texture, EUIBlend2D blend, const UIVertex
         Flush();
     }
 
-    const uint32_t target = PlaceInBatch( texture, blend, false, minX, minY, maxX, maxY );
+    const uint32_t target = PlaceInBatch( texture, blend, false, { minX, minY, maxX, maxY } );
 
     const uint32_t first = static_cast<uint32_t>( m_Vertices.size() );
     m_Vertices.insert( m_Vertices.end(), vertices, vertices + count );
@@ -374,32 +376,74 @@ void UIRenderer2D::Append( GfxTexture* texture, EUIBlend2D blend, const UIVertex
     }
 }
 
-uint32_t UIRenderer2D::PlaceInBatch( GfxTexture* texture, EUIBlend2D blend, bool items, float minX, float minY, float maxX, float maxY ) {
+bool UIRenderer2D::Region::Overlaps( const Rect& r ) const {
+    for ( int i = 0; i < Count; ++i ) {
+        const Rect& o = Rects[i];
+        if ( RectsOverlap( r.MinX, r.MinY, r.MaxX, r.MaxY, o.MinX, o.MinY, o.MaxX, o.MaxY ) ) return true;
+    }
+    return false;
+}
+
+void UIRenderer2D::Region::Add( const Rect& r ) {
+    auto area = []( const Rect& a ) { return (a.MaxX - a.MinX) * (a.MaxY - a.MinY); };
+    auto unite = []( const Rect& a, const Rect& b ) {
+        return Rect{ std::min( a.MinX, b.MinX ), std::min( a.MinY, b.MinY ), std::max( a.MaxX, b.MaxX ), std::max( a.MaxY, b.MaxY ) };
+    };
+
+    // Grow the rect whose union adds the least empty area; a new rect while every union would add a lot.
+    const float rArea = area( r );
+    int fit = -1, closest = -1;
+    float fitWaste = FLT_MAX, closestWaste = FLT_MAX;
+    for ( int i = 0; i < Count; ++i ) {
+        const float oArea = area( Rects[i] );
+        const float waste = area( unite( Rects[i], r ) ) - oArea - rArea;
+        if ( waste < closestWaste ) {
+            closest = i;
+            closestWaste = waste;
+        }
+        if ( waste <= kRegionMaxWaste * (oArea + rArea) && waste < fitWaste ) {
+            fit = i;
+            fitWaste = waste;
+        }
+    }
+
+    if ( fit < 0 && Count < kMaxRects ) {
+        Rects[Count++] = r;
+        return;
+    }
+    const int target = fit >= 0 ? fit : closest;
+    Rects[target] = unite( Rects[target], r );
+}
+
+uint32_t UIRenderer2D::PlaceInBatch( GfxTexture* texture, EUIBlend2D blend, bool items, const Rect& rect ) {
     // Items in one batch share a depth clear, so an item can only join a batch none of its items overlaps.
     auto itemOverlaps = [&]( uint32_t batch ) {
         for ( const Primitive& p : m_ItemPrimitives ) {
             if ( p.Batch != batch ) continue;
             for ( uint32_t i = p.First; i < p.First + p.Count; ++i ) {
                 const UIItemPreview& item = m_Items[i];
-                if ( RectsOverlap( minX, minY, maxX, maxY, item.RectX, item.RectY, item.RectX + item.RectW, item.RectY + item.RectH ) )
+                if ( RectsOverlap( rect.MinX, rect.MinY, rect.MaxX, rect.MaxY, item.RectX, item.RectY, item.RectX + item.RectW, item.RectY + item.RectH ) )
                     return true;
             }
         }
         return false;
     };
+    auto overlaps = [&]( int batch ) {
+        const UIBatch2D& b = m_Batches[batch];
+        return RectsOverlap( rect.MinX, rect.MinY, rect.MaxX, rect.MaxY, b.MinX, b.MinY, b.MaxX, b.MaxY )
+            && m_Regions[batch].Overlaps( rect );
+    };
 
-    // Join the newest same-key batch that nothing drawn after it overlaps; disjoint rects commute.
+    // Join the oldest same-key batch that nothing drawn after it overlaps; disjoint rects commute.
+    // The newest one would split interleaved runs, like the inventory's tile, item, label per slot.
     int target = -1;
     const int newest = static_cast<int>( m_Batches.size() ) - 1;
     for ( int i = newest; i >= 0 && i > newest - kMergeLookback; --i ) {
         const UIBatch2D& b = m_Batches[i];
-        if ( b.Items == items && b.Texture == texture && b.Blend == blend ) {
-            if ( !items || !itemOverlaps( static_cast<uint32_t>( i ) ) ) target = i;
-            break;
+        if ( b.Items == items && b.Texture == texture && b.Blend == blend && (!items || !itemOverlaps( static_cast<uint32_t>( i ) )) ) {
+            target = i;
         }
-        if ( RectsOverlap( minX, minY, maxX, maxY, b.MinX, b.MinY, b.MaxX, b.MaxY ) ) {
-            break;
-        }
+        if ( overlaps( i ) ) break;
     }
 
     if ( target < 0 ) {
@@ -407,19 +451,21 @@ uint32_t UIRenderer2D::PlaceInBatch( GfxTexture* texture, EUIBlend2D blend, bool
         batch.Texture = texture;
         batch.Blend = blend;
         batch.Items = items;
-        batch.MinX = minX;
-        batch.MinY = minY;
-        batch.MaxX = maxX;
-        batch.MaxY = maxY;
+        batch.MinX = rect.MinX;
+        batch.MinY = rect.MinY;
+        batch.MaxX = rect.MaxX;
+        batch.MaxY = rect.MaxY;
         m_Batches.push_back( batch );
+        m_Regions.emplace_back().Add( rect );
         return static_cast<uint32_t>( m_Batches.size() - 1 );
     }
 
     UIBatch2D& b = m_Batches[target];
-    b.MinX = std::min( b.MinX, minX );
-    b.MinY = std::min( b.MinY, minY );
-    b.MaxX = std::max( b.MaxX, maxX );
-    b.MaxY = std::max( b.MaxY, maxY );
+    b.MinX = std::min( b.MinX, rect.MinX );
+    b.MinY = std::min( b.MinY, rect.MinY );
+    b.MaxX = std::max( b.MaxX, rect.MaxX );
+    b.MaxY = std::max( b.MaxY, rect.MaxY );
+    m_Regions[target].Add( rect );
     if ( target != newest ) {
         (items ? m_ItemsInOrder : m_InOrder) = false;
     }
@@ -481,6 +527,7 @@ void UIRenderer2D::Discard() {
     m_Upload.clear();
     m_Primitives.clear();
     m_Batches.clear();
+    m_Regions.clear();
     m_InOrder = true;
 
     m_Items.clear();

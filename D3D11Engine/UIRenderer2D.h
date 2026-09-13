@@ -149,11 +149,25 @@ private:
         uint32_t Count;
     };
 
+    struct Rect {
+        float MinX, MinY, MaxX, MaxY;
+    };
+
+    /** Conservative cover of one batch's primitives: a few rects, each grown while that adds little empty area. */
+    struct Region {
+        static constexpr int kMaxRects = 16;
+        Rect Rects[kMaxRects];
+        int Count = 0;
+
+        bool Overlaps( const Rect& r ) const;
+        void Add( const Rect& r );
+    };
+
     void EmitPolygon( ClipVertex* poly, int count, GfxTexture* texture, EUIBlend2D blend, uint32_t params );
     void Append( GfxTexture* texture, EUIBlend2D blend, const UIVertex2D* vertices, uint32_t count,
         float minX, float minY, float maxX, float maxY );
-    /** Joins the newest same-key batch nothing drawn after it overlaps, else opens a new one. */
-    uint32_t PlaceInBatch( GfxTexture* texture, EUIBlend2D blend, bool items, float minX, float minY, float maxX, float maxY );
+    /** Joins the oldest same-key batch nothing drawn after it overlaps, else opens a new one. */
+    uint32_t PlaceInBatch( GfxTexture* texture, EUIBlend2D blend, bool items, const Rect& rect );
 
     BaseGraphicsEngine& m_Engine;
 
@@ -161,6 +175,7 @@ private:
     std::vector<UIVertex2D> m_Upload;      // batch order, only when a merge went out of order
     std::vector<Primitive> m_Primitives;
     std::vector<UIBatch2D> m_Batches;
+    std::vector<Region> m_Regions;         // parallel to m_Batches
     bool m_InOrder = true;
     bool m_Flushing = false;
 

@@ -209,6 +209,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         }
     }
     if ( commands.empty() && unbound.empty() && skinned.empty() ) return;
+    DXMarker marker( m_CmdList.Get(), L"Inventory Items" );
 
     // Instances are indexed by UIItemDraw::Instance, so the whole frame's list goes up.
     static std::vector<ItemInstanceGPU> instances;
