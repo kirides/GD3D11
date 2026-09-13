@@ -197,6 +197,11 @@ public:
         them through the validated 2D/UI path (VS_TransformedEx + FF-stage PS + alpha blend). */
     void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
 
+    /** Native 2D UI (D3D12UI2D.cpp): UIRenderer2D batches with bindless textures, one draw per blend class. */
+    void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches ) override;
+    UINT GetUITextureIndex( GfxTexture* texture ) override;
+    bool SupportsUI2D() const override;
+
     /** Render resolution; same split D3D11 has between m_scaledResolution and Resolution. */
     INT2 GetResolution() override { return m_Resolution; }
     /** Native swapchain/window size. */

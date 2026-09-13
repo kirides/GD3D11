@@ -913,6 +913,7 @@ struct GothicRendererSettings {
         AllowNumpadKeys = false;
         EnableDebugLog = false;
         EnableCustomFontRendering = true;
+        NativeUIRenderer = true;
         FastInventoryRendering = true;
 
         ForceFOV = false;
@@ -1312,6 +1313,8 @@ struct GothicRendererSettings {
     bool EnableDebugLog;
 
     bool EnableCustomFontRendering;
+    /** Records ZenGin's 2D UI into UIRenderer2D instead of the fixed-function emulation. */
+    bool NativeUIRenderer;
     /** Skips ZenGin's per-inventory-slot pseudo-world render (see zCWorld::hooked_Render). Off = fall back to
         the original oCItem::RenderItem path, for comparing against vanilla behavior. */
     bool FastInventoryRendering;

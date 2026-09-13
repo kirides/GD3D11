@@ -5,6 +5,10 @@
 #include <iostream>
 #include <string>
 
+bool BaseGraphicsEngine::UseUIRenderer2D() const {
+    return SupportsUI2D() && Engine::GAPI->GetRendererState().RendererSettings.NativeUIRenderer;
+}
+
 /** Resolves the limit for the frame about to start; see BaseGraphicsEngine.h. */
 int BaseGraphicsEngine::ResolveFrameLimit() const {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;

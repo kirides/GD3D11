@@ -1702,6 +1702,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 XRESULT D3D11GraphicsEngine::OnEndFrame() {
     auto& renderInfo = Engine::GAPI->GetRendererState().RendererInfo;
     renderInfo.RenderStage = STAGE_DRAW_PRESENT;
+    FlushUI2D();
     Present();
 
     RenderedVobs.clear();
@@ -9368,14 +9369,7 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     if ( !maxLen ) return;
     str = str.substr(0, maxLen);
 
-    float UIScale = 1.0f;
-    static int savedBarSize = -1;
-    if ( auto game = oCGame::GetGame(); game && game->swimBar ) {
-        if ( savedBarSize == -1 ) {
-            savedBarSize = game->swimBar->psizex;
-        }
-        UIScale = static_cast<float>(savedBarSize) / 180.f;
-    }
+    float UIScale = UIRenderer2D::ComputeFontScale( *this );
 
     constexpr float FONT_CACHE_PRIO = -1;
     zCTexture* tx = font->tex;
@@ -9384,7 +9378,6 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
         return;
     }
     
-    UIScale *= GetCustomFontMultiplier();
 
     //
     // Set alpha blending

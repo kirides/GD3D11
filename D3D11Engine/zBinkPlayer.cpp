@@ -408,6 +408,7 @@ int __fastcall BinkPlayerPlayFrame(DWORD BinkPlayer)
                 video->textureY->BindToPixelShader(0);
                 video->textureU->BindToPixelShader(1);
                 video->textureV->BindToPixelShader(2);
+                Engine::GraphicsEngine->FlushUI2D();
                 Engine::GraphicsEngine->Clear(float4(0.f, 0.f, 0.f, 1.f));
                 Engine::GraphicsEngine->DrawVertexArray(verts, 6);
 

@@ -3941,6 +3941,7 @@ float GothicAPI::GetFogOverride() {
 
 /** Draws the inventory */
 void GothicAPI::DrawInventory( zCWorld* world, zCCamera& camera ) {
+    Engine::GraphicsEngine->FlushUI2D();
     Inventory->DrawInventory( world, camera );
 }
 
@@ -5812,6 +5813,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "GTAO", "DepthMIPSamplingOffset", to_string_locale_independent( s.GtaoSettings.DepthMIPSamplingOffset ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "FontRendering", "Enable", to_string_locale_independent( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "NativeUIRenderer", to_string_locale_independent( s.NativeUIRenderer ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Inventory", "FastInventoryRendering", to_string_locale_independent( s.FastInventoryRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
 
@@ -6054,6 +6056,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.GtaoSettings.DenoisePasses = std::clamp( s.GtaoSettings.DenoisePasses, 0, 3 );
 
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
+        s.NativeUIRenderer = GetPrivateProfileBoolA( "Display", "NativeUIRenderer", ds.NativeUIRenderer, ini );
 
         s.FastInventoryRendering = GetPrivateProfileBoolA( "Inventory", "FastInventoryRendering", ds.FastInventoryRendering, ini );
 

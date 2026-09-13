@@ -131,6 +131,7 @@ public:
 	ULONG __declspec(nothrow) STDMETHODCALLTYPE Release() override {
 		DebugWrite( "MyDirect3DDevice7::Release" );
 		if ( --RefCount == 0 ) {
+			if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->GetUIRenderer2D().SetBeforeFirstRecord( nullptr, nullptr );
 			delete this;
 			return 0;
 		}
@@ -478,6 +479,9 @@ public:
 		vp.MaxZ = lpViewport->dvMaxZ;
 
 		Engine::GraphicsEngine->SetViewport( vp );
+		Engine::GraphicsEngine->GetUIRenderer2D().SetClipRect(
+			static_cast<float>( lpViewport->dwX ), static_cast<float>( lpViewport->dwY ),
+			static_cast<float>( lpViewport->dwWidth ), static_cast<float>( lpViewport->dwHeight ) );
 
 		return S_OK;
 	}
@@ -495,6 +499,12 @@ public:
 		m_FF2DBatch.clear();
 		m_LastFF2DTextureStage0 = nullptr;
 
+		// The UI recorder must see any pending FF batch drawn before its first primitive.
+		UIRenderer2D& ui = Engine::GraphicsEngine->GetUIRenderer2D();
+		ui.Discard();
+		ui.SetClipRect( 0, 0, 0, 0 );   // unclipped, like the full-frame viewport both engines set in OnBeginFrame
+		ui.SetBeforeFirstRecord( []( void* device ) { static_cast<MyDirect3DDevice7*>( device )->FlushFF2DBatch(); }, this );
+
 		Engine::GraphicsEngine->OnBeginFrame();
 		return S_OK;
 	}
@@ -511,6 +521,7 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE Clear( DWORD dwCount, LPD3DRECT lpRects, DWORD dwFlags, D3DCOLOR dwColor, D3DVALUE dvZ, DWORD dwStencil ) override {
 		DebugWrite( "MyDirect3DDevice7::Clear" );
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 		return S_OK;
 	}
@@ -532,24 +543,28 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawIndexedPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitive" );
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawIndexedPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitiveStrided" );
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawIndexedPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitiveVB" );
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitive" );
+		Engine::GraphicsEngine->FlushUI2D();
 
 		// Convert them into ExVertices
 		static std::vector<ExVertexStruct> exv;
@@ -641,12 +656,14 @@ public:
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitiveStrided" );
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE DrawPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitiveVB" );
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 		if ( d3dptPrimitiveType < 4 )
 		{
@@ -686,6 +703,7 @@ public:
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE EndScene() override {
 		DebugWrite( "MyDirect3DDevice7::EndScene" );
 
+		Engine::GraphicsEngine->FlushUI2D();
 		FlushFF2DBatch();
 
 		hook_infunc

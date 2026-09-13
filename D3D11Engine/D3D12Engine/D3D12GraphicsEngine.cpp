@@ -168,6 +168,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline." );
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreateUI2D() ) {
+        // Non-fatal: SupportsUI2D() stays false and the 2D UI keeps the fixed-function path.
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the native 2D UI pipeline." );
+    }
     if ( !CreateWhiteTexture() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the white fallback texture." );
         return XR_FAILED;
@@ -2196,6 +2200,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
+    FlushUI2D();
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;

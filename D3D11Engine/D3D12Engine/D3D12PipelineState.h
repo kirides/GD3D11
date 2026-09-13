@@ -18,6 +18,8 @@ struct GothicDepthBufferStateInfo;
 // the engine holds one instance and binds these objects at draw time. GPU RESOURCE creation
 // (vertex/instance/constant buffers, shadow textures) stays in the engine — this class is pipeline
 // state only. Migrated incrementally: passes still living in the engine will move here over time.
+enum class EUIBlend2D : uint8_t;
+
 class D3D12PipelineState {
 public:
     // Grouped storage. Public so the engine can bind RootSig/PSO directly in the draw path.
@@ -152,6 +154,14 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlobHdr;   // LINEARIZE_OUTPUT variant — sky pass writes into the linear HDR scene target
         std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32 | Cull<<34 | RtvIsHdr<<36 | MaxZ<<37 | FrontCCW<<38 | FFLayout<<39
+    };
+    // Native 2D UI (UIRenderer2D): bindless root sig + one VS/PS pair; PSOs keyed by blend class and target.
+    struct UI2DPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlobHdr;   // LINEARIZE_OUTPUT, for UI drawn into the HDR scene target
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = EUIBlend2D | RtvIsHdr<<8
     };
     // Particle (PFX) billboards: one root sig + one VS/PS pair; PSOs built per BlendKey on demand.
     // Instance ring buffers stay in the engine.
@@ -558,6 +568,8 @@ public:
     bool CreateDepthPrepassGBuf(); // motion-vector + normal variants of the above (called by CreateDepthPrepass)
     bool CreateVob();          // lit instanced-VOB PSO (needs World.RootSig); buffers stay in the engine
     bool CreateUI();          // 2D/UI root sig + shaders; warms the default PSO (vertex buffers stay in engine)
+    bool CreateUI2D();        // native 2D UI (UIRenderer2D): bindless root sig + shaders; warms the premultiplied PSO
+    ID3D12PipelineState* GetOrCreateUI2DPipeline( EUIBlend2D blend, bool rtvIsHdr );
     bool CreateParticle();    // particle root sig + shaders; warms the alpha PSO (instance buffers stay in engine)
     bool CreateDecal();       // decal root sig + shaders + fixed lit PSO; warms alpha (quad/instance VBs stay in engine)
     bool CreateSkeletal();    // skinned root sig + lit + depth-prepass PSOs (skeletal CB ring stays in the engine)
@@ -626,6 +638,7 @@ public:
     // --- Storage (one per migrated pass) ---
     WorldPipeline       World;
     UIPipeline          UI;
+    UI2DPipeline        UI2D;
     ParticlePipeline    Particle;
     DecalPipeline       Decal;
     SkeletalPipeline    Skeletal;

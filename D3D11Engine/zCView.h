@@ -89,6 +89,14 @@ public:
 
         auto len = s.Length();
         if ( len > 0 ) {
+            if ( Engine::GraphicsEngine->UseUIRenderer2D() ) {
+                Engine::GraphicsEngine->GetUIRenderer2D().AddGlyphRun(
+                    std::string_view{ s.ToChar(), len },
+                    static_cast<float>( x ),
+                    static_cast<float>( y ),
+                    thisptr->font, thisptr->fontColor.dword );
+                return;
+            }
             Engine::GraphicsEngine->DrawString(
                 std::string_view{ s.ToChar(), len },
                 static_cast<float>( x ),

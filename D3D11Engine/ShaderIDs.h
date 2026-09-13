@@ -42,6 +42,7 @@ enum class VShaderID : size_t {
     VS_ExCubeFace,
     VS_ExNodeCubeFace,
     VS_ExSkeletalCubeFace,
+    VS_UI2D,
     COUNT
 };
 
@@ -123,6 +124,7 @@ enum class PShaderID : size_t {
     PS_FP_DiffuseNormalmappedAlphaTestFxMap,
     PS_FP_ShadowMask,
     PS_ResolveDepthMSAA,
+    PS_UI2D,
     COUNT
 };
 
