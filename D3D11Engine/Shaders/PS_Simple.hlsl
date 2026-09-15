@@ -2,6 +2,8 @@
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
 
+#include <TransparencyFog.h>
+
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
 //--------------------------------------------------------------------------------------
@@ -45,6 +47,6 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 #endif
 	//return float4(1,0,0,1);
 	
-	return color;
+	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a);
 }
 

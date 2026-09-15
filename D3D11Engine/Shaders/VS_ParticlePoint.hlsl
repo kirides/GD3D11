@@ -104,6 +104,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     
     VS_OUTPUT Output = (VS_OUTPUT)0;
     Output.vPosition = mul(float4(position, 1.0f), frame.M_ViewProj);
+    Output.vViewPosition = mul(float4(position, 1.0f), frame.M_View).xyz;
     Output.vDiffuse = float4(Input.vDiffuse.rgb, pow(Input.vDiffuse.a, 2.2f));
     Output.vTexcoord = float2(tu[Input.vertexID], tv[Input.vertexID]);
 	return Output;

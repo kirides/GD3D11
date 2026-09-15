@@ -1682,6 +1682,10 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     SetActivePixelShader( PShaderID::PS_Simple );
     SetActiveVertexShader( VShaderID::VS_Ex );
 
+    // PS_Simple also serves Gothic's UI/FF draws. The CB pool rotates three buffers, so a slot left
+    // bound from an earlier frame still reads a valid (possibly enabled) fog mode - clear it here.
+    BindTransparencyFog( ETransparencyFog::Off );
+
     if ( rendererState.RendererSettings.AllowNormalmaps ) {
         Resolved_DiffuseNormalmappedFxMap = PShaderID::PS_DiffuseNormalmappedFxMap;
         Resolved_DiffuseNormalmappedAlphatestFxMap = PShaderID::PS_DiffuseNormalmappedAlphaTestFxMap;
@@ -2519,6 +2523,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     SetActiveVertexShader( VShaderID::VS_ExSkeletalVN );
     SetActivePixelShader( PShaderID::PS_Simple );
 
+    BindTransparencyFog( ETransparencyFog::Off );
     BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
     
     SetupVS_ExMeshDrawCall();
@@ -4077,73 +4082,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
 
-    graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        auto size = GetResolution();
-
-        auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
-        auto particleDistortionHandle = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"PfxDistortion" });
-
-        builder.Write( particleColorHandle );
-        builder.Write( particleDistortionHandle );
-        builder.Read( particleColorHandle );
-        builder.Read( particleDistortionHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this, particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
-
-            Engine::GAPI->ResetRenderStates();
-            Engine::GAPI->DrawParticlesSimple();
-
-            // The two refraction targets are engine-owned (render-graph physical textures); draw the
-            // collected particle instances into them directly instead of routing them through GothicAPI.
-            DrawFrameParticles(
-                Engine::GAPI->GetFrameParticles(),
-                Engine::GAPI->GetFrameParticleInfo(),
-                graph.GetPhysicalTexture( particleColorHandle ),
-                graph.GetPhysicalTexture( particleDistortionHandle ) );
-        };
-    });
-    
-    graph.AddPass( RG_PASS_NAME("Draw SkeletalVN"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this](const RenderGraph&) {
-            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw SkeletalVN" );
-
-            Engine::GAPI->DrawSkeletalVN();   // ghosts themselves are transparency-queue content
-
-            // for Post-Processing FX we use the full viewport for now
-            // TODO: introduce UV-scaling to PostFX
-            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-        };
-    });
-
-    // Everything alpha-blended in one back-to-front pass: after the opaque scene, sky and water, but BEFORE
-    // the fog, god rays and particles - drawn after those, alpha surfaces get pasted onto an already-fogged
-    // scene and never fog themselves.
-    graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-        builder.Read( backBufferHandle );
-        builder.Write( backBufferHandle );
-
-        pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph ) {
-            // Bind depth explicitly: passes inherit OM state, and a preceding PfxRenderer blit can
-            // leave an RTV with no DSV, silently killing depth testing here.
-            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
-            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
-            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
-                DepthStencilBuffer->GetDepthStencilView().Get() );
-
-            zCCamera::GetCamera()->Activate();
-            // Camera->Activate breaks the viewport
-            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-
-            CollectTransparencyQueue();
-            DrawTransparencyQueue();
-        };
-    } );
-
+    // Fog and god rays run BEFORE anything transparent. The fullscreen pass fogs by the depth of the
+    // opaque surface behind a pixel, which for a flame or a decal against the sky is the far plane -
+    // it dimmed them to ~15% and left a hard edge along every silhouette. Everything drawn from here
+    // on fogs itself from its own depth instead (BindTransparencyFog / Shaders/TransparencyFog.h).
     if (rendererState.RendererSettings.DrawFog &&
                 Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
                 zBSP_MODE_OUTDOOR && !compositionActive) {
@@ -4159,60 +4101,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             };
         });
     }
-    
-    if (Engine::GAPI->GetRainFXWeight() > 0.0f) {
-        if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
-            graph.AddPass( RG_PASS_NAME("Draw Rain"), [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( backBufferHandle );
-                builder.Write( reactiveMaskResource );
-                builder.Write( backBufferHandle );
-
-                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
-                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain" );
-                    
-                    auto reactiveMask = g.GetPhysicalTexture(reactiveMaskResource);
-                    ID3D11RenderTargetView* rtvs[] = {
-                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
-                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
-                    };
-                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
-
-                    Effects->DrawRain();
-                };
-            });
-        } else {
-            graph.AddPass( RG_PASS_NAME("Draw Rain CS"), [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( backBufferHandle );
-                builder.Write( reactiveMaskResource );
-                builder.Write( backBufferHandle );
-
-                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
-                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain (CS)" );
-                    auto reactiveMask = g.GetPhysicalTexture( reactiveMaskResource );
-                    ID3D11RenderTargetView* rtvs[] = {
-                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
-                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
-                    };
-                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
-                    Effects->DrawRain_CS();
-                };
-            });
-        }
-    }
-    
-    graph.AddPass( RG_PASS_NAME("Reset RenderTargets"), [&]( RGBuilder& builder, RenderPass& pass )
-    {
-        builder.Write( backBufferHandle );
-        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
-            auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
-            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
-                DepthStencilBuffer->GetDepthStencilView().Get() );
-
-            // Set viewport for gothics rendering
-            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
-        };
-    });
-    
     
     if (rendererState.RendererSettings.EnableGodRays &&
         Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
@@ -4283,6 +4171,139 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             };
         });
     }
+    
+    graph.AddPass( RG_PASS_NAME("Reset RenderTargets (Fog)"), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
+        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+            auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+        };
+    });
+
+    graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
+        auto size = GetResolution();
+
+        auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
+        auto particleDistortionHandle = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"PfxDistortion" });
+
+        builder.Write( particleColorHandle );
+        builder.Write( particleDistortionHandle );
+        builder.Read( particleColorHandle );
+        builder.Read( particleDistortionHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
+
+            Engine::GAPI->ResetRenderStates();
+            Engine::GAPI->DrawParticlesSimple();
+
+            // The two refraction targets are engine-owned (render-graph physical textures); draw the
+            // collected particle instances into them directly instead of routing them through GothicAPI.
+            DrawFrameParticles(
+                Engine::GAPI->GetFrameParticles(),
+                Engine::GAPI->GetFrameParticleInfo(),
+                graph.GetPhysicalTexture( particleColorHandle ),
+                graph.GetPhysicalTexture( particleDistortionHandle ) );
+        };
+    });
+    
+    graph.AddPass( RG_PASS_NAME("Draw SkeletalVN"), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw SkeletalVN" );
+
+            Engine::GAPI->DrawSkeletalVN();   // ghosts themselves are transparency-queue content
+
+            // for Post-Processing FX we use the full viewport for now
+            // TODO: introduce UV-scaling to PostFX
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+        };
+    });
+
+    // Everything alpha-blended in one back-to-front pass: after the opaque scene, sky, water and the fog
+    // pass. Each run binds its own fog mode (BindTransparencyFog) so the surfaces fog by their own depth.
+    graph.AddPass( RG_PASS_NAME( "Draw Transparency" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph ) {
+            // Bind depth explicitly: passes inherit OM state, and a preceding PfxRenderer blit can
+            // leave an RTV with no DSV, silently killing depth testing here.
+            auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+            GetContext()->PSSetShaderResources( 0, 4, s_nullSRVs ); // depth may still be bound as SRV
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+
+            zCCamera::GetCamera()->Activate();
+            // Camera->Activate breaks the viewport
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+
+            CollectTransparencyQueue();
+            DrawTransparencyQueue();
+        };
+    } );
+
+    if (Engine::GAPI->GetRainFXWeight() > 0.0f) {
+        if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
+            graph.AddPass( RG_PASS_NAME("Draw Rain"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( reactiveMaskResource );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain" );
+                    
+                    auto reactiveMask = g.GetPhysicalTexture(reactiveMaskResource);
+                    ID3D11RenderTargetView* rtvs[] = {
+                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
+                    };
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
+
+                    Effects->DrawRain();
+                };
+            });
+        } else {
+            graph.AddPass( RG_PASS_NAME("Draw Rain CS"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( reactiveMaskResource );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain (CS)" );
+                    auto reactiveMask = g.GetPhysicalTexture( reactiveMaskResource );
+                    ID3D11RenderTargetView* rtvs[] = {
+                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
+                    };
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
+                    Effects->DrawRain_CS();
+                };
+            });
+        }
+    }
+    
+    graph.AddPass( RG_PASS_NAME("Reset RenderTargets"), [&]( RGBuilder& builder, RenderPass& pass )
+    {
+        builder.Write( backBufferHandle );
+        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+            BindTransparencyFog( ETransparencyFog::Off );
+            // Transparency leaves blending on; the blits below (scale, HDR-off copy) must not inherit it.
+            SetDefaultStates();
+            auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+
+            // Set viewport for gothics rendering
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+        };
+    });
+    
     
     // NOTE: Depth of Field, Bloom and HDR/Tonemapping are Post-processing "B" effects and now run
     // AFTER upscaling (at presentation resolution) — see the relocated passes near the end of this
@@ -4495,6 +4516,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this, sceneHDRAt, ldrTarget, sharpenSrc](const RenderGraph&) {
+                    // Opaque copy like RenderHDR: the sharpen temp is never cleared, so a leaked blend state smears frames.
+                    SetDefaultStates();
                     PfxRenderer->CopyTextureToRTV( sceneHDRAt()->GetShaderResView(), ldrTarget->GetRenderTargetView(), GetBackbufferResolution() );
                 };
             } );
@@ -4818,6 +4841,7 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
                 Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
+                BindTransparencyFog( TransparencyFogModeForAlphaFunc( alphaFunc ) );
                 UpdateRenderStates();
                 lastAlphaFunc = alphaFunc;
             }
@@ -4850,12 +4874,14 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
 
                 // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else
                 // blends. Depth state is left as the base pass set it (test on, write off).
-                if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) {
+                const bool envAdditive = mat->GetMatGroup() == zMAT_GROUP_WATER;
+                if ( envAdditive ) {
                     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
                 } else {
                     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
                 }
                 Engine::GAPI->GetRendererState().BlendState.SetDirty();
+                BindTransparencyFog( envAdditive ? ETransparencyFog::Add : ETransparencyFog::Blend );
                 UpdateRenderStates();
 
                 envData.Params = float4( Engine::GAPI->GetEnvMapStageAlpha( mat ), 0.0f, 0.0f, 0.0f );
@@ -4931,6 +4957,7 @@ void D3D11GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 
     D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
     SetRenderingStage( DES_GHOST );
+    BindTransparencyFog( ETransparencyFog::Blend );
 
     Engine::GAPI->BeginTransparencyVobRun();
     for ( auto const& item : items ) {
@@ -5067,6 +5094,8 @@ void D3D11GraphicsEngine::DrawTransparencyQueue() {
         } );
 
     DrawWorldTransparencyDepthOnly();
+
+    BindTransparencyFog( ETransparencyFog::Off );
 
     // Not resettable inside the emitter: one batch's instances can span several runs.
     for ( auto const& alphaMesh : m_AlphaMeshes ) {
@@ -7240,6 +7269,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
+    BindTransparencyFog( ETransparencyFog::Blend );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -7432,6 +7462,8 @@ void D3D11GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
                 ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
                 ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
             }
+
+            BindTransparencyFog( TransparencyFogModeForAlphaFunc( mat->GetAlphaFunc() ) );
 
             // Get diffuse and normalmap
             srv[0] = GetSrvFromGfx( surface->GetEngineTexture() );
@@ -8199,6 +8231,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     // Set up alpha
     if ( !lighting ) {
         SetActivePixelShader( PShaderID::PS_Transparency );
+        BindTransparencyFog( ETransparencyFog::Blend );
         Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
     } else {
@@ -8582,6 +8615,7 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             const bool modulate = (alphaFunc == zMAT_ALPHA_FUNC_MUL || alphaFunc == zMAT_ALPHA_FUNC_MUL2);
             SetActivePixelShader( modulate ? PShaderID::PS_Simple : litShader );
             BindActivePixelShader();
+            BindTransparencyFog( TransparencyFogModeForAlphaFunc( alphaFunc ) );
 
             if ( !modulate ) {
                 ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &state.GraphicsState, sizeof( state.GraphicsState ) );
@@ -8912,6 +8946,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
                     }
 
                     lastBlend = currentBlend;
+                    BindTransparencyFog( TransparencyFogModeForAlphaFunc( currentBlend ) );
                     UpdateRenderStates();
                 }
             } else {
@@ -8954,6 +8989,54 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
                     itm2nd->Indices.size() );
             }
         }
+    }
+}
+
+/** Maps a Gothic alpha func onto the fog target a surface of that blend mode has to fade into */
+D3D11GraphicsEngine::ETransparencyFog D3D11GraphicsEngine::TransparencyFogModeForAlphaFunc( int alphaFunc ) {
+    switch ( alphaFunc ) {
+    case zRND_ALPHA_FUNC_ADD:  return ETransparencyFog::Add;
+    case zRND_ALPHA_FUNC_MUL:
+    case zRND_ALPHA_FUNC_MUL2: return ETransparencyFog::Modulate;
+    default:                   return ETransparencyFog::Blend;
+    }
+}
+
+/** Binds the self-fog constants for transparent surfaces */
+void D3D11GraphicsEngine::BindTransparencyFog( ETransparencyFog mode ) {
+    // Only the fullscreen pass' own conditions; anywhere it doesn't run, nothing fogs itself either.
+    const bool fogActive = mode != ETransparencyFog::Off
+        && Engine::GAPI->GetRendererState().RendererSettings.DrawFog
+        && Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
+
+    // Called per blend-mode switch, so the (matrix-inverting) constant build is cached per frame.
+    const unsigned int frame = Engine::GAPI->GetFrameNumber();
+    if ( fogActive && m_TransparencyFogFrame != frame ) {
+        HeightfogConstantBuffer hf;
+        D3D11PfxRenderer::BuildHeightfogCB( hf );
+
+        XMStoreFloat4x4( &m_TransparencyFogCB.TF_InvView, XMMatrixInverse( nullptr, Engine::GAPI->GetViewMatrixXM() ) );
+        m_TransparencyFogCB.TF_CameraPosition = hf.CameraPosition;
+        m_TransparencyFogCB.TF_FogHeight = hf.HF_FogHeight;
+        m_TransparencyFogCB.TF_HeightFalloff = hf.HF_HeightFalloff;
+        m_TransparencyFogCB.TF_GlobalDensity = hf.HF_GlobalDensity;
+        m_TransparencyFogCB.TF_WeightZNear = hf.HF_WeightZNear;
+        m_TransparencyFogCB.TF_WeightZFar = hf.HF_WeightZFar;
+        m_TransparencyFogCB.TF_FogColorMod = hf.HF_FogColorMod;
+        m_TransparencyFogFrame = frame;
+    }
+
+    TransparencyFogConstantBuffer cb = fogActive ? m_TransparencyFogCB : TransparencyFogConstantBuffer{};
+    cb.TF_Mode = fogActive ? static_cast<int>(mode) : 0;
+
+    ConstantBufferPool* pool = GetConstantBufferPool();
+    pool->BindPS( 7, pool->Allocate( &cb, sizeof( cb ) ) );
+
+    if ( fogActive ) {
+        // b1 in every shader that includes TransparencyFog.h; bound by slot so a shader switch
+        // inside the pass keeps it.
+        GSky* sky = Engine::GAPI->GetSky();
+        pool->BindPS( 1, pool->Allocate( &sky->GetAtmosphereCB(), sizeof( sky->GetAtmosphereCB() ) ) );
     }
 }
 
@@ -9032,6 +9115,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     UpdateRenderStates();
 
+    BindTransparencyFog( ETransparencyFog::Add );
+
     for ( auto const& textureParticleRenderInfo : pvecAdd ) {
         zCTexture* tx = std::get<0>( textureParticleRenderInfo );
         std::vector<ParticleInstanceInfo>& instances = *std::get<2>( textureParticleRenderInfo );
@@ -9084,6 +9169,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
             state.BlendState.SetDirty();
 
             lastBlendMode = partInfo.BlendMode;
+            BindTransparencyFog( TransparencyFogModeForAlphaFunc( partInfo.BlendMode ) );
             UpdateRenderStates();
         }
 
@@ -9096,6 +9182,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     D3D11PipelineStateCache::SetPrimitiveTopology( Context.Get(), D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     state.BlendState.SetDefault();
     state.BlendState.SetDirty();
+    BindTransparencyFog( ETransparencyFog::Off );
 
     bufferParticleColor->BindToPixelShader( Context.Get(), 1 );
     bufferParticleDistortion->BindToPixelShader( Context.Get(), 2 );

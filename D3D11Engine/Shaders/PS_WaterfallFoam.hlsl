@@ -1,4 +1,5 @@
 #include <AtmosphericScattering.h>
+#include <TransparencyFog.h>
 
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
@@ -41,5 +42,5 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 		colour *= float4(colourRGB, colourRGB, colourRGB, 0.80f);
 	}	
 
-	return colour;
+	return float4(ApplyTransparencyFog(colour.rgb, Input.vViewPosition), colour.a);
 }

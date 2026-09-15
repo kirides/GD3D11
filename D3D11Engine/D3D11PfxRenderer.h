@@ -22,6 +22,8 @@ class D3D11PFX_SAO;
 class D3D11PFX_SimpleSharpen;
 class D3D11PFX_ASSAO;
 
+struct HeightfogConstantBuffer;
+
 class D3D11PfxRenderer {
 public:
     D3D11PfxRenderer();
@@ -35,6 +37,10 @@ public:
 
     /** Renders the heightfog */
     XRESULT RenderHeightfog();
+
+    /** Fills the heightfog constants for the current frame. Also used by transparent passes that
+        have to fog themselves instead of relying on the fullscreen pass. */
+    static void BuildHeightfogCB( HeightfogConstantBuffer& cb );
 
     /** Renders the distance blur effect */
     XRESULT RenderDistanceBlur(ID3D11ShaderResourceView* diffuse );

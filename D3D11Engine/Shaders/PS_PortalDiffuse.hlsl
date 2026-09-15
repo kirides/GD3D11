@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
 #include <AtmosphericScattering.h>
+#include <TransparencyFog.h>
 
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
@@ -60,7 +61,7 @@ float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / darknessFactor;
 
 //apply fade
 PS_OUTPUT output;
-output.vDiffuse = float4(color.rgb, percentageFade);
+output.vDiffuse = float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), percentageFade);
 
 return output;
 }
