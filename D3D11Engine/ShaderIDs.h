@@ -58,6 +58,7 @@ enum class PShaderID : size_t {
     PS_Rain_Snow,
     PS_Transparency,
     PS_TransparencySkel,
+    PS_TransparencyLitFP,
     PS_World,
     PS_World_NoMV,
     PS_QuadMarkLit,

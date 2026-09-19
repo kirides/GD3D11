@@ -3151,70 +3151,79 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
             g->BindActivePixelShader();
 
             // Update transparency alpha information
-            GhostAlphaConstantBuffer gacb;
+            GhostAlphaConstantBuffer gacb = {};
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
             cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
+            VobInfo* vob = TransVobInfo.normalVob;
             // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
             // Extract3DSMeshFromVisual2Async) - skip until Meshes is safe to iterate.
-            if ( !TransVobInfo.normalVob->VisualInfo->GetIsReady() ) return;
+            if ( !vob->VisualInfo->GetIsReady() ) return;
 
             g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
-            
-            TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
+
+            vob->UpdateVobConstantBuffer( cbPerInstance );
             cbPool->BindVS(1 , cbPool->Allocate(&cbPerInstance, sizeof(cbPerInstance)));
 
-            // We need to do Z-prepass first
-            g->UnbindActivePS();
-            D3D11PipelineStateCache::SetPixelShader( g->GetContext().Get(), nullptr );
-
-            for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first ) {
-                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
-                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            aniTex->Bind( 0 );
-                        }
-                    }
-                }
-
-                for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
-                        meshInfo->GetMeshVertexBuffer(),
-                        meshInfo->GetMeshIndexBuffer(),
-                        meshInfo->Indices.size() );
-                }
-            }
-            RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
-
-            // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( PShaderID::PS_Transparency );
-            g->BindActivePixelShader();
-
-            // Update transparency alpha information
-            GhostAlphaConstantBuffer gacb;
+            GhostAlphaConstantBuffer gacb = {};
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
+            // Green channel, as the instanced path's R8G8B8A8 INSTANCE_COLOR delivers it in vDiffuse.y
+            gacb.GA_VertLighting = static_cast<float>( (vob->GroundColor >> 8) & 0xFF ) / 255.0f;
 
-            for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first ) {
-                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
-                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            const float ffAlphaRef = RendererState.GraphicsState.FF_AlphaRef;
+            const float alphaRef = ffAlphaRef > 0.0f ? ffAlphaRef : 170.0f / 255.0f;
+
+            // Alpha-tested materials clip in both passes, so cutout texels neither write depth nor blend.
+            auto drawMeshes = [&]() {
+                float boundRef = -1.0f;
+                for ( auto const& [material, meshes] : vob->VisualInfo->Meshes ) {
+                    float ref = 0.0f;
+                    if ( material ) {
+                        zCTexture* aniTex = material->GetAniTexture();
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                             aniTex->Bind( 0 );
                         }
+                        const int alphaFunc = material->GetAlphaFunc();
+                        const bool blended = alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD;
+                        if ( !blended && ((aniTex && aniTex->HasAlphaChannel()) || material->HasAlphaTest()) ) {
+                            ref = alphaRef;
+                        }
+                    }
+                    if ( ref != boundRef ) {
+                        gacb.GA_AlphaRef = ref;
+                        g->GetActivePS()->UpdateBuffer( "GhostAlphaInfo", &gacb, sizeof( gacb ) );
+                        boundRef = ref;
+                    }
+
+                    for ( auto const& meshInfo : meshes ) {
+                        g->DrawVertexBufferIndexed(
+                            meshInfo->GetMeshVertexBuffer(),
+                            meshInfo->GetMeshIndexBuffer(),
+                            meshInfo->Indices.size() );
                     }
                 }
+            };
 
-                for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
-                        meshInfo->GetMeshVertexBuffer(),
-                        meshInfo->GetMeshIndexBuffer(),
-                        meshInfo->Indices.size() );
-                }
-            }
+            // Z-prepass first, so the ghost's own back layers don't blend through its front
+            g->SetActivePixelShader( PShaderID::PS_Transparency );
+            g->BindActivePixelShader();
+            RendererState.BlendState.ColorWritesEnabled = false;
+            RendererState.BlendState.SetDirty();
+            g->UpdateRenderStates();
+            drawMeshes();
+            RendererState.BlendState.ColorWritesEnabled = true;
+            RendererState.BlendState.SetDirty();
+            g->UpdateRenderStates();
+
+            // Lit like the opaque vobs when the clustered light data exists, flat texture otherwise
+            const bool lit = g->BindClusteredLightingToPixelShader();
+            g->SetActivePixelShader( lit ? PShaderID::PS_TransparencyLitFP : PShaderID::PS_Transparency );
+            g->BindActivePixelShader();
+            drawMeshes();
         }
     }
 }

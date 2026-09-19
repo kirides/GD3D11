@@ -7,7 +7,9 @@ cbuffer GhostAlphaInfo : register( b0 )
 {
 	float2 GA_ViewportSize;
 	float GA_Alpha;
-	float GA_Pad;
+	float GA_AlphaRef;
+	float GA_VertLighting;
+	float3 GA_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -41,5 +43,14 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	//color *= float4(screenLuma, screenLuma, screenLuma, GA_Alpha);
-	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a * GA_Alpha);
+
+	// Alpha-tested materials keep their cutout; the surviving texels fade as a whole.
+	float alpha = color.a * GA_Alpha;
+	[branch]
+	if (GA_AlphaRef > 0.0f)
+	{
+		clip(color.a - GA_AlphaRef);
+		alpha = GA_Alpha;
+	}
+	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), alpha);
 }

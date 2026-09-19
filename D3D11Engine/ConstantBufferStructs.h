@@ -402,7 +402,9 @@ struct ScreenFadeConstantBuffer {
 struct GhostAlphaConstantBuffer {
     float2 GA_ViewportSize;
     float GA_Alpha;
-    float GA_Pad;
+    float GA_AlphaRef;      // > 0: clip at this ref, survivors fade by GA_Alpha alone
+    float GA_VertLighting;  // ground-poly light, what the instanced vob path feeds as vDiffuse.y
+    float3 GA_Pad;
 };
 
 struct GrassConstantBuffer {

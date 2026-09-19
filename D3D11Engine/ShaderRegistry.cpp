@@ -504,6 +504,11 @@ void ShaderRegistry::Build() {
             .with_macros( shadowMacroBuilder )
             .with_category( ShaderCategory::LightsAndShadows ) );
 
+        // Ghost/fading static VOBs (zClearView etc.), same light data as the lit quad marks.
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_TransparencyLitFP>( "PS_TransparencyLitFP.hlsl" )
+            .with_macros( shadowMacroBuilder )
+            .with_category( ShaderCategory::LightsAndShadows ) );
+
         // Forward+ pixel shader variants
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_Diffuse>( "PS_Diffuse.hlsl" )
             .with_macros(shadowMacroBuilder)

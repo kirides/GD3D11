@@ -4966,6 +4966,8 @@ void D3D11GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
             Engine::GAPI->DrawTransparencyVob( transparencyVobs[index] );
         }
     }
+    // Static ghosts may have bound the clustered light data
+    UnbindClusteredLightingFromPixelShader();
 
     SetRenderingStage( oldStage );
 }
@@ -8534,6 +8536,59 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     Context->IASetVertexBuffers( 1, 1, &nullBuf, &nullStride, &nullOffset );
 }
 
+/** Binds sun, CSM and clustered point-light data for the Forward+ transparent shaders
+    (PS_QuadMarkLitFP, PS_TransparencyLitFP). False when tiled lighting isn't active. */
+bool D3D11GraphicsEngine::BindClusteredLightingToPixelShader() {
+    const bool useTiledLighting = !FeatureLevel10Compatibility &&
+        Engine::GAPI->GetRendererState().RendererSettings.EnableTiledLighting;
+    D3D11TiledDeferredShading* tiledDeferred = useTiledLighting ? ShadowMaps->GetTiledDeferred() : nullptr;
+    if ( !tiledDeferred ) return false;
+
+    GSky* sky = Engine::GAPI->GetSky();
+    auto atmoCB = sky->GetAtmosphereCB();
+    BindDynamicCBToPixelShader( 1, AllocateDynamicCB( &atmoCB, sizeof( atmoCB ) ) );
+
+    DS_ScreenQuadConstantBuffer scb = ShadowMaps->FillSunCSMConstantBuffer();
+    BindDynamicCBToPixelShader( 4, AllocateDynamicCB( &scb, sizeof( scb ) ) );
+
+    auto res = GetResolution();
+    ForwardPlusTileConstantBuffer tileCB = {};
+    tileCB.ViewportSize = float2( static_cast<float>( res.x ), static_cast<float>( res.y ) );
+    tileCB.NumTilesX = ( static_cast<uint32_t>( res.x ) + 15 ) / 16;
+    tileCB.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
+    tileCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
+    tileCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
+    BindDynamicCBToPixelShader( 5, AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
+
+    ShadowMaps->BindToPixelShader( GetContext().Get(), 3 );
+    ShadowMaps->BindSampler( GetContext().Get(), 2 );
+    GetBlueNoiseTexture()->BindToPixelShader( 6 );
+
+    ID3D11ShaderResourceView* lightSRVs[4] = {
+        tiledDeferred->GetLightBufferSRV(),
+        tiledDeferred->GetLightGridSRV(),
+        nullptr,
+        nullptr,
+    };
+    GetContext()->PSSetShaderResources( 8, 4, lightSRVs );
+    // Overlay tier at t14, core tier at t15; either may be null - a light only ever carries the half of
+    // its ShadowCubeIndex whose array exists.
+    ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
+        ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
+    GetContext()->PSSetShaderResources( 14, 1, &dynCubeSRV );
+    ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
+        ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
+    GetContext()->PSSetShaderResources( 15, 1, &staticCubeSRV );
+    return true;
+}
+
+void D3D11GraphicsEngine::UnbindClusteredLightingFromPixelShader() {
+    GetContext()->PSSetShaderResources( 3, 1, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 6, 1, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 8, 4, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 14, 2, s_nullSRVs ); // dynamic + static-only shadow cubes
+}
+
 /** One run of quad marks (blood, spell ground marks). Replaces the old DrawQuadMarks/DrawMQuadMarks
     split - MUL/MUL2 are no longer deferred to a later pass, every blend mode is handled per item. */
 void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> items ) {
@@ -8556,51 +8611,9 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    // Real sun+CSM-shadow+clustered-point-light shading needs the same light/shadow data the
-    // tiled-deferred and Forward+ renderers produce; fall back to the flat day-factor shader when
-    // that path isn't active (legacy per-pixel deferred point lights are out of scope here).
-    const bool useTiledLighting = !FeatureLevel10Compatibility &&
-        Engine::GAPI->GetRendererState().RendererSettings.EnableTiledLighting;
-    D3D11TiledDeferredShading* tiledDeferred = useTiledLighting ? ShadowMaps->GetTiledDeferred() : nullptr;
-    const PShaderID litShader = tiledDeferred ? PShaderID::PS_QuadMarkLitFP : PShaderID::PS_QuadMarkLit;
-
-    if ( tiledDeferred ) {
-        GSky* sky = Engine::GAPI->GetSky();
-        auto atmoCB = sky->GetAtmosphereCB();
-        BindDynamicCBToPixelShader( 1, AllocateDynamicCB( &atmoCB, sizeof( atmoCB ) ) );
-
-        DS_ScreenQuadConstantBuffer scb = ShadowMaps->FillSunCSMConstantBuffer();
-        BindDynamicCBToPixelShader( 4, AllocateDynamicCB( &scb, sizeof( scb ) ) );
-
-        auto res = GetResolution();
-        ForwardPlusTileConstantBuffer tileCB = {};
-        tileCB.ViewportSize = float2( static_cast<float>( res.x ), static_cast<float>( res.y ) );
-        tileCB.NumTilesX = ( static_cast<uint32_t>( res.x ) + 15 ) / 16;
-        tileCB.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
-        tileCB.ClusterNearZ = Engine::GAPI->GetNearPlane();
-        tileCB.ClusterFarZ = std::max( CLUSTER_MIN_FAR_Z, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
-        BindDynamicCBToPixelShader( 5, AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
-
-        ShadowMaps->BindToPixelShader( GetContext().Get(), 3 );
-        ShadowMaps->BindSampler( GetContext().Get(), 2 );
-        GetBlueNoiseTexture()->BindToPixelShader( 6 );
-
-        ID3D11ShaderResourceView* lightSRVs[4] = {
-            tiledDeferred->GetLightBufferSRV(),
-            tiledDeferred->GetLightGridSRV(),
-            nullptr,
-            nullptr,
-        };
-        GetContext()->PSSetShaderResources( 8, 4, lightSRVs );
-        // Overlay tier at t14, core tier at t15; either may be null - a light only ever carries the half of
-        // its ShadowCubeIndex whose array exists.
-        ID3D11ShaderResourceView* dynCubeSRV = tiledDeferred->IsDynShadowArrayCreated()
-            ? tiledDeferred->GetShadowDynCubeArraySRV() : nullptr;
-        GetContext()->PSSetShaderResources( 14, 1, &dynCubeSRV );
-        ID3D11ShaderResourceView* staticCubeSRV = tiledDeferred->IsStaticShadowArrayCreated()
-            ? tiledDeferred->GetShadowStaticCubeArraySRV() : nullptr;
-        GetContext()->PSSetShaderResources( 15, 1, &staticCubeSRV );
-    }
+    // Flat day-factor shader when the clustered light data isn't there.
+    const bool tiledLit = BindClusteredLightingToPixelShader();
+    const PShaderID litShader = tiledLit ? PShaderID::PS_QuadMarkLitFP : PShaderID::PS_QuadMarkLit;
 
     int lastAlphaFunc = -1;
     for ( auto const& item : items ) {
@@ -8630,7 +8643,7 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             if ( !modulate ) {
                 ActivePS->UpdateBuffer( "FFPipelineConstantBuffer", &state.GraphicsState, sizeof( state.GraphicsState ) );
 
-                if ( !tiledDeferred ) {
+                if ( !tiledLit ) {
                     const float skyLight = Engine::GAPI->GetSkyDayFactor();
                     const float4 quadMarkLight( skyLight, skyLight, skyLight, 0.0f );
                     ActivePS->UpdateBuffer( "QuadMarkLightCB", &quadMarkLight, sizeof( quadMarkLight ) );
@@ -8680,11 +8693,8 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         DrawVertexBuffer( quadMark.Info->Mesh.get(), quadMark.Info->NumVertices );
     }
 
-    if ( tiledDeferred ) {
-        GetContext()->PSSetShaderResources( 3, 1, s_nullSRVs );
-        GetContext()->PSSetShaderResources( 6, 1, s_nullSRVs );
-        GetContext()->PSSetShaderResources( 8, 4, s_nullSRVs );
-        GetContext()->PSSetShaderResources( 14, 2, s_nullSRVs ); // dynamic + static-only shadow cubes
+    if ( tiledLit ) {
+        UnbindClusteredLightingFromPixelShader();
     }
 }
 
