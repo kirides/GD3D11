@@ -35,6 +35,9 @@ SamplerComparisonState  shadowCmp : register(s2);
 #undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);
 #include "include/AOCB.hlsl"
+// PSAlphaBlendBindless only: 0 = plain blend, else ADD with the opaque scene copy at heap index (value - 1).
+cbuffer OpaqueSceneAddCB : register(b8) { uint OpaqueSceneAdd; };
+#include "include/GammaSpaceAdd.hlsl"
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
 SamplerState smpAoClamp : register(s1);
 // SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp declared above.
@@ -292,7 +295,11 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     // ZenGin blend alpha = material color alpha x texture alpha; i.col is ground light, not an alpha.
-    return float4( rgb, t.a * MatAlpha );
+    float a = t.a * MatAlpha;
+    [branch]
+    if ( OpaqueSceneAdd != 0 && a > ( 1.0 / 255.0 ) )
+        return float4( GammaSpaceAddSource( OpaqueSceneAdd - 1, i.clip.xy, GSA_ToSrgb( max( rgb, 0.0 ) ), a ), a );
+    return float4( rgb, a );
 }
 
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET

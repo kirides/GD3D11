@@ -200,11 +200,7 @@ cbuffer TransparencyViewCB : register(b4) { float4x4 TransparencyView; };
 
 struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
 
-// Inverse of SrgbToLinear, unclamped above 1 so HDR scene values round-trip.
-float3 LinearToSrgbExt( float3 c )
-{
-    return select( c <= 0.0031308, c * 12.92, 1.055 * pow( c, 1.0 / 2.4 ) - 0.055 );
-}
+#include "include/GammaSpaceAdd.hlsl"
 
 // Shares VS_IN + the world input layout with VSMain; NORMAL is simply not read. This ONE blob feeds both
 // the blended color PSO and the depth-fill PSO that follows it — same rule as the water Z-prepass: a
@@ -229,16 +225,9 @@ float4 PSTransparent( VST_OUT i ) : SV_TARGET
     c *= i.col.bgra;
     c *= TextureFactor;
 
-    // Additive in linear HDR is several times weaker than DX7's gamma-space add over a bright background.
-    // Output the increment that lands on lin(srgb(dst) + a*c), measured against the opaque scene behind.
     [branch]
     if ( GammaSpaceAdd != 0 && OpaqueSceneIndex != 0xFFFFFFFFu && c.a > ( 1.0 / 255.0 ) )
-    {
-        Texture2D opaqueScene = ResourceDescriptorHeap[OpaqueSceneIndex];
-        float3 dst = max( opaqueScene.Load( int3( i.clip.xy, 0 ) ).rgb, 0.0 );
-        float3 target = SrgbToLinear( LinearToSrgbExt( dst ) + c.a * c.rgb );
-        return float4( max( target - dst, 0.0 ) / c.a, c.a );
-    }
+        return float4( GammaSpaceAddSource( OpaqueSceneIndex, i.clip.xy, c.rgb, c.a ), c.a );
 
     // The scene target is linear HDR on D3D12, so the sampled sRGB texel has to be linearized like every
     // other albedo read; the alpha rides through untouched for the blend.

@@ -148,6 +148,8 @@ bool D3D12PipelineState::CreateWorld() {
     // RootDataStatic: UploadMotionConstants writes this once per frame, well before the G-buffer
     // prepass — the only consumer — records anything.
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB
+    // 14: b8 OpaqueSceneAddCB, read only by PSAlphaBlendBindless. This is the 64th and last root DWORD.
+    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );
 
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
@@ -1553,9 +1555,11 @@ bool D3D12PipelineState::CreateParticle() {
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
     rs.AddConstants( 1, 4, D3D12_SHADER_VISIBILITY_VERTEX );   // 1: b1 camera pos
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 2: t0 diffuse
+    rs.AddConstants( 2, 2, D3D12_SHADER_VISIBILITY_PIXEL );    // 3: b2 { opaque scene index, gamma-space add }
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
 
-    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     Particle.RootSig = rs.RootSig();
 

@@ -1468,6 +1468,8 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const UINT frame = m_FrameIndex;
+	const UINT opaqueScene = GetOpaqueSceneSrvIndex();
+	uint32_t lastGammaAdd = UINT32_MAX;
 	ID3D12PipelineState* lastPso = nullptr;
 	unsigned int drawnTris = 0;
 
@@ -1485,6 +1487,17 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		}
 		if ( !pso ) continue;
 		if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
+
+		// b2: gamma-space add for SrcAlpha/One buckets (see include/GammaSpaceAdd.hlsl).
+		const GothicBlendStateInfo* bs = infoIt != info.end() ? &infoIt->second.BlendState : nullptr;
+		const bool additive = bs && bs->BlendEnabled && bs->SrcBlend == GothicBlendStateInfo::BF_SRC_ALPHA
+			&& bs->DestBlend == GothicBlendStateInfo::BF_ONE && bs->BlendOp == GothicBlendStateInfo::BO_BLEND_OP_ADD;
+		const uint32_t gammaAdd = ( additive && opaqueScene != 0xFFFFFFFFu ) ? 1u : 0u;
+		if ( gammaAdd != lastGammaAdd ) {
+			const uint32_t psConsts[2] = { opaqueScene, gammaAdd };
+			m_CmdList->SetGraphicsRoot32BitConstants( 3, 2, psConsts, 0 );
+			lastGammaAdd = gammaAdd;
+		}
 
 		const UINT numInstances = static_cast<UINT>(instances.size());
 		const UINT instBytes = numInstances * static_cast<UINT>(sizeof( ParticleInstanceInfo ));

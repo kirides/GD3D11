@@ -25,14 +25,17 @@ cbuffer FxWorldCB    : register( b1 ) { float4x4 World; };
 // into the G-buffer alpha instead), and PS_Simple does NOT alpha-test.
 #define FX_ALPHA_TEST   1
 #define FX_VERTEX_COLOR 2
+#define FX_GAMMA_ADD    4   // ADD draw: reproduce DX7's gamma-space sum against OpaqueSceneIndex
 
 cbuffer FxMaterialCB : register( b2 )
 {
     uint  DiffuseIndex;     // SRV heap slot of the diffuse texture (bindless)
     uint  Flags;            // FX_* bits above
     float AlphaRef;         // Gothic's live FF_AlphaRef (GraphicsState), the same value D3D11 uploads
-    float _FxPad;
+    uint  OpaqueSceneIndex; // this frame's opaque scene copy, read only with FX_GAMMA_ADD
 };
+
+#include "include/GammaSpaceAdd.hlsl"
 
 SamplerState smp : register( s0 );
 
@@ -82,6 +85,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // Poly strips / MUL quad marks: PS_Simple's `color *= Input.vDiffuse`. PS_World deliberately does NOT do
     // this — it writes the vertex color into the G-buffer alpha and leaves RGB at the texture value, so
     // modulating here would blacken a mark sitting on geometry with dark baked lightStatic.
+    [branch]
+    if ( Flags & FX_GAMMA_ADD )
+    {
+        float4 s = ( Flags & FX_VERTEX_COLOR ) ? t * i.color : t;
+        if ( s.a > ( 1.0 / 255.0 ) )
+            return float4( GammaSpaceAddSource( OpaqueSceneIndex, i.clip.xy, s.rgb, s.a ), s.a );
+    }
+
     float4 c = float4( SrgbToLinear( t.rgb ), t.a );
     if ( Flags & FX_VERTEX_COLOR )
         c *= i.color;

@@ -387,6 +387,10 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
     ID3D12PipelineState* const addPso = m_Pipelines.World.VobAlphaAddPSO
         ? m_Pipelines.World.VobAlphaAddPSO.Get() : blendPso;
 
+    // b8: 0 = plain blend, else ADD's gamma-space sum against opaque scene slot (value - 1).
+    const UINT opaqueScene = GetOpaqueSceneSrvIndex();
+    const uint32_t gammaAddValue = opaqueScene != 0xFFFFFFFFu ? opaqueScene + 1 : 0u;
+
     ID3D12PipelineState* current = nullptr;
     unsigned int drawnTriangles = 0;
     for ( const TransparentItem& item : items ) {
@@ -399,6 +403,9 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
         if ( want != current ) {
             m_CmdList->SetPipelineState( want );
             current = want;
+            // The ADD fallback to the blend PSO must not take the ADD shader path.
+            const uint32_t b8 = ( want == addPso && addPso != blendPso ) ? gammaAddValue : 0u;
+            m_CmdList->SetGraphicsRoot32BitConstant( 14, b8, 0 );
         }
 
         const float windHeights[2] = { e.WindMinHeight, e.WindMaxHeight };
