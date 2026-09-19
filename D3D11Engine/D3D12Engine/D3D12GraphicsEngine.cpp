@@ -2197,6 +2197,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
     }
 
+    m_OpaqueSceneCapturedThisFrame = false;
     m_FrameOpen = true;
     return XR_SUCCESS;
 }

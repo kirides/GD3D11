@@ -1787,8 +1787,7 @@ private:
     // geometry is final; since the whole frame executes in submission order on one direct queue, that read
     // always happens-before that write, so no second buffer is needed to avoid a cross-frame race.
     //
-    // This increment only builds the capture — nothing reads these buffers yet. See
-    // D3D12_SSR_WET_SURFACES_PLAN.md (repo root) for the marcher this feeds next.
+    // Readers: the AO pass (previous frame) and the transparent passes' gamma-space add (this frame).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevColor;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SsrPrevColorAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevDepth;
@@ -1798,8 +1797,13 @@ private:
     UINT m_SsrPrevColorSrvSlot = UINT_MAX;
     UINT m_SsrPrevDepthSrvSlot = UINT_MAX;
     bool m_SsrHistoryValid = false;   // false until the first CaptureSsrOpaqueHistory() has run this world/resize
+    bool m_OpaqueSceneCapturedThisFrame = false;   // reset in OnBeginFrame; transparency reads the copy as THIS frame's
     bool CreateSsrHistoryResources( INT2 size );   // (re)builds the two persistent history textures + their SRVs
-    void CaptureSsrOpaqueHistory();                // copies the finished opaque scene color+depth; post-opaque/pre-water
+    // Copies the finished opaque scene color+depth; post-opaque/pre-water. Also the gamma-space-add reference
+    // for the transparent passes, so it must run every frame regardless of SSR settings.
+    void CaptureSsrOpaqueHistory();
+    // This frame's opaque scene copy for the transparent passes, or 0xFFFFFFFF (logged once) if not captured.
+    UINT GetOpaqueSceneSrvIndex();
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT

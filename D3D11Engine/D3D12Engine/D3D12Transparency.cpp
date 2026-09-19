@@ -310,8 +310,7 @@ bool D3D12GraphicsEngine::BindWorldTransparencyFrameState() {
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &tcb, 0 );
 
     // b5[9..10]: opaque scene copy for PSTransparent's gamma-space add (captured pre-water this frame), flag off.
-    const uint32_t sceneRef[2] = {
-        ( m_SsrHistoryValid && m_SsrPrevColorSrvSlot != UINT_MAX ) ? m_SsrPrevColorSrvSlot : 0xFFFFFFFFu, 0u };
+    const uint32_t sceneRef[2] = { GetOpaqueSceneSrvIndex(), 0u };
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, sceneRef, 9 );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
