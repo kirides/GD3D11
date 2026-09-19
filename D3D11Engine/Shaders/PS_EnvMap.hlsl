@@ -11,6 +11,8 @@
 // with the WORLD-space reflection vector instead: same stage, same alpha, stable reflection.
 //--------------------------------------------------------------------------------------
 
+#include <TransparencyFog.h>
+
 SamplerState SS_Linear : register( s0 );
 // t4, matching the slot PS_Diffuse reserves for the reflection cube.
 TextureCube	TX_ReflectionCube : register( t4 );
@@ -52,5 +54,5 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float3 env = TX_ReflectionCube.Sample( SS_Linear, reflWS ).rgb;
 
 	// rgbGen IDENTITY: the env texture is emitted unlit and unmodulated; only the alpha is driven.
-	return float4( env, EM_Params.x );
+	return float4( ApplyTransparencyFog( env, Input.vViewPosition ), EM_Params.x );
 }

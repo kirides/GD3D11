@@ -2,6 +2,8 @@
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
 
+#include <TransparencyFog.h>
+
 cbuffer RefractionInfo : register( b0 )
 {
 	float4x4 RI_Projection;
@@ -50,8 +52,8 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	color *= Input.vDiffuse;
 	
 	PS_OUTPUT o;
-	// Store particle color
-	o.gb0 = color;
+	// Store particle color, fogged by the particle's own depth
+	o.gb0 = float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a);
 	
 	// Center the UV
 	float2 uvCenter = Input.vTexcoord - 0.5f;

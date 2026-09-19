@@ -4,6 +4,7 @@
 // DrawQuadMarkRun.
 #include <AtmosphericScattering.h>
 #include <FFFog.h>
+#include <TransparencyFog.h>
 
 SamplerState SS_Linear : register( s0 );
 Texture2D	TX_Texture0 : register( t0 );
@@ -56,5 +57,5 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	litPixel += FP_ComputePointLighting(wsPosition, Input.vViewPosition, normal,
 		color.rgb, 0.0f, 1.0f, Input.vPosition.xy);
 
-	return float4(litPixel, color.a);
+	return float4(ApplyTransparencyFogWS(litPixel, wsPosition), color.a);
 }

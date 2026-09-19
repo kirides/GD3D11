@@ -29,7 +29,10 @@ SamplerComparisonState  shadowCmp : register(s2);
 // (P2.12) sets the diffuse SRV heap slot as a root constant instead of a per-draw t0 descriptor table, so the
 // whole instanced-VOB pass (color/depth/shadow) submits as one ExecuteIndirect. The classic t0-table PS
 // (PSMain/PSDepthClip/PSShadowClip, used by node attachments) simply never reads the 3rd field.
+// Vob's 4th b6 constant: material color alpha, read only by PSAlphaBlendBindless.
+#define MATERIALCB_EXTRA_FIELDS float MatAlpha;
 #include "include/MaterialCB.hlsl"
+#undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);
 #include "include/AOCB.hlsl"
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
@@ -288,7 +291,8 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
-    return float4( rgb, t.a * i.col.a );
+    // ZenGin blend alpha = material color alpha x texture alpha; i.col is ground light, not an alpha.
+    return float4( rgb, t.a * MatAlpha );
 }
 
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET

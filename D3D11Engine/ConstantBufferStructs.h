@@ -132,6 +132,23 @@ struct HeightfogConstantBuffer {
     float2 HF_JitterOffset;
 };
 
+// Fog constants for transparent surfaces that fog themselves (see Shaders/TransparencyFog.h).
+// TF_Mode 0 = off, so an unbound buffer is a no-op.
+struct TransparencyFogConstantBuffer {
+    XMFLOAT4X4 TF_InvView;
+
+    float3 TF_CameraPosition;
+    float TF_FogHeight;
+
+    float TF_HeightFalloff;
+    float TF_GlobalDensity;
+    float TF_WeightZNear;
+    float TF_WeightZFar;
+
+    float3 TF_FogColorMod;
+    int TF_Mode;
+};
+
 struct LumAdaptConstantBuffer {
     float LC_DeltaTime;
     float3 LC_Pad;

@@ -2,6 +2,8 @@
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
 
+#include <TransparencyFog.h>
+
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
 //--------------------------------------------------------------------------------------
@@ -39,12 +41,13 @@ struct PS_INPUT
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-	color *= Input.vDiffuse;
+	// Instanced VOBs flag focus as w = 2.0; clamp so it can't leak into the blend alpha.
+	color *= float4(Input.vDiffuse.rgb, saturate(Input.vDiffuse.w));
 #ifdef USE_FFDATA
 	color *= cbFFData.textureFactor;
 #endif
 	//return float4(1,0,0,1);
 	
-	return color;
+	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a);
 }
 

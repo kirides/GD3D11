@@ -5,8 +5,8 @@
 //--------------------------------------------------------------------------------------
 
 #if COMPOSE_HEIGHTFOG
-#include <AtmosphericScattering.h>
 #include "DepthReconstruction.h"
+#include "HeightfogColor.h"
 #endif
 
 //--------------------------------------------------------------------------------------
@@ -73,56 +73,27 @@ float3 VSPositionFromDepth( float depth, float2 vTexCoord )
     return pos;
 }
 
-float ComputeVolumetricFog( float3 cameraToWorldPos, float3 posOriginal )
+HeightfogParams MakeHeightfogParams()
 {
-    float cVolFogHeightDensityAtViewer = exp( -HF_HeightFalloff );
-
-    float lenOrig = distance(posOriginal, HF_CameraPosition);
-    float len = length( cameraToWorldPos );
-    float fogInt = len * cVolFogHeightDensityAtViewer;
-    const float cSlopeThreshold = 0.01;
-
-    float w = saturate( ( lenOrig - HF_WeightZNear ) / ( HF_WeightZFar - HF_WeightZNear ) );
-
-    if ( abs( cameraToWorldPos.y ) > cSlopeThreshold )
-    {
-        float t = HF_HeightFalloff * cameraToWorldPos.y * w;
-        fogInt *= ( abs( t ) > 0.0001 ? ( ( 1.0 - exp( -t ) ) / t ) : 1.0 );
-    }
-
-    return exp( -HF_GlobalDensity * w * fogInt );
+    HeightfogParams p;
+    p.CameraPosition = HF_CameraPosition;
+    p.FogHeight = HF_FogHeight;
+    p.HeightFalloff = HF_HeightFalloff;
+    p.GlobalDensity = HF_GlobalDensity;
+    p.WeightZNear = HF_WeightZNear;
+    p.WeightZFar = HF_WeightZFar;
+    return p;
 }
 
 float4 ComputeHeightFog( float2 texcoord )
 {
+    HeightfogParams p = MakeHeightfogParams();
+
     float expDepth = TX_Depth.Sample( SS_Linear, texcoord ).r;
-    float3 position = VSPositionFromDepth( expDepth, texcoord );
-    position = mul( float4( position, 1 ), HF_InvView ).xyz;
-    float3 posOriginal = position;
-    position -= HF_CameraPosition;
-    position.y -= HF_FogHeight;
+    float3 worldPos = mul( float4( VSPositionFromDepth( expDepth, texcoord ), 1 ), HF_InvView ).xyz;
 
-    float fog = 1.0f - ComputeVolumetricFog( position, posOriginal );
-    float3 color = ApplyAtmosphericScatteringGround( position, HF_FogColorMod, true );
-	
-	// (Increased the R, G, B values. Tweak these up/down if you want it brighter/darker!)
-	float3 nightFogColor = float3(0.04f, 0.06f, 0.09f); 
-	        nightFogColor = float3(0.12f, 0.18f, 0.27f); 
-	float nightTimeBlend = saturate(-AC_LightPos.y * 4.0f);
-	color = lerp(color, nightFogColor, nightTimeBlend);
-
-	// Starts darker (2.5) and doesn't drop as much at noon.
-	float darknessFactor = 2.5f; 
-	// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
-	[branch]
-	if (AC_LightPos.y > 0.0f) {
-		darknessFactor -= (AC_LightPos.y * 0.8f);
-	}
-	
-	// Never let the fog become a 100% solid wall of color.
-	float maxFogOpacity = 0.85f;
-
-	return float4(saturate(color / darknessFactor), saturate(fog) * maxFogOpacity);}
+    return float4( HeightfogColor( p, worldPos, HF_FogColorMod ), HeightfogCoverage( p, worldPos ) );
+}
 #endif
 
 //--------------------------------------------------------------------------------------

@@ -404,6 +404,18 @@ public:
     void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, RenderToTextureBuffer
                             * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion);
 
+    /** What the fog fades a transparent surface into - matches its blend mode. Mirrors the TF_MODE_*
+        defines in Shaders/TransparencyFog.h. */
+    enum class ETransparencyFog : int { Off = 0, Blend = 1, Add = 2, Modulate = 3 };
+
+    /** Binds the constants transparent surfaces fog themselves with (b7) plus the atmosphere CB (b1)
+        the fog color needs. Both go to fixed slots, so they survive shader switches inside a pass.
+        Call once per transparent pass and again whenever the blend mode changes. */
+    void BindTransparencyFog( ETransparencyFog mode );
+
+    /** Maps a zRND_ALPHA_FUNC_* / zMAT_ALPHA_FUNC_* value onto a fog mode. */
+    static ETransparencyFog TransparencyFogModeForAlphaFunc( int alphaFunc );
+
     /** Returns a dummy cube-rendertarget used for pointlight shadowmaps */
     RenderToTextureBuffer* GetDummyCubeRT() const { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
 
@@ -548,6 +560,11 @@ protected:
         repoint. Only valid inside OnStartWorldRendering. */
     class RenderGraph* m_ActiveGraph = nullptr;
     RGResourceHandle m_BackBufferHandle = 0;
+
+    /** Heightfog constants for the self-fogging transparent shaders, rebuilt once per frame.
+        TF_Mode is filled in per bind. */
+    TransparencyFogConstantBuffer m_TransparencyFogCB = {};
+    unsigned int m_TransparencyFogFrame = 0xFFFFFFFF;
     // DummyShadowCubemapTexture moved into ShadowMaps
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
 

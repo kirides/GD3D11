@@ -2,9 +2,11 @@
 // shader - it writes straight to the already-lit back buffer, so it applies the day/night
 // factor itself instead of vertex color (always (0,0,0,1) for these procedural decal polys).
 #include <FFFog.h>
+#include <TransparencyFog.h>
 
-// b0 is FFPipelineConstantBuffer, pulled in above for DoAlphaTest.
-cbuffer QuadMarkLightCB : register( b1 )
+// b0 is FFPipelineConstantBuffer, pulled in above for DoAlphaTest. b1 is the Atmosphere CB
+// TransparencyFog needs for the fog color.
+cbuffer QuadMarkLightCB : register( b4 )
 {
 	float3 QM_DayLight;
 	float QM_Pad;
@@ -31,5 +33,5 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	DoAlphaTest(color.a);
 	color.rgb *= QM_DayLight;
-	return color;
+	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a);
 }

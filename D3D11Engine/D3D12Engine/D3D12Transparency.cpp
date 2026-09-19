@@ -397,6 +397,7 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
 
         const float windHeights[2] = { e.WindMinHeight, e.WindMaxHeight };
         m_CmdList->SetGraphicsRoot32BitConstants( 10, 3, e.MatIndices, 0 );              // b6 MaterialCB
+        m_CmdList->SetGraphicsRoot32BitConstants( 10, 1, &e.MatAlpha, 3 );              // b6.MatAlpha
         m_CmdList->SetGraphicsRoot32BitConstants( 11, 2, windHeights, 4 );               // b4[4..5] per visual
 
         const D3D12_VERTEX_BUFFER_VIEW vbs[2] = { e.MeshVBV, e.InstVBV };

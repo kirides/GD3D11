@@ -3598,6 +3598,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     a.MatIndices[0] = normalIdx;
                     a.MatIndices[1] = ormIdx;
                     a.MatIndices[2] = diffuseIdx;
+                    a.MatAlpha = zColor( meshKey.Material->GetColor() ).bgra.alpha * (1.0f / 255.0f);
                     a.WindMinHeight = minH;
                     a.WindMaxHeight = maxH;
                     a.IndexCount = static_cast<UINT>( mi->Indices.size() );

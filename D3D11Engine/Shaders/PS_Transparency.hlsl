@@ -1,3 +1,5 @@
+#include <TransparencyFog.h>
+
 //--------------------------------------------------------------------------------------
 // Ghost NPC Buffer
 //--------------------------------------------------------------------------------------
@@ -39,5 +41,5 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	//color *= float4(screenLuma, screenLuma, screenLuma, GA_Alpha);
-	return float4(color.rgb, color.a * GA_Alpha);
+	return float4(ApplyTransparencyFog(color.rgb, Input.vViewPosition), color.a * GA_Alpha);
 }
