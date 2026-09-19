@@ -185,6 +185,8 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             BlendStateForAlphaFunc( alphaFunc, blend );   // the `default:` arm keeps the current blend state
             depthWrite = false;
             lastAlphaFunc = alphaFunc;
+            const uint32_t gammaAdd = ( kind == EKind::Simple && alphaFunc == zMAT_ALPHA_FUNC_ADD ) ? 1u : 0u;
+            m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &gammaAdd, 10 );
             ID3D12PipelineState* next = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
             if ( !next ) continue;
             m_CmdList->SetPipelineState( next );
@@ -306,6 +308,11 @@ bool D3D12GraphicsEngine::BindWorldTransparencyFrameState() {
     tcb.TextureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
     tcb.SunHeight = sky ? sky->GetAtmosphereCB().AC_LightPos.y : 0.0f;
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &tcb, 0 );
+
+    // b5[9..10]: opaque scene copy for PSTransparent's gamma-space add (captured pre-water this frame), flag off.
+    const uint32_t sceneRef[2] = {
+        ( m_SsrHistoryValid && m_SsrPrevColorSrvSlot != UINT_MAX ) ? m_SsrPrevColorSrvSlot : 0xFFFFFFFFu, 0u };
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, sceneRef, 9 );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
