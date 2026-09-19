@@ -1,8 +1,8 @@
 cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
 cbuffer ParticleCB : register(b1) { float3 CameraPosition; float _ppad; };
-// OpaqueSceneIndex is valid only when GammaSpaceAdd != 0 (ADD buckets); see include/GammaSpaceAdd.hlsl.
-cbuffer ParticlePSCB : register(b2) { uint OpaqueSceneIndex; uint GammaSpaceAdd; };
-#include "include/GammaSpaceAdd.hlsl"
+// Heap CBV of TransparencyFrameData (0xFFFFFFFF = unavailable) + the bucket's TF_MODE_*.
+cbuffer ParticlePSCB : register(b2) { uint TransparencyFrameIndex; uint FogMode; };
+#include "include/TransparencyFog.hlsl"
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -20,7 +20,7 @@ struct VS_IN {
     uint   type     : TYPE;
     float3 vel      : VELOCITY;
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 dif : TEXCOORD1; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 dif : TEXCOORD1; float3 wpos : TEXCOORD2; };
 
 static const float tu[4] = { 0.0, 1.0, 0.0, 1.0 };
 static const float tv[4] = { 1.0, 1.0, 0.0, 0.0 };
@@ -66,6 +66,7 @@ VS_OUT VSMain( VS_IN i )
 
     VS_OUT o;
     o.clip = mul( float4( position, 1.0 ), ViewProj );
+    o.wpos = position;
     o.uv   = float2( tu[i.vertexID], tv[i.vertexID] );
     o.dif  = float4( i.dif.rgb, pow( i.dif.a, 2.2 ) );   // gamma the alpha, like VS_ParticlePoint
     return o;
@@ -74,8 +75,8 @@ VS_OUT VSMain( VS_IN i )
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 c = tx.Sample( smp, i.uv ) * i.dif;   // color = texture * particle diffuse (blend picks add/alpha/mul)
-    [branch]
-    if ( GammaSpaceAdd != 0 && c.a > ( 1.0 / 255.0 ) )
-        return float4( GammaSpaceAddSource( OpaqueSceneIndex, i.clip.xy, saturate( c.rgb ), c.a ), c.a );
-    return float4( SrgbToLinear( saturate( c.rgb ) ), c.a );   // linearize rgb for the linear HDR buffer (emissive)
+    float3 s = saturate( c.rgb );
+    // linearize rgb for the linear HDR buffer (emissive)
+    return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,
+        s, SrgbToLinear( s ), c.a ), c.a );
 }

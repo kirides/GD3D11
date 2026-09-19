@@ -19,34 +19,41 @@
 
 static const float NIGHT_BRIGHTNESS = 2.0f;
 
-cbuffer Atmosphere : register( b1 )
-{
-    float AC_Kr4PI;
-    float AC_Km4PI;
-    float AC_g;
-    float AC_KrESun;
+#define ATMOSPHERE_FIELDS \
+    float AC_Kr4PI; float AC_Km4PI; float AC_g; float AC_KrESun; \
+    float AC_KmESun; float AC_InnerRadius; float AC_OuterRadius; float AC_Scale; \
+    float3 AC_Wavelength; float AC_RayleighScaleDepth; \
+    float AC_RayleighOverScaleDepth; int AC_nSamples; float AC_fSamples; float AC_CameraHeight; \
+    float3 AC_CameraPos; float AC_Time; float3 AC_LightPos; float AC_SceneWettness; \
+    float3 AC_SpherePosition; float AC_RainFXWeight;
 
-    float AC_KmESun;
-    float AC_InnerRadius;
-    float AC_OuterRadius;
-    float AC_Scale;
-
-    float3 AC_Wavelength;
-    float AC_RayleighScaleDepth;
-
-    float AC_RayleighOverScaleDepth;
-    int AC_nSamples;
-    float AC_fSamples;
-    float AC_CameraHeight;
-
-    float3 AC_CameraPos;
-    float AC_Time;
-    float3 AC_LightPos;
-    float AC_SceneWettness;
-
-    float3 AC_SpherePosition;
-    float AC_RainFXWeight;
-};
+// ATMOSPHERE_BINDLESS: no b1 cbuffer; the includer fills g_Atmosphere from a heap CBV before calling in.
+struct AtmosphereData { ATMOSPHERE_FIELDS };
+#if ATMOSPHERE_BINDLESS
+static AtmosphereData g_Atmosphere;
+#define AC_Kr4PI g_Atmosphere.AC_Kr4PI
+#define AC_Km4PI g_Atmosphere.AC_Km4PI
+#define AC_g g_Atmosphere.AC_g
+#define AC_KrESun g_Atmosphere.AC_KrESun
+#define AC_KmESun g_Atmosphere.AC_KmESun
+#define AC_InnerRadius g_Atmosphere.AC_InnerRadius
+#define AC_OuterRadius g_Atmosphere.AC_OuterRadius
+#define AC_Scale g_Atmosphere.AC_Scale
+#define AC_Wavelength g_Atmosphere.AC_Wavelength
+#define AC_RayleighScaleDepth g_Atmosphere.AC_RayleighScaleDepth
+#define AC_RayleighOverScaleDepth g_Atmosphere.AC_RayleighOverScaleDepth
+#define AC_nSamples g_Atmosphere.AC_nSamples
+#define AC_fSamples g_Atmosphere.AC_fSamples
+#define AC_CameraHeight g_Atmosphere.AC_CameraHeight
+#define AC_CameraPos g_Atmosphere.AC_CameraPos
+#define AC_Time g_Atmosphere.AC_Time
+#define AC_LightPos g_Atmosphere.AC_LightPos
+#define AC_SceneWettness g_Atmosphere.AC_SceneWettness
+#define AC_SpherePosition g_Atmosphere.AC_SpherePosition
+#define AC_RainFXWeight g_Atmosphere.AC_RainFXWeight
+#else
+cbuffer Atmosphere : register( b1 ) { ATMOSPHERE_FIELDS };
+#endif
 
 // The scale equation calculated by Vernier's Graphical Analysis
 float AC_Escale( float fCos )

@@ -1468,8 +1468,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const UINT frame = m_FrameIndex;
-	const UINT opaqueScene = GetOpaqueSceneSrvIndex();
-	uint32_t lastGammaAdd = UINT32_MAX;
+	uint32_t lastFogMode = UINT32_MAX;
 	ID3D12PipelineState* lastPso = nullptr;
 	unsigned int drawnTris = 0;
 
@@ -1488,15 +1487,13 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		if ( !pso ) continue;
 		if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 
-		// b2: gamma-space add for SrcAlpha/One buckets (see include/GammaSpaceAdd.hlsl).
-		const GothicBlendStateInfo* bs = infoIt != info.end() ? &infoIt->second.BlendState : nullptr;
-		const bool additive = bs && bs->BlendEnabled && bs->SrcBlend == GothicBlendStateInfo::BF_SRC_ALPHA
-			&& bs->DestBlend == GothicBlendStateInfo::BF_ONE && bs->BlendOp == GothicBlendStateInfo::BO_BLEND_OP_ADD;
-		const uint32_t gammaAdd = ( additive && opaqueScene != 0xFFFFFFFFu ) ? 1u : 0u;
-		if ( gammaAdd != lastGammaAdd ) {
-			const uint32_t psConsts[2] = { opaqueScene, gammaAdd };
+		// b2: self-fog + gamma-space add by the bucket's alpha func (include/TransparencyFog.hlsl).
+		const uint32_t fogMode = infoIt != info.end()
+			? TransparencyFogModeForAlphaFunc( infoIt->second.BlendMode ) : kTransparencyFogBlend;
+		if ( fogMode != lastFogMode ) {
+			const uint32_t psConsts[2] = { m_TransparencyFrameIndex, fogMode };
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 2, psConsts, 0 );
-			lastGammaAdd = gammaAdd;
+			lastFogMode = fogMode;
 		}
 
 		const UINT numInstances = static_cast<UINT>(instances.size());
@@ -2675,10 +2672,20 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 
+	// Height fog + god rays BEFORE anything that blends (D3D11's order): fogging afterwards used the depth
+	// behind a transparent surface. Its own graph because it runs mid-scene; arena ranges are name-keyed.
+	{
+		D3D12RenderGraph fogGraph( &m_AliasArena );
+		RenderFogAndGodRays( fogGraph );
+		fogGraph.Compile();
+		fogGraph.Execute( m_CmdList );
+	}
+	PrepareTransparencyFrame( m_TransparencyFogActive ? CaptureTransparencyBackdrop() : UINT_MAX );
+	BindSceneColorTarget();   // the fog composite and the backdrop copy leave no DSV bound
+
 	// Everything else that blends, in ONE back-to-front pass: world transparency surfaces, blended instanced
-	// VOBs, ghosts, blended decals, quad marks and poly strips. Before the particles and RenderFogAndGodRays,
-	// or alpha surfaces get pasted onto an already-fogged scene and never fog themselves. Must run every frame
-	// - it drains the per-kind lists.
+	// VOBs, ghosts, blended decals, quad marks and poly strips. After the fog pass; these fog themselves.
+	// Must run every frame - it drains the per-kind lists.
 	CollectTransparencyQueue();
 	
     // Billboarded PFX, depth-tested but not depth-writing. Not queue content yet, same as D3D11.
@@ -2733,13 +2740,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// alias/reorder them, the same way a Forward+ shadow-mask/AO-mask scratch texture eventually will.
 	D3D12RenderGraph postFxGraph( &m_AliasArena );
 
-	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same
-	// slot D3D11's PostFX composition occupies (after the ghosts/particle passes, before bloom+tonemap). Both
-	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise. Registers its
-	// own passes directly onto postFxGraph (not wrapped in an opaque pass here) — see D3D12DoF.cpp's file
-	// header for why: its god-ray mask/zoom scratch textures need to be real graph resources, visible to
-	// (and correctly scheduled among) every other post-FX pass in this SAME shared graph.
-	RenderFogAndGodRays( postFxGraph );
+	// Height fog + god rays ran mid-scene (after water), see above.
 
 	// Debug/editor lines, INSIDE the scene rather than over the finished LDR image (D3D11's slot): drawing
 	// them at native size afterwards would need a native-res copy of the scene depth for the world-space list

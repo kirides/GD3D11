@@ -75,7 +75,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
 
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    cbDesc.Width = 512;
+    cbDesc.Width = 768;
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
@@ -102,7 +102,104 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
         m_FogCBMapped[i] = static_cast<uint8_t*>( mapped );
         m_FogCBGpu[i] = m_FogCB[i]->GetGPUVirtualAddress();
     }
+
+    // Permanent CBVs over the three blocks, so transparent shaders reach them bindlessly. Non-fatal.
+    ID3D12Device* device = m_Device.GetDevice();
+    bool cbvsReady = true;
+    for ( UINT i = 0; i < kBackBufferCount && cbvsReady; ++i ) {
+        UINT* const slots[3] = { &m_FogHeightfogCbvSlot[i], &m_FogAtmosphereCbvSlot[i], &m_TransparencyFrameCbvSlot[i] };
+        for ( UINT b = 0; b < 3; ++b ) {
+            *slots[b] = AllocateSrvSlot();
+            if ( *slots[b] == UINT_MAX ) { cbvsReady = false; break; }
+            D3D12_CONSTANT_BUFFER_VIEW_DESC cbv = { m_FogCBGpu[i] + b * 256u, 256u };
+            device->CreateConstantBufferView( &cbv, GetSrvCpuHandle( *slots[b] ) );
+        }
+    }
+    m_TransparencyFrameCbvReady = cbvsReady;
+    if ( !cbvsReady ) {
+        LogWarn() << "D3D12: no SRV-heap slots for the transparency fog CBVs - transparent passes skip self-fog.";
+    }
     return true;
+}
+
+bool D3D12GraphicsEngine::CreateTransparencyBackdrop( INT2 size ) {
+    m_TransparencyBackdrop.Reset();
+    m_TransparencyBackdropAlloc.Reset();
+    if ( size.x < 4 || size.y < 4 || !m_Allocator ) return false;
+
+    D3D12MA::ALLOCATION_DESC heapDefault = {};
+    heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = static_cast<UINT64>( size.x );
+    dd.Height = static_cast<UINT>( size.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = kSceneColorFormat;
+    dd.SampleDesc.Count = 1;
+    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_TransparencyBackdropAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_TransparencyBackdrop.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the transparency backdrop (" << size.x << "x" << size.y
+            << ") - additive transparency uses the unfogged scene as its reference.";
+        return false;
+    }
+    m_TransparencyBackdrop->SetName( L"TransparencyBackdrop" );
+
+    if ( m_TransparencyBackdropSrvSlot == UINT_MAX ) m_TransparencyBackdropSrvSlot = AllocateSrvSlot();
+    if ( m_TransparencyBackdropSrvSlot == UINT_MAX ) { m_TransparencyBackdrop.Reset(); return false; }
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    srv.Format = kSceneColorFormat;
+    m_Device.GetDevice()->CreateShaderResourceView( m_TransparencyBackdrop.Get(), &srv,
+        GetSrvCpuHandle( m_TransparencyBackdropSrvSlot ) );
+    return true;
+}
+
+/** Copies the fogged scene (opaque + water + fog) for the transparent passes' gamma-space add. Called right
+    after the fog composite, which leaves the scene color a bound RENDER_TARGET. */
+UINT D3D12GraphicsEngine::CaptureTransparencyBackdrop() {
+    if ( !m_FrameOpen || !m_CmdList || !m_SceneColor ) return UINT_MAX;
+    if ( !m_TransparencyBackdrop ) {
+        if ( m_TransparencyBackdropAttempted ) return UINT_MAX;
+        m_TransparencyBackdropAttempted = true;
+        if ( !CreateTransparencyBackdrop( m_Resolution ) ) return UINT_MAX;
+    }
+
+    DX_ZONE( m_CmdList.Get(), "Transparency backdrop" );
+    m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+    const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
+        ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+    m_CmdList->TransitionBarriers( {
+        { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
+        { m_TransparencyBackdrop.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST },
+        } );
+    m_CmdList->CopyResource( m_TransparencyBackdrop.Get(), m_SceneColor.Get() );
+    m_CmdList->TransitionBarriers( {
+        { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
+        { m_TransparencyBackdrop.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
+        } );
+    m_SceneColorInPixelState = false;
+    return m_TransparencyBackdropSrvSlot;
+}
+
+/** Fills this frame's TransparencyFrameData and publishes its CBV for the transparent passes. Runs after
+    RenderFogAndGodRays, which wrote the fog blocks it points at. */
+void D3D12GraphicsEngine::PrepareTransparencyFrame( UINT backdropSlot ) {
+    m_TransparencyFrameIndex = UINT_MAX;
+    if ( !m_TransparencyFrameCbvReady || !m_FogCBMapped[m_FrameIndex] ) return;
+
+    // The gamma-space add measures against what is actually behind: the fogged copy when fog ran.
+    const uint32_t data[4] = {
+        backdropSlot != UINT_MAX ? backdropSlot : GetOpaqueSceneSrvIndex(),
+        m_FogHeightfogCbvSlot[m_FrameIndex],
+        m_FogAtmosphereCbvSlot[m_FrameIndex],
+        m_TransparencyFogActive ? 1u : 0u,
+    };
+    memcpy( m_FogCBMapped[m_FrameIndex] + kTransparencyFrameCbOffset, data, sizeof( data ) );
+    m_TransparencyFrameIndex = m_TransparencyFrameCbvSlot[m_FrameIndex];
 }
 
 
@@ -132,11 +229,11 @@ bool D3D12GraphicsEngine::EvaluateHeightFogActive() const {
     DrawUnderwaterEffects all follow). Called directly from the postFxGraph construction in D3D12Scene.cpp's
     OnStartWorldRendering. */
 void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
-    // Called from OnStartWorldRendering after ALL scene content (opaque, water, decals, particles, rain,
-    // ghosts) and before RenderBloom — the same slot D3D11's composition pass occupies (after "Draw ghosts"
-    // / "Draw ParticleFX #2", before the post-upscale bloom+tonemap block).
+    // Called from OnStartWorldRendering right after water, before particles and every transparent pass —
+    // D3D11's slot since its 2026-09 fog reorder. Everything drawn later fogs itself (TransparencyFog.hlsl).
     // Both halves need the depth buffer (sky detection for the rays, position reconstruction for the fog) and
     // both go through the composition draw, so its PSO/root sig/CB are hard requirements for the whole pass.
+    m_TransparencyFogActive = false;
     if ( !m_FrameOpen || !m_CmdList || !m_SceneColor || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return;
     if ( !m_Pipelines.Fog.CompositePSO || !m_Pipelines.Fog.CompositeRootSig || !m_FogCBMapped[m_FrameIndex] ) return;
 
@@ -366,6 +463,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         } else {
             memset( m_FogCBMapped[m_FrameIndex] + kFogAtmosphereCbOffset, 0, sizeof( AtmosphereConstantBuffer ) );
         }
+        m_TransparencyFogActive = true;
     }
 
     graph.AddPass( RG_PASS_NAME( "Fog Composition" ), [&]( D3D12RGBuilder&, D3D12RenderPass& pass ) {

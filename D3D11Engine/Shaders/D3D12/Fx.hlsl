@@ -25,17 +25,18 @@ cbuffer FxWorldCB    : register( b1 ) { float4x4 World; };
 // into the G-buffer alpha instead), and PS_Simple does NOT alpha-test.
 #define FX_ALPHA_TEST   1
 #define FX_VERTEX_COLOR 2
-#define FX_GAMMA_ADD    4   // ADD draw: reproduce DX7's gamma-space sum against OpaqueSceneIndex
+// Bits 2-3: TF_MODE_* fog/blend mode of the draw (include/TransparencyFog.hlsl).
+#define FX_FOG_MODE( f ) ( ( ( f ) >> 2 ) & 3u )
 
 cbuffer FxMaterialCB : register( b2 )
 {
     uint  DiffuseIndex;     // SRV heap slot of the diffuse texture (bindless)
     uint  Flags;            // FX_* bits above
     float AlphaRef;         // Gothic's live FF_AlphaRef (GraphicsState), the same value D3D11 uploads
-    uint  OpaqueSceneIndex; // this frame's opaque scene copy, read only with FX_GAMMA_ADD
+    uint  TransparencyFrameIndex;   // heap CBV of TransparencyFrameData, 0xFFFFFFFF = unavailable
 };
 
-#include "include/GammaSpaceAdd.hlsl"
+#include "include/TransparencyFog.hlsl"
 
 SamplerState smp : register( s0 );
 
@@ -49,6 +50,7 @@ struct VS_OUT {
     float4 clip  : SV_POSITION;
     float2 uv    : TEXCOORD0;
     float4 color : COLOR0;
+    float3 wpos  : TEXCOORD1;
 };
 
 VS_OUT VSMain( VS_IN i )
@@ -56,6 +58,7 @@ VS_OUT VSMain( VS_IN i )
     VS_OUT o;
     float4 wpos = mul( float4( i.pos, 1.0f ), World );
     o.clip = mul( wpos, ViewProj );
+    o.wpos = wpos.xyz;
     o.uv = i.uv;
     // The DWORD vertex color arrives as R8G8B8A8 but Gothic packs zCOLOR as BGRA — swizzle to recover RGB.
     // (D3D11's PS_Simple multiplies it unswizzled, i.e. with R/B transposed; that is a latent bug there,
@@ -85,17 +88,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // Poly strips / MUL quad marks: PS_Simple's `color *= Input.vDiffuse`. PS_World deliberately does NOT do
     // this — it writes the vertex color into the G-buffer alpha and leaves RGB at the texture value, so
     // modulating here would blacken a mark sitting on geometry with dark baked lightStatic.
-    [branch]
-    if ( Flags & FX_GAMMA_ADD )
+    float4 c = float4( SrgbToLinear( t.rgb ), t.a );
+    float3 s = t.rgb;
+    if ( Flags & FX_VERTEX_COLOR )
     {
-        float4 s = ( Flags & FX_VERTEX_COLOR ) ? t * i.color : t;
-        if ( s.a > ( 1.0 / 255.0 ) )
-            return float4( GammaSpaceAddSource( OpaqueSceneIndex, i.clip.xy, s.rgb, s.a ), s.a );
+        c *= i.color;
+        s *= i.color.rgb;
     }
 
-    float4 c = float4( SrgbToLinear( t.rgb ), t.a );
-    if ( Flags & FX_VERTEX_COLOR )
-        c *= i.color;
-
-    return c;
+    return float4( FinishTransparentColor( TransparencyFrameIndex, FX_FOG_MODE( Flags ), i.clip.xy, i.wpos,
+        s, c.rgb, c.a ), c.a );
 }

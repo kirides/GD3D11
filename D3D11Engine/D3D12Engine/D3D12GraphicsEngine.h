@@ -1714,6 +1714,8 @@ private:
     // blocks — [0,256) the HeightfogConstantBuffer (b0), [256,512) the AtmosphereConstantBuffer (b1). Both
     // are filled once per frame in RenderFogAndGodRays from the exact same GAPI/GSky values D3D11 uses.
     static constexpr UINT kFogAtmosphereCbOffset = 256;
+    // [512,768): TransparencyFrameData (include/TransparencyFog.hlsl), refilled by PrepareTransparencyFrame.
+    static constexpr UINT kTransparencyFrameCbOffset = 512;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_FogCB[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FogCBAlloc[kBackBufferMax];
     uint8_t* m_FogCBMapped[kBackBufferMax] = {};
@@ -1804,6 +1806,27 @@ private:
     void CaptureSsrOpaqueHistory();
     // This frame's opaque scene copy for the transparent passes, or 0xFFFFFFFF (logged once) if not captured.
     UINT GetOpaqueSceneSrvIndex();
+
+    // Transparent-pass self-fog + gamma-space add (include/TransparencyFog.hlsl). Permanent heap CBVs over the
+    // three blocks of each m_FogCB[i]; the passes get m_TransparencyFrameIndex (UINT_MAX = feature off).
+    UINT m_FogHeightfogCbvSlot[kBackBufferMax] = {};
+    UINT m_FogAtmosphereCbvSlot[kBackBufferMax] = {};
+    UINT m_TransparencyFrameCbvSlot[kBackBufferMax] = {};
+    bool m_TransparencyFrameCbvReady = false;
+    bool m_TransparencyFogActive = false;          // RenderFogAndGodRays wrote this frame's fog blocks
+    UINT m_TransparencyFrameIndex = UINT_MAX;
+    // Fogged scene copy for the gamma-space add, taken after the fog pass. Lazy (VA), like the DoF textures.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TransparencyBackdrop;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TransparencyBackdropAlloc;
+    UINT m_TransparencyBackdropSrvSlot = UINT_MAX;
+    bool m_TransparencyBackdropAttempted = false;
+    bool CreateTransparencyBackdrop( INT2 size );
+    UINT CaptureTransparencyBackdrop();            // SRV slot of this frame's copy, or UINT_MAX
+    void PrepareTransparencyFrame( UINT backdropSlot );   // after the fog pass, before any transparent draw
+    // TF_MODE_* for a Gothic alpha func, as D3D11's TransparencyFogModeForAlphaFunc.
+    static uint32_t TransparencyFogModeForAlphaFunc( int alphaFunc );
+    static constexpr uint32_t kTransparencyFogBlend = 1;
+    static constexpr uint32_t kTransparencyFogAdd = 2;
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT
