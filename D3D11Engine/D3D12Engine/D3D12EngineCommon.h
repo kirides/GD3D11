@@ -159,6 +159,7 @@ struct VobAlphaMesh {
     D3D12_VERTEX_BUFFER_VIEW InstVBV;        // per-instance VobInstanceInfo (UNculled — see BuildVobDrawCommands)
     D3D12_INDEX_BUFFER_VIEW  IBV;
     uint32_t MatIndices[3];                  // b6 MaterialCB { normal, orm, diffuse }, same order as VobDrawCommand
+    float    MatAlpha;                       // b6[3], material color alpha (Vob.hlsl MatAlpha)
     float    WindMinHeight;                  // b4[4..5], per visual
     float    WindMaxHeight;
     UINT     IndexCount;
