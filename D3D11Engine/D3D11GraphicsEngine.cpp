@@ -7264,7 +7264,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
     // Make sure lighting doesn't mess up our state
     SetDefaultStates();
 
-    SetActivePixelShader( PShaderID::PS_Simple );
+    SetActivePixelShader( PShaderID::PS_Simple_FF );
     SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
     SetupVS_ExMeshDrawCall();
@@ -7287,6 +7287,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
     }
 
     {
+        zCMaterial* lastMaterial = nullptr;
         for ( size_t i = 0; i < items.size(); ) {
             const TransparentAlphaVob& first = queue.GetAlphaVob( items[i] );
 
@@ -7346,6 +7347,15 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
                 Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
                 UpdateRenderStates();
+            }
+
+            // ZenGin's blend alpha is the material color alpha (times texture alpha), never the vertex color.
+            if ( mk.Material != lastMaterial ) {
+                PsSimpleFFdata ffdata = {};
+                ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f,
+                    zColor( mk.Material->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
+                ActivePS->UpdateBuffer( "cbFFData", &ffdata, sizeof( ffdata ) );
+                lastMaterial = mk.Material;
             }
 
             // TODO: apply MaterialInfoBuffer.Update(&mk.Info->buffer) ?
