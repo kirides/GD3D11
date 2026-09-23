@@ -103,6 +103,10 @@ public:
         from meshInfo until then. Falls back to the synchronous call when there is no worker pool. */
     static void ExtractProgMeshProtoFromModelAsync( zCModel* model, MeshVisualInfo* meshInfo );
 
+    /** False when there is no worker pool or the SynchronousMeshExtraction debug toggle is on;
+        every *Async extraction then runs its synchronous counterpart inline. */
+    static bool UseWorkerExtraction();
+
     /** Extracts a zCProgMeshProto from a zCMesh */
     static void ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo* meshInfo );
 

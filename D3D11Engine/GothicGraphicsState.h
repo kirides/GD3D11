@@ -843,6 +843,7 @@ struct GothicRendererSettings {
 
         EnableShadows = true;
         ThreadedShadowCulling = false;
+        SynchronousMeshExtraction = false;
         GpuVobCulling = false;
         GpuVobOcclusionCulling = false;
         EnableVSync = true;
@@ -1114,6 +1115,8 @@ struct GothicRendererSettings {
     E_ShadowFilterMode ShadowFilterMode;
     bool EnableShadows;
     bool ThreadedShadowCulling;
+    // Debug: run every async mesh extraction (VOBs, attachments, skeletal, world load) inline on the calling thread.
+    bool SynchronousMeshExtraction;
     // GPU-driven static-VOB culling (D3D12 only; D3D11 ignores both). GpuVobCulling replaces the CPU per-VOB
     // frustum test with a distance-only collection plus a compute frustum cull that compacts the instance
     // stream and rewrites the ExecuteIndirect instance counts. GpuVobOcclusionCulling additionally rejects

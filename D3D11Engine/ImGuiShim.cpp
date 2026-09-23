@@ -1477,6 +1477,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SliderFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SliderFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
 
+        ImGui::Checkbox( "Synchronous mesh extraction", &settings.SynchronousMeshExtraction );
+        ImGui::SetItemTooltip( "Debug: extract VOB, attachment, skeletal and world meshes on the calling thread\n"
+            "instead of worker threads. Causes hitches; use to rule out threading races.\n"
+            "Applies to extractions started after the change." );
+
         ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
         ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );
         ImGui::SliderFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 0.0f, 18000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );

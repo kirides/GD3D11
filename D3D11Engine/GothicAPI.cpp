@@ -5937,6 +5937,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Inventory", "RenderMode", to_string_locale_independent( static_cast<int>( s.InventoryRenderMode ) ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "SynchronousMeshExtraction", to_string_locale_independent( s.SynchronousMeshExtraction ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
@@ -6188,6 +6189,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         }
 
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
+        s.SynchronousMeshExtraction = GetPrivateProfileBoolA( "Debug", "SynchronousMeshExtraction", ds.SynchronousMeshExtraction, ini );
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
         s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
         s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );
