@@ -135,11 +135,12 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
-    // R11G11B10 drops alpha (nothing blends against destination alpha) but is an optional typed-UAV
-    // format, and the TAA/DoF/bloom compute passes bind the scene colour as a UAV.
+    // R11G11B10 drops alpha, which TAA's history weight needs; it is also an optional typed-UAV format.
     {
         auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
-        if ( rs.CompressBackBuffer ) {
+        if ( rs.CompressBackBuffer && !rs.GetUseCompressedBackBuffer() ) {
+            Logging::Inf( "D3D12: CompressBackBuffer ignored while TAA is active; keeping R16G16B16A16_FLOAT." );
+        } else if ( rs.CompressBackBuffer ) {
             if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
                 kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
                 Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT)." );

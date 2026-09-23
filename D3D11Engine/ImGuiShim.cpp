@@ -982,11 +982,14 @@ void ImGuiShim::RenderSettingsWindow()
             {
                 // D3D12 bakes the scene-colour format into every PSO, so it only reads this at startup.
                 const bool uavOk = Engine::GraphicsEngine->GetDeviceCapabilities().TypedUAVLoadAdditionalFormats;
-                ImGui::BeginDisabled( Engine::IsD3D12Backend && !uavOk );
+                const bool taa = settings.AntiAliasingMode == GothicRendererSettings::AA_TAA;
+                ImGui::BeginDisabled( ( Engine::IsD3D12Backend && !uavOk ) || taa );
                 if ( ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer ) ) {
                     Engine::GAPI->UpdateCompressBackBuffer();
                 }
-                if ( Engine::IsD3D12Backend && ImGui::IsItemHovered() ) {
+                if ( taa && ImGui::IsItemHovered( ImGuiHoveredFlags_AllowWhenDisabled ) ) {
+                    ImGui::SetTooltip( "Ignored while TAA is enabled: TAA needs the full-precision backbuffer." );
+                } else if ( Engine::IsD3D12Backend && ImGui::IsItemHovered() ) {
                     ImGui::SetTooltip( uavOk ? "Takes effect after a restart."
                         : "Unavailable: this device can't use R11G11B10 as a typed UAV." );
                 }

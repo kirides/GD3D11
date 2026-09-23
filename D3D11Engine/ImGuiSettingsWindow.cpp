@@ -667,7 +667,11 @@ void RenderSystemTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
             tip += uavOk ? "\n\nTakes effect after a restart."
                          : "\n\nUnavailable: this device can't use R11G11B10 as a typed UAV.";
         }
-        ImGui::BeginDisabled( d3d12 && !uavOk );
+        const bool taa = settings.AntiAliasingMode == GothicRendererSettings::AA_TAA;
+        if ( taa ) {
+            tip += "\n\nIgnored while TAA is enabled: TAA needs the full-precision backbuffer.";
+        }
+        ImGui::BeginDisabled( ( d3d12 && !uavOk ) || taa );
         if ( CheckRow( "Compress Backbuffer", &settings.CompressBackBuffer, tip.c_str() ) ) {
             Engine::GAPI->UpdateCompressBackBuffer();
         }

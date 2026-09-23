@@ -1474,6 +1474,11 @@ struct GothicRendererSettings {
         } PointLightDebug;
     } DebugSettings;
 
+    // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks.
+    bool GetUseCompressedBackBuffer() const {
+        return CompressBackBuffer && AntiAliasingMode != E_AntiAliasingMode::AA_TAA;
+    }
+
     bool GetIsTAAEnabled() const {
         return AntiAliasingMode == E_AntiAliasingMode::AA_TAA
             || AntiAliasingMode == E_AntiAliasingMode::AA_FSR;

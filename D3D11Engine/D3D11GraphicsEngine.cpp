@@ -1007,7 +1007,7 @@ void D3D11GraphicsEngine::SwapHDRBackBuffer() {
 
 /** Get BackBuffer Format */
 DXGI_FORMAT D3D11GraphicsEngine::GetBackBufferFormat() {
-    return Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+    return Engine::GAPI->GetRendererState().RendererSettings.GetUseCompressedBackBuffer() ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
 /** Get Window Mode */
@@ -1576,6 +1576,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     static int s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
     static int s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
     static GothicRendererSettings::E_RendererMode s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
+    static DXGI_FORMAT s_oldBackBufferFormat = GetBackBufferFormat();
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
     BeginFrameTransientBufferPools();
@@ -1613,6 +1614,12 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         RecreateMSAABuffers( GetResolution() );
         s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
         s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
+    }
+
+    // TAA overrides CompressBackBuffer, so an AA-mode change can switch the scene format.
+    if ( GetBackBufferFormat() != s_oldBackBufferFormat ) {
+        s_oldBackBufferFormat = GetBackBufferFormat();
+        RecreateBuffers();
     }
 
     // Lets alpha-tested pixel shaders know whether to sharpen their alpha test into a per-pixel
