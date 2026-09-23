@@ -3431,9 +3431,11 @@ bool D3D12PipelineState::CreateDoF() {
     // The Gaussian variant is the same CSBlur entry point recompiled with DOF_GAUSS_BLUR — exactly how the D3D11
     // side splits CS_PFX_DoF into CS_PFX_DoF / CS_PFX_DoF_Gauss.
     const D3D_SHADER_MACRO gaussMacros[] = { { "DOF_GAUSS_BLUR", "1" }, { nullptr, nullptr } };
+    const D3D_SHADER_MACRO gaussVMacros[] = { { "DOF_GAUSS_BLUR", "1" }, { "DOF_GAUSS_VERTICAL", "1" }, { nullptr, nullptr } };
     if ( !m_Shaders->CompileFromFile( "DoF.hlsl", "CSFocusResolve", Shadermodel_CS, DoF.FocusCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.BlurCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.GaussCsBlob.ReleaseAndGetAddressOf(), gaussMacros )
+        || !m_Shaders->CompileFromFile( "DoF.hlsl", "CSBlur", Shadermodel_CS, DoF.GaussVCsBlob.ReleaseAndGetAddressOf(), gaussVMacros )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "VSFullscreen", Shadermodel_VS, DoF.CompositeVsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "DoF.hlsl", "PSComposite", Shadermodel_PS, DoF.CompositePsBlob.ReleaseAndGetAddressOf() ) )
         return false;
@@ -3441,6 +3443,7 @@ bool D3D12PipelineState::CreateDoF() {
         { DoF.FocusCsBlob.Get(),     "DoF.hlsl:CSFocusResolve",           D3D12_SHADER_VISIBILITY_ALL    },
         { DoF.BlurCsBlob.Get(),      "DoF.hlsl:CSBlur",                   D3D12_SHADER_VISIBILITY_ALL    },
         { DoF.GaussCsBlob.Get(),     "DoF.hlsl:CSBlur (DOF_GAUSS_BLUR)",  D3D12_SHADER_VISIBILITY_ALL    },
+        { DoF.GaussVCsBlob.Get(),    "DoF.hlsl:CSBlur (DOF_GAUSS_VERTICAL)", D3D12_SHADER_VISIBILITY_ALL },
         { DoF.CompositeVsBlob.Get(), "DoF.hlsl:VSFullscreen",             D3D12_SHADER_VISIBILITY_VERTEX },
         { DoF.CompositePsBlob.Get(), "DoF.hlsl:PSComposite",              D3D12_SHADER_VISIBILITY_PIXEL  },
         } );
@@ -3449,6 +3452,7 @@ bool D3D12PipelineState::CreateDoF() {
         { DoF.FocusCsBlob.Get(), &DoF.FocusPSO, "focus resolve" },
         { DoF.BlurCsBlob.Get(),  &DoF.BlurPSO,  "bokeh blur" },
         { DoF.GaussCsBlob.Get(), &DoF.GaussPSO, "gaussian blur" },
+        { DoF.GaussVCsBlob.Get(), &DoF.GaussVPSO, "vertical gaussian blur" },
     };
     for ( const auto& p : passes ) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};

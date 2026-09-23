@@ -56,6 +56,8 @@ float ComputeCoC( float linearDepth, float focusDepth )
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
 
+#include "DoFGaussBlur.h"
+
 static const int SAMPLE_COUNT = 48;
 
 float2 GetSpiralSample( int index, int count )
@@ -69,6 +71,17 @@ float2 GetSpiralSample( int index, int count )
 
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
+#ifdef DOF_GAUSS_VERTICAL
+    // t0 is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
+    float4 center = TX_Scene.SampleLevel( SS_Linear, Input.vTexcoord, 0 );
+    if ( center.a < 0.01 )
+        return center;
+
+    float2 halfSize;
+    TX_Scene.GetDimensions( halfSize.x, halfSize.y );
+    float radius = min( center.a * DoF_BokehRadius, DoF_MaxBlur );
+    return float4( DoFGaussBlur1D( TX_Scene, TX_Scene, SS_Linear, Input.vTexcoord, float2( 0.0, 0.5 / halfSize.y ), radius, 3.0, center.a, 0.0 ), center.a );
+#else
     // Texel size of the full-res scene for sampling offsets
     float2 sceneSize;
     TX_Scene.GetDimensions( sceneSize.x, sceneSize.y );
@@ -89,29 +102,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     float blurRadius = min( centerCoC * DoF_BokehRadius, DoF_MaxBlur );
 
 #ifdef DOF_GAUSS_BLUR
-    // --- Simple Gaussian blur (16 taps) ---
-    // Uses a radial Gaussian kernel with exp(-r^2 * 3) weights.
-    // Much cheaper than the bokeh path; no highlight boost or
-    // foreground rejection — just a smooth, uniform blur.
-    static const int GAUSS_SAMPLE_COUNT = 16;
-
-    float3 colorAccum = 0.0;
-    float weightAccum = 0.0;
-
-    [unroll]
-    for ( int i = 0; i < GAUSS_SAMPLE_COUNT; i++ )
-    {
-        float2 offset = GetSpiralSample( i, GAUSS_SAMPLE_COUNT );
-        float2 sampleUV = Input.vTexcoord + offset * blurRadius * texelSize;
-
-        float3 sampleColor = TX_Scene.Sample( SS_Linear, sampleUV ).rgb;
-
-        float r2 = dot( offset, offset );
-        float weight = exp( -r2 * 3.0 );
-
-        colorAccum += sampleColor * weight;
-        weightAccum += weight;
-    }
+    // Horizontal half of a separable Gaussian; the DOF_GAUSS_VERTICAL pass finishes it.
+    float3 colorAccum = DoFGaussBlur1D( TX_Scene, TX_Depth, SS_Linear, Input.vTexcoord, float2( texelSize.x, 0.0 ), blurRadius, 1.5, centerCoC, focusDepth );
 #else
     // --- Bokeh spiral blur (48 taps) ---
     // Seed accumulator with the center pixel so that if all 48 spiral
@@ -151,10 +143,11 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
         colorAccum += sampleColor * weight;
         weightAccum += weight;
     }
-#endif
 
     colorAccum /= max( weightAccum, 0.001 );
+#endif
 
     // Store blurred color + CoC for the full-res composite
     return float4( colorAccum, centerCoC );
+#endif
 }

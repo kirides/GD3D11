@@ -430,6 +430,9 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Gauss>( "PS_PFX_DoF.hlsl" )
         .with_macros( {{ "DOF_GAUSS_BLUR", "1" }} ) );
 
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_GaussV>( "PS_PFX_DoF.hlsl" )
+        .with_macros( {{ "DOF_GAUSS_BLUR", "1" }, { "DOF_GAUSS_VERTICAL", "1" }} ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Composite>( "PS_PFX_DoF_Composite.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_BloomComposite>( "PS_PFX_BloomComposite.hlsl" ) );
@@ -471,6 +474,9 @@ void ShaderRegistry::Build() {
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_Gauss>( "CS_PFX_DoF.hlsl" )
             .with_macros( {{ "DOF_GAUSS_BLUR", "1" }} ) );
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_GaussV>( "CS_PFX_DoF.hlsl" )
+            .with_macros( {{ "DOF_GAUSS_BLUR", "1" }, { "DOF_GAUSS_VERTICAL", "1" }} ) );
 
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO>( "CS_PFX_SAO.hlsl" ));
