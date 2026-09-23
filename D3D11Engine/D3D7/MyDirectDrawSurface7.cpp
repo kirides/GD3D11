@@ -593,7 +593,10 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         int pixelSize;
         Engine::GraphicsEngine->ResetPresentPending();
         Engine::GraphicsEngine->FlushUI2D();
-        Engine::GraphicsEngine->OnStartWorldRendering();
+        {
+            ZenGinVobToggleScope vobToggles;
+            Engine::GraphicsEngine->OnStartWorldRendering();
+        }
         Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
         Engine::GraphicsEngine->ResetPresentPending();
 

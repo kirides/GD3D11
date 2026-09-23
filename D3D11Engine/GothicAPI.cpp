@@ -4158,6 +4158,102 @@ void GothicAPI::DebugDrawBSPTree() {
     DebugDrawTreeNode( root, root->BBox3D );
 }
 
+void GothicAPI::DrawHelperVisuals() {
+    // Spacer builds already register helper visuals as regular vobs (see zCVob::GetVisual)
+#if !defined(BUILD_SPACER) && !defined(BUILD_SPACER_NET) && !defined(BUILD_1_12F)
+    if ( !zCVob::GetShowHelperVisuals() || !LoadedWorldInfo || !LoadedWorldInfo->BspTree || !oCGame::GetGame() )
+        return;
+    zCBspBase* root = LoadedWorldInfo->BspTree->GetRootNode();
+    if ( !root || HelperVisualFrame == FrameNumber ) // once per frame, repeat world renders would double the lines
+        return;
+    HelperVisualFrame = FrameNumber;
+    ZoneScoped;
+
+    constexpr float HELPER_VISUAL_RANGE = 5000.0f; // ZenGin's 50 m cutoff
+    const XMFLOAT3 camPos = GetCameraPosition();
+    const XMVECTOR xmCamPos = XMLoadFloat3( &camPos );
+
+    // X/Z only: outdoor node boxes are clamped to polygon height, the per-vob distance test handles Y
+    HelperVisualVobs.clear();
+    HelperVisualNodes.clear();
+    HelperVisualNodes.push_back( root );
+    while ( !HelperVisualNodes.empty() ) {
+        zCBspBase* base = HelperVisualNodes.back();
+        HelperVisualNodes.pop_back();
+
+        const zTBBox3D& box = base->BBox3D;
+        if ( camPos.x + HELPER_VISUAL_RANGE < box.Min.x || camPos.x - HELPER_VISUAL_RANGE > box.Max.x
+            || camPos.z + HELPER_VISUAL_RANGE < box.Min.z || camPos.z - HELPER_VISUAL_RANGE > box.Max.z )
+            continue;
+
+        if ( base->IsLeaf() ) {
+            const zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base);
+            HelperVisualVobs.insert( HelperVisualVobs.end(), leaf->LeafVobList.Array, leaf->LeafVobList.Array + leaf->LeafVobList.NumInArray );
+        } else {
+            const zCBspNode* node = static_cast<zCBspNode*>(base);
+            if ( node->Front ) HelperVisualNodes.push_back( node->Front );
+            if ( node->Back ) HelperVisualNodes.push_back( node->Back );
+        }
+    }
+
+    // A vob sits in every leaf its bbox touches
+    std::sort( HelperVisualVobs.begin(), HelperVisualVobs.end() );
+    HelperVisualVobs.erase( std::unique( HelperVisualVobs.begin(), HelperVisualVobs.end() ), HelperVisualVobs.end() );
+
+    BaseLineRenderer* lineRenderer = Engine::GraphicsEngine->GetLineRenderer();
+    const zCVob* camVob = oCGame::GetGame()->_zCSession_camVob;
+    for ( zCVob* vob : HelperVisualVobs ) {
+        if ( !vob || vob == camVob || !vob->GetHomeWorld() || vob->GetMainVisual() )
+            continue;
+        if ( XMVectorGetX( XMVector3LengthSq( vob->GetPositionWorldXM() - xmCamPos ) ) > HELPER_VISUAL_RANGE * HELPER_VISUAL_RANGE )
+            continue;
+
+        zCVisual* helper = vob->GetClassHelperVisual();
+        if ( !helper || strcmp( helper->GetFileExtension( 0 ), ".3DS" ) != 0 )
+            continue;
+        MeshVisualInfo* mvi = GetOrCreateProgMeshVisual( helper, false );
+        if ( !mvi || !mvi->GetIsReady() )
+            continue;
+
+        // Gothic's matrix is column-vector, AddWireframeMesh transforms row-vector
+        XMFLOAT4X4 world;
+        XMStoreFloat4x4( &world, XMMatrixTranspose( vob->GetWorldMatrixXM() ) );
+        for ( auto const& [material, meshes] : mvi->Meshes ) {
+            const DWORD c = material ? material->GetColor() : 0xFFFFFFFF;
+            const XMFLOAT4 color( ((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, 1.0f );
+            for ( auto const& mesh : meshes )
+                lineRenderer->AddWireframeMesh( mesh->Vertices, mesh->Indices, color, &world );
+        }
+    }
+#endif
+}
+
+ZenGinVobToggleScope::ZenGinVobToggleScope() {
+#if !defined(BUILD_SPACER) && !defined(BUILD_1_12F)
+    if ( !zCVob::GetRenderVobs() ) {
+        GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        DrawVOBs = rs.DrawVOBs;
+        DrawMobs = rs.DrawMobs;
+        DrawParticleEffects = rs.DrawParticleEffects;
+        DrawSkeletalMeshes = rs.DrawSkeletalMeshes;
+        rs.DrawVOBs = rs.DrawMobs = rs.DrawParticleEffects = rs.DrawSkeletalMeshes = false;
+        Overridden = true;
+        return; // ZenGin skips helper visuals too while vobs are off
+    }
+#endif
+    Engine::GAPI->DrawHelperVisuals();
+}
+
+ZenGinVobToggleScope::~ZenGinVobToggleScope() {
+    if ( !Overridden )
+        return;
+    GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    rs.DrawVOBs = DrawVOBs;
+    rs.DrawMobs = DrawMobs;
+    rs.DrawParticleEffects = DrawParticleEffects;
+    rs.DrawSkeletalMeshes = DrawSkeletalMeshes;
+}
+
 /** Collects vobs using gothics BSP-Tree */
 void GothicAPI::CollectVisibleVobs( 
     std::vector<VobInfo*>& vobs,

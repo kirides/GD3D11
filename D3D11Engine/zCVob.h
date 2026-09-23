@@ -143,13 +143,20 @@ public:
         hook_outfunc
     }
 
-#if (defined BUILD_SPACER || defined BUILD_SPACER_NET)
+#ifndef BUILD_1_12F
     /** Returns the helper-visual for this class
         This actually uses a map to lookup the visual. Beware for performance-issues! */
     zCVisual* GetClassHelperVisual() {
         return reinterpret_cast<zCVisual*( __fastcall* )( zCVob* )>( GothicMemoryLocations::zCVob::GetClassHelperVisual )( this );
     }
 
+    /** zCVob::s_showHelperVisuals ("ZTOGGLE SHOWHELPVERVISUALS") */
+    static bool GetShowHelperVisuals() {
+        return *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
+    }
+#endif
+
+#if (defined BUILD_SPACER || defined BUILD_SPACER_NET)
     /** Returns the visual saved in this vob */
     zCVisual* GetVisual() {
         zCVisual* visual = GetMainVisual();
@@ -283,12 +290,10 @@ public:
         reinterpret_cast<void( __fastcall* )( zCVob*, int, int )>( GothicMemoryLocations::zCVob::SetSleeping )( this, 0, on );
     }
 
-#if BUILD_SPACER_NET
-    /** Return whether all vobs are currently rendered or not */
-    static bool GetDrawVobs()
-    {
-        bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_renderVobs) != 0;
-        return showHelpers;
+#if !defined(BUILD_SPACER) && !defined(BUILD_1_12F)
+    /** zCVob::s_renderVobs ("ZTOGGLE RENDERVOB"): false hides every vob visual */
+    static bool GetRenderVobs() {
+        return *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_renderVobs) != 0;
     }
 #endif
 

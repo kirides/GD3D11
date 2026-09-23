@@ -3885,16 +3885,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         rendererState.RendererSettings.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
     }
 
-#if BUILD_SPACER_NET
-    bool bDrawVobsGlobal = zCVob::GetDrawVobs();
-
-    rendererState.RendererSettings.DrawVOBs = bDrawVobsGlobal;
-    rendererState.RendererSettings.DrawMobs = bDrawVobsGlobal;
-    rendererState.RendererSettings.DrawParticleEffects = bDrawVobsGlobal;
-    rendererState.RendererSettings.DrawSkeletalMeshes = bDrawVobsGlobal;
-#endif 
-
-
     Engine::GAPI->SetFarPlane( rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
     
     // Clear textures from the last frame
