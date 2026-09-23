@@ -50,7 +50,8 @@ SamplerState SS_LinearClamp : register( s0 );
 
 float LinearizeDepth( float d )
 {
-    return rcp( max( d, 1e-8f ) );
+    // Sky (depth 0) sits at a finite 1e6 so the focus can converge onto it.
+    return rcp( max( d, 1e-6f ) );
 }
 
 float ComputeCoC( float linearDepth, float focusDepth )
@@ -113,7 +114,9 @@ void CSFocusResolve( uint3 DTid : SV_DispatchThreadID )
     }
 
     // Adaptive smoothing: creep while the focus target is stable, snap harder when it jumps.
-    float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
+    // Relative term damps near-focus jitter; the FocusRange term keeps far jumps (sky) from crawling.
+    float absDiff = abs( targetDepth - prevFocus );
+    float relDiff = max( absDiff / max( prevFocus, 1.0 ), absDiff / DoF_FocusRange );
     float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     outFocus[uint2(0, 0)] = lerp( prevFocus, targetDepth, smoothing );

@@ -33,7 +33,8 @@ struct PS_INPUT
 
 float LinearizeDepth( float d )
 {
-    return LinearizeDepthReverseZInfinite( d );
+    // Sky (depth 0) sits at a finite 1e6 so the focus can converge onto it.
+    return LinearizeDepthReverseZInfinite( max( d, 1e-6f ) );
 }
 
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
@@ -81,7 +82,9 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
     // Adaptive smoothing: large focus jumps converge faster to avoid sluggish response,
     // small changes (view bobbing) are heavily damped for stability
-    float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
+    // Relative term damps near-focus jitter; the FocusRange term keeps far jumps (sky) from crawling.
+    float absDiff = abs( targetDepth - prevFocus );
+    float relDiff = max( absDiff / max( prevFocus, 1.0 ), absDiff / DoF_FocusRange );
     float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     float newFocus = lerp( prevFocus, targetDepth, smoothing );

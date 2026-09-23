@@ -28,7 +28,8 @@ RWTexture2D<float> OutputFocus : register( u0 );
 
 float LinearizeDepth( float d )
 {
-    return LinearizeDepthReverseZInfinite( d );
+    // Sky (depth 0) sits at a finite 1e6 so the focus can converge onto it.
+    return LinearizeDepthReverseZInfinite( max( d, 1e-6f ) );
 }
 
 [numthreads(1, 1, 1)]
@@ -77,7 +78,9 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
     }
 
     // Adaptive smoothing
-    float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
+    // Relative term damps near-focus jitter; the FocusRange term keeps far jumps (sky) from crawling.
+    float absDiff = abs( targetDepth - prevFocus );
+    float relDiff = max( absDiff / max( prevFocus, 1.0 ), absDiff / DoF_FocusRange );
     float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     float newFocus = lerp( prevFocus, targetDepth, smoothing );

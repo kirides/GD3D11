@@ -34,7 +34,8 @@ struct PS_INPUT
 
 float LinearizeDepth( float d )
 {
-    return LinearizeDepthReverseZInfinite( d );
+    // Sky (depth 0) sits at a finite 1e6 so the focus can converge onto it.
+    return LinearizeDepthReverseZInfinite( max( d, 1e-6f ) );
 }
 
 // Point-sample (nearest texel) the center depth. This pass runs at half-res, so a
