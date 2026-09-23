@@ -39,6 +39,17 @@ void AsyncVisualExtractor::ExtractSkeletal( zCModel* model, SkeletalMeshVisualIn
     // where oCNPC::SetVisual has already released the model only our reference is still holding up.
     WaitForSkeletal( info );
 
+    if ( !WorldConverter::UseWorkerExtraction() ) {
+        const std::vector<zCMeshSoftSkin*> softSkins = SnapshotSoftSkins( model );
+        info->ClearMeshes();
+        WorldConverter::ExtractSkeletalMeshFromVob( model, softSkins, info );
+        info->Visual = model;
+        info->Ready.store( true );
+        for ( zCMeshSoftSkin* s : softSkins )
+            QueueRelease( s );
+        return;
+    }
+
     // Ready gates every draw/update site, so nobody touches Meshes/SkeletalMeshes while we fill them.
     info->Ready = false;
 

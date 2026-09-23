@@ -91,7 +91,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 		dd.Height = static_cast<UINT>( h );
 		dd.DepthOrArraySize = 1;
 		dd.MipLevels = 1;
-		dd.Format = kSceneColorFormat;
+		dd.Format = kPostFxDownsampledFormat;
 		dd.SampleDesc.Count = 1;
 		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -111,12 +111,12 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 		};
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Format = kSceneColorFormat;
+	srvDesc.Format = kPostFxDownsampledFormat;
 	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srvDesc.Texture2D.MipLevels = 1;
 	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-	uavDesc.Format = kSceneColorFormat;
+	uavDesc.Format = kPostFxDownsampledFormat;
 	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 
 	for ( int i = 0; i < mipCount; ++i ) {

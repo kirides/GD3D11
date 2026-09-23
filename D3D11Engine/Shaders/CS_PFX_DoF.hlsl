@@ -29,7 +29,8 @@ RWTexture2D<float4> OutputBlur : register( u0 ); // Half-res output
 
 float LinearizeDepth( float d )
 {
-    return LinearizeDepthReverseZInfinite( d );
+    // Sky (depth 0) sits at a finite 1e6 so the focus can converge onto it.
+    return LinearizeDepthReverseZInfinite( max( d, 1e-6f ) );
 }
 
 // Point-sample (nearest texel) the center depth. This pass runs at half-res, so a
@@ -49,6 +50,8 @@ float ComputeCoC( float linearDepth, float focusDepth )
 {
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
+
+#include "DoFGaussBlur.h"
 
 static const int SAMPLE_COUNT = 48;
 
@@ -71,6 +74,17 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
         return;
 
     float2 texcoord = ( float2( DTid.xy ) + 0.5 ) / float2( outSize );
+
+#ifdef DOF_GAUSS_VERTICAL
+    // t0 is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
+    float4 center = TX_Scene.SampleLevel( SS_Linear, texcoord, 0 );
+    if ( center.a >= 0.01 )
+    {
+        float radius = min( center.a * DoF_BokehRadius, DoF_MaxBlur );
+        center.rgb = DoFGaussBlur1D( TX_Scene, TX_Scene, SS_Linear, texcoord, float2( 0.0, 0.5 / float( outSize.y ) ), radius, 3.0, center.a, 0.0 );
+    }
+    OutputBlur[DTid.xy] = center;
+#else
 
     // Texel size of the full-res scene for sampling offsets
     float2 sceneSize;
@@ -95,29 +109,8 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
     float blurRadius = min( centerCoC * DoF_BokehRadius, DoF_MaxBlur );
 
 #ifdef DOF_GAUSS_BLUR
-    // --- Simple Gaussian blur (16 taps) ---
-    // Uses a radial Gaussian kernel with exp(-r^2 * 3) weights.
-    // Much cheaper than the bokeh path; no highlight boost or
-    // foreground rejection — just a smooth, uniform blur.
-    static const int GAUSS_SAMPLE_COUNT = 16;
-
-    float3 colorAccum = 0.0;
-    float weightAccum = 0.0;
-
-    [unroll]
-    for ( int i = 0; i < GAUSS_SAMPLE_COUNT; i++ )
-    {
-        float2 offset = GetSpiralSample( i, GAUSS_SAMPLE_COUNT );
-        float2 sampleUV = texcoord + offset * blurRadius * texelSize;
-
-        float3 sampleColor = TX_Scene.SampleLevel( SS_Linear, sampleUV, 0 ).rgb;
-
-        float r2 = dot( offset, offset );
-        float weight = exp( -r2 * 3.0 );
-
-        colorAccum += sampleColor * weight;
-        weightAccum += weight;
-    }
+    // Horizontal half of a separable Gaussian; the DOF_GAUSS_VERTICAL pass finishes it.
+    float3 colorAccum = DoFGaussBlur1D( TX_Scene, TX_Depth, SS_Linear, texcoord, float2( texelSize.x, 0.0 ), blurRadius, 1.5, centerCoC, focusDepth );
 #else
     // --- Bokeh spiral blur (48 taps) ---
     // Seed accumulator with the center pixel so that if all 48 spiral
@@ -153,9 +146,10 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
         colorAccum += sampleColor * weight;
         weightAccum += weight;
     }
-#endif
 
     colorAccum /= max( weightAccum, 0.001 );
+#endif
 
     OutputBlur[DTid.xy] = float4( colorAccum, centerCoC );
+#endif
 }

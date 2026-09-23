@@ -3151,70 +3151,79 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
             g->BindActivePixelShader();
 
             // Update transparency alpha information
-            GhostAlphaConstantBuffer gacb;
+            GhostAlphaConstantBuffer gacb = {};
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
             cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
+            VobInfo* vob = TransVobInfo.normalVob;
             // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
             // Extract3DSMeshFromVisual2Async) - skip until Meshes is safe to iterate.
-            if ( !TransVobInfo.normalVob->VisualInfo->GetIsReady() ) return;
+            if ( !vob->VisualInfo->GetIsReady() ) return;
 
             g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
-            
-            TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
+
+            vob->UpdateVobConstantBuffer( cbPerInstance );
             cbPool->BindVS(1 , cbPool->Allocate(&cbPerInstance, sizeof(cbPerInstance)));
 
-            // We need to do Z-prepass first
-            g->UnbindActivePS();
-            D3D11PipelineStateCache::SetPixelShader( g->GetContext().Get(), nullptr );
-
-            for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first ) {
-                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
-                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            aniTex->Bind( 0 );
-                        }
-                    }
-                }
-
-                for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
-                        meshInfo->GetMeshVertexBuffer(),
-                        meshInfo->GetMeshIndexBuffer(),
-                        meshInfo->Indices.size() );
-                }
-            }
-            RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
-
-            // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( PShaderID::PS_Transparency );
-            g->BindActivePixelShader();
-
-            // Update transparency alpha information
-            GhostAlphaConstantBuffer gacb;
+            GhostAlphaConstantBuffer gacb = {};
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
+            // Green channel, as the instanced path's R8G8B8A8 INSTANCE_COLOR delivers it in vDiffuse.y
+            gacb.GA_VertLighting = static_cast<float>( (vob->GroundColor >> 8) & 0xFF ) / 255.0f;
 
-            for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first ) {
-                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
-                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            const float ffAlphaRef = RendererState.GraphicsState.FF_AlphaRef;
+            const float alphaRef = ffAlphaRef > 0.0f ? ffAlphaRef : 170.0f / 255.0f;
+
+            // Alpha-tested materials clip in both passes, so cutout texels neither write depth nor blend.
+            auto drawMeshes = [&]() {
+                float boundRef = -1.0f;
+                for ( auto const& [material, meshes] : vob->VisualInfo->Meshes ) {
+                    float ref = 0.0f;
+                    if ( material ) {
+                        zCTexture* aniTex = material->GetAniTexture();
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                             aniTex->Bind( 0 );
                         }
+                        const int alphaFunc = material->GetAlphaFunc();
+                        const bool blended = alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD;
+                        if ( !blended && ((aniTex && aniTex->HasAlphaChannel()) || material->HasAlphaTest()) ) {
+                            ref = alphaRef;
+                        }
+                    }
+                    if ( ref != boundRef ) {
+                        gacb.GA_AlphaRef = ref;
+                        g->GetActivePS()->UpdateBuffer( "GhostAlphaInfo", &gacb, sizeof( gacb ) );
+                        boundRef = ref;
+                    }
+
+                    for ( auto const& meshInfo : meshes ) {
+                        g->DrawVertexBufferIndexed(
+                            meshInfo->GetMeshVertexBuffer(),
+                            meshInfo->GetMeshIndexBuffer(),
+                            meshInfo->Indices.size() );
                     }
                 }
+            };
 
-                for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
-                        meshInfo->GetMeshVertexBuffer(),
-                        meshInfo->GetMeshIndexBuffer(),
-                        meshInfo->Indices.size() );
-                }
-            }
+            // Z-prepass first, so the ghost's own back layers don't blend through its front
+            g->SetActivePixelShader( PShaderID::PS_Transparency );
+            g->BindActivePixelShader();
+            RendererState.BlendState.ColorWritesEnabled = false;
+            RendererState.BlendState.SetDirty();
+            g->UpdateRenderStates();
+            drawMeshes();
+            RendererState.BlendState.ColorWritesEnabled = true;
+            RendererState.BlendState.SetDirty();
+            g->UpdateRenderStates();
+
+            // Lit like the opaque vobs when the clustered light data exists, flat texture otherwise
+            const bool lit = g->BindClusteredLightingToPixelShader();
+            g->SetActivePixelShader( lit ? PShaderID::PS_TransparencyLitFP : PShaderID::PS_Transparency );
+            g->BindActivePixelShader();
+            drawMeshes();
         }
     }
 }
@@ -4147,6 +4156,102 @@ void GothicAPI::DebugDrawBSPTree() {
 
     // Recursively go through the tree and draw all nodes
     DebugDrawTreeNode( root, root->BBox3D );
+}
+
+void GothicAPI::DrawHelperVisuals() {
+    // Spacer builds already register helper visuals as regular vobs (see zCVob::GetVisual)
+#if !defined(BUILD_SPACER) && !defined(BUILD_SPACER_NET) && !defined(BUILD_1_12F)
+    if ( !zCVob::GetShowHelperVisuals() || !LoadedWorldInfo || !LoadedWorldInfo->BspTree || !oCGame::GetGame() )
+        return;
+    zCBspBase* root = LoadedWorldInfo->BspTree->GetRootNode();
+    if ( !root || HelperVisualFrame == FrameNumber ) // once per frame, repeat world renders would double the lines
+        return;
+    HelperVisualFrame = FrameNumber;
+    ZoneScoped;
+
+    constexpr float HELPER_VISUAL_RANGE = 5000.0f; // ZenGin's 50 m cutoff
+    const XMFLOAT3 camPos = GetCameraPosition();
+    const XMVECTOR xmCamPos = XMLoadFloat3( &camPos );
+
+    // X/Z only: outdoor node boxes are clamped to polygon height, the per-vob distance test handles Y
+    HelperVisualVobs.clear();
+    HelperVisualNodes.clear();
+    HelperVisualNodes.push_back( root );
+    while ( !HelperVisualNodes.empty() ) {
+        zCBspBase* base = HelperVisualNodes.back();
+        HelperVisualNodes.pop_back();
+
+        const zTBBox3D& box = base->BBox3D;
+        if ( camPos.x + HELPER_VISUAL_RANGE < box.Min.x || camPos.x - HELPER_VISUAL_RANGE > box.Max.x
+            || camPos.z + HELPER_VISUAL_RANGE < box.Min.z || camPos.z - HELPER_VISUAL_RANGE > box.Max.z )
+            continue;
+
+        if ( base->IsLeaf() ) {
+            const zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base);
+            HelperVisualVobs.insert( HelperVisualVobs.end(), leaf->LeafVobList.Array, leaf->LeafVobList.Array + leaf->LeafVobList.NumInArray );
+        } else {
+            const zCBspNode* node = static_cast<zCBspNode*>(base);
+            if ( node->Front ) HelperVisualNodes.push_back( node->Front );
+            if ( node->Back ) HelperVisualNodes.push_back( node->Back );
+        }
+    }
+
+    // A vob sits in every leaf its bbox touches
+    std::sort( HelperVisualVobs.begin(), HelperVisualVobs.end() );
+    HelperVisualVobs.erase( std::unique( HelperVisualVobs.begin(), HelperVisualVobs.end() ), HelperVisualVobs.end() );
+
+    BaseLineRenderer* lineRenderer = Engine::GraphicsEngine->GetLineRenderer();
+    const zCVob* camVob = oCGame::GetGame()->_zCSession_camVob;
+    for ( zCVob* vob : HelperVisualVobs ) {
+        if ( !vob || vob == camVob || !vob->GetHomeWorld() || vob->GetMainVisual() )
+            continue;
+        if ( XMVectorGetX( XMVector3LengthSq( vob->GetPositionWorldXM() - xmCamPos ) ) > HELPER_VISUAL_RANGE * HELPER_VISUAL_RANGE )
+            continue;
+
+        zCVisual* helper = vob->GetClassHelperVisual();
+        if ( !helper || strcmp( helper->GetFileExtension( 0 ), ".3DS" ) != 0 )
+            continue;
+        MeshVisualInfo* mvi = GetOrCreateProgMeshVisual( helper, false );
+        if ( !mvi || !mvi->GetIsReady() )
+            continue;
+
+        // Gothic's matrix is column-vector, AddWireframeMesh transforms row-vector
+        XMFLOAT4X4 world;
+        XMStoreFloat4x4( &world, XMMatrixTranspose( vob->GetWorldMatrixXM() ) );
+        for ( auto const& [material, meshes] : mvi->Meshes ) {
+            const DWORD c = material ? material->GetColor() : 0xFFFFFFFF;
+            const XMFLOAT4 color( ((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, 1.0f );
+            for ( auto const& mesh : meshes )
+                lineRenderer->AddWireframeMesh( mesh->Vertices, mesh->Indices, color, &world );
+        }
+    }
+#endif
+}
+
+ZenGinVobToggleScope::ZenGinVobToggleScope() {
+#if !defined(BUILD_SPACER) && !defined(BUILD_1_12F)
+    if ( !zCVob::GetRenderVobs() ) {
+        GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        DrawVOBs = rs.DrawVOBs;
+        DrawMobs = rs.DrawMobs;
+        DrawParticleEffects = rs.DrawParticleEffects;
+        DrawSkeletalMeshes = rs.DrawSkeletalMeshes;
+        rs.DrawVOBs = rs.DrawMobs = rs.DrawParticleEffects = rs.DrawSkeletalMeshes = false;
+        Overridden = true;
+        return; // ZenGin skips helper visuals too while vobs are off
+    }
+#endif
+    Engine::GAPI->DrawHelperVisuals();
+}
+
+ZenGinVobToggleScope::~ZenGinVobToggleScope() {
+    if ( !Overridden )
+        return;
+    GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    rs.DrawVOBs = DrawVOBs;
+    rs.DrawMobs = DrawMobs;
+    rs.DrawParticleEffects = DrawParticleEffects;
+    rs.DrawSkeletalMeshes = DrawSkeletalMeshes;
 }
 
 /** Collects vobs using gothics BSP-Tree */
@@ -5832,6 +5937,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Inventory", "RenderMode", to_string_locale_independent( static_cast<int>( s.InventoryRenderMode ) ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "SynchronousMeshExtraction", to_string_locale_independent( s.SynchronousMeshExtraction ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
@@ -6083,6 +6189,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         }
 
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
+        s.SynchronousMeshExtraction = GetPrivateProfileBoolA( "Debug", "SynchronousMeshExtraction", ds.SynchronousMeshExtraction, ini );
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
         s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
         s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );

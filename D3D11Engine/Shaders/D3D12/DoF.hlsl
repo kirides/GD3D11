@@ -4,7 +4,7 @@
 //
 // The MATHS is unchanged from those three shaders: the same 13-tap centre-weighted focus disc with
 // the same adaptive temporal smoothing, the same 48-tap spiral bokeh kernel with luminance boost and
-// asymmetric foreground rejection (or the 16-tap Gaussian when DOF_GAUSS_BLUR is defined), and the
+// asymmetric foreground rejection (or the separable Gaussian when DOF_GAUSS_BLUR is defined), and the
 // same 5-tap min-CoC erosion in the composite. What changed is the plumbing:
 //
 //  1. BINDLESS. The t0..t3 / u0 bindings become SM6.6 ResourceDescriptorHeap[] fetches off root
@@ -50,13 +50,16 @@ SamplerState SS_LinearClamp : register( s0 );
 
 float LinearizeDepth( float d )
 {
-    return rcp( max( d, 1e-8f ) );
+    // Sky (depth 0) sits at a finite 1e6 so the focus can converge onto it.
+    return rcp( max( d, 1e-6f ) );
 }
 
 float ComputeCoC( float linearDepth, float focusDepth )
 {
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 }
+
+#include "../DoFGaussBlur.h"
 
 //--------------------------------------------------------------------------------------
 // Pass 0 — focus resolve. Samples depth across a centre-weighted disc (~12% of the screen: "what is
@@ -113,7 +116,9 @@ void CSFocusResolve( uint3 DTid : SV_DispatchThreadID )
     }
 
     // Adaptive smoothing: creep while the focus target is stable, snap harder when it jumps.
-    float relDiff = abs( targetDepth - prevFocus ) / max( prevFocus, 1.0 );
+    // Relative term damps near-focus jitter; the FocusRange term keeps far jumps (sky) from crawling.
+    float absDiff = abs( targetDepth - prevFocus );
+    float relDiff = max( absDiff / max( prevFocus, 1.0 ), absDiff / DoF_FocusRange );
     float smoothing = mad(saturate( relDiff * 2.0 ), 0.20 - 0.015, 0.015);
 
     outFocus[uint2(0, 0)] = lerp( prevFocus, targetDepth, smoothing );
@@ -159,6 +164,19 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
 
     float2 texcoord = ( float2( DTid.xy ) + 0.5 ) / outSize;
 
+#ifdef DOF_GAUSS_VERTICAL
+    // BlurIndex is the horizontal pass's half-res output (rgb = blur, a = CoC); offsets stay in full-res pixels.
+    Texture2D<float4> hTex = ResourceDescriptorHeap[DoF_BlurIndex];
+    float4 center = hTex.SampleLevel( SS_LinearClamp, texcoord, 0 );
+    if ( center.a >= 0.01 )
+    {
+        float radius = min( center.a * DoF_BokehRadius, DoF_MaxBlur );
+        center.rgb = DoFGaussBlur1D( hTex, hTex, SS_LinearClamp, texcoord, float2( 0.0, 1.0 / DoF_FullResY ), radius, 3.0, center.a, 0.0 );
+    }
+    outBlur[DTid.xy] = center;
+    return;
+#endif
+
     // Texel size of the FULL-res scene: the sample offsets are in full-res pixels (DoF_BokehRadius),
     // even though this pass rasterizes at half res.
     float2 texelSize = 1.0 / float2( DoF_FullResX, DoF_FullResY );
@@ -181,28 +199,9 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
     float blurRadius = min( centerCoC * DoF_BokehRadius, DoF_MaxBlur );
 
 #ifdef DOF_GAUSS_BLUR
-    // --- Simple Gaussian blur (16 taps) ---
-    // Uses a radial Gaussian kernel with exp(-r^2 * 3) weights. Much cheaper than the bokeh path; no
-    // highlight boost or foreground rejection — just a smooth, uniform blur.
-    static const int GAUSS_SAMPLE_COUNT = 16;
-
-    float3 colorAccum = 0.0;
-    float weightAccum = 0.0;
-
-    [unroll]
-    for ( int i = 0; i < GAUSS_SAMPLE_COUNT; i++ )
-    {
-        float2 offset = GetSpiralSample( i, GAUSS_SAMPLE_COUNT );
-        float2 sampleUV = texcoord + offset * blurRadius * texelSize;
-
-        float3 sampleColor = sceneTex.SampleLevel( SS_LinearClamp, sampleUV, 0 ).rgb;
-
-        float r2 = dot( offset, offset );
-        float weight = exp( -r2 * 3.0 );
-
-        colorAccum += sampleColor * weight;
-        weightAccum += weight;
-    }
+    // Horizontal half of a separable Gaussian; the DOF_GAUSS_VERTICAL pass finishes it.
+    Texture2D<float4> depthTex4 = ResourceDescriptorHeap[DoF_DepthIndex];
+    float3 colorAccum = DoFGaussBlur1D( sceneTex, depthTex4, SS_LinearClamp, texcoord, float2( texelSize.x, 0.0 ), blurRadius, 1.5, centerCoC, focusDepth );
 #else
     // --- Bokeh spiral blur (48 taps) ---
     // Seed the accumulator with the centre pixel so that if all 48 spiral samples are
@@ -237,9 +236,9 @@ void CSBlur( uint3 DTid : SV_DispatchThreadID )
         colorAccum += sampleColor * weight;
         weightAccum += weight;
     }
-#endif
 
     colorAccum /= max( weightAccum, 0.001 );
+#endif
 
     outBlur[DTid.xy] = float4( colorAccum, centerCoC );
 }

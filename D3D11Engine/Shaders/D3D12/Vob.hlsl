@@ -35,6 +35,9 @@ SamplerComparisonState  shadowCmp : register(s2);
 #undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);
 #include "include/AOCB.hlsl"
+// PSAlphaBlendBindless only: bits 0-30 = TransparencyFrameData CBV index + 1 (0 = none), bit 31 = ADD.
+cbuffer TransparencyFrameCB : register(b8) { uint TransparencyFrameAdd; };
+#include "include/TransparencyFog.hlsl"
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
 SamplerState smpAoClamp : register(s1);
 // SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp declared above.
@@ -272,8 +275,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
 // PSMainBindless apart from the alpha handling, which keeps a peeled material shading exactly as it did while
 // it was still in the opaque set.
 //
-// No fog term: this one PS serves both BLEND and ADD, and lerping toward the fog colour brightens an additive
-// surface rather than fading it. D3D11 doesn't fog its alpha meshes either.
+// Self-fogs by its own position (drawn after the fog pass): BLEND fades to the fog colour, ADD toward black.
 float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
 {
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
@@ -292,7 +294,11 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );
     // ZenGin blend alpha = material color alpha x texture alpha; i.col is ground light, not an alpha.
-    return float4( rgb, t.a * MatAlpha );
+    float a = t.a * MatAlpha;
+    const uint frameIndex = ( TransparencyFrameAdd & 0x7FFFFFFFu ) - 1u;   // 0 wraps to 0xFFFFFFFF = none
+    const uint mode = ( TransparencyFrameAdd >> 31 ) ? TF_MODE_ADD : TF_MODE_BLEND;
+    return float4( FinishTransparentColor( frameIndex, mode, i.clip.xy, i.wpos,
+        GSA_ToSrgb( max( rgb, 0.0 ) ), rgb, a ), a );
 }
 
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET

@@ -103,7 +103,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
 
     // --- Pass 1: Half-res bokeh blur ---
     auto res = resolution;
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
+    DXGI_FORMAT bbufferFormat = DXGI_FORMAT_PFX_DOWNSAMPLED;
     auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat } );
 
@@ -124,6 +124,20 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
 
     ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
     engine->GetContext()->PSSetShaderResources( 0, 4, nullSRVs );
+
+    // Gaussian is separable: the pass above blurred horizontally, this one finishes vertically.
+    if ( rendererSettings.DoFGaussBlur ) {
+        auto vBuffer = FxRenderer->GetTexturePool()->Acquire(
+            TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat } );
+        auto blurVPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_GaussV );
+        blurVPS->Apply();
+        blurVPS->UpdateBuffer( "DepthOfFieldConstantBuffer", &cb, sizeof( cb ) );
+        engine->GetContext()->OMSetRenderTargets( 1, vBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+        engine->GetContext()->PSSetShaderResources( 0, 1, halfBuffer->GetShaderResView().GetAddressOf() );
+        FxRenderer->DrawFullScreenQuad();
+        engine->GetContext()->PSSetShaderResources( 0, 1, nullSRVs );
+        halfBuffer = std::move( vBuffer );
+    }
     engine->GetContext()->RSSetViewports( 1, &oldVP );
 
     // --- Pass 2: Full-res composite, blended straight onto the output ---
@@ -224,7 +238,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
 
     // --- Pass 1: Half-res bokeh blur ---
     auto res = resolution;
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
+    DXGI_FORMAT bbufferFormat = DXGI_FORMAT_PFX_DOWNSAMPLED;
     auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
@@ -251,6 +265,22 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 3, nullSRVs );
+
+    // Gaussian is separable: the dispatch above blurred horizontally, this one finishes vertically.
+    if ( rendererSettings.DoFGaussBlur ) {
+        auto vBuffer = FxRenderer->GetTexturePool()->Acquire(
+            TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat,
+                D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
+        auto blurVCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_GaussV );
+        blurVCS->Apply();
+        blurVCS->UpdateBuffer( "DepthOfFieldConstantBuffer", &cb, sizeof( cb ) );
+        context->CSSetShaderResources( 0, 1, halfBuffer->GetShaderResView().GetAddressOf() );
+        context->CSSetUnorderedAccessViews( 0, 1, vBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
+        context->Dispatch( (res.x / 2 + 7) / 8, (res.y / 2 + 7) / 8, 1 );
+        context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+        context->CSSetShaderResources( 0, 1, nullSRVs );
+        halfBuffer = std::move( vBuffer );
+    }
 
     context->CSSetShader( nullptr, nullptr, 0 );
 

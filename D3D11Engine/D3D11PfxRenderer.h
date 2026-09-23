@@ -24,6 +24,9 @@ class D3D11PFX_ASSAO;
 
 struct HeightfogConstantBuffer;
 
+// Downsampled/blur intermediates stay FP16 even when CompressBackBuffer makes the scene R11G11B10.
+constexpr DXGI_FORMAT DXGI_FORMAT_PFX_DOWNSAMPLED = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
 class D3D11PfxRenderer {
 public:
     D3D11PfxRenderer();

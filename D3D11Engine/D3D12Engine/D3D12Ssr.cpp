@@ -132,4 +132,17 @@ void D3D12GraphicsEngine::CaptureSsrOpaqueHistory() {
 
     BindSceneColorTarget();
     m_SsrHistoryValid = true;
+    m_OpaqueSceneCapturedThisFrame = true;
+}
+
+UINT D3D12GraphicsEngine::GetOpaqueSceneSrvIndex() {
+    if ( m_OpaqueSceneCapturedThisFrame && m_SsrPrevColorSrvSlot != UINT_MAX ) {
+        return m_SsrPrevColorSrvSlot;
+    }
+    static bool s_Warned = false;
+    if ( !s_Warned ) {
+        s_Warned = true;
+        LogWarn() << "D3D12: opaque scene copy not captured this frame - additive transparency falls back to linear-space adds (fainter than D3D11).";
+    }
+    return 0xFFFFFFFFu;
 }

@@ -135,11 +135,12 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     // Must run BEFORE any Create*() too: every scene PSO bakes kSceneColorFormat into RTVFormats[0].
-    // R11G11B10 drops alpha (nothing blends against destination alpha) but is an optional typed-UAV
-    // format, and the TAA/DoF/bloom compute passes bind the scene colour as a UAV.
+    // R11G11B10 drops alpha, which TAA's history weight needs; it is also an optional typed-UAV format.
     {
         auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
-        if ( rs.CompressBackBuffer ) {
+        if ( rs.CompressBackBuffer && !rs.GetUseCompressedBackBuffer() ) {
+            Logging::Inf( "D3D12: CompressBackBuffer ignored while TAA is active; keeping R16G16B16A16_FLOAT." );
+        } else if ( rs.CompressBackBuffer ) {
             if ( m_DeviceCapabilities.TypedUAVLoadAdditionalFormats ) {
                 kSceneColorFormat = DXGI_FORMAT_R11G11B10_FLOAT;
                 Logging::Inf( "D3D12: compressed scene colour (R11G11B10_FLOAT)." );
@@ -1873,6 +1874,8 @@ bool D3D12GraphicsEngine::CreateRenderResolutionTargets( INT2 renderSize ) {
     CreateMotionResources( renderSize ); // motion-vector + normal G-buffer; prepass falls back to depth-only
     CreateTaaResources( renderSize );    // also drops the history, which any resolution change invalidates
     CreateSsrHistoryResources( renderSize ); // opaque-SSR previous-frame color+depth; see D3D12Ssr.cpp
+    m_TransparencyBackdropAttempted = false;   // lazy, like DoF: only re-size if it exists
+    if ( m_TransparencyBackdrop ) CreateTransparencyBackdrop( renderSize );
     // DoF textures are built lazily (~20 MB of VA, off by default), so only re-size them if they exist.
     // Clearing the attempted flag lets a previous failure retry.
     m_DoFCreateAttempted = false;
@@ -2197,6 +2200,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
     }
 
+    m_OpaqueSceneCapturedThisFrame = false;
     m_FrameOpen = true;
     return XR_SUCCESS;
 }

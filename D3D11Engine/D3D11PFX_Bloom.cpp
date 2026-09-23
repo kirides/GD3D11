@@ -67,7 +67,7 @@ XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderReso
     if ( mipCount < 1 )
         mipCount = 1;
 
-    DXGI_FORMAT fmt = engine->GetBackBufferFormat();
+    DXGI_FORMAT fmt = DXGI_FORMAT_PFX_DOWNSAMPLED;
     const DXGI_USAGE bindFlags =
         D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
 

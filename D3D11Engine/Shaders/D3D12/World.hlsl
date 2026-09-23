@@ -188,14 +188,19 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 cbuffer TransparencyCB : register(b5) {
     float4 TextureFactor;
     float SunHeight; float3 EnvCamPosWS;
-    uint EnvCubeIndex; float3 _tpad;
+    uint EnvCubeIndex;
+    uint TransparencyFrameIndex;   // heap CBV of TransparencyFrameData, 0xFFFFFFFF = unavailable
+    uint FogMode;                  // TF_MODE_* of the current alpha func (include/TransparencyFog.hlsl)
+    float _tpad;
 };
 // World->view, VS only, used ONLY by VSTransparentPortal (see below). World.hlsl declares nothing else at
 // b4 — the shared World.RootSig's b4 (wind) is never read by this file, and an unused declaration emits no
 // binding, so this cannot collide with the opaque world/VOB PSOs.
 cbuffer TransparencyViewCB : register(b4) { float4x4 TransparencyView; };
 
-struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float3 wpos : TEXCOORD2; };
+
+#include "include/TransparencyFog.hlsl"
 
 // Shares VS_IN + the world input layout with VSMain; NORMAL is simply not read. This ONE blob feeds both
 // the blended color PSO and the depth-fill PSO that follows it — same rule as the water Z-prepass: a
@@ -207,6 +212,7 @@ VST_OUT VSTransparent( VS_IN i )
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv = i.uv;
     o.col = i.col;
+    o.wpos = i.pos;   // world verts are already world-space
     return o;
 }
 
@@ -219,9 +225,11 @@ float4 PSTransparent( VST_OUT i ) : SV_TARGET
     // not something to reproduce.)
     c *= i.col.bgra;
     c *= TextureFactor;
+
     // The scene target is linear HDR on D3D12, so the sampled sRGB texel has to be linearized like every
     // other albedo read; the alpha rides through untouched for the blend.
-    return float4( SrgbToLinear( c.rgb ), c.a );
+    return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,
+        c.rgb, SrgbToLinear( c.rgb ), c.a ), c.a );
 }
 
 // --- Env-map overlay stage (ZenGin zRenderManager.cpp:671-712, D3D11: PS_EnvMap.hlsl) ----------------
@@ -258,7 +266,8 @@ float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
     // rgbGen IDENTITY: emitted unlit and unmodulated, only the alpha is driven. The scene target is linear
     // HDR here, so the sRGB cube texel is linearized like every other albedo read (same rule PSTransparent
     // follows above).
-    return float4( SrgbToLinear( env ), TextureFactor.a );
+    return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,
+        env, SrgbToLinear( env ), TextureFactor.a ), TextureFactor.a );
 }
 
 // --- MT_WaterfallFoam (D3D11: PS_WaterfallFoam.hlsl) -------------------------------------------------
@@ -278,14 +287,15 @@ float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
     } else {
         colour *= float4( colourRGB, colourRGB, colourRGB, 0.80 );
     }
-    return float4( SrgbToLinear( colour.rgb ), colour.a );
+    return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,
+        colour.rgb, SrgbToLinear( colour.rgb ), colour.a ), colour.a );
 }
 
 // --- MT_Portal (D3D11: PS_PortalDiffuse.hlsl, VS_Ex.hlsl's vViewPosition) ----------------------------
 // Gothic 1's forest portals: a texture sheet that fades in with distance and darkens with the sun. Gated
 // on RendererSettings.DrawG1ForestPortals, same as D3D11. Needs the VIEW-space position, so it gets its
 // own VS; everything else in the pass shares VSTransparent.
-struct VSTP_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 vpos : TEXCOORD1; };
+struct VSTP_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 vpos : TEXCOORD1; float3 wpos : TEXCOORD2; };
 
 VSTP_OUT VSTransparentPortal( VS_IN i )
 {
@@ -295,6 +305,7 @@ VSTP_OUT VSTransparentPortal( VS_IN i )
     // D3D11's VS_Ex sets vViewPosition = mul(float4(positionWorld,1), M_View); world verts are already
     // world-space here, so this is the same value.
     o.vpos = mul( float4( i.pos, 1.0 ), TransparencyView ).xyz;
+    o.wpos = i.pos;
     return o;
 }
 
@@ -330,5 +341,6 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
     float4 color = difTex.Sample( smp, i.uv ) / darknessFactor;
 
-    return float4( SrgbToLinear( color.rgb ), percentageFade );
+    return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,
+        color.rgb, SrgbToLinear( color.rgb ), percentageFade ), percentageFade );
 }

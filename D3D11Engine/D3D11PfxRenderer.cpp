@@ -442,10 +442,9 @@ TextureHandle D3D11PfxRenderer::GetBackbufferTempBuffer()
 TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
 {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat(); // actually intermediate backbuffer format -> HDRBackbuffer
     auto res = engine->GetResolution();
 
-    return m_texturePool->Acquire( TexturePool::Description{ res.x / 4, res.y / 4, bbufferFormat } );
+    return m_texturePool->Acquire( TexturePool::Description{ res.x / 4, res.y / 4, DXGI_FORMAT_PFX_DOWNSAMPLED } );
 }
 
 Microsoft::WRL::ComPtr<ID3D11SamplerState>& D3D11PfxRenderer::GetSampler(const D3D11_SAMPLER_DESC& desc) {

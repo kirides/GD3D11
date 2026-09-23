@@ -1099,7 +1099,11 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     // touches its own data, so we batch them into a small number of contiguous
     // chunks to keep the pool busy without drowning it in tiny tasks
     const size_t total = allMeshes.size();
-    if ( total > 0 ) {
+    if ( total > 0 && !UseWorkerExtraction() ) {
+        for ( WorldMeshInfo* mesh : allMeshes ) {
+            BuildWorldMeshBuffers( mesh );
+        }
+    } else if ( total > 0 ) {
         const size_t numThreads = std::max<size_t>( 1, Engine::WorkerThreadPool->getNumThreads() );
         constexpr size_t MIN_BATCH = 32; // don't create tasks smaller than this
         size_t batches = std::min<size_t>( numThreads * 2, (total + MIN_BATCH - 1) / MIN_BATCH );
@@ -2043,11 +2047,16 @@ void WorldConverter::PruneFinishedNodeVisuals() {
     PruneFinishedNodeVisualsLocked();
 }
 
+bool WorldConverter::UseWorkerExtraction() {
+    return Engine::WorkerThreadPool
+        && !Engine::GAPI->GetRendererState().RendererSettings.SynchronousMeshExtraction;
+}
+
 /** Extracts a node-visual on a worker thread. See the header for the contract. */
 void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
     ZoneScoped;
 
-    if ( !node->NodeVisual || !Engine::WorkerThreadPool ) {
+    if ( !node->NodeVisual || !UseWorkerExtraction() ) {
         ExtractNodeVisual( index, node, attachments );
         return;
     }
@@ -2130,7 +2139,7 @@ void WorldConverter::ExtractNodeVisualAsync( int index, zCModelNodeInst* node, g
 void WorldConverter::ExtractProgMeshProtoFromModelAsync( zCModel* model, MeshVisualInfo* meshInfo ) {
     ZoneScoped;
 
-    if ( !Engine::WorkerThreadPool ) {
+    if ( !UseWorkerExtraction() ) {
         ExtractProgMeshProtoFromModel( model, meshInfo );
         return;
     }
@@ -2211,7 +2220,7 @@ void WorldConverter::ExtractProgMeshProtoFromModelAsync( zCModel* model, MeshVis
 void WorldConverter::Extract3DSMeshFromVisual2Async( zCVisual* holdVisual, zCProgMeshProto* pm, MeshVisualInfo* meshInfo ) {
     ZoneScoped;
 
-    if ( !Engine::WorkerThreadPool ) {
+    if ( !UseWorkerExtraction() ) {
         Extract3DSMeshFromVisual2( pm, meshInfo );
         return;
     }

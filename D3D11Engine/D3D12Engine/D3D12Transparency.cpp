@@ -95,6 +95,15 @@ namespace {
 }
 
 
+uint32_t D3D12GraphicsEngine::TransparencyFogModeForAlphaFunc( int alphaFunc ) {
+    switch ( alphaFunc ) {
+    case zRND_ALPHA_FUNC_ADD:  return kTransparencyFogAdd;
+    case zRND_ALPHA_FUNC_MUL:
+    case zRND_ALPHA_FUNC_MUL2: return 3;   // TF_MODE_MODULATE
+    default:                   return kTransparencyFogBlend;
+    }
+}
+
 bool D3D12GraphicsEngine::IsWorldMeshAlphaBlended( zCMaterial* mat ) {
     // Any real blend mode is peeled out of the opaque set. TEST is a cutout, not a blend; MAT_DEFAULT (0)
     // only blends for the types collected by MaterialType (portals, foam), which have their own branches.
@@ -150,6 +159,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     blend.SetDefault();
     bool depthWrite = true;
     int lastAlphaFunc = zMAT_ALPHA_FUNC_MAT_DEFAULT;
+    uint32_t fogMode = kTransparencyFogBlend;   // BindWorldTransparencyFrameState's b5[10]
 
     ID3D12PipelineState* pso = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
     if ( !pso ) return;
@@ -185,6 +195,8 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             BlendStateForAlphaFunc( alphaFunc, blend );   // the `default:` arm keeps the current blend state
             depthWrite = false;
             lastAlphaFunc = alphaFunc;
+            fogMode = TransparencyFogModeForAlphaFunc( alphaFunc );
+            m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &fogMode, 10 );
             ID3D12PipelineState* next = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
             if ( !next ) continue;
             m_CmdList->SetPipelineState( next );
@@ -214,6 +226,8 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 envBlend, false, EKind::Env );
             if ( envPso ) {
                 m_CmdList->SetPipelineState( envPso );
+                const uint32_t envFog = mat->GetMatGroup() == zMAT_GROUP_WATER ? kTransparencyFogAdd : kTransparencyFogBlend;
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &envFog, 10 );
 
                 // b5 tail: [4] SunHeight is left alone (PSTransparentEnv doesn't read it), [5..7] camera
                 // world position, [8] the bindless cube slot. TextureFactor.a carries the stage alpha.
@@ -231,6 +245,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
                 // re-establish both instead of hitting these caches.
                 ID3D12PipelineState* restore = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
                 if ( restore ) m_CmdList->SetPipelineState( restore );
+                m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &fogMode, 10 );
                 lastMat = nullptr;
             }
         }
@@ -307,6 +322,10 @@ bool D3D12GraphicsEngine::BindWorldTransparencyFrameState() {
     tcb.SunHeight = sky ? sky->GetAtmosphereCB().AC_LightPos.y : 0.0f;
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 8, &tcb, 0 );
 
+    // b5[9..10]: TransparencyFrameData CBV + fog mode (include/TransparencyFog.hlsl); runs start as BLEND.
+    const uint32_t tfConsts[2] = { m_TransparencyFrameIndex, kTransparencyFogBlend };
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, tfConsts, 9 );
+
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
@@ -381,6 +400,9 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
     ID3D12PipelineState* const addPso = m_Pipelines.World.VobAlphaAddPSO
         ? m_Pipelines.World.VobAlphaAddPSO.Get() : blendPso;
 
+    // b8: bits 0-30 = TransparencyFrameData CBV + 1 (0 = none), bit 31 = ADD (Vob.hlsl).
+    const uint32_t frameValue = m_TransparencyFrameIndex != UINT_MAX ? m_TransparencyFrameIndex + 1 : 0u;
+
     ID3D12PipelineState* current = nullptr;
     unsigned int drawnTriangles = 0;
     for ( const TransparentItem& item : items ) {
@@ -393,6 +415,10 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
         if ( want != current ) {
             m_CmdList->SetPipelineState( want );
             current = want;
+            // The ADD fallback to the blend PSO must not take the ADD shader path.
+            const bool addPath = want == addPso && addPso != blendPso && frameValue != 0;
+            const uint32_t b8 = frameValue | ( addPath ? 0x80000000u : 0u );
+            m_CmdList->SetGraphicsRoot32BitConstant( 14, b8, 0 );
         }
 
         const float windHeights[2] = { e.WindMinHeight, e.WindMaxHeight };

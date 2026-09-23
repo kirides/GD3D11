@@ -188,6 +188,7 @@ public:
     static void __fastcall hooked_zCBspNodeRender( void* thisptr, void* unkwn ) {
         // Start world rendering here
         Engine::GraphicsEngine->FlushUI2D();
+        ZenGinVobToggleScope vobToggles;
         Engine::GraphicsEngine->OnStartWorldRendering();
     }
 

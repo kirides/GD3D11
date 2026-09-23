@@ -982,11 +982,14 @@ void ImGuiShim::RenderSettingsWindow()
             {
                 // D3D12 bakes the scene-colour format into every PSO, so it only reads this at startup.
                 const bool uavOk = Engine::GraphicsEngine->GetDeviceCapabilities().TypedUAVLoadAdditionalFormats;
-                ImGui::BeginDisabled( Engine::IsD3D12Backend && !uavOk );
+                const bool taa = settings.AntiAliasingMode == GothicRendererSettings::AA_TAA;
+                ImGui::BeginDisabled( ( Engine::IsD3D12Backend && !uavOk ) || taa );
                 if ( ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer ) ) {
                     Engine::GAPI->UpdateCompressBackBuffer();
                 }
-                if ( Engine::IsD3D12Backend && ImGui::IsItemHovered() ) {
+                if ( taa && ImGui::IsItemHovered( ImGuiHoveredFlags_AllowWhenDisabled ) ) {
+                    ImGui::SetTooltip( "Ignored while TAA is enabled: TAA needs the full-precision backbuffer." );
+                } else if ( Engine::IsD3D12Backend && ImGui::IsItemHovered() ) {
                     ImGui::SetTooltip( uavOk ? "Takes effect after a restart."
                         : "Unavailable: this device can't use R11G11B10 as a typed UAV." );
                 }
@@ -1473,6 +1476,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SliderFloat( "OutdoorVobDrawRadius", &settings.OutdoorVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SliderFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SliderFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+
+        ImGui::Checkbox( "Synchronous mesh extraction", &settings.SynchronousMeshExtraction );
+        ImGui::SetItemTooltip( "Debug: extract VOB, attachment, skeletal and world meshes on the calling thread\n"
+            "instead of worker threads. Causes hitches; use to rule out threading races.\n"
+            "Applies to extractions started after the change." );
 
         ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
         ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );

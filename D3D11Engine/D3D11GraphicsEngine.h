@@ -244,6 +244,8 @@ public:
     void DrawGhostRun( std::span<const TransparentItem> items );
     void DrawDecalRun( std::span<const TransparentItem> items );
     void DrawQuadMarkRun( std::span<const TransparentItem> items );
+    bool BindClusteredLightingToPixelShader();
+    void UnbindClusteredLightingFromPixelShader();
     void DrawPolyStripRun( std::span<const TransparentItem> items );
 
     /** Depth re-lay for the world transparency meshes, once, after the replay - the fog/god-ray

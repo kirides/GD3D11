@@ -179,6 +179,8 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
         ? m_Pipelines.DoF.GaussPSO.Get()
         : m_Pipelines.DoF.BlurPSO.Get();
     if ( !blurPso ) return;
+    const bool gauss = settings.DoFGaussBlur;
+    if ( gauss && !m_Pipelines.DoF.GaussVPSO ) return;
 
     const UINT prevIdx = m_DoFFocusIndex;
     const UINT curIdx = 1 - m_DoFFocusIndex;
@@ -207,6 +209,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     // the "written at deferred-execution time, read at deferred-execution time" boundary the shared_ptr
     // treatment exists for (see cb, which genuinely is mutated across passes' callbacks).
     RGResourceHandle halfHandle = RG_INVALID_HANDLE;
+    RGResourceHandle gaussHHandle = RG_INVALID_HANDLE;   // Gaussian only: horizontal pass output
 
     // --- Prepare: scene colour RENDER_TARGET -> compute-readable, depth out of DEPTH_WRITE, previous focus
     // UAV -> readable. The DSV/RTV must be unbound first: a resource cannot be bound as a render target while
@@ -260,11 +263,12 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     // frame's DoF pass left it, and the composite pass's Read() below transitions it to shader-read
     // afterward — neither needs a manual check/transition here any more.
     graph.AddPass( RG_PASS_NAME( "DoF Half-Res Blur" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-        halfHandle = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
-            static_cast<int>( kSceneColorFormat ), L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        const RGResourceHandle out = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
+            static_cast<int>( kPostFxDownsampledFormat ), gauss ? L"DoFGaussH" : L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        ( gauss ? gaussHHandle : halfHandle ) = out;
 
-        pass.m_executeCallback = [this, blurPso, halfSize, cb, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
-            D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
+        pass.m_executeCallback = [this, blurPso, halfSize, cb, out]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+            D3D12RenderTarget* half = g.GetPhysicalTexture( out );
             if ( !half ) return;   // arena exhausted or creation failed (logged once by the arena) — skip the blur
 
             cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
@@ -276,6 +280,28 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
             cmdList.Dispatch( ( halfSize.x + 7 ) / 8, ( halfSize.y + 7 ) / 8, 1 );
             };
         } );
+
+    // --- Gaussian only: vertical half of the separable blur, reading the horizontal result ---
+    if ( gauss ) {
+        graph.AddPass( RG_PASS_NAME( "DoF Gauss Vertical" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            builder.Read( gaussHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+            halfHandle = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
+                static_cast<int>( kPostFxDownsampledFormat ), L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+
+            pass.m_executeCallback = [this, halfSize, cb, gaussHHandle, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* h = g.GetPhysicalTexture( gaussHHandle );
+                D3D12RenderTarget* half = g.GetPhysicalTexture( halfHandle );
+                if ( !h || !half ) return;
+
+                cmdList.SetComputeRootSignature( m_Pipelines.DoF.RootSig.Get() );
+                cmdList.SetPipelineState( m_Pipelines.DoF.GaussVPSO.Get() );
+                cb->BlurIndex = h->GetSrvSlot();
+                cb->OutIndex = half->GetUavSlot();
+                cmdList.SetComputeRoot32BitConstants( 0, 16, cb.get(), 0 );
+                cmdList.Dispatch( ( halfSize.x + 7 ) / 8, ( halfSize.y + 7 ) / 8, 1 );
+                };
+            } );
+    }
 
     // --- Full-res composite: a blended fullscreen draw straight onto the scene colour ---
     graph.AddPass( RG_PASS_NAME( "DoF Composite" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {

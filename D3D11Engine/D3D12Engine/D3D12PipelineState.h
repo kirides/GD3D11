@@ -323,7 +323,7 @@ public:
     // resolve and the half-res blur in compute, then the full-res composite as a blended fullscreen draw
     // into the scene-colour target. The blur has two variants, selected at runtime by
     // RendererSettings.DoFGaussBlur exactly as on D3D11 — the 48-tap bokeh spiral (BlurPSO) or the cheap
-    // 16-tap Gaussian (GaussPSO, the DOF_GAUSS_BLUR macro). The focus ping-pong pair and the half-res blur
+    // separable Gaussian (GaussPSO horizontal + GaussVPSO vertical, the DOF_GAUSS_BLUR macro). The focus ping-pong pair and the half-res blur
     // target are GPU resources and live in the engine (D3D12DoF.cpp), like the bloom pyramid / TAA history.
     struct DoFPipeline {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
@@ -331,8 +331,10 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> FocusPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            BlurCsBlob;       // 48-tap bokeh spiral
         Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;
-        Microsoft::WRL::ComPtr<ID3DBlob>            GaussCsBlob;      // DOF_GAUSS_BLUR: 16-tap Gaussian
+        Microsoft::WRL::ComPtr<ID3DBlob>            GaussCsBlob;      // DOF_GAUSS_BLUR: horizontal Gaussian
         Microsoft::WRL::ComPtr<ID3D12PipelineState> GaussPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            GaussVCsBlob;     // + DOF_GAUSS_VERTICAL: vertical Gaussian
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> GaussVPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            CompositeVsBlob;  // fullscreen triangle
         Microsoft::WRL::ComPtr<ID3DBlob>            CompositePsBlob;  // blends over the scene colour
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;     // graphics, not compute

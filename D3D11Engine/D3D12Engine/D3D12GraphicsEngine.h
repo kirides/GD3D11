@@ -1714,6 +1714,8 @@ private:
     // blocks — [0,256) the HeightfogConstantBuffer (b0), [256,512) the AtmosphereConstantBuffer (b1). Both
     // are filled once per frame in RenderFogAndGodRays from the exact same GAPI/GSky values D3D11 uses.
     static constexpr UINT kFogAtmosphereCbOffset = 256;
+    // [512,768): TransparencyFrameData (include/TransparencyFog.hlsl), refilled by PrepareTransparencyFrame.
+    static constexpr UINT kTransparencyFrameCbOffset = 512;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_FogCB[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FogCBAlloc[kBackBufferMax];
     uint8_t* m_FogCBMapped[kBackBufferMax] = {};
@@ -1787,8 +1789,7 @@ private:
     // geometry is final; since the whole frame executes in submission order on one direct queue, that read
     // always happens-before that write, so no second buffer is needed to avoid a cross-frame race.
     //
-    // This increment only builds the capture — nothing reads these buffers yet. See
-    // D3D12_SSR_WET_SURFACES_PLAN.md (repo root) for the marcher this feeds next.
+    // Readers: the AO pass (previous frame) and the transparent passes' gamma-space add (this frame).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevColor;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SsrPrevColorAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevDepth;
@@ -1798,8 +1799,34 @@ private:
     UINT m_SsrPrevColorSrvSlot = UINT_MAX;
     UINT m_SsrPrevDepthSrvSlot = UINT_MAX;
     bool m_SsrHistoryValid = false;   // false until the first CaptureSsrOpaqueHistory() has run this world/resize
+    bool m_OpaqueSceneCapturedThisFrame = false;   // reset in OnBeginFrame; transparency reads the copy as THIS frame's
     bool CreateSsrHistoryResources( INT2 size );   // (re)builds the two persistent history textures + their SRVs
-    void CaptureSsrOpaqueHistory();                // copies the finished opaque scene color+depth; post-opaque/pre-water
+    // Copies the finished opaque scene color+depth; post-opaque/pre-water. Also the gamma-space-add reference
+    // for the transparent passes, so it must run every frame regardless of SSR settings.
+    void CaptureSsrOpaqueHistory();
+    // This frame's opaque scene copy for the transparent passes, or 0xFFFFFFFF (logged once) if not captured.
+    UINT GetOpaqueSceneSrvIndex();
+
+    // Transparent-pass self-fog + gamma-space add (include/TransparencyFog.hlsl). Permanent heap CBVs over the
+    // three blocks of each m_FogCB[i]; the passes get m_TransparencyFrameIndex (UINT_MAX = feature off).
+    UINT m_FogHeightfogCbvSlot[kBackBufferMax] = {};
+    UINT m_FogAtmosphereCbvSlot[kBackBufferMax] = {};
+    UINT m_TransparencyFrameCbvSlot[kBackBufferMax] = {};
+    bool m_TransparencyFrameCbvReady = false;
+    bool m_TransparencyFogActive = false;          // RenderFogAndGodRays wrote this frame's fog blocks
+    UINT m_TransparencyFrameIndex = UINT_MAX;
+    // Fogged scene copy for the gamma-space add, taken after the fog pass. Lazy (VA), like the DoF textures.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TransparencyBackdrop;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TransparencyBackdropAlloc;
+    UINT m_TransparencyBackdropSrvSlot = UINT_MAX;
+    bool m_TransparencyBackdropAttempted = false;
+    bool CreateTransparencyBackdrop( INT2 size );
+    UINT CaptureTransparencyBackdrop();            // SRV slot of this frame's copy, or UINT_MAX
+    void PrepareTransparencyFrame( UINT backdropSlot );   // after the fog pass, before any transparent draw
+    // TF_MODE_* for a Gothic alpha func, as D3D11's TransparencyFogModeForAlphaFunc.
+    static uint32_t TransparencyFogModeForAlphaFunc( int alphaFunc );
+    static constexpr uint32_t kTransparencyFogBlend = 1;
+    static constexpr uint32_t kTransparencyFogAdd = 2;
 
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT

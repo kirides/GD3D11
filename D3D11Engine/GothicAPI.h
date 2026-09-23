@@ -748,6 +748,9 @@ public:
     /** Recursive helper function to draw the BSP-Tree */
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
+    /** Queues the class helper visuals of visual-less vobs as wireframe, like ZenGin's s_showHelperVisuals */
+    void DrawHelperVisuals();
+
     /** Prepares this frame's particle draw data (visibility + FX collection) and draws the
         particle prog-meshes. Backend-neutral: the concrete engine draws the collected
         FrameParticles into its own refraction targets afterwards. */
@@ -1147,6 +1150,11 @@ private:
     std::vector<zCVob*> DecalVobs;
     std::unordered_map<zCVob*, std::string> tempParticleNames;
 
+    /** DrawHelperVisuals scratch, reused across frames */
+    std::vector<zCBspBase*> HelperVisualNodes;
+    std::vector<zCVob*> HelperVisualVobs;
+    size_t HelperVisualFrame = static_cast<size_t>( -1 );
+
     /** List of Meshes derived from a zCParticleFX-Visual */
     std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>> ParticleEffectProgMeshes;
 
@@ -1302,4 +1310,21 @@ private:
     bool m_DebugMode;
 
     std::string m_gameName;
+};
+
+/** Applies ZenGin's zCVob::s_renderVobs / s_showHelperVisuals console toggles around one world render.
+    Vob draw settings are overridden only for the scope so the user's settings are never clobbered. */
+class ZenGinVobToggleScope {
+public:
+    ZenGinVobToggleScope();
+    ~ZenGinVobToggleScope();
+    ZenGinVobToggleScope( const ZenGinVobToggleScope& ) = delete;
+    ZenGinVobToggleScope& operator=( const ZenGinVobToggleScope& ) = delete;
+
+private:
+    bool Overridden = false;
+    bool DrawVOBs = false;
+    bool DrawMobs = false;
+    bool DrawParticleEffects = false;
+    bool DrawSkeletalMeshes = false;
 };

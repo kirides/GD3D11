@@ -39,9 +39,15 @@ namespace {
     // PS_Simple modulates by the vertex color and does not alpha-test.
     constexpr uint32_t kFxAlphaTest = 1;     // PS_World's unconditional DoAlphaTest(color.a)
     constexpr uint32_t kFxVertexColor = 2;   // PS_Simple's `color *= Input.vDiffuse`
+    constexpr uint32_t kFxFogModeShift = 2;  // bits 2-3: TF_MODE_* (Fx.hlsl FX_FOG_MODE)
 
-    // b2 payload: { diffuse SRV slot, flags, alpha ref, pad }.
-    struct FxMaterialConsts { uint32_t DiffuseIndex; uint32_t Flags; float AlphaRef; float Pad; };
+    // b2 payload: { diffuse SRV slot, flags, alpha ref, TransparencyFrameData CBV slot }.
+    struct FxMaterialConsts { uint32_t DiffuseIndex; uint32_t Flags; float AlphaRef; uint32_t TransparencyFrameIndex; };
+
+    // PS_Simple semantics (vertex color, no alpha test), plus self-fog / gamma-space add by fog mode.
+    FxMaterialConsts SimpleFxConsts( UINT diffuseSlot, uint32_t fogMode, UINT transparencyFrame ) {
+        return { diffuseSlot, kFxVertexColor | ( fogMode << kFxFogModeShift ), 0.0f, transparencyFrame };
+    }
     static_assert( sizeof( FxMaterialConsts ) == 4 * sizeof( uint32_t ), "FxMaterialCB is 4 root constants" );
 
     // The material a quad mark actually draws with: the first polygon's, falling back to the mark's own.
@@ -227,7 +233,8 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             // PS_Simple semantics (what D3D11's DrawMQuadMarks binds): modulate by the vertex color, no alpha
             // test. UpdateQuadMarkInfo forces the vertex color to white for MUL/MUL2 materials anyway, so this
             // is a no-op multiply in practice — kept because it is what the D3D11 shader does.
-            const FxMaterialConsts matCb = { diffuseSlot, kFxVertexColor, 0.0f, 0.0f };
+            const FxMaterialConsts matCb = SimpleFxConsts( diffuseSlot, TransparencyFogModeForAlphaFunc( mat->GetAlphaFunc() ),
+                m_TransparencyFrameIndex );
             m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, &matCb, 0 );
         }
 
@@ -281,7 +288,6 @@ void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
     ID3D12PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
     if ( !pso ) return;
     m_CmdList->SetPipelineState( pso );
-
     const UINT frame = m_FrameIndex;
     unsigned int drawnVertices = 0;
     for ( const TransparentItem& item : items ) {
@@ -327,7 +333,8 @@ void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
 
         // PS_Simple semantics (BindShaderForTexture resolves to it for every strip): modulate by the vertex
         // color, no alpha test — the trails' translucency comes from their blend mode, not a cutout.
-        const FxMaterialConsts matCb = { diffuseSlot, kFxVertexColor, 0.0f, 0.0f };
+        const FxMaterialConsts matCb = SimpleFxConsts( diffuseSlot, TransparencyFogModeForAlphaFunc( matAlphaFunc ),
+            m_TransparencyFrameIndex );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, &matCb, 0 );
 
         const D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, sizeof( ExVertexStruct ) };
@@ -433,7 +440,8 @@ void D3D12GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             if ( diffuseSlot == UINT_MAX ) continue;   // D3D11 skips the material until it is cached in
 
             // PS_Simple semantics: modulate by the vertex color, no alpha test.
-            const FxMaterialConsts matCb = { diffuseSlot, kFxVertexColor, 0.0f, 0.0f };
+            const FxMaterialConsts matCb = SimpleFxConsts( diffuseSlot, TransparencyFogModeForAlphaFunc( currentBlend ),
+                m_TransparencyFrameIndex );
             m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, &matCb, 0 );
 
             for ( auto const& mesh : mat.second ) {

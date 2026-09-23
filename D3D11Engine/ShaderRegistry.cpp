@@ -430,6 +430,9 @@ void ShaderRegistry::Build() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Gauss>( "PS_PFX_DoF.hlsl" )
         .with_macros( {{ "DOF_GAUSS_BLUR", "1" }} ) );
 
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_GaussV>( "PS_PFX_DoF.hlsl" )
+        .with_macros( {{ "DOF_GAUSS_BLUR", "1" }, { "DOF_GAUSS_VERTICAL", "1" }} ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Composite>( "PS_PFX_DoF_Composite.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_BloomComposite>( "PS_PFX_BloomComposite.hlsl" ) );
@@ -472,6 +475,9 @@ void ShaderRegistry::Build() {
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_Gauss>( "CS_PFX_DoF.hlsl" )
             .with_macros( {{ "DOF_GAUSS_BLUR", "1" }} ) );
 
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_GaussV>( "CS_PFX_DoF.hlsl" )
+            .with_macros( {{ "DOF_GAUSS_BLUR", "1" }, { "DOF_GAUSS_VERTICAL", "1" }} ) );
+
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO>( "CS_PFX_SAO.hlsl" ));
 
@@ -501,6 +507,11 @@ void ShaderRegistry::Build() {
         // tiled-deferred renderers. See DrawQuadMarkRun for the flat-shaded fallback used when tiled
         // lighting isn't active.
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_QuadMarkLitFP>( "PS_QuadMarkLitFP.hlsl" )
+            .with_macros( shadowMacroBuilder )
+            .with_category( ShaderCategory::LightsAndShadows ) );
+
+        // Ghost/fading static VOBs (zClearView etc.), same light data as the lit quad marks.
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_TransparencyLitFP>( "PS_TransparencyLitFP.hlsl" )
             .with_macros( shadowMacroBuilder )
             .with_category( ShaderCategory::LightsAndShadows ) );
 
