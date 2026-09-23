@@ -52,9 +52,8 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
 
 	RenderToTextureBuffer* lum = CalcLuminance( backbuffer );
 
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
     auto tempBufferDs4_1 = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ resolution.x / 4, resolution.y / 4, bbufferFormat } );
+        TexturePool::Description{ resolution.x / 4, resolution.y / 4, DXGI_FORMAT_PFX_DOWNSAMPLED } );
 	CreateBloom( lum, tempBufferDs4_1.get(), backbuffer, resolution );
 
     // Scene at t0 directly: the output is always the LDR target, never the HDR scene this reads.
@@ -124,7 +123,7 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffe
 
     // Second blur ping-pong buffer, sized to match dsRes (the working resolution / 4).
     auto tempBloomBuffer2 = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ dsRes.x, dsRes.y, engine->GetBackBufferFormat() } );
+        TexturePool::Description{ dsRes.x, dsRes.y, DXGI_FORMAT_PFX_DOWNSAMPLED } );
     // Copy
     FxRenderer->CopyTextureToRTV( bloomTempBuffer->GetShaderResView(), tempBloomBuffer2->GetRenderTargetView(), dsRes, true );
 

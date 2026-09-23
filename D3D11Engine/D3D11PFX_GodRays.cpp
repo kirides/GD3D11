@@ -184,10 +184,10 @@ XRESULT D3D11PFX_GodRays::RenderCS(
 
     // Acquire DS4 UAV-capable textures from the pool
     auto maskBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ ds4Size.x, ds4Size.y, engine->GetBackBufferFormat(),
+        TexturePool::Description{ ds4Size.x, ds4Size.y, DXGI_FORMAT_PFX_DOWNSAMPLED,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
     auto zoomBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ ds4Size.x, ds4Size.y, engine->GetBackBufferFormat(),
+        TexturePool::Description{ ds4Size.x, ds4Size.y, DXGI_FORMAT_PFX_DOWNSAMPLED,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
 
     auto clampSampler = engine->GetClampSamplerState();
@@ -378,10 +378,10 @@ XRESULT D3D11PFX_GodRays::RenderToTextureCS(
     INT2 ds4Size = { res.x / 4, res.y / 4 };
 
     auto maskBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ ds4Size.x, ds4Size.y, engine->GetBackBufferFormat(),
+        TexturePool::Description{ ds4Size.x, ds4Size.y, DXGI_FORMAT_PFX_DOWNSAMPLED,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
     auto zoomBuffer = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ ds4Size.x, ds4Size.y, engine->GetBackBufferFormat(),
+        TexturePool::Description{ ds4Size.x, ds4Size.y, DXGI_FORMAT_PFX_DOWNSAMPLED,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
 
     auto clampSampler = engine->GetClampSamplerState();

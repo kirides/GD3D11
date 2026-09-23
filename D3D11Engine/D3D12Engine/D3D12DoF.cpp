@@ -264,7 +264,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     // afterward — neither needs a manual check/transition here any more.
     graph.AddPass( RG_PASS_NAME( "DoF Half-Res Blur" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
         const RGResourceHandle out = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
-            static_cast<int>( kSceneColorFormat ), gauss ? L"DoFGaussH" : L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            static_cast<int>( kPostFxDownsampledFormat ), gauss ? L"DoFGaussH" : L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         ( gauss ? gaussHHandle : halfHandle ) = out;
 
         pass.m_executeCallback = [this, blurPso, halfSize, cb, out]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
@@ -286,7 +286,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
         graph.AddPass( RG_PASS_NAME( "DoF Gauss Vertical" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
             builder.Read( gaussHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
             halfHandle = builder.CreateTexture( { static_cast<uint32_t>( halfSize.x ), static_cast<uint32_t>( halfSize.y ),
-                static_cast<int>( kSceneColorFormat ), L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                static_cast<int>( kPostFxDownsampledFormat ), L"DoFHalf", kRgNeedsUav }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
             pass.m_executeCallback = [this, halfSize, cb, gaussHHandle, halfHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
                 D3D12RenderTarget* h = g.GetPhysicalTexture( gaussHHandle );

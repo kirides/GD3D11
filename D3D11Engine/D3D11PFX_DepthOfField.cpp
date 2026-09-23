@@ -103,7 +103,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
 
     // --- Pass 1: Half-res bokeh blur ---
     auto res = resolution;
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
+    DXGI_FORMAT bbufferFormat = DXGI_FORMAT_PFX_DOWNSAMPLED;
     auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat } );
 
@@ -238,7 +238,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
 
     // --- Pass 1: Half-res bokeh blur ---
     auto res = resolution;
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
+    DXGI_FORMAT bbufferFormat = DXGI_FORMAT_PFX_DOWNSAMPLED;
     auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );

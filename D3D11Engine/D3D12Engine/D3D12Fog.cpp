@@ -331,7 +331,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         // transitions it to shader-read afterward — neither needs a manual check/transition here.
         graph.AddPass( RG_PASS_NAME( "God Ray Mask" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
             maskHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
-                static_cast<int>( kSceneColorFormat ), L"GodRayMask", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                static_cast<int>( kPostFxDownsampledFormat ), L"GodRayMask", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
 
             // Scene color must be readable by the mask CS; compute can't run with it bound as an RTV. Not
             // graph-tracked, so declared via TransitionExternal to fold it into maskHandle's own batch.
@@ -358,7 +358,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         graph.AddPass( RG_PASS_NAME( "God Ray Zoom" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
             builder.Read( maskHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
             zoomHandle = builder.CreateTexture( { static_cast<uint32_t>( godRaySize.x ), static_cast<uint32_t>( godRaySize.y ),
-                static_cast<int>( kSceneColorFormat ), L"GodRayZoom", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+                static_cast<int>( kPostFxDownsampledFormat ), L"GodRayZoom", 1u }, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
             // The composition pass further down reads this pass's result via godRayZoomSrvSlot, a plain
             // shared value — not a graph Read(), so mark the side effect explicitly (see
             // D3D12RenderPass::m_hasExternalSideEffect). Since nothing ever Read()s zoomHandle, its final

@@ -215,6 +215,9 @@ inline void SsrStepsForQuality( int quality, UINT& maxSteps, UINT& refineSteps )
 // RTVFormats[0], so changing it needs a restart, same contract as D3D12PipelineState::DisplayFormat.
 inline DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
+// Downsampled/blur intermediates (bloom pyramid, DoF half-res, god rays) stay FP16 even with a compressed scene.
+inline constexpr DXGI_FORMAT kPostFxDownsampledFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
 // Display-buffer format used ONLY when real HDR scanout is active. The tonemap resolve, Gothic's 2D UI, SMAA,
 // the sharpen pass and the ImGui overlay then composite into an m_HdrDisplay of this format instead of writing
 // the swapchain directly; it stores EXTENDED-sRGB values (the normal gamma encoding, but >1.0 allowed = brighter
