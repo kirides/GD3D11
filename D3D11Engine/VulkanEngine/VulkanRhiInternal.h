@@ -192,6 +192,8 @@ namespace VulkanRhi {
         VkPipeline m_Pipeline = VK_NULL_HANDLE;
         VkPipelineBindPoint m_BindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         ComPtr<RootSignatureImpl> m_RootSig;
+        uint32_t m_ColorCount = 0;   // attachments the rendering scope must present to this pipeline
+        bool m_HasDepth = false;
     };
 
     class CommandSignatureImpl final : public Rhi::CommandSignature {

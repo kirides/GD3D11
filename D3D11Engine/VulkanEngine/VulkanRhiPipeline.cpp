@@ -169,16 +169,22 @@ namespace VulkanRhi {
         ComPtr<RootSignatureImpl> rs;
         rs.Attach( new RootSignatureImpl( this ) );
         std::vector<VkDescriptorSetLayoutBinding> bindings;
+        std::vector<int> bindingOwner;   // root parameter per binding (-1: static sampler)
+        int currentParam = -1;
         bool ok = true;
 
         auto addBinding = [&]( uint32_t binding, VkDescriptorType type, VkShaderStageFlags stages, const VkSampler* immutable ) {
-            for ( VkDescriptorSetLayoutBinding& b : bindings ) {
+            for ( size_t i = 0; i < bindings.size(); ++i ) {
+                VkDescriptorSetLayoutBinding& b = bindings[i];
                 if ( b.binding != binding ) continue;
                 if ( b.descriptorType != type ) {
                     Logging::Err( "Vulkan: root signature '{}' maps two parameter kinds onto binding {}.", name, binding );
                     ok = false;
+                } else if ( bindingOwner[i] != currentParam ) {
+                    // D3D12 can feed one register per stage from separate parameters; Vulkan has one binding.
+                    Logging::Wrn( "Vulkan: root signature '{}' feeds binding {} from two parameters; the last one set wins.", name, binding );
                 }
-                b.stageFlags |= stages;   // same register under two visibilities: one Vulkan binding
+                b.stageFlags |= stages;
                 return;
             }
             VkDescriptorSetLayoutBinding b = {};
@@ -188,6 +194,7 @@ namespace VulkanRhi {
             b.stageFlags = stages;
             b.pImmutableSamplers = immutable;
             bindings.push_back( b );
+            bindingOwner.push_back( currentParam );
         };
         auto shiftOf = [&]( uint32_t shift, UINT reg, UINT space ) -> uint32_t {
             if ( space != 0 || reg >= kRegistersPerClass ) {
@@ -201,6 +208,7 @@ namespace VulkanRhi {
         for ( UINT i = 0; i < desc.NumParameters; ++i ) {
             const D3D12_ROOT_PARAMETER1& src = desc.pParameters[i];
             const VkShaderStageFlags stages = StagesOf( src.ShaderVisibility );
+            currentParam = static_cast<int>( i );
             RootSignatureImpl::Param p;
             p.Kind = src.ParameterType;
             switch ( src.ParameterType ) {
@@ -293,6 +301,7 @@ namespace VulkanRhi {
             rs->m_StaticSamplers.push_back( sampler );
         }
         // Immutable samplers point into m_StaticSamplers, which no longer reallocates.
+        currentParam = -1;
         for ( UINT i = 0; i < desc.NumStaticSamplers; ++i ) {
             const D3D12_STATIC_SAMPLER_DESC& s = desc.pStaticSamplers[i];
             addBinding( shiftOf( kShiftS, s.ShaderRegister, s.RegisterSpace ), VK_DESCRIPTOR_TYPE_SAMPLER,
@@ -496,6 +505,8 @@ namespace VulkanRhi {
         pso.Attach( new PipelineStateImpl( this ) );
         pso->m_BindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         pso->m_RootSig = rs;
+        pso->m_ColorCount = rtCount;
+        pso->m_HasDepth = desc->DSVFormat != DXGI_FORMAT_UNKNOWN;
         const VkResult result = vkCreateGraphicsPipelines( Vk(), VK_NULL_HANDLE, 1, &ci, nullptr, &pso->m_Pipeline );
         cleanup();
         if ( CheckResult( result, "vkCreateGraphicsPipelines" ) ) {
