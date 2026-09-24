@@ -1269,9 +1269,7 @@ Rhi::Resource* D3D12GraphicsEngine::RealDisplayTarget() const {
 
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::RealDisplayRtv() const {
 	if ( m_HdrDisplay ) return m_HdrDisplayRtv;
-	D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	rtv.ptr += static_cast<SIZE_T>( m_BackBufferIndex ) * m_RtvDescriptorSize;
-	return rtv;
+	return BackBufferRtv( m_BackBufferIndex );
 }
 
 // Mid-chain the finished image lives in one of the LDR scratches, so "the display target" resolves to that.
@@ -1554,8 +1552,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 
 	m_CmdList->TransitionBarrier( m_HdrDisplay.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 
-	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	backRtv.ptr += static_cast<SIZE_T>( m_BackBufferIndex ) * m_RtvDescriptorSize;
+	const D3D12_CPU_DESCRIPTOR_HANDLE backRtv = BackBufferRtv( m_BackBufferIndex );
 	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
 
 	// Display->swapchain, both native (the tonemap resolve already upscaled).
@@ -1823,12 +1820,8 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 bool D3D12GraphicsEngine::CreateFrameResources() {
     Rhi::Device* device = m_Rhi.Get();
 
-    // RTV descriptor heap: kBackBufferMax backbuffer slots (reserved at the compile-time max regardless of
-    // the actually configured kBackBufferCount, so every fixed offset below stays stable) + 1 for the HDR
-    // scene-color target (slot kBackBufferMax) + 2 unused (slots +1 / +2) + 1 for the HDR display composite
-    // target (slot +3; only populated when real HDR output is active) + 2 for the motion-vector /
-    // octahedral-normal G-buffer the depth prepass writes (slots +4 / +5, D3D12Motion.cpp) + 2 for the LDR
-    // display-chain scratches (slots +6 / +7, D3D12PostFX.cpp).
+    // Fixed RTV slots: 0..kBackBufferMax-1 unused (keeps the offsets below stable), kBackBufferMax scene colour,
+    // +3 HDR display, +4/+5 motion/normal G-buffer (D3D12Motion.cpp), +6/+7 LDR display-chain scratches (D3D12PostFX.cpp).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = kBackBufferMax + 8;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -1836,6 +1829,12 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, m_RtvHeap.ReleaseAndGetAddressOf() ) ) )
         return false;
     m_RtvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
+
+    // Back-buffer RTVs live apart from the fixed slots above; the swapchain may have more images than frames in flight.
+    D3D12_DESCRIPTOR_HEAP_DESC backRtvDesc = rtvHeapDesc;
+    backRtvDesc.NumDescriptors = kSwapchainImageMax;
+    if ( FAILED( m_Rhi->CreateDescriptorHeap( &backRtvDesc, m_BackBufferRtvHeap.ReleaseAndGetAddressOf() ) ) )
+        return false;
 
     // Per-frame command allocators
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
@@ -1865,14 +1864,19 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
 bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
     Rhi::Device* device = m_Rhi.Get();
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+    m_SwapChainImageCount = m_SwapChain->GetBufferCount();
+    if ( m_SwapChainImageCount == 0 || m_SwapChainImageCount > kSwapchainImageMax ) {
+        Logging::Err( "D3D12GraphicsEngine: the swapchain has {} images (max {}).", m_SwapChainImageCount, kSwapchainImageMax );
+        return false;
+    }
+    for ( UINT i = 0; i < m_SwapChainImageCount; ++i ) {
         if ( FAILED( m_SwapChain->GetBuffer( i, m_BackBuffers[i].ReleaseAndGetAddressOf() ) ) )
             return false;
-        m_BackBuffers[i]->SetName( i == 0 ? L"BackBuffer0" : L"BackBuffer1" );
-        device->CreateRenderTargetView( m_BackBuffers[i].Get(), nullptr, rtvHandle );
+        wchar_t name[16];
+        swprintf_s( name, L"BackBuffer%u", i );
+        m_BackBuffers[i]->SetName( name );
+        device->CreateRenderTargetView( m_BackBuffers[i].Get(), nullptr, BackBufferRtv( i ) );
         m_CmdList.InvalidateRenderTargets();
-        rtvHandle.ptr += m_RtvDescriptorSize;
     }
     return true;
 }
@@ -2792,7 +2796,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( size.x == m_BackbufferResolution.x && size.y == m_BackbufferResolution.y ) return true;
 
     WaitForGpuIdle();
-    for ( UINT i = 0; i < kBackBufferCount; ++i ) m_BackBuffers[i].Reset();
+    for ( UINT i = 0; i < kSwapchainImageMax; ++i ) m_BackBuffers[i].Reset();
     m_HdrDisplay.Reset();          // rebuilt at the new size below (SRV slot is kept and re-pointed)
 
     // Must pass the SAME flags the swapchain was created with (CreateSwapChainForHwnd's scd.Flags) —

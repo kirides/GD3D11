@@ -60,6 +60,8 @@ public:
     /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
         Arrays are always sized to this; kBackBufferCount below decides how many slots are actually used. */
     static constexpr UINT kBackBufferMax = 3;
+    /** Swapchain images the engine can address; separate from frames in flight (Vulkan may create more). */
+    static constexpr UINT kSwapchainImageMax = 8;
 
     /** Actual configured frame-in-flight count (<= kBackBufferMax). Set once in the constructor from
         RendererSettings.LowLatency, before D3D12ShadowMap::Attach/D3D12PointShadows::Attach copy it -
@@ -505,7 +507,14 @@ private:
     // safe to fully stall the GPU here. See the .cpp for the flush + rollback-on-fatal-failure sequence.
     void ApplyPendingShaderReload();
 
-    Microsoft::WRL::ComPtr<Rhi::Resource>         m_BackBuffers[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>         m_BackBuffers[kSwapchainImageMax];
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap>   m_BackBufferRtvHeap;   // one RTV per swapchain image
+    UINT m_SwapChainImageCount = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE BackBufferRtv( UINT index ) const {
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_BackBufferRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        rtv.ptr += static_cast<SIZE_T>( index ) * m_RtvDescriptorSize;
+        return rtv;
+    }
     Microsoft::WRL::ComPtr<Rhi::CommandAllocator> m_CmdAllocators[kBackBufferMax];
     // The frame's direct command list, behind the engine-wide redundant-state filter (RHI/RhiCmdList.h).
     // Reads exactly like the ComPtr it replaces (`m_CmdList->Foo()`, `.Get()`, `if (!m_CmdList)`), but every
