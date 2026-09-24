@@ -850,10 +850,12 @@ void ImGuiShim::RenderSettingsWindow()
 
     static std::string settingsLabel;
     if ( settingsLabel.empty() && Engine::GraphicsEngine ) {
-        settingsLabel.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12
-        ? "D3D12 "
-        : "D3D11 " )
-        .append( VERSION_NUMBER );
+        switch ( Engine::GraphicsEngine->GetBackendAPI() ) {
+        case EGraphicsEngineBackend::D3D12: settingsLabel.append( "D3D12 " ); break;
+        case EGraphicsEngineBackend::Vulkan: settingsLabel.append( "Vulkan " ); break;
+        default: settingsLabel.append( "D3D11 " ); break;
+        }
+        settingsLabel.append( VERSION_NUMBER );
 
 #ifdef IS_DEV_BUILD
         settingsLabel.append(" - (").append(BUILD_DATE).append(")");

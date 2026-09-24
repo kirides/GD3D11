@@ -103,6 +103,9 @@
     <Filter Include="Librarys\D3D12MemoryAllocator">
       <UniqueIdentifier>{c0a8cc76-71b8-489a-8078-86f1dc39635d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\Vulkan">
+      <UniqueIdentifier>{bd78cd84-23f0-47b8-b0e8-3825ff5baa24}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -798,6 +801,12 @@
     <ClInclude Include="TransparencyQueue.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="VulkanEngine\VulkanCommon.h">
+      <Filter>Engine\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VulkanEngine\VulkanDevice.h">
+      <Filter>Engine\Vulkan</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1064,6 +1073,12 @@
     </ClCompile>
     <ClCompile Include="TransparencyQueue.cpp">
       <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanLoader.cpp">
+      <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanDevice.cpp">
+      <Filter>Engine\Vulkan</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>

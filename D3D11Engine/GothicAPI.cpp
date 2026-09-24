@@ -5857,7 +5857,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "LimitLightIntesity", to_string_locale_independent( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "TiledLighting", to_string_locale_independent( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "RendererMode", to_string_locale_independent( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "GraphicsAPI", s.GraphicsAPI == GothicRendererSettings::GRAPHICS_API_D3D12 ? "D3D12" : "D3D11", ini.c_str() );
+    WritePrivateProfileStringA( "Display", "GraphicsAPI", GothicRendererSettings::GraphicsAPIName( s.GraphicsAPI ), ini.c_str() );
     WritePrivateProfileStringA( "Display", "MSAASamples", to_string_locale_independent( s.MSAASamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
@@ -6104,9 +6104,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 
         // Backend selection is applied at engine creation (read directly there, before this load
         // runs). Mirror it into the settings struct so the settings UI reflects the current value.
-        s.GraphicsAPI = _stricmp( GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", ini ).c_str(), "D3D12" ) == 0
-            ? GothicRendererSettings::GRAPHICS_API_D3D12
-            : GothicRendererSettings::GRAPHICS_API_D3D11;
+        s.GraphicsAPI = GothicRendererSettings::ParseGraphicsAPI( GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", ini ).c_str() );
 
         {
             // MSAA is only valid for the Forward+ renderer; clamp to the nearest supported power-of-two (1/2/4/8).

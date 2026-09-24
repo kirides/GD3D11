@@ -682,12 +682,28 @@ struct GothicRendererSettings {
     };
 
     /** Selects which graphics backend the engine creates on startup. Read very early
-        (before the full settings load) in Engine::CreateGraphicsEngine(). D3D12 is inert
-        until the D3D12 backend lands; requesting it currently falls back to D3D11. */
+        (before the full settings load) in Engine::CreateGraphicsEngine(). D3D12 and Vulkan
+        fall back to D3D11 when their device can't be created. */
     enum E_GraphicsAPI {
         GRAPHICS_API_D3D11 = 0,
         GRAPHICS_API_D3D12 = 1,
+        GRAPHICS_API_VULKAN = 2,
     };
+
+    /** The UserSettings.ini spelling of a backend ([Display] GraphicsAPI). */
+    static const char* GraphicsAPIName( E_GraphicsAPI api ) {
+        switch ( api ) {
+        case GRAPHICS_API_D3D12: return "D3D12";
+        case GRAPHICS_API_VULKAN: return "Vulkan";
+        default: return "D3D11";
+        }
+    }
+    /** Case-insensitive inverse of GraphicsAPIName; anything unknown is D3D11. */
+    static E_GraphicsAPI ParseGraphicsAPI( const char* name ) {
+        if ( name && _stricmp( name, "D3D12" ) == 0 ) return GRAPHICS_API_D3D12;
+        if ( name && _stricmp( name, "Vulkan" ) == 0 ) return GRAPHICS_API_VULKAN;
+        return GRAPHICS_API_D3D11;
+    }
 
     enum E_WaterSSRQuality {
         WATER_SSR_DISABLED = 0,
@@ -1174,7 +1190,7 @@ struct GothicRendererSettings {
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
     E_RendererMode RendererMode;
-    /** Requested graphics backend (see E_GraphicsAPI). Inert until the D3D12 backend lands. */
+    /** Requested graphics backend (see E_GraphicsAPI); what actually initialized is Engine::GraphicsEngine. */
     E_GraphicsAPI GraphicsAPI;
     /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
     int MSAASamples;

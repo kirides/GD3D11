@@ -196,6 +196,7 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     constexpr ListItem<GothicRendererSettings::E_GraphicsAPI> graphicsApis[] = {
         { "Direct3D 11", GothicRendererSettings::GRAPHICS_API_D3D11 },
         { "Direct3D 12", GothicRendererSettings::GRAPHICS_API_D3D12, "Falls back to Direct3D 11 if the device can't be created." },
+        { "Vulkan (experimental)", GothicRendererSettings::GRAPHICS_API_VULKAN, "Not implemented yet: logs a Vulkan device report to Log.txt and uses Direct3D 11." },
     };
     ComboRow( "Graphics API [*]", "##GraphicsAPI", graphicsApis, &settings.GraphicsAPI,
         "Takes effect after restarting the game." );
@@ -792,7 +793,11 @@ void ImGuiSettings::RenderWindow( ImGuiShim& shim ) {
     if ( title.empty() ) {
         title.append( "GD3D11 " ).append( VERSION_NUMBER );
         if ( Engine::GraphicsEngine ) {
-            title.append( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ? " - Dx12" : " - Dx11" );
+            switch ( Engine::GraphicsEngine->GetBackendAPI() ) {
+            case EGraphicsEngineBackend::D3D12: title.append( " - Dx12" ); break;
+            case EGraphicsEngineBackend::Vulkan: title.append( " - Vulkan" ); break;
+            default: title.append( " - Dx11" ); break;
+            }
         }
 #ifdef IS_DEV_BUILD
         title.append( " (" BUILD_DATE ")" );
