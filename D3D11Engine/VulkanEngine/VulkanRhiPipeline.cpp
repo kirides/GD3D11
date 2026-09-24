@@ -597,14 +597,67 @@ namespace VulkanRhi {
         return S_OK;
     }
 
+    CommandSignatureImpl::~CommandSignatureImpl() {
+        DeviceImpl* device = m_Device;
+        VkIndirectCommandsLayoutEXT layout = m_Generated;
+        if ( layout ) device->DeferDestroy( [device, layout]() { vkDestroyIndirectCommandsLayoutEXT( device->Vk(), layout, nullptr ); } );
+    }
+
+    namespace {
+        /** Tokens for a signature of push-constant root constants followed by one draw; null if it has anything else. */
+        VkIndirectCommandsLayoutEXT CreateGeneratedLayout( DeviceImpl* device, const CommandSignatureImpl& sig ) {
+            const RootSignatureImpl* rs = sig.m_RootSig.Get();
+            if ( !device->VkCaps().DeviceGeneratedCommands || !rs || sig.m_Args.empty() || sig.m_Stride > device->VkCaps().DgcMaxIndirectStride )
+                return VK_NULL_HANDLE;
+            std::vector<VkIndirectCommandsLayoutTokenEXT> tokens;
+            std::vector<VkIndirectCommandsPushConstantTokenEXT> pushes( sig.m_Args.size() );
+            uint32_t offset = 0;
+            for ( size_t i = 0; i < sig.m_Args.size(); ++i ) {
+                const D3D12_INDIRECT_ARGUMENT_DESC& a = sig.m_Args[i];
+                const bool last = i + 1 == sig.m_Args.size();
+                VkIndirectCommandsLayoutTokenEXT t = { VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_TOKEN_EXT };
+                t.offset = offset;
+                if ( a.Type == D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT && !last ) {
+                    const UINT param = a.Constant.RootParameterIndex;
+                    if ( param >= rs->m_Params.size() || rs->m_Params[param].PushOffset == RootSignatureImpl::kNoPush ) return VK_NULL_HANDLE;
+                    const RootSignatureImpl::Param& p = rs->m_Params[param];
+                    if ( p.PushStages & ~device->VkCaps().DgcShaderStages ) return VK_NULL_HANDLE;   // e.g. an ALL-visible block
+                    pushes[i].updateRange = { p.PushStages, p.PushOffset + a.Constant.DestOffsetIn32BitValues * 4,
+                        a.Constant.Num32BitValuesToSet * 4 };
+                    t.type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT;
+                    t.data.pPushConstant = &pushes[i];
+                    offset += a.Constant.Num32BitValuesToSet * 4;
+                } else if ( a.Type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED && last ) {
+                    t.type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_INDEXED_EXT;
+                } else if ( a.Type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW && last ) {
+                    t.type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_DRAW_EXT;
+                } else {
+                    return VK_NULL_HANDLE;   // vertex/index/root-descriptor arguments stay on the CPU replay
+                }
+                tokens.push_back( t );
+            }
+            VkIndirectCommandsLayoutCreateInfoEXT ci = { VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_CREATE_INFO_EXT };
+            ci.shaderStages = device->VkCaps().DgcShaderStages;
+            ci.indirectStride = sig.m_Stride;
+            ci.pipelineLayout = rs->m_Layout;
+            ci.tokenCount = static_cast<uint32_t>( tokens.size() );
+            ci.pTokens = tokens.data();
+            VkIndirectCommandsLayoutEXT layout = VK_NULL_HANDLE;
+            if ( device->CheckResult( vkCreateIndirectCommandsLayoutEXT( device->Vk(), &ci, nullptr, &layout ), "vkCreateIndirectCommandsLayoutEXT" ) )
+                return VK_NULL_HANDLE;
+            return layout;
+        }
+    }
+
     HRESULT DeviceImpl::CreateCommandSignature( const D3D12_COMMAND_SIGNATURE_DESC* desc, Rhi::RootSignature* rootSig,
         Rhi::CommandSignature** outSig ) {
         if ( !desc || !outSig ) return E_INVALIDARG;
         ComPtr<CommandSignatureImpl> sig;
-        sig.Attach( new CommandSignatureImpl() );
+        sig.Attach( new CommandSignatureImpl( this ) );
         sig->m_Stride = desc->ByteStride;
         sig->m_Args.assign( desc->pArgumentDescs, desc->pArgumentDescs + desc->NumArgumentDescs );
         sig->m_RootSig = static_cast<RootSignatureImpl*>( rootSig );
+        sig->m_Generated = CreateGeneratedLayout( this, *sig.Get() );
         *outSig = sig.Detach();
         return S_OK;
     }

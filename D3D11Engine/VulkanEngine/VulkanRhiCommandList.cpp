@@ -152,6 +152,9 @@ namespace VulkanRhi {
         bool PrepareDraw();
         void ReplayIndirect( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
             ResourceImpl* count, UINT64 countOffset );
+        /** vkCmdExecuteGeneratedCommandsEXT for a signature with a generated layout; false to fall back to replay. */
+        bool ExecuteGenerated( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
+            ResourceImpl* count, UINT64 countOffset );
 
         void BeginRenderingScope( const Descriptor* colors, uint32_t colorCount, const Descriptor* depth,
             const VkAttachmentLoadOp* colorLoad, const VkClearValue* colorClear, VkAttachmentLoadOp depthLoad,
@@ -659,6 +662,7 @@ namespace VulkanRhi {
         m_InIndirect = true;
         struct Leave { bool& Flag; ~Leave() { Flag = false; } } leave{ m_InIndirect };
         if ( s->m_Args.size() != 1 ) {
+            if ( s->m_Generated && ExecuteGenerated( *s, maxCount, argBuf, argOffset, countBuf, countOffset ) ) return;
             ReplayIndirect( *s, maxCount, argBuf, argOffset, countBuf, countOffset );
             return;
         }
@@ -681,6 +685,53 @@ namespace VulkanRhi {
         default:
             break;
         }
+    }
+
+    bool CommandListImpl::ExecuteGenerated( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
+        ResourceImpl* count, UINT64 countOffset ) {
+        // The layout's tokens target the signature's root signature; D3D12 requires the bound one to match anyway.
+        if ( !maxCount || m_Gfx.RootSig != s.m_RootSig.Get() || !m_Gfx.Pso || !args->m_DeviceAddress
+            || ( count && !count->m_DeviceAddress ) || argOffset >= args->m_Size ) {
+            return false;
+        }
+        const UINT64 fits = ( args->m_Size - argOffset ) / s.m_Stride;
+        const uint32_t sequences = static_cast<uint32_t>( std::min<UINT64>( { maxCount, fits, m_Device->VkCaps().DgcMaxSequenceCount } ) );
+        if ( !sequences ) return true;
+
+        VkGeneratedCommandsPipelineInfoEXT pipeline = { VK_STRUCTURE_TYPE_GENERATED_COMMANDS_PIPELINE_INFO_EXT };
+        pipeline.pipeline = m_Gfx.Pso->m_Pipeline;
+        VkGeneratedCommandsMemoryRequirementsInfoEXT req = { VK_STRUCTURE_TYPE_GENERATED_COMMANDS_MEMORY_REQUIREMENTS_INFO_EXT };
+        req.pNext = &pipeline;
+        req.indirectCommandsLayout = s.m_Generated;
+        req.maxSequenceCount = sequences;
+        VkMemoryRequirements2 mem = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
+        vkGetGeneratedCommandsMemoryRequirementsEXT( m_Device->Vk(), &req, &mem );
+        VkDeviceAddress preprocess = 0;
+        if ( mem.memoryRequirements.size
+            && !m_Allocator->AllocatePreprocess( mem.memoryRequirements.size, mem.memoryRequirements.alignment, preprocess ) ) {
+            return false;
+        }
+        if ( !PrepareDraw() ) return true;
+
+        VkGeneratedCommandsInfoEXT info = { VK_STRUCTURE_TYPE_GENERATED_COMMANDS_INFO_EXT };
+        info.pNext = &pipeline;
+        info.shaderStages = m_Device->VkCaps().DgcShaderStages;
+        info.indirectCommandsLayout = s.m_Generated;
+        info.indirectAddress = args->m_DeviceAddress + argOffset;
+        info.indirectAddressSize = static_cast<VkDeviceSize>( sequences ) * s.m_Stride;
+        info.preprocessAddress = preprocess;
+        info.preprocessSize = mem.memoryRequirements.size;
+        info.maxSequenceCount = sequences;
+        info.sequenceCountAddress = count ? count->m_DeviceAddress + countOffset : 0;
+        {
+            TickScope driver( m_Stats.DriverDrawTicks );
+            vkCmdExecuteGeneratedCommandsEXT( m_Cmd, VK_FALSE, &info );
+        }
+        // Push constants the tokens wrote are undefined afterwards.
+        m_Gfx.DirtyParams |= s.m_RootSig->m_PushConstantParams;
+        ++m_Stats.Generated;
+        ++m_Stats.Draws;
+        return true;
     }
 
     void CommandListImpl::ReplayIndirect( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
