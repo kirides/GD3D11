@@ -298,6 +298,36 @@ namespace VulkanRhi {
         Logging::Inf( "Vulkan: saved the pipeline cache ({} KiB).", size / 1024 );
     }
 
+    SharedPipeline* DeviceImpl::AcquireSharedPipeline( const std::string& key ) {
+        std::lock_guard<std::mutex> lock( m_SharedPipelineMutex );
+        auto it = m_SharedPipelines.find( key );
+        if ( it == m_SharedPipelines.end() ) return nullptr;
+        ++it->second.Users;
+        m_SharedPipelineHits.fetch_add( 1, std::memory_order_relaxed );
+        return &it->second;
+    }
+
+    SharedPipeline* DeviceImpl::PublishSharedPipeline( const std::string& key, VkPipeline pipeline ) {
+        std::lock_guard<std::mutex> lock( m_SharedPipelineMutex );
+        auto [it, inserted] = m_SharedPipelines.try_emplace( key );
+        if ( inserted ) {
+            it->second.Pipeline = pipeline;
+            it->second.Key = &it->first;
+        } else {
+            DeferDestroy( [this, pipeline]() { vkDestroyPipeline( Vk(), pipeline, nullptr ); } );
+        }
+        ++it->second.Users;
+        return &it->second;
+    }
+
+    void DeviceImpl::ReleaseSharedPipeline( SharedPipeline* shared ) {
+        std::lock_guard<std::mutex> lock( m_SharedPipelineMutex );
+        if ( --shared->Users ) return;
+        const VkPipeline pipeline = shared->Pipeline;
+        DeferDestroy( [this, pipeline]() { vkDestroyPipeline( Vk(), pipeline, nullptr ); } );
+        m_SharedPipelines.erase( *shared->Key );
+    }
+
     void DeviceImpl::AddRecordStats( const RecordStats& s ) {
         std::lock_guard<std::mutex> lock( m_StatsMutex );
         m_Stats.Draws += s.Draws;
@@ -343,11 +373,11 @@ namespace VulkanRhi {
             Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, GPU busy {:.2f} ms; CPU blocked: fences {:.2f}, acquire {:.2f}, "
                 "present {:.2f}, submit {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
                 "{} push-constant updates, {} device-generated ExecuteIndirects, {} render scopes, {} submits; over all {} frames: "
-                "{} pipelines and {} resources created, {} heap descriptor writes.",
+                "{} pipelines created ({} PSOs shared an existing one), {} resources created, {} heap descriptor writes.",
                 f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
                 waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
                 s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.PushConstants / f, s.Generated / f, s.Scopes / f, submits / f,
-                f, pipelines, m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
+                f, pipelines, m_SharedPipelineHits.exchange( 0 ), m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
             Logging::Inf( "Vulkan recording per frame, summed over threads: ExecuteIndirect {:.2f} ms, direct draws/dispatches {:.2f} ms; "
                 "of both, driver push descriptors {:.2f} ms and driver draw calls {:.2f} ms.",
                 ms( s.IndirectTicks ), ms( s.DrawTicks ), ms( s.PushTicks ), ms( s.DriverDrawTicks ) );

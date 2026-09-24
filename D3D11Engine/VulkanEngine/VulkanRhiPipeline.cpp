@@ -105,13 +105,13 @@ namespace VulkanRhi {
             return module;
         }
 
-        /** The stage's module with the root signature's per-draw constants it reads lowered to push constants;
+        /** The stage's SPIR-V with the root signature's per-draw constants it reads lowered to push constants;
             parameters the stage still reads as uniform buffers are added to `uboFallback`. */
-        VkShaderModule CreateStageModule( DeviceImpl* device, const D3D12_SHADER_BYTECODE& code, const RootSignatureImpl& rs,
-            VkShaderStageFlags stage, uint32_t& uboFallback ) {
-            if ( !rs.m_PushConstantParams || code.BytecodeLength % 4 ) return CreateModule( device, code );
+        std::vector<uint32_t> LowerStage( const D3D12_SHADER_BYTECODE& code, const RootSignatureImpl& rs, VkShaderStageFlags stage,
+            uint32_t& uboFallback ) {
             const uint32_t* first = static_cast<const uint32_t*>( code.pShaderBytecode );
             std::vector<uint32_t> words( first, first + code.BytecodeLength / 4 );
+            if ( !rs.m_PushConstantParams ) return words;
             for ( uint32_t i = 0; i < rs.m_Params.size(); ++i ) {
                 const RootSignatureImpl::Param& p = rs.m_Params[i];
                 if ( !( rs.m_PushConstantParams & ( 1u << i ) ) || !( p.PushStages & stage ) ) continue;
@@ -120,8 +120,14 @@ namespace VulkanRhi {
                     uboFallback |= 1u << i;
                 }
             }
-            const D3D12_SHADER_BYTECODE patched = { words.data(), words.size() * sizeof( uint32_t ) };
-            return CreateModule( device, patched );
+            return words;
+        }
+
+        uint64_t HashWords( const std::vector<uint32_t>& words ) {
+            uint64_t h = 1469598103934665603ull;   // FNV-1a
+            const uint8_t* p = reinterpret_cast<const uint8_t*>( words.data() );
+            for ( size_t i = 0; i < words.size() * sizeof( uint32_t ); ++i ) h = ( h ^ p[i] ) * 1099511628211ull;
+            return h;
         }
 
         VkBlendFactor BlendOf( D3D12_BLEND b ) {
@@ -382,6 +388,10 @@ namespace VulkanRhi {
     // ---- Pipelines ------------------------------------------------------------------------------
 
     PipelineStateImpl::~PipelineStateImpl() {
+        if ( m_Shared ) {
+            m_Device->ReleaseSharedPipeline( m_Shared );
+            return;
+        }
         DeviceImpl* device = m_Device;
         VkPipeline pipeline = m_Pipeline;
         device->DeferDestroy( [device, pipeline]() { if ( pipeline ) vkDestroyPipeline( device->Vk(), pipeline, nullptr ); } );
@@ -404,28 +414,21 @@ namespace VulkanRhi {
             { &desc->DS, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT }, { &desc->GS, VK_SHADER_STAGE_GEOMETRY_BIT },
             { &desc->PS, VK_SHADER_STAGE_FRAGMENT_BIT },
         };
-        VkPipelineShaderStageCreateInfo stages[5] = {};
         SpirvInfo infos[5];
+        std::vector<uint32_t> words[5];
+        VkShaderStageFlagBits bits[5] = {};
         uint32_t uboFallback = 0;
-        VkShaderModule modules[5] = {};
         uint32_t stageCount = 0;
         SpirvInfo vsInfo;
-        auto cleanup = [&]() { for ( uint32_t i = 0; i < stageCount; ++i ) vkDestroyShaderModule( Vk(), modules[i], nullptr ); };
         for ( const Stage& s : stageList ) {
             if ( !s.Code->pShaderBytecode || !s.Code->BytecodeLength ) continue;
-            SpirvInfo& info = infos[stageCount];
-            if ( !ParseSpirv( s.Code->pShaderBytecode, s.Code->BytecodeLength, info ) ) {
+            if ( !ParseSpirv( s.Code->pShaderBytecode, s.Code->BytecodeLength, infos[stageCount] ) ) {
                 Logging::Wrn( "Vulkan: a pipeline was handed a shader that is not SPIR-V." );
-                cleanup();
                 return E_INVALIDARG;
             }
-            modules[stageCount] = CreateStageModule( this, *s.Code, *rs, s.Bit, uboFallback );
-            if ( !modules[stageCount] ) { cleanup(); return E_FAIL; }
-            stages[stageCount] = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
-            stages[stageCount].stage = s.Bit;
-            stages[stageCount].module = modules[stageCount];
-            stages[stageCount].pName = info.Entry.c_str();
-            if ( s.Bit == VK_SHADER_STAGE_VERTEX_BIT ) vsInfo = info;
+            words[stageCount] = LowerStage( *s.Code, *rs, s.Bit, uboFallback );
+            bits[stageCount] = s.Bit;
+            if ( s.Bit == VK_SHADER_STAGE_VERTEX_BIT ) vsInfo = infos[stageCount];
             ++stageCount;
         }
 
@@ -511,14 +514,26 @@ namespace VulkanRhi {
         cb.attachmentCount = rtCount;
         cb.pAttachments = blends;
 
-        const VkDynamicState dynamics[] = {
+        // Everything D3D12 PSOs commonly vary in is dynamic; see PipelineStateImpl::Dynamic.
+        std::vector<VkDynamicState> dynamics = {
             VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
             VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE, VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-            VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
+            VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE, VK_DYNAMIC_STATE_CULL_MODE, VK_DYNAMIC_STATE_FRONT_FACE,
+            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+            VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_DEPTH_BIAS,
         };
+        const VulkanDeviceCaps& caps = VkCaps();
+        if ( caps.DynamicBlend ) {
+            dynamics.insert( dynamics.end(), { VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
+                VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT } );
+        }
+        if ( caps.DynamicDepthClamp ) dynamics.push_back( VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT );
+        if ( caps.DynamicPolygonMode ) dynamics.push_back( VK_DYNAMIC_STATE_POLYGON_MODE_EXT );
+        if ( caps.DynamicAlphaToCoverage ) dynamics.push_back( VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT );
         VkPipelineDynamicStateCreateInfo dyn = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-        dyn.dynamicStateCount = static_cast<uint32_t>( std::size( dynamics ) );
-        dyn.pDynamicStates = dynamics;
+        dyn.dynamicStateCount = static_cast<uint32_t>( dynamics.size() );
+        dyn.pDynamicStates = dynamics.data();
 
         VkFormat colorFormats[8] = {};
         for ( UINT i = 0; i < rtCount; ++i ) colorFormats[i] = ToVkFormat( desc->RTVFormats[i] );
@@ -531,20 +546,6 @@ namespace VulkanRhi {
             if ( HasStencil( depth ) ) rendering.stencilAttachmentFormat = depth;
         }
 
-        VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-        ci.pNext = &rendering;
-        ci.stageCount = stageCount;
-        ci.pStages = stages;
-        ci.pVertexInputState = &vi;
-        ci.pInputAssemblyState = &ia;
-        ci.pViewportState = &vp;
-        ci.pRasterizationState = &rs2;
-        ci.pMultisampleState = &ms;
-        ci.pDepthStencilState = &ds;
-        ci.pColorBlendState = &cb;
-        ci.pDynamicState = &dyn;
-        ci.layout = rs->m_Layout;
-
         ComPtr<PipelineStateImpl> pso;
         pso.Attach( new PipelineStateImpl( this ) );
         pso->m_BindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -552,13 +553,90 @@ namespace VulkanRhi {
         pso->m_ColorCount = rtCount;
         pso->m_HasDepth = desc->DSVFormat != DXGI_FORMAT_UNKNOWN;
         pso->m_UboFallback = uboFallback;
-        const VkResult result = vkCreateGraphicsPipelines( Vk(), m_PipelineCache, 1, &ci, nullptr, &pso->m_Pipeline );
-        cleanup();
-        OnPipelineCreated();
-        if ( CheckResult( result, "vkCreateGraphicsPipelines" ) ) {
-            pso->m_Pipeline = VK_NULL_HANDLE;
-            return E_FAIL;
+        PipelineStateImpl::Dynamic& dy = pso->m_Dynamic;
+        dy.CullMode = rs2.cullMode;
+        dy.FrontFace = rs2.frontFace;
+        dy.DepthTest = ds.depthTestEnable;
+        dy.DepthWrite = ds.depthWriteEnable;
+        dy.DepthCompare = ds.depthCompareOp;
+        dy.StencilTest = ds.stencilTestEnable;
+        dy.Front = ds.front;
+        dy.Back = ds.back;
+        dy.DepthBias = rs2.depthBiasEnable;
+        dy.BiasConstant = rs2.depthBiasConstantFactor;
+        dy.BiasClamp = rs2.depthBiasClamp;
+        dy.BiasSlope = rs2.depthBiasSlopeFactor;
+        dy.DepthClamp = rs2.depthClampEnable;
+        dy.PolygonMode = rs2.polygonMode;
+        dy.AlphaToCoverage = ms.alphaToCoverageEnable;
+        dy.ColorCount = rtCount;
+        for ( UINT i = 0; i < rtCount; ++i ) {
+            const VkPipelineColorBlendAttachmentState& b = blends[i];
+            dy.BlendEnable[i] = b.blendEnable;
+            dy.Blend[i] = { b.srcColorBlendFactor, b.dstColorBlendFactor, b.colorBlendOp,
+                b.srcAlphaBlendFactor, b.dstAlphaBlendFactor, b.alphaBlendOp };
+            dy.WriteMask[i] = b.colorWriteMask;
         }
+
+        // Key: everything baked into the pipeline. Static-only state joins it where the device can't make it dynamic.
+        std::string key;
+        auto add = [&key]( const auto& v ) { key.append( reinterpret_cast<const char*>( &v ), sizeof( v ) ); };
+        add( VkUtil::HandleToU64( rs->m_Layout ) );
+        for ( uint32_t i = 0; i < stageCount; ++i ) {
+            add( bits[i] );
+            add( words[i].size() );
+            add( HashWords( words[i] ) );
+            key += infos[i].Entry;
+            key.push_back( '\0' );
+        }
+        add( vbBindings.size() );
+        for ( const auto& b : vbBindings ) add( b );
+        add( attributes.size() );
+        for ( const auto& a : attributes ) add( a );
+        add( ia.topology );
+        add( rtCount );
+        for ( UINT i = 0; i < rtCount; ++i ) add( colorFormats[i] );
+        add( rendering.depthAttachmentFormat );
+        add( rendering.stencilAttachmentFormat );
+        if ( !caps.DynamicBlend ) for ( UINT i = 0; i < rtCount; ++i ) add( blends[i] );
+        if ( !caps.DynamicDepthClamp ) add( rs2.depthClampEnable );
+        if ( !caps.DynamicPolygonMode ) add( rs2.polygonMode );
+        if ( !caps.DynamicAlphaToCoverage ) add( ms.alphaToCoverageEnable );
+
+        pso->m_Shared = AcquireSharedPipeline( key );
+        if ( !pso->m_Shared ) {
+            VkPipelineShaderStageCreateInfo stages[5] = {};
+            VkShaderModule modules[5] = {};
+            auto cleanup = [&]() { for ( uint32_t i = 0; i < stageCount; ++i ) if ( modules[i] ) vkDestroyShaderModule( Vk(), modules[i], nullptr ); };
+            for ( uint32_t i = 0; i < stageCount; ++i ) {
+                modules[i] = CreateModule( this, { words[i].data(), words[i].size() * sizeof( uint32_t ) } );
+                if ( !modules[i] ) { cleanup(); return E_FAIL; }
+                stages[i] = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+                stages[i].stage = bits[i];
+                stages[i].module = modules[i];
+                stages[i].pName = infos[i].Entry.c_str();
+            }
+            VkGraphicsPipelineCreateInfo ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+            ci.pNext = &rendering;
+            ci.stageCount = stageCount;
+            ci.pStages = stages;
+            ci.pVertexInputState = &vi;
+            ci.pInputAssemblyState = &ia;
+            ci.pViewportState = &vp;
+            ci.pRasterizationState = &rs2;
+            ci.pMultisampleState = &ms;
+            ci.pDepthStencilState = &ds;
+            ci.pColorBlendState = &cb;
+            ci.pDynamicState = &dyn;
+            ci.layout = rs->m_Layout;
+            VkPipeline pipeline = VK_NULL_HANDLE;
+            const VkResult result = vkCreateGraphicsPipelines( Vk(), m_PipelineCache, 1, &ci, nullptr, &pipeline );
+            cleanup();
+            OnPipelineCreated();
+            if ( CheckResult( result, "vkCreateGraphicsPipelines" ) ) return E_FAIL;
+            pso->m_Shared = PublishSharedPipeline( key, pipeline );
+        }
+        pso->m_Pipeline = pso->m_Shared->Pipeline;
         *outPso = pso.Detach();
         return S_OK;
     }
@@ -572,7 +650,8 @@ namespace VulkanRhi {
             return E_INVALIDARG;
         }
         uint32_t uboFallback = 0;
-        VkShaderModule module = CreateStageModule( this, desc->CS, *rs, VK_SHADER_STAGE_COMPUTE_BIT, uboFallback );
+        const std::vector<uint32_t> words = LowerStage( desc->CS, *rs, VK_SHADER_STAGE_COMPUTE_BIT, uboFallback );
+        VkShaderModule module = CreateModule( this, { words.data(), words.size() * sizeof( uint32_t ) } );
         if ( !module ) return E_FAIL;
         VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
         ci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };

@@ -13,7 +13,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace VulkanRhi {
@@ -241,6 +243,39 @@ namespace VulkanRhi {
         uint32_t m_ColorCount = 0;   // attachments the rendering scope must present to this pipeline
         bool m_HasDepth = false;
         uint32_t m_UboFallback = 0;  // push-constant parameters some stage still reads as a uniform buffer
+
+        /** Graphics state set at bind time, so PSOs that differ only here share one VkPipeline. */
+        struct Dynamic {
+            VkCullModeFlags CullMode = VK_CULL_MODE_NONE;
+            VkFrontFace FrontFace = VK_FRONT_FACE_CLOCKWISE;
+            VkBool32 DepthTest = VK_FALSE;
+            VkBool32 DepthWrite = VK_FALSE;
+            VkCompareOp DepthCompare = VK_COMPARE_OP_ALWAYS;
+            VkBool32 StencilTest = VK_FALSE;
+            VkStencilOpState Front = {};
+            VkStencilOpState Back = {};
+            VkBool32 DepthBias = VK_FALSE;
+            float BiasConstant = 0.0f;
+            float BiasClamp = 0.0f;
+            float BiasSlope = 0.0f;
+            VkBool32 DepthClamp = VK_FALSE;        // EDS3, when the device has it
+            VkPolygonMode PolygonMode = VK_POLYGON_MODE_FILL;
+            VkBool32 AlphaToCoverage = VK_FALSE;
+            uint32_t ColorCount = 0;
+            VkBool32 BlendEnable[8] = {};
+            VkColorBlendEquationEXT Blend[8] = {};
+            VkColorComponentFlags WriteMask[8] = {};
+        };
+        Dynamic m_Dynamic;
+        /** Set for graphics PSOs: the device-wide pipeline this PSO shares (see DeviceImpl::AcquireSharedPipeline). */
+        struct SharedPipeline* m_Shared = nullptr;
+    };
+
+    /** A graphics VkPipeline and the PSOs using it; lives in DeviceImpl's map, keyed by everything baked into it. */
+    struct SharedPipeline {
+        VkPipeline Pipeline = VK_NULL_HANDLE;
+        uint32_t Users = 0;
+        const std::string* Key = nullptr;   // the map node's key
     };
 
     class CommandSignatureImpl final : public Rhi::CommandSignature {
@@ -497,6 +532,12 @@ namespace VulkanRhi {
         void OnPipelineCreated() { m_PipelineGeneration.fetch_add( 1, std::memory_order_relaxed ); }
         /** Render thread, once per present: saves the pipeline cache after a quiet spell. */
         void NotePresent();
+
+        /** The shared pipeline for `key` with a new user, or null to build one and Publish it. */
+        SharedPipeline* AcquireSharedPipeline( const std::string& key );
+        /** Registers a freshly built pipeline; if another thread won the race, destroys it and returns theirs. */
+        SharedPipeline* PublishSharedPipeline( const std::string& key, VkPipeline pipeline );
+        void ReleaseSharedPipeline( SharedPipeline* shared );
         void AddRecordStats( const RecordStats& stats );
         /** CPU time spent blocked, in QPC ticks, for the per-frame log. */
         enum class Wait : uint32_t { Fence, Acquire, Present, Submit, Count };
@@ -553,6 +594,9 @@ namespace VulkanRhi {
         RecordStats m_Stats;
         std::array<std::atomic<int64_t>, static_cast<size_t>( Wait::Count )> m_WaitTicks{};
         std::atomic<uint32_t> m_ResourcesCreated{ 0 };
+        std::atomic<uint32_t> m_SharedPipelineHits{ 0 };
+        std::mutex m_SharedPipelineMutex;
+        std::unordered_map<std::string, SharedPipeline> m_SharedPipelines;
         std::atomic<uint32_t> m_HeapWrites{ 0 };   // bindless-set updates
         uint32_t m_StatsGeneration = 0;            // pipeline generation at the last stats line
         uint32_t m_StatsPresents = 0;   // render thread only, like the start time
