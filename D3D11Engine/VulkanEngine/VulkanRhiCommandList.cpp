@@ -36,6 +36,14 @@ namespace VulkanRhi {
             return { std::max( 1u, r->m_Extent.width >> mip ), std::max( 1u, r->m_Extent.height >> mip ) };
         }
 
+        /** The attachment's current layout (a read-only DSV sits in READ_ONLY_OPTIMAL); `fallback` if untracked. */
+        VkImageLayout AttachmentLayout( const Descriptor& d, VkImageLayout fallback ) {
+            const ResourceImpl* r = d.Resource;
+            const uint32_t sub = d.Key.BaseMip + d.Key.BaseLayer * r->m_Mips;
+            const VkImageLayout l = sub < r->m_Layouts.size() ? r->m_Layouts[sub] : fallback;
+            return l == VK_IMAGE_LAYOUT_UNDEFINED || l == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ? fallback : l;
+        }
+
         void SubresourceOf( const ResourceImpl* r, UINT sub, uint32_t& mip, uint32_t& layer ) {
             const uint32_t s = sub % std::max( 1u, r->SubresourceCount() );   // depth/stencil planes share a layout
             mip = s % r->m_Mips;
@@ -368,7 +376,7 @@ namespace VulkanRhi {
             const Descriptor& d = colors[i];
             if ( d.Type != Descriptor::Kind::RenderTarget || !d.Resource ) continue;
             a.imageView = d.Resource->GetView( d.Key );
-            a.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            a.imageLayout = AttachmentLayout( d, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
             a.loadOp = colorLoad ? colorLoad[i] : VK_ATTACHMENT_LOAD_OP_LOAD;
             a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             if ( colorClear ) a.clearValue = colorClear[i];
@@ -377,11 +385,8 @@ namespace VulkanRhi {
         const bool hasDepth = depth && depth->Type == Descriptor::Kind::DepthStencil && depth->Resource;
         if ( hasDepth ) {
             ResourceImpl* r = depth->Resource;
-            const uint32_t sub = depth->Key.BaseMip + depth->Key.BaseLayer * r->m_Mips;
-            const VkImageLayout layout = sub < r->m_Layouts.size() ? r->m_Layouts[sub] : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             depthInfo.imageView = r->GetView( depth->Key );
-            depthInfo.imageLayout = layout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthInfo.imageLayout = AttachmentLayout( *depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
             depthInfo.loadOp = depthLoad;
             depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             if ( depthClear ) depthInfo.clearValue = *depthClear;
