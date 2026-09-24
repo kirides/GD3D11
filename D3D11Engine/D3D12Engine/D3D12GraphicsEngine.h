@@ -515,30 +515,27 @@ private:
     void ApplyPendingShaderReload();
 
     Microsoft::WRL::ComPtr<Rhi::Resource>         m_BackBuffers[kBackBufferMax];
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferMax];
-    // The frame's direct command list, behind the engine-wide redundant-state filter (D3D12StateCache.h).
+    Microsoft::WRL::ComPtr<Rhi::CommandAllocator> m_CmdAllocators[kBackBufferMax];
+    // The frame's direct command list, behind the engine-wide redundant-state filter (RHI/RhiCmdList.h).
     // Reads exactly like the ComPtr it replaces (`m_CmdList->Foo()`, `.Get()`, `if (!m_CmdList)`), but every
     // PSO / root-signature / root-argument / IA / RS / OM bind now goes through the shadow first.
     D3D12CmdList m_CmdList;
 
-    Microsoft::WRL::ComPtr<ID3D12Fence> m_Fence;
+    Microsoft::WRL::ComPtr<Rhi::Fence> m_Fence;
     UINT64 m_FenceValues[kBackBufferMax] = {};
     HANDLE m_FenceEvent = nullptr;
     UINT   m_FrameIndex = 0;   // frame slot (0..kBackBufferCount-1): indexes every per-frame GPU ring; render-thread-only
     UINT   m_BackBufferIndex = 0;   // swapchain image being rendered; NOT the frame slot
 
     // Synchronous upload path (direct queue) used for the transition barrier after async copy-queue uploads.
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_UploadAllocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_UploadCmdList;
-    Microsoft::WRL::ComPtr<ID3D12Fence> m_UploadFence;
+    Microsoft::WRL::ComPtr<Rhi::CommandAllocator> m_UploadAllocator;
+    Microsoft::WRL::ComPtr<Rhi::CommandList> m_UploadCmdList;
+    Microsoft::WRL::ComPtr<Rhi::Fence> m_UploadFence;
     UINT64 m_UploadFenceValue = 0;
     HANDLE m_UploadEvent = nullptr;
 
-    // Copy-queue upload path for textures (asynchronous to the main direct queue).
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_CopyQueue;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CopyAllocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CopyCmdList;
-    Microsoft::WRL::ComPtr<ID3D12Fence> m_CopyFence;
+    // Copy-queue upload path (the device copy queue, asynchronous to the main direct queue).
+    Microsoft::WRL::ComPtr<Rhi::Fence> m_CopyFence;
     UINT64 m_CopyFenceValue = 0;
     HANDLE m_CopyFenceEvent = nullptr;
     std::atomic<UINT64> m_LastDirectSignal{ 0 };     // latest m_Fence value signalled on the direct queue
@@ -561,8 +558,8 @@ private:
     // — at frame end (Present), on GPU-idle, or when the accumulated upload bytes cross a threshold
     // (bounds VA use during no-Present world-load bursts). Command allocator+list objects are
     // recycled by fence, so steady-state streaming creates ~0 new command lists.
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_CopyBatchAllocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CopyBatchList;
+    Microsoft::WRL::ComPtr<Rhi::CommandAllocator>    m_CopyBatchAllocator;
+    Microsoft::WRL::ComPtr<Rhi::CommandList> m_CopyBatchList;
     bool   m_CopyBatchOpen = false;   // m_CopyBatchList is Reset+recording with >=1 queued copy
     UINT64 m_CopyBatchBytes = 0;      // upload bytes accumulated in the currently open batch
     std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      m_CopyBatchUploadResources;  // "
@@ -598,16 +595,16 @@ private:
         // final-released while a copy that reads/writes it is still queued.
         std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      DestResources;
         std::vector<StagingChunk> StagingChunks;   // returned to m_FreeStagingChunks, not freed
-        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
-        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
+        Microsoft::WRL::ComPtr<Rhi::CommandAllocator> CopyAllocator;
+        Microsoft::WRL::ComPtr<Rhi::CommandList> CopyCommandList;
     };
     std::deque<PendingCopyRelease> m_PendingCopyReleases;
 
     // Free-list of (allocator,list) pairs whose copies have completed on the GPU — recycled by
     // BeginCopyBatch instead of re-creating command objects each burst.
     struct CopyCmdObjects {
-        Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    Allocator;
-        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> List;
+        Microsoft::WRL::ComPtr<Rhi::CommandAllocator>    Allocator;
+        Microsoft::WRL::ComPtr<Rhi::CommandList> List;
     };
     std::vector<CopyCmdObjects> m_FreeCopyCmdObjects;
 
@@ -1114,7 +1111,7 @@ private:
     static constexpr UINT kPointShadowListIndex = kShadowCascades;       // (from D3D12ShadowMap.h)
     static constexpr UINT kRainShadowListIndex  = kShadowCascades + 1;
     static constexpr UINT kShadowRecordSlots    = kShadowCascades + 2;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::CommandAllocator>    m_ShadowCmdAllocators[kShadowRecordSlots][kBackBufferMax];
     // Each slot owns its OWN state cache: a D3D12CmdList shadow is per-list and unsynchronized, and these
     // lists are recorded concurrently on pool threads while the main thread records m_CmdList.
     D3D12CmdList m_ShadowCmdLists[kShadowRecordSlots][kBackBufferMax];
@@ -1263,10 +1260,10 @@ private:
         D3D12_CPU_DESCRIPTOR_HANDLE DstRtv = {};
         bool Valid() const { return SrcSrvSlot != UINT_MAX && Dst != nullptr; }
     };
-    DisplayChainStep BeginDisplayChainStep( class D3D12CmdList& cmdList );
-    void EndDisplayChainStep( class D3D12CmdList& cmdList );
+    DisplayChainStep BeginDisplayChainStep( D3D12CmdList& cmdList );
+    void EndDisplayChainStep( D3D12CmdList& cmdList );
     void PlanDisplayChain();   // counts the passes that will run and points the resolve at scratch 0
-    void FinishDisplayChain( class D3D12CmdList& cmdList );   // safety net: copy back if a predicted pass bailed
+    void FinishDisplayChain( D3D12CmdList& cmdList );   // safety net: copy back if a predicted pass bailed
     // The guards of the three chain passes, so PlanDisplayChain and the passes themselves cannot drift apart.
     bool WillRunSMAA() const;
     bool WillRunSharpen() const;

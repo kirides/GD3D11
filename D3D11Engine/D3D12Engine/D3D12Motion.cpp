@@ -35,7 +35,6 @@
 // RenderMotionDebugOverlay renders either one for the DebugSettings.TAA.Display* flags.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../zCCamera.h"

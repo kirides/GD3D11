@@ -476,7 +476,7 @@ namespace {
             HRESULT hr;
             if ( flags & Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) {
                 hr = D3D12ResourceCreate::CreateTexture( m_Allocator, allocDesc, *desc, initialState, clearValue,
-                    allocation.GetAddressOf(), IID_PPV_ARGS( resource.GetAddressOf() ) );
+                    allocation.GetAddressOf(), IID_PPV_ARGS( resource.GetAddressOf() ), m_Caps.EnhancedBarriers );
             } else {
                 hr = m_Allocator->CreateResource( &allocDesc, desc, initialState, clearValue, allocation.GetAddressOf(),
                     IID_PPV_ARGS( resource.GetAddressOf() ) );

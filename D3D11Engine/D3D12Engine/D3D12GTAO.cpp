@@ -13,7 +13,6 @@
 // All eight PSOs share one bindless (SM6.6) root signature - two root-constant blocks, no tables.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"

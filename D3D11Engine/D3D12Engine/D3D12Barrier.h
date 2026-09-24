@@ -2,9 +2,8 @@
 #include <d3d12.h>
 #include "../RHI/Rhi.h"
 
-// Enhanced-barrier support for D3D12CmdList (see D3D12StateCache.h). Kept in its own translation
-// unit because the legacy-state -> (sync, access, layout) translation table is real domain logic,
-// not a one-line filter forward like everything else D3D12CmdList wraps.
+// Enhanced-barrier recording for the D3D12 RHI command list: the legacy-state -> (sync, access, layout)
+// translation table plus the legacy ResourceBarrier fallback.
 
 /** Sentinel meaning "no hint -- use the table's conservative default for this state." */
 inline constexpr D3D12_BARRIER_SYNC kBarrierSyncUnspecified = Rhi::kBarrierSyncUnspecified;
@@ -22,7 +21,7 @@ struct D3D12NativeTransition {
     D3D12_BARRIER_SYNC SyncAfter = kBarrierSyncUnspecified;
 };
 
-/** The barrier recorder shared by D3D12CmdList and the RHI command list. `list7` is the enhanced-barrier
+/** The barrier recorder behind the RHI command list. `list7` is the enhanced-barrier
     interface when the device supports enhanced barriers, else null (legacy ResourceBarrier path). */
 namespace D3D12Barriers {
     void Transition( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* resource,

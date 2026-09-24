@@ -25,7 +25,6 @@
 // handles any other description change.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"

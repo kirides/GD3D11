@@ -701,7 +701,7 @@ D3D12CmdList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
 	// open list (nullptr on failure — the caller then leaves that slot unrecorded and FinishShadowPasses
 	// re-issues the pass inline). Safe without a GPU wait: this pair was last used kBackBufferCount frames ago
 	// and Present() already fenced on that frame.
-	ID3D12CommandAllocator* alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
+	Rhi::CommandAllocator*  alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
 	D3D12CmdList&           cl    = m_ShadowCmdLists[slot][m_FrameIndex];
 	if ( !alloc || !cl ) return nullptr;
 	if ( FAILED( alloc->Reset() ) ) return nullptr;
@@ -839,12 +839,12 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		g_ShadowRecordJobs.clear();
 		m_ShadowRecordingPending = false;
 
-		ID3D12CommandList* lists[kShadowRecordSlots] = {};
+		Rhi::CommandList* lists[kShadowRecordSlots] = {};
 		UINT numLists = 0;
 		for ( UINT s = 0; s < kShadowRecordSlots; ++s )
 			if ( m_ShadowListRecorded[s] ) lists[numLists++] = m_ShadowCmdLists[s][m_FrameIndex].Get();
 		if ( numLists > 0 )
-			m_Device.GetDirectQueue()->ExecuteCommandLists( numLists, lists );
+			m_Rhi->GetDirectQueue()->ExecuteCommandLists( numLists, lists );
 
 		bool anyFailed = false;
 		// Only when the jobs were SUPPOSED to record into their own lists — otherwise 2a already emitted every

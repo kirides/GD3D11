@@ -1,7 +1,6 @@
 // D3D12GraphicsEngine — core: device/queues/swapchain/frame/present/uploads/resources.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
@@ -86,7 +85,6 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Err( "D3D12GraphicsEngine::Init: device creation failed." );
         return XR_FAILED;
     }
-    D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
     InitGpuScopeMarkers();
 
     m_DeviceCapabilities.DeviceDescription = m_Device.GetDeviceDescription();
@@ -456,15 +454,14 @@ bool D3D12GraphicsEngine::CreateAllocators() {
 
 bool D3D12GraphicsEngine::CreateUploadObjects() {
     Rhi::Device* device = m_Rhi.Get();
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
-        IID_PPV_ARGS( m_UploadAllocator.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, m_UploadAllocator.ReleaseAndGetAddressOf() ) ) )
         return false;
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-        m_UploadAllocator.Get(), nullptr, IID_PPV_ARGS( m_UploadCmdList.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateCommandList( D3D12_COMMAND_LIST_TYPE_DIRECT,
+        m_UploadAllocator.Get(), nullptr, m_UploadCmdList.ReleaseAndGetAddressOf() ) ) )
         return false;
     m_UploadCmdList->SetName( L"Upload" );
     m_UploadCmdList->Close();
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_UploadFence.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateFence( 0, m_UploadFence.ReleaseAndGetAddressOf() ) ) )
         return false;
     m_UploadEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
     return m_UploadEvent != nullptr;
@@ -475,16 +472,9 @@ bool D3D12GraphicsEngine::InitCopyQueue() {
     Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
-    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    device->GetCopyQueue()->SetName( L"TextureCopyQueue" );
 
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-    m_CopyQueue->SetName( L"TextureCopyQueue" );
-
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_CopyFence.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateFence( 0, m_CopyFence.ReleaseAndGetAddressOf() ) ) )
         return false;
 
     m_CopyFenceEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
@@ -534,27 +524,25 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( Rhi::Resource* te
 
     // Fallback if called outside frame boundaries: execute asynchronously on direct queue WITHOUT CPU blocking
     Rhi::Device* device = m_Rhi.Get();
-    ComPtr<ID3D12CommandAllocator> transitionAllocator;
-    ComPtr<ID3D12GraphicsCommandList> transitionCmdList;
+    ComPtr<Rhi::CommandAllocator> transitionAllocator;
+    ComPtr<Rhi::CommandList> transitionCmdList;
 
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
-        IID_PPV_ARGS( transitionAllocator.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, transitionAllocator.ReleaseAndGetAddressOf() ) ) )
         return;
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-        transitionAllocator.Get(), nullptr, IID_PPV_ARGS( transitionCmdList.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateCommandList( D3D12_COMMAND_LIST_TYPE_DIRECT,
+        transitionAllocator.Get(), nullptr, transitionCmdList.ReleaseAndGetAddressOf() ) ) )
         return;
 
-    // Bare ID3D12GraphicsCommandList (not the D3D12CmdList wrapper) -- this transient list is built and thrown
-    // away outside the normal per-frame recording path, so it stays on the legacy transition API.
+    // This transient list lives outside the per-frame recording path, so it stays on the legacy transition API.
     auto toSRV = TransitionBarrier( D3D12Rhi::Native( texture ), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-    transitionCmdList->ResourceBarrier( 1, &toSRV );
+    D3D12Rhi::Native( transitionCmdList.Get() )->ResourceBarrier( 1, &toSRV );
     if ( FAILED( transitionCmdList->Close() ) ) return;
 
-    ID3D12CommandList* lists[] = { transitionCmdList.Get() };
-    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+    Rhi::CommandList* lists[] = { transitionCmdList.Get() };
+    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     const UINT64 waitValue = ++m_UploadFenceValue;
-    if ( FAILED( m_Device.GetDirectQueue()->Signal( m_UploadFence.Get(), waitValue ) ) ) return;
+    if ( FAILED( m_Rhi->GetDirectQueue()->Signal( m_UploadFence.Get(), waitValue ) ) ) return;
 
     // OPTIMIZATION: Defer deletion to m_PerFrameCleanupItems via fence value instead of CPU blocking with WaitForSingleObject!
     QueueCleanupJob( [allocator = transitionAllocator, list = transitionCmdList]() {
@@ -616,13 +604,13 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( Rhi::Resource* dst, const D
 		return false;
 
 	for ( UINT i = 0; i < numSubresources; ++i ) {
-		D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
-		dstLoc.pResource = D3D12Rhi::Native( dst );
+		Rhi::TextureCopyLocation dstLoc = {};
+		dstLoc.pResource = dst;
 		dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 		dstLoc.SubresourceIndex = i;
 
-		D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
-		srcLoc.pResource = D3D12Rhi::Native( upload.Get() );
+		Rhi::TextureCopyLocation srcLoc = {};
+		srcLoc.pResource = upload.Get();
 		srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 		srcLoc.PlacedFootprint = layouts[i];
 
@@ -733,8 +721,7 @@ bool D3D12GraphicsEngine::UploadBufferData( Rhi::Resource* dst, UINT64 dstOffset
 		// 16-byte alignment: CopyBufferRegion imposes none, this is purely so the memcpy lands aligned.
 		if ( AcquireStagingSpaceLocked( sizeInBytes, 16, &stagingResource, &stagingOffset, &stagingCpu ) ) {
 			memcpy( stagingCpu, srcData, sizeInBytes );
-			m_CopyBatchList->CopyBufferRegion( D3D12Rhi::Native( dst ), dstOffset, D3D12Rhi::Native( stagingResource ),
-				stagingOffset, sizeInBytes );
+			m_CopyBatchList->CopyBufferRegion( dst, dstOffset, stagingResource, stagingOffset, sizeInBytes );
 
 			m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
 			m_CopyBatchBytes += sizeInBytes;
@@ -779,7 +766,7 @@ bool D3D12GraphicsEngine::UploadBufferData( Rhi::Resource* dst, UINT64 dstOffset
 	if ( !BeginCopyBatch() )   // may be a different batch than the one probed above; harmless
 		return false;
 
-	m_CopyBatchList->CopyBufferRegion( D3D12Rhi::Native( dst ), dstOffset, D3D12Rhi::Native( upload.Get() ), 0, sizeInBytes );
+	m_CopyBatchList->CopyBufferRegion( dst, dstOffset, upload.Get(), 0, sizeInBytes );
 
 	m_CopyBatchUploadResources.push_back( std::move( upload ) );
 	m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
@@ -806,11 +793,10 @@ bool D3D12GraphicsEngine::BeginCopyBatch() {
 		if ( FAILED( m_CopyBatchAllocator->Reset() ) ) return false;         // safe: its copies completed (fence-gated recycle)
 		if ( FAILED( m_CopyBatchList->Reset( m_CopyBatchAllocator.Get(), nullptr ) ) ) return false;
 	} else {
-		if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY,
-			IID_PPV_ARGS( m_CopyBatchAllocator.ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY, m_CopyBatchAllocator.ReleaseAndGetAddressOf() ) ) )
 			return false;
-		if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
-			m_CopyBatchAllocator.Get(), nullptr, IID_PPV_ARGS( m_CopyBatchList.ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( device->CreateCommandList( D3D12_COMMAND_LIST_TYPE_COPY,
+			m_CopyBatchAllocator.Get(), nullptr, m_CopyBatchList.ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_CopyBatchList->SetName( L"TextureCopyBatch" );
 		// CreateCommandList returns the list already open for recording.
@@ -842,18 +828,18 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	// Copy-queue order is FIFO, so one wait also covers every later batch.
 	if ( m_CopyWaitsForDirect.exchange( false ) ) {
 		const UINT64 directValue = m_LastDirectSignal.load();
-		if ( directValue ) m_CopyQueue->Wait( m_Fence.Get(), directValue );
+		if ( directValue ) m_Rhi->GetCopyQueue()->Wait( m_Fence.Get(), directValue );
 	}
 
-	ID3D12CommandList* lists[] = { m_CopyBatchList.Get() };
-	m_CopyQueue->ExecuteCommandLists( 1, lists );
+	Rhi::CommandList* lists[] = { m_CopyBatchList.Get() };
+	m_Rhi->GetCopyQueue()->ExecuteCommandLists( 1, lists );
 
 	const UINT64 fenceValue = ++m_CopyFenceValue;
-	m_CopyQueue->Signal( m_CopyFence.Get(), fenceValue );
+	m_Rhi->GetCopyQueue()->Signal( m_CopyFence.Get(), fenceValue );
 
 	// ONE cross-queue GPU wait for the whole batch: the direct (render) queue won't sample any of
 	// these textures until the batch's copies complete. Replaces the old per-texture render stall.
-	m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
+	m_Rhi->GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
 
 	PendingCopyRelease pending;
 	pending.FenceValue = fenceValue;
@@ -1945,21 +1931,19 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // Per-frame command allocators
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
-            IID_PPV_ARGS( m_CmdAllocators[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, m_CmdAllocators[i].ReleaseAndGetAddressOf() ) ) )
             return false;
     }
 
     // A single command list (created recording, then closed — OnBeginFrame resets it each frame)
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-        m_CmdAllocators[m_FrameIndex].Get(), nullptr, IID_PPV_ARGS( m_CmdList.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateCommandList( D3D12_COMMAND_LIST_TYPE_DIRECT,
+        m_CmdAllocators[m_FrameIndex].Get(), nullptr, m_CmdList.ReleaseAndGetAddressOf() ) ) )
         return false;
     m_CmdList.Get()->SetName( L"Main" );
     m_CmdList->Close();
 
     // Frame-sync fence
-    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateFence( m_FenceValues[m_FrameIndex], D3D12_FENCE_FLAG_NONE,
-        IID_PPV_ARGS( m_Fence.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateFence( m_FenceValues[m_FrameIndex], m_Fence.ReleaseAndGetAddressOf() ) ) )
         return false;
     m_FenceValues[m_FrameIndex]++;
 
@@ -2134,10 +2118,10 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName region ) {
     // Present closes the list and the next OnBeginFrame resets it; a scope ending in between is dropped.
     if ( !m_FrameOpen || !m_CmdList ) return GraphicsEventRecord{};
-    BeginDXMarker( m_CmdList.Get(), region.wide, region.len_wide );
+    m_CmdList.Get()->BeginEvent( region.wide, static_cast<UINT>( region.len_wide ), region.narrow );
     return GraphicsEventRecord( this, []( void* context ) {
         D3D12GraphicsEngine* engine = static_cast<D3D12GraphicsEngine*>( context );
-        if ( engine->m_FrameOpen && engine->m_CmdList ) EndDXMarker( engine->m_CmdList.Get() );
+        if ( engine->m_FrameOpen && engine->m_CmdList ) engine->m_CmdList.Get()->EndEvent();
         else PopDXMarkerSlot();
     } );
 }
@@ -2407,7 +2391,7 @@ XRESULT D3D12GraphicsEngine::Present() {
         TracyD3D12ZoneCGX( m_CmdList.Get(), "ImGui" );
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
-        Engine::ImGuiHandle->RenderLoopD3D12( m_CmdList.Get() );
+        Engine::ImGuiHandle->RenderLoopD3D12( D3D12Rhi::Native( m_CmdList.Get() ) );
         // imgui_impl_dx12 records on the RAW list: its own PSO, root signature, descriptor heaps, RTV,
         // viewport, scissor, topology, blend factor and vertex/index buffers. The state cache cannot see
         // any of it, so drop the whole shadow — this is the one place in the backend that goes behind it.
@@ -2427,8 +2411,8 @@ XRESULT D3D12GraphicsEngine::Present() {
 
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;
 
-    ID3D12CommandList* lists[] = { m_CmdList.Get() };
-    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+    Rhi::CommandList* lists[] = { m_CmdList.Get() };
+    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
     const UINT syncInterval = vsync ? 1 : 0;
@@ -2505,7 +2489,7 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
         submittedOrdinal = m_CleanupFrameOrdinal++;
     }
 
-    m_Device.GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
+    m_Rhi->GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
     m_LastDirectSignal.store( currentFenceValue );
 
     // Frame slots cycle on their own; the swapchain image is tracked separately (Vulkan may acquire out of order).
@@ -2543,7 +2527,7 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
 
 
 void D3D12GraphicsEngine::WaitForGpuIdle() {
-    if ( !m_Fence || !m_Device.GetDirectQueue() ) return;
+    if ( !m_Fence || !m_Rhi ) return;
 
     // Submit any still-open upload batch first, so its copies are actually queued before we wait on
     // the copy fence below (an un-flushed batch has recorded copies that were never signaled).
@@ -2573,7 +2557,7 @@ void D3D12GraphicsEngine::WaitForGpuIdle() {
     // Queue the signal command on the GPU timeline.
     // Because GPU execution is sequential, this milestone is only reached 
     // when ALL work previously queued has finished.
-    if ( FAILED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), idleValue ) ) ) return;
+    if ( FAILED( m_Rhi->GetDirectQueue()->Signal( m_Fence.Get(), idleValue ) ) ) return;
     m_LastDirectSignal.store( idleValue );
 
     // Perform a CPU wait using a transient local event.
@@ -2600,7 +2584,7 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
     // once-per-frame Close/Execute in Present() (no PRESENT transition, no MoveToNextFrame/frame-index
     // advance) — it exists solely for GetBackbufferData, which must synchronously read pixels back mid-
     // frame (Gothic's savegame-thumbnail Lock() fires before this frame's own Present).
-    if ( !m_CmdList || !m_Fence || !m_Device.GetDirectQueue() ) return;
+    if ( !m_CmdList || !m_Fence || !m_Rhi ) return;
 
     // Ensure any batched uploads recorded before this mid-frame sync are submitted + waited-on, so the
     // pixels read back here reflect textures cached in this frame.
@@ -2608,11 +2592,11 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
 
     if ( FAILED( m_CmdList->Close() ) ) return;
 
-    ID3D12CommandList* lists[] = { m_CmdList.Get() };
-    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+    Rhi::CommandList* lists[] = { m_CmdList.Get() };
+    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     const UINT64 waitValue = ++m_FenceValues[m_FrameIndex];
-    if ( SUCCEEDED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), waitValue ) ) ) {
+    if ( SUCCEEDED( m_Rhi->GetDirectQueue()->Signal( m_Fence.Get(), waitValue ) ) ) {
         m_LastDirectSignal.store( waitValue );
         WaitOnFrameFence( waitValue, "FlushCommandListSync" );
     }
@@ -2634,14 +2618,12 @@ bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
 
     for ( UINT c = 0; c < kShadowRecordSlots; ++c ) {
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-            if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
-                IID_PPV_ARGS( m_ShadowCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
+            if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, m_ShadowCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) {
                 Logging::Wrn( "D3D12: failed to create a shadow command allocator — deferred shadow recording disabled." );
                 return false;
             }
-            if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                m_ShadowCmdAllocators[c][i].Get(), nullptr,
-                IID_PPV_ARGS( m_ShadowCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
+            if ( FAILED( device->CreateCommandList( D3D12_COMMAND_LIST_TYPE_DIRECT,
+                m_ShadowCmdAllocators[c][i].Get(), nullptr, m_ShadowCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) {
                 Logging::Wrn( "D3D12: failed to create a shadow command list — deferred shadow recording disabled." );
                 return false;
             }
@@ -2667,7 +2649,7 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
     // Everything the command list itself carries as state (descriptor heaps, render targets, viewport, PSO,
     // root signature) is lost across Reset; the caller is responsible for re-establishing what it needs. The
     // shader-visible SRV heap is re-bound here because literally every subsequent pass needs it.
-    if ( !m_CmdList || !m_Device.GetDirectQueue() ) return;
+    if ( !m_CmdList || !m_Rhi ) return;
 
     // Present() normally inserts the frame's single copy->direct cross-queue wait immediately before the one
     // graphics execute. Submitting graphics work EARLIER than that would let it sample textures whose copy-queue
@@ -2676,8 +2658,8 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
     FlushTextureUploads();
 
     if ( FAILED( m_CmdList->Close() ) ) return;
-    ID3D12CommandList* lists[] = { m_CmdList.Get() };
-    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+    Rhi::CommandList* lists[] = { m_CmdList.Get() };
+    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     if ( FAILED( m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr ) ) ) return;
 

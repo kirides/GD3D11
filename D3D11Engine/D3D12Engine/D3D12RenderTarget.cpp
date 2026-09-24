@@ -1,7 +1,6 @@
 #include "../pch.h"
 #include "D3D12RenderTarget.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12PooledDescriptorHeap.h"
 #include "../Logger.h"
 

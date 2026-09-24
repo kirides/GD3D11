@@ -1,6 +1,6 @@
 #pragma once
 #include <D3D12MemAlloc.h>
-#include "D3D12StateCache.h"
+#include <cstring>
 
 // Texture creation helper: when the device supports enhanced barriers, creates the resource directly
 // in D3D12_BARRIER_LAYOUT tracking (D3D12MA::Allocator::CreateResource3) instead of legacy
@@ -46,13 +46,13 @@ namespace D3D12ResourceCreate {
 
     inline HRESULT CreateTexture( D3D12MA::Allocator* allocator, const D3D12MA::ALLOCATION_DESC& allocDesc,
         const D3D12_RESOURCE_DESC& desc, D3D12_RESOURCE_STATES legacyState, const D3D12_CLEAR_VALUE* clearValue,
-        D3D12MA::Allocation** outAlloc, REFIID riid, void** outResource ) {
-        if ( D3D12CmdList::EnhancedBarriersSupported() ) {
+        D3D12MA::Allocation** outAlloc, REFIID riid, void** outResource, bool enhancedBarriers ) {
+        if ( enhancedBarriers ) {
             const D3D12_RESOURCE_DESC1 desc1 = ToDesc1( desc );
             const HRESULT hr = allocator->CreateResource3( &allocDesc, &desc1, ToInitialLayout( legacyState ),
                 clearValue, 0, nullptr, outAlloc, riid, outResource );
             if ( SUCCEEDED( hr ) ) return hr;
-            // Shouldn't happen given EnhancedBarriersSupported(), but fall through to the legacy call
+            // Shouldn't happen on an enhanced-barrier device, but fall through to the legacy call
             // rather than fail outright.
         }
         return allocator->CreateResource( &allocDesc, &desc, legacyState, clearValue, outAlloc, riid, outResource );

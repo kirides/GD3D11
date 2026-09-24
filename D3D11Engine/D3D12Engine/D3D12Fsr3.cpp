@@ -568,14 +568,14 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
             m_Fsr3OutputInUavState ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                    : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-        m_CmdList->ResourceBarrier( n, pre );
+        D3D12Rhi::Native( m_CmdList.Get() )->ResourceBarrier( n, pre );
         m_SceneColorInPixelState = true;   // corrected to PIXEL_SHADER_RESOURCE on the way out
         m_Fsr3OutputInUavState = true;
     }
 
     // --- dispatch description --------------------------------------------------------------------------
     FfxFsr3UpscalerDispatchDescription dd = {};
-    dd.commandList = g_Ffx.GetCommandList( m_CmdList.Get() );
+    dd.commandList = g_Ffx.GetCommandList( D3D12Rhi::Native( m_CmdList.Get() ) );
 
     dd.color = AsFfxResource( m_SceneColor.Get(), L"Fsr3InputColor", FFX_API_RESOURCE_STATE_COMPUTE_READ );
     dd.depth = AsFfxResource( m_DepthBuffer.Get(), L"Fsr3InputDepth", FFX_API_RESOURCE_STATE_COMPUTE_READ );
@@ -653,7 +653,7 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
             kVelocityReadState );
         post[n++] = TransitionBarrier( D3D12Rhi::Native( m_Fsr3Output.Get() ), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( n, post );
+        D3D12Rhi::Native( m_CmdList.Get() )->ResourceBarrier( n, post );
         m_VelocityInPixelState = true;
         m_Fsr3OutputInUavState = false;
     }

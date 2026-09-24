@@ -7,7 +7,8 @@
 #include "D3D12Barrier.h"      // D3D12ResourceTransition
 
 class D3D12RenderGraph;
-class D3D12CmdList;
+namespace Rhi { class CmdList; }
+using D3D12CmdList = Rhi::CmdList;
 
 /** One resource usage a pass declares (via D3D12RGBuilder::Read/Write) — the handle plus the resource
     STATE the pass needs it in. D3D12RenderGraph::Execute() uses this to insert transition barriers

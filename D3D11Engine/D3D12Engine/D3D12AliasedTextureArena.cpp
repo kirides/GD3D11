@@ -2,7 +2,6 @@
 #include "D3D12AliasedTextureArena.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12StateCache.h"
-#include "D3D12ResourceCreate.h"
 #include "../Logger.h"
 
 namespace {
