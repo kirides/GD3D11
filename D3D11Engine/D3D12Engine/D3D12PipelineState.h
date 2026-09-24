@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <unordered_map>

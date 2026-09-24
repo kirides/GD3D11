@@ -92,7 +92,7 @@ namespace {
 bool D3D12GraphicsEngine::CreateSkyIblResources() {
     m_SkyIblResourcesReady = false;
     m_SkyIblValid = false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     for ( UINT m = 0; m < kSkyEnvMips; ++m ) m_SkyEnvUavSlot[m] = UINT_MAX;
@@ -102,7 +102,7 @@ bool D3D12GraphicsEngine::CreateSkyIblResources() {
 
     // Both cubes are TEXTURE2D arrays of 6 slices — that is what a cube resource IS in D3D12; only the VIEWS
     // decide whether it reads back as a TextureCube (SRV) or a Texture2DArray (UAV; cube UAVs don't exist).
-    auto makeCube = [&]( ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc,
+    auto makeCube = [&]( ComPtr<Rhi::Resource>& out,
                          UINT size, UINT mips, const wchar_t* name ) -> bool {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -114,8 +114,7 @@ bool D3D12GraphicsEngine::CreateSkyIblResources() {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create a sky-IBL cubemap ({}^2, {} mips).", size, mips );
             return false;
         }
@@ -123,8 +122,8 @@ bool D3D12GraphicsEngine::CreateSkyIblResources() {
         return true;
         };
 
-    if ( !makeCube( m_SkyEnvCube, m_SkyEnvCubeAlloc, kSkyEnvSize, kSkyEnvMips, L"SkyEnvCube" ) ) return false;
-    if ( !makeCube( m_SkyIrradCube, m_SkyIrradCubeAlloc, kSkyIrradSize, 1, L"SkyIrradianceCube" ) ) return false;
+    if ( !makeCube( m_SkyEnvCube, kSkyEnvSize, kSkyEnvMips, L"SkyEnvCube" ) ) return false;
+    if ( !makeCube( m_SkyIrradCube, kSkyIrradSize, 1, L"SkyIrradianceCube" ) ) return false;
 
     auto ensureSlot = [&]( UINT& slot ) -> bool {
         if ( slot == UINT_MAX ) slot = AllocateSrvSlot();

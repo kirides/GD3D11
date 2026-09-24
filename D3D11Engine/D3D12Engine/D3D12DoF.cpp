@@ -59,7 +59,7 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
     m_DoFResourcesReady = false;
     m_DoFCreateAttempted = true;
     if ( size.x < 4 || size.y < 4 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Allocator ) return false;
     // Init runs before the first CreateSwapChain; don't build resources for a pipeline that failed there.
     if ( !m_Pipelines.DoF.FocusPSO || !m_Pipelines.DoF.CompositePSO ) return false;
@@ -72,8 +72,8 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
         return slot != UINT_MAX;
         };
 
-    auto makeTex = [&]( int w, int h, DXGI_FORMAT fmt, ComPtr<ID3D12Resource>& out,
-        ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+    auto makeTex = [&]( int w, int h, DXGI_FORMAT fmt, ComPtr<Rhi::Resource>& out,
+        const wchar_t* name ) -> bool {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         dd.Width = static_cast<UINT64>( w );
@@ -86,8 +86,7 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         // Rests in UNORDERED_ACCESS between frames (see RenderDepthOfField), so create it in it — that makes
         // the "before" state at the top of the very first frame deterministic.
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create a depth-of-field focus texture ({}x{}).", w, h );
             return false;
         }
@@ -105,7 +104,7 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
     // Focus pair: 1x1 R32_FLOAT, the auto-focus distance. Resolution-independent, but rebuilt with the rest
     // so there is exactly one creation path; the history is worthless across a resolution change anyway.
     for ( UINT i = 0; i < 2; ++i ) {
-        if ( !makeTex( 1, 1, DXGI_FORMAT_R32_FLOAT, m_DoFFocus[i], m_DoFFocusAlloc[i],
+        if ( !makeTex( 1, 1, DXGI_FORMAT_R32_FLOAT, m_DoFFocus[i],
             i == 0 ? L"DoFFocus0" : L"DoFFocus1" ) ) return false;
         if ( !ensureSlot( m_DoFFocusSrvSlot[i] ) || !ensureSlot( m_DoFFocusUavSlot[i] ) ) return false;
         srv.Format = DXGI_FORMAT_R32_FLOAT;

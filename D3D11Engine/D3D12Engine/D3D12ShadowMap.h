@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 // CSM sun shadows for the D3D12 backend (P2.9c) — extracted out of the engine monolith.
 //
 // Directional shadow map = a Texture2DArray, one D32 slice per cascade, R32_TYPELESS so each slice serves a
@@ -137,8 +138,7 @@ private:
 
     UINT m_MapSize = 2048;   // per-cascade slice resolution; mirrors RendererSettings.ShadowMapSize (clamped
                              // 512..8192, power-of-two steps), re-checked every frame in OnBeginFrame
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_Map;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_MapAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>       m_Map;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DsvHeap;    // one D32 DSV per cascade slice
     UINT m_DsvSize = 0;
     UINT m_SrvSlot = UINT_MAX;         // R32_FLOAT Texture2DArray SRV (all cascades), bound by the lit passes
@@ -186,8 +186,7 @@ private:
     bool m_SunDirInitialized = false;
 
     // Per-cascade world-mesh ExecuteIndirect arg rings (engine command sig m_WorldIndirectCmdSig).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WorldDrawArgs[kShadowCascades][kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kShadowCascades][kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_WorldDrawArgs[kShadowCascades][kBackBufferMax];
     uint8_t*                  m_WorldDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kShadowCascades][kBackBufferMax] = {};
     UINT                      m_WorldDrawCount[kShadowCascades] = {};
@@ -200,8 +199,7 @@ private:
     UINT                      m_WorldDepthMergedFirst[kShadowCascades] = {};
     UINT                      m_WorldDepthMergedCount[kShadowCascades] = {};
     // Per-cascade instanced-VOB arg rings — the VOB analogue of the above (engine sig m_VobIndirectCmdSig).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kShadowCascades][kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobDrawArgs[kShadowCascades][kBackBufferMax];
     uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
     UINT     m_VobOpaqueDrawCount[kShadowCascades] = {};   // alpha-test partition — see m_WorldOpaqueDrawCount

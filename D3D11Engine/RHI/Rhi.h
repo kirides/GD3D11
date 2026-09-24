@@ -30,6 +30,8 @@ namespace Rhi {
             return r;
         }
         virtual void SetName( LPCWSTR /*name*/ ) {}
+        /** Narrow-string debug name; cheaper for the per-texture names (no wide conversion). */
+        virtual void SetNameA( const char* /*name*/, UINT /*length*/ ) {}
 
     protected:
         Object() = default;

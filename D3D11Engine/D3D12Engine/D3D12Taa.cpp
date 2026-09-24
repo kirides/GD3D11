@@ -56,7 +56,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
     m_TaaHistoryValid = false;      // freshly allocated garbage until the first resolve writes it
     m_TaaPrevDepthValid = false;
     if ( size.x < 4 || size.y < 4 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Allocator ) return false;
     // Init runs before the first CreateSwapChain; don't re-enable the feature if the pipeline failed there.
     if ( !m_Pipelines.Taa.PSO ) return false;
@@ -77,9 +77,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, m_TaaHistoryAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_TaaHistory[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_TaaHistory[i].ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create a TAA history buffer ({}x{}).", size.x, size.y );
             return false;
         }
@@ -102,9 +100,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         D3D12_CLEAR_VALUE clear = {};
         clear.Format = DXGI_FORMAT_D32_FLOAT;
         clear.DepthStencil.Depth = 0.0f;   // reversed-Z
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kPrevDepthReadState, &clear,
-            m_TaaPrevDepthAlloc.ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_TaaPrevDepth.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, kPrevDepthReadState, &clear, m_TaaPrevDepth.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create the TAA previous-depth snapshot." );
             return false;
         }

@@ -78,7 +78,7 @@ namespace {
 
 bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
     m_RainBuffersReady = false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || numParticles == 0 ) return false;
 
     // 128-thread groups, like D3D11Effect::DrawRain_CS (D3D11Effect.cpp:323).
@@ -104,8 +104,7 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
         bd.SampleDesc.Count = 1;
         bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_RainBufferStaticAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainBufferStatic.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_RainBufferStatic.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the rain static-particle buffer." );
             return false;
         }
@@ -136,8 +135,7 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
         bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr,
-            m_RainBufferDynamicAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainBufferDynamic.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr, m_RainBufferDynamic.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the rain dynamic-particle buffer." );
             return false;
         }
@@ -311,15 +309,15 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     m_CmdList->DrawInstanced( 4, numParticles, 0, 0 );
 }
 
-bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, ComPtr<ID3D12Resource>& outTex,
-    ComPtr<D3D12MA::Allocation>& outAlloc, UINT& outSrvSlot ) {
+bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, ComPtr<Rhi::Resource>& outTex,
+    UINT& outSrvSlot ) {
     ParsedTextureArray parsed;
     if ( FAILED( ParseTextureArrayDDS( prefix, count, zVdfsReadFile, parsed ) ) ) {
         Logging::Wrn( "D3D12: failed to parse rain/snow texture array at prefix {}", prefix );
         return false;
     }
 
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     D3D12_RESOURCE_DESC td = {};
@@ -339,8 +337,7 @@ bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, C
     // below is a copy-queue CopyTextureRegion (buffers/textures implicitly promote COMMON->COPY_DEST for
     // that), and reading it afterward as an SRV also implicitly promotes from COMMON, so no explicit
     // barrier is needed either side of the upload for a plain (non-simultaneous-access) texture.
-    if ( FAILED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
-        outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( outTex.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &td, D3D12_RESOURCE_STATE_COMMON, nullptr, outTex.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create rain/snow texture array resource (prefix {}).", prefix );
         return false;
     }
@@ -380,11 +377,11 @@ bool D3D12GraphicsEngine::LoadRainTextures() {
     // backends share.
     Logging::Inf( "D3D12: loading rain-drop textures" );
     const bool rainOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370,
-        m_RainTextureArray, m_RainTextureArrayAlloc, m_RainTextureArraySrvSlot );
+        m_RainTextureArray, m_RainTextureArraySrvSlot );
 
     Logging::Inf( "D3D12: loading snow-flake textures" );
     const bool snowOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256,
-        m_SnowTextureArray, m_SnowTextureArrayAlloc, m_SnowTextureArraySrvSlot );
+        m_SnowTextureArray, m_SnowTextureArraySrvSlot );
 
     m_RainTexturesLoaded = rainOk && snowOk;
     return m_RainTexturesLoaded;
@@ -446,7 +443,7 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
 
 bool D3D12GraphicsEngine::CreateRainShadowResources() {
     if ( m_RainShadowResourcesReady ) return true;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     if ( !m_RainShadowDsvHeap ) {
@@ -485,8 +482,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     clear.Format = DXGI_FORMAT_D32_FLOAT;
     clear.DepthStencil.Depth = 1.0f;   // normal-Z: 1.0 == far (not reversed-Z, matches the CSM sun map)
 
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
-        m_RainShadowMapAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainShadowMap.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_RainShadowMap.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Wrn( "D3D12: failed to create the rain shadow map resource." );
         return false;
     }
@@ -526,8 +522,7 @@ bool D3D12GraphicsEngine::CreateRainVobArgRings( UINT commandStride ) {
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_RainVobDrawArgsAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainVobDrawArgs[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_RainVobDrawArgs[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_RainVobDrawArgs[i]->SetName( L"RainVobDrawArgsRing" );
         D3D12_RANGE noRead = { 0, 0 };

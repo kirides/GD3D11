@@ -105,9 +105,7 @@ bool D3D12GraphicsEngine::CreateWaterConstantBuffers() {
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WaterCBAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_WaterCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WaterCB[i].ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the water constant buffer." );
             return false;
         }
@@ -127,7 +125,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     // recognises the cubemap caps bits). D3D12Texture is Texture2D-only, so the 6-face DDS is parsed here
     // and given a real D3D12_SRV_DIMENSION_TEXTURECUBE view. Non-fatal: on failure the water shader gets
     // 0xFFFFFFFF for ReflectionCubeIndex and simply renders with SSR/refraction only.
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     const std::string path = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\Textures\\reflect_cube.dds";
@@ -218,8 +216,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
     // COMMON, like the rain texture arrays: the copy-queue upload promotes to COPY_DEST implicitly and the
     // later SRV read promotes back, so no explicit barrier is needed on either side.
-    if ( FAILED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
-        m_ReflectionCubeAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_ReflectionCube.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &td, D3D12_RESOURCE_STATE_COMMON, nullptr, m_ReflectionCube.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the reflection cube resource." );
         return false;
     }
@@ -228,7 +225,6 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     if ( !UploadTextureSubresources( m_ReflectionCube.Get(), subs.data(), static_cast<UINT>( subs.size() ) ) ) {
         Logging::Wrn( "D3D12: failed to upload the reflection cube — water sky reflection disabled." );
         m_ReflectionCube.Reset();
-        m_ReflectionCubeAlloc.Reset();
         return false;
     }
 
@@ -236,7 +232,6 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     if ( m_ReflectionCubeSrvSlot == UINT_MAX ) {
         Logging::Wrn( "D3D12: SRV heap exhausted allocating a slot for the reflection cube." );
         m_ReflectionCube.Reset();
-        m_ReflectionCubeAlloc.Reset();
         return false;
     }
     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
@@ -244,7 +239,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv.TextureCube.MipLevels = mips;
-    m_Device.GetDevice()->CreateShaderResourceView( m_ReflectionCube.Get(), &srv, GetSrvCpuHandle( m_ReflectionCubeSrvSlot ) );
+    m_Rhi->CreateShaderResourceView( m_ReflectionCube.Get(), &srv, GetSrvCpuHandle( m_ReflectionCubeSrvSlot ) );
     return true;
 }
 

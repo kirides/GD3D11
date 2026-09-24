@@ -1,6 +1,6 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <d3d12.h>
-#include <D3D12MemAlloc.h>
 #include <wrl/client.h>
 
 class D3D12GraphicsEngine;
@@ -34,18 +34,18 @@ public:
     D3D12RenderTarget( const D3D12RenderTarget& ) = delete;
     D3D12RenderTarget& operator=( const D3D12RenderTarget& ) = delete;
 
-    bool Init( ID3D12Device* device, D3D12MA::Allocator* allocator, D3D12GraphicsEngine* engine,
+    bool Init( Rhi::Device* device, D3D12GraphicsEngine* engine,
         D3D12PooledDescriptorHeap* rtvHeap, UINT width, UINT height, DXGI_FORMAT format, bool needsUav,
         const wchar_t* debugName );
 
-    bool InitPlaced( ID3D12Device* device, ID3D12Resource* resource, D3D12GraphicsEngine* engine,
+    bool InitPlaced( Rhi::Device* device, Rhi::Resource* resource, D3D12GraphicsEngine* engine,
         D3D12PooledDescriptorHeap* rtvHeap, UINT width, UINT height, DXGI_FORMAT format, bool needsUav,
         const wchar_t* debugName );
 
-    bool ReplaceResource( ID3D12Device* device, ID3D12Resource* newResource, UINT width, UINT height,
+    bool ReplaceResource( Rhi::Device* device, Rhi::Resource* newResource, UINT width, UINT height,
         DXGI_FORMAT format, bool needsUav );
 
-    ID3D12Resource* GetResource() const { return m_Texture.Get(); }
+    Rhi::Resource* GetResource() const { return m_Texture.Get(); }
     D3D12_CPU_DESCRIPTOR_HANDLE GetRTV() const { return m_Rtv; }
     UINT GetSrvSlot() const { return m_SrvSlot; }
     UINT GetUavSlot() const { return m_UavSlot; }   // 0xFFFFFFFF when not requested
@@ -62,14 +62,13 @@ public:
     D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
 private:
-    bool CreateViews( ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format, bool needsUav );
+    bool CreateViews( Rhi::Device* device, UINT width, UINT height, DXGI_FORMAT format, bool needsUav );
 
     D3D12GraphicsEngine* m_Engine = nullptr;
     D3D12PooledDescriptorHeap* m_RtvHeap = nullptr;
     UINT m_RtvSlot = 0xFFFFFFFFu;
 
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Allocation;   // null for a placed instance (arena owns the heap)
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_Texture;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Texture;
     D3D12_CPU_DESCRIPTOR_HANDLE m_Rtv{};
     UINT m_SrvSlot = 0xFFFFFFFFu;
     UINT m_UavSlot = 0xFFFFFFFFu;

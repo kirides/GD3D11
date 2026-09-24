@@ -69,7 +69,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 	// resource. Non-fatal on failure — RenderBloom() checks m_BloomMipCount > 0 before doing anything.
 	m_BloomMipCount = 0;
 	if ( size.x < 4 || size.y < 4 ) return false;
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	if ( !device ) return false;
 
 	int mipCount = 0;
@@ -84,7 +84,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 	D3D12MA::ALLOCATION_DESC heapDefault = {};
 	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-	auto makeTex = [&]( int w, int h, ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+	auto makeTex = [&]( int w, int h, ComPtr<Rhi::Resource>& out, const wchar_t* name ) -> bool {
 		D3D12_RESOURCE_DESC dd = {};
 		dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 		dd.Width = static_cast<UINT64>( w );
@@ -95,9 +95,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 		dd.SampleDesc.Count = 1;
 		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 			Logging::Wrn( "D3D12: failed to create a bloom pyramid texture ({}x{}).", w, h );
 			return false;
 		}
@@ -126,14 +124,14 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 
 		wchar_t nameBuf[32];
 		swprintf_s( nameBuf, L"BloomDown%d", i );
-		if ( !makeTex( mw, mh, m_BloomDown[i], m_BloomDownAlloc[i], nameBuf ) ) return false;
+		if ( !makeTex( mw, mh, m_BloomDown[i], nameBuf ) ) return false;
 		if ( !ensureSlot( m_BloomDownSrvSlot[i] ) || !ensureSlot( m_BloomDownUavSlot[i] ) ) return false;
 		device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomDownSrvSlot[i] ) );
 		device->CreateUnorderedAccessView( m_BloomDown[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomDownUavSlot[i] ) );
 
 		if ( i < mipCount - 1 ) {
 			swprintf_s( nameBuf, L"BloomUp%d", i );
-			if ( !makeTex( mw, mh, m_BloomUp[i], m_BloomUpAlloc[i], nameBuf ) ) return false;
+			if ( !makeTex( mw, mh, m_BloomUp[i], nameBuf ) ) return false;
 			if ( !ensureSlot( m_BloomUpUavSlot[i] ) || !ensureSlot( m_BloomUpSrvSlot[i] ) ) return false;
 			device->CreateUnorderedAccessView( m_BloomUp[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomUpUavSlot[i] ) );
 
@@ -199,7 +197,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// under-synchronize that read.
 	constexpr D3D12_RESOURCE_STATES kBloomRead =
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	auto toBloomRead = [&]( ID3D12Resource* res ) {
+	auto toBloomRead = [&]( Rhi::Resource* res ) {
 		m_CmdList->TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kBloomRead );
 		};
 
@@ -245,12 +243,12 @@ void D3D12GraphicsEngine::RenderBloom() {
 		m_CmdList->SetComputeRootSignature( m_Pipelines.Bloom.UpRootSig.Get() );
 		for ( int i = mipCount - 2; i >= 0; --i ) {
 			const bool firstStep = (i == mipCount - 2);
-			ID3D12Resource* source = firstStep ? m_BloomDown[mipCount - 1].Get() : m_BloomUp[i + 1].Get();
+			Rhi::Resource* source = firstStep ? m_BloomDown[mipCount - 1].Get() : m_BloomUp[i + 1].Get();
 			// Double-buffered by m_FrameIndex: this CPU-side descriptor write must never land in the same heap
 			// slot a still-in-flight PRIOR frame's GPU dispatch is reading (see the header comment on
 			// m_BloomUpSrvPairSlot) — that race was the actual cause of the flickering black regions in bloom.
 			const UINT pairSlot = m_BloomUpSrvPairSlot[m_FrameIndex][i];
-			m_Device.GetDevice()->CreateShaderResourceView( source, &upSrcSrvDesc, GetSrvCpuHandle( pairSlot ) );
+			m_Rhi->CreateShaderResourceView( source, &upSrcSrvDesc, GetSrvCpuHandle( pairSlot ) );
 
 			const int srcW = firstStep ? m_BloomMipSize[mipCount - 1].x : m_BloomMipSize[i + 1].x;
 			const int srcH = firstStep ? m_BloomMipSize[mipCount - 1].y : m_BloomMipSize[i + 1].y;
@@ -266,7 +264,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 			// Refresh this level's canonical SRV (read by the i-1 step's t0 above, and by the composite pass
 			// once i reaches 0) — same resource/view every resize, so this is a cheap no-op-content rewrite,
 			// not a new allocation.
-			m_Device.GetDevice()->CreateShaderResourceView( m_BloomUp[i].Get(), &upSrcSrvDesc, GetSrvCpuHandle( m_BloomUpSrvSlot[i] ) );
+			m_Rhi->CreateShaderResourceView( m_BloomUp[i].Get(), &upSrcSrvDesc, GetSrvCpuHandle( m_BloomUpSrvSlot[i] ) );
 		}
 		finalBloomSrvSlot = m_BloomUpSrvSlot[0];
 	}
@@ -327,14 +325,11 @@ bool D3D12GraphicsEngine::CreateLumAdaptedBuffer() {
 	// resize (RenderLuminanceAdapt then bails at its guard every frame, never touching this buffer), Tonemap's
 	// root SRV read must still see a valid state — PIXEL_SHADER_RESOURCE is exactly that, and is otherwise the
 	// state RenderLuminanceAdapt itself always leaves the buffer in at the end of a successful frame.
-	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_LumAdaptedBufferAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_LumAdaptedBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_LumAdaptedBuffer.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: failed to create the dynamic-exposure adapted-luminance buffer." );
 		return false;
 	}
 	m_LumAdaptedBuffer->SetName( L"AdaptedLuminance" );
-	m_LumAdaptedBufferAlloc->SetName( L"AllocAdaptedLuminance" );
 	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	m_LumAdaptInitialized = false;
 	return true;
@@ -363,15 +358,12 @@ bool D3D12GraphicsEngine::CreateLumPartialBuffer( INT2 size ) {
 	bd.SampleDesc.Count = 1;
 	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_LumPartialBufferAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_LumPartialBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_LumPartialBuffer.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: failed to create the dynamic-exposure partial-sum buffer ({}x{}).", size.x, size.y );
 		m_LumPartialCapacity = 0;
 		return false;
 	}
 	m_LumPartialBuffer->SetName( L"LumPartialSums" );
-	m_LumPartialBufferAlloc->SetName( L"AllocLumPartialSums" );
 	m_LumPartialCapacity = numGroups;
 	return true;
 }
@@ -484,7 +476,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	// resize (like the bloom pyramid / m_SceneColor); the RTVs live in fixed heap slots. Rest in RENDER_TARGET.
 	m_LdrCopyReady = false;
 	if ( size.x < 4 || size.y < 4 ) return false;
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	if ( !device || !m_RtvHeap ) return false;
 
 	D3D12MA::ALLOCATION_DESC heapDefault = {};
@@ -510,8 +502,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	srv.Format = m_Pipelines.DisplayFormat;
 
 	for ( UINT i = 0; i < 2; ++i ) {
-		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
-			m_LdrScratchAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrScratch[i].ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_LdrScratch[i].ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 			Logging::Wrn( "D3D12: failed to create LDR display-chain scratch {} (SMAA/sharpen/underwater will be unavailable).", i );
 			return false;
 		}
@@ -772,7 +763,7 @@ void D3D12GraphicsEngine::ApplyDisplayGammaCorrection() {
 
 	DX_ZONE( m_CmdList.Get(), "Gamma correct" );
 
-	ID3D12Resource* displayTarget = GetDisplayTarget();
+	Rhi::Resource* displayTarget = GetDisplayTarget();
 	D3D12_CPU_DESCRIPTOR_HANDLE displayRtv = GetDisplayRtv();
 
 	// A texture can't be its own SRV and RTV, so correct a copy of the display target back onto itself. Can't

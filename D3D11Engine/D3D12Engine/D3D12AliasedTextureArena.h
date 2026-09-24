@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
@@ -95,10 +96,9 @@ private:
 
     Slot* FindOrCreateSlot( UINT64 offset );
 
-    ID3D12Device* m_Device = nullptr;
-    Microsoft::WRL::ComPtr<ID3D12Device10> m_Device10;   // CreatePlacedResource2; null without enhanced-barrier support
+    Rhi::Device* m_Device = nullptr;
     D3D12GraphicsEngine* m_Engine = nullptr;
-    Microsoft::WRL::ComPtr<ID3D12Heap> m_Heap;
+    Microsoft::WRL::ComPtr<Rhi::Heap> m_Heap;
     D3D12PooledDescriptorHeap m_RtvHeap;
 
     std::vector<std::unique_ptr<Slot>> m_Slots;

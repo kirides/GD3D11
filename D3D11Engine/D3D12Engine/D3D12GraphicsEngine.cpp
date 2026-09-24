@@ -455,16 +455,16 @@ bool D3D12GraphicsEngine::CreateAllocators() {
 
 
 bool D3D12GraphicsEngine::CreateUploadObjects() {
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
+    Rhi::Device* device = m_Rhi.Get();
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
         IID_PPV_ARGS( m_UploadAllocator.ReleaseAndGetAddressOf() ) ) ) )
         return false;
-    if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_UploadAllocator.Get(), nullptr, IID_PPV_ARGS( m_UploadCmdList.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_UploadCmdList->SetName( L"Upload" );
     m_UploadCmdList->Close();
-    if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_UploadFence.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_UploadFence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_UploadEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
     return m_UploadEvent != nullptr;
@@ -472,7 +472,7 @@ bool D3D12GraphicsEngine::CreateUploadObjects() {
 
 
 bool D3D12GraphicsEngine::InitCopyQueue() {
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -480,11 +480,11 @@ bool D3D12GraphicsEngine::InitCopyQueue() {
     queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
     queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 
-    if ( FAILED( device->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_CopyQueue->SetName( L"TextureCopyQueue" );
 
-    if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_CopyFence.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_CopyFence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
     m_CopyFenceEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
@@ -523,7 +523,7 @@ void D3D12GraphicsEngine::WaitForCopyFence( UINT64 fenceValue ) {
 }
 
 
-void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* texture ) {
+void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( Rhi::Resource* texture ) {
     if ( !texture || !m_Device.GetDevice() ) return;
 
     // Use the active frame's existing command list instead of creating temporary allocators & command lists
@@ -533,20 +533,20 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* t
     }
 
     // Fallback if called outside frame boundaries: execute asynchronously on direct queue WITHOUT CPU blocking
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     ComPtr<ID3D12CommandAllocator> transitionAllocator;
     ComPtr<ID3D12GraphicsCommandList> transitionCmdList;
 
-    if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
         IID_PPV_ARGS( transitionAllocator.ReleaseAndGetAddressOf() ) ) ) )
         return;
-    if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         transitionAllocator.Get(), nullptr, IID_PPV_ARGS( transitionCmdList.ReleaseAndGetAddressOf() ) ) ) )
         return;
 
     // Bare ID3D12GraphicsCommandList (not the D3D12CmdList wrapper) -- this transient list is built and thrown
     // away outside the normal per-frame recording path, so it stays on the legacy transition API.
-    auto toSRV = TransitionBarrier( texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+    auto toSRV = TransitionBarrier( D3D12Rhi::Native( texture ), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     transitionCmdList->ResourceBarrier( 1, &toSRV );
     if ( FAILED( transitionCmdList->Close() ) ) return;
 
@@ -563,9 +563,9 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* t
 }
 
 
-bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources ) {
+bool D3D12GraphicsEngine::UploadTextureSubresources( Rhi::Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources ) {
     if ( !dst || !subresources || numSubresources == 0 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
 
     D3D12_RESOURCE_DESC desc = dst->GetDesc();
 
@@ -588,15 +588,8 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     D3D12MA::ALLOCATION_DESC allocDesc = {};
     allocDesc.HeapType = DefaultUploadHeapType;
 
-	ComPtr<D3D12MA::Allocation> uploadAllocation;
-	ComPtr<ID3D12Resource> upload;
-	if ( FAILED( m_Allocator->CreateResource(
-		&allocDesc,
-		&bufDesc,
-		D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr,
-		uploadAllocation.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( upload.ReleaseAndGetAddressOf() ) ) ) ) {
+	ComPtr<Rhi::Resource> upload;
+	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.ReleaseAndGetAddressOf() ) ) ) {
 		return false;
 	}
 
@@ -624,12 +617,12 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 
 	for ( UINT i = 0; i < numSubresources; ++i ) {
 		D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
-		dstLoc.pResource = dst;
+		dstLoc.pResource = D3D12Rhi::Native( dst );
 		dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 		dstLoc.SubresourceIndex = i;
 
 		D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
-		srcLoc.pResource = upload.Get();
+		srcLoc.pResource = D3D12Rhi::Native( upload.Get() );
 		srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 		srcLoc.PlacedFootprint = layouts[i];
 
@@ -637,7 +630,6 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 	}
 
 	// Keep the staging buffer alive until the batch's copies complete (moved to the pending list at flush).
-	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
 	m_CopyBatchUploadResources.push_back( std::move( upload ) );
 	m_CopyBatchDestResources.emplace_back( dst );   // and the destination — see PendingCopyRelease::DestResources
 	m_CopyBatchBytes += totalBytes;
@@ -653,7 +645,7 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 
 
 bool D3D12GraphicsEngine::AcquireStagingSpaceLocked( UINT64 size, UINT64 alignment,
-	ID3D12Resource** outResource, UINT64* outOffset, uint8_t** outCpuPtr ) {
+	Rhi::Resource** outResource, UINT64* outOffset, uint8_t** outCpuPtr ) {
 	// Caller holds m_CopyQueueMutex.
 	if ( size > kStagingChunkSize ) return false;   // too big to pool — dedicated resource instead
 	if ( alignment == 0 ) alignment = 1;
@@ -701,8 +693,7 @@ bool D3D12GraphicsEngine::AcquireStagingSpaceLocked( UINT64 size, UINT64 alignme
 	allocDesc.HeapType = DefaultUploadHeapType;
 
 	StagingChunk chunk;
-	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-		chunk.Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( chunk.Resource.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, chunk.Resource.ReleaseAndGetAddressOf() ) ) ) {
 		return false;
 	}
 
@@ -714,7 +705,7 @@ bool D3D12GraphicsEngine::AcquireStagingSpaceLocked( UINT64 size, UINT64 alignme
 	chunk.MappedPtr = static_cast<uint8_t*>( mapped );
 	chunk.Capacity = kStagingChunkSize;
 	chunk.Offset = 0;
-	chunk.Resource->SetPrivateData( WKPDID_D3DDebugObjectName, 13, "StagingChunk" );
+	chunk.Resource->SetName( L"StagingChunk" );
 
 	++m_LiveStagingChunks;
 	m_CopyBatchStagingChunks.push_back( std::move( chunk ) );
@@ -722,7 +713,7 @@ bool D3D12GraphicsEngine::AcquireStagingSpaceLocked( UINT64 size, UINT64 alignme
 }
 
 
-bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, UINT64 dstOffset, const void* srcData, UINT64 sizeInBytes ) {
+bool D3D12GraphicsEngine::UploadBufferData( Rhi::Resource* dst, UINT64 dstOffset, const void* srcData, UINT64 sizeInBytes ) {
 	if ( !dst || !srcData || sizeInBytes == 0 ) return false;
 
 	// Record into the shared batched copy list (submitted once at flush) — same rationale as
@@ -735,14 +726,15 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, UINT64 dstOffse
 		if ( !BeginCopyBatch() )
 			return false;
 
-		ID3D12Resource* stagingResource = nullptr;
+		Rhi::Resource* stagingResource = nullptr;
 		UINT64 stagingOffset = 0;
 		uint8_t* stagingCpu = nullptr;
 
 		// 16-byte alignment: CopyBufferRegion imposes none, this is purely so the memcpy lands aligned.
 		if ( AcquireStagingSpaceLocked( sizeInBytes, 16, &stagingResource, &stagingOffset, &stagingCpu ) ) {
 			memcpy( stagingCpu, srcData, sizeInBytes );
-			m_CopyBatchList->CopyBufferRegion( dst, dstOffset, stagingResource, stagingOffset, sizeInBytes );
+			m_CopyBatchList->CopyBufferRegion( D3D12Rhi::Native( dst ), dstOffset, D3D12Rhi::Native( stagingResource ),
+				stagingOffset, sizeInBytes );
 
 			m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
 			m_CopyBatchBytes += sizeInBytes;
@@ -771,15 +763,8 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, UINT64 dstOffse
 	D3D12MA::ALLOCATION_DESC allocDesc = {};
 	allocDesc.HeapType = DefaultUploadHeapType;
 
-	ComPtr<D3D12MA::Allocation> uploadAllocation;
-	ComPtr<ID3D12Resource> upload;
-	if ( FAILED( m_Allocator->CreateResource(
-		&allocDesc,
-		&bufDesc,
-		D3D12_RESOURCE_STATE_GENERIC_READ,
-		nullptr,
-		uploadAllocation.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( upload.ReleaseAndGetAddressOf() ) ) ) ) {
+	ComPtr<Rhi::Resource> upload;
+	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.ReleaseAndGetAddressOf() ) ) ) {
 		return false;
 	}
 
@@ -794,9 +779,8 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, UINT64 dstOffse
 	if ( !BeginCopyBatch() )   // may be a different batch than the one probed above; harmless
 		return false;
 
-	m_CopyBatchList->CopyBufferRegion( dst, dstOffset, upload.Get(), 0, sizeInBytes );
+	m_CopyBatchList->CopyBufferRegion( D3D12Rhi::Native( dst ), dstOffset, D3D12Rhi::Native( upload.Get() ), 0, sizeInBytes );
 
-	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
 	m_CopyBatchUploadResources.push_back( std::move( upload ) );
 	m_CopyBatchDestResources.emplace_back( dst );   // see PendingCopyRelease::DestResources
 	m_CopyBatchBytes += sizeInBytes;
@@ -811,7 +795,7 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, UINT64 dstOffse
 
 bool D3D12GraphicsEngine::BeginCopyBatch() {
 	if ( m_CopyBatchOpen ) return true;
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	if ( !device ) return false;
 
 	// Recycle a completed (allocator,list) pair if one is available, else create one.
@@ -822,10 +806,10 @@ bool D3D12GraphicsEngine::BeginCopyBatch() {
 		if ( FAILED( m_CopyBatchAllocator->Reset() ) ) return false;         // safe: its copies completed (fence-gated recycle)
 		if ( FAILED( m_CopyBatchList->Reset( m_CopyBatchAllocator.Get(), nullptr ) ) ) return false;
 	} else {
-		if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY,
+		if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY,
 			IID_PPV_ARGS( m_CopyBatchAllocator.ReleaseAndGetAddressOf() ) ) ) )
 			return false;
-		if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
+		if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
 			m_CopyBatchAllocator.Get(), nullptr, IID_PPV_ARGS( m_CopyBatchList.ReleaseAndGetAddressOf() ) ) ) )
 			return false;
 		m_CopyBatchList->SetName( L"TextureCopyBatch" );
@@ -844,7 +828,6 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	if ( FAILED( m_CopyBatchList->Close() ) ) {
 		// Drop the batch; its staging buffers free with the ComPtr vectors, cmd objects are discarded.
 		// The batch was never submitted, so no GPU is reading the pooled chunks — reuse them right away.
-		m_CopyBatchUploadAllocs.clear();
 		m_CopyBatchUploadResources.clear();
 		m_CopyBatchDestResources.clear();
 		for ( auto& chunk : m_CopyBatchStagingChunks ) {
@@ -874,7 +857,6 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 
 	PendingCopyRelease pending;
 	pending.FenceValue = fenceValue;
-	pending.UploadAllocations = std::move( m_CopyBatchUploadAllocs );
 	pending.UploadResources = std::move( m_CopyBatchUploadResources );
 	pending.DestResources = std::move( m_CopyBatchDestResources );
 	pending.StagingChunks = std::move( m_CopyBatchStagingChunks );
@@ -882,7 +864,6 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	pending.CopyCommandList = std::move( m_CopyBatchList );
 	m_PendingCopyReleases.push_back( std::move( pending ) );
 
-	m_CopyBatchUploadAllocs.clear();
 	m_CopyBatchUploadResources.clear();
 	m_CopyBatchDestResources.clear();
 	m_CopyBatchStagingChunks.clear();
@@ -897,7 +878,7 @@ void D3D12GraphicsEngine::FlushTextureUploads() {
 
 
 bool D3D12GraphicsEngine::CreateSrvHeap() {
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	D3D12_DESCRIPTOR_HEAP_DESC desc = {};
 	desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	desc.NumDescriptors = kSrvHeapCapacity;
@@ -943,7 +924,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 		if ( orm && slot == orm->GetSrvSlot() ) return;
 	}
 
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 
 	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
 
@@ -1028,9 +1009,7 @@ bool D3D12GraphicsEngine::CreateShadowConstantBuffer() {
     cbDesc.SampleDesc.Count = 1;
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowCBAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_ShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowCB[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_ShadowCB[i]->SetName( L"ShadowSamplingCB" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -1102,7 +1081,7 @@ bool D3D12GraphicsEngine::LoadDistortionTexture() {
 
 bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	if ( size.x <= 0 || size.y <= 0 ) return false;
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 
 	// DSV heap — created once, reused across resizes. Slot 0 = this scene depth buffer; slot 1 = the
 	// native-resolution preview depth (see GetPreviewDsv), only populated while the render scale is != 100%.
@@ -1137,9 +1116,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 
 	// Born in DEPTH_WRITE. Now also SRV-readable: DispatchLightCulling brackets a NON_PIXEL_SHADER_RESOURCE
 	// read of it (per-tile far-Z) and transitions back to DEPTH_WRITE, so it is DEPTH_WRITE at every other point.
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd,
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_DepthBufferAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_DepthBuffer.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 		Logging::Err( "D3D12: failed to create the depth buffer ({}x{}).", size.x, size.y );
 		return false;
 	}
@@ -1171,7 +1148,6 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	// Drop the preview depth (it only exists to cover a size mismatch); the next DrawVobSingle rebuilds it
 	// if still needed. Every caller has idled the GPU.
 	m_PreviewDepthBuffer.Reset();
-	m_PreviewDepthAlloc.Reset();
 	m_PreviewDepthSize = {};
 	m_PreviewDepthFailed = false;
 	return true;
@@ -1217,12 +1193,10 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetPreviewDsv() {
 	clear.Format = DXGI_FORMAT_D32_FLOAT;
 	clear.DepthStencil.Depth = 0.0f;   // reversed-Z far, same as the scene depth
 
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
-		m_PreviewDepthAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_PreviewDepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_PreviewDepthBuffer.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 		Logging::Wrn( "D3D12: failed to create the inventory-preview depth buffer ({}x{}) — item previews will not render.",
 			m_BackbufferResolution.x, m_BackbufferResolution.y );
 		m_PreviewDepthBuffer.Reset();
-		m_PreviewDepthAlloc.Reset();
 		m_PreviewDepthFailed = true;
 		return none;
 	}
@@ -1231,7 +1205,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetPreviewDsv() {
 	D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
 	dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
 	dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-	m_Device.GetDevice()->CreateDepthStencilView( m_PreviewDepthBuffer.Get(), &dsvDesc, dsv );
+	m_Rhi->CreateDepthStencilView( m_PreviewDepthBuffer.Get(), &dsvDesc, dsv );
 	m_CmdList.InvalidateRenderTargets();   // descriptor written in place — see D3D12StateCache.h
 	m_PreviewDepthSize = m_BackbufferResolution;
 	return dsv;
@@ -1246,7 +1220,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 	// are rebuilt). DEFAULT-heap GPU memory (64bpp, or 32 when CompressBackBuffer picked R11G11B10 at init),
 	// so it barely touches the 32-bit CPU address space.
 	if ( size.x <= 0 || size.y <= 0 ) return false;
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	if ( !device || !m_RtvHeap ) return false;
 
 	D3D12MA::ALLOCATION_DESC allocDesc = {};
@@ -1265,9 +1239,7 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 
 	// Born in RENDER_TARGET (the world pass renders straight into it; ResolveSceneToBackBuffer flips it to
 	// PIXEL_SHADER_RESOURCE and back next frame). GPU is idle at every call site (init / post-WaitForGpuIdle resize).
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd,
-		D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_SceneColorAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_SceneColor.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 		Logging::Err( "D3D12: failed to create the HDR scene-color target ({}x{}).", size.x, size.y );
 		return false;
 	}
@@ -1333,7 +1305,7 @@ float D3D12GraphicsEngine::GetHdrPaperWhiteNits() const {
 }
 
 
-ID3D12Resource* D3D12GraphicsEngine::RealDisplayTarget() const {
+Rhi::Resource* D3D12GraphicsEngine::RealDisplayTarget() const {
 	return m_HdrDisplay ? m_HdrDisplay.Get() : m_BackBuffers[m_BackBufferIndex].Get();
 }
 
@@ -1346,7 +1318,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::RealDisplayRtv() const {
 
 // Mid-chain the finished image lives in one of the LDR scratches, so "the display target" resolves to that.
 // Outside the chain m_DisplaySlot is -1 and this is the plain accessor.
-ID3D12Resource* D3D12GraphicsEngine::GetDisplayTarget() const {
+Rhi::Resource* D3D12GraphicsEngine::GetDisplayTarget() const {
 	if ( m_DisplaySlot >= 0 && m_LdrScratch[m_DisplaySlot] ) return m_LdrScratch[m_DisplaySlot].Get();
 	return RealDisplayTarget();
 }
@@ -1409,8 +1381,8 @@ void D3D12GraphicsEngine::FinishDisplayChain( D3D12CmdList& cmdList ) {
 	EndDisplayChainStep( cmdList );
 	if ( m_DisplaySlot < 0 ) return;
 
-	ID3D12Resource* src = m_LdrScratch[m_DisplaySlot].Get();
-	ID3D12Resource* dst = RealDisplayTarget();
+	Rhi::Resource* src = m_LdrScratch[m_DisplaySlot].Get();
+	Rhi::Resource* dst = RealDisplayTarget();
 	m_DisplaySlot = -1;
 	if ( !src || !dst ) return;
 	Logging::Wrn( "D3D12: a display-chain pass did not run after being counted; copying the frame back." );
@@ -1604,11 +1576,10 @@ void D3D12GraphicsEngine::ApplySwapChainColorSpace() {
 	OnBeginFrame, so nothing carries over between frames. */
 bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 	m_HdrDisplay.Reset();
-	m_HdrDisplayAlloc.Reset();
 	if ( !m_HdrOutputActive ) return true;   // SDR: display target IS the swapchain, nothing to build
 	if ( size.x < 4 || size.y < 4 ) return false;
 
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	if ( !device || !m_RtvHeap ) return false;
 
 	D3D12MA::ALLOCATION_DESC heapDefault = {};
@@ -1629,8 +1600,7 @@ bool D3D12GraphicsEngine::CreateHdrDisplayTarget( INT2 size ) {
 	clearValue.Format = kHdrDisplayFormat;
 	memcpy( clearValue.Color, m_ClearColor, sizeof( clearValue.Color ) );
 
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue,
-		m_HdrDisplayAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HdrDisplay.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue, m_HdrDisplay.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 		Logging::Err( "D3D12: failed to create the HDR display composite target ({}x{}).", size.x, size.y );
 		return false;
 	}
@@ -1716,7 +1686,7 @@ XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
 }
 
 
-void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource )
+void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<Rhi::Resource> resource )
 {
     QueueCleanupJob( [this, slot, resource = std::move(resource)]() {
         // Recycle the descriptor slot safely
@@ -1740,23 +1710,13 @@ void D3D12GraphicsEngine::QueueCleanupJob( std::move_only_function<void()> callb
 }
 
 
-void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource )
+void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<Rhi::Resource> resource )
 {
     if ( !resource ) return;
     // No slot to recycle — just hold a reference until this frame index comes back around (after its
     // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
     // every command list that could reference it has finished on the GPU.
     QueueCleanupJob( [resource = std::move(resource)]() {} );
-}
-
-
-void D3D12GraphicsEngine::QueueAllocationForRelease( Microsoft::WRL::ComPtr<D3D12MA::Allocation> value )
-{
-    if ( !value ) return;
-    // No slot to recycle — just hold a reference until this frame index comes back around (after its
-    // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
-    // every command list that could reference it has finished on the GPU.
-    QueueCleanupJob( [resource = std::move(value)]() { } );
 }
 
 
@@ -1967,7 +1927,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 
 
 bool D3D12GraphicsEngine::CreateFrameResources() {
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
 
     // RTV descriptor heap: kBackBufferMax backbuffer slots (reserved at the compile-time max regardless of
     // the actually configured kBackBufferCount, so every fixed offset below stays stable) + 1 for the HDR
@@ -1985,20 +1945,20 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
     // Per-frame command allocators
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
+        if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS( m_CmdAllocators[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
     }
 
     // A single command list (created recording, then closed — OnBeginFrame resets it each frame)
-    if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_CmdAllocators[m_FrameIndex].Get(), nullptr, IID_PPV_ARGS( m_CmdList.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_CmdList.Get()->SetName( L"Main" );
     m_CmdList->Close();
 
     // Frame-sync fence
-    if ( FAILED( device->CreateFence( m_FenceValues[m_FrameIndex], D3D12_FENCE_FLAG_NONE,
+    if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateFence( m_FenceValues[m_FrameIndex], D3D12_FENCE_FLAG_NONE,
         IID_PPV_ARGS( m_Fence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_FenceValues[m_FrameIndex]++;
@@ -2012,11 +1972,13 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
 
 
 bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_SwapChain->GetBuffer( i, IID_PPV_ARGS( m_BackBuffers[i].ReleaseAndGetAddressOf() ) ) ) )
+        ComPtr<ID3D12Resource> buffer;
+        if ( FAILED( m_SwapChain->GetBuffer( i, IID_PPV_ARGS( buffer.GetAddressOf() ) ) ) )
             return false;
+        m_BackBuffers[i] = D3D12Rhi::WrapResource( buffer.Get() );
         m_BackBuffers[i]->SetName( i == 0 ? L"BackBuffer0" : L"BackBuffer1" );
         device->CreateRenderTargetView( m_BackBuffers[i].Get(), nullptr, rtvHandle );
         m_CmdList.InvalidateRenderTargets();
@@ -2667,17 +2629,17 @@ bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
     // from it (so each frame-in-flight needs its own). Total = kShadowRecordSlots * kBackBufferCount allocators
     // (the CSM cascades plus the point-cube and rain-shadowmap passes), which is a handful of small VA
     // reservations — acceptable even under the 32-bit budget.
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     for ( UINT c = 0; c < kShadowRecordSlots; ++c ) {
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-            if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
+            if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
                 IID_PPV_ARGS( m_ShadowCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
                 Logging::Wrn( "D3D12: failed to create a shadow command allocator — deferred shadow recording disabled." );
                 return false;
             }
-            if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+            if ( FAILED( D3D12Rhi::NativeDevice( device )->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
                 m_ShadowCmdAllocators[c][i].Get(), nullptr,
                 IID_PPV_ARGS( m_ShadowCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
                 Logging::Wrn( "D3D12: failed to create a shadow command list — deferred shadow recording disabled." );
@@ -2786,7 +2748,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
         return;
     }
 
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
 
     // The world + tonemap-resolve commands recorded by the OnStartWorldRendering() call the caller just
     // made are still sitting unexecuted in m_CmdList — nothing has actually landed on the GPU yet. Flush
@@ -2817,10 +2779,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     D3D12_CLEAR_VALUE clearValue = {};
     clearValue.Format = kBackBufferFormat;
 
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> captureAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource> captureTex;
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, td, D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &clearValue, captureAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( captureTex.ReleaseAndGetAddressOf() ) ) ) ) {
+    Microsoft::WRL::ComPtr<Rhi::Resource> captureTex;
+    if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue, captureTex.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. Capture texture could not be created" : "GetBackbufferData failed. Capture texture could not be created") );
         RestoreFrameRenderTarget();
         return;
@@ -2888,21 +2848,19 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     rbDesc.SampleDesc.Count = 1;
     rbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> readbackAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource> readback;
-    if ( FAILED( m_Allocator->CreateResource( &rbAllocDesc, &rbDesc, D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr, readbackAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( readback.ReleaseAndGetAddressOf() ) ) ) ) {
+    Microsoft::WRL::ComPtr<Rhi::Resource> readback;
+    if ( FAILED( m_Rhi->CreateResource( rbAllocDesc.HeapType, &rbDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, readback.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. Readback buffer could not be created" : "GetBackbufferData failed. Readback buffer could not be created") );
         RestoreFrameRenderTarget();
         return;
     }
 
-    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    Rhi::TextureCopyLocation dstLoc = {};
     dstLoc.pResource = readback.Get();
     dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     dstLoc.PlacedFootprint = footprint;
 
-    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    Rhi::TextureCopyLocation srcLoc = {};
     srcLoc.pResource = captureTex.Get();
     srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     srcLoc.SubresourceIndex = 0;
@@ -2949,7 +2907,6 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     WaitForGpuIdle();
     for ( UINT i = 0; i < kBackBufferCount; ++i ) m_BackBuffers[i].Reset();
     m_HdrDisplay.Reset();          // rebuilt at the new size below (SRV slot is kept and re-pointed)
-    m_HdrDisplayAlloc.Reset();
 
     // Must pass the SAME flags the swapchain was created with (CreateSwapChainForHwnd's scd.Flags) —
     // neither DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING nor _FRAME_LATENCY_WAITABLE_OBJECT can be added/removed

@@ -54,7 +54,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
     // at a different resolution and reprojecting into it would be meaningless.
     m_MotionHistoryValid = false;
     if ( size.x < 4 || size.y < 4 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_RtvHeap || !m_Allocator ) return false;
     // Init runs BEFORE the first CreateSwapChain, so if either half of the pipeline setup failed there this
     // must not re-enable the feature by setting m_MotionResourcesReady below. The fill PSO and the mapped CB
@@ -66,7 +66,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
 
     // Optimized clear values must match what ClearRenderTargetView is actually called with, or the driver
     // silently loses fast-clear on these targets. Velocity clears to the sentinel, normals to zero.
-    auto makeTarget = [&]( ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc,
+    auto makeTarget = [&]( ComPtr<Rhi::Resource>& out,
                            DXGI_FORMAT format, bool needsUav, const float clearColor[4], const wchar_t* name ) -> bool {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -84,8 +84,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
         clear.Format = format;
         memcpy( clear.Color, clearColor, sizeof( clear.Color ) );
 
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET,
-            &clear, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, out.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create a motion G-buffer target ({}x{}).", size.x, size.y );
             return false;
         }
@@ -96,9 +95,9 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
     const float velocityClear[4] = { kVelocitySentinel, kVelocitySentinel, 0.0f, 0.0f };
     const float normalClear[4] = { kGBufferNormalSentinel, kGBufferNormalSentinel, 0.0f, 0.0f };
     // The velocity target additionally needs UAV: FillCameraVelocity writes it from compute.
-    if ( !makeTarget( m_VelocityBuffer, m_VelocityAlloc, kVelocityFormat, true, velocityClear, L"MotionVectors(RG16F)" ) )
+    if ( !makeTarget( m_VelocityBuffer, kVelocityFormat, true, velocityClear, L"MotionVectors(RG16F)" ) )
         return false;
-    if ( !makeTarget( m_NormalBuffer, m_NormalAlloc, kGBufferNormalFormat, false, normalClear, L"GBufferNormals(RG16F oct)" ) )
+    if ( !makeTarget( m_NormalBuffer, kGBufferNormalFormat, false, normalClear, L"GBufferNormals(RG16F oct)" ) )
         return false;
 
     // RTVs in the two heap slots past the swapchain RTVs, the scene-color RTV, SMAA's edge/blend pair and the
@@ -141,7 +140,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
 /** One-time creation of the per-frame-in-flight MotionCB slabs. Persistently mapped UPLOAD, 256 bytes each
     (the root-CBV alignment quantum) for a 192-byte payload — 768 bytes of 32-bit VA in total. */
 bool D3D12GraphicsEngine::CreateMotionConstantBuffers() {
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Allocator ) return false;
 
     D3D12MA::ALLOCATION_DESC allocDesc = {};
@@ -158,8 +157,7 @@ bool D3D12GraphicsEngine::CreateMotionConstantBuffers() {
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_MotionCBAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_MotionCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_MotionCB[i].ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the motion-vector constant buffer." );
             return false;
         }

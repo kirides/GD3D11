@@ -97,9 +97,7 @@ bool D3D12GraphicsEngine::CreateSkyConstantBuffers() {
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr, m_SkyCBAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_SkyCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_SkyCB[i].ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the sky atmosphere constant buffer." );
             return false;
         }

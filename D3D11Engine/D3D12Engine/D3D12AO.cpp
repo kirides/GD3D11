@@ -28,7 +28,7 @@ using Microsoft::WRL::ComPtr;
 bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
     m_AOResourcesReady = false;
     if ( size.x < 4 || size.y < 4 || !m_DepthBuffer ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
     // The blur pairs below alias m_DepthSrvSlot's view, so the depth buffer's own SRV must already exist.
     if ( m_DepthSrvSlot == UINT_MAX ) return false;
@@ -36,7 +36,7 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    auto makeTex = [&]( ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+    auto makeTex = [&]( ComPtr<Rhi::Resource>& out, const wchar_t* name ) -> bool {
         D3D12_RESOURCE_DESC dd = {};
         dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         dd.Width = static_cast<UINT64>( size.x );
@@ -52,8 +52,7 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create an SSAO texture ({}x{}).", size.x, size.y );
             return false;
         }
@@ -61,8 +60,8 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
         return true;
         };
 
-    if ( !makeTex( m_AOMask, m_AOMaskAlloc, L"AOMask" ) ) return false;
-    if ( !makeTex( m_AOBlurTemp, m_AOBlurTempAlloc, L"AOBlurTemp" ) ) return false;
+    if ( !makeTex( m_AOMask, L"AOMask" ) ) return false;
+    if ( !makeTex( m_AOBlurTemp, L"AOBlurTemp" ) ) return false;
 
     auto ensureSlot = [&]( UINT& slot ) -> bool {
         if ( slot == UINT_MAX ) slot = AllocateSrvSlot();

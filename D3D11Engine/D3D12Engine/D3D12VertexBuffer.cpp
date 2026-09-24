@@ -106,18 +106,13 @@ D3D12VertexBuffer::~D3D12VertexBuffer() {
             c.Resource->Unmap( 0, nullptr );
             c.MappedPtr = nullptr;
         }
-        if ( c.Resource || c.Allocation ) {
+        if ( c.Resource ) {
+            // The resource owns its suballocated heap block, so one deferral covers both: freeing the block
+            // early would let the next buffer be placed on top of memory an in-flight draw still reads.
             if ( D3D12GraphicsEngine* engine = Engine12() ) {
-                // The D3D12MA::Allocation must be deferred TOGETHER with the resource: releasing it is what
-                // hands the suballocated heap block back to the allocator. Dropping it here while the
-                // ID3D12Resource still lives in the cleanup queue lets the very next placed buffer be created
-                // on top of a still-alive resource -> HEAP_ADDRESS_RANGE_INTERSECTS_MULTIPLE_BUFFERS on
-                // IASetVertexBuffers, and (worse) live GPU memory of an in-flight draw reused for new data.
                 engine->QueueResourceForRelease( std::move( c.Resource ) );
-                engine->QueueAllocationForRelease( std::move( c.Allocation ) );
             }
             c.Resource.Reset();
-            c.Allocation.Reset();
         }
     }
 }
@@ -125,9 +120,8 @@ D3D12VertexBuffer::~D3D12VertexBuffer() {
 XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags bindFlags,
     EUsageFlags usage, ECPUAccessFlags cpuAccess, const std::string& fileName, unsigned int structuredByteSize ) {
 
-    ID3D12Device* device = Engine12() ? Engine12()->GetD3DDevice() : nullptr;
-    D3D12MA::Allocator* allocator = Engine12() ? Engine12()->GetAllocator() : nullptr;
-    if ( !device || !allocator ) return XR_FAILED;
+    Rhi::Device* device = Engine12() ? Engine12()->GetRhi() : nullptr;
+    if ( !device ) return XR_FAILED;
 
     if ( sizeInBytes == 0 ) {
         Logging::Err( "VertexBuffer size can't be 0!" );
@@ -160,21 +154,19 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     const std::string debugName = "VB:" + ( fileName.empty() ? std::string( "unnamed" ) : fileName );
 
     if ( isDynamic ) {
-        bool useGpuUpload = false && allocator->IsGPUUploadHeapSupported();
+        bool useGpuUpload = false && device->GetCaps().GpuUploadHeap;
 
         // --- Dynamic path: Persistently Mapped UPLOAD Heap, one copy per frame-in-flight ---
         for ( UINT i = 0; i < m_NumCopies; ++i ) {
             D3D12MA::ALLOCATION_DESC allocDesc = {};
             allocDesc.HeapType = useGpuUpload ? D3D12_HEAP_TYPE_GPU_UPLOAD : D3D12_HEAP_TYPE_UPLOAD;
 
-            HRESULT hr = allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                m_Copies[i].Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Copies[i].Resource.ReleaseAndGetAddressOf() ) );
+            HRESULT hr = device->CreateResource( allocDesc.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_Copies[i].Resource.ReleaseAndGetAddressOf() );
 
             if ( FAILED( hr ) && useGpuUpload ) {
                 // graceful non-GPU_UPLOAD path
                 allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
-                hr = allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                    m_Copies[i].Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Copies[i].Resource.ReleaseAndGetAddressOf() ) );
+                hr = device->CreateResource( allocDesc.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_Copies[i].Resource.ReleaseAndGetAddressOf() );
             }
 
             if ( FAILED( hr ) ) {
@@ -190,7 +182,7 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
             // Replicate initData into EVERY copy — whichever frame-slot the first draw picks up (before any
             // UpdateBuffer has run for that slot) must already hold valid data, not garbage.
             if ( initData ) memcpy( m_Copies[i].MappedPtr, initData, sizeInBytes );
-            m_Copies[i].Resource->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
+            m_Copies[i].Resource->SetNameA( debugName.c_str(), static_cast<UINT>( debugName.size() ) );
         }
     }
     else {
@@ -198,8 +190,7 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         D3D12MA::ALLOCATION_DESC allocDesc = {};
         allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-        if ( FAILED( allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr,
-            m_Copies[0].Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Copies[0].Resource.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( device->CreateResource( allocDesc.HeapType, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr, m_Copies[0].Resource.ReleaseAndGetAddressOf() ) ) ) {
             return XR_FAILED;
         }
 
@@ -209,7 +200,7 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
                 return XR_FAILED;
             }
         }
-        m_Copies[0].Resource->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
+        m_Copies[0].Resource->SetNameA( debugName.c_str(), static_cast<UINT>( debugName.size() ) );
     }
 
     // initData was replicated into every copy above, so whichever slot is current already holds it.

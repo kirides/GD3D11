@@ -24,9 +24,8 @@ namespace {
 
 bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     m_Engine = &engine;
-    m_Device = engine.GetD3DDevice();
+    m_Device = engine.GetRhi();
     if ( !m_Device ) return false;
-    m_Device->QueryInterface( IID_PPV_ARGS( m_Device10.ReleaseAndGetAddressOf() ) );
 
     D3D12_HEAP_DESC heapDesc = {};
     heapDesc.SizeInBytes = kArenaCapacityBytes;
@@ -38,7 +37,7 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     heapDesc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
     heapDesc.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
 
-    if ( FAILED( m_Device->CreateHeap( &heapDesc, IID_PPV_ARGS( m_Heap.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Device->CreateHeap( &heapDesc, m_Heap.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12AliasedTextureArena: failed to create the {} MB aliasing heap.", ( kArenaCapacityBytes / ( 1024 * 1024 ) ) );
         return false;
     }
@@ -64,7 +63,7 @@ void D3D12AliasedTextureArena::GetAllocationInfo( UINT width, UINT height, DXGI_
     outAlignment = 0;
     if ( !m_Device ) return;
     const D3D12_RESOURCE_DESC desc = MakeDesc( width, height, format, needsUav );
-    const D3D12_RESOURCE_ALLOCATION_INFO info = m_Device->GetResourceAllocationInfo( 0, 1, &desc );
+    const D3D12_RESOURCE_ALLOCATION_INFO info = m_Device->GetResourceAllocationInfo( desc );
     outSize = info.SizeInBytes;
     outAlignment = info.Alignment;
 }
@@ -92,18 +91,10 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
     D3D12_CLEAR_VALUE clear = {};
     clear.Format = format;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> newResource;
-    // Enhanced-barrier devices need the resource layout-tracked from creation; a legacy RENDER_TARGET
-    // initial state can't be touched by enhanced barriers (debug layer #1350).
-    HRESULT hr = E_FAIL;
-    if ( D3D12CmdList::EnhancedBarriersSupported() && m_Device10 ) {
-        const D3D12_RESOURCE_DESC1 desc1 = D3D12ResourceCreate::ToDesc1( desc );
-        hr = m_Device10->CreatePlacedResource2( m_Heap.Get(), slotOffset, &desc1, D3D12_BARRIER_LAYOUT_RENDER_TARGET,
-            &clear, 0, nullptr, IID_PPV_ARGS( newResource.ReleaseAndGetAddressOf() ) );
-    } else {
-        hr = m_Device->CreatePlacedResource( m_Heap.Get(), slotOffset, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET,
-            &clear, IID_PPV_ARGS( newResource.ReleaseAndGetAddressOf() ) );
-    }
+    Microsoft::WRL::ComPtr<Rhi::Resource> newResource;
+    // Layout-tracked from creation on enhanced-barrier devices (see Rhi::Device::CreatePlacedRenderTarget).
+    const HRESULT hr = m_Device->CreatePlacedRenderTarget( m_Heap.Get(), slotOffset, &desc, &clear,
+        newResource.ReleaseAndGetAddressOf() );
     if ( FAILED( hr ) ) {
         if ( !m_LoggedExhaustion ) {
             Logging::Wrn( "D3D12AliasedTextureArena: failed to place a {}x{} transient texture at offset {}.", width, height, slotOffset );
@@ -122,7 +113,7 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
         }
         cmdList.AliasingBarrier( nullptr, D3D12_RESOURCE_STATE_COMMON, newResource.Get() );
     } else {
-        ID3D12Resource* oldResource = slot->Texture->GetResource();
+        Rhi::Resource* oldResource = slot->Texture->GetResource();
         const D3D12_RESOURCE_STATES oldState = slot->Texture->State;
         if ( !slot->Texture->ReplaceResource( m_Device, newResource.Get(), width, height, format, needsUav ) )
             return nullptr;   // old resource/views stay bound to what was there before — still valid, just stale
