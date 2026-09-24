@@ -521,7 +521,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_Fence;
     UINT64 m_FenceValues[kBackBufferMax] = {};
     HANDLE m_FenceEvent = nullptr;
-    UINT   m_FrameIndex = 0;   // render-thread-only; every use above indexes per-frame GPU rings
+    UINT   m_FrameIndex = 0;   // frame slot (0..kBackBufferCount-1): indexes every per-frame GPU ring; render-thread-only
+    UINT   m_BackBufferIndex = 0;   // swapchain image being rendered; NOT the frame slot
 
     // Synchronous upload path (direct queue) used for the transition barrier after async copy-queue uploads.
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_UploadAllocator;
