@@ -154,9 +154,9 @@ bool D3D12PointShadows::Init() {
 	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
 	dsvHeapDesc.NumDescriptors = kMaxStaticCubes;
 	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_StaticDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateDescriptorHeap( &dsvHeapDesc, m_StaticDsvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
-	m_DsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+	m_DsvSize = m_E->m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
 	D3D12_CPU_DESCRIPTOR_HANDLE dsvH = m_StaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	for ( UINT s = 0; s < kMaxStaticCubes; ++s ) {
 		D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
@@ -197,7 +197,7 @@ bool D3D12PointShadows::Init() {
 	D3D12_DESCRIPTOR_HEAP_DESC dynDsvHeapDesc = {};
 	dynDsvHeapDesc.NumDescriptors = kMaxDynCubes;
 	dynDsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dynDsvHeapDesc, IID_PPV_ARGS( m_DynDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateDescriptorHeap( &dynDsvHeapDesc, m_DynDsvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
 	D3D12_CPU_DESCRIPTOR_HANDLE sdsvH = m_DynDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	for ( UINT s = 0; s < kMaxDynCubes; ++s ) {
@@ -879,7 +879,7 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// A freshly-Reset pool list carries no descriptor heap. On m_CmdList (serial fallback) the same heap is
 	// already bound, so this is a no-op — hence unconditional rather than branched on the caller.
 	if ( m_E->m_SrvHeap ) {
-		ID3D12DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
+		Rhi::DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
 		cmdList->SetDescriptorHeaps( 1, heaps );
 	}
 

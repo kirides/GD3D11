@@ -2,12 +2,12 @@
 #include "D3D12PooledDescriptorHeap.h"
 #include "../Logger.h"
 
-bool D3D12PooledDescriptorHeap::Init( ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT capacity, const wchar_t* debugName ) {
+bool D3D12PooledDescriptorHeap::Init( Rhi::Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT capacity, const wchar_t* debugName ) {
     D3D12_DESCRIPTOR_HEAP_DESC desc = {};
     desc.Type = type;
     desc.NumDescriptors = capacity;
     desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;   // CPU-only: RTV/DSV heaps are never shader-visible
-    if ( FAILED( device->CreateDescriptorHeap( &desc, IID_PPV_ARGS( m_Heap.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( device->CreateDescriptorHeap( &desc, m_Heap.ReleaseAndGetAddressOf() ) ) )
         return false;
     if ( debugName ) m_Heap->SetName( debugName );
 

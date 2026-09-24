@@ -151,6 +151,8 @@ public:
 
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
     ID3D12Device* GetD3DDevice() const { return m_Device.GetDevice(); }
+    /** The RHI device every renderer object is created through. */
+    Rhi::Device* GetRhi() const { return m_Rhi.Get(); }
 
     /** Current frame-in-flight index (0..kBackBufferCount-1), stable for the whole frame. Used by
         D3D12VertexBuffer to pick which of its per-frame copies to write/bind for a dynamic (GPU-bound,
@@ -471,7 +473,7 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Device> m_Rhi;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain3>        m_SwapChain;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV
     UINT m_RtvDescriptorSize = 0;
 
     // HDR scene-color pipeline (Phase 3): the 3D world passes render into m_SceneColor (R16F, values >1 allowed —
@@ -661,7 +663,7 @@ private:
     float m_ClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f }; // black — the 2D UI draws over it
 
     // --- 2D / UI draw path (Gothic menus, fonts, HUD) ---
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_SrvHeap;         // shader-visible CBV_SRV_UAV heap (texture SRVs)
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_SrvHeap;         // shader-visible CBV_SRV_UAV heap (texture SRVs)
     UINT m_SrvDescriptorSize = 0;
     UINT m_SrvHeapCapacity = 0;
     UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
@@ -747,7 +749,7 @@ private:
     D3D12_RECT     m_CurrentScissor = {};
 
     // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;         // slot 0 = scene depth, slot 1 = preview depth
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DsvHeap;         // slot 0 = scene depth, slot 1 = preview depth
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DepthBufferAlloc; // backing D3D12MA allocation (recreated on resize)
     UINT m_DsvDescriptorSize = 0;
@@ -1904,7 +1906,7 @@ private:
     static constexpr float kRainShadowDepth = 20000.0f;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainShadowMap;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainShadowMapAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_RainShadowDsvHeap;
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_RainShadowDsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE m_RainShadowDsv = {};
     UINT m_RainShadowSrvSlot = UINT_MAX;
     bool m_RainShadowResourcesReady = false;

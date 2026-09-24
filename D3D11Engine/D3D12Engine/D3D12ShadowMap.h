@@ -139,7 +139,7 @@ private:
                              // 512..8192, power-of-two steps), re-checked every frame in OnBeginFrame
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_Map;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_MapAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;    // one D32 DSV per cascade slice
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DsvHeap;    // one D32 DSV per cascade slice
     UINT m_DsvSize = 0;
     UINT m_SrvSlot = UINT_MAX;         // R32_FLOAT Texture2DArray SRV (all cascades), bound by the lit passes
     bool m_InPixelState = false;       // DEPTH_WRITE (casters write) <-> PIXEL_SHADER_RESOURCE (lit reads)

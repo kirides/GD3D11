@@ -902,9 +902,9 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	desc.NumDescriptors = kSrvHeapCapacity;
 	desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-	if ( FAILED( device->CreateDescriptorHeap( &desc, IID_PPV_ARGS( m_SrvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_Rhi->CreateDescriptorHeap( &desc, m_SrvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
-	m_SrvDescriptorSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+	m_SrvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	m_SrvHeapCapacity = kSrvHeapCapacity;
 	m_SrvAllocated = 0;
 	return true;
@@ -1111,9 +1111,9 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 		dsvHeapDesc.NumDescriptors = 2;
 		dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 		dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_DsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateDescriptorHeap( &dsvHeapDesc, m_DsvHeap.ReleaseAndGetAddressOf() ) ) )
 			return false;
-		m_DsvDescriptorSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+		m_DsvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
 	}
 
 	D3D12MA::ALLOCATION_DESC allocDesc = {};
@@ -1678,7 +1678,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 	// bound. It normally still is from OnBeginFrame, but this runs after the ImGui overlay, which sets heaps
 	// of its own — cheap insurance for the one pass that would otherwise present garbage.
 	if ( m_SrvHeap ) {
-		ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+		Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
 		m_CmdList->SetDescriptorHeaps( 1, heaps );
 	}
 
@@ -1960,7 +1960,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         // built for that RTV format, not the swapchain's. It needs no HDR awareness beyond that: the display
         // buffer holds the same gamma-encoded values it would write to an SDR swapchain.
         Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, m_Device.GetDevice(),
-            m_Device.GetDirectQueue(), kBackBufferCount, m_Pipelines.DisplayFormat, m_SrvHeap.Get() );
+            m_Device.GetDirectQueue(), kBackBufferCount, m_Pipelines.DisplayFormat, D3D12Rhi::Native( m_SrvHeap.Get() ) );
     }
     return true;
 }
@@ -1979,9 +1979,9 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     rtvHeapDesc.NumDescriptors = kBackBufferMax + 8;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, m_RtvHeap.ReleaseAndGetAddressOf() ) ) )
         return false;
-    m_RtvDescriptorSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
+    m_RtvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_RTV );
 
     // Per-frame command allocators
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
@@ -2128,7 +2128,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr );
 
     // Bind the shader-visible SRV heap for this frame's 2D draws (descriptor tables reference it).
-    ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+    Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
     m_CmdList->SetDescriptorHeaps( 1, heaps );
 
     // Reset the per-frame 2D vertex ring + VOB instance ring + default the viewport to the full backbuffer.
@@ -2720,7 +2720,7 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
     if ( FAILED( m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr ) ) ) return;
 
     if ( m_SrvHeap ) {
-        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         m_CmdList->SetDescriptorHeaps( 1, heaps );
     }
 }
@@ -2744,7 +2744,7 @@ void D3D12GraphicsEngine::RestoreFrameRenderTarget() {
     m_ColorTargetIsHDR = false;
 
     if ( m_SrvHeap ) {
-        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         m_CmdList->SetDescriptorHeaps( 1, heaps );
     }
 
@@ -2830,8 +2830,8 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
     rtvHeapDesc.NumDescriptors = 1;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> captureRtvHeap;
-    if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( captureRtvHeap.ReleaseAndGetAddressOf() ) ) ) ) {
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> captureRtvHeap;
+    if ( FAILED( m_Rhi->CreateDescriptorHeap( &rtvHeapDesc, captureRtvHeap.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. RTV heap could not be created" : "GetBackbufferData failed. RTV heap could not be created") );
         RestoreFrameRenderTarget();
         return;
@@ -2849,7 +2849,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     m_CmdList->RSSetScissorRects( 1, &sc );
 
     if ( m_SrvHeap ) {
-        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         m_CmdList->SetDescriptorHeaps( 1, heaps );
     }
 

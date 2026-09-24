@@ -9,7 +9,7 @@ bool D3D12TexturePool::Attach( D3D12GraphicsEngine& engine ) {
     m_Device = engine.GetD3DDevice();
     m_Allocator = engine.GetAllocator();
     if ( !m_Device || !m_Allocator ) return false;
-    return m_RtvHeap.Init( m_Device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxPooledTargets, L"D3D12TexturePool_RTV" );
+    return m_RtvHeap.Init( engine.GetRhi(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxPooledTargets, L"D3D12TexturePool_RTV" );
 }
 
 D3D12TexturePool::Handle D3D12TexturePool::Acquire( const Description& desc ) {

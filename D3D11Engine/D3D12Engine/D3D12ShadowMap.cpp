@@ -188,9 +188,9 @@ bool D3D12ShadowMap::Init() {
 	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
 	dsvHeapDesc.NumDescriptors = kShadowCascades;
 	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_DsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateDescriptorHeap( &dsvHeapDesc, m_DsvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
-	m_DsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+	m_DsvSize = m_E->m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
 
 	// Array SRV (R32_FLOAT) covering all cascades — bound by the lit passes. The slot itself is permanent (bindless
 	// index baked into shaders/CBs elsewhere); Resize just re-points it at the new resource.
@@ -1185,7 +1185,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	// A freshly-Reset command list carries no descriptor heap. On the serial path m_CmdList already has the same
 	// heap bound, so re-binding is a no-op — hence unconditional rather than branched on the caller.
 	if ( m_E->m_SrvHeap ) {
-		ID3D12DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
+		Rhi::DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
 		cmdList->SetDescriptorHeaps( 1, heaps );
 	}
 

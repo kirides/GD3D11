@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <vector>
@@ -15,7 +16,7 @@ class D3D12PooledDescriptorHeap {
 public:
     static constexpr UINT kInvalidSlot = 0xFFFFFFFFu;
 
-    bool Init( ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT capacity, const wchar_t* debugName );
+    bool Init( Rhi::Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT capacity, const wchar_t* debugName );
 
     UINT Allocate();
     void Free( UINT slot );
@@ -24,7 +25,7 @@ public:
     void Reset();   // drops the heap; pool Clear() calls this on resize/level change
 
 private:
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_Heap;
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_Heap;
     UINT m_DescriptorSize = 0;
     UINT m_Capacity = 0;
     UINT m_NextFree = 0;

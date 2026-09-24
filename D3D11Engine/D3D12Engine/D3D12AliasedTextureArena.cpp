@@ -44,7 +44,7 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     }
     m_Heap->SetName( L"D3D12RenderGraph_AliasArena" );
 
-    return m_RtvHeap.Init( m_Device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxSlots, L"D3D12AliasedTextureArena_RTV" );
+    return m_RtvHeap.Init( engine.GetRhi(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxSlots, L"D3D12AliasedTextureArena_RTV" );
 }
 
 UINT64 D3D12AliasedTextureArena::ReserveNamedRange( const std::wstring& name, UINT64 size, UINT64 alignment ) {

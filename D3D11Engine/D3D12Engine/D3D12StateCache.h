@@ -164,7 +164,7 @@ public:
         m_List->SetComputeRootSignature( D3D12Rhi::Native( rs ) );
     }
 
-    void SetDescriptorHeaps( UINT numHeaps, ID3D12DescriptorHeap* const* heaps ) {
+    void SetDescriptorHeaps( UINT numHeaps, Rhi::DescriptorHeap* const* heaps ) {
         if ( numHeaps <= kMaxDescriptorHeaps && numHeaps == m_NumHeaps ) {
             bool same = true;
             for ( UINT i = 0; i < numHeaps; ++i ) if ( m_Heaps[i] != heaps[i] ) { same = false; break; }
@@ -180,7 +180,10 @@ public:
         InvalidateTables( m_Gfx );
         InvalidateTables( m_Compute );
         ++m_Stats.Issued;
-        m_List->SetDescriptorHeaps( numHeaps, heaps );
+        ID3D12DescriptorHeap* native[kMaxDescriptorHeaps] = {};
+        const UINT numNative = std::min( numHeaps, kMaxDescriptorHeaps );
+        for ( UINT i = 0; i < numNative; ++i ) native[i] = D3D12Rhi::Native( heaps[i] );
+        m_List->SetDescriptorHeaps( numNative, native );
     }
 
     void IASetPrimitiveTopology( D3D12_PRIMITIVE_TOPOLOGY topology ) {
@@ -483,7 +486,7 @@ private:
     Rhi::PipelineState* m_PSO = nullptr;
     Rhi::RootSignature* m_GfxRootSig = nullptr;
     Rhi::RootSignature* m_ComputeRootSig = nullptr;
-    ID3D12DescriptorHeap* m_Heaps[kMaxDescriptorHeaps] = {};
+    Rhi::DescriptorHeap* m_Heaps[kMaxDescriptorHeaps] = {};
     UINT m_NumHeaps = 0;
 
     D3D12_PRIMITIVE_TOPOLOGY m_Topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
