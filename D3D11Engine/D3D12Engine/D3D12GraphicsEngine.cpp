@@ -181,17 +181,27 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Inf( "D3D12GraphicsEngine initialized on Vulkan: menus and UI only, the 3D scene is not drawn yet." );
         return XR_SUCCESS;
     }
+    if ( !InitScene() ) return XR_FAILED;
+    D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
+    Logging::Inf( "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set." );
+    return XR_SUCCESS;
+}
+
+
+/** The scene half of Init(): the world/VOB/skeletal/shadow/post pipelines and their resources. False when a
+    pass nothing else falls back for failed (already logged). */
+bool D3D12GraphicsEngine::InitScene() {
     if ( !m_Pipelines.CreateWorld() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateDepthPrepass() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !CreateWorldIndirect() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the world ExecuteIndirect resources." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateWorldTransparency() ) {
         // Non-fatal: DrawWorldTransparencyRun early-outs on a missing root sig, which leaves the peeled
@@ -202,15 +212,15 @@ XRESULT D3D12GraphicsEngine::Init() {
     }
     if ( !m_Pipelines.CreateLightCull() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateVob() || !CreateVobInstanceBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the VOB pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !CreateVobIndirect() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the VOB ExecuteIndirect resources." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateCull() || !CreateVobCullResources() ) {
         // Non-fatal: GPU VOB culling is an optimization, not a resource anything samples unconditionally.
@@ -229,35 +239,35 @@ XRESULT D3D12GraphicsEngine::Init() {
     }
     if ( !CreateLightBuffer() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the point-light buffer." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateSkeletal() || !CreateSkeletalConstantBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !CreateSkeletalIndirect() ) {
         // Fatal: both skeletal passes submit exclusively through these (T9), so a missing signature/ring would
         // silently drop every NPC/monster and every node attachment. Must run after CreateSkeletal (it needs
         // Skeletal.RootSig) and after CreateVobIndirect (the attachment rings ride the VOB command signature).
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal ExecuteIndirect resources." );
-        return XR_FAILED;
+        return false;
     }
     if ( !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
         // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
         // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).
         // Runs after the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the sun shadow map." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreatePointShadow() || !m_PointShadows.Init() ) {
         // Fatal: the lit PSOs sample the cube array (t5) unconditionally once P2.10d lands, so a missing resource
         // would leave that root slot unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create point-light shadow cubes." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateWater() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the water pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !CreateWaterConstantBuffers() ) {
         // Fatal-ish for water only: DrawWaterSurfaces skips its color pass without the CB (the Z-prepass
@@ -268,27 +278,27 @@ XRESULT D3D12GraphicsEngine::Init() {
     LoadReflectionCube();   // non-fatal: water then reflects only on-screen geometry via SSR
     if ( !m_Pipelines.CreateParticle() || !CreateParticleInstanceBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the particle pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateDecal() || !CreateDecalQuadVB() || !CreateDecalInstanceBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the decal pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateTonemap() ) {
         // Fatal: the 3D scene PSOs now target the HDR scene-color RT (kSceneColorFormat), so without the tonemap
         // resolve nothing reaches the swapchain. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateLumAdapt() || !CreateLumAdaptedBuffer() ) {
         // Fatal: Tonemap.hlsl's PS now reads m_LumAdaptedBuffer (t1) unconditionally every frame — a missing
         // buffer would leave that root SRV unbound. Same reasoning as the tonemap PSO itself just above.
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the dynamic-exposure (auto-exposure) pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreatePreview() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline." );
-        return XR_FAILED;
+        return false;
     }
     if ( !m_Pipelines.CreateInventoryItem() ) {
         // Non-fatal: RenderItem-mode item previews are skipped; Original mode keeps using the Preview pipeline.
@@ -426,9 +436,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         // spell ground marks and weapon/spell trails simply don't draw — the same as before they were ported.
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the FX pipeline (quad marks and poly strips will not render)." );
     }
-    D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
-    Logging::Inf( "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set." );
-    return XR_SUCCESS;
+    return true;
 }
 
 

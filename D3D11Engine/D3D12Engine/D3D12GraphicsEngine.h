@@ -469,6 +469,7 @@ private:
     Rhi::Backend m_Api = Rhi::Backend::D3D12;
     bool m_SceneEnabled = true;   // false on Vulkan until the scene passes are lowered
     void CreateDisplayOnlyPipelines();
+    bool InitScene();
 
     Microsoft::WRL::ComPtr<Rhi::Swapchain>        m_SwapChain;
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV
