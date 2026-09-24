@@ -296,7 +296,43 @@ namespace VulkanRhi {
         Logging::Inf( "Vulkan: saved the pipeline cache ({} KiB).", size / 1024 );
     }
 
+    void DeviceImpl::AddRecordStats( const RecordStats& s ) {
+        std::lock_guard<std::mutex> lock( m_StatsMutex );
+        m_Stats.Draws += s.Draws;
+        m_Stats.Replayed += s.Replayed;
+        m_Stats.Pushes += s.Pushes;
+        m_Stats.Writes += s.Writes;
+        m_Stats.Scopes += s.Scopes;
+    }
+
     void DeviceImpl::NotePresent() {
+        constexpr uint32_t kStatsPresents = 600;
+        LARGE_INTEGER now = {};
+        QueryPerformanceCounter( &now );
+        if ( !m_StatsStart ) m_StatsStart = now.QuadPart;
+        if ( ++m_StatsPresents >= kStatsPresents ) {
+            RecordStats s;
+            {
+                std::lock_guard<std::mutex> lock( m_StatsMutex );
+                s = m_Stats;
+                m_Stats = {};
+            }
+            uint32_t submits = 0;
+            {
+                std::lock_guard<std::mutex> lock( m_Queue->m_Mutex );
+                submits = m_Queue->m_SubmitCount;
+                m_Queue->m_SubmitCount = 0;
+            }
+            LARGE_INTEGER freq = {};
+            QueryPerformanceFrequency( &freq );
+            const uint32_t f = m_StatsPresents;
+            Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
+                "{} render scopes, {} submits.", f, static_cast<double>( now.QuadPart - m_StatsStart ) * 1000.0 / freq.QuadPart / f,
+                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.Scopes / f, submits / f );
+            m_StatsPresents = 0;
+            m_StatsStart = now.QuadPart;
+        }
+
         constexpr uint32_t kQuietPresents = 300;   // ~5 s at 60 fps without a new pipeline
         const uint32_t generation = m_PipelineGeneration.load( std::memory_order_relaxed );
         if ( generation == m_SavedGeneration ) return;

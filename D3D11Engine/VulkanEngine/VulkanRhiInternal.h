@@ -78,6 +78,15 @@ namespace VulkanRhi {
         VkDeviceSize Range = 0;
     };
 
+    /** CPU-side recording counters; command lists add theirs at Close and the swapchain logs them per frame. */
+    struct RecordStats {
+        uint32_t Draws = 0;      // draws reaching the command buffer, replayed ones included
+        uint32_t Replayed = 0;   // ExecuteIndirect commands replayed on the CPU
+        uint32_t Pushes = 0;     // vkCmdPushDescriptorSetKHR calls
+        uint32_t Writes = 0;     // descriptors those pushes wrote
+        uint32_t Scopes = 0;     // vkCmdBeginRendering calls
+    };
+
     // ---- Objects ----------------------------------------------------------------------------------
 
     class ResourceImpl final : public Rhi::Resource {
@@ -318,6 +327,7 @@ namespace VulkanRhi {
         static constexpr uint32_t kMaxPendingWaits = 16;
         VkSemaphoreSubmitInfo m_PendingWaits[kMaxPendingWaits] = {};   // guarded by m_Mutex
         uint32_t m_PendingWaitCount = 0;
+        uint32_t m_SubmitCount = 0;   // guarded by m_Mutex; taken by DeviceImpl::NotePresent
     };
 
     /** Signals Win32 events once fences reach a value, like ID3D12Fence::SetEventOnCompletion. */
@@ -429,6 +439,7 @@ namespace VulkanRhi {
         void OnPipelineCreated() { m_PipelineGeneration.fetch_add( 1, std::memory_order_relaxed ); }
         /** Render thread, once per present: saves the pipeline cache after a quiet spell. */
         void NotePresent();
+        void AddRecordStats( const RecordStats& stats );
 
     private:
         bool CreateBindlessLayout();
@@ -476,6 +487,11 @@ namespace VulkanRhi {
         uint32_t m_SavedGeneration = 0;   // render thread only, like the two below
         uint32_t m_SeenGeneration = 0;
         uint32_t m_QuietPresents = 0;
+
+        std::mutex m_StatsMutex;
+        RecordStats m_Stats;
+        uint32_t m_StatsPresents = 0;   // render thread only, like the start time
+        int64_t m_StatsStart = 0;
         friend class DescriptorHeapImpl;
     };
 

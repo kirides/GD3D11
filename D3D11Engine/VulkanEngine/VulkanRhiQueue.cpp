@@ -348,6 +348,7 @@ namespace VulkanRhi {
         si.signalSemaphoreInfoCount = ns;
         si.pSignalSemaphoreInfos = s;
         const VkResult r = vkQueueSubmit2( m_Queue, 1, &si, VK_NULL_HANDLE );
+        ++m_SubmitCount;
         if ( r == VK_SUCCESS ) m_Serial.store( serial );
         else m_Device->CheckResult( r, "vkQueueSubmit2" );
         return r;

@@ -127,7 +127,7 @@ namespace VulkanRhi {
             PipelineStateImpl* Pso = nullptr;
             bool PsoDirty = true;
             bool HeapDirty = true;
-            bool Dirty = true;
+            uint32_t DirtyParams = ~0u;   // root parameters to re-push; push descriptors update incrementally
             uint32_t Consts[kMaxConstDwords] = {};
             bool ConstDirty[kMaxParams] = {};
             VkBuffer ConstBuffer[kMaxParams] = {};
@@ -214,6 +214,7 @@ namespace VulkanRhi {
         std::vector<ComPtr<ResourceImpl>> m_CopyTouched;   // COPY lists only; keeps its capacity across resets
 
         uint32_t m_LabelDepth = 0;
+        RecordStats m_Stats;   // handed to the device at Close
         bool m_LoggedIndirect = false;
         bool m_LoggedBinding = false;
     };
@@ -278,6 +279,8 @@ namespace VulkanRhi {
     HRESULT CommandListImpl::Close() {
         EndRenderingScope();
         DecayCopyListImages();
+        m_Device->AddRecordStats( m_Stats );
+        m_Stats = {};
         if ( m_Device->VkCaps().DebugUtils )
             for ( ; m_LabelDepth > 0; --m_LabelDepth ) vkCmdEndDebugUtilsLabelEXT( m_Cmd );
         m_LabelDepth = 0;
@@ -304,7 +307,8 @@ namespace VulkanRhi {
             r = nullptr;
         }
         b.RootSig = r;
-        b.Dirty = b.HeapDirty = true;
+        b.DirtyParams = ~0u;   // a new set layout leaves every push descriptor undefined
+        b.HeapDirty = true;
         for ( uint32_t i = 0; i < kMaxParams; ++i ) {
             b.ConstDirty[i] = true;
             b.ConstBuffer[i] = VK_NULL_HANDLE;
@@ -319,19 +323,19 @@ namespace VulkanRhi {
         if ( destOffset + num > p.ConstDwords ) return;
         std::memcpy( &b.Consts[p.ConstOffset + destOffset], data, num * sizeof( uint32_t ) );
         b.ConstDirty[param] = true;
-        b.Dirty = true;
+        b.DirtyParams |= 1u << param;
     }
 
     void CommandListImpl::SetTable( BindState& b, UINT param, D3D12_GPU_DESCRIPTOR_HANDLE h ) {
         if ( param >= kMaxParams ) return;
         b.Tables[param] = h;
-        b.Dirty = true;
+        b.DirtyParams |= 1u << param;
     }
 
     void CommandListImpl::SetRootVa( BindState& b, UINT param, D3D12_GPU_VIRTUAL_ADDRESS a ) {
         if ( param >= kMaxParams ) return;
         b.RootVa[param] = a;
-        b.Dirty = true;
+        b.DirtyParams |= 1u << param;
     }
 
     void CommandListImpl::SetDescriptorHeaps( UINT numHeaps, Rhi::DescriptorHeap* const* heaps ) {
@@ -441,6 +445,7 @@ namespace VulkanRhi {
         ri.pDepthAttachment = hasDepth ? &depthInfo : nullptr;
         ri.pStencilAttachment = hasDepth && HasStencil( depth->Resource->m_Format ) ? &stencilInfo : nullptr;
         vkCmdBeginRendering( m_Cmd, &ri );
+        ++m_Stats.Scopes;
         m_InRendering = true;
         m_ScopeColorCount = colorCount;
         m_ScopeHasDepth = hasDepth;
@@ -468,7 +473,7 @@ namespace VulkanRhi {
             vkCmdBindDescriptorSets( m_Cmd, point, rs->m_Layout, 1, 1, &m_Heap->m_Set, 0, nullptr );
             b.HeapDirty = false;
         }
-        if ( !b.Dirty ) return true;
+        if ( !b.DirtyParams ) return true;
 
         constexpr uint32_t kMaxWrites = 64;
         VkWriteDescriptorSet writes[kMaxWrites];
@@ -496,6 +501,7 @@ namespace VulkanRhi {
         };
 
         for ( uint32_t i = 0; i < rs->m_Params.size() && i < kMaxParams && n < kMaxWrites; ++i ) {
+            if ( !( b.DirtyParams & ( 1u << i ) ) ) continue;
             const RootSignatureImpl::Param& p = rs->m_Params[i];
             switch ( p.Kind ) {
             case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS: {
@@ -551,8 +557,12 @@ namespace VulkanRhi {
                 break;
             }
         }
-        if ( n ) vkCmdPushDescriptorSetKHR( m_Cmd, point, rs->m_Layout, 0, n, writes );
-        b.Dirty = false;
+        if ( n ) {
+            vkCmdPushDescriptorSetKHR( m_Cmd, point, rs->m_Layout, 0, n, writes );
+            ++m_Stats.Pushes;
+            m_Stats.Writes += n;
+        }
+        b.DirtyParams = 0;
         return true;
     }
 
@@ -600,7 +610,9 @@ namespace VulkanRhi {
                 vkCmdBindIndexBuffer( m_Cmd, r->m_Buffer, offset, m_Ib.Format == DXGI_FORMAT_R32_UINT ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16 );
             m_IbDirty = false;
         }
-        return FlushBindings( m_Gfx, VK_PIPELINE_BIND_POINT_GRAPHICS );
+        if ( !FlushBindings( m_Gfx, VK_PIPELINE_BIND_POINT_GRAPHICS ) ) return false;
+        ++m_Stats.Draws;
+        return true;
     }
 
     void CommandListImpl::DrawInstanced( UINT vertexCount, UINT instanceCount, UINT startVertex, UINT startInstance ) {
@@ -678,6 +690,7 @@ namespace VulkanRhi {
         for ( UINT i = 0; i < n; ++i ) {
             const UINT64 at = static_cast<UINT64>( i ) * s.m_Stride;
             if ( at + s.m_Stride > available ) break;
+            ++m_Stats.Replayed;
             const uint8_t* cmd = cmds + at;
             const uint8_t* p = cmd;
             const VkDeviceSize gpuAt = argOffset + at;   // this command inside the GPU buffer
@@ -1212,7 +1225,10 @@ namespace VulkanRhi {
 
     void CommandListImpl::EndNative() {
         // The raw recorder bound its own pipeline, descriptor sets, buffers and dynamic state.
-        for ( BindState* b : { &m_Gfx, &m_Compute } ) b->PsoDirty = b->HeapDirty = b->Dirty = true;
+        for ( BindState* b : { &m_Gfx, &m_Compute } ) {
+            b->PsoDirty = b->HeapDirty = true;
+            b->DirtyParams = ~0u;   // its descriptor sets disturbed our push set
+        }
         m_ViewportDirty = m_ScissorDirty = m_TopologyDirty = true;
         m_StaticDynamicsSet = false;
         for ( uint32_t i = 0; i < kMaxVertexBuffers; ++i )
