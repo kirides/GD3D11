@@ -215,6 +215,7 @@ namespace VulkanRhi {
 
         uint32_t m_LabelDepth = 0;
         RecordStats m_Stats;   // handed to the device at Close
+        std::vector<uint8_t> m_ReplayScratch;   // ExecuteIndirect commands copied out of host memory; grows only
         bool m_InIndirect = false;     // draws replayed by ExecuteIndirect count as its time
         int64_t m_UntimedTicks = 0;
         bool m_LoggedIndirect = false;
@@ -703,6 +704,12 @@ namespace VulkanRhi {
             std::memcpy( &gpuCount, countPtr + countOffset, sizeof( gpuCount ) );
             n = std::min( n, gpuCount );
         }
+        // One bulk read into cached memory; host-visible memory may be write-combined, where small reads crawl.
+        const size_t bytes = static_cast<size_t>( std::min<UINT64>( available, static_cast<UINT64>( n ) * s.m_Stride ) );
+        if ( m_ReplayScratch.size() < bytes ) m_ReplayScratch.resize( bytes );
+        std::memcpy( m_ReplayScratch.data(), cmds, bytes );
+        cmds = m_ReplayScratch.data();
+        available = bytes;
         const bool compute = s.m_Args.back().Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
         BindState& b = compute ? m_Compute : m_Gfx;
         for ( UINT i = 0; i < n; ++i ) {
