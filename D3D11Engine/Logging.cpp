@@ -18,6 +18,7 @@ namespace Logging {
         constexpr size_t MaxBufferBytes = 1024 * 1024;      // hard cap per buffer; past it records are dropped and counted
         constexpr size_t RetainedBytes = 128 * 1024;        // capacity kept across flushes; a burst's excess is given back
         constexpr auto FlushInterval = std::chrono::seconds( 1 );
+        constexpr uint64_t StaleFlushMs = 3000;             // past this without a flush, producers write the queue themselves
 
         struct State {
             std::mutex QueueMutex;
@@ -29,7 +30,11 @@ namespace Logging {
             bool Stopping = false;
             bool FlushRequested = false;
 
-            std::mutex FileMutex; // serialises the file write: worker vs. a Shutdown() drain
+            std::mutex FileMutex; // serialises the file write: worker vs. producer fallback vs. Shutdown() drain
+
+            std::atomic<bool> WorkerStarted = false;
+            std::atomic<bool> FallbackReported = false;
+            std::atomic<uint64_t> LastFlushTick = GetTickCount64();
         };
 
         /** Deliberately leaked: the worker is detached and must never touch a destroyed global
@@ -156,9 +161,38 @@ namespace Logging {
                 retired = RetireActive( state, dropped );
             }
             if ( retired ) WriteRetired( state, retired, dropped );
+            state.LastFlushTick.store( GetTickCount64(), std::memory_order_relaxed );
+        }
+
+        /** Producer-side fallback so Log.txt still grows when the worker isn't flushing. Never blocks:
+            if someone else is writing the file, the queue is being drained anyway. */
+        void FlushIfStale( State& state ) {
+            uint64_t now = GetTickCount64();
+            if ( now - state.LastFlushTick.load( std::memory_order_relaxed ) < StaleFlushMs ) return;
+
+            std::unique_lock fileLock( state.FileMutex, std::try_to_lock );
+            if ( !fileLock.owns_lock() ) return;
+
+            if ( !state.FallbackReported.exchange( true ) ) {
+                if ( FILE* f = fopen( LogFilePath().c_str(), "a" ) ) {
+                    std::print( f, "[logging] worker thread {}; thread {} is flushing the queue itself\n",
+                        state.WorkerStarted ? "stalled" : "never started", GetCurrentThreadId() );
+                    fclose( f );
+                }
+            }
+
+            std::vector<char>* retired = nullptr;
+            uint32_t dropped = 0;
+            {
+                std::lock_guard lock( state.QueueMutex );
+                retired = RetireActive( state, dropped );
+            }
+            if ( retired ) WriteRetired( state, retired, dropped );
+            state.LastFlushTick.store( now, std::memory_order_relaxed );
         }
 
         void WorkerMain( State& state ) {
+            state.WorkerStarted = true;
             for ( ;; ) {
                 {
                     std::unique_lock lock( state.QueueMutex );
@@ -199,14 +233,14 @@ namespace Logging {
 
             if ( !out.Overflowed ) {
                 Enqueue( state, stack, static_cast<size_t>( out.Cursor - stack ) );
-                return;
+            } else {
+                // Rare: the record outgrew the stack buffer, so build it once on the heap.
+                std::string big;
+                big.reserve( MessageStackBytes * 2 );
+                EmitRecord( std::back_inserter( big ), level, where, fmt, args );
+                Enqueue( state, big.data(), big.size() );
             }
-
-            // Rare: the record outgrew the stack buffer, so build it once on the heap.
-            std::string big;
-            big.reserve( MessageStackBytes * 2 );
-            EmitRecord( std::back_inserter( big ), level, where, fmt, args );
-            Enqueue( state, big.data(), big.size() );
+            FlushIfStale( state );
         }
 
         void WriteBox( Level level, const std::source_location& where, std::string_view fmt, std::format_args args ) {
