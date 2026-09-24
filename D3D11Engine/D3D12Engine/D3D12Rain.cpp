@@ -453,7 +453,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         hd.NumDescriptors = 1;
-        if ( FAILED( device->CreateDescriptorHeap( &hd, IID_PPV_ARGS( m_RainShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateDescriptorHeap( &hd, m_RainShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the rain shadowmap DSV heap." );
             return false;
         }
@@ -794,7 +794,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
     // A freshly-Reset pool list carries no descriptor heap; on m_CmdList this is a redundant no-op.
     if ( m_SrvHeap ) {
-        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         cmdList->SetDescriptorHeaps( 1, heaps );
     }
 

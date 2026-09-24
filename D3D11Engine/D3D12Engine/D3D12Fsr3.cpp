@@ -637,7 +637,7 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     // contract imgui_impl_dx12 has in Present (see D3D12StateCache.h).
     m_CmdList.InvalidateAll();
     if ( m_SrvHeap ) {
-        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         m_CmdList->SetDescriptorHeaps( 1, heaps );
     }
 

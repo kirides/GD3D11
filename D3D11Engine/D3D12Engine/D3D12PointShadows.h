@@ -135,7 +135,7 @@ private:
     // its depth stays valid for as long as StaticSlot::valid says it does.
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_StaticCube;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_StaticCubeAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_StaticDsvHeap;
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_StaticDsvHeap;
     UINT m_DsvSize = 0;
     UINT m_StaticSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV, fetched bindlessly
 
@@ -144,7 +144,7 @@ private:
     // HI half and the shader never reads this array for it.
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_DynCube;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DynCubeAlloc;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DynDsvHeap;
+    Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DynDsvHeap;
     UINT m_DynSrvSlot = UINT_MAX;
 
     // PER-SLOT resource state (a slot's DSV views exactly its 6 faces). An ALL_SUBRESOURCES transition out of
