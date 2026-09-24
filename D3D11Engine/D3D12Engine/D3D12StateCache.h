@@ -5,6 +5,7 @@
 #include <cstring>
 #include <initializer_list>
 #include "D3D12Barrier.h"
+#include "D3D12Rhi.h"
 
 // Engine-wide redundant-state filter for the D3D12 backend.
 //
@@ -130,37 +131,37 @@ public:
     // ---- Lifetime ------------------------------------------------------------------------------
     HRESULT Close() { return m_List->Close(); }
 
-    HRESULT Reset( ID3D12CommandAllocator* allocator, ID3D12PipelineState* initialState ) {
+    HRESULT Reset( ID3D12CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
         // Reset drops every bit of state the list carried, including the PSO — the shadow has to go
         // with it. `initialState` is the one thing that survives, so seed the PSO shadow from it.
         InvalidateAll();
-        HRESULT hr = m_List->Reset( allocator, initialState );
+        HRESULT hr = m_List->Reset( allocator, D3D12Rhi::Native( initialState ) );
         if ( SUCCEEDED( hr ) ) m_PSO = initialState;
         return hr;
     }
 
     // ---- Tracked state -------------------------------------------------------------------------
-    void SetPipelineState( ID3D12PipelineState* pso ) {
+    void SetPipelineState( Rhi::PipelineState* pso ) {
         if ( m_PSO == pso ) { ++m_Stats.Filtered; return; }
         m_PSO = pso;
         ++m_Stats.Issued;
-        m_List->SetPipelineState( pso );
+        m_List->SetPipelineState( D3D12Rhi::Native( pso ) );
     }
 
-    void SetGraphicsRootSignature( ID3D12RootSignature* rs ) {
+    void SetGraphicsRootSignature( Rhi::RootSignature* rs ) {
         if ( m_GfxRootSig == rs ) { ++m_Stats.Filtered; return; }
         m_GfxRootSig = rs;
         InvalidateRootArgs( m_Gfx );   // a root-signature change invalidates every root argument
         ++m_Stats.Issued;
-        m_List->SetGraphicsRootSignature( rs );
+        m_List->SetGraphicsRootSignature( D3D12Rhi::Native( rs ) );
     }
 
-    void SetComputeRootSignature( ID3D12RootSignature* rs ) {
+    void SetComputeRootSignature( Rhi::RootSignature* rs ) {
         if ( m_ComputeRootSig == rs ) { ++m_Stats.Filtered; return; }
         m_ComputeRootSig = rs;
         InvalidateRootArgs( m_Compute );
         ++m_Stats.Issued;
-        m_List->SetComputeRootSignature( rs );
+        m_List->SetComputeRootSignature( D3D12Rhi::Native( rs ) );
     }
 
     void SetDescriptorHeaps( UINT numHeaps, ID3D12DescriptorHeap* const* heaps ) {
@@ -367,9 +368,9 @@ public:
         m_List->DrawIndexedInstanced( indexCount, instanceCount, startIndex, baseVertex, startInstance );
     }
     void Dispatch( UINT x, UINT y, UINT z ) { m_List->Dispatch( x, y, z ); }
-    void ExecuteIndirect( ID3D12CommandSignature* sig, UINT maxCount, ID3D12Resource* argBuffer,
+    void ExecuteIndirect( Rhi::CommandSignature* sig, UINT maxCount, ID3D12Resource* argBuffer,
         UINT64 argOffset, ID3D12Resource* countBuffer, UINT64 countOffset ) {
-        m_List->ExecuteIndirect( sig, maxCount, argBuffer, argOffset, countBuffer, countOffset );
+        m_List->ExecuteIndirect( D3D12Rhi::Native( sig ), maxCount, argBuffer, argOffset, countBuffer, countOffset );
         // NOT a passthrough: a command signature can WRITE bindings from the argument stream — VBVs, the
         // IBV, root constants and root CBV/SRV/UAVs (this backend uses all four) — and D3D12 leaves every
         // one of them UNDEFINED once the call returns, so anything the shadow still claims is a lie.
@@ -396,10 +397,8 @@ public:
     }
 
 private:
-    // TransitionBarriers()/UAVBarriers() split a caller's batch into chunks of at most
-    // kMaxBatchedBarriers (see D3D12Barrier.cpp) and issue one grouped Barrier() call per chunk.
-    void TransitionBarriersChunk( const D3D12ResourceTransition* transitions, UINT count );
-    void UAVBarriersChunk( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint );
+    /** The enhanced-barrier interface when the device has enhanced barriers, else null (legacy path). */
+    ID3D12GraphicsCommandList7* EnhancedList() const noexcept { return s_DeviceSupportsEnhancedBarriers ? List7() : nullptr; }
 
     static constexpr UINT kMaxViewports = 4;
     static constexpr UINT kInvalidCount = 0xFFFFFFFFu;
@@ -481,9 +480,9 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_List;
 
-    ID3D12PipelineState* m_PSO = nullptr;
-    ID3D12RootSignature* m_GfxRootSig = nullptr;
-    ID3D12RootSignature* m_ComputeRootSig = nullptr;
+    Rhi::PipelineState* m_PSO = nullptr;
+    Rhi::RootSignature* m_GfxRootSig = nullptr;
+    Rhi::RootSignature* m_ComputeRootSig = nullptr;
     ID3D12DescriptorHeap* m_Heaps[kMaxDescriptorHeaps] = {};
     UINT m_NumHeaps = 0;
 

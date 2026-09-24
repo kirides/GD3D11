@@ -21,3 +21,18 @@ struct D3D12ResourceTransition {
     D3D12_BARRIER_SYNC SyncBefore = kBarrierSyncUnspecified;
     D3D12_BARRIER_SYNC SyncAfter = kBarrierSyncUnspecified;
 };
+
+/** The barrier recorder shared by D3D12CmdList and the RHI command list. `list7` is the enhanced-barrier
+    interface when the device supports enhanced barriers, else null (legacy ResourceBarrier path). */
+namespace D3D12Barriers {
+    void Transition( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* resource,
+        D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, UINT subresource,
+        D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint );
+    void Transitions( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+        const D3D12ResourceTransition* transitions, UINT count );
+    void UAV( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint );
+    void UAVs( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+        ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint );
+    void Aliasing( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* before,
+        D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after );
+}

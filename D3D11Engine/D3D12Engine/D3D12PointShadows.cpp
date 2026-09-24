@@ -930,9 +930,9 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// root CBVs, the bound PSO survives a root-signature change, so one filter spanning all four phases is both
 	// correct and the fewest switches. `noAlpha` falls back to the clipping PSO when the twin failed to build,
 	// which collapses the filter back to today's behaviour without a second code path.
-	ID3D12PipelineState* boundPso = nullptr;
-	auto bindCasterPso = [&]( ID3D12PipelineState* clip, ID3D12PipelineState* noAlpha, bool alphaTested ) {
-		ID3D12PipelineState* want = ( alphaTested || !noAlpha ) ? clip : noAlpha;
+	Rhi::PipelineState* boundPso = nullptr;
+	auto bindCasterPso = [&]( Rhi::PipelineState* clip, Rhi::PipelineState* noAlpha, bool alphaTested ) {
+		Rhi::PipelineState* want = ( alphaTested || !noAlpha ) ? clip : noAlpha;
 		if ( want != boundPso ) {
 			cmdList->SetPipelineState( want );
 			boundPso = want;

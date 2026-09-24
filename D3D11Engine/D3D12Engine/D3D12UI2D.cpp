@@ -24,7 +24,7 @@ namespace {
 }
 
 bool D3D12PipelineState::CreateUI2D() {
-    ID3D12Device* device = m_Device->GetDevice();
+    Rhi::Device* device = m_Device;
     if ( !device ) return false;
 
     D3D12RootLayout& rs = Layout( "UI2D" );
@@ -61,7 +61,7 @@ bool D3D12PipelineState::CreateUI2D() {
     return true;
 }
 
-ID3D12PipelineState* D3D12PipelineState::GetOrCreateUI2DPipeline( EUIBlend2D blend, bool rtvIsHdr ) {
+Rhi::PipelineState* D3D12PipelineState::GetOrCreateUI2DPipeline( EUIBlend2D blend, bool rtvIsHdr ) {
     const uint32_t key = static_cast<uint32_t>( blend ) | ( rtvIsHdr ? 0x100u : 0u );
     if ( auto it = UI2D.Pipelines.find( key ); it != UI2D.Pipelines.end() ) return it->second.Get();
     if ( !UI2D.RootSig ) return nullptr;
@@ -75,7 +75,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUI2DPipeline( EUIBlend2D ble
     };
 
     ID3DBlob* psBlob = rtvIsHdr ? UI2D.PsBlobHdr.Get() : UI2D.PsBlob.Get();
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    Rhi::GraphicsPipelineStateDesc pso = {};
     pso.pRootSignature = UI2D.RootSig.Get();
     pso.VS = { UI2D.VsBlob->GetBufferPointer(), UI2D.VsBlob->GetBufferSize() };
     pso.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
@@ -119,12 +119,12 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUI2DPipeline( EUIBlend2D ble
         break;
     }
 
-    ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    ComPtr<Rhi::PipelineState> state;
+    if ( FAILED( m_Device->CreateGraphicsPipelineState( &pso, state.GetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for UI2D pipeline key 0x{:x}.", key );
         return nullptr;
     }
-    ID3D12PipelineState* raw = state.Get();
+    Rhi::PipelineState* raw = state.Get();
     UI2D.Pipelines.emplace( key, std::move( state ) );
     return raw;
 }
@@ -179,7 +179,7 @@ void D3D12GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::s
     };
 
     bool needsBind = true;
-    ID3D12PipelineState* bound = nullptr;
+    Rhi::PipelineState* bound = nullptr;
     for ( const UIBatch2D& batch : batches ) {
         if ( batch.Items ) {
             if ( batch.ItemCount == 0 ) continue;
@@ -193,7 +193,7 @@ void D3D12GraphicsEngine::DrawUI2D( std::span<const UIVertex2D> vertices, std::s
             bindUIState();
             needsBind = false;
         }
-        ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUI2DPipeline( batch.Blend, rtvIsHdr );
+        Rhi::PipelineState* pso = m_Pipelines.GetOrCreateUI2DPipeline( batch.Blend, rtvIsHdr );
         if ( !pso ) continue;
         if ( pso != bound ) {
             m_CmdList->SetPipelineState( pso );

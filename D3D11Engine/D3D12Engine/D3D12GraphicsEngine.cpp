@@ -131,7 +131,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Non-fatal for the same reason: no pass constructs a D3D12RenderGraph yet (see D3D12RenderGraph.h).
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the render-graph aliasing arena." );
     }
-    if ( !m_Pipelines.Init( &m_Device, &m_ShaderBackend ) ) {
+    if ( !m_Pipelines.Init( m_Rhi.Get(), &m_ShaderBackend ) ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to init the pipeline-state module." );
         return XR_FAILED;
     }
@@ -448,7 +448,8 @@ bool D3D12GraphicsEngine::CreateAllocators() {
 	    // for example for dynamic verticies, this causes 99% usage in FixedFunction vertex updates
 		// DefaultUploadHeapType = D3D12_HEAP_TYPE_GPU_UPLOAD;
 	}
-    
+
+    m_Rhi = D3D12Rhi::CreateDevice( m_Device, m_Allocator.Get() );
     return m_Allocator != nullptr;
 }
 

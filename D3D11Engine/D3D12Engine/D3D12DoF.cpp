@@ -175,7 +175,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
         }
     }
 
-    ID3D12PipelineState* blurPso = settings.DoFGaussBlur
+    Rhi::PipelineState* blurPso = settings.DoFGaussBlur
         ? m_Pipelines.DoF.GaussPSO.Get()
         : m_Pipelines.DoF.BlurPSO.Get();
     if ( !blurPso ) return;

@@ -224,7 +224,7 @@ XRESULT D3D12GraphicsEngine::SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, 
 	const bool frontCCW = rs.RasterizerState.FrontCounterClockwise;
 
 	// Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-	ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode,
+	Rhi::PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode,
 		m_ColorTargetIsHDR, isSkyPass, frontCCW, ffVbLayout );
 	if ( !pso ) return XR_SUCCESS;
 
