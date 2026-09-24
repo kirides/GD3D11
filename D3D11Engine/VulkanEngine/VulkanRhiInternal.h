@@ -92,6 +92,7 @@ namespace VulkanRhi {
         uint32_t Writes = 0;     // descriptors those pushes wrote
         uint32_t Scopes = 0;     // vkCmdBeginRendering calls
         uint32_t PushConstants = 0;   // vkCmdPushConstants calls
+        uint32_t Generated = 0;       // ExecuteIndirect calls run as device-generated commands
         int64_t IndirectTicks = 0;     // QPC ticks inside ExecuteIndirect, CPU replay included
         int64_t DrawTicks = 0;         // inside direct draws and dispatches
         int64_t PushTicks = 0;         // inside vkCmdPushDescriptorSetKHR
@@ -139,6 +140,7 @@ namespace VulkanRhi {
         VmaAllocation m_Allocation = VK_NULL_HANDLE;
         VkBuffer m_Buffer = VK_NULL_HANDLE;
         VkDeviceSize m_Size = 0;
+        VkDeviceAddress m_DeviceAddress = 0;   // with device-generated commands only
         uint32_t m_BufferId = 0;
         D3D12_GPU_VIRTUAL_ADDRESS m_Va = 0;
         VkImage m_Image = VK_NULL_HANDLE;
@@ -243,9 +245,15 @@ namespace VulkanRhi {
 
     class CommandSignatureImpl final : public Rhi::CommandSignature {
     public:
+        explicit CommandSignatureImpl( DeviceImpl* device ) : m_Device( device ) {}
+        ~CommandSignatureImpl() override;
+
+        DeviceImpl* m_Device;
         UINT m_Stride = 0;
         std::vector<D3D12_INDIRECT_ARGUMENT_DESC> m_Args;
         ComPtr<RootSignatureImpl> m_RootSig;
+        /** Push-constant and draw tokens for signatures made of per-draw constants plus one draw; else null (replayed). */
+        VkIndirectCommandsLayoutEXT m_Generated = VK_NULL_HANDLE;
     };
 
     /** Placement heap for aliased render targets: one VMA allocation the placed images bind into. */
@@ -297,6 +305,8 @@ namespace VulkanRhi {
         VkCommandBuffer AcquireCommandBuffer();
         /** Upload memory valid until the next Reset(); false when the chunk cap is hit. */
         bool AllocateUpload( VkDeviceSize size, VkDeviceSize alignment, VkBuffer& outBuffer, VkDeviceSize& outOffset, void*& outCpu );
+        /** Device-local preprocess memory for one vkCmdExecuteGeneratedCommandsEXT, valid until the next Reset(). */
+        bool AllocatePreprocess( VkDeviceSize size, VkDeviceSize alignment, VkDeviceAddress& outAddress );
 
         struct Chunk {
             VkBuffer Buffer = VK_NULL_HANDLE;
@@ -315,6 +325,18 @@ namespace VulkanRhi {
         std::vector<Chunk> m_Chunks;
         size_t m_CurrentChunk = 0;
         bool m_LoggedCap = false;
+
+        struct PreprocessChunk {
+            VkBuffer Buffer = VK_NULL_HANDLE;
+            VmaAllocation Allocation = VK_NULL_HANDLE;
+            VkDeviceAddress Address = 0;
+            VkDeviceSize Size = 0;
+            VkDeviceSize Offset = 0;
+        };
+        static constexpr VkDeviceSize kPreprocessChunkSize = 4 * 1024 * 1024;
+        static constexpr size_t kMaxPreprocessChunks = 8;
+        std::vector<PreprocessChunk> m_Preprocess;
+        bool m_LoggedPreprocessCap = false;
     };
 
     class CommandListImpl;

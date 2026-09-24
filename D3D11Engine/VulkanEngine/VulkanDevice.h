@@ -30,6 +30,11 @@ struct VulkanDeviceCaps {
     /** Heap-indexed ConstantBuffers can live in the mutable heap (feature + limits); else they need regular bindings. */
     bool HeapUniformBuffers = false;
     bool TimestampQueries = false;
+    /** VK_EXT_device_generated_commands (+ maintenance5, buffer device address): ExecuteIndirect runs on the GPU. */
+    bool DeviceGeneratedCommands = false;
+    uint32_t DgcMaxIndirectStride = 0;
+    uint32_t DgcMaxSequenceCount = 0;
+    VkShaderStageFlags DgcShaderStages = 0;
 
     uint32_t MaxPushDescriptors = 0;
     uint32_t MaxPushConstantsSize = 0;

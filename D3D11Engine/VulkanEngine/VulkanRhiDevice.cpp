@@ -209,6 +209,7 @@ namespace VulkanRhi {
         // Mapping maps a whole VkDeviceMemory block, so the default 256 MiB blocks would eat the 32-bit VA.
         ci.preferredLargeHeapBlockSize = 16ull * 1024 * 1024;
         if ( VkCaps().MemoryBudget ) ci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+        if ( VkCaps().DeviceGeneratedCommands ) ci.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
         VmaVulkanFunctions functions = {};
         if ( VkUtil::Failed( vmaImportVulkanFunctionsFromVolk( &ci, &functions ), "vmaImportVulkanFunctionsFromVolk" ) ) return false;
         ci.pVulkanFunctions = &functions;
@@ -304,6 +305,7 @@ namespace VulkanRhi {
         m_Stats.Writes += s.Writes;
         m_Stats.Scopes += s.Scopes;
         m_Stats.PushConstants += s.PushConstants;
+        m_Stats.Generated += s.Generated;
         m_Stats.IndirectTicks += s.IndirectTicks;
         m_Stats.DrawTicks += s.DrawTicks;
         m_Stats.PushTicks += s.PushTicks;
@@ -339,11 +341,11 @@ namespace VulkanRhi {
             m_StatsGeneration = generation;
             Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, GPU busy {:.2f} ms; CPU blocked: fences {:.2f}, acquire {:.2f}, "
                 "present {:.2f}, submit {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
-                "{} push-constant updates, {} render scopes, {} submits; over all {} frames: {} pipelines and {} resources created, "
-                "{} heap descriptor writes.",
+                "{} push-constant updates, {} device-generated ExecuteIndirects, {} render scopes, {} submits; over all {} frames: "
+                "{} pipelines and {} resources created, {} heap descriptor writes.",
                 f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
                 waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
-                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.PushConstants / f, s.Scopes / f, submits / f,
+                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.PushConstants / f, s.Generated / f, s.Scopes / f, submits / f,
                 f, pipelines, m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
             Logging::Inf( "Vulkan recording per frame, summed over threads: ExecuteIndirect {:.2f} ms, direct draws/dispatches {:.2f} ms; "
                 "of both, driver push descriptors {:.2f} ms and driver draw calls {:.2f} ms.",
@@ -641,10 +643,15 @@ namespace VulkanRhi {
         if ( desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ) {
             VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             bi.size = std::max<UINT64>( desc->Width, 4 );
-            bi.usage = kBufferUsage;
+            bi.usage = kBufferUsage | ( VkCaps().DeviceGeneratedCommands ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0u );
             bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             if ( CheckResult( vmaCreateBuffer( m_Allocator, &bi, &ai, &r->m_Buffer, &r->m_Allocation, nullptr ), "vmaCreateBuffer" ) )
                 return E_OUTOFMEMORY;
+            if ( VkCaps().DeviceGeneratedCommands ) {
+                VkBufferDeviceAddressInfo ai2 = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+                ai2.buffer = r->m_Buffer;
+                r->m_DeviceAddress = vkGetBufferDeviceAddress( Vk(), &ai2 );
+            }
             r->m_Size = desc->Width;
             r->m_BufferId = RegisterBuffer( r.Get() );
             r->m_Va = static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( r->m_BufferId ) << 32;

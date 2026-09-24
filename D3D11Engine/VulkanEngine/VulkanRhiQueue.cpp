@@ -171,12 +171,14 @@ namespace VulkanRhi {
         DeviceImpl* device = m_Device;
         VkCommandPool pool = m_Pool;
         std::vector<Chunk> chunks = std::move( m_Chunks );
-        device->DeferDestroy( [device, pool, chunks = std::move( chunks )]() {
+        std::vector<PreprocessChunk> preprocess = std::move( m_Preprocess );
+        device->DeferDestroy( [device, pool, chunks = std::move( chunks ), preprocess = std::move( preprocess )]() {
             if ( pool ) vkDestroyCommandPool( device->Vk(), pool, nullptr );
             for ( const Chunk& c : chunks ) {
                 vmaUnmapMemory( device->Allocator(), c.Allocation );
                 vmaDestroyBuffer( device->Allocator(), c.Buffer, c.Allocation );
             }
+            for ( const PreprocessChunk& c : preprocess ) vmaDestroyBuffer( device->Allocator(), c.Buffer, c.Allocation );
         } );
     }
 
@@ -186,8 +188,49 @@ namespace VulkanRhi {
         if ( m_Device->CheckResult( vkResetCommandPool( m_Device->Vk(), m_Pool, 0 ), "vkResetCommandPool" ) ) return E_FAIL;
         m_NextCommandBuffer = 0;
         for ( Chunk& c : m_Chunks ) c.Offset = 0;
+        for ( PreprocessChunk& c : m_Preprocess ) c.Offset = 0;
         m_CurrentChunk = 0;
         return S_OK;
+    }
+
+    bool CommandAllocatorImpl::AllocatePreprocess( VkDeviceSize size, VkDeviceSize alignment, VkDeviceAddress& outAddress ) {
+        alignment = std::max<VkDeviceSize>( alignment, 4 );
+        for ( PreprocessChunk& c : m_Preprocess ) {
+            const VkDeviceSize offset = ( c.Offset + alignment - 1 ) / alignment * alignment;
+            if ( offset + size > c.Size ) continue;
+            c.Offset = offset + size;
+            outAddress = c.Address + offset;
+            return true;
+        }
+        if ( m_Preprocess.size() >= kMaxPreprocessChunks ) {
+            if ( !m_LoggedPreprocessCap ) {
+                m_LoggedPreprocessCap = true;
+                Logging::Wrn( "Vulkan: a command allocator hit its {} preprocess chunks; ExecuteIndirect falls back to CPU replay.",
+                    kMaxPreprocessChunks );
+            }
+            return false;
+        }
+        PreprocessChunk c;
+        c.Size = std::max( kPreprocessChunkSize, ( size + alignment - 1 ) / alignment * alignment );
+        VkBufferUsageFlags2CreateInfoKHR usage = { VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR };
+        usage.usage = VK_BUFFER_USAGE_2_PREPROCESS_BUFFER_BIT_EXT | VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT_KHR;
+        VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bi.pNext = &usage;
+        bi.size = c.Size;
+        bi.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;   // ignored by Vulkan with the flags2 struct; guides VMA
+        VmaAllocationCreateInfo ai = {};
+        ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        if ( m_Device->CheckResult( vmaCreateBuffer( m_Device->Allocator(), &bi, &ai, &c.Buffer, &c.Allocation, nullptr ),
+            "vmaCreateBuffer (preprocess)" ) ) {
+            return false;
+        }
+        VkBufferDeviceAddressInfo ai2 = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+        ai2.buffer = c.Buffer;
+        c.Address = vkGetBufferDeviceAddress( m_Device->Vk(), &ai2 );
+        c.Offset = size;
+        outAddress = c.Address;
+        m_Preprocess.push_back( c );
+        return true;
     }
 
     VkCommandBuffer CommandAllocatorImpl::AcquireCommandBuffer() {

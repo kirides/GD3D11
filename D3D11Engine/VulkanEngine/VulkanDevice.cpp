@@ -176,6 +176,9 @@ namespace {
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT Mutable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
         VkPhysicalDeviceRobustness2FeaturesKHR Robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
         VkPhysicalDeviceFaultFeaturesEXT Fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
+        VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT Dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
+        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT DgcProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT };
+        VkPhysicalDeviceMaintenance5FeaturesKHR Maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
 
@@ -227,7 +230,9 @@ namespace {
         info.Props.pNext = &info.Props11;
         info.Props11.pNext = &info.Props12;
         info.Props12.pNext = &info.Props13;
-        if ( info.Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ) ) info.Props13.pNext = &info.PushProps;
+        void** propsTail = &info.Props13.pNext;
+        if ( info.Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ) ) { *propsTail = &info.PushProps; propsTail = &info.PushProps.pNext; }
+        if ( info.Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) ) { *propsTail = &info.DgcProps; propsTail = &info.DgcProps.pNext; }
         vkGetPhysicalDeviceProperties2( device, &info.Props );
 
         void** tail = &info.Features13.pNext;
@@ -237,6 +242,8 @@ namespace {
         if ( info.MutableExtension ) { *tail = &info.Mutable; tail = &info.Mutable.pNext; }
         if ( info.Robustness2Extension ) { *tail = &info.Robustness2; tail = &info.Robustness2.pNext; }
         if ( info.Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) ) { *tail = &info.Fault; tail = &info.Fault.pNext; }
+        if ( info.Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) ) { *tail = &info.Dgc; tail = &info.Dgc.pNext; }
+        if ( info.Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) ) { *tail = &info.Maintenance5; tail = &info.Maintenance5.pNext; }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
         vkGetPhysicalDeviceQueueFamilyProperties( device, &count, nullptr );
@@ -549,6 +556,18 @@ bool VulkanDevice::Init() {
         VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
+    // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
+    constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    m_Caps.DeviceGeneratedCommands = info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
+        && info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) && info->Maintenance5.maintenance5 && info->Features12.bufferDeviceAddress
+        && ( info->DgcProps.supportedIndirectCommandsShaderStages & kDgcStages ) == kDgcStages;
+    if ( m_Caps.DeviceGeneratedCommands ) {
+        extensions.push_back( VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
+        extensions.push_back( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME );
+        m_Caps.DgcMaxIndirectStride = info->DgcProps.maxIndirectCommandsIndirectStride;
+        m_Caps.DgcMaxSequenceCount = info->DgcProps.maxIndirectSequenceCount;
+        m_Caps.DgcShaderStages = kDgcStages;
+    }
 
     // --- Features: every requirement from CheckRequirements, plus the supported optional ones ---
     const VkPhysicalDeviceFeatures& sup = info->Features.features;
@@ -600,6 +619,7 @@ bool VulkanDevice::Init() {
     f12.shaderStorageBufferArrayNonUniformIndexing = sup12.shaderStorageBufferArrayNonUniformIndexing;
     f12.hostQueryReset = sup12.hostQueryReset;
     f12.samplerMirrorClampToEdge = sup12.samplerMirrorClampToEdge;
+    f12.bufferDeviceAddress = m_Caps.DeviceGeneratedCommands;
     m_Caps.HeapUniformBuffers = HeapUniformBuffersSupported( *info );
     m_Caps.TimestampQueries = info->TimestampQueries;
 
@@ -615,6 +635,10 @@ bool VulkanDevice::Init() {
     robustness2.nullDescriptor = VK_TRUE;
     VkPhysicalDeviceFaultFeaturesEXT fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
     fault.deviceFault = VK_TRUE;
+    VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
+    maintenance5.maintenance5 = VK_TRUE;
+    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
+    dgc.deviceGeneratedCommands = VK_TRUE;
 
     features.pNext = &f11;
     f11.pNext = &f12;
@@ -623,6 +647,10 @@ bool VulkanDevice::Init() {
     void** tail = &mutableFeatures.pNext;
     if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
     if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
+    if ( m_Caps.DeviceGeneratedCommands ) {
+        *tail = &maintenance5; tail = &maintenance5.pNext;
+        *tail = &dgc; tail = &dgc.pNext;
+    }
 
     // --- Queues ---
     const float priority = 1.0f;
@@ -673,7 +701,8 @@ bool VulkanDevice::Init() {
     if ( m_TransferQueue != m_GraphicsQueue )
         SetObjectName( VK_OBJECT_TYPE_QUEUE, VkUtil::HandleToU64( m_TransferQueue ), "TransferQueue" );
 
-    Logging::Inf( "Vulkan device created on: {}", m_DeviceDescription );
+    Logging::Inf( "Vulkan device created on: {}{}", m_DeviceDescription,
+        m_Caps.DeviceGeneratedCommands ? " (device-generated commands on)" : "" );
     VkUtil::LogAddressSpace( "after Vulkan device creation" );
     return true;
 }
