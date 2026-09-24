@@ -507,8 +507,17 @@ bool D3D12ShaderBackend::Reflect( ID3DBlob* code, ID3D12ShaderReflection** ppRef
     return SUCCEEDED( dxcUtils->CreateReflection( &container, IID_PPV_ARGS( ppReflection ) ) );
 }
 
+bool D3D12ShaderBackend::IsDxil( ID3DBlob* code ) {
+    constexpr uint32_t kDxbc = 'D' | ( 'X' << 8 ) | ( 'B' << 16 ) | ( 'C' << 24 );
+    uint32_t fourCC = 0;
+    if ( !code || code->GetBufferSize() < sizeof( fourCC ) ) return false;
+    std::memcpy( &fourCC, code->GetBufferPointer(), sizeof( fourCC ) );
+    return fourCC == kDxbc;
+}
+
 bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const char* entryPoint,
-    const char* target, ID3DBlob** ppCode, const D3D_SHADER_MACRO* defines, ShaderIL il ) {
+    const char* target, ID3DBlob** ppCode, const D3D_SHADER_MACRO* defines ) {
+    const ShaderIL il = m_IL;
     std::string source;
     if ( !LoadShaderSource( fileName, source ) )
         return false;
