@@ -209,7 +209,7 @@ void ImGuiEditorView::RenderVegetationTab() {
     ImGui::SameLine();
     if (ImGui::Button("Fill Selection", ImVec2(125, 30))) {
         if (Selection.SelectedMesh && !FindVegetationFromMeshInfo(Selection.SelectedMesh)) {
-            LogInfo() << "Filling selected mesh with vegetation";
+            Logging::Inf( "Filling selected mesh with vegetation" );
 
             GVegetationBox* box = new GVegetationBox;
             if (XR_SUCCESS == box->InitVegetationBox(Selection.SelectedMesh, "", 1.0f, 1.0f, Selection.SelectedMaterial->GetTextureSingle())) {
@@ -759,7 +759,7 @@ void ImGuiEditorView::OnMouseClick(int button) {
             auto hasHit = Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hit, nullptr, hitTri);
             if (hasHit) {
                 XMFLOAT3 pos = hit;
-                LogInfo() << "Setting player position to: " << float3(pos).toString();
+                Logging::Inf( "Setting player position to: {}", float3(pos).toString() );
                 pos.y += 370.0f; // Spawn above ground to avoid getting stuck in terrain
                 Engine::GAPI->SetPlayerPosition(pos);
             }

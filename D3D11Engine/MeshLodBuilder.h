@@ -47,11 +47,8 @@ namespace MeshLod {
         // must call this.
         if ( total != 1 && ( total == 0 || total % 500 != 0 ) ) return;
         const uint64_t in = g_TrisIn, out = g_TrisOut;
-        LogInfo() << "VOB LOD: " << g_Built.load() << " built / " << total << " submeshes"
-            << " (skipped: " << g_SkipSmall.load() << " too-small, " << g_SkipStride.load() << " stride, "
-            << g_SkipNoReduction.load() << " no-reduction)"
-            << "; tris " << in << " -> " << out
-            << ( in ? " (" + std::to_string( out * 100 / in ) + "%)" : "" );
+        Logging::Inf( "VOB LOD: {} built / {} submeshes (skipped: {} too-small, {} stride, {} no-reduction); tris {} -> {}{}",
+            g_Built.load(), total, g_SkipSmall.load(), g_SkipStride.load(), g_SkipNoReduction.load(), in, out, ( in ? " (" + std::to_string( out * 100 / in ) + "%)" : "" ) );
     }
 
     /** Builds the reduced index list over the fetch-remapped vertex buffer. Clears it on anything

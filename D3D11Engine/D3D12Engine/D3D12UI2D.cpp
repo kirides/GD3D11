@@ -121,7 +121,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUI2DPipeline( EUIBlend2D ble
 
     ComPtr<ID3D12PipelineState> state;
     if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI2D pipeline key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for UI2D pipeline key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();

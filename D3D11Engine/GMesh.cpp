@@ -23,7 +23,7 @@ GMesh::~GMesh() {
 XRESULT GMesh::LoadMesh( const std::string& file, float scale ) {
     char dir[260];
     GetCurrentDirectoryA( 260, dir );
-    LogInfo() << "Loading custom mesh " << dir << "\\" << file;
+    Logging::Inf( "Loading custom mesh {}\\{}", dir, file );
 
     // Check file format
     if ( file.substr( file.find_last_of( "." ) + 1 ) == "mcache" ) {
@@ -35,17 +35,17 @@ XRESULT GMesh::LoadMesh( const std::string& file, float scale ) {
     imp.SetPropertyInteger( AI_CONFIG_PP_SLM_VERTEX_LIMIT, 0xFFFF - 1 );
     const aiScene* s = imp.ReadFile( file, aiProcessPreset_TargetRealtime_Fast | aiProcess_SplitLargeMeshes );
     if ( !s ) {
-        LogError() << "Failed to open custom Mesh: " << file;
-        LogError() << " - " << imp.GetErrorString();
+        Logging::Err( "Failed to open custom Mesh: {}", file );
+        Logging::Err( " - {}", imp.GetErrorString() );
         return XR_FAILED;
     }
 
-    LogInfo() << "Loading " << std::to_string( s->mNumMeshes ) << " submeshes";
+    Logging::Inf( "Loading {} submeshes", std::to_string( s->mNumMeshes ) );
 
     // Little helper for the case that the .mtl went wrong
     if ( s->mNumMaterials <= 3 ) {
-        LogWarn() << "Mesh contains only " << s->mNumMaterials << " materials! This may not be what the creator wanted, please check your"
-            ".mtl-File and the mtllib-reference in the .obj-File. Remember to delete the cache-file after a change!";
+        Logging::Wrn( "Mesh contains only {} materials! This may not be what the creator wanted, please check your.mtl-File and the mtllib-reference in the .obj-File. Remember to delete the cache-file after a change!",
+            s->mNumMaterials );
     }
 
     int startIndex = 0;
@@ -66,7 +66,7 @@ XRESULT GMesh::LoadMesh( const std::string& file, float scale ) {
         }
 
         if ( s->mMeshes[i]->mNumFaces * 3 >= 0xFFFF ) {
-            LogWarn() << "Mesh with Texture '" << texture << "' has more than 0xFFFF vertices!";
+            Logging::Wrn( "Mesh with Texture '{}' has more than 0xFFFF vertices!", texture );
             continue;
         }
 
@@ -94,7 +94,7 @@ XRESULT GMesh::LoadMesh( const std::string& file, float scale ) {
 
         for ( unsigned int n = 0; n < s->mMeshes[i]->mNumFaces; n++ ) {
             if ( s->mMeshes[i]->mFaces[n].mNumIndices != 3 ) {
-                LogError() << "Mesh not triangulated!";
+                Logging::Err( "Mesh not triangulated!" );
                 continue;
             }
 
@@ -111,10 +111,10 @@ XRESULT GMesh::LoadMesh( const std::string& file, float scale ) {
         int extpos = stex.find_last_of( "." );
         if ( extpos >= 0 ) {
             ext = &stex[extpos + 1];
-            //LogInfo() << "Got file ext: " << ext;
+            //Logging::Inf( "Got file ext: {}", ext );
 
             name.resize( name.size() - (ext.size() + 1) ); // Strip file extension
-            //LogInfo() << "Got file name: " << name;
+            //Logging::Inf( "Got file name: {}", name );
         }
 
         mi->Create( vertices, s->mMeshes[i]->mNumVertices, indices, s->mMeshes[i]->mNumFaces * 3 );
@@ -142,10 +142,10 @@ void GMesh::DrawMesh() {
 XRESULT GMesh::LoadCached( const std::string& file ) {
     FILE* f = fopen( file.c_str(), "rb" );
 
-    LogInfo() << "Loading cached mesh: " << file;
+    Logging::Inf( "Loading cached mesh: {}", file );
 
     if ( !f ) {
-        LogWarn() << "Failed to find cache file: " << file;
+        Logging::Wrn( "Failed to find cache file: {}", file );
         return XR_FAILED;
     }
 
@@ -155,8 +155,7 @@ XRESULT GMesh::LoadCached( const std::string& file ) {
 
     // Reject incompatible caches (e.g. after a vertex-format change) so the caller regenerates.
     if ( Version != MESH_CACHE_VERSION ) {
-        LogWarn() << "Mesh cache version mismatch (" << Version << " != " << MESH_CACHE_VERSION
-            << "), regenerating: " << file;
+        Logging::Wrn( "Mesh cache version mismatch ({} != {}), regenerating: {}", Version, MESH_CACHE_VERSION, file );
         fclose( f );
         return XR_FAILED;
     }

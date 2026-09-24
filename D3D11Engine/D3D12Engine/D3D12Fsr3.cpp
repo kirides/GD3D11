@@ -164,7 +164,7 @@ namespace {
 
             Module = LoadLibraryA( "ffx_fsr3upscaler_dx12_x86.dll" );
             if ( !Module ) {
-                LogWarn() << "D3D12: ffx_fsr3upscaler_dx12_x86.dll not found; FSR 3 unavailable.";
+                Logging::Wrn( "D3D12: ffx_fsr3upscaler_dx12_x86.dll not found; FSR 3 unavailable." );
                 return false;
             }
 
@@ -173,8 +173,7 @@ namespace {
                 fn = reinterpret_cast<std::remove_reference_t<decltype( fn )>>(
                     GetProcAddress( Module, name ) );
                 if ( !fn ) {
-                    LogWarn() << "D3D12: ffx_fsr3upscaler_dx12_x86.dll is missing " << name
-                        << "; FSR 3 unavailable.";
+                    Logging::Wrn( "D3D12: ffx_fsr3upscaler_dx12_x86.dll is missing {}; FSR 3 unavailable.", name );
                     all = false;
                 }
             };
@@ -263,7 +262,7 @@ namespace {
 
 #ifdef DEBUG_D3D11
     void Fsr3Log( FfxApiMsgType type, const wchar_t* message ) {
-        LogWarn() << "D3D12 FSR3 (" << static_cast<int>( type ) << "): " << message;
+        Logging::Wrn( "D3D12 FSR3 ({}): {}", static_cast<int>( type ), Toolbox::ToMultiByte( message ) );
     }
 #endif
 
@@ -313,8 +312,8 @@ void D3D12GraphicsEngine::EnsureFsr3Ready() {
     if ( !CreateFsr3Output( m_BackbufferResolution ) ) { m_Fsr3InitFailed = true; return; }
     if ( !CreateFsr3Context( m_Resolution, m_BackbufferResolution ) ) { m_Fsr3InitFailed = true; return; }
 
-    LogInfo() << "D3D12: FSR 3 upscaler ready (" << m_Resolution.x << "x" << m_Resolution.y << " -> "
-        << m_BackbufferResolution.x << "x" << m_BackbufferResolution.y << ").";
+    Logging::Inf( "D3D12: FSR 3 upscaler ready ({}x{} -> {}x{}).",
+        m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y );
 }
 
 
@@ -344,7 +343,7 @@ bool D3D12GraphicsEngine::CreateFsr3Output( INT2 size ) {
     if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         nullptr, m_Fsr3OutputAlloc.ReleaseAndGetAddressOf(),
         IID_PPV_ARGS( m_Fsr3Output.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the FSR3 output target (" << size.x << "x" << size.y << ").";
+        Logging::Wrn( "D3D12: failed to create the FSR3 output target ({}x{}).", size.x, size.y );
         return false;
     }
     m_Fsr3Output->SetName( L"Fsr3Output" );
@@ -387,7 +386,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     // whether the interface comes up at all depends on heap garbage. (D3D11PFX_FSR3::Init has the same bug.)
     m_Fsr3Scratch = calloc( 1, scratchSize );
     if ( !m_Fsr3Scratch ) {
-        LogWarn() << "D3D12: out of memory allocating the FSR3 backend scratch buffer (" << scratchSize << " bytes).";
+        Logging::Wrn( "D3D12: out of memory allocating the FSR3 backend scratch buffer ({} bytes).", scratchSize );
         return false;
     }
 
@@ -411,7 +410,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
 
     if ( g_Ffx.GetInterface( &desc.backendInterface, g_Ffx.GetDevice( device ), m_Fsr3Scratch, scratchSize,
         FFX_FSR3UPSCALER_CONTEXT_COUNT ) != FFX_OK ) {
-        LogWarn() << "D3D12: ffxGetInterfaceDX12 failed; FSR 3 unavailable.";
+        Logging::Wrn( "D3D12: ffxGetInterfaceDX12 failed; FSR 3 unavailable." );
         free( m_Fsr3Scratch );
         m_Fsr3Scratch = nullptr;
         return false;
@@ -423,8 +422,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
         // FFX_ERROR_BACKEND_API_ERROR (0x8000000d) here means a D3D12 call inside the FFX backend failed and
         // FFX discarded the HRESULT; it can only come from CreatePipelineDX12. Requires instrumenting the SDK
         // to narrow further — see the FSR3 note in the project memory for the one that has already bitten us.
-        LogWarn() << "D3D12: ffxFsr3UpscalerContextCreate failed (" << static_cast<int>( err )
-            << "); FSR 3 unavailable.";
+        Logging::Wrn( "D3D12: ffxFsr3UpscalerContextCreate failed ({}); FSR 3 unavailable.", static_cast<int>( err ) );
         delete m_Fsr3Context;
         m_Fsr3Context = nullptr;
         free( m_Fsr3Scratch );
@@ -458,7 +456,7 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
 
     FfxFsr3UpscalerSharedResourceDescriptions shared = {};
     if ( g_Ffx.GetSharedResourceDescriptions( m_Fsr3Context, &shared ) != FFX_OK ) {
-        LogWarn() << "D3D12: ffxFsr3UpscalerGetSharedResourceDescriptions failed; FSR 3 unavailable.";
+        Logging::Wrn( "D3D12: ffxFsr3UpscalerGetSharedResourceDescriptions failed; FSR 3 unavailable." );
         return false;
     }
 
@@ -473,8 +471,8 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
         const FfxApiResourceDescription& src = descs[i]->resourceDescription;
         const DXGI_FORMAT fmt = DxgiFromFfxSurfaceFormat( src.format );
         if ( fmt == DXGI_FORMAT_UNKNOWN ) {
-            LogWarn() << "D3D12: FSR3 asked for shared resource " << i << " in unmapped surface format "
-                << static_cast<int>( src.format ) << "; FSR 3 unavailable (extend DxgiFromFfxSurfaceFormat).";
+            Logging::Wrn( "D3D12: FSR3 asked for shared resource {} in unmapped surface format {}; FSR 3 unavailable (extend DxgiFromFfxSurfaceFormat).",
+                i, static_cast<int>( src.format ) );
             return false;
         }
 
@@ -491,7 +489,7 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
         if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, kFsr3SharedRestState, nullptr,
             m_Fsr3SharedAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_Fsr3Shared[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create FSR3 shared resource " << kSharedNames[i] << ".";
+            Logging::Wrn( "D3D12: failed to create FSR3 shared resource {}.", Toolbox::ToMultiByte( kSharedNames[i] ) );
             return false;
         }
         m_Fsr3Shared[i]->SetName( kSharedNames[i] );
@@ -670,8 +668,8 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
         // above must run regardless. Leaving m_Fsr3RanThisFrame false makes the tonemap fall back to the scene
         // colour, i.e. this frame is simply bilinearly upscaled (and RenderSharpen takes over again).
         if ( !m_Fsr3DispatchFailureLogged ) {
-            LogWarn() << "D3D12: ffxFsr3UpscalerContextDispatch failed (" << static_cast<int>( err )
-                << "); falling back to bilinear upscaling. Further failures are not logged.";
+            Logging::Wrn( "D3D12: ffxFsr3UpscalerContextDispatch failed ({}); falling back to bilinear upscaling. Further failures are not logged.",
+                static_cast<int>( err ) );
             m_Fsr3DispatchFailureLogged = true;
         }
         return;

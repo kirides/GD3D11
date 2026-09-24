@@ -108,7 +108,7 @@ bool D3D12GraphicsEngine::CreateWaterConstantBuffers() {
         if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WaterCBAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_WaterCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the water constant buffer.";
+            Logging::Wrn( "D3D12: failed to create the water constant buffer." );
             return false;
         }
         m_WaterCB[i]->SetName( L"WaterCB" );
@@ -135,7 +135,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     {
         std::ifstream f( path, std::ios::binary | std::ios::ate );
         if ( !f ) {
-            LogWarn() << "D3D12: reflection cube not found (" << path << ") — water will reflect only on-screen geometry (SSR).";
+            Logging::Wrn( "D3D12: reflection cube not found ({}) — water will reflect only on-screen geometry (SSR).", path );
             return false;
         }
         const std::streamsize sz = f.tellg();
@@ -147,7 +147,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
 
     auto rd = [&]( size_t off ) -> uint32_t { uint32_t v; memcpy( &v, bytes.data() + off, 4 ); return v; };
     if ( rd( 0 ) != DDS::Magic ) {
-        LogWarn() << "D3D12: reflect_cube.dds is not a DDS file — water sky reflection disabled.";
+        Logging::Wrn( "D3D12: reflect_cube.dds is not a DDS file — water sky reflection disabled." );
         return false;
     }
 
@@ -173,14 +173,14 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
         fmt = DDS::FromPixelFormat( pfFlags, rd( 88 ), rd( 92 ), rd( 96 ), rd( 100 ), rd( 104 ) );
     }
     if ( fmt == DXGI_FORMAT_UNKNOWN || ( DDS::BCBlockBytes( fmt ) == 0 && DDS::BitsPerPixel( fmt ) == 0 ) ) {
-        LogWarn() << "D3D12: unsupported pixel format in reflect_cube.dds — water sky reflection disabled.";
+        Logging::Wrn( "D3D12: unsupported pixel format in reflect_cube.dds — water sky reflection disabled." );
         return false;
     }
     // The DX10-extended header can also flag the cube via miscFlag (0x4); accept either signalling.
     const bool isCube = ( ( caps2 & kDdsCaps2Cubemap ) && ( caps2 & kDdsCaps2CubemapAllFaces ) == kDdsCaps2CubemapAllFaces )
         || ( dataOffset == 148 && ( rd( 136 ) & 0x4 ) != 0 );
     if ( !isCube || width == 0 || height == 0 ) {
-        LogWarn() << "D3D12: reflect_cube.dds is not a complete 6-face cubemap — water sky reflection disabled.";
+        Logging::Wrn( "D3D12: reflect_cube.dds is not a complete 6-face cubemap — water sky reflection disabled." );
         return false;
     }
 
@@ -196,7 +196,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
             const uint32_t rowPitch = DDS::RowPitch( fmt, w );
             const uint32_t surfaceBytes = DDS::SurfaceBytes( fmt, w, h );
             if ( offset + surfaceBytes > bytes.size() ) {
-                LogWarn() << "D3D12: reflect_cube.dds is truncated (face " << face << " mip " << m << ") — water sky reflection disabled.";
+                Logging::Wrn( "D3D12: reflect_cube.dds is truncated (face {} mip {}) — water sky reflection disabled.", face, m );
                 return false;
             }
             subs.push_back( { bytes.data() + offset, static_cast<LONG_PTR>( rowPitch ), static_cast<LONG_PTR>( surfaceBytes ) } );
@@ -220,13 +220,13 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
     // later SRV read promotes back, so no explicit barrier is needed on either side.
     if ( FAILED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
         m_ReflectionCubeAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_ReflectionCube.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the reflection cube resource.";
+        Logging::Wrn( "D3D12: failed to create the reflection cube resource." );
         return false;
     }
     m_ReflectionCube->SetName( L"WaterReflectionCube" );
 
     if ( !UploadTextureSubresources( m_ReflectionCube.Get(), subs.data(), static_cast<UINT>( subs.size() ) ) ) {
-        LogWarn() << "D3D12: failed to upload the reflection cube — water sky reflection disabled.";
+        Logging::Wrn( "D3D12: failed to upload the reflection cube — water sky reflection disabled." );
         m_ReflectionCube.Reset();
         m_ReflectionCubeAlloc.Reset();
         return false;
@@ -234,7 +234,7 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
 
     m_ReflectionCubeSrvSlot = AllocateSrvSlot();
     if ( m_ReflectionCubeSrvSlot == UINT_MAX ) {
-        LogWarn() << "D3D12: SRV heap exhausted allocating a slot for the reflection cube.";
+        Logging::Wrn( "D3D12: SRV heap exhausted allocating a slot for the reflection cube." );
         m_ReflectionCube.Reset();
         m_ReflectionCubeAlloc.Reset();
         return false;
@@ -447,7 +447,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // and the water pixels simply show the opaque scene underneath — a degradation, not a corruption.
     if ( !copiesReady ) {
         static bool warned = false;
-        if ( !warned ) { warned = true; LogWarn() << "D3D12: water refraction resources unavailable — water surfaces will not be shaded."; }
+        if ( !warned ) { warned = true; Logging::Wrn( "D3D12: water refraction resources unavailable — water surfaces will not be shaded." ); }
         g_FrameWaterSurfaces.clear();
         return;
     }

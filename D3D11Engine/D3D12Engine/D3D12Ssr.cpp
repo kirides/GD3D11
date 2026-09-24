@@ -43,7 +43,7 @@ bool D3D12GraphicsEngine::CreateSsrHistoryResources( INT2 size ) {
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kSsrPrevReadState,
             nullptr, m_SsrPrevColorAlloc.ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_SsrPrevColor.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the SSR previous-frame color history (" << size.x << "x" << size.y << ").";
+            Logging::Wrn( "D3D12: failed to create the SSR previous-frame color history ({}x{}).", size.x, size.y );
             return false;
         }
         m_SsrPrevColor->SetName( L"SsrPrevColor" );
@@ -66,7 +66,7 @@ bool D3D12GraphicsEngine::CreateSsrHistoryResources( INT2 size ) {
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kSsrPrevReadState,
             nullptr, m_SsrPrevDepthAlloc.ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_SsrPrevDepth.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the SSR previous-frame depth history (" << size.x << "x" << size.y << ").";
+            Logging::Wrn( "D3D12: failed to create the SSR previous-frame depth history ({}x{}).", size.x, size.y );
             return false;
         }
         m_SsrPrevDepth->SetName( L"SsrPrevDepth" );
@@ -142,7 +142,7 @@ UINT D3D12GraphicsEngine::GetOpaqueSceneSrvIndex() {
     static bool s_Warned = false;
     if ( !s_Warned ) {
         s_Warned = true;
-        LogWarn() << "D3D12: opaque scene copy not captured this frame - additive transparency falls back to linear-space adds (fainter than D3D11).";
+        Logging::Wrn( "D3D12: opaque scene copy not captured this frame - additive transparency falls back to linear-space adds (fainter than D3D11)." );
     }
     return 0xFFFFFFFFu;
 }

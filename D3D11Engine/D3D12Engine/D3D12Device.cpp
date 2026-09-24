@@ -318,33 +318,40 @@ bool D3D12Device::Init() {
     constexpr bool DEBUG_D3D11_ENABLED = false;
 #endif
 
-    // Enable the debug layer before device creation when available (best-effort).
-    if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) ) {
-        auto getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>( GetProcAddress( d3d12, "D3D12GetDebugInterface" ) );
-        ComPtr<ID3D12Debug> debug;
-        if ( DEBUG_D3D11_ENABLED && getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
-            debug->EnableDebugLayer();
-            Logging::Inf( "D3D12 debug layer enabled." );
+    // Debug layer + DRED must be configured before device creation. A factory-made (Agility) device reads
+    // them from the factory's configuration interfaces, not the global D3D12GetDebugInterface state.
+    auto getConfig = [getDebug = PFN_D3D12_GET_DEBUG_INTERFACE( nullptr )]( REFCLSID clsid, REFIID iid, void** out ) mutable -> HRESULT {
+        if ( agilityDeviceFactory ) return agilityDeviceFactory->GetConfigurationInterface( clsid, iid, out );
+        if ( !getDebug ) {
+            if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) )
+                getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>( GetProcAddress( d3d12, "D3D12GetDebugInterface" ) );
+            if ( !getDebug ) return E_NOINTERFACE;
         }
+        return getDebug( iid, out );
+        };
 
-        ComPtr<ID3D12Debug1> debug1;
-        if ( DEBUG_D3D11_ENABLED && SUCCEEDED( debug.As( &debug1 ) ) ) {
-            debug1->SetEnableGPUBasedValidation( FALSE ); // NOTE: This is REALLY expensive. Only use when actually debugging hard crashes.
-        }
+    ComPtr<ID3D12Debug> debug;
+    if ( DEBUG_D3D11_ENABLED && SUCCEEDED( getConfig( CLSID_D3D12Debug, IID_PPV_ARGS( debug.ReleaseAndGetAddressOf() ) ) ) ) {
+        debug->EnableDebugLayer();
+        Logging::Inf( "D3D12 debug layer enabled." );
+    }
 
-        // Enable DRED
-        ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> pDredSettings;
-        if ( getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( pDredSettings.ReleaseAndGetAddressOf() ) ) ) ) {
-            // Auto-breadcrumbs + their CPU-side context are always on: cheap, and they're what
-            // D3D12GraphicsEngine::DiagnoseErrors dumps to Log.txt on device removal on every machine.
-            // Page-fault tracking stays debug-only — it walks the whole resource residency set on GPU
-            // crash, which is not something to pay for (or rely on) on a player's machine.
-            pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            if ( DEBUG_D3D11_ENABLED ) {
-                pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
-            }
+    ComPtr<ID3D12Debug1> debug1;
+    if ( DEBUG_D3D11_ENABLED && debug && SUCCEEDED( debug.As( &debug1 ) ) ) {
+        debug1->SetEnableGPUBasedValidation( FALSE ); // NOTE: This is REALLY expensive. Only use when actually debugging hard crashes.
+    }
+
+    // Auto-breadcrumbs + context are always on (DiagnoseErrors dumps them on device removal); page faults debug-only.
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> pDredSettings;
+    if ( SUCCEEDED( getConfig( CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS( pDredSettings.ReleaseAndGetAddressOf() ) ) ) ) {
+        pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+        pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+        if ( DEBUG_D3D11_ENABLED ) {
+            pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
         }
+        Logging::Inf( "D3D12: DRED auto-breadcrumbs enabled ({}).", agilityDeviceFactory ? "Agility device factory" : "global" );
+    } else {
+        Logging::Wrn( "D3D12: DRED settings unavailable; device-removal breadcrumbs will be empty." );
     }
 
     if ( !CreateFactory( m_Factory ) ) {
@@ -365,6 +372,18 @@ bool D3D12Device::Init() {
         return false;
     }
     Logging::Inf( "D3D12 device created on: {}", m_DeviceDescription );
+
+    // Debug-layer messages otherwise only reach OutputDebugString; a CPU-side validation removal leaves DRED empty.
+    ComPtr<ID3D12InfoQueue1> infoQueue;
+    if ( DEBUG_D3D11_ENABLED && SUCCEEDED( m_Device.As( &infoQueue ) ) ) {
+        auto onMessage = []( D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id, LPCSTR desc, void* ) {
+            if ( severity <= D3D12_MESSAGE_SEVERITY_ERROR )
+                Logging::Err( "D3D12 debug layer (#{}): {}", static_cast<int>( id ), desc ? desc : "" );
+            };
+        DWORD cookie = 0;
+        if ( FAILED( infoQueue->RegisterMessageCallback( onMessage, D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie ) ) )
+            Logging::Wrn( "D3D12: could not route debug-layer messages to Log.txt." );
+    }
 
     m_LayeredRenderingSupported = DeviceSupportsLayeredRendering( m_Device.Get() );
 
@@ -390,6 +409,7 @@ bool D3D12Device::Init() {
         Logging::Wrn( "D3D12Device::Init: failed to create the direct command queue (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
+    m_DirectQueue->SetName( L"DirectQueue" );
 
     // Copy queue (async texture / buffer uploads)
     D3D12_COMMAND_QUEUE_DESC copyDesc = {};
@@ -400,6 +420,7 @@ bool D3D12Device::Init() {
         Logging::Wrn( "D3D12Device::Init: failed to create the copy command queue (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
+    m_CopyQueue->SetName( L"CopyQueue" );
 
     s_tracyD3D12Ctx = TracyD3D12Context( m_Device.Get(), m_DirectQueue.Get() );
     return true;

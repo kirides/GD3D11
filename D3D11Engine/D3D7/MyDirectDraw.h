@@ -150,7 +150,7 @@ public:
 		DebugWrite( "MyDirectDraw::CreateSurface\n" );
 
 		if ( lpDDSurfaceDesc2->ddsCaps.dwCaps & DDSCAPS_OFFSCREENPLAIN ) {
-			LogInfo() << "Forcing DDSCAPS_OFFSCREENPLAIN-Surface to 24-Bit";
+			Logging::Inf( "Forcing DDSCAPS_OFFSCREENPLAIN-Surface to 24-Bit" );
 			// Set up the pixel format for 24-bit RGB (8-8-8).
 			lpDDSurfaceDesc2->ddpfPixelFormat.dwSize = sizeof( DDPIXELFORMAT );
 			lpDDSurfaceDesc2->ddpfPixelFormat.dwFlags = DDPF_RGB;

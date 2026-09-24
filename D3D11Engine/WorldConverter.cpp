@@ -728,7 +728,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             ms += "\t" + (*it) + "\n";
         }
 
-        LogWarn() << ms;
+        Logging::Wrn( "{}", ms );
     }
 
     // Dont need that anymore
@@ -966,7 +966,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         XMFLOAT3& bbmax = sectionInfo.BoundingBox.Max;
 
         if ( poly->GetNumPolyVertices() < 3 ) {
-            LogWarn() << "Poly with less than 3 vertices!";
+            Logging::Wrn( "Poly with less than 3 vertices!" );
         }
 
         // Use the map to put the polygon to those using the same material
@@ -1144,9 +1144,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
     // Worth watching in a 32-bit process: the vertex count follows the weld key
     // in CmpClass, which keeps wedges apart when their normal or baked color differs.
-    LogInfo() << "Worldmesh: " << allMeshes.size() << " meshes, " << totalWorldVertices
-        << " vertices (" << (totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)
-        << " MB CPU-side), " << totalWorldIndices << " indices";
+    Logging::Inf( "Worldmesh: {} meshes, {} vertices ({} MB CPU-side), {} indices",
+        allMeshes.size(), totalWorldVertices, (totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024), totalWorldIndices );
 
     std::vector<ExVertexStruct> wrappedVertices;
     std::vector<unsigned int> wrappedIndices;
@@ -1200,8 +1199,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             mesh->ShrinkCpuVertices();
             slimBytes += mesh->CpuVertices.size() * sizeof( WorldVertexCPU );
         }
-        LogInfo() << "Worldmesh: CPU vertex copy shrunk to " << (slimBytes / (1024 * 1024)) << " MB (was "
-            << ((totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)) << " MB)";
+        Logging::Inf( "Worldmesh: CPU vertex copy shrunk to {} MB (was {} MB)",
+            (slimBytes / (1024 * 1024)), ((totalWorldVertices * sizeof( ExVertexStruct )) / (1024 * 1024)) );
     }
 
     // Calculate the approx midpoint of the world
@@ -1341,7 +1340,7 @@ void WorldConverter::SaveSectionsToObjUnindexed( const char* file, const std::ma
     FILE* f = fopen( file, "w" );
 
     if ( !f ) {
-        LogError() << "Failed to open file " << file << " for writing!";
+        Logging::Err( "Failed to open file {} for writing!", file );
         return;
     }
 
@@ -1447,8 +1446,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMes
             // so it is safe from a worker thread.
             static std::atomic<bool> loggedTornSoftSkin = false;
             if ( !loggedTornSoftSkin.exchange( true ) ) {
-                LogWarn() << "Skipped a zCMeshSoftSkin with no submesh/weight data on '"
-                    << model->GetModelName() << "' (skin " << skin << ") - skipping further reports";
+                Logging::Wrn( "Skipped a zCMeshSoftSkin with no submesh/weight data on '{}' (skin {}) - skipping further reports",
+                    model->GetModelName(), skin );
             }
             continue;
         }
@@ -1650,7 +1649,7 @@ namespace {
 
             // Create the indexed mesh
             if ( vertices.empty() ) {
-                LogWarn() << "Empty submesh (#" << i << ") on Visual " << visualName;
+                Logging::Wrn( "Empty submesh (#{}) on Visual {}", i, visualName );
                 continue;
             }
 
@@ -2293,7 +2292,7 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         }
         if ( now - s_lastReportFrame > 300 ) {
             s_lastReportFrame = now;
-            LogInfo() << "MorphBlend verify: worst deviation " << s_worstSeen << " units over the last 300 frames";
+            Logging::Inf( "MorphBlend verify: worst deviation {} units over the last 300 frames", s_worstSeen );
             s_worstSeen = 0.0f;
         }
     }
@@ -2411,7 +2410,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
 
         // Create the indexed mesh
         if ( vertices.empty() ) {
-            LogWarn() << "Empty submesh (#" << i << ") on Visual " << visual->GetObjectName();
+            Logging::Wrn( "Empty submesh (#{}) on Visual {}", i, visual->GetObjectName() );
             continue;
         }
 
@@ -2563,7 +2562,7 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     // 16-bit indices: the per-point-light collector (WorldMeshCollectPolyRange) merges whole section
     // neighbourhoods into one MeshInfo, so this ceiling is reachable.
     if ( static_cast<size_t>(index) > static_cast<size_t>(std::numeric_limits<VERTEX_INDEX>::max()) + 1 ) {
-        LogError() << "IndexVertices: " << index << " unique vertices exceeds the 16-bit index range - mesh truncated";
+        Logging::Err( "IndexVertices: {} unique vertices exceeds the 16-bit index range - mesh truncated", index );
     }
 
     // Check for overlaying triangles and throw them out

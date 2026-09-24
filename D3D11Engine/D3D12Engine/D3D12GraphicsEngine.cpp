@@ -87,6 +87,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
+    InitGpuScopeMarkers();
 
     m_DeviceCapabilities.DeviceDescription = m_Device.GetDeviceDescription();
     DXGI_ADAPTER_DESC1 adapterDesc = {};
@@ -460,6 +461,7 @@ bool D3D12GraphicsEngine::CreateUploadObjects() {
     if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_UploadAllocator.Get(), nullptr, IID_PPV_ARGS( m_UploadCmdList.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_UploadCmdList->SetName( L"Upload" );
     m_UploadCmdList->Close();
     if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_UploadFence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
@@ -479,6 +481,7 @@ bool D3D12GraphicsEngine::InitCopyQueue() {
 
     if ( FAILED( device->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_CopyQueue->SetName( L"TextureCopyQueue" );
 
     if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_CopyFence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
@@ -824,6 +827,7 @@ bool D3D12GraphicsEngine::BeginCopyBatch() {
 		if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
 			m_CopyBatchAllocator.Get(), nullptr, IID_PPV_ARGS( m_CopyBatchList.ReleaseAndGetAddressOf() ) ) ) )
 			return false;
+		m_CopyBatchList->SetName( L"TextureCopyBatch" );
 		// CreateCommandList returns the list already open for recording.
 	}
 	m_CopyBatchOpen = true;
@@ -912,7 +916,7 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 
 	// Fall back to bump allocation
 	if ( m_SrvAllocated >= m_SrvHeapCapacity ) {
-		LogWarn() << "D3D12: SRV heap exhausted (" << m_SrvHeapCapacity << " descriptors).";
+		Logging::Wrn( "D3D12: SRV heap exhausted ({} descriptors).", m_SrvHeapCapacity );
 		return UINT_MAX;
 	}
 	return m_SrvAllocated++;
@@ -1081,7 +1085,7 @@ bool D3D12GraphicsEngine::LoadDistortionTexture() {
 	m_DistortionTexture = std::make_unique<D3D12Texture>();
 	const std::string path = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\textures\\distortion2.dds";
 	if ( m_DistortionTexture->Init( path ) != XR_SUCCESS || !m_DistortionTexture->HasSRV() ) {
-		LogWarn() << "D3D12: rain-distortion texture not found/loadable (" << path << ") — wet-ground fallback for non-normalmapped materials disabled.";
+		Logging::Wrn( "D3D12: rain-distortion texture not found/loadable ({}) — wet-ground fallback for non-normalmapped materials disabled.", path );
 		m_DistortionTexture.reset();
 		return false;
 	}
@@ -1402,7 +1406,7 @@ void D3D12GraphicsEngine::FinishDisplayChain( D3D12CmdList& cmdList ) {
 	ID3D12Resource* dst = RealDisplayTarget();
 	m_DisplaySlot = -1;
 	if ( !src || !dst ) return;
-	LogWarn() << "D3D12: a display-chain pass did not run after being counted; copying the frame back.";
+	Logging::Wrn( "D3D12: a display-chain pass did not run after being counted; copying the frame back." );
 	cmdList.TransitionBarriers( {
 		{ src, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE },
 		{ dst, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST },
@@ -1834,14 +1838,14 @@ bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
         D3D12RootLayout::SetAnisoMipLodBias( previousBias );
         std::string names;
         for ( const auto& n : failedFatal ) { if ( !names.empty() ) names += ", "; names += n; }
-        LogWarn() << "D3D12: could not re-bake the texture mip bias (" << names
-            << " failed to rebuild) — keeping the previous pipelines. Textures will look blurrier than they should.";
+        Logging::Wrn( "D3D12: could not re-bake the texture mip bias ({} failed to rebuild) — keeping the previous pipelines. Textures will look blurrier than they should.",
+            names );
         return false;
     }
     if ( !failedOptional.empty() ) {
         std::string names;
         for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
-        LogWarn() << "D3D12: mip-bias rebuild finished with degraded passes (" << names << ").";
+        Logging::Wrn( "D3D12: mip-bias rebuild finished with degraded passes ({}).", names );
     }
     m_AppliedMipLodBias = newBias;
     return true;
@@ -2010,6 +2014,7 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_CmdAllocators[m_FrameIndex].Get(), nullptr, IID_PPV_ARGS( m_CmdList.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_CmdList.Get()->SetName( L"Main" );
     m_CmdList->Close();
 
     // Frame-sync fence
@@ -2117,7 +2122,6 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     // Goes through the state cache, which drops its shadow with the list state Reset just discarded.
     hr = m_CmdList.Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
     if ( FAILED( hr ) ) return XR_FAILED;
-    ResetCpuContextTracker();
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
@@ -2213,6 +2217,7 @@ GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName 
     return GraphicsEventRecord( this, []( void* context ) {
         D3D12GraphicsEngine* engine = static_cast<D3D12GraphicsEngine*>( context );
         if ( engine->m_FrameOpen && engine->m_CmdList ) EndDXMarker( engine->m_CmdList.Get() );
+        else PopDXMarkerSlot();
     } );
 }
 
@@ -2262,6 +2267,14 @@ static const wchar_t* GetOpName( D3D12_AUTO_BREADCRUMB_OP op ) {
     case D3D12_AUTO_BREADCRUMB_OP_EXECUTEMETACOMMAND: return L"ExecuteMetaCommand";
     case D3D12_AUTO_BREADCRUMB_OP_ESTIMATEMOTION: return L"EstimateMotion";
     case D3D12_AUTO_BREADCRUMB_OP_BARRIER: return L"EnhancedBarrier";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return L"ResolveQueryData";
+    case D3D12_AUTO_BREADCRUMB_OP_ATOMICCOPYBUFFERUINT: return L"AtomicCopyBufferUINT";
+    case D3D12_AUTO_BREADCRUMB_OP_ATOMICCOPYBUFFERUINT64: return L"AtomicCopyBufferUINT64";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCEREGION: return L"ResolveSubresourceRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_WRITEBUFFERIMMEDIATE: return L"WriteBufferImmediate";
+    case D3D12_AUTO_BREADCRUMB_OP_SETPIPELINESTATE1: return L"SetPipelineState1";
+    case D3D12_AUTO_BREADCRUMB_OP_DISPATCHMESH: return L"DispatchMesh";
+    case D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST: return L"BeginCommandList";
     default: return L"Unknown D3D12 Command";
     }
 }
@@ -2272,91 +2285,163 @@ static const wchar_t* SafeWideString( const wchar_t* str ) {
 }
 
 
-static const wchar_t* FindCpuRecordedContext( UINT crashIndex ) {
-    const wchar_t* lastKnownContext = L"Unknown/Outside Scopes";
+// Logs one command list's slice around its first unfinished op, with DRED's BeginEvent scope path if it has one.
+static void PrintActiveNode( const D3D12_AUTO_BREADCRUMB_NODE1* node, UINT completed ) {
+    constexpr UINT kOpsBefore = 12, kOpsAfter = 4;
+    std::unordered_map<UINT, const wchar_t*> contexts;
+    for ( UINT c = 0; c < node->BreadcrumbContextsCount; ++c )
+        contexts[node->pBreadcrumbContexts[c].BreadcrumbIndex] = node->pBreadcrumbContexts[c].pContextString;
 
-    // Look back through what the CPU logged during recording up to the crash point
-    for ( UINT i = 0; i <= crashIndex; ++i ) {
-        if ( i < g_CpuContextHistory.size() && g_CpuContextHistory[i].pContextText != nullptr ) {
-            lastKnownContext = g_CpuContextHistory[i].pContextText;
+    std::vector<std::wstring> scope;
+    const UINT first = completed > kOpsBefore ? completed - kOpsBefore : 0;
+    const UINT last = std::min( node->BreadcrumbCount, completed + kOpsAfter + 1 );
+    for ( UINT i = 0; i < last; ++i ) {
+        const D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[i];
+        const auto ctx = contexts.find( i );
+        if ( op == D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT )
+            scope.emplace_back( ctx != contexts.end() && ctx->second ? ctx->second : L"?" );
+        if ( i >= first ) {
+            std::wstring path;
+            for ( const std::wstring& s : scope ) path.append( path.empty() ? L"" : L" > " ).append( s );
+            if ( op == D3D12_AUTO_BREADCRUMB_OP_SETMARKER && ctx != contexts.end() && ctx->second )
+                path.append( L" : " ).append( ctx->second );
+            // DRED fills contexts only for some marker encodings; without them the GPU scope lines below name the pass.
+            Logging::Err( "  {} #{:<4} {:<24}{}{}", i == completed ? ">>" : ( i < completed ? "  " : " ." ), i,
+                Toolbox::ToMultiByte( GetOpName( op ) ), contexts.empty() ? "" : " [" + Toolbox::ToMultiByte( path ) + "]",
+                i == completed ? "   <-- first unfinished op" : "" );
         }
+        if ( op == D3D12_AUTO_BREADCRUMB_OP_ENDEVENT && !scope.empty() ) scope.pop_back();
     }
-    return lastKnownContext;
 }
 
 
-static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
-    if ( !node ) {
+// Lists run in submission order: DONE lists finished, QUEUED ones never started (waiting behind the fault),
+// the ACTIVE one started and did not finish — that is where the GPU died.
+static void PrintBreadcrumbs( const D3D12_AUTO_BREADCRUMB_NODE1* head ) {
+    const D3D12_AUTO_BREADCRUMB_NODE1* culprit = nullptr;
+    const D3D12_AUTO_BREADCRUMB_NODE1* firstQueued = nullptr;
+    UINT index = 0;
+    for ( const auto* node = head; node; node = node->pNext, ++index ) {
+        const UINT completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+        const char* status = completed >= node->BreadcrumbCount ? "done" : ( completed == 0 ? "queued" : "ACTIVE" );
+        if ( !culprit && completed > 0 && completed < node->BreadcrumbCount ) culprit = node;
+        if ( !firstQueued && completed == 0 && node->BreadcrumbCount > 0 ) firstQueued = node;
+        Logging::Inf( "D3D12 DRED list {:>2}: {:<6} {}/{} ops  list \"{}\" on queue \"{}\"", index, status, completed,
+            node->BreadcrumbCount, Toolbox::ToMultiByte( SafeWideString( node->pCommandListDebugNameW ) ),
+            Toolbox::ToMultiByte( SafeWideString( node->pCommandQueueDebugNameW ) ) );
+    }
+
+    // No partially-finished list: the fault hit the first op of the oldest list that never reported progress.
+    const auto* target = culprit ? culprit : firstQueued;
+    if ( !target ) {
+        Logging::Wrn( "D3D12 DRED: every outstanding list completed; the fault was outside recorded work (e.g. Present)." );
         return;
     }
-
-    std::wstring builder{};
-    builder.reserve(1024);
-
-    builder.append( L"--- Outstanding Command List GPU Breadcrumbs ---\n" );
-    builder.append( L"Command List Debug Name: " ).append( SafeWideString( node->pCommandListDebugNameW ) ).append( L"\n" );
-    builder.append( L"Command Queue Debug Name: " ).append( SafeWideString( node->pCommandQueueDebugNameW ) ).append( L"\n" );
-    LogInfo() << builder.c_str();
-
-    // Log out the History of GPU Operations recorded
-    // Note: pLastBreadcrumbValue points to the number of completed operations.
-    // Operations *up to* (*node->pLastBreadcrumbValue) finished. Anything past failed or hung.
-    UINT completedOps = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
-
-    builder.clear();
-    builder.append( L"Completed Op Count: " ).append( std::to_wstring( completedOps ) ).append( L" / " ).append( std::to_wstring( node->BreadcrumbCount ) ).append( L"\n" );
-    LogInfo() << builder.c_str();
-
-    for ( UINT i = 0; i < node->BreadcrumbCount; ++i ) {
-        builder.clear();
-
-        if ( i < completedOps ) {
-            builder.append( L" [ok] " );
-        } else if ( i == completedOps ) {
-            builder.append( L" [ERR] " );
-        } else {
-            builder.append( L" [ ] " );
-        }
-
-        builder.append( L"Op #" ).append( std::to_wstring( i ) ).append( L": " );
-        builder.append( GetOpName( node->pCommandHistory[i] ) );
-
-        if ( i == completedOps ) {
-            builder.append( L"   <=== !!! HARDWARE HANG DETECTED AT THIS OPERATION !!!" );
-
-            // Pull the exact recorded context step tied directly to this operation cluster!
-            const wchar_t* contextAtCrash = FindCpuRecordedContext( completedOps );
-            builder.append( L"\n   <=== !!! ACTIVE SCOPE AT TIME OF HARDWARE CRASH: \"" )
-                .append( contextAtCrash ).append( L"\" !!!" );
-        }
-
-        builder.append( L"\n" );
-        LogInfo() << builder.c_str();
-    }
-
-    if ( node->pNext ) {
-        PrintNode( node->pNext );
-    }
-#undef PRINT_NODE_FIELD
+    const UINT completed = target->pLastBreadcrumbValue ? *target->pLastBreadcrumbValue : 0;
+    Logging::Err( "D3D12 DRED: GPU stopped in list \"{}\" at op #{} ({}){}:",
+        Toolbox::ToMultiByte( SafeWideString( target->pCommandListDebugNameW ) ), completed,
+        Toolbox::ToMultiByte( GetOpName( target->pCommandHistory[completed] ) ),
+        culprit ? "" : " — no list was mid-way, so this is a best guess" );
+    PrintActiveNode( target, completed );
 }
 
 
+static void PrintGpuScopeMarkers();
+
 static void DiagnoseErrors(ID3D12Device* device) {
-    // Deliberately does NOT read GetPageFaultAllocationOutput: page-fault tracking is only ever turned on
-    // under DEBUG_D3D11 (see D3D12Device::Init) and must never be relied on for player-machine diagnostics.
-    // Auto-breadcrumbs + breadcrumb context are FORCED_ON unconditionally, so this is always available.
+    // Auto-breadcrumbs + context are FORCED_ON unconditionally; page-fault data only in DEBUG_D3D11 builds.
     ComPtr<ID3D12DeviceRemovedExtendedData1> pRemovedExtendedData;
     if ( !device || FAILED( device->QueryInterface( IID_PPV_ARGS( pRemovedExtendedData.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12 DiagnoseErrors: ID3D12DeviceRemovedExtendedData1 unavailable, no breadcrumbs to dump.";
+        Logging::Wrn( "D3D12 DiagnoseErrors: ID3D12DeviceRemovedExtendedData1 unavailable, no breadcrumbs to dump." );
         return;
     }
 
     D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 output;
     if ( SUCCEEDED( pRemovedExtendedData->GetAutoBreadcrumbsOutput1( &output ) ) ) {
-        PrintNode( output.pHeadAutoBreadcrumbNode );
+        if ( !output.pHeadAutoBreadcrumbNode )
+            Logging::Wrn( "D3D12 DiagnoseErrors: DRED reports no outstanding command lists (breadcrumbs not enabled for this device?)." );
+        PrintBreadcrumbs( output.pHeadAutoBreadcrumbNode );
     } else {
-        LogWarn() << "D3D12 DiagnoseErrors: GetAutoBreadcrumbsOutput1 failed, no breadcrumbs to dump.";
+        Logging::Wrn( "D3D12 DiagnoseErrors: GetAutoBreadcrumbsOutput1 failed, no breadcrumbs to dump." );
     }
+
+    PrintGpuScopeMarkers();
+
+    // Only populated when page-fault tracking is on (DEBUG_D3D11 builds); otherwise VA is 0 and nothing prints.
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 fault = {};
+    if ( SUCCEEDED( pRemovedExtendedData->GetPageFaultAllocationOutput1( &fault ) ) && fault.PageFaultVA ) {
+        Logging::Err( "D3D12 DRED page fault at GPU VA 0x{:016X}.", fault.PageFaultVA );
+        auto dumpNodes = []( const char* label, const D3D12_DRED_ALLOCATION_NODE1* node ) {
+            for ( ; node; node = node->pNext )
+                Logging::Err( "  {}: {}", label, node->ObjectNameW ? Toolbox::ToMultiByte( node->ObjectNameW )
+                    : ( node->ObjectNameA ? node->ObjectNameA : "<unnamed>" ) );
+            };
+        dumpNodes( "existing allocation at VA", fault.pHeadExistingAllocationNode );
+        dumpNodes( "recently freed allocation at VA", fault.pHeadRecentFreedAllocationNode );
+    }
+}
+
+
+void D3D12GraphicsEngine::InitGpuScopeMarkers() {
+    // Memory we own (not a D3D12 heap), so it stays readable after the device is removed.
+    constexpr SIZE_T kBytes = 64 * 1024;
+    static_assert( GpuScopeMarkers::kSlots * sizeof( UINT ) <= kBytes );
+    ComPtr<ID3D12Device3> device3;
+    if ( FAILED( m_Device.GetDevice()->QueryInterface( IID_PPV_ARGS( device3.GetAddressOf() ) ) ) ) return;
+    void* memory = VirtualAlloc( nullptr, kBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE );
+    if ( !memory ) return;
+
+    ComPtr<ID3D12Heap> heap;
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = kBytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+    HRESULT hr = device3->OpenExistingHeapFromAddress( memory, IID_PPV_ARGS( heap.GetAddressOf() ) );
+    if ( SUCCEEDED( hr ) )
+        hr = device3->CreatePlacedResource( heap.Get(), 0, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS( g_GpuScopeMarkers.Buffer.ReleaseAndGetAddressOf() ) );
+    if ( FAILED( hr ) ) {
+        Logging::Wrn( "D3D12: GPU scope markers unavailable (0x{:08X}); crash logs will lack scope names.", static_cast<uint32_t>( hr ) );
+        VirtualFree( memory, 0, MEM_RELEASE );
+        return;
+    }
+    g_GpuScopeMarkers.Buffer->SetName( L"GpuScopeMarkers" );
+    g_GpuScopeMarkers.Cpu = static_cast<volatile UINT*>( memory );
+    g_GpuScopeMarkers.Va = g_GpuScopeMarkers.Buffer->GetGPUVirtualAddress();
+}
+
+
+// Scopes whose MARKER_IN landed but whose MARKER_OUT did not: what the GPU was inside when it stopped.
+static void PrintGpuScopeMarkers() {
+    const GpuScopeMarkers& m = g_GpuScopeMarkers;
+    if ( !m.Va ) return;
+    constexpr UINT kWindow = 4096;   // only the most recent markers; older ring slots may hold stale values
+    constexpr UINT kCompletedShown = 6;
+    const UINT next = m.Next.load();
+    const UINT count = std::min( next, kWindow );
+
+    std::vector<UINT> open, completed;
+    for ( UINT n = next - count; n != next; ++n ) {
+        const UINT slot = n % GpuScopeMarkers::kSlots;
+        if ( m.Cpu[slot] == 1 ) open.push_back( slot );
+        else if ( m.Cpu[slot] == 2 ) completed.push_back( slot );
+    }
+    auto name = [&]( UINT slot ) { return Toolbox::ToMultiByte( m.Names[slot] ? m.Names[slot] : L"?" ); };
+
+    const size_t firstShown = completed.size() > kCompletedShown ? completed.size() - kCompletedShown : 0;
+    for ( size_t i = firstShown; i < completed.size(); ++i )
+        Logging::Inf( "D3D12 GPU scope finished:     {}", name( completed[i] ) );
+    if ( open.empty() ) {
+        Logging::Wrn( "D3D12 GPU scope: none open — the GPU stopped outside any marker (or after the last one above)." );
+        return;
+    }
+    for ( UINT slot : open )
+        Logging::Err( "D3D12 GPU scope STILL OPEN:   {}", name( slot ) );
 }
 
 
@@ -2367,7 +2452,7 @@ void D3D12GraphicsEngine::HandleDeviceRemoved( HRESULT removedReason, const char
 
     auto msg = std::format( "D3D12 device removed at {} (reason: 0x{:08X}). See Log.txt for GPU breadcrumbs.",
         context, static_cast<uint32_t>( removedReason ) );
-    LogWarn() << msg.c_str();
+    Logging::Wrn( "{}", msg.c_str() );
     MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Device Removed", MB_OK );
     exit( removedReason );
 }
@@ -2440,7 +2525,7 @@ XRESULT D3D12GraphicsEngine::Present() {
             HandleDeviceRemoved( removedReason, "Present" ); // [[noreturn]]
         } else {
             auto msg = std::format( "D3D12 Present failed (0x{:08X})", r );
-            LogWarn() << "D3D12 Present failed (0x" << std::hex << r << ").";
+            Logging::Wrn( "D3D12 Present failed (0x{:x}).", r );
             MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Error", MB_OK);
         }
         exit( hr );
@@ -2473,17 +2558,14 @@ bool D3D12GraphicsEngine::WaitOnFrameFence( UINT64 value, const char* site ) {
             copyDone = m_CopyFence ? m_CopyFence->GetCompletedValue() : 0;
         }
 
-        LogWarn() << "D3D12: " << site << " has been waiting " << ( round * kFenceWaitTimeoutMs ) / 1000
-            << "s for frame fence " << value << " (completed " << m_Fence->GetCompletedValue()
-            << "). Copy fence: " << copyDone << "/" << copyPending
-            << ( copyDone < copyPending ? " (direct queue is blocked on the copy queue)" : "" )
-            << ". Device removed reason: 0x" << std::hex << static_cast<uint32_t>( removedReason ) << std::dec << ".";
+        Logging::Wrn( "D3D12: {} has been waiting {}s for frame fence {} (completed {}). Copy fence: {}/{}{}. Device removed reason: 0x{:x}.",
+            site, ( round * kFenceWaitTimeoutMs ) / 1000, value, m_Fence->GetCompletedValue(), copyDone, copyPending, ( copyDone < copyPending ? " (direct queue is blocked on the copy queue)" : "" ), static_cast<uint32_t>( removedReason ) );
 
         if ( FAILED( removedReason ) ) {
             // The fence can no longer advance — waiting more only extends the freeze. Diagnose + terminate
             // here rather than returning false: every caller of WaitOnFrameFence ignores that return value
             // and would otherwise carry on resetting allocators/lists against a dead device.
-            LogWarn() << "D3D12: giving up on frame fence " << value << " — the device is gone.";
+            Logging::Wrn( "D3D12: giving up on frame fence {} — the device is gone.", value );
             HandleDeviceRemoved( removedReason, site ); // [[noreturn]]
         }
     }
@@ -2638,6 +2720,9 @@ bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
                 return false;
             }
             // CreateCommandList returns the list already open; close it so BeginShadowRecording's Reset is symmetric.
+            wchar_t name[32];
+            swprintf_s( name, L"Shadow%u[frame %u]", c, i );
+            m_ShadowCmdLists[c][i].Get()->SetName( name );
             m_ShadowCmdLists[c][i]->Close();
         }
     }
@@ -2669,7 +2754,6 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
     m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     if ( FAILED( m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr ) ) ) return;
-    ResetCpuContextTracker();
 
     if ( m_SrvHeap ) {
         ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
@@ -2734,7 +2818,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     buffersize = thumbnail ? INT2( 256, 256 ) : m_BackbufferResolution;
 
     if ( !m_CmdList || !m_SwapChainReady || !m_SceneColor || !m_Pipelines.TonemapCapturePSO || !m_Pipelines.Tonemap.RootSig ) {
-        LogInfo() << (thumbnail ? "Thumbnail failed. D3D12 backend not ready" : "GetBackbufferData failed. D3D12 backend not ready");
+        Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. D3D12 backend not ready" : "GetBackbufferData failed. D3D12 backend not ready") );
         return;
     }
 
@@ -2773,7 +2857,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     Microsoft::WRL::ComPtr<ID3D12Resource> captureTex;
     if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, td, D3D12_RESOURCE_STATE_RENDER_TARGET,
         &clearValue, captureAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( captureTex.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogInfo() << (thumbnail ? "Thumbnail failed. Capture texture could not be created" : "GetBackbufferData failed. Capture texture could not be created");
+        Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. Capture texture could not be created" : "GetBackbufferData failed. Capture texture could not be created") );
         RestoreFrameRenderTarget();
         return;
     }
@@ -2784,7 +2868,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> captureRtvHeap;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( captureRtvHeap.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogInfo() << (thumbnail ? "Thumbnail failed. RTV heap could not be created" : "GetBackbufferData failed. RTV heap could not be created");
+        Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. RTV heap could not be created" : "GetBackbufferData failed. RTV heap could not be created") );
         RestoreFrameRenderTarget();
         return;
     }
@@ -2844,7 +2928,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     Microsoft::WRL::ComPtr<ID3D12Resource> readback;
     if ( FAILED( m_Allocator->CreateResource( &rbAllocDesc, &rbDesc, D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr, readbackAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( readback.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogInfo() << (thumbnail ? "Thumbnail failed. Readback buffer could not be created" : "GetBackbufferData failed. Readback buffer could not be created");
+        Logging::Inf( "{}", (thumbnail ? "Thumbnail failed. Readback buffer could not be created" : "GetBackbufferData failed. Readback buffer could not be created") );
         RestoreFrameRenderTarget();
         return;
     }
@@ -2882,7 +2966,7 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
         }
         readback->Unmap( 0, nullptr );
     } else {
-        LogInfo() << (thumbnail ? "Thumbnail failed" : "GetBackbufferData failed");
+        Logging::Inf( "{}", (thumbnail ? "Thumbnail failed" : "GetBackbufferData failed") );
     }
 
     *data = d;
@@ -2911,7 +2995,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     HRESULT hr = m_SwapChain->ResizeBuffers( kBackBufferCount,
         static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), kBackBufferFormat, swapChainFlags );
     if ( FAILED( hr ) ) {
-        LogWarn() << "D3D12 ResizeBuffers failed (0x" << std::hex << hr << ").";
+        Logging::Wrn( "D3D12 ResizeBuffers failed (0x{:x}).", static_cast<uint32_t>( hr ) );
         return false;
     }
 
@@ -2961,8 +3045,8 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
     m_Resolution = newRenderRes;
     if ( !CreateRenderResolutionTargets( m_Resolution ) ) {
         // The frame path's null checks keep it from drawing into a mismatched target.
-        LogWarn() << "D3D12GraphicsEngine: failed to rebuild the render targets at " << m_Resolution.x
-            << "x" << m_Resolution.y << " (render scale " << requested << "%).";
+        Logging::Wrn( "D3D12GraphicsEngine: failed to rebuild the render targets at {}x{} (render scale {}%).",
+            m_Resolution.x, m_Resolution.y, requested );
         return;
     }
 
@@ -2975,10 +3059,8 @@ void D3D12GraphicsEngine::ApplyPendingResolutionScale() {
     }
 
     m_AppliedResolutionScalePercent = requested;
-    LogInfo() << "D3D12 render scale " << requested << "% -> rendering at "
-        << m_Resolution.x << "x" << m_Resolution.y
-        << " (display " << m_BackbufferResolution.x << "x" << m_BackbufferResolution.y
-        << "), texture mip bias " << m_AppliedMipLodBias << ".";
+    Logging::Inf( "D3D12 render scale {}% -> rendering at {}x{} (display {}x{}), texture mip bias {}.",
+        requested, m_Resolution.x, m_Resolution.y, m_BackbufferResolution.x, m_BackbufferResolution.y, m_AppliedMipLodBias );
 }
 
 
@@ -2992,14 +3074,14 @@ void D3D12GraphicsEngine::ApplyPendingAoResolutionChange() {
     WaitForGpuIdle();   // the AO targets below are still referenced by up to kBackBufferCount in-flight frames
     const INT2 aoSize = GetAoTargetResolution( m_Resolution );
     if ( !CreateAOResources( aoSize ) ) {
-        LogWarn() << "D3D12GraphicsEngine: failed to rebuild the SSAO targets at " << aoSize.x << "x" << aoSize.y
-            << " for an AO resolution change.";
+        Logging::Wrn( "D3D12GraphicsEngine: failed to rebuild the SSAO targets at {}x{} for an AO resolution change.",
+            aoSize.x, aoSize.y );
     }
     CreateGtaoResources( aoSize );   // must follow CreateAOResources: XeGTAO writes ITS m_AOMask; non-fatal
     m_AoResourceSize = aoSize;
     m_AppliedAoResolution = requested;
-    LogInfo() << "D3D12 AO resolution -> " << ( requested == AoResolutionScale::Half ? "Half" : "Full" )
-        << " (" << aoSize.x << "x" << aoSize.y << ").";
+    Logging::Inf( "D3D12 AO resolution -> {} ({}x{}).",
+        ( requested == AoResolutionScale::Half ? "Half" : "Full" ), aoSize.x, aoSize.y );
 }
 
 
@@ -3083,7 +3165,7 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
     // be lost by an unrelated later clear.
     m_PendingShaderReload = ShaderCategory::None;
 
-    LogInfo() << "D3D12: reloading shaders...";
+    Logging::Inf( "D3D12: reloading shaders..." );
     Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Reloading shaders..." );
 
     // Every current PSO/root-sig/blob must be provably unreferenced by the GPU before ReloadAll() releases
@@ -3108,8 +3190,8 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
         m_Pipelines = backup;   // whole-state rollback — see ReloadAll's header comment for why this is safe
         std::string names;
         for ( const auto& n : failedFatal ) { if ( !names.empty() ) names += ", "; names += n; }
-        LogWarn() << "D3D12: shader reload failed (" << names << ") - keeping the previous, working shaders. "
-                     "Fix the shader source and reload again.";
+        Logging::Wrn( "D3D12: shader reload failed ({}) - keeping the previous, working shaders. Fix the shader source and reload again.",
+                     names );
         Engine::GAPI->PrintMessageTimed( INT2( 30, 30 ), "Shader reload FAILED (" + names + ") - kept previous shaders." );
         return;
     }
@@ -3117,11 +3199,11 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
     if ( !failedOptional.empty() ) {
         std::string names;
         for ( const auto& n : failedOptional ) { if ( !names.empty() ) names += ", "; names += n; }
-        LogWarn() << "D3D12: shader reload finished with degraded passes (" << names
-                   << ") - those effects are disabled/simplified until fixed and reloaded again.";
+        Logging::Wrn( "D3D12: shader reload finished with degraded passes ({}) - those effects are disabled/simplified until fixed and reloaded again.",
+                   names );
     }
     D3D12ShaderBackend::LogAndResetCacheStats( "reload" );
-    LogInfo() << "D3D12: shaders reloaded.";
+    Logging::Inf( "D3D12: shaders reloaded." );
 }
 
 

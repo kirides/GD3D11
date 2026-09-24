@@ -98,36 +98,36 @@ XRESULT D3D11GraphicsEngineBase::Present() {
     if ( SwapChain->Present( vsync ? 1 : 0, 0 ) == DXGI_ERROR_DEVICE_REMOVED ) {
         switch ( GetDevice()->GetDeviceRemovedReason() ) {
         case DXGI_ERROR_DEVICE_HUNG:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_HUNG)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DEVICE_HUNG)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_DEVICE_REMOVED:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_REMOVED)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DEVICE_REMOVED)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_DEVICE_RESET:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_RESET)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DEVICE_RESET)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DRIVER_INTERNAL_ERROR)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DRIVER_INTERNAL_ERROR)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_INVALID_CALL:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_INVALID_CALL)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_INVALID_CALL)" );
             exit( 0 );
             break;
 
         case S_OK:
-            LogInfo() << "Device removed, but we're fine!";
+            Logging::Inf( "Device removed, but we're fine!" );
             break;
 
         default:
-            LogWarnBox() << "Device Removed! (Unknown reason)";
+            Logging::WrnBox( "Device Removed! (Unknown reason)" );
         }
     }
 
@@ -195,7 +195,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     // Check if we need a bigger vertexbuffer
     if ( desc.ByteWidth < stride * numVertices ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-            LogInfo() << "TempVertexBuffer too small (" << desc.ByteWidth << "), need " << stride * numVertices << " bytes. Recreating buffer.";
+            Logging::Inf( "TempVertexBuffer too small ({}), need {} bytes. Recreating buffer.", desc.ByteWidth, stride * numVertices );
 
         // Buffer too small, recreate it
         TempVertexBuffer = std::make_unique<D3D11VertexBuffer>();

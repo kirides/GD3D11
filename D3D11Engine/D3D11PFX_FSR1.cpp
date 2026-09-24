@@ -44,7 +44,7 @@ bool D3D11PFX_FSR1::Init() {
 
     PointSampler = Renderer->GetSampler(samplerDesc);
     if ( !PointSampler ) {
-        LogError() << "Failed to create FSR1 point sampler";
+        Logging::Err( "Failed to create FSR1 point sampler" );
         return false;
     }
 
@@ -90,7 +90,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
     // Get EASU shader
     auto easuPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_FSR1_EASU );
     if ( !easuPS ) {
-        LogError() << "FSR1 EASU shader not found";
+        Logging::Err( "FSR1 EASU shader not found" );
         return XR_FAILED;
     }
     engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
@@ -168,7 +168,7 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
     // Get RCAS shader
     auto rcasPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_FSR1_RCAS );
     if ( !rcasPS ) {
-        LogError() << "FSR1 RCAS shader not found";
+        Logging::Err( "FSR1 RCAS shader not found" );
         return XR_FAILED;
     }
 

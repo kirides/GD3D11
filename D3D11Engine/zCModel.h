@@ -132,7 +132,7 @@ public:
     /** This is called on load time for models */
     /*
     static int __fastcall Hooked_LoadModelASC( void* thisptr, void* unknwn, const zSTRING& file ) {
-        LogInfo() << "Loading Model: " << file.ToChar();
+        Logging::Inf( "Loading Model: {}", file.ToChar() );
         int r = HookedFunctions::OriginalFunctions.original_zCModelPrototypeLoadModelASC( thisptr, file );
 
         // Pre-Load this model for us, too
@@ -146,7 +146,7 @@ public:
     /** This is called on load time for models */
     /*
     static int __fastcall Hooked_ReadMeshAndTreeMSB( void* thisptr, void* unknwn, int& i, class zCFileBIN& f ) {
-        LogInfo() << "Loading Model!";
+        Logging::Inf( "Loading Model!" );
         int r = HookedFunctions::OriginalFunctions.original_zCModelPrototypeReadMeshAndTreeMSB( thisptr, i, f );
 
         // Pre-Load this model for us, too

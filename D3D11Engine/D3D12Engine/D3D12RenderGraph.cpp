@@ -124,8 +124,8 @@ void D3D12RenderGraph::Compile() {
 
         const UINT64 offset = m_arena->ReserveNamedRange( desc.name, size, alignment );
         if ( offset == UINT64_MAX ) {
-            LogWarn() << "D3D12RenderGraph: aliasing arena exhausted (" << ( D3D12AliasedTextureArena::kArenaCapacityBytes / (1024*1024) )
-                << " MB) — a transient resource will be skipped this frame.";
+            Logging::Wrn( "D3D12RenderGraph: aliasing arena exhausted ({} MB) — a transient resource will be skipped this frame.",
+                ( D3D12AliasedTextureArena::kArenaCapacityBytes / (1024*1024) ) );
             continue;   // m_resourceHasOffset[i] stays false; AllocateResourcesForPass skips it
         }
         m_resourceOffsets[i] = offset;

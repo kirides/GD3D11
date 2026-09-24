@@ -76,7 +76,7 @@ bool D3D12RenderTarget::Init( ID3D12Device* device, D3D12MA::Allocator* allocato
 
     if ( FAILED( D3D12ResourceCreate::CreateTexture( allocator, allocDesc, dd, D3D12_RESOURCE_STATE_RENDER_TARGET,
         &clear, m_Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12TexturePool: failed to create a pooled render target (" << width << "x" << height << ").";
+        Logging::Wrn( "D3D12TexturePool: failed to create a pooled render target ({}x{}).", width, height );
         return false;
     }
     if ( debugName ) m_Texture->SetName( debugName );

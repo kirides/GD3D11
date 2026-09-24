@@ -167,13 +167,8 @@ namespace MorphBlend {
         s_totalVertPosBytes += vertPosBytes;
         s_totalInverseBytes += inverseTableBytes;
 
-        LogInfo() << "MorphBlend budget: " << (proto->GetName() ? proto->GetName()->ToChar() : "?")
-            << " " << numAnis << " anis, " << totalFrames << " frames, " << meshNumVert << " mesh verts"
-            << " | vertPosMatrix " << (vertPosBytes / 1024) << " KB (widest ani "
-            << (widestAniBytes / 1024) << " KB), vertIndexList " << (indexBytes / 1024) << " KB"
-            << ", inverse tables " << (inverseTableBytes / 1024) << " KB"
-            << " | running total: vertPosMatrix " << (s_totalVertPosBytes / 1024) << " KB + inverse "
-            << (s_totalInverseBytes / 1024) << " KB over " << s_seen.size() << " prototypes";
+        Logging::Inf( "MorphBlend budget: {} {} anis, {} frames, {} mesh verts | vertPosMatrix {} KB (widest ani {} KB), vertIndexList {} KB, inverse tables {} KB | running total: vertPosMatrix {} KB + inverse {} KB over {} prototypes",
+            (proto->GetName() ? proto->GetName()->ToChar() : "?"), numAnis, totalFrames, meshNumVert, (vertPosBytes / 1024), (widestAniBytes / 1024), (indexBytes / 1024), (inverseTableBytes / 1024), (s_totalVertPosBytes / 1024), (s_totalInverseBytes / 1024), s_seen.size() );
     }
 
     float CompareAgainstEngine( zCMorphMesh* mm ) {

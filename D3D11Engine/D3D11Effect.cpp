@@ -454,7 +454,7 @@ XRESULT D3D11Effect::LoadRainResources()
     if ( !RainTextureArray.Get() ) {
         HRESULT hr = S_OK;
         // Load textures...
-        LogInfo() << "Loading rain-drop textures";
+        Logging::Inf( "Loading rain-drop textures" );
         ZoneScopedN( "LoadRainTextures" );
         LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
     }
@@ -462,7 +462,7 @@ XRESULT D3D11Effect::LoadRainResources()
     if ( !SnowTextureArray.Get() ) {
         HRESULT hr = S_OK;
         // Load textures...
-        LogInfo() << "Loading snow flake textures";
+        Logging::Inf( "Loading snow flake textures" );
         ZoneScopedN( "LoadSnowTextures" );
         LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
     }

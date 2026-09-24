@@ -140,7 +140,7 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
     float maxSize,
     zCTexture* meshTexture ) {
     if ( VegetationMesh ) {
-        LogWarn() << "Tried to init GVegetationBox twice!";
+        Logging::Wrn( "Tried to init GVegetationBox twice!" );
         return XR_FAILED;
     }
 
@@ -205,7 +205,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
     const std::string& restrictByTexture,
     EShape shape ) {
     if ( VegetationMesh ) {
-        LogWarn() << "Tried to init GVegetationBox twice!";
+        Logging::Wrn( "Tried to init GVegetationBox twice!" );
         return XR_FAILED;
     }
 
@@ -738,7 +738,7 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
     if ( VegetationMesh ) {
-        LogWarn() << "Tried to init GVegetationBox twice!";
+        Logging::Wrn( "Tried to init GVegetationBox twice!" );
     }
 
     if ( AcquireSharedResources() ) {

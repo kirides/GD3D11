@@ -155,7 +155,7 @@ public:
         hook_infunc
 
             if ( vob->GetVisual() ) {
-                //LogInfo() << vob->GetVisual()->GetFileExtension(0);
+                //Logging::Inf( "{}", vob->GetVisual()->GetFileExtension(0) );
                 Engine::GAPI->OnAddVob( vob, thisptr );
             }
 
@@ -169,7 +169,7 @@ public:
         // Make sure worker thread don't work on any point light
         Engine::WorkerThreadPool->clearAndFlush();
 
-        LogInfo() << "Loading world!";
+        Logging::Inf( "Loading world!" );
         Engine::GAPI->GetLoadedWorldInfo()->MainWorld = thisptr;
         Engine::GAPI->OnGeometryLoaded( thisptr->GetBspTree() );
     }
@@ -180,7 +180,7 @@ public:
         // Make sure worker thread don't work on any point light
         Engine::WorkerThreadPool->clearAndFlush();
 
-        LogInfo() << "Loading world!";
+        Logging::Inf( "Loading world!" );
         Engine::GAPI->GetLoadedWorldInfo()->MainWorld = thisptr;
         Engine::GAPI->OnGeometryLoaded( thisptr->GetBspTree() );
     }

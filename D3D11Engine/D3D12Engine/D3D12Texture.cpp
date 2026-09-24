@@ -100,7 +100,7 @@ XRESULT D3D12Texture::Init( const std::string& file ) {
 
     if ( std::filesystem::path( file ).is_absolute() ) {
         std::ifstream f( file, std::ios::binary | std::ios::ate );
-        if ( !f ) { LogError() << "D3D12Texture: failed to open " << file; return XR_FAILED; }
+        if ( !f ) { Logging::Err( "D3D12Texture: failed to open {}", file ); return XR_FAILED; }
         std::streamsize sz = f.tellg();
         f.seekg( 0, std::ios::beg );
         bytes.resize( static_cast<size_t>( sz ) );
@@ -110,7 +110,7 @@ XRESULT D3D12Texture::Init( const std::string& file ) {
             ? zFILE_VDFS::Create( ( "\\" + file ).c_str() )
             : zFILE_VDFS::Create( file.c_str() );
         if ( !vdfsFile || !vdfsFile->Exists() || vdfsFile->Open( false ) != zERROR_NONE ) {
-            LogError() << "D3D12Texture: failed to load texture from VDFS: " << file;
+            Logging::Err( "D3D12Texture: failed to load texture from VDFS: {}", file );
             return XR_FAILED;
         }
         bytes.resize( vdfsFile->Size() );
@@ -169,8 +169,8 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
 
     // Reject anything the size math can't describe (neither a known BC format nor a known bpp).
     if ( DDS::BCBlockBytes( fmt ) == 0 && DDS::BitsPerPixel( fmt ) == 0 ) {
-        LogWarn() << "D3D12Texture: unsupported DDS format (fourCC=" << fourCC << " flags=" << pfFlags
-                  << " bpp=" << rd( 88 ) << " -> DXGI " << static_cast<int>( fmt ) << ") — texture skipped.";
+        Logging::Wrn("D3D12Texture: unsupported DDS format (fourCC={} flags={} bpp={} -> DXGI {}) — texture skipped.",
+            fourCC, pfFlags, rd( 88 ), static_cast<int>( fmt ));
         return XR_FAILED;
     }
 
@@ -236,8 +236,8 @@ bool D3D12Texture::CreateAndUpload( const void* data ) {
         nullptr,
         m_Allocation.ReleaseAndGetAddressOf(),
         IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12Texture: D3D12MA::CreateResource failed (format " << static_cast<int>( m_Format )
-                  << ", " << m_Size.x << "x" << m_Size.y << ", mips " << m_MipMapCount << ").";
+        Logging::Wrn("D3D12Texture: D3D12MA::CreateResource failed (format {}, {}x{}, mips {}).", magic_enum::enum_name(m_Format)
+                  , m_Size.x, m_Size.y, m_MipMapCount);
         return false;
     }
 
@@ -312,9 +312,8 @@ XRESULT D3D12Texture::UpdateData( void* data, int mip ) {
         // The chain was interrupted by another texture on this thread (see the invariant above). The
         // earlier mips are gone and the buffer is sized for the other texture, so continuing would
         // both corrupt this texture and risk writing past the end — drop it instead.
-        LogWarn() << "D3D12Texture: interleaved mip upload for '"
-                  << ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName )
-                  << "' (mip " << mip << ") — texture skipped.";
+        Logging::Wrn( "D3D12Texture: interleaved mip upload for '{}' (mip {}) — texture skipped.",
+                  ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName ), mip );
         return XR_FAILED;
     }
 

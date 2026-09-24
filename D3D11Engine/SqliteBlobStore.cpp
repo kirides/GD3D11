@@ -13,7 +13,7 @@ namespace {
         char* errMsg = nullptr;
         const int rc = sqlite3_exec( db, sql, nullptr, nullptr, &errMsg );
         if ( rc != SQLITE_OK ) {
-            LogWarn() << "SqliteBlobStore: " << ( errMsg ? errMsg : sqlite3_errstr( rc ) );
+            Logging::Wrn( "SqliteBlobStore: {}", ( errMsg ? errMsg : sqlite3_errstr( rc ) ) );
             sqlite3_free( errMsg );
             return false;
         }
@@ -39,7 +39,7 @@ SqliteBlobStore::SqliteBlobStore( const std::string& path ) {
 
     sqlite3* db = nullptr;
     if ( sqlite3_open_v2( path.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr ) != SQLITE_OK ) {
-        LogWarn() << "SqliteBlobStore: failed to open " << path << " - caching disabled for this store.";
+        Logging::Wrn( "SqliteBlobStore: failed to open {} - caching disabled for this store.", path );
         if ( db ) sqlite3_close( db );
         return;
     }

@@ -25,14 +25,14 @@ public:
         int extpos = file.find_last_of( "." );
         if ( extpos >= 0 ) {
             ext = &file[extpos + 1];
-            //LogInfo() << "Got file ext: " << ext;
+            //Logging::Inf( "Got file ext: {}", ext );
 
             int slashpos = file.find_last_of( "\\" );
             if ( slashpos >= 0 ) {
                 name = &file[slashpos + 1]; // Strip directories
                 name.resize( name.size() - (ext.size() + 1) ); // Strip file extension
 
-                //LogInfo() << "Got file name: " << name;
+                //Logging::Inf( "Got file name: {}", name );
             }
         }
 
@@ -40,7 +40,7 @@ public:
 
         Engine::GAPI->SetTextureTestBindMode( true, name );
 
-        //LogInfo() << "Opening file: " << name;
+        //Logging::Inf( "Opening file: {}", name );
 
         return HookedFunctions::OriginalFunctions.original_zFILEOpen( thisptr, str, b );
     }

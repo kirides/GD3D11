@@ -33,6 +33,9 @@ namespace Logging {
 
         /** Type-erased sink. Defined in Logging.cpp so <format>'s codegen isn't duplicated per call site. */
         void Write( Level level, const std::source_location& where, std::string_view fmt, std::format_args args );
+
+        /** Write, then show the message in a blocking MessageBox. */
+        void WriteBox( Level level, const std::source_location& where, std::string_view fmt, std::format_args args );
     }
 
     template<class... Args>
@@ -44,6 +47,9 @@ namespace Logging {
 
     /** Messages below this are discarded before they are formatted. */
     void SetMinLevel( Level level ) noexcept;
+
+    /** Truncates Log.txt. Call once at startup, before the first record. */
+    void ClearFile();
 
     /** Asks the worker to write out what is queued; returns without waiting for it. */
     void Flush();
@@ -80,6 +86,22 @@ namespace Logging {
     void Err( Site<Args...> site, Args&&... args ) {
         if ( !IsEnabled( Level::Error ) ) return;
         Detail::Write( Level::Error, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+    }
+
+    /** Like Inf/Wrn/Err, plus a blocking MessageBox. Never filtered by the min level. */
+    template<class... Args>
+    void InfBox( Site<Args...> site, Args&&... args ) {
+        Detail::WriteBox( Level::Info, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+    }
+
+    template<class... Args>
+    void WrnBox( Site<Args...> site, Args&&... args ) {
+        Detail::WriteBox( Level::Warn, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+    }
+
+    template<class... Args>
+    void ErrBox( Site<Args...> site, Args&&... args ) {
+        Detail::WriteBox( Level::Error, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
     }
 
 } // namespace Logging

@@ -60,11 +60,11 @@ typedef HRESULT( *VirtualFileReader )(const char* path, std::vector<uint8_t>& bu
 inline HRESULT zVdfsReadFile( const char* str, std::vector<uint8_t>& buffer, long* numRead ) {
     auto file = zFILE_VDFS::Create( str );
     if ( !file->Exists() ) {
-        LogError() << "File does not exist: " << str;
+        Logging::Err( "File does not exist: {}", str );
         return E_FAIL;
     }
     if ( file->Open( false ) != zERRORS::zERROR_NONE ) {
-        LogError() << "Failed to open filepath: " << str;
+        Logging::Err( "Failed to open filepath: {}", str );
         return E_FAIL;
     }
 
@@ -116,7 +116,7 @@ inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTexture
 
         HRESULT hr = fileReader( str, out.fileBuffers[i], &numRead );
         if ( !SUCCEEDED( hr ) ) {
-            LogError() << "Failed to read file: " << str;
+            Logging::Err( "Failed to read file: {}", str );
             return E_FAIL;
         }
     }
@@ -127,20 +127,20 @@ inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTexture
         const size_t rawSize = out.fileBuffers[i].size();
 
         if ( rawSize < (sizeof( uint32_t ) + sizeof( DDS_HEADER )) ) {
-            LogError() << "DDS data too small at index: " << i << " was: " << rawSize << ", expected: " << (sizeof( uint32_t ) + sizeof( DDS_HEADER )) << " prefix was: " << sTexturePrefix;
+            Logging::Err( "DDS data too small at index: {} was: {}, expected: {} prefix was: {}", i, rawSize, (sizeof( uint32_t ) + sizeof( DDS_HEADER )), sTexturePrefix );
             return E_FAIL;
         }
 
         // Validate DDS Magic Header Number
         uint32_t magicNumber = *reinterpret_cast<const uint32_t*>( rawData );
         if ( magicNumber != DDS::Magic ) {
-            LogError() << "Invalid DDS magic number at index: " << i;
+            Logging::Err( "Invalid DDS magic number at index: {}", i );
             return E_FAIL;
         }
 
         const auto* header = reinterpret_cast<const DDS_HEADER*>(rawData + sizeof( uint32_t ));
         if ( header->size != sizeof( DDS_HEADER ) || header->ddspf.size != sizeof( DDS_PIXELFORMAT ) ) {
-            LogError() << "Malformed DDS header structurally at index: " << i;
+            Logging::Err( "Malformed DDS header structurally at index: {}", i );
             return E_FAIL;
         }
 
@@ -152,7 +152,7 @@ inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTexture
             if ( header->ddspf.fourCC == DDS::Dx10 ) {
                 // DX10 container: the secondary header carries the exact DXGI_FORMAT.
                 if ( rawSize < (offset + sizeof( DDS_HEADER_DXT10 )) ) {
-                    LogError() << "DDS file missing DXT10 extended header at index: " << i;
+                    Logging::Err( "DDS file missing DXT10 extended header at index: {}", i );
                     return E_FAIL;
                 }
                 const auto* headerDX10 = reinterpret_cast<const DDS_HEADER_DXT10*>( rawData + offset );
@@ -168,8 +168,8 @@ inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTexture
 
         // Reject anything the size math can't describe (neither a known BC format nor a known bpp).
         if ( DDS::BCBlockBytes( parsedFormat ) == 0 && DDS::BitsPerPixel( parsedFormat ) == 0 ) {
-            LogError() << "Unsupported DDS format (fourCC=" << header->ddspf.fourCC << " flags=" << header->ddspf.flags
-                       << " -> DXGI " << static_cast<int>( parsedFormat ) << ") at index: " << i;
+            Logging::Err( "Unsupported DDS format (fourCC={} flags={} -> DXGI {}) at index: {}",
+                       header->ddspf.fourCC, header->ddspf.flags, static_cast<int>( parsedFormat ), i );
             return E_FAIL;
         }
 
@@ -186,7 +186,7 @@ inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTexture
         } else {
             // Validate match integrity
             if ( width != out.width || height != out.height || mipCount != out.mipCount || parsedFormat != out.format ) {
-                LogError() << "Texture index " << i << " mismatch with Texture 0 properties!";
+                Logging::Err( "Texture index {} mismatch with Texture 0 properties!", i );
                 return E_FAIL;
             }
         }
@@ -205,7 +205,7 @@ inline HRESULT ParseTextureArrayDDS( const char* sTexturePrefix, int iNumTexture
             GetSurfaceInfo( currentWidth, currentHeight, out.format, subresourceSize, rowPitch );
 
             if ( offset + subresourceSize > rawSize ) {
-                LogError() << "Texture data out of bounds during layout allocation at index: " << i;
+                Logging::Err( "Texture data out of bounds during layout allocation at index: {}", i );
                 return E_FAIL;
             }
 
@@ -232,7 +232,7 @@ inline HRESULT LoadTextureArray(
     ID3D11ShaderResourceView** ppSRV )
 {
     if ( !ppTex2D || !ppSRV ) {
-        LogError() << "invalid argument: ppTex2D or ppSRV should not be null";
+        Logging::Err( "invalid argument: ppTex2D or ppSRV should not be null" );
         return E_FAIL;
     }
 
@@ -268,7 +268,7 @@ inline HRESULT LoadTextureArray(
     // Step 3: Atomic GPU Array allocation (using thread-safe pd3dDevice)
     hr = pd3dDevice->CreateTexture2D( &desc, initData.data(), ppTex2D );
     if ( FAILED( hr ) || !(*ppTex2D) ) {
-        LogError() << "Failed to allocate 2D Texture Array (Error Code: " << hr << ")";
+        Logging::Err( "Failed to allocate 2D Texture Array (Error Code: {})", hr );
         return E_FAIL;
     }
 

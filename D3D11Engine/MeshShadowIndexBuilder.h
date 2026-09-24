@@ -27,10 +27,8 @@ namespace MeshShadow {
         // Same cadence rule as MeshLod::ReportStats: first sub-mesh, then every 500, so that silence is
         // never ambiguous between "nothing ran" and "fewer than N sub-meshes exist".
         if ( total != 1 && ( total == 0 || total % 500 != 0 ) ) return;
-        LogInfo() << "Shadow IB: " << g_Built.load() << " built / " << total << " submeshes"
-            << " (" << g_SkipIdentical.load() << " identical to render IB, "
-            << g_SkipOverflow.load() << " overflow)"
-            << "; skipped " << ( g_BytesSaved.load() / 1024 ) << " KiB of index data";
+        Logging::Inf( "Shadow IB: {} built / {} submeshes ({} identical to render IB, {} overflow); skipped {} KiB of index data",
+            g_Built.load(), total, g_SkipIdentical.load(), g_SkipOverflow.load(), ( g_BytesSaved.load() / 1024 ) );
     }
 
     /** Builds the position-welded index list over the fetch-remapped vertex buffer, and DROPS it when it
@@ -82,7 +80,7 @@ namespace MeshShadow {
 
         shadowIndices.resize( welded.size() );
         if ( !convertToVertexIndex( welded, shadowIndices.data(), shadowIndices.size() ) ) {
-            LogError() << "BuildShadowIndices: shadow index exceeds VERTEX_INDEX range";
+            Logging::Err( "BuildShadowIndices: shadow index exceeds VERTEX_INDEX range" );
             shadowIndices.clear();
             ++g_SkipOverflow;
             ReportStats();

@@ -67,7 +67,7 @@ void UIRenderer2D::AddPolygon( zCTexture* texture, const zTRndSimpleVertex* vert
         static bool logged = false;
         if ( !logged ) {
             logged = true;
-            LogWarn() << "UIRenderer2D: DrawPolySimple polygon with " << numVertices << " vertices dropped (cap " << kMaxPolygonVertices << ").";
+            Logging::Wrn( "UIRenderer2D: DrawPolySimple polygon with {} vertices dropped (cap {}).", numVertices, kMaxPolygonVertices );
         }
         return;
     }

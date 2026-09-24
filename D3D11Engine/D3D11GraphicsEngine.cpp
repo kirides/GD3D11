@@ -221,7 +221,7 @@ namespace
             {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_2 , "D3D_FEATURE_LEVEL_9_2" },
             {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1 , "D3D_FEATURE_LEVEL_9_1" },
         };
-        LogInfo() << "D3D_FEATURE_LEVEL: " << dxFeatureLevelsMap.at( lvl );
+        Logging::Inf( "D3D_FEATURE_LEVEL: {}", dxFeatureLevelsMap.at( lvl ) );
     }
 
     FORCEINLINE uint64_t BuildSortKeyBase( zCMaterial* mat ) {
@@ -439,7 +439,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     HMODULE dxgiHandle = LoadLibraryA( "dxgi.dll" );
     HMODULE d3d11Handle = LoadLibraryA( "d3d11.dll" );
     if ( !dxgiHandle || !d3d11Handle ) {
-        LogErrorBox() << "Minimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update.";
+        Logging::ErrBox( "Minimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update." );
         exit( 2 );
     }
 
@@ -447,12 +447,12 @@ XRESULT D3D11GraphicsEngine::Init() {
     PFN_CREATE_DXGI_FACTORY2 CreateDXGIFactory2Func = reinterpret_cast<PFN_CREATE_DXGI_FACTORY2>( GetProcAddress( dxgiHandle, "CreateDXGIFactory2") );
     PFN_D3D11_CREATE_DEVICE D3D11CreateDeviceFunc = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>( GetProcAddress( d3d11Handle, "D3D11CreateDevice" ) );
     if ( !D3D11CreateDeviceFunc || ( !CreateDXGIFactory2Func && !CreateDXGIFactoryFunc ) ) {
-        LogErrorBox() << "Minimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update.";
+        Logging::ErrBox( "Minimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update." );
         exit( 2 );
     }
 
     HRESULT hr;
-    LogInfo() << "Initializing Device...";
+    Logging::Inf( "Initializing Device..." );
 
     // Create DXGI factory
     UINT factoryFlags = 0;
@@ -462,8 +462,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     hr = (CreateDXGIFactory2Func ? CreateDXGIFactory2Func( factoryFlags, __uuidof(IDXGIFactory2), reinterpret_cast<void**>( DXGIFactory2.ReleaseAndGetAddressOf() ) )
         : CreateDXGIFactoryFunc( __uuidof(IDXGIFactory2), reinterpret_cast<void**>( DXGIFactory2.ReleaseAndGetAddressOf() ) ));
     if ( FAILED( hr ) ) {
-        LogErrorBox() << "CreateDXGIFactory failed with code: " << hr << "!\n"
-            "Minimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update.";
+        Logging::ErrBox( "CreateDXGIFactory failed with code: {}!\nMinimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update.",
+            hr );
         exit( 2 );
     }
 
@@ -516,12 +516,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     }
 
     if ( !haveAdapter ) {
-        LogErrorBox() << "Couldn't find any suitable GPU on your device, so it can't run GD3D11!\n"
-            "It has to be at least Featurelevel 10.0 compatible, "
-            "which requires at least:\n"
-            " *	Nvidia GeForce 8xxx or higher\n"
-            " *	AMD Radeon HD 2xxx or higher\n\n"
-            "The game will now close.";
+        Logging::ErrBox( "Couldn't find any suitable GPU on your device, so it can't run GD3D11!\nIt has to be at least Featurelevel 10.0 compatible, which requires at least:\n *	Nvidia GeForce 8xxx or higher\n *	AMD Radeon HD 2xxx or higher\n\nThe game will now close." );
         exit( 2 );
     }
 
@@ -532,7 +527,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     std::wstring wDeviceDescription( adpDesc.Description );
     std::string deviceDescription( wDeviceDescription.begin(), wDeviceDescription.end() );
     DeviceDescription = deviceDescription;
-    LogInfo() << "Rendering on: " << deviceDescription.c_str();
+    Logging::Inf( "Rendering on: {}", deviceDescription.c_str() );
 
     bool dxvkAvailable = false;
     IUnknown* dxgiVKInterop = nullptr;
@@ -614,19 +609,14 @@ XRESULT D3D11GraphicsEngine::Init() {
     }
 
     if ( FAILED( hr ) ) {
-        LogErrorBox() << "D3D11CreateDevice failed with code: " << std::hex << hr << "!";
+        Logging::ErrBox( "D3D11CreateDevice failed with code: {:x}!", static_cast<uint32_t>( hr ) );
         exit( 2 );
     }
 
     PrintD3DFeatureLevel( maxFeatureLevel );
     if ( maxFeatureLevel < D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_10_0 ) {
-        LogErrorBox() << "Your GPU (" << deviceDescription.c_str()
-            << ") does not support Direct3D 11, so it can't run GD3D11!\n"
-            "It has to be at least Featurelevel 10.0 compatible, "
-            "which requires at least:\n"
-            " *	Nvidia GeForce 8xxx or higher\n"
-            " *	AMD Radeon HD 2xxx or higher\n\n"
-            "The game will now close.";
+        Logging::ErrBox( "Your GPU ({}) does not support Direct3D 11, so it can't run GD3D11!\nIt has to be at least Featurelevel 10.0 compatible, which requires at least:\n *	Nvidia GeForce 8xxx or higher\n *	AMD Radeon HD 2xxx or higher\n\nThe game will now close.",
+            deviceDescription.c_str() );
         exit( 2 );
     }
 
@@ -711,9 +701,9 @@ XRESULT D3D11GraphicsEngine::Init() {
     hr = Device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS3, &options3, sizeof( options3 ) );
     if ( SUCCEEDED( hr ) ) {
         FeatureRTArrayIndexFromAnyShader = options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
-        LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: VPAndRTArrayIndexFromAnyShaderFeedingRasterizer = " << (FeatureRTArrayIndexFromAnyShader ? "Supported" : "Unsupported");
+        Logging::Inf( "D3D11_FEATURE_D3D11_OPTIONS3: VPAndRTArrayIndexFromAnyShaderFeedingRasterizer = {}", (FeatureRTArrayIndexFromAnyShader ? "Supported" : "Unsupported") );
     } else {
-        LogInfo() << "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported";
+        Logging::Inf( "D3D11_FEATURE_D3D11_OPTIONS3: CheckFeatureSupport failed, assuming Unsupported" );
     }
 
     m_DeviceCapabilities.DeviceDescription = deviceDescription;
@@ -743,7 +733,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     }
 
 
-    LogInfo() << "Creating ShaderManager";
+    Logging::Inf( "Creating ShaderManager" );
     ShaderManager = std::make_unique<D3D11ShaderManager>();
     ShaderManager->Init();
     ShaderManager->LoadShaders();
@@ -874,8 +864,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         GetDevice().Get(), L"system\\GD3D11\\Textures\\reflect_cube.dds",
         nullptr,
         ReflectionCube.GetAddressOf() ) )
-        LogWarn()
-        << "Failed to load file: system\\GD3D11\\Textures\\reflect_cube.dds";
+        Logging::Wrn( "Failed to load file: system\\GD3D11\\Textures\\reflect_cube.dds" );
 
     // Init quad buffers
     ExVertexStruct vx[6];
@@ -946,7 +935,7 @@ void D3D11GraphicsEngine::SelectActiveRenderer() {
 /** Called when the game created its window */
 XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
     if ( !m_OutputWindow ) {
-        LogInfo() << "Creating swapchain";
+        Logging::Inf( "Creating swapchain" );
         CommonSetWindow( hWnd );
 
         const INT2 res = Resolution;
@@ -978,7 +967,7 @@ void D3D11GraphicsEngine::OnResetBackBuffer() {
     HDRBackBufferSwap = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, bind );
     if ( !HDRBackBufferSwap->GetTexture() ) {
         // Drop the half-built object rather than hand out null views; every ping-pong site then copies.
-        LogWarn() << "Could not create the HDR ping-pong buffer - scene-in/scene-out passes will copy instead.";
+        Logging::Wrn( "Could not create the HDR ping-pong buffer - scene-in/scene-out passes will copy instead." );
         HDRBackBufferSwap.reset();
         return;
     }
@@ -1083,7 +1072,7 @@ void D3D11GraphicsEngine::RecreateMSAABuffers( INT2 resolution ) {
         }
 
         if ( samples != requestedSamples ) {
-            LogWarn() << "MSAA x" << requestedSamples << " isn't supported by this device/format combination; falling back to x" << samples;
+            Logging::Wrn( "MSAA x{} isn't supported by this device/format combination; falling back to x{}", requestedSamples, samples );
             settings.MSAASamples = samples;
         }
 
@@ -1096,7 +1085,7 @@ void D3D11GraphicsEngine::RecreateMSAABuffers( INT2 resolution ) {
     }
 
     // Nothing worked, not even 2x — disable MSAA entirely.
-    LogWarn() << "MSAA isn't supported by this device/format combination; disabling it.";
+    Logging::Wrn( "MSAA isn't supported by this device/format combination; disabling it." );
     settings.MSAASamples = 1;
     MSAAColorBuffer.reset();
     MSAADepthStencilBuffer.reset();
@@ -1305,12 +1294,12 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             }
         }
 
-        LogInfo() << "SwapChain Mode: " << swapEffectMap.at( swapEffect );
+        Logging::Inf( "SwapChain Mode: {}", swapEffectMap.at( swapEffect ) );
         if ( m_swapchainflip ) {
-            LogInfo() << "SwapChain: DXGI_FEATURE_PRESENT_ALLOW_TEARING = " << (m_flipWithTearing ? "Enabled" : "Disabled");
+            Logging::Inf( "SwapChain: DXGI_FEATURE_PRESENT_ALLOW_TEARING = {}", (m_flipWithTearing ? "Enabled" : "Disabled") );
         }
 
-        LogInfo() << "Creating new swapchain! (Format: " << DXGI_FORMAT_ENGINE_SWAPCHAIN << " )";
+        Logging::Inf( "Creating new swapchain! (Format: {} )", static_cast<int>( DXGI_FORMAT_ENGINE_SWAPCHAIN ) );
 
         if ( m_swapchainflip ) {
             scd.BufferCount = 2;
@@ -1323,7 +1312,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         m_lowlatency = Engine::GAPI->GetRendererState().RendererSettings.LowLatency;
         if ( FAILED( Device.As( &pDXGIDevice3 ) ) // DXGI 1.3 required
             || swapEffect == DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD ) { // Doesn't work with fullscreen exclusive on D3D11
-            LogWarn() << "DXGI 1.3 not supported! HR: " << std::hex << hr;
+            Logging::Wrn( "DXGI 1.3 not supported! HR: {:x}", static_cast<uint32_t>( hr ) );
 
             m_lowlatency = false;
         }
@@ -1344,7 +1333,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), m_OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
         if ( FAILED( hr ) ) {
-            LogError() << "Failed to create Swapchain! Program will now exit! HR: " << std::hex << hr;
+            Logging::Err( "Failed to create Swapchain! Program will now exit! HR: {:x}", static_cast<uint32_t>( hr ) );
             exit( 0 );
         }
 
@@ -1381,10 +1370,10 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
         }
     } else {
-        LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_SWAPCHAIN )";
+        Logging::Inf( "Resizing swapchain  (Format: DXGI_FORMAT_SWAPCHAIN )" );
         hr =SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_ENGINE_SWAPCHAIN , lastSwapchainFlags );
         if ( FAILED( hr ) ) {
-            LogError() << "Failed to resize swapchain! HRESULT: " << std::hex << hr;
+            Logging::Err( "Failed to resize swapchain! HRESULT: {:x}", static_cast<uint32_t>( hr ) );
             return XR_FAILED;
         }
     }
@@ -1500,8 +1489,8 @@ D3D11GraphicsEngine::FrameIndirectAllocation D3D11GraphicsEngine::AcquireFrameIn
         }
 
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog ) {
-            LogInfo() << "(Re-)created frame indirect ring buffer: " << (debugName ? debugName : "<unnamed>") << pool.FrameIndex
-                << " (" << newCapacity << " bytes)";
+            Logging::Inf( "(Re-)created frame indirect ring buffer: {}{} ({} bytes)",
+                (debugName ? debugName : "<unnamed>"), pool.FrameIndex, newCapacity );
         }
 
         slot.Buffer = std::move( newBuffer );
@@ -1548,8 +1537,8 @@ D3D11GraphicsEngine::FrameInstancingAllocation D3D11GraphicsEngine::AcquireFrame
         }
 
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog ) {
-            LogInfo() << "(Re-)created frame instancing ring buffer: " << (debugName ? debugName : "FrameInstancingBuffer") << pool.FrameIndex
-                << " (" << newCapacity << " bytes)";
+            Logging::Inf( "(Re-)created frame instancing ring buffer: {}{} ({} bytes)",
+                (debugName ? debugName : "FrameInstancingBuffer"), pool.FrameIndex, newCapacity );
         }
 
         slot.Buffer = std::move( newBuffer );
@@ -1952,36 +1941,36 @@ XRESULT D3D11GraphicsEngine::Present() {
     if ( hr == DXGI_ERROR_DEVICE_REMOVED ) {
         switch ( GetDevice()->GetDeviceRemovedReason() ) {
         case DXGI_ERROR_DEVICE_HUNG:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_HUNG)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DEVICE_HUNG)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_DEVICE_REMOVED:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_REMOVED)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DEVICE_REMOVED)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_DEVICE_RESET:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DEVICE_RESET)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DEVICE_RESET)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_DRIVER_INTERNAL_ERROR)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_DRIVER_INTERNAL_ERROR)" );
             exit( 0 );
             break;
 
         case DXGI_ERROR_INVALID_CALL:
-            LogErrorBox() << "Device Removed! (DXGI_ERROR_INVALID_CALL)";
+            Logging::ErrBox( "Device Removed! (DXGI_ERROR_INVALID_CALL)" );
             exit( 0 );
             break;
 
         case S_OK:
-            LogInfo() << "Device removed, but we're fine!";
+            Logging::Inf( "Device removed, but we're fine!" );
             break;
 
         default:
-            LogWarnBox() << "Device Removed! (Unknown reason)";
+            Logging::WrnBox( "Device Removed! (Unknown reason)" );
         }
     }
 
@@ -2569,8 +2558,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
-        LogWarn() << "SkeletalMesh has more than "
-            << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
+        Logging::Wrn( "SkeletalMesh has more than {} bones! ({})Up this limit!", NUM_MAX_BONES, transforms.size() );
     }
 
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
@@ -2660,8 +2648,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
-        LogWarn() << "SkeletalMesh has more than "
-            << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
+        Logging::Wrn( "SkeletalMesh has more than {} bones! ({})Up this limit!", NUM_MAX_BONES, transforms.size() );
     }
 
     ActiveVS->Apply();
@@ -3074,8 +3061,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     }
 
                     if ( transforms.size() >= NUM_MAX_BONES ) {
-                        LogWarn() << "SkeletalMesh has more than "
-                            << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
+                        Logging::Wrn( "SkeletalMesh has more than {} bones! ({})Up this limit!",
+                            NUM_MAX_BONES, transforms.size() );
                     }
 
                     if ( RenderingStage == DES_MAIN ) {
@@ -3268,7 +3255,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         // Remove attachment. Shared, so it goes back to the registry, not deleted here.
                         WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
-                        LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
+                        Logging::Inf( "Removed attachment from model {}", vi->VisualInfo->VisualName );
 
                         continue; // Go to next attachment
                     }
@@ -3456,7 +3443,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 isShadowPass ? "ShadowNodeAttachmentInstancingBuffer" : "MainNodeAttachmentInstancingBuffer" );
             nodeAttachmentBuffer = nodeAttachmentAlloc.Buffer;
             if ( !nodeAttachmentBuffer ) {
-                LogError() << "Failed to acquire node attachment instancing buffer.";
+                Logging::Err( "Failed to acquire node attachment instancing buffer." );
                 return;
             }
             nodeAttachmentBufferOffset = nodeAttachmentAlloc.OffsetInBytes;
@@ -3468,7 +3455,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             UINT mappedSize;
             if ( XR_SUCCESS != nodeAttachmentBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
                 &mappedData, &mappedSize ) ) {
-                LogError() << "Failed to map instance buffer for node attachments!";
+                Logging::Err( "Failed to map instance buffer for node attachments!" );
                 return;
             }
 
@@ -3517,7 +3504,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
 
         if ( !nodeAttachmentBuffer ) {
-            LogError() << "Missing node attachment instancing buffer.";
+            Logging::Err( "Missing node attachment instancing buffer." );
             return;
         }
 
@@ -4698,7 +4685,7 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain()
     if ( SUCCEEDED( SwapChain3->CheckColorSpaceSupport( colorSpace, &colorSpaceSupport ) )
         && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ) {
         SwapChain3->SetColorSpace1( colorSpace );
-        LogInfo() << "Using HDR Monitor ColorSpace";
+        Logging::Inf( "Using HDR Monitor ColorSpace" );
     }
 }
 
@@ -5106,8 +5093,8 @@ void D3D11GraphicsEngine::DrawTransparencyQueue() {
     // Run count close to the item count means batching collapsed.
     static unsigned int transparencyLogCounter = 0;
     if ( !queue.Empty() && (transparencyLogCounter++ % 1800) == 0 ) {
-        LogInfo() << "Transparency queue: " << queue.Size() << " items in " << runs
-            << " runs, " << m_AlphaVobDrawsThisFrame << " alpha VOB draws";
+        Logging::Inf( "Transparency queue: {} items in {} runs, {} alpha VOB draws",
+            queue.Size(), runs, m_AlphaVobDrawsThisFrame );
     }
 }
 
@@ -6180,7 +6167,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         D3D11VertexBuffer* shadowInstancingBuffer = shadowInstancingAlloc.Buffer;
         int shadowInstancingMapFlag = D3D11VertexBuffer::M_WRITE_NO_OVERWRITE;
         if ( !shadowInstancingBuffer ) {
-            LogError() << "Failed to acquire shadow vob instancing buffer.";
+            Logging::Err( "Failed to acquire shadow vob instancing buffer." );
             shadowInstancingBuffer = DynamicInstancingBuffer.get();
             shadowInstancingAlloc.OffsetInBytes = 0;
             shadowInstancingMapFlag = D3D11VertexBuffer::M_WRITE_DISCARD;
@@ -6231,7 +6218,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
             shadowInstancingBuffer->Unmap();
         } else {
-            LogError() << "Failed to map dynamic instancing buffer for vobs.";
+            Logging::Err( "Failed to map dynamic instancing buffer for vobs." );
         }
 
         // Unbind PS
@@ -6780,7 +6767,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     requiredBytes, "MainVobInstancingBuffer" );
                 instancingBuffer = mainInstancingAlloc.Buffer;
                 if ( !instancingBuffer ) {
-                    LogError() << "Failed to acquire main vob instancing buffer.";
+                    Logging::Err( "Failed to acquire main vob instancing buffer." );
                     return XR_FAILED;
                 }
 
@@ -6795,7 +6782,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     }
                     instancingBuffer->Unmap();
                 } else {
-                    LogError() << "Failed to map dynamic instancing buffer for vobs.";
+                    Logging::Err( "Failed to map dynamic instancing buffer for vobs." );
                 }
 
                 cache.MainVobInstancingBuffer = instancingBuffer;
@@ -6865,7 +6852,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             }
 
             if ( !instancingBuffer ) {
-                LogError() << "Missing main vob instancing buffer in cache.";
+                Logging::Err( "Missing main vob instancing buffer in cache." );
                 return XR_FAILED;
             }
 
@@ -7256,7 +7243,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
 
     D3D11VertexBuffer* instancingBuffer = m_FrameGeometryCache.MainVobInstancingBuffer;
     if ( !instancingBuffer ) {
-        LogError() << "Missing main vob instancing buffer for alpha mesh rendering.";
+        Logging::Err( "Missing main vob instancing buffer for alpha mesh rendering." );
         return;
     }
 
@@ -8157,9 +8144,9 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     LE( GetDevice()->CreateTexture2D( &texDesc, 0, texture.GetAddressOf() ) );
     if ( !texture.Get() ) {
         if ( thumbnail ) {
-            LogInfo() << "Thumbnail failed. Texture could not be created";
+            Logging::Inf( "Thumbnail failed. Texture could not be created" );
         } else {
-            LogInfo() << "GetBackbufferData failed. Texture could not be created";
+            Logging::Inf( "GetBackbufferData failed. Texture could not be created" );
         }
         return;
     }
@@ -8188,9 +8175,9 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
         GetContext()->Unmap( texture.Get(), 0 );
     } else {
         if ( thumbnail ) {
-            LogInfo() << "Thumbnail failed";
+            Logging::Inf( "Thumbnail failed" );
         } else {
-            LogInfo() << "GetBackbufferData failed";
+            Logging::Inf( "GetBackbufferData failed" );
         }
     }
     
@@ -8398,7 +8385,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     if ( DecalInstancingBuffer->GetSizeInBytes() < neededBytes ) {
         if ( XR_FAILED == DecalInstancingBuffer->Init( nullptr, neededBytes,
             D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) ) {
-            LogError() << "Failed to (re)create decal instance buffer!";
+            Logging::Err( "Failed to (re)create decal instance buffer!" );
             return;
         }
         SetDebugName( DecalInstancingBuffer->GetVertexBuffer().Get(), "DecalInstancingBuffer" );
@@ -8407,7 +8394,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     void* mappedData;
     UINT mappedSize;
     if ( XR_SUCCESS != DecalInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD, &mappedData, &mappedSize ) ) {
-        LogError() << "Failed to map decal instance buffer!";
+        Logging::Err( "Failed to map decal instance buffer!" );
         return;
     }
     auto* destData = static_cast<XMFLOAT4X4*>(mappedData);
@@ -8887,7 +8874,7 @@ void D3D11GraphicsEngine::EnsureTempVertexBufferSize( std::unique_ptr<D3D11Verte
     buffer->GetVertexBuffer()->GetDesc( &desc );
     if ( desc.ByteWidth < size ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-            LogInfo() << "(EnsureTempVertexBufferSize) TempVertexBuffer too small (" << desc.ByteWidth << "), need " << size << " bytes. Recreating buffer.";
+            Logging::Inf( "(EnsureTempVertexBufferSize) TempVertexBuffer too small ({}), need {} bytes. Recreating buffer.", desc.ByteWidth, size );
 
         // Buffer too small, recreate it
         buffer.reset( new D3D11VertexBuffer() );
@@ -9243,8 +9230,8 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     // crash log tells us whether this scrub path is even reached before the D3D11ShadowMap dynamic_cast
     // crash, or whether the removal is happening through a path that never calls OnVobRemovedFromWorld.
     if ( size_t removed = std::erase_if( m_FrameLights, [vob]( VobLightInfo* li ) { return li->Vob == vob; } ) ) {
-        LogWarn() << "D3D11GraphicsEngine::OnVobRemovedFromWorld: scrubbed " << removed
-            << " stale light(s) from m_FrameLights mid-frame (vob=" << vob << ")";
+        Logging::Wrn( "D3D11GraphicsEngine::OnVobRemovedFromWorld: scrubbed {} stale light(s) from m_FrameLights mid-frame (vob={})",
+            removed, static_cast<const void*>( vob ) );
     }
 
     DebugPointlight = nullptr;
@@ -9340,7 +9327,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
     wrl::ComPtr<ID3D11Texture2D> texture;
     LE( GetDevice()->CreateTexture2D( &texDesc, 0, texture.GetAddressOf() ) );
     if ( !texture.Get() ) {
-        LogError() << "Could not create texture for screenshot!";
+        Logging::Err( "Could not create texture for screenshot!" );
         return;
     }
     GetContext()->CopyResource( texture.Get(), rt->GetTexture().Get() );
@@ -9355,7 +9342,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
     std::string name = "system\\screenshots\\GD3D11_" + std::string( date ) +
         "__" + std::string( time ) + ".jpg";
 
-    LogInfo() << "Saving screenshot to: " << name;
+    Logging::Inf( "Saving screenshot to: {}", name );
 
     // Save the Texture as jpeg using Windows Imaging Component (WIC) with 95% quality.
 

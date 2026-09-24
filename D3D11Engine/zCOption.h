@@ -105,22 +105,22 @@ public:
     static long __fastcall Do_hooked_zOptionReadInt( void* thisptr, zSTRING const& section, char const* var, int def ) {
         BaseGraphicsEngine* engine = Engine::GraphicsEngine;
         // TODO: Make Option checkable
-        // LogInfo() << "Reading Gothic-Config: " << var;
+        // Logging::Inf( "Reading Gothic-Config: {}", var );
         if ( !engine ) {
-            LogWarn() << "ENGINE wasn't initialized yet! WTF! - Reading Gothic-Config: " << var;
+            Logging::Wrn( "ENGINE wasn't initialized yet! WTF! - Reading Gothic-Config: {}", var );
         }
 
         static bool once = false;
         if ( !once ) {
             once = true;
-            LogInfo() << "Forcing zVidResFullscreenX";
-            LogInfo() << "Forcing zVidResFullscreenY";
-            LogInfo() << "Forcing zVidResFullscreenBPP = 32";
-            LogInfo() << "Forcing zTexMaxSize = 16384";
-            LogInfo() << "Forcing zTexCacheOutTimeMSec = 9120000"; // G2A Engine default: 240000
-            LogInfo() << "Forcing zTexCacheSizeMaxBytes = 1000000000"; // G2A Engine default: 32 MB (not MiB)
-            LogInfo() << "Forcing zSndCacheOutTimeMSec = 10000"; // G2A Engine default: 10000
-            LogInfo() << "Forcing zSndCacheSizeMaxBytes = 40000000"; // G2A Engine default: 20 MB (not MiB)
+            Logging::Inf( "Forcing zVidResFullscreenX" );
+            Logging::Inf( "Forcing zVidResFullscreenY" );
+            Logging::Inf( "Forcing zVidResFullscreenBPP = 32" );
+            Logging::Inf( "Forcing zTexMaxSize = 16384" );
+            Logging::Inf( "Forcing zTexCacheOutTimeMSec = 9120000" ); // G2A Engine default: 240000
+            Logging::Inf( "Forcing zTexCacheSizeMaxBytes = 1000000000" ); // G2A Engine default: 32 MB (not MiB)
+            Logging::Inf( "Forcing zSndCacheOutTimeMSec = 10000" ); // G2A Engine default: 10000
+            Logging::Inf( "Forcing zSndCacheSizeMaxBytes = 40000000" ); // G2A Engine default: 20 MB (not MiB)
         }
 
         if ( _stricmp( var, "zVidResFullscreenX" ) == 0 ) {
@@ -155,7 +155,7 @@ public:
     /** Reads config stuff */
     static unsigned long __fastcall hooked_zOptionReadDWORD( void* thisptr, void* unknwn, zSTRING const& section, char const* var, unsigned long def ) {
         // TODO: Make Option checkable
-        // LogInfo() << "Reading Gothic-Config: " << var;
+        // Logging::Inf( "Reading Gothic-Config: {}", var );
 
         if ( _stricmp( var, "zTexCacheOutTimeMSec" ) == 0 ) // Following values are from Marcellos L'Hiver config
         {

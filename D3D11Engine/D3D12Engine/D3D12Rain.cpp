@@ -106,7 +106,7 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
 
         if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             m_RainBufferStaticAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainBufferStatic.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the rain static-particle buffer.";
+            Logging::Wrn( "D3D12: failed to create the rain static-particle buffer." );
             return false;
         }
         m_RainBufferStatic->SetName( L"RainBufferStatic" );
@@ -138,13 +138,13 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
 
         if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr,
             m_RainBufferDynamicAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainBufferDynamic.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the rain dynamic-particle buffer.";
+            Logging::Wrn( "D3D12: failed to create the rain dynamic-particle buffer." );
             return false;
         }
         m_RainBufferDynamic->SetName( L"RainBufferDynamic" );
 
         if ( !UploadBufferData( m_RainBufferDynamic.Get(), dynamicParticles.data(), bd.Width ) ) {
-            LogWarn() << "D3D12: failed to upload initial rain dynamic-particle data.";
+            Logging::Wrn( "D3D12: failed to upload initial rain dynamic-particle data." );
             return false;
         }
         m_RainDynamicNeedsInitialBarrier = true;
@@ -315,7 +315,7 @@ bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, C
     ComPtr<D3D12MA::Allocation>& outAlloc, UINT& outSrvSlot ) {
     ParsedTextureArray parsed;
     if ( FAILED( ParseTextureArrayDDS( prefix, count, zVdfsReadFile, parsed ) ) ) {
-        LogWarn() << "D3D12: failed to parse rain/snow texture array at prefix " << prefix;
+        Logging::Wrn( "D3D12: failed to parse rain/snow texture array at prefix {}", prefix );
         return false;
     }
 
@@ -341,7 +341,7 @@ bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, C
     // barrier is needed either side of the upload for a plain (non-simultaneous-access) texture.
     if ( FAILED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
         outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( outTex.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create rain/snow texture array resource (prefix " << prefix << ").";
+        Logging::Wrn( "D3D12: failed to create rain/snow texture array resource (prefix {}).", prefix );
         return false;
     }
     outTex->SetName( L"RainSnowTextureArray" );
@@ -354,13 +354,13 @@ bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, C
         }
     }
     if ( !UploadTextureSubresources( outTex.Get(), subs.data(), static_cast<UINT>(subs.size()) ) ) {
-        LogWarn() << "D3D12: failed to upload rain/snow texture array data (prefix " << prefix << ").";
+        Logging::Wrn( "D3D12: failed to upload rain/snow texture array data (prefix {}).", prefix );
         return false;
     }
 
     outSrvSlot = AllocateSrvSlot();
     if ( outSrvSlot == UINT_MAX ) {
-        LogWarn() << "D3D12: SRV heap exhausted allocating a slot for the rain/snow texture array.";
+        Logging::Wrn( "D3D12: SRV heap exhausted allocating a slot for the rain/snow texture array." );
         return false;
     }
     D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
@@ -378,11 +378,11 @@ bool D3D12GraphicsEngine::LoadRainTextures() {
 
     // Same VFS paths as D3D11Effect::LoadRainResources; parsed via the DDSArrayLoader.h helper both
     // backends share.
-    LogInfo() << "D3D12: loading rain-drop textures";
+    Logging::Inf( "D3D12: loading rain-drop textures" );
     const bool rainOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370,
         m_RainTextureArray, m_RainTextureArrayAlloc, m_RainTextureArraySrvSlot );
 
-    LogInfo() << "D3D12: loading snow-flake textures";
+    Logging::Inf( "D3D12: loading snow-flake textures" );
     const bool snowOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256,
         m_SnowTextureArray, m_SnowTextureArrayAlloc, m_SnowTextureArraySrvSlot );
 
@@ -454,7 +454,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         hd.NumDescriptors = 1;
         if ( FAILED( device->CreateDescriptorHeap( &hd, IID_PPV_ARGS( m_RainShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the rain shadowmap DSV heap.";
+            Logging::Wrn( "D3D12: failed to create the rain shadowmap DSV heap." );
             return false;
         }
         m_RainShadowDsv = m_RainShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -462,7 +462,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     if ( m_RainShadowSrvSlot == UINT_MAX ) {
         m_RainShadowSrvSlot = AllocateSrvSlot();
         if ( m_RainShadowSrvSlot == UINT_MAX ) {
-            LogWarn() << "D3D12: SRV heap exhausted allocating the rain shadowmap slot.";
+            Logging::Wrn( "D3D12: SRV heap exhausted allocating the rain shadowmap slot." );
             return false;
         }
     }
@@ -487,7 +487,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
 
     if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
         m_RainShadowMapAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainShadowMap.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the rain shadow map resource.";
+        Logging::Wrn( "D3D12: failed to create the rain shadow map resource." );
         return false;
     }
     m_RainShadowMap->SetName( L"RainShadowMap" );

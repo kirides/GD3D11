@@ -83,8 +83,8 @@ namespace {
 
         if ( remaining != 0 ) {
 #ifdef DEBUG_D3D11
-            LogWarn() << "D3D12Barrier: unmapped D3D12_RESOURCE_STATES bit(s) 0x" << std::hex
-                      << static_cast<UINT>( remaining ) << std::dec << "; falling back to a legacy transition.";
+            Logging::Wrn( "D3D12Barrier: unmapped D3D12_RESOURCE_STATES bit(s) 0x{:x}; falling back to a legacy transition.",
+                      static_cast<UINT>( remaining ) );
 #endif
             return false;
         }

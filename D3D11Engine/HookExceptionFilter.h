@@ -14,7 +14,12 @@ public:
         // LoadModules();
     }
     MyStackWalker( DWORD dwProcessId, HANDLE hProcess ) : StackWalker( dwProcessId, hProcess ) {}
-    void OnOutput( LPCSTR szText ) override { Log( "STACK", __FILE__, __LINE__, __FUNCSIG__ ) << szText; StackWalker::OnOutput( szText ); }
+    void OnOutput( LPCSTR szText ) override {
+        std::string_view text( szText );
+        while ( !text.empty() && (text.back() == '\n' || text.back() == '\r') ) text.remove_suffix( 1 );
+        Logging::Inf( "STACK: {}", text );
+        StackWalker::OnOutput( szText );
+    }
 
     static MyStackWalker& GetSingleton() { static MyStackWalker singleton; return singleton; }
 };
@@ -23,6 +28,7 @@ public:
 static LONG WINAPI ExpFilter( EXCEPTION_POINTERS* pExp, DWORD dwExpCode ) {
     // Print callstack
     MyStackWalker::GetSingleton().ShowCallstack( GetCurrentThread(), pExp->ContextRecord );
+    Logging::Flush();
 
     // Show message:
     /*MessageBoxA(nullptr, "GD3D11 crashed due to internal problems. A detailed description can be found in system\\log.txt.\n\n"
@@ -59,7 +65,7 @@ static void __AddDbgFuncCall( const std::string& fn, int threadID, bool out ) {
 
 /*
 #define hook_outfunc      } catch (...) { \
-                                                LogInfo() << "Exception caught!"; \
+                                                Logging::Inf( "Exception caught!" ); \
                                                                     \
                                                 }
                                                 */

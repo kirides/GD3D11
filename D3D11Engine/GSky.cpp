@@ -114,7 +114,7 @@ XRESULT GSky::LoadSkyResources() {
     SkyDome = std::make_unique<GMesh>();
     SkyDome->LoadMesh( "system\\GD3D11\\meshes\\unitSphere.obj" );
 
-    LogInfo() << "Loading sky textures...";
+    Logging::Inf( "Loading sky textures..." );
 
     XLE( Engine::GraphicsEngine->CreateTexture( CloudTexture ) );
 

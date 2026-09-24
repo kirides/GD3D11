@@ -15,7 +15,7 @@ XRESULT D3D11IndirectBuffer::Init( void* initData, unsigned int sizeInBytes, EBi
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     if ( sizeInBytes == 0 ) {
-        LogError() << "IndirectBuffer size can't be 0!";
+        Logging::Err( "IndirectBuffer size can't be 0!" );
     }
 
     SizeInBytes = sizeInBytes;

@@ -442,6 +442,8 @@ private:
         and WaitOnFrameFence giving up) so a lost device is never silently swallowed. */
     [[noreturn]] void HandleDeviceRemoved( HRESULT removedReason, const char* context );
 
+    void InitGpuScopeMarkers();
+
     // Mid-frame synchronous flush for GetBackbufferData: closes + executes the currently-recorded m_CmdList
     // and blocks until the GPU has consumed it, then Resets the same allocator/list so recording can
     // continue for the rest of the frame. Unlike Present()/MoveToNextFrame() this does NOT transition the

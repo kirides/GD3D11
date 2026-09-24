@@ -88,7 +88,7 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
         // the "before" state at the top of the very first frame deterministic.
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create a depth-of-field focus texture (" << w << "x" << h << ").";
+            Logging::Wrn( "D3D12: failed to create a depth-of-field focus texture ({}x{}).", w, h );
             return false;
         }
         out->SetName( name );
@@ -170,7 +170,7 @@ void D3D12GraphicsEngine::RenderDepthOfField( D3D12RenderGraph& graph ) {
     if ( !m_DoFResourcesReady ) {
         if ( m_DoFCreateAttempted ) return;
         if ( !CreateDoFResources( m_Resolution ) ) {
-            LogWarn() << "D3D12: depth of field is enabled but its focus texture could not be created — DoF disabled.";
+            Logging::Wrn( "D3D12: depth of field is enabled but its focus texture could not be created — DoF disabled." );
             return;
         }
     }

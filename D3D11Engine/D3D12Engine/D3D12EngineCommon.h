@@ -4,6 +4,7 @@
 // in the original monolith; they are promoted here so the split TUs share ONE definition each.
 // This header is D3D12-backend-private — do not include it outside D3D12Engine/.
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -255,35 +256,55 @@ inline constexpr float kVelocitySentinel = -1.0e4f;
 // turn must match the optimized clear value CreateMotionResources passes, or fast-clear is lost).
 inline constexpr float kGBufferNormalSentinel = -2.0f;
 
-// --- CPU breadcrumb / debug-marker ring (DRED forensics + PIX events) ---
-// Why is BeginEvent not working as intended with Context on debugging this 32 bit app !!
-// A global ring-buffer tracking recent recording phases mapped directly to command list slots.
-struct CPUBreadcrumbContext {
-    UINT opIndex = 0;
-    const wchar_t* pContextText = nullptr;
+// --- Debug markers: PIX events + GPU scope breadcrumbs ---
+// Every marker also writes 1 (begun, MARKER_IN) / 2 (ended, MARKER_OUT) into CPU memory that survives device
+// removal, so DiagnoseErrors can name the scopes still open when the GPU died. DRED gives us no event strings.
+struct GpuScopeMarkers {
+    static constexpr UINT kSlots = 16384;   // ring; far more than a frame's markers x frames in flight
+    D3D12_GPU_VIRTUAL_ADDRESS Va = 0;       // 0 = not initialized, markers are PIX-only
+    volatile UINT* Cpu = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> Buffer;
+    std::array<const wchar_t*, kSlots> Names{};   // text must outlive the frame (literals / static names)
+    std::atomic<UINT> Next{ 0 };
 };
+inline GpuScopeMarkers g_GpuScopeMarkers;
 
-// Allocate space for tracking up to 2048 sequential draw states per frame execution.
-inline thread_local std::array<CPUBreadcrumbContext, 2048> g_CpuContextHistory;
-inline thread_local UINT g_CurrentRecordingOpIndex = 0;
+// Open slots of this thread's markers; Begin/End of one scope always run on the recording thread.
+inline thread_local std::array<UINT, 64> g_MarkerSlotStack;
+inline thread_local UINT g_MarkerSlotDepth = 0;
 
-#define DX_MARKER_VALUE(x) x, std::sizeof(x)
-#define SetMarkerStr(x) SetMarker(x, std::sizeof(x))
+inline void WriteGpuScopeMarker( ID3D12GraphicsCommandList* c, UINT slot, UINT value, D3D12_WRITEBUFFERIMMEDIATE_MODE mode ) {
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> c2;
+    if ( FAILED( c->QueryInterface( IID_PPV_ARGS( c2.GetAddressOf() ) ) ) ) return;
+    const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER param = { g_GpuScopeMarkers.Va + slot * sizeof( UINT ), value };
+    c2->WriteBufferImmediate( 1, &param, &mode );
+}
 
-// text must outlive the frame: the breadcrumb ring keeps the pointer.
 inline void BeginDXMarker( ID3D12GraphicsCommandList* c, const wchar_t* text, size_t len ) {
-    // Track exactly what string context we are assigning to the CURRENT command slot
-    if ( g_CurrentRecordingOpIndex < g_CpuContextHistory.size() ) {
-        g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
-    }
     c->BeginEvent( 0, text, static_cast<UINT>( (len + 1) * sizeof( wchar_t ) ) );
-    // Increment tracking slot to match what DRED maps under the hood
-    g_CurrentRecordingOpIndex++;
+    UINT slot = UINT_MAX;
+    if ( GpuScopeMarkers& m = g_GpuScopeMarkers; m.Va ) {
+        slot = m.Next.fetch_add( 1, std::memory_order_relaxed ) % GpuScopeMarkers::kSlots;
+        m.Names[slot] = text;
+        m.Cpu[slot] = 0;
+        WriteGpuScopeMarker( c, slot, 1, D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN );
+    }
+    if ( g_MarkerSlotDepth < g_MarkerSlotStack.size() ) g_MarkerSlotStack[g_MarkerSlotDepth] = slot;
+    ++g_MarkerSlotDepth;
+}
+
+// Pops the scope without recording anything (its list was already closed).
+inline UINT PopDXMarkerSlot() {
+    if ( g_MarkerSlotDepth == 0 ) return UINT_MAX;
+    --g_MarkerSlotDepth;
+    return g_MarkerSlotDepth < g_MarkerSlotStack.size() ? g_MarkerSlotStack[g_MarkerSlotDepth] : UINT_MAX;
 }
 
 inline void EndDXMarker( ID3D12GraphicsCommandList* c ) {
+    const UINT slot = PopDXMarkerSlot();
+    if ( slot != UINT_MAX && g_GpuScopeMarkers.Va )
+        WriteGpuScopeMarker( c, slot, 2, D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT );
     c->EndEvent();
-    g_CurrentRecordingOpIndex++;
 }
 
 struct DXMarker {
@@ -304,15 +325,15 @@ struct DXMarker {
 
     // Raw-pointer overload: the MT shadow-cascade recorder (PrepareSunShadows / RecordShadowCascade) is handed a
     // bare ID3D12GraphicsCommandList* so the same body can record into m_CmdList or into a per-cascade list.
-    // The breadcrumb ring this writes is thread_local, so concurrent recorders don't collide.
+    // The open-slot stack is thread_local, so concurrent recorders don't collide.
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :
-        DXMarker( commandList, text, wcslen( text ) )
+        DXMarker( commandList, text, text ? wcslen( text ) : 0 )
     {}
 
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text, size_t len ) :
-        c( commandList )
+        c( text ? commandList : nullptr )
     {
-        if ( c && text ) BeginDXMarker( c, text, len );
+        if ( c ) BeginDXMarker( c, text, len );
     }
 
     ~DXMarker() {
@@ -325,14 +346,6 @@ struct DXMarker {
 private:
     ID3D12GraphicsCommandList* c;
 };
-
-// Reset this counter to 0 EVERY TIME you call Reset() on your command list!
-inline void ResetCpuContextTracker() {
-    g_CurrentRecordingOpIndex = 0;
-    for ( auto& slot : g_CpuContextHistory ) {
-        slot.pContextText = nullptr;
-    }
-}
 
 #define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__ = DXMarker::Create(cmdList, L##nameStr)
 

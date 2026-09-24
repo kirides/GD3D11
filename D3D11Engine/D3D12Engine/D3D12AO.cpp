@@ -54,7 +54,7 @@ bool D3D12GraphicsEngine::CreateAOResources( INT2 size ) {
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create an SSAO texture (" << size.x << "x" << size.y << ").";
+            Logging::Wrn( "D3D12: failed to create an SSAO texture ({}x{}).", size.x, size.y );
             return false;
         }
         out->SetName( name );

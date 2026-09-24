@@ -203,7 +203,7 @@ private:
             Sleep( 1 );
         }
 
-        LogWarn() << "zCResourceManager::PurgeCaches: resource thread did not suspend in time";
+        Logging::Wrn( "zCResourceManager::PurgeCaches: resource thread did not suspend in time" );
         return false;
     }
 
@@ -269,9 +269,8 @@ private:
             }
 
             if ( isCorrupted ) {
-                LogWarn() << "zCResourceManager::PurgeCaches: class cache " << i << " (\""
-                    << cache->GetResClassDefName() << "\") has a corrupted resource list - excluding "
-                    "it from this purge.";
+                Logging::Wrn( "zCResourceManager::PurgeCaches: class cache {} (\"{}\") has a corrupted resource list - excluding it from this purge.",
+                    i, cache->GetResClassDefName() );
                 if ( corrupted )
                     corrupted->push_back( i );
             }
@@ -345,8 +344,7 @@ private:
         ClearGoToSuspendGuard clearGoToSuspend( this );
 
         if ( !parked ) {
-            LogWarn() << "zCResourceManager::PurgeCaches: skipping this purge entirely - the class "
-                "cache lists cannot be scanned safely while the resource thread is still running";
+            Logging::Wrn( "zCResourceManager::PurgeCaches: skipping this purge entirely - the class cache lists cannot be scanned safely while the resource thread is still running" );
             return;
         }
 

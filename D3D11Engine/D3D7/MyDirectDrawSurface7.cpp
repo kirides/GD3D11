@@ -253,14 +253,14 @@ static bool LoadResource(
     (void)file->Close();
 
     if (numRead != size) {
-        LogWarn() << "Failed to load " << name << ": short read";
+        Logging::Wrn( "Failed to load {}: short read", name );
         return false;
     }
 
     Engine::GraphicsEngine->CreateTexture( ppTexture );
     if ( XR_SUCCESS != (*ppTexture)->Init( storage.data(), size, name ) ) {
         SAFE_DELETE( *ppTexture );
-        LogWarn() << "Failed to load " << name << ": init failed";
+        Logging::Wrn("Failed to load {}: init failed", name);
         return false;
     }
     return true;
@@ -297,8 +297,8 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         // caches under) somebody else's replacement maps forever. That can only happen if the loading
         // texture leaked across threads or past its load - see GothicAPI::ScopedLoadingTexture.
         if ( MyDirectDrawSurface7* owner = ownedTexture->GetSurface(); owner && owner != this ) {
-            LogWarn() << "LoadAdditionalResources: '" << ownedTexture->GetNameView()
-                << "' does not own this surface - texture name would be wrong, skipping";
+            Logging::Wrn( "LoadAdditionalResources: '{}' does not own this surface - texture name would be wrong, skipping",
+                ownedTexture->GetNameView() );
             return;
         }
 #endif

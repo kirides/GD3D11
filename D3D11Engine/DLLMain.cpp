@@ -16,6 +16,7 @@
 #include "D3D11GraphicsEngine.h"
 
 #include <shlwapi.h>
+#include <psapi.h>
 #include "GSky.h"
 
 #pragma comment(lib, "Imagehlp.lib") // Used in VersionCheck.cpp to get Gothic.exe Checksum.
@@ -36,6 +37,13 @@ bool userHaveAMDGPU = false;
 
 typedef void (WINAPI* DirectDrawSimple)();
 typedef HRESULT( WINAPI* DirectDrawCreateEx_type )(GUID FAR*, LPVOID*, REFIID, IUnknown FAR*);
+
+// Game builds init from the exe entry point: after the loader lock, before Union's WinMain hook loads plugins.
+#if !defined(BUILD_SPACER) && !defined(BUILD_SPACER_NET)
+#define GD3D11_INIT_AT_ENTRY_POINT
+using EntryPointFunc = void( __cdecl* )();
+EntryPointFunc originalEntryPoint = nullptr;
+#endif
 
 #if defined(BUILD_GOTHIC_2_6_fix)
 using WinMainFunc = decltype(&WinMain);
@@ -194,7 +202,7 @@ void UnquantizeHalfFloat_X8_F16C( unsigned short* input, float* output )
 #endif
 
 void SignalHandler( int signal ) {
-    LogInfo() << "Signal:" << signal;
+    Logging::Inf( "Signal:{}", signal );
     throw "!Access Violation!";
 }
 
@@ -258,7 +266,7 @@ extern "C" void WINAPI HookedAcquireDDThreadLock() {
         return;
     }
     // Do nothing
-    LogInfo() << "AcquireDDThreadLock called!";
+    Logging::Inf( "AcquireDDThreadLock called!" );
 }
 
 extern "C" void WINAPI HookedReleaseDDThreadLock() {
@@ -267,7 +275,7 @@ extern "C" void WINAPI HookedReleaseDDThreadLock() {
         return;
     }
     // Do nothing
-    LogInfo() << "ReleaseDDThreadLock called!";
+    Logging::Inf( "ReleaseDDThreadLock called!" );
 }
 
 extern "C" float WINAPI UpdateCustomFontMultiplierFontRendering( float multiplier ) {
@@ -425,11 +433,48 @@ void CheckPlatformSupport() {
     }
 }
 
+/** Everything that used to run in DllMain(DLL_PROCESS_ATTACH). Call inside a Detours transaction. */
+void InitializeEngine() {
+    SetupWorkingDirectory();
+    if ( Engine::PassThrough ) {
+        return;
+    }
+
+    Logging::ClearFile();
+    Logging::Inf( "Starting DDRAW Proxy DLL." );
+
+    HRESULT hr = CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
+    if ( hr == RPC_E_CHANGED_MODE ) {
+        hr = CoInitializeEx( NULL, COINIT_MULTITHREADED );
+    }
+
+    if ( hr == S_FALSE || hr == S_OK ) {
+        comInitialized = true;
+        Logging::Inf( "COM initialized" );
+    }
+
+    ZoneScoped;
+
+    // Check for right version
+    VersionCheck::CheckExecutable();
+    CheckPlatformSupport();
+
+    Engine::GAPI = nullptr;
+    Engine::GraphicsEngine = nullptr;
+
+    // Create GothicAPI here to make all hooks work
+    Engine::CreateGothicAPI();
+    HookedFunctions::OriginalFunctions.InitHooks();
+
+    EnableCrashingOnCrashes();
+    //SetUnhandledExceptionFilter(MyUnhandledExceptionFilter);
+}
+
 #if defined(BUILD_GOTHIC_2_6_fix)
 int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd ) {
     if ( GetModuleHandleA( "gmp.dll" ) ) {
         GMPModeActive = true;
-        LogInfo() << "GMP Mode Enabled";
+        Logging::Inf( "GMP Mode Enabled" );
     }
     // Remove automatic volume change of sounds regarding whether the camera is indoor or outdoor
     // TODO: Implement!
@@ -439,6 +484,75 @@ int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR l
         DetourTransactionCommit();
     }
     return originalWinMain( hInstance, hPrevInstance, lpCmdLine, nShowCmd );
+}
+#endif
+
+#if defined(GD3D11_INIT_AT_ENTRY_POINT)
+/** Logs whether a union-api plugin is already live, i.e. whether its DLL-load callback beat our preload. */
+static void LogUnionApiPresence() {
+    HMODULE modules[1024];
+    DWORD bytesNeeded = 0;
+    if ( !EnumProcessModules( GetCurrentProcess(), modules, sizeof( modules ), &bytesNeeded ) ) {
+        return;
+    }
+
+    const DWORD count = std::min<DWORD>( bytesNeeded / sizeof( HMODULE ), static_cast<DWORD>( std::size( modules ) ) );
+    for ( DWORD i = 0; i < count; i++ ) {
+        auto instance = reinterpret_cast<void**>(GetProcAddress( modules[i], "UnionSharedMemoryInstance" ));
+        if ( instance && *instance ) {
+            char name[MAX_PATH] = {};
+            GetModuleFileNameA( modules[i], name, MAX_PATH );
+            Logging::Wrn( "union-api is already active at startup ({}); preloaded DLLs will still be scanned by it.", name );
+            return;
+        }
+    }
+    Logging::Inf( "No union-api plugin active at startup; preloading game-folder DLLs ahead of its DLL-load scanner." );
+}
+
+/** Loads game-folder DLLs we would otherwise load lazily. union-api plugins scan (and patch) every
+    game-folder DLL loaded after them, and the scan overflows its stack on dxcompiler.dll. */
+static void PreloadGameFolderDlls() {
+    LogUnionApiPresence();
+
+    // D3D12-only DLLs are large; keep them out of the address space of D3D11 sessions.
+    if ( !Engine::IsD3D12Requested() ) {
+        return;
+    }
+
+    auto preload = []( const char* path ) {
+        if ( LoadLibraryA( path ) ) {
+            Logging::Inf( "Preloaded {}", path );
+        } else {
+            Logging::Wrn( "Could not preload {} (error {})", path, GetLastError() );
+        }
+    };
+
+    // dxil.dll first: dxcompiler.dll then resolves it by name to the already-loaded module.
+    preload( "dxil.dll" );
+    preload( "dxcompiler.dll" );
+    preload( "ffx_fsr3upscaler_dx12_x86.dll" );
+
+    // Agility SDK core, same location D3D12Device.cpp hands to CreateDeviceFactory.
+    char corePath[MAX_PATH];
+    DWORD len = GetModuleFileNameA( nullptr, corePath, MAX_PATH );
+    if ( len && len < MAX_PATH ) {
+        PathRemoveFileSpecA( corePath );
+        if ( PathAppendA( corePath, "GD3D11\\D3D12\\D3D12Core.dll" ) && PathFileExistsA( corePath ) ) {
+            preload( corePath );
+        }
+    }
+}
+
+/** Replaces the exe's CRT entry point; runs before Gothic's static init and before Union's WinMain hook. */
+static void __cdecl hooked_EntryPoint() {
+    DetourTransactionBegin();
+    InitializeEngine();
+    DetourTransactionCommit();
+
+    if ( !Engine::PassThrough ) {
+        PreloadGameFolderDlls();
+    }
+    originalEntryPoint();
 }
 #endif
 
@@ -457,21 +571,16 @@ int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR l
         PIMAGE_NT_HEADERS nt_header = reinterpret_cast<PIMAGE_NT_HEADERS>(&codeBase[dos_header->e_lfanew]);
         if ( nt_header->Signature == IMAGE_NT_SIGNATURE ) {
             if ( !(nt_header->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) ) {
-                LogErrorBox() << "Allocation failed due to running out of memory or virtual address space!\n"
-                    "Large Address Aware flag in executable is missing.\n"
-                    "You might want to patch your game with 4gb patch so that the game can use more memory.";
+                Logging::ErrBox( "Allocation failed due to running out of memory or virtual address space!\nLarge Address Aware flag in executable is missing.\nYou might want to patch your game with 4gb patch so that the game can use more memory." );
                 exit( -1 );
             }
         }
     }
 
     if ( userHaveAMDGPU ) {
-        LogErrorBox() << "Allocation failed due to running out of memory or virtual address space!\n"
-            "You might experience random crashes when saving game due"
-            " to heavy memory overhead caused by AMD drivers.\n"
-            "It is recommended to use 32-bit DXVK on top of GD3D11 for AMD users.";
+        Logging::ErrBox( "Allocation failed due to running out of memory or virtual address space!\nYou might experience random crashes when saving game due to heavy memory overhead caused by AMD drivers.\nIt is recommended to use 32-bit DXVK on top of GD3D11 for AMD users." );
     } else {
-        LogErrorBox() << "Allocation failed due to running out of memory or virtual address space!";
+        Logging::ErrBox( "Allocation failed due to running out of memory or virtual address space!" );
     }
     exit( -1 );
 }
@@ -493,42 +602,16 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
 
         Engine::PassThrough = false;
 
+        //_CrtSetDbgFlag (_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #if defined(BUILD_GOTHIC_2_6_fix)
         DetourAttachTyped( &originalWinMain, hooked_WinMain  );
 #endif
-
-        //_CrtSetDbgFlag (_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
-        SetupWorkingDirectory();
-        if ( !Engine::PassThrough ) {
-            Log::Clear();
-            LogInfo() << "Starting DDRAW Proxy DLL.";
-
-            HRESULT hr = CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
-            if ( hr == RPC_E_CHANGED_MODE ) {
-                hr = CoInitializeEx( NULL, COINIT_MULTITHREADED );
-            }
-
-            if ( hr == S_FALSE || hr == S_OK ) {
-                comInitialized = true;
-                LogInfo() << "COM initialized";
-            }
-
-            ZoneScoped;
-
-            // Check for right version
-            VersionCheck::CheckExecutable();
-            CheckPlatformSupport();
-
-            Engine::GAPI = nullptr;
-            Engine::GraphicsEngine = nullptr;
-
-            // Create GothicAPI here to make all hooks work
-            Engine::CreateGothicAPI();
-            HookedFunctions::OriginalFunctions.InitHooks();
-
-            EnableCrashingOnCrashes();
-            //SetUnhandledExceptionFilter(MyUnhandledExceptionFilter);
-        }
+#if defined(GD3D11_INIT_AT_ENTRY_POINT)
+        originalEntryPoint = reinterpret_cast<EntryPointFunc>(DetourGetEntryPoint( nullptr ));
+        DetourAttachTyped( &originalEntryPoint, hooked_EntryPoint );
+#else
+        InitializeEngine();
+#endif
         DetourTransactionCommit();
 
         char dllBuf[MAX_PATH];
@@ -573,7 +656,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
             FreeLibrary( ddraw.dll );
         }
 
-        LogInfo() << "DDRAW Proxy DLL signing off.\n";
+        Logging::Inf( "DDRAW Proxy DLL signing off." );
     }
     return TRUE;
 }

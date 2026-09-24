@@ -119,7 +119,7 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         nullptr, m_GtaoWorkingDepthAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_GtaoWorkingDepth.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the XeGTAO working-depth pyramid (" << size.x << "x" << size.y << ").";
+        Logging::Wrn( "D3D12: failed to create the XeGTAO working-depth pyramid ({}x{}).", size.x, size.y );
         return false;
     }
     m_GtaoWorkingDepth->SetName( L"GtaoWorkingDepth" );

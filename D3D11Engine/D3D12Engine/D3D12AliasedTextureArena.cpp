@@ -37,7 +37,7 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     heapDesc.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
 
     if ( FAILED( m_Device->CreateHeap( &heapDesc, IID_PPV_ARGS( m_Heap.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12AliasedTextureArena: failed to create the " << ( kArenaCapacityBytes / ( 1024 * 1024 ) ) << " MB aliasing heap.";
+        Logging::Wrn( "D3D12AliasedTextureArena: failed to create the {} MB aliasing heap.", ( kArenaCapacityBytes / ( 1024 * 1024 ) ) );
         return false;
     }
     m_Heap->SetName( L"D3D12RenderGraph_AliasArena" );
@@ -96,7 +96,7 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
     if ( FAILED( m_Device->CreatePlacedResource( m_Heap.Get(), slotOffset, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET,
         &clear, IID_PPV_ARGS( newResource.ReleaseAndGetAddressOf() ) ) ) ) {
         if ( !m_LoggedExhaustion ) {
-            LogWarn() << "D3D12AliasedTextureArena: failed to place a " << width << "x" << height << " transient texture at offset " << slotOffset << ".";
+            Logging::Wrn( "D3D12AliasedTextureArena: failed to place a {}x{} transient texture at offset {}.", width, height, slotOffset );
             m_LoggedExhaustion = true;
         }
         return nullptr;

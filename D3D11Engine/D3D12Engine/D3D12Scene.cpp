@@ -615,8 +615,8 @@ void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
                 }
             }
         } else if ( !m_SkeletalCBOverflowLogged ) {
-            LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
-                      << " bytes/frame). Skinned inventory preview dropped this frame.";
+            Logging::Wrn( "D3D12: skeletal CB ring overflow ({} bytes/frame). Skinned inventory preview dropped this frame.",
+                      m_SkeletalCBBufferCapacity );
             m_SkeletalCBOverflowLogged = true;
         }
     }
@@ -707,7 +707,6 @@ D3D12CmdList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
 	if ( FAILED( alloc->Reset() ) ) return nullptr;
 	// Through the wrapper, so this slot's state shadow is dropped with the list state it describes.
 	if ( FAILED( cl.Reset( alloc, nullptr ) ) ) return nullptr;
-	ResetCpuContextTracker();   // per-thread breadcrumb ring — see D3D12EngineCommon.h
 	return &cl;
 }
 
@@ -867,8 +866,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		}
 		if ( anyFailed && !m_ShadowRecordFailureLogged ) {
 			m_ShadowRecordFailureLogged = true;   // log once, not once per frame
-			LogWarn() << "D3D12: a shadow pass failed to record into its own command list — re-issued inline "
-				<< "on the main command list (slower, but correct).";
+			Logging::Wrn( "D3D12: a shadow pass failed to record into its own command list — re-issued inline on the main command list (slower, but correct)." );
 		}
 	}
 
@@ -957,7 +955,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
 			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: failed to create a light-cull UAV buffer.";
+			Logging::Wrn( "D3D12: failed to create a light-cull UAV buffer." );
 			return false;
 		}
 		out->SetName( name );
@@ -1259,8 +1257,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		zCVobLight* vob = cand.vob;
 		if ( count >= m_LightBufferCapacity ) {
 			if ( !m_LightOverflowLogged ) {
-				LogWarn() << "D3D12: point-light buffer overflow (" << m_LightBufferCapacity
-					<< " lights/frame). Excess (farthest) lights dropped this frame.";
+				Logging::Wrn( "D3D12: point-light buffer overflow ({} lights/frame). Excess (farthest) lights dropped this frame.",
+					m_LightBufferCapacity );
 				m_LightOverflowLogged = true;
 			}
 			break;
@@ -1500,8 +1498,8 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 		const UINT instBytes = numInstances * static_cast<UINT>(sizeof( ParticleInstanceInfo ));
 		if ( m_ParticleInstanceBufferOffset + instBytes > m_ParticleInstanceBufferCapacity ) {
 			if ( !m_ParticleInstanceOverflowLogged ) {
-				LogWarn() << "D3D12: particle instance ring overflow (" << m_ParticleInstanceBufferCapacity
-					<< " bytes/frame). Some particles dropped this frame.";
+				Logging::Wrn( "D3D12: particle instance ring overflow ({} bytes/frame). Some particles dropped this frame.",
+					m_ParticleInstanceBufferCapacity );
 				m_ParticleInstanceOverflowLogged = true;
 			}
 			break;
@@ -1763,8 +1761,8 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	const UINT instBytes = static_cast<UINT>(gpu.size() * sizeof( DecalInstanceInfo ));
 	if ( m_DecalInstanceBufferOffset + instBytes > m_DecalInstanceBufferCapacity ) {
 		if ( !m_DecalInstanceOverflowLogged ) {
-			LogWarn() << "D3D12: decal instance ring overflow (" << m_DecalInstanceBufferCapacity
-				<< " bytes/frame). Some decals dropped this frame.";
+			Logging::Wrn( "D3D12: decal instance ring overflow ({} bytes/frame). Some decals dropped this frame.",
+				m_DecalInstanceBufferCapacity );
 			m_DecalInstanceOverflowLogged = true;
 		}
 		return;
@@ -1942,8 +1940,8 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 			const UINT boneOff = AlignCB( instOff + instSize );
 			if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
 				if ( !m_SkeletalCBOverflowLogged ) {
-					LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
-						<< " bytes/frame). Some skeletal meshes (including ghosts) dropped this frame.";
+					Logging::Wrn( "D3D12: skeletal CB ring overflow ({} bytes/frame). Some skeletal meshes (including ghosts) dropped this frame.",
+						m_SkeletalCBBufferCapacity );
 					m_SkeletalCBOverflowLogged = true;
 				}
 				continue;
@@ -2985,7 +2983,7 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	// A command that sets root constants must carry the root signature its param index refers to.
 	if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
 		IID_PPV_ARGS( m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the world indirect command signature.";
+		Logging::Wrn( "D3D12: failed to create the world indirect command signature." );
 		return false;
 	}
 
@@ -3179,8 +3177,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             }
             if ( count + alphaCmds.size() >= kMaxWorldDrawCommands ) {
                 if ( !m_WorldDrawArgsOverflowLogged ) {
-                    LogWarn() << "D3D12: world draw-command ring overflow (" << kMaxWorldDrawCommands
-                        << " draws/frame); some world materials dropped this frame.";
+                    Logging::Wrn( "D3D12: world draw-command ring overflow ({} draws/frame); some world materials dropped this frame.",
+                        kMaxWorldDrawCommands );
                     m_WorldDrawArgsOverflowLogged = true;
                 }
                 break;
@@ -3303,7 +3301,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     // Commands set root constants (b6/b4), so the signature must carry the root signature those param indices refer to.
     if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
         IID_PPV_ARGS( m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the VOB indirect command signature.";
+        Logging::Wrn( "D3D12: failed to create the VOB indirect command signature." );
         return false;
     }
 
@@ -3330,7 +3328,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     boundDesc.pArgumentDescs = boundArgs;
     if ( FAILED( device->CreateCommandSignature( &boundDesc, m_Pipelines.World.RootSig.Get(),
         IID_PPV_ARGS( m_VobBoundIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the bound VOB indirect command signature.";
+        Logging::Wrn( "D3D12: failed to create the bound VOB indirect command signature." );
         return false;
     }
 
@@ -3695,8 +3693,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         if ( !staged.empty()
             && count + alphaCmds.size() + cmdsNeeded > maxCommands ) {
             if ( !m_VobDrawArgsOverflowLogged ) {
-                LogWarn() << "D3D12: VOB draw-command ring overflow (" << maxCommands
-                    << " draws/frame); some VOBs dropped this frame.";
+                Logging::Wrn( "D3D12: VOB draw-command ring overflow ({} draws/frame); some VOBs dropped this frame.",
+                    maxCommands );
                 m_VobDrawArgsOverflowLogged = true;
             }
             return finish();
@@ -3799,7 +3797,7 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
     // signature those parameter indices refer to.
     if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
         IID_PPV_ARGS( m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the skeletal indirect command signature.";
+        Logging::Wrn( "D3D12: failed to create the skeletal indirect command signature." );
         return false;
     }
 
@@ -3860,8 +3858,8 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 
     auto logOverflow = [this]( const char* what, UINT cap ) {
         if ( !m_SkeletalDrawArgsOverflowLogged ) {
-            LogWarn() << "D3D12: skeletal " << what << " draw-command ring overflow (" << cap
-                << " draws/frame); some skeletal geometry dropped this frame.";
+            Logging::Wrn( "D3D12: skeletal {} draw-command ring overflow ({} draws/frame); some skeletal geometry dropped this frame.",
+                what, cap );
             m_SkeletalDrawArgsOverflowLogged = true;
         }
         };
@@ -4031,7 +4029,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             const UINT need = instBytes * static_cast<UINT>( b.members.size() );
             if ( m_VobInstanceBufferOffset + need > m_VobInstanceBufferCapacity ) {
                 if ( !m_VobInstanceOverflowLogged ) {
-                    LogWarn() << "D3D12: VOB instance ring overflow (attachment batches dropped this frame).";
+                    Logging::Wrn( "D3D12: VOB instance ring overflow (attachment batches dropped this frame)." );
                     m_VobInstanceOverflowLogged = true;
                 }
                 break;
@@ -4376,8 +4374,8 @@ bool D3D12GraphicsEngine::UploadVobs(
 
         if ( sliceCursor + instBytes > sliceCapacity ) {
             if ( !m_ShadowInstanceOverflowLogged[ringSlot] ) {
-                LogWarn() << "D3D12: shadow VOB instance ring slot " << ringSlot << " overflow ("
-                    << m_ShadowInstanceSliceCapacity << " bytes/slot/frame). Some shadow casters dropped.";
+                Logging::Wrn( "D3D12: shadow VOB instance ring slot {} overflow ({} bytes/slot/frame). Some shadow casters dropped.",
+                    ringSlot, m_ShadowInstanceSliceCapacity );
                 m_ShadowInstanceOverflowLogged[ringSlot] = true;
             }
             break;
@@ -4484,8 +4482,8 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
 
         if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
             if ( !m_VobInstanceOverflowLogged ) {
-                LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
-                    << " bytes/frame). Some VOBs dropped this frame.";
+                Logging::Wrn( "D3D12: VOB instance ring overflow ({} bytes/frame). Some VOBs dropped this frame.",
+                    m_VobInstanceBufferCapacity );
                 m_VobInstanceOverflowLogged = true;
             }
             break;
@@ -4554,8 +4552,8 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
                 // from the raw ring when this happens.
                 m_VobCullVisualOverflowed = true;
                 if ( !m_VobCullVisualOverflowLogged ) {
-                    LogWarn() << "D3D12: VOB cull-record overflow (" << kMaxCullVisuals
-                        << " visuals/frame); the rest render without GPU culling this frame.";
+                    Logging::Wrn( "D3D12: VOB cull-record overflow ({} visuals/frame); the rest render without GPU culling this frame.",
+                        kMaxCullVisuals );
                     m_VobCullVisualOverflowLogged = true;
                 }
             }
@@ -4934,8 +4932,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 const UINT boneOff = AlignCB( instOff + instSize );
                 if ( boneOff + boneSizeTotal > m_SkeletalCBBufferCapacity ) {
                     if ( !m_SkeletalCBOverflowLogged ) {
-                        LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
-                                  << " bytes/frame). Some skeletal meshes dropped this frame.";
+                        Logging::Wrn( "D3D12: skeletal CB ring overflow ({} bytes/frame). Some skeletal meshes dropped this frame.",
+                                  m_SkeletalCBBufferCapacity );
                         m_SkeletalCBOverflowLogged = true;
                     }
                     break;
@@ -5077,7 +5075,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             const UINT instBytes = VobInstanceStride();
                             if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
                                 if ( !m_VobInstanceOverflowLogged ) {
-                                    LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
+                                    Logging::Wrn( "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame)." );
                                     m_VobInstanceOverflowLogged = true;
                                 }
                                 break;

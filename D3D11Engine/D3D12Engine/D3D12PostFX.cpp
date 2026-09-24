@@ -98,7 +98,7 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
 			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: failed to create a bloom pyramid texture (" << w << "x" << h << ").";
+			Logging::Wrn( "D3D12: failed to create a bloom pyramid texture ({}x{}).", w, h );
 			return false;
 		}
 		out->SetName( name );
@@ -234,7 +234,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// Each level's t0 (variable source) is written into the pair slot right before dispatch; t1 (down[i]) was
 	// already written once at creation (CreateBloomResources) and never changes.
 	D3D12_SHADER_RESOURCE_VIEW_DESC upSrcSrvDesc = {};
-	upSrcSrvDesc.Format = kSceneColorFormat;
+	upSrcSrvDesc.Format = kPostFxDownsampledFormat;   // views bloom mips, not the scene colour
 	upSrcSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	upSrcSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	upSrcSrvDesc.Texture2D.MipLevels = 1;
@@ -330,7 +330,7 @@ bool D3D12GraphicsEngine::CreateLumAdaptedBuffer() {
 	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_LumAdaptedBufferAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_LumAdaptedBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the dynamic-exposure adapted-luminance buffer.";
+		Logging::Wrn( "D3D12: failed to create the dynamic-exposure adapted-luminance buffer." );
 		return false;
 	}
 	m_LumAdaptedBuffer->SetName( L"AdaptedLuminance" );
@@ -366,7 +366,7 @@ bool D3D12GraphicsEngine::CreateLumPartialBuffer( INT2 size ) {
 	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
 		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_LumPartialBufferAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_LumPartialBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: failed to create the dynamic-exposure partial-sum buffer (" << size.x << "x" << size.y << ").";
+		Logging::Wrn( "D3D12: failed to create the dynamic-exposure partial-sum buffer ({}x{}).", size.x, size.y );
 		m_LumPartialCapacity = 0;
 		return false;
 	}
@@ -459,21 +459,21 @@ bool D3D12GraphicsEngine::LoadSmaaTextures() {
 
 	m_SmaaAreaTex = std::make_unique<D3D12Texture>();
 	if ( m_SmaaAreaTex->Init( base + "SMAA_AreaTexDX10.dds" ) != XR_SUCCESS || !m_SmaaAreaTex->HasSRV() ) {
-		LogWarn() << "D3D12: SMAA area LUT not found/loadable (" << base << "SMAA_AreaTexDX10.dds) — SMAA disabled.";
+		Logging::Wrn( "D3D12: SMAA area LUT not found/loadable ({}SMAA_AreaTexDX10.dds) — SMAA disabled.", base );
 		m_SmaaAreaTex.reset();
 		return false;
 	}
 
 	m_SmaaSearchTex = std::make_unique<D3D12Texture>();
 	if ( m_SmaaSearchTex->Init( base + "SMAA_SearchTex.dds" ) != XR_SUCCESS || !m_SmaaSearchTex->HasSRV() ) {
-		LogWarn() << "D3D12: SMAA search LUT not found/loadable (" << base << "SMAA_SearchTex.dds) — SMAA disabled.";
+		Logging::Wrn( "D3D12: SMAA search LUT not found/loadable ({}SMAA_SearchTex.dds) — SMAA disabled.", base );
 		m_SmaaAreaTex.reset();
 		m_SmaaSearchTex.reset();
 		return false;
 	}
 
-	LogInfo() << "D3D12: SMAA LUTs loaded (area " << m_SmaaAreaTex->GetSize().x << "x" << m_SmaaAreaTex->GetSize().y
-		<< ", search " << m_SmaaSearchTex->GetSize().x << "x" << m_SmaaSearchTex->GetSize().y << ").";
+	Logging::Inf( "D3D12: SMAA LUTs loaded (area {}x{}, search {}x{}).",
+		m_SmaaAreaTex->GetSize().x, m_SmaaAreaTex->GetSize().y, m_SmaaSearchTex->GetSize().x, m_SmaaSearchTex->GetSize().y );
 	return true;
 }
 
@@ -512,7 +512,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	for ( UINT i = 0; i < 2; ++i ) {
 		if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
 			m_LdrScratchAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrScratch[i].ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: failed to create LDR display-chain scratch " << i << " (SMAA/sharpen/underwater will be unavailable).";
+			Logging::Wrn( "D3D12: failed to create LDR display-chain scratch {} (SMAA/sharpen/underwater will be unavailable).", i );
 			return false;
 		}
 		m_LdrScratch[i]->SetName( i == 0 ? L"LdrDisplayScratch0" : L"LdrDisplayScratch1" );

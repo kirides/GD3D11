@@ -55,8 +55,8 @@ void BspPortalCuller::BuildFromWorld( zCBspTree* tree ) {
 
     const int numSectors = sectorList.NumInArray;
     if ( numSectors > SECTOR_OUTDOOR ) {
-        LogWarn() << "BspPortalCuller: world has " << numSectors
-            << " sectors, more than the 16-bit sector id space allows - portal culling disabled";
+        Logging::Wrn( "BspPortalCuller: world has {} sectors, more than the 16-bit sector id space allows - portal culling disabled",
+            numSectors );
         return;
     }
 
@@ -175,13 +175,11 @@ void BspPortalCuller::BuildFromWorld( zCBspTree* tree ) {
     LastStats.NumSectors = numSectors;
     LastStats.NumPortals = static_cast<int>(Portals.size());
 
-    LogInfo() << "BspPortalCuller: " << numSectors << " sectors, " << Portals.size()
-        << " portals (" << OutdoorEntryPortals.size() << " outdoor entries), "
-        << numLeafsTagged << " leaf/sector links";
+    Logging::Inf( "BspPortalCuller: {} sectors, {} portals ({} outdoor entries), {} leaf/sector links",
+        numSectors, Portals.size(), OutdoorEntryPortals.size(), numLeafsTagged );
     if ( LastStats.UnreachableSectors > 0 ) {
-        LogWarn() << "BspPortalCuller: " << LastStats.UnreachableSectors << " of " << numSectors
-            << " sectors cannot be reached from the outdoor through any portal chain - those are"
-            " never culled. Portal data of this world is incomplete for culling purposes.";
+        Logging::Wrn( "BspPortalCuller: {} of {} sectors cannot be reached from the outdoor through any portal chain - those are never culled. Portal data of this world is incomplete for culling purposes.",
+            LastStats.UnreachableSectors, numSectors );
     }
 }
 
@@ -374,8 +372,8 @@ void BspPortalCuller::ActivateSector( uint16_t sector, const ScreenBox2D& apertu
     if ( --VisitBudget < 0 ) {
         if ( !WarnedBudget ) {
             WarnedBudget = true;
-            LogWarn() << "BspPortalCuller: sector activation budget (" << MAX_SECTOR_VISITS
-                << ") exhausted - portal graph may be cyclic. Culling stays conservative.";
+            Logging::Wrn( "BspPortalCuller: sector activation budget ({}) exhausted - portal graph may be cyclic. Culling stays conservative.",
+                MAX_SECTOR_VISITS );
         }
         return;
     }

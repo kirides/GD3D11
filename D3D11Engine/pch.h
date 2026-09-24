@@ -59,8 +59,8 @@ extern bool FeatureLevel10Compatibility;
 extern bool GMPModeActive;
 
 /** D3D7-Call logging */
-#define DebugWriteValue(value, check) if (value == check) { LogInfo() << " - " << #check; }
-#define DebugWriteFlag(value, check) if ((value & check) == check) { LogInfo() << " - " << #check; }
+#define DebugWriteValue(value, check) if (value == check) { Logging::Inf( " - {}", #check ); }
+#define DebugWriteFlag(value, check) if ((value & check) == check) { Logging::Inf( " - {}", #check ); }
 #define DebugWrite(debugMessage) DebugWrite_i(debugMessage, (void *) this);
 
 /** Debugging */

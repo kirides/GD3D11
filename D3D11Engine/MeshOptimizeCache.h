@@ -89,8 +89,8 @@ namespace MeshOptimizeCache {
         const size_t bytes = EntryBytes( e );
         if ( g_CacheBytes + bytes > kMemoryBudgetBytes ) {
             if ( !g_BudgetCapLogged.exchange( true ) ) {
-                LogInfo() << "Mesh optimize cache: memory tier hit its " << ( kMemoryBudgetBytes >> 20 )
-                    << " MiB budget - further entries this load are disk-only/recomputed, not memoized.";
+                Logging::Inf( "Mesh optimize cache: memory tier hit its {} MiB budget - further entries this load are disk-only/recomputed, not memoized.",
+                    ( kMemoryBudgetBytes >> 20 ) );
             }
             return;
         }
@@ -110,9 +110,8 @@ namespace MeshOptimizeCache {
         // Same cadence rule as MeshLod::ReportStats / MeshShadow::ReportStats: first lookup, then every
         // 500, so silence is never ambiguous between "nothing ran" and "fewer than N lookups happened".
         if ( total != 1 && ( total == 0 || total % 500 != 0 ) ) return;
-        LogInfo() << "Mesh optimize cache: " << g_MemHits.load() << " mem-hit, " << g_DiskHits.load()
-            << " disk-hit / " << total << " lookups (" << g_Cache.size() << " resident, "
-            << g_Misses.load() << " computed)";
+        Logging::Inf( "Mesh optimize cache: {} mem-hit, {} disk-hit / {} lookups ({} resident, {} computed)",
+            g_MemHits.load(), g_DiskHits.load(), total, g_Cache.size(), g_Misses.load() );
     }
 
     namespace Disk {

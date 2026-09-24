@@ -84,8 +84,8 @@ void SharedVisualRegistry::Clear() {
         doomed.reserve( m_Visuals.size() );
         for ( auto const& it : m_Visuals ) {
             if ( it.second->SharedRefs != 0 ) {
-                LogWarn() << "SharedVisualRegistry: dropping attachment visual '" << it.second->VisualName
-                    << "' that still has " << it.second->SharedRefs << " reference(s)";
+                Logging::Wrn( "SharedVisualRegistry: dropping attachment visual '{}' that still has {} reference(s)",
+                    it.second->VisualName, it.second->SharedRefs );
             }
             it.second->SharedKey = nullptr;
             it.second->SharedRefs = 0;
@@ -94,8 +94,8 @@ void SharedVisualRegistry::Clear() {
         m_Visuals.clear();
 
         if ( m_TotalAcquires ) {
-            LogInfo() << "SharedVisualRegistry: " << m_TotalAcquires << " attachment(s) served by "
-                << m_TotalConversions << " converted mesh(es), peak " << m_PeakSize << " resident";
+            Logging::Inf( "SharedVisualRegistry: {} attachment(s) served by {} converted mesh(es), peak {} resident",
+                m_TotalAcquires, m_TotalConversions, m_PeakSize );
         }
         m_TotalAcquires = 0;
         m_TotalConversions = 0;
