@@ -181,6 +181,8 @@ namespace {
         VkPhysicalDeviceMaintenance5FeaturesKHR Maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
         VkPhysicalDeviceMemoryPriorityFeaturesEXT MemoryPriority = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT };
         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT Eds3 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT };
+        VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR Divisor = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR };
+        const char* DivisorExtension = nullptr;   // KHR, or the older EXT
         VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT Pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
@@ -249,6 +251,10 @@ namespace {
         if ( info.Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) ) { *tail = &info.Maintenance5; tail = &info.Maintenance5.pNext; }
         if ( info.Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) ) { *tail = &info.MemoryPriority; tail = &info.MemoryPriority.pNext; }
         if ( info.Has( VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME ) ) { *tail = &info.Eds3; tail = &info.Eds3.pNext; }
+        // The KHR and EXT feature structs share one layout (the EXT sType is the KHR one's alias).
+        info.DivisorExtension = info.Has( VK_KHR_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME ) ? VK_KHR_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME
+            : info.Has( VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME ) ? VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME : nullptr;
+        if ( info.DivisorExtension ) { *tail = &info.Divisor; tail = &info.Divisor.pNext; }
         if ( info.Has( VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME ) ) { *tail = &info.Pageable; tail = &info.Pageable.pNext; }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
@@ -666,6 +672,11 @@ bool VulkanDevice::Init() {
     memoryPriority.memoryPriority = VK_TRUE;
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
     pageable.pageableDeviceLocalMemory = VK_TRUE;
+    m_Caps.InstanceDivisor = enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
+    m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && info->Divisor.vertexAttributeInstanceRateZeroDivisor;
+    VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR divisor = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR };
+    divisor.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
+    divisor.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
     VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT };
     eds3.extendedDynamicState3ColorBlendEnable = m_Caps.DynamicBlend;
     eds3.extendedDynamicState3ColorBlendEquation = m_Caps.DynamicBlend;
@@ -690,6 +701,7 @@ bool VulkanDevice::Init() {
     if ( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage ) {
         *tail = &eds3; tail = &eds3.pNext;
     }
+    if ( m_Caps.InstanceDivisor ) { *tail = &divisor; tail = &divisor.pNext; }
 
     // --- Queues ---
     const float priority = 1.0f;

@@ -42,6 +42,9 @@ struct VulkanDeviceCaps {
     bool DynamicDepthClamp = false;
     bool DynamicPolygonMode = false;
     bool DynamicAlphaToCoverage = false;
+    /** VK_KHR/EXT_vertex_attribute_divisor: D3D12 InstanceDataStepRate > 1 (and 0 with the zero-divisor feature). */
+    bool InstanceDivisor = false;
+    bool InstanceDivisorZero = false;
 
     uint32_t MaxPushDescriptors = 0;
     uint32_t MaxPushConstantsSize = 0;
