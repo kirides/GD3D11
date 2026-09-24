@@ -40,6 +40,9 @@ public:
     bool        IsHdr() const { return m_ColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT; }
     bool        IsVSync() const { return m_VSync; }
 
+    /** Whether the next Recreate asks for an HDR10 surface format. */
+    void SetHdrRequested( bool hdr ) { m_HdrRequested = hdr; }
+
     /** HDR10 mastering metadata (Rec.709 primaries, like D3D12). No-op without VK_EXT_hdr_metadata or in SDR. */
     void SetHdrMetadata( float maxNits, float minNits, float maxFrameAverageNits );
 
