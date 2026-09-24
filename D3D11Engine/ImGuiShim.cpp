@@ -2,6 +2,9 @@
 #include "GSky.h"
 #include "D3D11PipelineStateCache.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
+#include "VulkanEngine/VulkanDevice.h"
+#define IMGUI_IMPL_VULKAN_USE_VOLK
+#include <imgui_impl_vulkan.h>
 #include <VersionHelpers.h>
 #include <ShellScalingApi.h>
 
@@ -215,6 +218,54 @@ void ImGuiShim::InitD3D12(
     FinishImGuiInit( Window, Resolutions, m_EditorView );
 }
 
+void ImGuiShim::InitVulkan( HWND Window, VulkanDevice& device, int colorFormat, uint32_t minImageCount, uint32_t imageCount )
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = NULL;
+    io.LogFilename = NULL;
+    OutputWindow = Window;
+    ImGui_ImplWin32_Init( OutputWindow );
+
+    // The pipeline is built inside ImGui_ImplVulkan_Init; the format array only has to outlive that call.
+    static VkFormat s_ColorFormat;
+    s_ColorFormat = static_cast<VkFormat>( colorFormat );
+
+    ImGui_ImplVulkan_InitInfo initInfo = {};
+    initInfo.ApiVersion = VK_API_VERSION_1_3;
+    initInfo.Instance = device.GetInstance();
+    initInfo.PhysicalDevice = device.GetPhysicalDevice();
+    initInfo.Device = device.GetDevice();
+    initInfo.QueueFamily = device.GetGraphicsQueueFamily();
+    initInfo.Queue = device.GetGraphicsQueue();
+    initInfo.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE + 64;   // font atlas + preview images
+    initInfo.MinImageCount = minImageCount;
+    initInfo.ImageCount = imageCount;
+    initInfo.UseDynamicRendering = true;
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    initInfo.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &s_ColorFormat;
+    initInfo.CheckVkResultFn = []( VkResult err ) {
+        if ( err < 0 ) Logging::Err( "Vulkan: imgui_impl_vulkan call failed ({}).", VkUtil::ResultToString( err ) );
+    };
+    if ( !ImGui_ImplVulkan_Init( &initInfo ) ) {
+        Logging::Err( "Vulkan: ImGui_ImplVulkan_Init failed; the settings overlay is unavailable." );
+        ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+        return;
+    }
+    m_Backend = Backend::Vulkan;
+
+    Initiated = true;
+    FinishImGuiInit( Window, Resolutions, m_EditorView );
+}
+
+void ImGuiShim::SetVulkanMinImageCount( uint32_t minImageCount )
+{
+    if ( Initiated && m_Backend == Backend::Vulkan ) ImGui_ImplVulkan_SetMinImageCount( minImageCount );
+}
+
 
 ImGuiShim::~ImGuiShim()
 {
@@ -222,6 +273,8 @@ ImGuiShim::~ImGuiShim()
         ImPreview::Reset(); // preview textures belong to the graphics engine, which outlives us
         if ( m_Backend == Backend::D3D12 ) {
             ImGui_ImplDX12_Shutdown();
+        } else if ( m_Backend == Backend::Vulkan ) {
+            ImGui_ImplVulkan_Shutdown();
         } else {
             ImGui_ImplDX11_Shutdown();
         }
@@ -712,6 +765,20 @@ void ImGuiShim::RenderLoopD3D12( ID3D12GraphicsCommandList* commandList )
 
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData( ImGui::GetDrawData(), commandList );
+
+    CallEndFrameScript();
+}
+
+void ImGuiShim::RenderLoopVulkan( VkCommandBuffer_T* commandBuffer )
+{
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    BuildFrameUI();
+
+    ImGui::Render();
+    ImGui_ImplVulkan_RenderDrawData( ImGui::GetDrawData(), commandBuffer );
 
     CallEndFrameScript();
 }

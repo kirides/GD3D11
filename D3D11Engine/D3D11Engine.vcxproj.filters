@@ -807,6 +807,15 @@
     <ClInclude Include="VulkanEngine\VulkanDevice.h">
       <Filter>Engine\Vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="VulkanEngine\VulkanSwapchain.h">
+      <Filter>Engine\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VulkanEngine\VulkanNullResources.h">
+      <Filter>Engine\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VulkanEngine\VulkanGraphicsEngine.h">
+      <Filter>Engine\Vulkan</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1078,6 +1087,18 @@
       <Filter>Engine\Vulkan</Filter>
     </ClCompile>
     <ClCompile Include="VulkanEngine\VulkanDevice.cpp">
+      <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanSwapchain.cpp">
+      <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanNullResources.cpp">
+      <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanGraphicsEngine.cpp">
+      <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanImGui.cpp">
       <Filter>Engine\Vulkan</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">

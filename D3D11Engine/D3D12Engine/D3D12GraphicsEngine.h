@@ -255,7 +255,6 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandleLocked( UINT slot ) const; // caller holds m_SrvHeapMutex
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandleLocked( UINT slot ) const; // caller holds m_SrvHeapMutex
     bool CreateAllocators();
-    void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads
@@ -637,9 +636,6 @@ private:
     INT2  m_Resolution = {};
     // NATIVE swapchain/window size: swapchain, HDR display target, every post-tonemap pass, 2D UI, ImGui.
     INT2  m_BackbufferResolution = {};
-    // Resolution zCView::SetMode was last handed. SetMode reflows Gothic's whole view hierarchy, so it may
-    // only run when this actually changes (see OnBeginFrame).
-    INT2  m_AppliedZViewMode = {};
     // Last ResolutionScalePercent the render targets were built for (D3D11's s_oldResolutionScalePercent).
     int   m_AppliedResolutionScalePercent = 100;
     int   m_PendingResolutionScalePercent = 0;   // value currently being waited out (0 = nothing pending)

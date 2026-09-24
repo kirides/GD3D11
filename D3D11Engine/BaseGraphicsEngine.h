@@ -436,6 +436,13 @@ public:
         slightly differently today. */
     void ApplyWindowStyle( WindowModes windowMode, RECT windowRect, UINT swpFlags = SWP_SHOWWINDOW | SWP_FRAMECHANGED );
 
+    /** Sizes the OS window to the target resolution (borderless when it covers the desktop, else a fixed
+        windowed client area) and tells Gothic about the mode. Used by the flip-model backends (D3D12, Vulkan). */
+    void ResizeOutputWindow( INT2 size );
+
+    /** zCView::SetMode reflows Gothic's whole view tree, so it only runs when the backbuffer size changed. */
+    void ApplyZViewModeIfChanged( INT2 backbufferSize );
+
     /** Focus tracking + cursor-clip. UpdateFocus is idempotent — it re-checks GetForegroundWindow()
         itself and only acts on a genuine transition — and calls UpdateClipCursor() when the state
         actually flips. UpdateClipCursor claims ClipCursor() to the window's client rect while the
@@ -473,6 +480,8 @@ protected:
     HWND m_OutputWindow = nullptr;
     bool m_IsWindowActive = false;
     INT2 m_NewResolution = {};
+    /** Resolution zCView::SetMode was last handed (see ApplyZViewModeIfChanged). */
+    INT2 m_AppliedZViewMode = {};
     std::vector<DisplayModeInfo> m_CachedDisplayModes;
 
     /** Shared by every backend via FrameLimiterBeginFrame/FrameLimiterEndFrame. */

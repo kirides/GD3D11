@@ -14,11 +14,13 @@
 #include "ImGuiEditorView.h"
 
 class D3D12GraphicsEngine;
+class VulkanDevice;
+struct VkCommandBuffer_T;
 
 class ImGuiShim {
 public:
     /** Which renderer backend the ImGui context was initialized for. */
-    enum class Backend { None, D3D11, D3D12 };
+    enum class Backend { None, D3D11, D3D12, Vulkan };
 
     ImGuiShim() {};
     virtual ~ImGuiShim();
@@ -31,11 +33,20 @@ public:
     virtual void InitD3D12( HWND Window, D3D12GraphicsEngine* engine, ID3D12Device* device,
         ID3D12CommandQueue* queue, int numFramesInFlight, DXGI_FORMAT rtvFormat, ID3D12DescriptorHeap* srvHeap );
 
+    /** Vulkan initialization path: imgui_impl_vulkan with dynamic rendering into a `colorFormat` (VkFormat)
+        target and its own small descriptor pool. */
+    virtual void InitVulkan( HWND Window, VulkanDevice& device, int colorFormat, uint32_t minImageCount, uint32_t imageCount );
+
     virtual void RenderLoop();
 
     /** D3D12 per-frame UI: builds the frame and records the ImGui draw data into the supplied command
         list (which must have the engine's shader-visible SRV heap bound and a render target set). */
     virtual void RenderLoopD3D12( ID3D12GraphicsCommandList* commandList );
+
+    /** Vulkan per-frame UI, recorded inside an open dynamic-rendering scope on the display target. */
+    virtual void RenderLoopVulkan( VkCommandBuffer_T* commandBuffer );
+    /** Call after a swapchain rebuild changed the image count. */
+    void SetVulkanMinImageCount( uint32_t minImageCount );
     virtual LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
     virtual void OnResize( INT2 newSize );
     bool Initiated = false;
