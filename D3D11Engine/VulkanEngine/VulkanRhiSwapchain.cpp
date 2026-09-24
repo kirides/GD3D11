@@ -35,6 +35,8 @@ namespace VulkanRhi {
         void FlushAcquireWait();
         bool Rebuild();
         void SyncWrappers();
+        /** No image to draw into (minimized, failed acquire): the current wrapper renders into a private image. */
+        void UseStandIn();
         DXGI_FORMAT DxgiFormat() const {
             return m_Swapchain.GetFormat() == VK_FORMAT_B8G8R8A8_UNORM ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R10G10B10A2_UNORM;
         }
@@ -50,6 +52,8 @@ namespace VulkanRhi {
         bool m_Acquired = false;
         bool m_NeedsRebuild = false;
         bool m_VSync = true;
+        ComPtr<Rhi::Resource> m_StandIn;
+        bool m_OnStandIn = false;
     };
 
     SwapchainImpl::~SwapchainImpl() {
@@ -81,6 +85,7 @@ namespace VulkanRhi {
             ResourceImpl* r = m_Images[i].Get();
             r->ReleaseViews();
             r->m_Image = m_Swapchain.GetImage( i );
+            r->m_IsSwapchain = true;
             r->m_Format = m_Swapchain.GetFormat();
             r->m_Aspect = VK_IMAGE_ASPECT_COLOR_BIT;
             r->m_Usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -98,6 +103,10 @@ namespace VulkanRhi {
             d.Format = DxgiFormat();
             d.SampleDesc.Count = 1;
             d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        }
+        if ( m_Swapchain.GetImageCount() > 0 ) {
+            m_OnStandIn = false;
+            m_StandIn.Reset();
         }
         if ( m_Swapchain.GetImageCount() > m_Desc.BufferCount ) {
             Logging::Wrn( "Vulkan: the swapchain has {} images, {} were requested.", m_Swapchain.GetImageCount(), m_Desc.BufferCount );
@@ -126,9 +135,30 @@ namespace VulkanRhi {
         return m_Swapchain.IsUsable();
     }
 
+    void SwapchainImpl::UseStandIn() {
+        if ( m_OnStandIn || m_ImageIndex >= m_Images.size() ) return;
+        ResourceImpl* r = m_Images[m_ImageIndex].Get();
+        if ( !m_StandIn || m_StandIn->GetDesc().Width != r->m_Desc.Width || m_StandIn->GetDesc().Height != r->m_Desc.Height ) {
+            m_StandIn.Reset();
+            if ( !r->m_Desc.Width || FAILED( m_Device->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &r->m_Desc,
+                D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_StandIn.GetAddressOf(), 0 ) ) ) {
+                return;
+            }
+        }
+        // The old swapchain's images may still be with the presentation engine; the frame goes nowhere instead.
+        r->ReleaseViews();
+        r->m_Image = ToImpl( m_StandIn.Get() )->m_Image;
+        r->m_IsSwapchain = false;
+        r->m_Layouts.assign( 1, VK_IMAGE_LAYOUT_UNDEFINED );
+        m_OnStandIn = true;
+    }
+
     bool SwapchainImpl::Acquire() {
-        if ( m_NeedsRebuild && !Rebuild() ) return false;
+        // Minimized: nothing to acquire, and no present will report OUT_OF_DATE, so retry once it is restored.
+        if ( !m_Swapchain.IsUsable() && IsIconic( m_Desc.Window ) ) return false;
+        if ( ( m_NeedsRebuild || !m_Swapchain.IsUsable() ) && !Rebuild() ) return false;
         if ( !m_Swapchain.IsUsable() || m_AcquireSemaphores.empty() ) return false;
+        if ( m_OnStandIn ) SyncWrappers();
         for ( int attempt = 0; attempt < 2; ++attempt ) {
             AcquireSemaphore& a = m_AcquireSemaphores[m_NextAcquire];
             if ( a.Serial && !m_Device->Queue()->WaitSerial( a.Serial ) ) return false;
@@ -161,7 +191,7 @@ namespace VulkanRhi {
     }
 
     UINT SwapchainImpl::GetCurrentBackBufferIndex() {
-        if ( !m_Acquired ) Acquire();
+        if ( !m_Acquired && !Acquire() ) UseStandIn();
         return m_ImageIndex;
     }
 
