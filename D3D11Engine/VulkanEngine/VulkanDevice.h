@@ -21,6 +21,8 @@ struct VulkanDeviceCaps {
     bool HdrMetadata = false;
     bool NullDescriptor = false;        // robustness2: unbound-but-used slots read zero instead of faulting
     bool MemoryBudget = false;
+    bool MemoryPriority = false;       // allocations carry a residency priority
+    bool PageableMemory = false;       // the OS may page device-local memory out under pressure, like D3D12
     bool DeviceFault = false;
     bool BufferMarkerAMD = false;
     bool DiagnosticCheckpointsNV = false;

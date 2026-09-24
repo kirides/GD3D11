@@ -179,6 +179,8 @@ namespace {
         VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT Dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
         VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT DgcProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT };
         VkPhysicalDeviceMaintenance5FeaturesKHR Maintenance5 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR };
+        VkPhysicalDeviceMemoryPriorityFeaturesEXT MemoryPriority = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT };
+        VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT Pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
 
@@ -244,6 +246,8 @@ namespace {
         if ( info.Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) ) { *tail = &info.Fault; tail = &info.Fault.pNext; }
         if ( info.Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) ) { *tail = &info.Dgc; tail = &info.Dgc.pNext; }
         if ( info.Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) ) { *tail = &info.Maintenance5; tail = &info.Maintenance5.pNext; }
+        if ( info.Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) ) { *tail = &info.MemoryPriority; tail = &info.MemoryPriority.pNext; }
+        if ( info.Has( VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME ) ) { *tail = &info.Pageable; tail = &info.Pageable.pNext; }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
         vkGetPhysicalDeviceQueueFamilyProperties( device, &count, nullptr );
@@ -550,6 +554,10 @@ bool VulkanDevice::Init() {
     };
     m_Caps.NullDescriptor = enableIf( info->Robustness2Extension && info->Robustness2.nullDescriptor, info->Robustness2Extension );
     m_Caps.MemoryBudget = enableIf( info->Has( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME ), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
+    m_Caps.MemoryPriority = enableIf( info->Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) && info->MemoryPriority.memoryPriority,
+        VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME );
+    m_Caps.PageableMemory = enableIf( m_Caps.MemoryPriority && info->Has( VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME )
+        && info->Pageable.pageableDeviceLocalMemory, VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME );
     m_Caps.DeviceFault = enableIf( info->Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) && info->Fault.deviceFault, VK_EXT_DEVICE_FAULT_EXTENSION_NAME );
     m_Caps.BufferMarkerAMD = enableIf( info->Has( VK_AMD_BUFFER_MARKER_EXTENSION_NAME ), VK_AMD_BUFFER_MARKER_EXTENSION_NAME );
     m_Caps.DiagnosticCheckpointsNV = enableIf( info->Has( VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME ),
@@ -642,6 +650,10 @@ bool VulkanDevice::Init() {
     maintenance5.maintenance5 = VK_TRUE;
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT dgc = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT };
     dgc.deviceGeneratedCommands = VK_TRUE;
+    VkPhysicalDeviceMemoryPriorityFeaturesEXT memoryPriority = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PRIORITY_FEATURES_EXT };
+    memoryPriority.memoryPriority = VK_TRUE;
+    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
+    pageable.pageableDeviceLocalMemory = VK_TRUE;
 
     features.pNext = &f11;
     f11.pNext = &f12;
@@ -654,6 +666,8 @@ bool VulkanDevice::Init() {
         *tail = &maintenance5; tail = &maintenance5.pNext;
         *tail = &dgc; tail = &dgc.pNext;
     }
+    if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
+    if ( m_Caps.PageableMemory ) { *tail = &pageable; tail = &pageable.pNext; }
 
     // --- Queues ---
     const float priority = 1.0f;
