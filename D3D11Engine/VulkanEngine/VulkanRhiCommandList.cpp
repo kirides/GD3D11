@@ -165,6 +165,9 @@ namespace VulkanRhi {
             VkPipelineStageFlags2 stage, VkAccessFlags2 access );
         /** D3D12's implicit decay: subresources a copy promoted return to where they rested. */
         void DecayPromoted();
+        /** Copy-queue lists: everything they touched decays to COMMON when they finish, like on D3D12. */
+        void TouchedOnCopyList( ResourceImpl* r );
+        void DecayCopyListImages();
         void CopyResourceImpl( Rhi::Resource* dst, Rhi::Resource* src );
         void CopyTextureRegionImpl( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,
             const Rhi::TextureCopyLocation* src, const D3D12_BOX* srcBox );
@@ -208,6 +211,7 @@ namespace VulkanRhi {
         static constexpr uint32_t kMaxPromotions = 64;
         Promotion m_Promoted[kMaxPromotions] = {};
         uint32_t m_PromotedCount = 0;
+        std::vector<ComPtr<ResourceImpl>> m_CopyTouched;   // COPY lists only; keeps its capacity across resets
 
         uint32_t m_LabelDepth = 0;
         bool m_LoggedIndirect = false;
@@ -256,6 +260,7 @@ namespace VulkanRhi {
         m_InRendering = false;
         m_LabelDepth = 0;
         m_PromotedCount = 0;
+        m_CopyTouched.clear();
     }
 
     HRESULT CommandListImpl::Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
@@ -272,6 +277,7 @@ namespace VulkanRhi {
 
     HRESULT CommandListImpl::Close() {
         EndRenderingScope();
+        DecayCopyListImages();
         if ( m_Device->VkCaps().DebugUtils )
             for ( ; m_LabelDepth > 0; --m_LabelDepth ) vkCmdEndDebugUtilsLabelEXT( m_Cmd );
         m_LabelDepth = 0;
@@ -769,6 +775,7 @@ namespace VulkanRhi {
                     emit( s % r->m_Mips, 1, s / r->m_Mips, 1, r->m_Layouts[s] );
             }
             std::fill( r->m_Layouts.begin(), r->m_Layouts.end(), after.Layout );
+            TouchedOnCopyList( r );
             return;
         }
         uint32_t mip = 0, layer = 0;
@@ -777,6 +784,7 @@ namespace VulkanRhi {
         if ( index >= r->m_Layouts.size() ) return;
         emit( mip, 1, layer, 1, r->m_Layouts[index] );
         r->m_Layouts[index] = after.Layout;
+        TouchedOnCopyList( r );
     }
 
     void CommandListImpl::TransitionBarriers( const Rhi::ResourceTransition* transitions, UINT count ) {
@@ -862,6 +870,43 @@ namespace VulkanRhi {
             }
         }
         FlushBarriers( batch );
+        TouchedOnCopyList( r );
+    }
+
+    void CommandListImpl::TouchedOnCopyList( ResourceImpl* r ) {
+        if ( m_Type != D3D12_COMMAND_LIST_TYPE_COPY || !r || r->IsBuffer() ) return;
+        for ( const auto& t : m_CopyTouched )
+            if ( t.Get() == r ) return;
+        m_CopyTouched.emplace_back( r );
+    }
+
+    void CommandListImpl::DecayCopyListImages() {
+        if ( m_CopyTouched.empty() ) return;
+        BarrierBatch batch;
+        for ( const auto& t : m_CopyTouched ) {
+            ResourceImpl* r = t.Get();
+            const VkImageLayout rest = MapState( D3D12_RESOURCE_STATE_COMMON, r ).Layout;
+            for ( uint32_t sub = 0; sub < r->m_Layouts.size(); ++sub ) {
+                VkImageLayout& current = r->m_Layouts[sub];
+                if ( current == rest ) continue;
+                if ( batch.ImageCount == kMaxBatch ) FlushBarriers( batch );
+                VkImageMemoryBarrier2& b = batch.Images[batch.ImageCount++];
+                b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+                b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+                b.oldLayout = current;
+                b.newLayout = rest;
+                b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.image = r->m_Image;
+                b.subresourceRange = { r->m_Aspect, sub % r->m_Mips, 1, sub / r->m_Mips, 1 };
+                current = rest;
+            }
+        }
+        FlushBarriers( batch );
+        m_CopyTouched.clear();
     }
 
     void CommandListImpl::DecayPromoted() {
