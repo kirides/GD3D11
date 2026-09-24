@@ -558,7 +558,10 @@ bool VulkanDevice::Init() {
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
     constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    m_Caps.DeviceGeneratedCommands = info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
+    // -VKNODGC / GD3D11_VULKAN_NO_DGC=1 fall back to CPU replay, for A/B tests and driver trouble.
+    const bool dgcDisabled = strstr( GetCommandLineA(), "-VKNODGC" ) || strstr( GetCommandLineA(), "-vknodgc" )
+        || GetEnvironmentVariableA( "GD3D11_VULKAN_NO_DGC", nullptr, 0 ) > 0;
+    m_Caps.DeviceGeneratedCommands = !dgcDisabled && info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
         && info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) && info->Maintenance5.maintenance5 && info->Features12.bufferDeviceAddress
         && ( info->DgcProps.supportedIndirectCommandsShaderStages & kDgcStages ) == kDgcStages;
     if ( m_Caps.DeviceGeneratedCommands ) {
