@@ -562,6 +562,7 @@ namespace VulkanRhi {
         ii.tiling = VK_IMAGE_TILING_OPTIMAL;
         ii.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if ( desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        if ( IsTypeless( desc->Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if ( CheckResult( vkCreateImage( Vk(), &ii, nullptr, &r->m_Image ), "vkCreateImage (placed)" ) ) return E_OUTOFMEMORY;
         if ( CheckResult( vmaBindImageMemory2( m_Allocator, h->m_Allocation, offset, r->m_Image, nullptr ), "vmaBindImageMemory2" ) ) {
@@ -592,6 +593,7 @@ namespace VulkanRhi {
         ii.tiling = VK_IMAGE_TILING_OPTIMAL;
         ii.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if ( desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) ii.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+        if ( IsTypeless( desc.Format ) ) ii.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // as CreatePlacedRenderTarget
         VkDeviceImageMemoryRequirements query = { VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS };
         query.pCreateInfo = &ii;
         VkMemoryRequirements2 req = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
