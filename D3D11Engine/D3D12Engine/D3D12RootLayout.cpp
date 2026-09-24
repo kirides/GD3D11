@@ -278,6 +278,7 @@ void D3D12RootLayout::ValidateShaders( std::initializer_list<ShaderRef> shaders 
 #ifdef DEBUG_D3D11
     for ( const ShaderRef& s : shaders ) {
         if ( !s.Code ) continue;   // optional shader that failed to compile / isn't built
+        if ( !D3D12ShaderBackend::IsDxil( s.Code ) ) continue;   // SPIR-V carries no D3D12 reflection
 
         ComPtr<ID3D12ShaderReflection> reflection;
         if ( !D3D12ShaderBackend::Reflect( s.Code, reflection.GetAddressOf() ) )
