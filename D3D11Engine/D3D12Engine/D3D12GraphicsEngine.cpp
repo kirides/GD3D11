@@ -1333,13 +1333,13 @@ float D3D12GraphicsEngine::GetHdrPaperWhiteNits() const {
 
 
 ID3D12Resource* D3D12GraphicsEngine::RealDisplayTarget() const {
-	return m_HdrDisplay ? m_HdrDisplay.Get() : m_BackBuffers[m_FrameIndex].Get();
+	return m_HdrDisplay ? m_HdrDisplay.Get() : m_BackBuffers[m_BackBufferIndex].Get();
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::RealDisplayRtv() const {
 	if ( m_HdrDisplay ) return m_HdrDisplayRtv;
 	D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+	rtv.ptr += static_cast<SIZE_T>( m_BackBufferIndex ) * m_RtvDescriptorSize;
 	return rtv;
 }
 
@@ -1665,7 +1665,7 @@ void D3D12GraphicsEngine::EncodeHdrDisplayToBackBuffer() {
 	m_CmdList->TransitionBarrier( m_HdrDisplay.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 
 	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+	backRtv.ptr += static_cast<SIZE_T>( m_BackBufferIndex ) * m_RtvDescriptorSize;
 	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
 
 	// Display->swapchain, both native (the tonemap resolve already upscaled).
@@ -1923,7 +1923,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         Logging::Err( "D3D12: the swapchain does not support IDXGISwapChain3." );
         return false;
     }
-    m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+    m_BackBufferIndex = m_SwapChain->GetCurrentBackBufferIndex();
 
     // Cap the swapchain's own render-ahead queue to N queued frames (kBackBufferCount - 1: kBackBufferCount
     // itself counts the 1 frame currently in flight too), matching the single wait we do per loop iteration
@@ -2104,7 +2104,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
-    m_CmdList->TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
+    m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
 
     // The swapchain stays transitioned to RENDER_TARGET even in HDR mode — EncodeHdrDisplayToBackBuffer
     // writes it at the end of Present — but everything the frame draws goes to the display target.
@@ -2455,7 +2455,7 @@ XRESULT D3D12GraphicsEngine::Present() {
     // it into the ST.2084 signal the swapchain scans out. No-op in SDR (the display target IS the backbuffer).
     EncodeHdrDisplayToBackBuffer();
 
-    m_CmdList->TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
+    m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
 
     // Submit any batched texture/buffer uploads accumulated this frame and insert the single
     // copy->direct cross-queue wait BEFORE the frame's graphics execute, so everything sampled below
@@ -2545,7 +2545,9 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     m_Device.GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
     m_LastDirectSignal.store( currentFenceValue );
 
-    m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+    // Frame slots cycle on their own; the swapchain image is tracked separately (Vulkan may acquire out of order).
+    m_FrameIndex = ( m_FrameIndex + 1 ) % kBackBufferCount;
+    m_BackBufferIndex = m_SwapChain->GetCurrentBackBufferIndex();
 
     WaitOnFrameFence( m_FenceValues[m_FrameIndex], "MoveToNextFrame" );
     m_FenceValues[m_FrameIndex] = currentFenceValue + 1;
@@ -2962,7 +2964,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 
     m_BackbufferResolution = size;
     m_Resolution = ComputeRenderResolution( size );
-    m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+    m_BackBufferIndex = m_SwapChain->GetCurrentBackBufferIndex();
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateRenderResolutionTargets( m_Resolution ) ) return false;   // GPU idled above
     // ResizeBuffers drops the colour space along with the buffers, and the window may have been dragged to a
