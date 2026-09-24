@@ -10,7 +10,6 @@
 // m_PrevViewProjUnjittered) is the next increment; see D3D12_SSR_WET_SURFACES_PLAN.md (repo root).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 

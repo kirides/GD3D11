@@ -1,7 +1,6 @@
 // D3D12GraphicsEngine — post-FX: bloom pyramid, luminance auto-exposure, SMAA, sharpen.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"

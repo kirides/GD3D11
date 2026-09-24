@@ -23,7 +23,6 @@
 // address-space budget, which is exactly why this stage comes before a probe grid.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../GSky.h"

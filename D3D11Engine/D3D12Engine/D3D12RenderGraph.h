@@ -7,7 +7,8 @@
 #include "D3D12RenderPass.h"
 #include "D3D12AliasedTextureArena.h"
 
-class D3D12CmdList;
+namespace Rhi { class CmdList; }
+using D3D12CmdList = Rhi::CmdList;
 
 // Handle bit-packing, mirrors RenderGraph.h's free functions exactly (kept as a separate copy rather
 // than shared with the D3D11 side: RGResourceHandle is a plain uint32_t typedef with no backend

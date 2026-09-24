@@ -13,6 +13,7 @@
 #include <DirectXMath.h>
 #include <wrl/client.h>
 #include "D3D12TracyDebug.h"
+#include "../RHI/Rhi.h"
 #include "../widenarrow.h"
 #include "../ConstantBufferStructs.h"   // VobInstanceInfo — held by value in FrameAttachDraw
 #include "../Shaders/D3D12/include/GPULightShared.h"   // GPULight — one definition, shared with HLSL
@@ -308,46 +309,38 @@ inline void EndDXMarker( ID3D12GraphicsCommandList* c ) {
 }
 
 struct DXMarker {
-    DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const WideNarrowChars& text ) :
-        DXMarker( commandList.Get(), text.wide, text.len_wide )
+    DXMarker( Rhi::CommandList* commandList, const WideNarrowChars& text ) :
+        DXMarker( commandList, text.wide, text.len_wide, text.narrow )
     {
     }
 
-    DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const wchar_t* text ) :
-        DXMarker( commandList.Get(), text )
-    {
+    template<UINT TWideLen, UINT TNarrowLen>
+    inline static DXMarker Create( Rhi::CommandList* commandList, const wchar_t( &text )[TWideLen], const char( &narrow )[TNarrowLen] ) {
+        return DXMarker( commandList, text, TWideLen - 1, narrow );
     }
 
-    template<UINT TTextLen>
-    inline static DXMarker Create( ID3D12GraphicsCommandList* commandList, const wchar_t( &text )[TTextLen] ) {
-        return DXMarker( commandList, text, TTextLen - 1 );
-    }
-
-    // Raw-pointer overload: the MT shadow-cascade recorder (PrepareSunShadows / RecordShadowCascade) is handed a
-    // bare ID3D12GraphicsCommandList* so the same body can record into m_CmdList or into a per-cascade list.
-    // The open-slot stack is thread_local, so concurrent recorders don't collide.
-    DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :
-        DXMarker( commandList, text, text ? wcslen( text ) : 0 )
+    DXMarker( Rhi::CommandList* commandList, const wchar_t* text ) :
+        DXMarker( commandList, text, text ? wcslen( text ) : 0, nullptr )
     {}
 
-    DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text, size_t len ) :
+    DXMarker( Rhi::CommandList* commandList, const wchar_t* text, size_t len, const char* narrow ) :
         c( text ? commandList : nullptr )
     {
-        if ( c ) BeginDXMarker( c, text, len );
+        if ( c ) c->BeginEvent( text, static_cast<UINT>( len ), narrow );
     }
 
     ~DXMarker() {
-        if ( c ) EndDXMarker( c );
+        if ( c ) c->EndEvent();
     }
 
     DXMarker( const DXMarker& ) = delete;
     DXMarker& operator=( const DXMarker& ) = delete;
 
 private:
-    ID3D12GraphicsCommandList* c;
+    Rhi::CommandList* c;
 };
 
-#define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__ = DXMarker::Create(cmdList, L##nameStr)
+#define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__ = DXMarker::Create(cmdList, L##nameStr, nameStr)
 
 // Simple whole-resource transition barrier (legacy barriers; no enhanced-barrier path on inbox D3D12).
 inline D3D12_RESOURCE_BARRIER TransitionBarrier( ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {

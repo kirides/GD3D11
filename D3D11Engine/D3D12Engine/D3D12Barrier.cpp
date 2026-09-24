@@ -1,7 +1,5 @@
 #include "../pch.h"
 #include "D3D12Barrier.h"
-#include "D3D12StateCache.h"
-#include "D3D12Rhi.h"
 #include "../Logger.h"
 #include <d3dx12_barriers.h>
 
@@ -331,42 +329,4 @@ void D3D12Barriers::Aliasing( ID3D12GraphicsCommandList* list, ID3D12GraphicsCom
     }
     // Placed RT textures must be initialized by a Clear/Copy/Discard before first use (debug layer #1422).
     list->DiscardResource( after, nullptr );
-}
-
-// ---- D3D12CmdList forwarders ------------------------------------------------------------------
-
-void D3D12CmdList::TransitionBarrier( Rhi::Resource* resource, D3D12_RESOURCE_STATES before,
-    D3D12_RESOURCE_STATES after, UINT subresource, D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint ) {
-    D3D12Barriers::Transition( m_List.Get(), EnhancedList(), D3D12Rhi::Native( resource ), before, after, subresource,
-        syncBeforeHint, syncAfterHint );
-}
-
-void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count ) {
-    // Converted in stack chunks; D3D12Barriers re-chunks to its own batch size internally.
-    D3D12NativeTransition native[kMaxBatchedBarriers];
-    for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
-        const UINT n = std::min( count - offset, kMaxBatchedBarriers );
-        for ( UINT i = 0; i < n; ++i ) {
-            const D3D12ResourceTransition& t = transitions[offset + i];
-            native[i] = { D3D12Rhi::Native( t.Resource ), t.Before, t.After, t.Subresource, t.SyncBefore, t.SyncAfter };
-        }
-        D3D12Barriers::Transitions( m_List.Get(), EnhancedList(), native, n );
-    }
-}
-
-void D3D12CmdList::UAVBarrier( Rhi::Resource* resource, D3D12_BARRIER_SYNC syncHint ) {
-    D3D12Barriers::UAV( m_List.Get(), EnhancedList(), D3D12Rhi::Native( resource ), syncHint );
-}
-
-void D3D12CmdList::UAVBarriers( Rhi::Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
-    ID3D12Resource* native[kMaxBatchedBarriers];
-    for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
-        const UINT n = std::min( count - offset, kMaxBatchedBarriers );
-        for ( UINT i = 0; i < n; ++i ) native[i] = D3D12Rhi::Native( resources[offset + i] );
-        D3D12Barriers::UAVs( m_List.Get(), EnhancedList(), native, n, syncHint );
-    }
-}
-
-void D3D12CmdList::AliasingBarrier( Rhi::Resource* before, D3D12_RESOURCE_STATES beforeState, Rhi::Resource* after ) {
-    D3D12Barriers::Aliasing( m_List.Get(), EnhancedList(), D3D12Rhi::Native( before ), beforeState, D3D12Rhi::Native( after ) );
 }

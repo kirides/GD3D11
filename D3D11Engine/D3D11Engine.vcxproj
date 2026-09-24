@@ -1146,6 +1146,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="VulkanEngine\VulkanNullResources.h" />
     <ClInclude Include="VulkanEngine\VulkanGraphicsEngine.h" />
     <ClInclude Include="RHI\Rhi.h" />
+    <ClInclude Include="RHI\RhiCmdList.h" />
     <ClInclude Include="D3D12Engine\D3D12Rhi.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />

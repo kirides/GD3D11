@@ -11,7 +11,8 @@
 #include "D3D12PooledDescriptorHeap.h"
 
 class D3D12GraphicsEngine;
-class D3D12CmdList;
+namespace Rhi { class CmdList; }
+using D3D12CmdList = Rhi::CmdList;
 
 /** Backing store for D3D12RenderGraph's transient textures: ONE DEFAULT-heap ID3D12Heap that multiple,
     non-overlapping-lifetime resources are placed into at different byte offsets via CreatePlacedResource

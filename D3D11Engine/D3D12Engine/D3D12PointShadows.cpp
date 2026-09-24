@@ -3,7 +3,6 @@
 #include "../pch.h"
 #include "D3D12PointShadows.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
