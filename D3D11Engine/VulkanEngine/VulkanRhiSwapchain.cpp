@@ -184,6 +184,7 @@ namespace VulkanRhi {
         if ( r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ) m_NeedsRebuild = true;
         else if ( m_Device->CheckResult( r, "vkQueuePresentKHR" ) && m_Device->IsDeviceLost() ) return DXGI_ERROR_DEVICE_REMOVED;
         m_Device->CollectGarbage();
+        m_Device->NotePresent();
         return S_OK;
     }
 
