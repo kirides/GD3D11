@@ -87,6 +87,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     D3D12CmdList::SetEnhancedBarriersDeviceSupport( m_Device.EnhancedBarriersSupported() );
+    InitGpuScopeMarkers();
 
     m_DeviceCapabilities.DeviceDescription = m_Device.GetDeviceDescription();
     DXGI_ADAPTER_DESC1 adapterDesc = {};
@@ -460,6 +461,7 @@ bool D3D12GraphicsEngine::CreateUploadObjects() {
     if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_UploadAllocator.Get(), nullptr, IID_PPV_ARGS( m_UploadCmdList.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_UploadCmdList->SetName( L"Upload" );
     m_UploadCmdList->Close();
     if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_UploadFence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
@@ -479,6 +481,7 @@ bool D3D12GraphicsEngine::InitCopyQueue() {
 
     if ( FAILED( device->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_CopyQueue->SetName( L"TextureCopyQueue" );
 
     if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_CopyFence.ReleaseAndGetAddressOf() ) ) ) )
         return false;
@@ -824,6 +827,7 @@ bool D3D12GraphicsEngine::BeginCopyBatch() {
 		if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
 			m_CopyBatchAllocator.Get(), nullptr, IID_PPV_ARGS( m_CopyBatchList.ReleaseAndGetAddressOf() ) ) ) )
 			return false;
+		m_CopyBatchList->SetName( L"TextureCopyBatch" );
 		// CreateCommandList returns the list already open for recording.
 	}
 	m_CopyBatchOpen = true;
@@ -2010,6 +2014,7 @@ bool D3D12GraphicsEngine::CreateFrameResources() {
     if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
         m_CmdAllocators[m_FrameIndex].Get(), nullptr, IID_PPV_ARGS( m_CmdList.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_CmdList.Get()->SetName( L"Main" );
     m_CmdList->Close();
 
     // Frame-sync fence
@@ -2117,7 +2122,6 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     // Goes through the state cache, which drops its shadow with the list state Reset just discarded.
     hr = m_CmdList.Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
     if ( FAILED( hr ) ) return XR_FAILED;
-    ResetCpuContextTracker();
     m_CmdList.ResetStats();
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
@@ -2213,6 +2217,7 @@ GraphicsEventRecord D3D12GraphicsEngine::RecordGraphicsEvent( GraphicsEventName 
     return GraphicsEventRecord( this, []( void* context ) {
         D3D12GraphicsEngine* engine = static_cast<D3D12GraphicsEngine*>( context );
         if ( engine->m_FrameOpen && engine->m_CmdList ) EndDXMarker( engine->m_CmdList.Get() );
+        else PopDXMarkerSlot();
     } );
 }
 
@@ -2262,6 +2267,14 @@ static const wchar_t* GetOpName( D3D12_AUTO_BREADCRUMB_OP op ) {
     case D3D12_AUTO_BREADCRUMB_OP_EXECUTEMETACOMMAND: return L"ExecuteMetaCommand";
     case D3D12_AUTO_BREADCRUMB_OP_ESTIMATEMOTION: return L"EstimateMotion";
     case D3D12_AUTO_BREADCRUMB_OP_BARRIER: return L"EnhancedBarrier";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return L"ResolveQueryData";
+    case D3D12_AUTO_BREADCRUMB_OP_ATOMICCOPYBUFFERUINT: return L"AtomicCopyBufferUINT";
+    case D3D12_AUTO_BREADCRUMB_OP_ATOMICCOPYBUFFERUINT64: return L"AtomicCopyBufferUINT64";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCEREGION: return L"ResolveSubresourceRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_WRITEBUFFERIMMEDIATE: return L"WriteBufferImmediate";
+    case D3D12_AUTO_BREADCRUMB_OP_SETPIPELINESTATE1: return L"SetPipelineState1";
+    case D3D12_AUTO_BREADCRUMB_OP_DISPATCHMESH: return L"DispatchMesh";
+    case D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST: return L"BeginCommandList";
     default: return L"Unknown D3D12 Command";
     }
 }
@@ -2272,79 +2285,71 @@ static const wchar_t* SafeWideString( const wchar_t* str ) {
 }
 
 
-static const wchar_t* FindCpuRecordedContext( UINT crashIndex ) {
-    const wchar_t* lastKnownContext = L"Unknown/Outside Scopes";
+// Logs one command list's slice around its first unfinished op, with DRED's BeginEvent scope path if it has one.
+static void PrintActiveNode( const D3D12_AUTO_BREADCRUMB_NODE1* node, UINT completed ) {
+    constexpr UINT kOpsBefore = 12, kOpsAfter = 4;
+    std::unordered_map<UINT, const wchar_t*> contexts;
+    for ( UINT c = 0; c < node->BreadcrumbContextsCount; ++c )
+        contexts[node->pBreadcrumbContexts[c].BreadcrumbIndex] = node->pBreadcrumbContexts[c].pContextString;
 
-    // Look back through what the CPU logged during recording up to the crash point
-    for ( UINT i = 0; i <= crashIndex; ++i ) {
-        if ( i < g_CpuContextHistory.size() && g_CpuContextHistory[i].pContextText != nullptr ) {
-            lastKnownContext = g_CpuContextHistory[i].pContextText;
+    std::vector<std::wstring> scope;
+    const UINT first = completed > kOpsBefore ? completed - kOpsBefore : 0;
+    const UINT last = std::min( node->BreadcrumbCount, completed + kOpsAfter + 1 );
+    for ( UINT i = 0; i < last; ++i ) {
+        const D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[i];
+        const auto ctx = contexts.find( i );
+        if ( op == D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT )
+            scope.emplace_back( ctx != contexts.end() && ctx->second ? ctx->second : L"?" );
+        if ( i >= first ) {
+            std::wstring path;
+            for ( const std::wstring& s : scope ) path.append( path.empty() ? L"" : L" > " ).append( s );
+            if ( op == D3D12_AUTO_BREADCRUMB_OP_SETMARKER && ctx != contexts.end() && ctx->second )
+                path.append( L" : " ).append( ctx->second );
+            // DRED fills contexts only for some marker encodings; without them the GPU scope lines below name the pass.
+            Logging::Err( "  {} #{:<4} {:<24}{}{}", i == completed ? ">>" : ( i < completed ? "  " : " ." ), i,
+                Toolbox::ToMultiByte( GetOpName( op ) ), contexts.empty() ? "" : " [" + Toolbox::ToMultiByte( path ) + "]",
+                i == completed ? "   <-- first unfinished op" : "" );
         }
+        if ( op == D3D12_AUTO_BREADCRUMB_OP_ENDEVENT && !scope.empty() ) scope.pop_back();
     }
-    return lastKnownContext;
 }
 
 
-static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
-    if ( !node ) {
+// Lists run in submission order: DONE lists finished, QUEUED ones never started (waiting behind the fault),
+// the ACTIVE one started and did not finish — that is where the GPU died.
+static void PrintBreadcrumbs( const D3D12_AUTO_BREADCRUMB_NODE1* head ) {
+    const D3D12_AUTO_BREADCRUMB_NODE1* culprit = nullptr;
+    const D3D12_AUTO_BREADCRUMB_NODE1* firstQueued = nullptr;
+    UINT index = 0;
+    for ( const auto* node = head; node; node = node->pNext, ++index ) {
+        const UINT completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+        const char* status = completed >= node->BreadcrumbCount ? "done" : ( completed == 0 ? "queued" : "ACTIVE" );
+        if ( !culprit && completed > 0 && completed < node->BreadcrumbCount ) culprit = node;
+        if ( !firstQueued && completed == 0 && node->BreadcrumbCount > 0 ) firstQueued = node;
+        Logging::Inf( "D3D12 DRED list {:>2}: {:<6} {}/{} ops  list \"{}\" on queue \"{}\"", index, status, completed,
+            node->BreadcrumbCount, Toolbox::ToMultiByte( SafeWideString( node->pCommandListDebugNameW ) ),
+            Toolbox::ToMultiByte( SafeWideString( node->pCommandQueueDebugNameW ) ) );
+    }
+
+    // No partially-finished list: the fault hit the first op of the oldest list that never reported progress.
+    const auto* target = culprit ? culprit : firstQueued;
+    if ( !target ) {
+        Logging::Wrn( "D3D12 DRED: every outstanding list completed; the fault was outside recorded work (e.g. Present)." );
         return;
     }
-
-    std::wstring builder{};
-    builder.reserve(1024);
-
-    builder.append( L"--- Outstanding Command List GPU Breadcrumbs ---\n" );
-    builder.append( L"Command List Debug Name: " ).append( SafeWideString( node->pCommandListDebugNameW ) ).append( L"\n" );
-    builder.append( L"Command Queue Debug Name: " ).append( SafeWideString( node->pCommandQueueDebugNameW ) ).append( L"\n" );
-    Logging::Inf( "{}", Toolbox::ToMultiByte( builder ) );
-
-    // Log out the History of GPU Operations recorded
-    // Note: pLastBreadcrumbValue points to the number of completed operations.
-    // Operations *up to* (*node->pLastBreadcrumbValue) finished. Anything past failed or hung.
-    UINT completedOps = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
-
-    builder.clear();
-    builder.append( L"Completed Op Count: " ).append( std::to_wstring( completedOps ) ).append( L" / " ).append( std::to_wstring( node->BreadcrumbCount ) ).append( L"\n" );
-    Logging::Inf( "{}", Toolbox::ToMultiByte( builder ) );
-
-    for ( UINT i = 0; i < node->BreadcrumbCount; ++i ) {
-        builder.clear();
-
-        if ( i < completedOps ) {
-            builder.append( L" [ok] " );
-        } else if ( i == completedOps ) {
-            builder.append( L" [ERR] " );
-        } else {
-            builder.append( L" [ ] " );
-        }
-
-        builder.append( L"Op #" ).append( std::to_wstring( i ) ).append( L": " );
-        builder.append( GetOpName( node->pCommandHistory[i] ) );
-
-        if ( i == completedOps ) {
-            builder.append( L"   <=== !!! HARDWARE HANG DETECTED AT THIS OPERATION !!!" );
-
-            // Pull the exact recorded context step tied directly to this operation cluster!
-            const wchar_t* contextAtCrash = FindCpuRecordedContext( completedOps );
-            builder.append( L"\n   <=== !!! ACTIVE SCOPE AT TIME OF HARDWARE CRASH: \"" )
-                .append( contextAtCrash ).append( L"\" !!!" );
-        }
-
-        builder.append( L"\n" );
-        Logging::Inf( "{}", Toolbox::ToMultiByte( builder ) );
-    }
-
-    if ( node->pNext ) {
-        PrintNode( node->pNext );
-    }
-#undef PRINT_NODE_FIELD
+    const UINT completed = target->pLastBreadcrumbValue ? *target->pLastBreadcrumbValue : 0;
+    Logging::Err( "D3D12 DRED: GPU stopped in list \"{}\" at op #{} ({}){}:",
+        Toolbox::ToMultiByte( SafeWideString( target->pCommandListDebugNameW ) ), completed,
+        Toolbox::ToMultiByte( GetOpName( target->pCommandHistory[completed] ) ),
+        culprit ? "" : " — no list was mid-way, so this is a best guess" );
+    PrintActiveNode( target, completed );
 }
 
 
+static void PrintGpuScopeMarkers();
+
 static void DiagnoseErrors(ID3D12Device* device) {
-    // Deliberately does NOT read GetPageFaultAllocationOutput: page-fault tracking is only ever turned on
-    // under DEBUG_D3D11 (see D3D12Device::Init) and must never be relied on for player-machine diagnostics.
-    // Auto-breadcrumbs + breadcrumb context are FORCED_ON unconditionally, so this is always available.
+    // Auto-breadcrumbs + context are FORCED_ON unconditionally; page-fault data only in DEBUG_D3D11 builds.
     ComPtr<ID3D12DeviceRemovedExtendedData1> pRemovedExtendedData;
     if ( !device || FAILED( device->QueryInterface( IID_PPV_ARGS( pRemovedExtendedData.ReleaseAndGetAddressOf() ) ) ) ) {
         Logging::Wrn( "D3D12 DiagnoseErrors: ID3D12DeviceRemovedExtendedData1 unavailable, no breadcrumbs to dump." );
@@ -2355,10 +2360,88 @@ static void DiagnoseErrors(ID3D12Device* device) {
     if ( SUCCEEDED( pRemovedExtendedData->GetAutoBreadcrumbsOutput1( &output ) ) ) {
         if ( !output.pHeadAutoBreadcrumbNode )
             Logging::Wrn( "D3D12 DiagnoseErrors: DRED reports no outstanding command lists (breadcrumbs not enabled for this device?)." );
-        PrintNode( output.pHeadAutoBreadcrumbNode );
+        PrintBreadcrumbs( output.pHeadAutoBreadcrumbNode );
     } else {
         Logging::Wrn( "D3D12 DiagnoseErrors: GetAutoBreadcrumbsOutput1 failed, no breadcrumbs to dump." );
     }
+
+    PrintGpuScopeMarkers();
+
+    // Only populated when page-fault tracking is on (DEBUG_D3D11 builds); otherwise VA is 0 and nothing prints.
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 fault = {};
+    if ( SUCCEEDED( pRemovedExtendedData->GetPageFaultAllocationOutput1( &fault ) ) && fault.PageFaultVA ) {
+        Logging::Err( "D3D12 DRED page fault at GPU VA 0x{:016X}.", fault.PageFaultVA );
+        auto dumpNodes = []( const char* label, const D3D12_DRED_ALLOCATION_NODE1* node ) {
+            for ( ; node; node = node->pNext )
+                Logging::Err( "  {}: {}", label, node->ObjectNameW ? Toolbox::ToMultiByte( node->ObjectNameW )
+                    : ( node->ObjectNameA ? node->ObjectNameA : "<unnamed>" ) );
+            };
+        dumpNodes( "existing allocation at VA", fault.pHeadExistingAllocationNode );
+        dumpNodes( "recently freed allocation at VA", fault.pHeadRecentFreedAllocationNode );
+    }
+}
+
+
+void D3D12GraphicsEngine::InitGpuScopeMarkers() {
+    // Memory we own (not a D3D12 heap), so it stays readable after the device is removed.
+    constexpr SIZE_T kBytes = 64 * 1024;
+    static_assert( GpuScopeMarkers::kSlots * sizeof( UINT ) <= kBytes );
+    ComPtr<ID3D12Device3> device3;
+    if ( FAILED( m_Device.GetDevice()->QueryInterface( IID_PPV_ARGS( device3.GetAddressOf() ) ) ) ) return;
+    void* memory = VirtualAlloc( nullptr, kBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE );
+    if ( !memory ) return;
+
+    ComPtr<ID3D12Heap> heap;
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = kBytes;
+    desc.Height = 1;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER;
+    HRESULT hr = device3->OpenExistingHeapFromAddress( memory, IID_PPV_ARGS( heap.GetAddressOf() ) );
+    if ( SUCCEEDED( hr ) )
+        hr = device3->CreatePlacedResource( heap.Get(), 0, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS( g_GpuScopeMarkers.Buffer.ReleaseAndGetAddressOf() ) );
+    if ( FAILED( hr ) ) {
+        Logging::Wrn( "D3D12: GPU scope markers unavailable (0x{:08X}); crash logs will lack scope names.", static_cast<uint32_t>( hr ) );
+        VirtualFree( memory, 0, MEM_RELEASE );
+        return;
+    }
+    g_GpuScopeMarkers.Buffer->SetName( L"GpuScopeMarkers" );
+    g_GpuScopeMarkers.Cpu = static_cast<volatile UINT*>( memory );
+    g_GpuScopeMarkers.Va = g_GpuScopeMarkers.Buffer->GetGPUVirtualAddress();
+}
+
+
+// Scopes whose MARKER_IN landed but whose MARKER_OUT did not: what the GPU was inside when it stopped.
+static void PrintGpuScopeMarkers() {
+    const GpuScopeMarkers& m = g_GpuScopeMarkers;
+    if ( !m.Va ) return;
+    constexpr UINT kWindow = 4096;   // only the most recent markers; older ring slots may hold stale values
+    constexpr UINT kCompletedShown = 6;
+    const UINT next = m.Next.load();
+    const UINT count = std::min( next, kWindow );
+
+    std::vector<UINT> open, completed;
+    for ( UINT n = next - count; n != next; ++n ) {
+        const UINT slot = n % GpuScopeMarkers::kSlots;
+        if ( m.Cpu[slot] == 1 ) open.push_back( slot );
+        else if ( m.Cpu[slot] == 2 ) completed.push_back( slot );
+    }
+    auto name = [&]( UINT slot ) { return Toolbox::ToMultiByte( m.Names[slot] ? m.Names[slot] : L"?" ); };
+
+    const size_t firstShown = completed.size() > kCompletedShown ? completed.size() - kCompletedShown : 0;
+    for ( size_t i = firstShown; i < completed.size(); ++i )
+        Logging::Inf( "D3D12 GPU scope finished:     {}", name( completed[i] ) );
+    if ( open.empty() ) {
+        Logging::Wrn( "D3D12 GPU scope: none open — the GPU stopped outside any marker (or after the last one above)." );
+        return;
+    }
+    for ( UINT slot : open )
+        Logging::Err( "D3D12 GPU scope STILL OPEN:   {}", name( slot ) );
 }
 
 
@@ -2637,6 +2720,9 @@ bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
                 return false;
             }
             // CreateCommandList returns the list already open; close it so BeginShadowRecording's Reset is symmetric.
+            wchar_t name[32];
+            swprintf_s( name, L"Shadow%u[frame %u]", c, i );
+            m_ShadowCmdLists[c][i].Get()->SetName( name );
             m_ShadowCmdLists[c][i]->Close();
         }
     }
@@ -2668,7 +2754,6 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
     m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     if ( FAILED( m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr ) ) ) return;
-    ResetCpuContextTracker();
 
     if ( m_SrvHeap ) {
         ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };

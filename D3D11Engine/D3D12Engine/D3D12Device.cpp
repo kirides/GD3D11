@@ -409,6 +409,7 @@ bool D3D12Device::Init() {
         Logging::Wrn( "D3D12Device::Init: failed to create the direct command queue (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
+    m_DirectQueue->SetName( L"DirectQueue" );
 
     // Copy queue (async texture / buffer uploads)
     D3D12_COMMAND_QUEUE_DESC copyDesc = {};
@@ -419,6 +420,7 @@ bool D3D12Device::Init() {
         Logging::Wrn( "D3D12Device::Init: failed to create the copy command queue (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
+    m_CopyQueue->SetName( L"CopyQueue" );
 
     s_tracyD3D12Ctx = TracyD3D12Context( m_Device.Get(), m_DirectQueue.Get() );
     return true;

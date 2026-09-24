@@ -707,7 +707,6 @@ D3D12CmdList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
 	if ( FAILED( alloc->Reset() ) ) return nullptr;
 	// Through the wrapper, so this slot's state shadow is dropped with the list state it describes.
 	if ( FAILED( cl.Reset( alloc, nullptr ) ) ) return nullptr;
-	ResetCpuContextTracker();   // per-thread breadcrumb ring — see D3D12EngineCommon.h
 	return &cl;
 }
 
