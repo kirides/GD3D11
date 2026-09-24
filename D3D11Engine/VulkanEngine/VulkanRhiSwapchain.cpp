@@ -161,9 +161,11 @@ namespace VulkanRhi {
         if ( m_OnStandIn ) SyncWrappers();
         for ( int attempt = 0; attempt < 2; ++attempt ) {
             AcquireSemaphore& a = m_AcquireSemaphores[m_NextAcquire];
+            const int64_t start = QpcNow();
             if ( a.Serial && !m_Device->Queue()->WaitSerial( a.Serial ) ) return false;
             uint32_t index = 0;
             const VkResult r = m_Swapchain.Acquire( a.Semaphore, index );
+            m_Device->AddWait( DeviceImpl::Wait::Acquire, QpcNow() - start );
             if ( r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR ) {
                 if ( r == VK_SUBOPTIMAL_KHR ) m_NeedsRebuild = true;
                 m_CurrentAcquire = m_NextAcquire;
@@ -209,7 +211,9 @@ namespace VulkanRhi {
         if ( queue->Submit( nullptr, 0, nullptr, 0, &signal, 1, nullptr, 0 ) != VK_SUCCESS ) return DXGI_ERROR_DEVICE_REMOVED;
         m_AcquireSemaphores[m_CurrentAcquire].Serial = queue->SubmittedSerial();
 
+        const int64_t presentStart = QpcNow();
         const VkResult r = m_Swapchain.Present( queue->m_Queue, queue->m_Mutex, m_ImageIndex );
+        m_Device->AddWait( DeviceImpl::Wait::Present, QpcNow() - presentStart );
         m_Acquired = false;
         if ( r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ) m_NeedsRebuild = true;
         else if ( m_Device->CheckResult( r, "vkQueuePresentKHR" ) && m_Device->IsDeviceLost() ) return DXGI_ERROR_DEVICE_REMOVED;
