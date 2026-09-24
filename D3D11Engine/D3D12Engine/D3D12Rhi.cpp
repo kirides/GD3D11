@@ -436,27 +436,42 @@ namespace {
 
     class DeviceImpl final : public Rhi::Device {
     public:
-        DeviceImpl( D3D12Device& device, D3D12MA::Allocator* allocator ) : m_D3D( device ), m_Allocator( allocator ) {
-            m_DirectQueue.Attach( new CommandQueueImpl( device.GetDirectQueue() ) );
-            m_CopyQueue.Attach( new CommandQueueImpl( device.GetCopyQueue() ) );
-            ID3D12Device* d = device.GetDevice();
+        bool Init() {
+            if ( !m_D3D.Init() ) return false;
+
+            D3D12MA::ALLOCATOR_DESC allocatorDesc{};
+            allocatorDesc.pDevice = m_D3D.GetDevice();
+            allocatorDesc.pAdapter = m_D3D.GetAdapter();
+            allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_DEFAULT_POOLS_NOT_ZEROED;
+            if ( GetModuleHandleA( "renderdoc.dll" ) != NULL ) {
+                allocatorDesc.Flags |= D3D12MA::ALLOCATOR_FLAGS::ALLOCATOR_FLAG_ALWAYS_COMMITTED;
+            }
+            if ( FAILED( D3D12MA::CreateAllocator( &allocatorDesc, m_Allocator.ReleaseAndGetAddressOf() ) ) ) {
+                Logging::Err( "D3D12: failed to create the memory allocator." );
+                return false;
+            }
+
+            m_DirectQueue.Attach( new CommandQueueImpl( m_D3D.GetDirectQueue() ) );
+            m_CopyQueue.Attach( new CommandQueueImpl( m_D3D.GetCopyQueue() ) );
+            ID3D12Device* d = m_D3D.GetDevice();
             m_Caps.Api = Rhi::Backend::D3D12;
             m_Caps.Shaders = Rhi::ShaderTarget::DXIL;
-            m_Caps.EnhancedBarriers = device.EnhancedBarriersSupported();
-            m_Caps.LayeredRendering = device.LayeredRenderingSupported();
-            m_Caps.TypedUAVLoadAdditionalFormats = device.TypedUAVLoadAdditionalFormatsSupported();
+            m_Caps.EnhancedBarriers = m_D3D.EnhancedBarriersSupported();
+            m_Caps.LayeredRendering = m_D3D.LayeredRenderingSupported();
+            m_Caps.TypedUAVLoadAdditionalFormats = m_D3D.TypedUAVLoadAdditionalFormatsSupported();
             m_Caps.RootSignature11 = SerializeVersionedRootSignatureProc() != nullptr
                 && QueryHighestRootSignatureVersion( d ) >= D3D_ROOT_SIGNATURE_VERSION_1_1;
-            m_Caps.GpuUploadHeap = allocator && allocator->IsGPUUploadHeapSupported();
+            m_Caps.GpuUploadHeap = m_Allocator->IsGPUUploadHeapSupported();
             m_Caps.AdapterLuid = d->GetAdapterLuid();
             DXGI_ADAPTER_DESC1 adapterDesc = {};
-            if ( device.GetAdapter() && SUCCEEDED( device.GetAdapter()->GetDesc1( &adapterDesc ) ) ) m_Caps.VendorId = adapterDesc.VendorId;
+            if ( m_D3D.GetAdapter() && SUCCEEDED( m_D3D.GetAdapter()->GetDesc1( &adapterDesc ) ) ) m_Caps.VendorId = adapterDesc.VendorId;
             BOOL tearing = FALSE;
             ComPtr<IDXGIFactory5> factory5;
-            if ( device.GetFactory() && SUCCEEDED( device.GetFactory()->QueryInterface( IID_PPV_ARGS( factory5.GetAddressOf() ) ) ) )
+            if ( m_D3D.GetFactory() && SUCCEEDED( m_D3D.GetFactory()->QueryInterface( IID_PPV_ARGS( factory5.GetAddressOf() ) ) ) )
                 factory5->CheckFeatureSupport( DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof( tearing ) );
             m_Caps.TearingSupported = tearing == TRUE;
             if ( m_Caps.EnhancedBarriers ) d->QueryInterface( IID_PPV_ARGS( m_Device10.GetAddressOf() ) );
+            return true;
         }
 
         ID3D12Device* Native() const { return m_D3D.GetDevice(); }
@@ -464,6 +479,23 @@ namespace {
         const Rhi::Caps& GetCaps() const override { return m_Caps; }
         const char* GetDescription() const override { return m_D3D.GetDeviceDescription().c_str(); }
         HRESULT GetDeviceRemovedReason() const override { return Native()->GetDeviceRemovedReason(); }
+        bool GetHdrOutput( float& maxNits, float& minNits, float& maxFullFrameNits ) const override {
+            IDXGIAdapter1* adapter = m_D3D.GetAdapter();
+            if ( !adapter ) return false;
+            ComPtr<IDXGIOutput> output;
+            for ( UINT i = 0; adapter->EnumOutputs( i, output.ReleaseAndGetAddressOf() ) != DXGI_ERROR_NOT_FOUND; ++i ) {
+                ComPtr<IDXGIOutput6> output6;
+                if ( FAILED( output.As( &output6 ) ) ) continue;   // pre-Windows-10-1703: no HDR metadata at all
+                DXGI_OUTPUT_DESC1 desc = {};
+                if ( FAILED( output6->GetDesc1( &desc ) ) ) continue;
+                if ( desc.ColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) continue;   // display not in HDR mode
+                maxNits = desc.MaxLuminance;
+                minNits = desc.MinLuminance;
+                maxFullFrameNits = desc.MaxFullFrameLuminance;
+                return true;
+            }
+            return false;
+        }
         Rhi::CommandQueue* GetDirectQueue() const override { return m_DirectQueue.Get(); }
         Rhi::CommandQueue* GetCopyQueue() const override { return m_CopyQueue.Get(); }
 
@@ -475,7 +507,7 @@ namespace {
             ComPtr<ID3D12Resource> resource;
             HRESULT hr;
             if ( flags & Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) {
-                hr = D3D12ResourceCreate::CreateTexture( m_Allocator, allocDesc, *desc, initialState, clearValue,
+                hr = D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, *desc, initialState, clearValue,
                     allocation.GetAddressOf(), IID_PPV_ARGS( resource.GetAddressOf() ), m_Caps.EnhancedBarriers );
             } else {
                 hr = m_Allocator->CreateResource( &allocDesc, desc, initialState, clearValue, allocation.GetAddressOf(),
@@ -658,8 +690,9 @@ namespace {
             return S_OK;
         }
 
-        D3D12Device& m_D3D;
-        D3D12MA::Allocator* m_Allocator;
+        // The allocator is released before the device it allocates from.
+        D3D12Device m_D3D;
+        ComPtr<D3D12MA::Allocator> m_Allocator;
         ComPtr<ID3D12Device10> m_Device10;   // CreatePlacedResource2; null without enhanced barriers
         ComPtr<Rhi::CommandQueue> m_DirectQueue;
         ComPtr<Rhi::CommandQueue> m_CopyQueue;
@@ -668,10 +701,11 @@ namespace {
 }
 
 namespace D3D12Rhi {
-    ComPtr<Rhi::Device> CreateDevice( D3D12Device& device, D3D12MA::Allocator* allocator ) {
-        ComPtr<Rhi::Device> rhi;
-        rhi.Attach( new DeviceImpl( device, allocator ) );
-        return rhi;
+    ComPtr<Rhi::Device> CreateDevice() {
+        ComPtr<DeviceImpl> device;
+        device.Attach( new DeviceImpl() );
+        if ( !device->Init() ) return nullptr;
+        return device;
     }
 
     ComPtr<Rhi::Resource> WrapResource( ID3D12Resource* resource, D3D12MA::Allocation* allocation ) {
@@ -691,5 +725,5 @@ namespace D3D12Rhi {
     ID3D12GraphicsCommandList* Native( Rhi::CommandList* list ) { return list ? static_cast<CommandListImpl*>( list )->m_List.Get() : nullptr; }
     ID3D12CommandQueue* Native( Rhi::CommandQueue* queue ) { return queue ? static_cast<CommandQueueImpl*>( queue )->m_Queue : nullptr; }
     ID3D12Device* NativeDevice( Rhi::Device* device ) { return device ? static_cast<DeviceImpl*>( device )->Native() : nullptr; }
-    D3D12MA::Allocator* NativeAllocator( Rhi::Device* device ) { return device ? static_cast<DeviceImpl*>( device )->m_Allocator : nullptr; }
+    D3D12MA::Allocator* NativeAllocator( Rhi::Device* device ) { return device ? static_cast<DeviceImpl*>( device )->m_Allocator.Get() : nullptr; }
 }

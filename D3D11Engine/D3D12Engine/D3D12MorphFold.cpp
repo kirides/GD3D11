@@ -49,7 +49,7 @@ bool D3D12GraphicsEngine::CreateMorphFoldResources() {
     }
 
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) {
+    if ( !device ) {
         MorphGpu::SetBackendAvailable( false );
         return false;
     }

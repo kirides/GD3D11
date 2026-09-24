@@ -54,7 +54,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
     m_MotionHistoryValid = false;
     if ( size.x < 4 || size.y < 4 ) return false;
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_RtvHeap || !m_Allocator ) return false;
+    if ( !device || !m_RtvHeap ) return false;
     // Init runs BEFORE the first CreateSwapChain, so if either half of the pipeline setup failed there this
     // must not re-enable the feature by setting m_MotionResourcesReady below. The fill PSO and the mapped CB
     // are exactly the two things Init creates, so testing them covers both failure modes.
@@ -140,7 +140,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
     (the root-CBV alignment quantum) for a 192-byte payload — 768 bytes of 32-bit VA in total. */
 bool D3D12GraphicsEngine::CreateMotionConstantBuffers() {
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) return false;
+    if ( !device ) return false;
 
     D3D12MA::ALLOCATION_DESC allocDesc = {};
     allocDesc.HeapType = DefaultUploadHeapType;

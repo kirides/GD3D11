@@ -56,7 +56,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
     m_TaaPrevDepthValid = false;
     if ( size.x < 4 || size.y < 4 ) return false;
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) return false;
+    if ( !device ) return false;
     // Init runs before the first CreateSwapChain; don't re-enable the feature if the pipeline failed there.
     if ( !m_Pipelines.Taa.PSO ) return false;
 

@@ -59,7 +59,7 @@ bool D3D12GraphicsEngine::CreateDoFResources( INT2 size ) {
     m_DoFCreateAttempted = true;
     if ( size.x < 4 || size.y < 4 ) return false;
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) return false;
+    if ( !device ) return false;
     // Init runs before the first CreateSwapChain; don't build resources for a pipeline that failed there.
     if ( !m_Pipelines.DoF.FocusPSO || !m_Pipelines.DoF.CompositePSO ) return false;
 

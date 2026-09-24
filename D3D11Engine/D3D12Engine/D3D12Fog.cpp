@@ -121,7 +121,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
 
 bool D3D12GraphicsEngine::CreateTransparencyBackdrop( INT2 size ) {
     m_TransparencyBackdrop.Reset();
-    if ( size.x < 4 || size.y < 4 || !m_Allocator ) return false;
+    if ( size.x < 4 || size.y < 4 || !m_Rhi ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
