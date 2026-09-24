@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 // Point-light shadow cubes for the D3D12 backend - the resources and the draws only. Every DECISION (which
 // lights get cubes, in which slots, what is re-rendered this frame, what is sampleable) belongs to
 // PointLightSlotSelector, shared verbatim with D3D11 - see POINTLIGHT_TWO_TIER_PLAN.md.
@@ -133,8 +134,7 @@ private:
 
     // --- STATIC (core) cube array. Baked once per light and cached; nothing is ever composited into it, so
     // its depth stays valid for as long as StaticSlot::valid says it does.
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_StaticCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_StaticCubeAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>       m_StaticCube;
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_StaticDsvHeap;
     UINT m_DsvSize = 0;
     UINT m_StaticSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV, fetched bindlessly
@@ -142,8 +142,7 @@ private:
     // --- DYNAMIC overlay cube array: ONLY this frame's moving casters, never a composite. A slot is cleared
     // and redrawn only on a frame that actually has movers in range; a light with no NPC nearby carries a zero
     // HI half and the shader never reads this array for it.
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_DynCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DynCubeAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>       m_DynCube;
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DynDsvHeap;
     UINT m_DynSrvSlot = UINT_MAX;
 
@@ -154,8 +153,7 @@ private:
     D3D12_RESOURCE_STATES m_DynSlotState[kMaxDynCubes] = {};         // overlay cube; PSR at rest
 
     // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FaceCB[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FaceCBAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_FaceCB[kBackBufferMax];
     uint8_t*                  m_FaceCBMapped[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_FaceCBGpu[kBackBufferMax] = {};
 
@@ -164,8 +162,7 @@ private:
     // nearby casters. Persistently mapped UPLOAD; offset reset at the top of Prepare(); drop+log on overflow
     // (never reallocates — see the 32-bit per-frame-allocation rule).
     static constexpr UINT kMaxVobInstances = 8192;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobInst[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobInst[kBackBufferMax];
     uint8_t*                  m_VobInstPtr[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_VobInstGpu[kBackBufferMax] = {};
     UINT m_VobInstCapacity = 0;   // bytes

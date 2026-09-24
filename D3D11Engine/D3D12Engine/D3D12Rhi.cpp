@@ -29,6 +29,9 @@ namespace {
         }
         void Unmap( UINT subresource, const D3D12_RANGE* writtenRange ) override { m_Resource->Unmap( subresource, writtenRange ); }
         void SetName( LPCWSTR name ) override { m_Resource->SetName( name ); }
+        void SetNameA( const char* name, UINT length ) override {
+            m_Resource->SetPrivateData( WKPDID_D3DDebugObjectName, length, name );
+        }
 
         ComPtr<ID3D12Resource> m_Resource;
         ComPtr<D3D12MA::Allocation> m_Allocation;
@@ -126,7 +129,7 @@ namespace {
         void TransitionBarriers( const Rhi::ResourceTransition* transitions, UINT count ) override {
             // Converted in stack chunks; D3D12Barriers re-chunks to its own batch size internally.
             constexpr UINT kChunk = 64;
-            D3D12ResourceTransition native[kChunk];
+            D3D12NativeTransition native[kChunk];
             for ( UINT offset = 0; offset < count; offset += kChunk ) {
                 const UINT n = std::min( count - offset, kChunk );
                 for ( UINT i = 0; i < n; ++i ) {
@@ -134,7 +137,7 @@ namespace {
                     native[i] = { N( t.Resource ), t.Before, t.After, t.Subresource, t.SyncBefore, t.SyncAfter };
                 }
                 if ( n == 1 ) {
-                    const D3D12ResourceTransition& t = native[0];
+                    const D3D12NativeTransition& t = native[0];
                     D3D12Barriers::Transition( m_List.Get(), m_List7.Get(), t.Resource, t.Before, t.After, t.Subresource, t.SyncBefore, t.SyncAfter );
                 } else {
                     D3D12Barriers::Transitions( m_List.Get(), m_List7.Get(), native, n );

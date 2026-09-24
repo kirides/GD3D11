@@ -63,9 +63,7 @@ bool D3D12GraphicsEngine::CreateLineVertexBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LineVertexBufferAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_LineVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LineVertexBuffer[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_LineVertexBuffer[i]->SetName( i == 0 ? L"LineVertexRing0" : L"LineVertexRing1" );
         D3D12_RANGE noRead = { 0, 0 };

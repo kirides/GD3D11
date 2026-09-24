@@ -13,7 +13,7 @@ D3D12RenderTarget::~D3D12RenderTarget() {
     if ( m_RtvHeap && m_RtvSlot != 0xFFFFFFFFu ) m_RtvHeap->Free( m_RtvSlot );
 }
 
-bool D3D12RenderTarget::CreateViews( ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format, bool needsUav ) {
+bool D3D12RenderTarget::CreateViews( Rhi::Device* device, UINT width, UINT height, DXGI_FORMAT format, bool needsUav ) {
     if ( m_RtvSlot == 0xFFFFFFFFu ) {
         m_RtvSlot = m_RtvHeap->Allocate();
         if ( m_RtvSlot == 0xFFFFFFFFu ) return false;
@@ -50,7 +50,7 @@ bool D3D12RenderTarget::CreateViews( ID3D12Device* device, UINT width, UINT heig
     return true;
 }
 
-bool D3D12RenderTarget::Init( ID3D12Device* device, D3D12MA::Allocator* allocator, D3D12GraphicsEngine* engine,
+bool D3D12RenderTarget::Init( Rhi::Device* device, D3D12GraphicsEngine* engine,
     D3D12PooledDescriptorHeap* rtvHeap, UINT width, UINT height, DXGI_FORMAT format, bool needsUav,
     const wchar_t* debugName ) {
     m_Engine = engine;
@@ -74,8 +74,7 @@ bool D3D12RenderTarget::Init( ID3D12Device* device, D3D12MA::Allocator* allocato
     D3D12MA::ALLOCATION_DESC allocDesc = {};
     allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( allocator, allocDesc, dd, D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &clear, m_Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( device->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, m_Texture.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Wrn( "D3D12TexturePool: failed to create a pooled render target ({}x{}).", width, height );
         return false;
     }
@@ -84,7 +83,7 @@ bool D3D12RenderTarget::Init( ID3D12Device* device, D3D12MA::Allocator* allocato
     return CreateViews( device, width, height, format, needsUav );
 }
 
-bool D3D12RenderTarget::InitPlaced( ID3D12Device* device, ID3D12Resource* resource, D3D12GraphicsEngine* engine,
+bool D3D12RenderTarget::InitPlaced( Rhi::Device* device, Rhi::Resource* resource, D3D12GraphicsEngine* engine,
     D3D12PooledDescriptorHeap* rtvHeap, UINT width, UINT height, DXGI_FORMAT format, bool needsUav,
     const wchar_t* debugName ) {
     m_Engine = engine;
@@ -95,7 +94,7 @@ bool D3D12RenderTarget::InitPlaced( ID3D12Device* device, ID3D12Resource* resour
     return CreateViews( device, width, height, format, needsUav );
 }
 
-bool D3D12RenderTarget::ReplaceResource( ID3D12Device* device, ID3D12Resource* newResource, UINT width, UINT height,
+bool D3D12RenderTarget::ReplaceResource( Rhi::Device* device, Rhi::Resource* newResource, UINT width, UINT height,
     DXGI_FORMAT format, bool needsUav ) {
     // The RTV slot is reused in place (device->CreateRenderTargetView below overwrites its CPU-side
     // descriptor content). That is safe unconditionally: an OM render-target bind snapshots the

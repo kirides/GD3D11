@@ -6,9 +6,8 @@
 
 bool D3D12TexturePool::Attach( D3D12GraphicsEngine& engine ) {
     m_Engine = &engine;
-    m_Device = engine.GetD3DDevice();
-    m_Allocator = engine.GetAllocator();
-    if ( !m_Device || !m_Allocator ) return false;
+    m_Device = engine.GetRhi();
+    if ( !m_Device ) return false;
     return m_RtvHeap.Init( engine.GetRhi(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kMaxPooledTargets, L"D3D12TexturePool_RTV" );
 }
 
@@ -25,7 +24,7 @@ D3D12TexturePool::Handle D3D12TexturePool::Acquire( const Description& desc ) {
         auto tex = std::make_unique<D3D12RenderTarget>();
         wchar_t name[64];
         swprintf_s( name, L"PooledRT_%zu", m_Pool.size() );
-        if ( !tex->Init( m_Device, m_Allocator, m_Engine, &m_RtvHeap, desc.Width, desc.Height, desc.Format, desc.NeedsUav, name ) ) {
+        if ( !tex->Init( m_Device, m_Engine, &m_RtvHeap, desc.Width, desc.Height, desc.Format, desc.NeedsUav, name ) ) {
             Logging::Wrn( "D3D12TexturePool: could not create a pooled render target ({}x{}).", desc.Width, desc.Height );
             return Handle( nullptr );
         }

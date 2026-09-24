@@ -99,7 +99,7 @@ bool D3D12ShadowMap::CreateTextureAndViews( UINT size ) {
 	// Builds/rebuilds just the sized GPU state: the resource + its per-cascade DSVs + the array SRV. Called once
 	// from Init (after the DSV heap + SRV slot are allocated) and again from Resize whenever the resolution
 	// setting changes — the heap/slot themselves don't depend on resolution, so they're untouched.
-	ID3D12Device* device = m_E->m_Device.GetDevice();
+	Rhi::Device* device = m_E->m_Rhi.Get();
 
 	D3D12MA::ALLOCATION_DESC allocDesc = {};
 	allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -120,11 +120,8 @@ bool D3D12ShadowMap::CreateTextureAndViews( UINT size ) {
 	clear.DepthStencil.Depth = 1.0f;        // normal-Z: 1.0 == far (NOT reversed-Z)
 
 	// Born in DEPTH_WRITE; each frame Prepare() writes then transitions to PIXEL_SHADER_RESOURCE and back.
-	m_MapAlloc.Reset();
 	m_Map.Reset();
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), allocDesc, dd,
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_MapAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_Map.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_Map.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) )
 		return false;
 	m_Map->SetName( L"SunShadowMap(D32 array)" );
 	m_InPixelState = false;
@@ -174,7 +171,7 @@ bool D3D12ShadowMap::Init() {
 	// 1.0) state — the directional caster is NOT reversed-Z (mirrors the D3D11 shadow map). Created once at init
 	// (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_Pipelines.World.RootSig to exist.
 	if ( !m_E ) return false;   // Attach() must have run (engine constructor)
-	ID3D12Device* device = m_E->m_Device.GetDevice();
+	Rhi::Device* device = m_E->m_Rhi.Get();
 	if ( !m_E->m_Pipelines.World.RootSig || !m_E->m_Pipelines.World.DepthPrepassVsBlob ) return false;
 
 	// Resolution from the shared quality setting (same knob D3D11 uses), clamped to a sane range. Bigger = smaller
@@ -416,7 +413,7 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 	pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z, matches the other casters
 	pso.DepthStencilState.StencilEnable = FALSE;
 
-	ID3D12Device* device = m_E->m_Device.GetDevice();
+	Rhi::Device* device = m_E->m_Rhi.Get();
 	if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterGrassPSO.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass shadow caster)." );
 		return false;
@@ -434,9 +431,7 @@ bool D3D12ShadowMap::CreateWorldArgRings( const D3D12_RESOURCE_DESC& bufferDesc 
 	upload.HeapType = DefaultUploadHeapType;
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
 		for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-			if ( FAILED( m_E->m_Allocator->CreateResource( &upload, &bufferDesc,
-				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgsAlloc[c][i].ReleaseAndGetAddressOf(),
-				IID_PPV_ARGS( m_WorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
+			if ( FAILED( m_E->m_Rhi->CreateResource( upload.HeapType, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) )
 				return false;
 
 			m_WorldDrawArgs[c][i]->SetName( L"ShadowWorldDrawArgsRing" );
@@ -468,8 +463,7 @@ bool D3D12ShadowMap::CreateVobArgRings( UINT commandStride ) {
 
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
 		for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-			if ( FAILED( m_E->m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-				m_VobDrawArgsAlloc[c][i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
+			if ( FAILED( m_E->m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) )
 				return false;
 			m_VobDrawArgs[c][i]->SetName( L"ShadowVobDrawArgsRing" );
 			D3D12_RANGE noRead = { 0, 0 };

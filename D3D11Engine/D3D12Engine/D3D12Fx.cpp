@@ -94,9 +94,7 @@ bool D3D12GraphicsEngine::CreateFxVertexBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FxVertexBufferAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_FxVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FxVertexBuffer[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_FxVertexBuffer[i]->SetName( i == 0 ? L"FxVertexRing0" : L"FxVertexRing1" );
         D3D12_RANGE noRead = { 0, 0 };

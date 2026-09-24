@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <d3d12.h>
 #include <D3D12MemAlloc.h>
 #include <cstdint>
@@ -83,8 +84,7 @@ public:
     size_t GetActiveCount() const;
 
 private:
-    ID3D12Device* m_Device = nullptr;
-    D3D12MA::Allocator* m_Allocator = nullptr;
+    Rhi::Device* m_Device = nullptr;
     D3D12GraphicsEngine* m_Engine = nullptr;
     D3D12PooledDescriptorHeap m_RtvHeap;
 

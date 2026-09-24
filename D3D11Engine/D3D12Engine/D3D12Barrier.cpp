@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "D3D12Barrier.h"
 #include "D3D12StateCache.h"
+#include "D3D12Rhi.h"
 #include "../Logger.h"
 #include <d3dx12_barriers.h>
 
@@ -128,7 +129,7 @@ namespace {
 
 namespace {
     void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
-        const D3D12ResourceTransition* transitions, UINT count );
+        const D3D12NativeTransition* transitions, UINT count );
     void UAVBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
         ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint );
 }
@@ -164,7 +165,7 @@ void D3D12Barriers::Transition( ID3D12GraphicsCommandList* list, ID3D12GraphicsC
 }
 
 void D3D12Barriers::Transitions( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
-    const D3D12ResourceTransition* transitions, UINT count ) {
+    const D3D12NativeTransition* transitions, UINT count ) {
     // Batches larger than kMaxBatchedBarriers are issued as multiple grouped Barrier() calls
     // (still far fewer than one call per element) rather than degrading to one Barrier() per
     // transition, which would defeat the point of batching for e.g. point-shadow slot updates.
@@ -176,7 +177,7 @@ void D3D12Barriers::Transitions( ID3D12GraphicsCommandList* list, ID3D12Graphics
 
 namespace {
 void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
-    const D3D12ResourceTransition* transitions, UINT count ) {
+    const D3D12NativeTransition* transitions, UINT count ) {
     if ( count == 0 ) return;
 
     if ( list7 ) {
@@ -185,7 +186,7 @@ void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCom
         UINT numTexture = 0, numBuffer = 0;
         bool ok = true;
         for ( UINT i = 0; i < count; ++i ) {
-            const D3D12ResourceTransition& t = transitions[i];
+            const D3D12NativeTransition& t = transitions[i];
             D3D12_BARRIER_SYNC syncBefore, syncAfter;
             D3D12_BARRIER_ACCESS accessBefore, accessAfter;
             D3D12_BARRIER_LAYOUT layoutBefore, layoutAfter;
@@ -218,7 +219,7 @@ void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCom
     D3D12_RESOURCE_BARRIER legacyBarriers[kMaxBatchedBarriers];
     UINT numLegacy = 0;
     for ( UINT i = 0; i < count; ++i ) {
-        const D3D12ResourceTransition& t = transitions[i];
+        const D3D12NativeTransition& t = transitions[i];
         legacyBarriers[numLegacy++] = CD3DX12_RESOURCE_BARRIER::Transition( t.Resource, t.Before, t.After, t.Subresource );
     }
     list->ResourceBarrier( numLegacy, legacyBarriers );
@@ -334,23 +335,38 @@ void D3D12Barriers::Aliasing( ID3D12GraphicsCommandList* list, ID3D12GraphicsCom
 
 // ---- D3D12CmdList forwarders ------------------------------------------------------------------
 
-void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+void D3D12CmdList::TransitionBarrier( Rhi::Resource* resource, D3D12_RESOURCE_STATES before,
     D3D12_RESOURCE_STATES after, UINT subresource, D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint ) {
-    D3D12Barriers::Transition( m_List.Get(), EnhancedList(), resource, before, after, subresource, syncBeforeHint, syncAfterHint );
+    D3D12Barriers::Transition( m_List.Get(), EnhancedList(), D3D12Rhi::Native( resource ), before, after, subresource,
+        syncBeforeHint, syncAfterHint );
 }
 
 void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count ) {
-    D3D12Barriers::Transitions( m_List.Get(), EnhancedList(), transitions, count );
+    // Converted in stack chunks; D3D12Barriers re-chunks to its own batch size internally.
+    D3D12NativeTransition native[kMaxBatchedBarriers];
+    for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
+        const UINT n = std::min( count - offset, kMaxBatchedBarriers );
+        for ( UINT i = 0; i < n; ++i ) {
+            const D3D12ResourceTransition& t = transitions[offset + i];
+            native[i] = { D3D12Rhi::Native( t.Resource ), t.Before, t.After, t.Subresource, t.SyncBefore, t.SyncAfter };
+        }
+        D3D12Barriers::Transitions( m_List.Get(), EnhancedList(), native, n );
+    }
 }
 
-void D3D12CmdList::UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint ) {
-    D3D12Barriers::UAV( m_List.Get(), EnhancedList(), resource, syncHint );
+void D3D12CmdList::UAVBarrier( Rhi::Resource* resource, D3D12_BARRIER_SYNC syncHint ) {
+    D3D12Barriers::UAV( m_List.Get(), EnhancedList(), D3D12Rhi::Native( resource ), syncHint );
 }
 
-void D3D12CmdList::UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
-    D3D12Barriers::UAVs( m_List.Get(), EnhancedList(), resources, count, syncHint );
+void D3D12CmdList::UAVBarriers( Rhi::Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
+    ID3D12Resource* native[kMaxBatchedBarriers];
+    for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
+        const UINT n = std::min( count - offset, kMaxBatchedBarriers );
+        for ( UINT i = 0; i < n; ++i ) native[i] = D3D12Rhi::Native( resources[offset + i] );
+        D3D12Barriers::UAVs( m_List.Get(), EnhancedList(), native, n, syncHint );
+    }
 }
 
-void D3D12CmdList::AliasingBarrier( ID3D12Resource* before, D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after ) {
-    D3D12Barriers::Aliasing( m_List.Get(), EnhancedList(), before, beforeState, after );
+void D3D12CmdList::AliasingBarrier( Rhi::Resource* before, D3D12_RESOURCE_STATES beforeState, Rhi::Resource* after ) {
+    D3D12Barriers::Aliasing( m_List.Get(), EnhancedList(), D3D12Rhi::Native( before ), beforeState, D3D12Rhi::Native( after ) );
 }

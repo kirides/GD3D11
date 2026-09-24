@@ -62,16 +62,11 @@ D3D12Texture::~D3D12Texture()
     //engine->FreeSrvSlot( m_SrvSlot );
     m_HasSrv = false;
 
+    // The resource owns its memory, so deferring it keeps the heap block alive for in-flight frames too.
     if ( m_Texture && m_SrvSlot != 0xFFFFFFFFu ) {
         engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
-    }
-
-    // Defer the backing D3D12MA allocation alongside the resource — releasing it here would return the
-    // heap block to the allocator while the deferred ID3D12Resource is still alive (and possibly still
-    // read by an in-flight frame), so the next placed resource lands on top of it.
-    if ( m_Allocation ) {
-        engine->QueueAllocationForRelease( std::move( m_Allocation ) );
-        m_Allocation.Reset();
+    } else if ( m_Texture ) {
+        engine->QueueResourceForRelease( m_Texture );
     }
 
     m_Texture.Reset();
@@ -124,7 +119,7 @@ XRESULT D3D12Texture::Init( const std::string& file ) {
 void D3D12Texture::SetDebugName( const char* debugName )
 {
     if ( m_Texture ) {
-        m_Texture->SetPrivateData( WKPDID_D3DDebugObjectName, std::strlen( debugName ), debugName );
+        m_Texture->SetNameA( debugName, std::strlen( debugName ) );
     }
 }
 
@@ -201,9 +196,8 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
 
 bool D3D12Texture::CreateAndUpload( const void* data ) {
     D3D12GraphicsEngine* engine = Engine12();
-    ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
-    D3D12MA::Allocator* allocator = engine ? engine->GetAllocator() : nullptr;
-    if ( !device || !allocator || m_Size.x <= 0 || m_Size.y <= 0 || m_Format == DXGI_FORMAT_UNKNOWN ) {
+    Rhi::Device* device = engine ? engine->GetRhi() : nullptr;
+    if ( !device || m_Size.x <= 0 || m_Size.y <= 0 || m_Format == DXGI_FORMAT_UNKNOWN ) {
         return false;
     }
 
@@ -218,10 +212,9 @@ bool D3D12Texture::CreateAndUpload( const void* data ) {
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     td.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    if ( m_Allocation ) {
-        engine->QueueAllocationForRelease( m_Allocation );
-        m_Allocation.Reset();
-        m_Texture.Reset();
+    // Recreating (animated textures): the old resource, and with it its memory, outlives in-flight frames.
+    if ( m_Texture ) {
+        engine->QueueResourceForRelease( std::move( m_Texture ) );
     }
     
     D3D12MA::ALLOCATION_DESC allocDesc = {};
@@ -229,13 +222,7 @@ bool D3D12Texture::CreateAndUpload( const void* data ) {
 
     const D3D12_RESOURCE_STATES initState = D3D12_RESOURCE_STATE_COMMON;
     
-    if ( FAILED( allocator->CreateResource(
-        &allocDesc,
-        &td,
-        initState,
-        nullptr,
-        m_Allocation.ReleaseAndGetAddressOf(),
-        IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( device->CreateResource( allocDesc.HeapType, &td, initState, nullptr, m_Texture.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn("D3D12Texture: D3D12MA::CreateResource failed (format {}, {}x{}, mips {}).", magic_enum::enum_name(m_Format)
                   , m_Size.x, m_Size.y, m_MipMapCount);
         return false;
@@ -243,8 +230,7 @@ bool D3D12Texture::CreateAndUpload( const void* data ) {
 
     {
         const std::string debugName = "Tex:" + ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName );
-        m_Allocation->SetName( std::wstring( debugName.begin(), debugName.end() ).c_str() );
-        m_Texture->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
+        m_Texture->SetNameA( debugName.c_str(), static_cast<UINT>( debugName.size() ) );
     }
 
     if ( !data ) {
@@ -275,7 +261,7 @@ bool D3D12Texture::CreateAndUpload( const void* data ) {
     reused across resource recreations (UpdateData), so a texture's GPU descriptor handle is stable. */
 void D3D12Texture::CreateSRV() {
     D3D12GraphicsEngine* engine = Engine12();
-    ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
+    Rhi::Device* device = engine ? engine->GetRhi() : nullptr;
     if ( !device || !m_Texture ) return;
 
     if ( m_SrvSlot == 0xFFFFFFFFu ) {

@@ -27,7 +27,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
     m_HiZInSrvState = false;
     m_HiZMipCount = 0;
     if ( size.x < 4 || size.y < 4 || !m_DepthBuffer ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     // Mip 0 is HALF the render resolution: the pyramid only ever bounds bounding-box footprints, so full-res
@@ -55,8 +55,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-        m_HiZAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HiZ.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_HiZ.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Wrn( "D3D12: failed to create the Hi-Z pyramid ({}x{}).", m_HiZWidth, m_HiZHeight );
         return false;
     }
@@ -103,7 +102,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
     static_assert( sizeof( VobCullVisual ) == 36, "VobCull.hlsl's VobCullVisual must match this layout" );
 
     m_VobCullReady = false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || m_VobInstanceBufferCapacity == 0 ) return false;
 
     D3D12MA::ALLOCATION_DESC upload = {};
@@ -127,8 +126,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
     {
         D3D12_RESOURCE_DESC bd = makeBufferDesc( static_cast<UINT64>( kMaxCullVisuals ) * sizeof( VobCullVisual ), false );
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-            if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                m_VobCullVisualsAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobCullVisuals[i].ReleaseAndGetAddressOf() ) ) ) ) {
+            if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobCullVisuals[i].ReleaseAndGetAddressOf() ) ) ) {
                 Logging::Wrn( "D3D12: failed to create the VOB cull-record ring." );
                 return false;
             }
@@ -146,8 +144,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
         // Compacted instance output. Same byte layout/offsets as the UPLOAD instance ring, so each command's
         // InstVBV is just "the same offset, different base address" and never needs GPU patching.
         D3D12_RESOURCE_DESC bd = makeBufferDesc( m_VobInstanceBufferCapacity, true );
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-            m_VobCulledInstancesAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobCulledInstances.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_VobCulledInstances.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the compacted VOB instance buffer." );
             return false;
         }
@@ -156,8 +153,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
     {
         // TWO counts per visual (near, far); CSPatchArgs indexes (visualIndex * 2 + LodBucket).
         D3D12_RESOURCE_DESC bd = makeBufferDesc( static_cast<UINT64>( kMaxCullVisuals ) * 2ull * sizeof( uint32_t ), true );
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-            m_VobVisibleCountsAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobVisibleCounts.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_VobVisibleCounts.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the VOB visible-count buffer." );
             return false;
         }
@@ -166,8 +162,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
     {
         // Born in COPY_DEST: every frame starts by copying the CPU-staged commands in (see CullVobsGPU).
         D3D12_RESOURCE_DESC bd = makeBufferDesc( static_cast<UINT64>( kMaxVobDrawCommands ) * sizeof( VobDrawCommand ), true );
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-            m_VobDrawArgsGpuAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobDrawArgsGpu.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, m_VobDrawArgsGpu.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the GPU-patched VOB indirect argument buffer." );
             return false;
         }
@@ -196,7 +191,7 @@ bool D3D12GraphicsEngine::EvaluateGpuVobCulling() const {
 }
 
 
-ID3D12Resource* D3D12GraphicsEngine::GetVobDrawArgsBuffer() const {
+Rhi::Resource* D3D12GraphicsEngine::GetVobDrawArgsBuffer() const {
     if ( !m_GpuVobCullActive ) return m_VobDrawArgs[m_FrameIndex].Get();
     // Culling is on, so this frame's commands were built pointing at m_VobCulledInstances and with unpatched
     // instance counts — the UPLOAD ring is NOT a valid fallback. Gate on the patch having actually happened
@@ -206,7 +201,7 @@ ID3D12Resource* D3D12GraphicsEngine::GetVobDrawArgsBuffer() const {
 }
 
 
-ID3D12Resource* D3D12GraphicsEngine::GetVobInstanceBufferForDraws() const {
+Rhi::Resource* D3D12GraphicsEngine::GetVobInstanceBufferForDraws() const {
     // Which per-instance stream the two main-view VOB passes bind on slot 1. Since the VOB arena removed the
     // per-command instance VBV, this is a single per-pass choice instead: the compacted buffer CSCull wrote
     // when culling is on, the raw upload ring otherwise. It has to agree with what BuildVobDrawCommands

@@ -164,19 +164,19 @@ public:
         copy queue, then defers the staging allocation lifetime until the copy-queue fence reaches the
         submitted value. The caller can then issue a direct-queue transition barrier once the copy has
         completed. */
-    bool UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources );
-    bool UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
+    bool UploadTextureSubresources( Rhi::Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources );
+    bool UploadBufferData( Rhi::Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
         return UploadBufferData( dst, 0, srcData, sizeInBytes );
     }
     /** dstOffset variant, for filling one slice of a larger DEFAULT-heap buffer (the VOB arena). */
-    bool UploadBufferData( ID3D12Resource* dst, UINT64 dstOffset, const void* srcData, UINT64 sizeInBytes );
+    bool UploadBufferData( Rhi::Resource* dst, UINT64 dstOffset, const void* srcData, UINT64 sizeInBytes );
     bool InitCopyQueue();
     UINT64 GetCopyFenceValue() const { return m_CopyFenceValue; }
     void WaitForCopyFence( UINT64 fenceValue );
     /** The next copy-batch submit first waits for all direct-queue work submitted so far; for uploads into a
         resource the direct queue also writes (the VOB arena's morph refresh). */
     void CopyQueueWaitForDirectQueue() { m_CopyWaitsForDirect.store( true, std::memory_order_relaxed ); }
-    void TransitionTextureToSRVOnDirectQueue( ID3D12Resource* texture );
+    void TransitionTextureToSRVOnDirectQueue( Rhi::Resource* texture );
 
     /** Gothic's 2D/UI draw entry (menus, fonts, HUD). Uploads the transformed ExVertexStruct verts to
         a per-frame ring, binds the UI PSO + current texture + viewport constants, and draws. */
@@ -226,7 +226,7 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle( UINT slot ) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle( UINT slot ) const;
 
-    void QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource );
+    void QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<Rhi::Resource> resource );
 
     /*
      Defers release of a GPU resource until the GPU is provably done with the frames that may
@@ -234,8 +234,7 @@ public:
         QueueSrvResourceForRelease it does NOT free an SRV slot — used when a texture recreates its
         backing resource (animated textures) but keeps its descriptor slot.
         */
-    void QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource );
-    void QueueAllocationForRelease(Microsoft::WRL::ComPtr<D3D12MA::Allocation> value);
+    void QueueResourceForRelease( Microsoft::WRL::ComPtr<Rhi::Resource> resource );
 
     void OnAddVob(VobInfo* vi) override;
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
@@ -312,7 +311,7 @@ private:
     // The target every "display space" pass renders into: the swapchain backbuffer normally, or m_HdrDisplay
     // when real HDR output is up. Both rest in RENDER_TARGET for the whole frame, so callers that copy out of
     // and back into it (SMAA, sharpen) need no special-casing.
-    ID3D12Resource*             GetDisplayTarget() const;
+    Rhi::Resource*             GetDisplayTarget() const;
     D3D12_CPU_DESCRIPTOR_HANDLE GetDisplayRtv() const;
     // World/DepthPrepass/Vob pipeline creation now lives in m_Pipelines (CreateWorld/CreateDepthPrepass/CreateVob).
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
@@ -478,8 +477,7 @@ private:
 
     // HDR scene-color pipeline (Phase 3): the 3D world passes render into m_SceneColor (R16F, values >1 allowed —
     // sun + additive point lights no longer clip), then ResolveSceneToBackBuffer tonemaps it into the swapchain.
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_SceneColorAlloc;       // backing D3D12MA allocation (recreated on resize)
+    Microsoft::WRL::ComPtr<Rhi::Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferMax
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
     bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
@@ -501,8 +499,7 @@ private:
     float m_HdrMonitorMaxNits = 0.0f;          // DXGI_OUTPUT_DESC1::MaxLuminance (0 = nothing reported)
     float m_HdrMonitorMinNits = 0.0f;          // DXGI_OUTPUT_DESC1::MinLuminance
     float m_HdrMonitorMaxFullFrameNits = 0.0f; // DXGI_OUTPUT_DESC1::MaxFullFrameLuminance
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_HdrDisplay;        // kHdrDisplayFormat, resolution-sized
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_HdrDisplayAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_HdrDisplay;        // kHdrDisplayFormat, resolution-sized
     D3D12_CPU_DESCRIPTOR_HANDLE                 m_HdrDisplayRtv = {};   // RTV heap slot kBackBufferMax+3
     UINT m_HdrDisplaySrvSlot = UINT_MAX;                                // read bindlessly by HdrEncode.hlsl
 
@@ -517,7 +514,7 @@ private:
     // safe to fully stall the GPU here. See the .cpp for the flush + rollback-on-fatal-failure sequence.
     void ApplyPendingShaderReload();
 
-    Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>         m_BackBuffers[kBackBufferMax];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferMax];
     // The frame's direct command list, behind the engine-wide redundant-state filter (D3D12StateCache.h).
     // Reads exactly like the ComPtr it replaces (`m_CmdList->Foo()`, `.Get()`, `if (!m_CmdList)`), but every
@@ -568,9 +565,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CopyBatchList;
     bool   m_CopyBatchOpen = false;   // m_CopyBatchList is Reset+recording with >=1 queued copy
     UINT64 m_CopyBatchBytes = 0;      // upload bytes accumulated in the currently open batch
-    std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> m_CopyBatchUploadAllocs;     // kept alive until flush
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      m_CopyBatchUploadResources;  // "
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      m_CopyBatchDestResources;    // copy targets, see PendingCopyRelease::DestResources
+    std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      m_CopyBatchUploadResources;  // "
+    std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      m_CopyBatchDestResources;    // copy targets, see PendingCopyRelease::DestResources
 
     // --- Pooled staging memory for buffer uploads ---
     // Creating a throwaway UPLOAD resource per upload cost one D3D12MA::CreateResource each (~0.1ms
@@ -580,8 +576,7 @@ private:
     // that are recycled by fence, so steady-state streaming creates zero upload resources. Uploads
     // larger than a chunk still fall back to a dedicated resource.
     struct StagingChunk {
-        Microsoft::WRL::ComPtr<D3D12MA::Allocation> Allocation;
-        Microsoft::WRL::ComPtr<ID3D12Resource>      Resource;
+        Microsoft::WRL::ComPtr<Rhi::Resource>      Resource;
         uint8_t* MappedPtr = nullptr;   // persistently mapped; never unmapped until teardown
         UINT64   Capacity = 0;
         UINT64   Offset = 0;            // bump pointer; reset when the chunk returns to the free list
@@ -595,14 +590,13 @@ private:
 
     struct PendingCopyRelease {
         UINT64 FenceValue = 0;
-        std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> UploadAllocations;
-        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      UploadResources;
+        std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      UploadResources;
         // The copy DESTINATIONS (texture/VB/IB being filled). The batch's command list references them,
         // and the batch lives on the copy queue — completely outside the frame-fence deferral that
         // guards D3D12Texture/D3D12VertexBuffer destruction. Gothic can create a visual and evict it
         // again before the batch is even flushed, so without this reference the destination is
         // final-released while a copy that reads/writes it is still queued.
-        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      DestResources;
+        std::vector<Microsoft::WRL::ComPtr<Rhi::Resource>>      DestResources;
         std::vector<StagingChunk> StagingChunks;   // returned to m_FreeStagingChunks, not freed
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
@@ -629,7 +623,7 @@ private:
         already opened the batch. ('alignment' exists so the texture path can ask for the 512-byte
         D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT its placed footprints require.) */
     bool AcquireStagingSpaceLocked( UINT64 size, UINT64 alignment,
-        ID3D12Resource** outResource, UINT64* outOffset, uint8_t** outCpuPtr );
+        Rhi::Resource** outResource, UINT64* outOffset, uint8_t** outCpuPtr );
 
 public:
     /** Submits any pending batched texture/buffer uploads to the copy queue and inserts the single
@@ -697,8 +691,7 @@ private:
     D3D12PipelineState m_Pipelines;
 
     // The 2D/UI root sig + shaders + blend/depth PSO cache now live in m_Pipelines.UI. The vertex ring stays here.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferMax]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_UIVertexBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_UIVertexBuffer[kBackBufferMax]; // persistently-mapped upload ring
     uint8_t* m_UIVertexBufferPtr[kBackBufferMax] = {};
     UINT m_UIVertexBufferCapacity = 0;
     UINT m_UIVertexBufferOffset = 0;                               // reset each OnBeginFrame
@@ -706,8 +699,7 @@ private:
 
     // Debug/editor line ring (D3D12LineRenderer). Same persistently-mapped per-frame upload ring pattern as
     // the UI vertex ring above; the line PSOs/root sig live in m_Pipelines.Lines.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LineVertexBuffer[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LineVertexBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LineVertexBuffer[kBackBufferMax];
     uint8_t* m_LineVertexBufferPtr[kBackBufferMax] = {};
     UINT m_LineVertexBufferCapacity = 0;
     UINT m_LineVertexBufferOffset = 0;                             // reset each OnBeginFrame
@@ -716,8 +708,7 @@ private:
     // Poly-strip vertex ring (D3D12Fx.cpp). Same persistently-mapped per-frame upload ring pattern; the strip
     // geometry is rebuilt on the CPU every frame (GothicAPI::CalcPolyStripMeshes), so it can't live in a
     // static VB the way quad marks do. D3D11 instead grows one shared TempPolysVertexBuffer on demand.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_FxVertexBuffer[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FxVertexBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_FxVertexBuffer[kBackBufferMax];
     uint8_t* m_FxVertexBufferPtr[kBackBufferMax] = {};
     UINT m_FxVertexBufferCapacity = 0;
     UINT m_FxVertexBufferOffset = 0;                               // reset each OnBeginFrame
@@ -750,16 +741,14 @@ private:
 
     // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_DsvHeap;         // slot 0 = scene depth, slot 1 = preview depth
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DepthBufferAlloc; // backing D3D12MA allocation (recreated on resize)
+    Microsoft::WRL::ComPtr<Rhi::Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
     UINT m_DsvDescriptorSize = 0;
     UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
 
     // Native-resolution depth for the inventory-item preview (DrawVobSingle), which draws onto the display
     // target after the resolve — a bound DSV must match its RTV's size. D3D11's m_SwapchainDepthStencilBuffer.
     // Built lazily and only while the render scale is != 100%.
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_PreviewDepthBuffer;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PreviewDepthAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>       m_PreviewDepthBuffer;
     INT2 m_PreviewDepthSize = {};
     bool m_PreviewDepthFailed = false;   // creation failed once — don't retry every preview draw
     D3D12_CPU_DESCRIPTOR_HANDLE GetPreviewDsv();   // {0} = none usable, caller skips the draw
@@ -783,8 +772,7 @@ private:
     };
     static constexpr UINT kMaxWorldDrawCommands = 16384;
     Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_WorldIndirectCmdSig;   // b6(4 consts)@param10 + DrawIndexed
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferMax]; // persistently-mapped UPLOAD ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_WorldDrawArgs[kBackBufferMax]; // persistently-mapped UPLOAD ring
     uint8_t* m_WorldDrawArgsPtr[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferMax] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
@@ -908,9 +896,8 @@ private:
         upload ring for the shadow/rain passes, the GPU-compacted buffer for a culled main view) on slot 1.
         Returns false when the arena holds nothing, in which case the caller must not submit: its commands
         would index a buffer that doesn't exist. */
-    bool BindVobArenaIA( D3D12CmdList& cmdList, ID3D12Resource* instances, UINT instanceBytes );
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferMax];
+    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes );
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
     UINT m_VobOpaqueDrawCount = 0;                    // alpha-test partition of the above — see m_WorldOpaqueDrawCount
@@ -990,13 +977,11 @@ private:
     static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
     static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
     Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // CBV(b1) + CBV(b2) + VBV + IBV + b6(3) + DrawIndexed
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalDrawArgs[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_SkeletalDrawArgs[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
     UINT m_SkeletalOpaqueDrawCount = 0;              // alpha-test partition — see m_WorldOpaqueDrawCount
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_AttachDrawArgs[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AttachDrawArgsAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_AttachDrawArgs[kBackBufferMax];
     uint8_t* m_AttachDrawArgsPtr[kBackBufferMax] = {};
     UINT m_AttachDrawCount = 0;                      // VobDrawCommands built this frame (prepass + color share them)
     UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
@@ -1019,8 +1004,7 @@ private:
     // Nothing here is required: EvaluateGpuVobCulling() turns the whole thing off (and the CPU frustum cull
     // back on) if a PSO/resource is missing or RendererSettings.GpuVobCulling is unticked.
     static constexpr UINT kMaxHiZMips = 14;         // 2^14 covers any mip-0 up to 16384 px
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_HiZ;        // R32_FLOAT mip chain, min-reduced reversed-Z depth
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_HiZAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_HiZ;        // R32_FLOAT mip chain, min-reduced reversed-Z depth
     UINT m_HiZWidth = 0, m_HiZHeight = 0;           // mip-0 dims = HALF the render resolution
     UINT m_HiZMipCount = 0;
     UINT m_HiZSrvSlot = UINT_MAX;                   // full-mip-chain SRV, Load()ed per level by the cull CS
@@ -1048,8 +1032,7 @@ private:
     // sub-mesh of the visual to have emitted a far command.
     static constexpr UINT kSplitModeLod   = 1;
     static constexpr UINT kMaxCullVisuals = 16384;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferMax];   // persistently-mapped UPLOAD
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCullVisualsAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobCullVisuals[kBackBufferMax];   // persistently-mapped UPLOAD
     uint8_t* m_VobCullVisualsPtr[kBackBufferMax] = {};
     UINT m_VobCullVisualCount = 0;                  // records written this frame
     bool m_VobCullVisualOverflowLogged = false;
@@ -1061,12 +1044,9 @@ private:
     float m_VobLodDistance = 0.0f;
     // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
     // frame N+1's cull writes — no per-frame-in-flight copies needed (and none of the 32-bit VA cost).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCulledInstancesAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobVisibleCounts;     // DEFAULT UAV, uint[kMaxCullVisuals]
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobVisibleCountsAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgsGpu;       // DEFAULT, the patched ExecuteIndirect args
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsGpuAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobVisibleCounts;     // DEFAULT UAV, uint[kMaxCullVisuals]
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VobDrawArgsGpu;       // DEFAULT, the patched ExecuteIndirect args
     bool m_VobCullReady = false;
     // Rest-state trackers (same pattern as m_LightGridInPixelState/m_AOMaskInPixelState): the draw passes leave
     // these in their read states, so CullVobsGPU flips them back at its top rather than after the draws.
@@ -1082,8 +1062,8 @@ private:
     void CullVobsGPU();                             // CSCull + CSPatchArgs; call after DrawDepthPrepass/BuildHiZ
     // The buffer both VOB passes ExecuteIndirect from: the GPU-patched DEFAULT copy when culling, else the
     // per-frame CPU-written UPLOAD ring.
-    ID3D12Resource* GetVobDrawArgsBuffer() const;
-    ID3D12Resource* GetVobInstanceBufferForDraws() const;
+    Rhi::Resource* GetVobDrawArgsBuffer() const;
+    Rhi::Resource* GetVobInstanceBufferForDraws() const;
 
     // ---- GPU morph fold (D3D12MorphFold.cpp + MorphGpu.h + Shaders/D3D12/MorphFold.hlsl) ----
     // Morph attachments (NPC heads, bow/crossbow draw meshes) fold their blend shapes in a compute pass that
@@ -1091,17 +1071,14 @@ private:
     // ZENGIN deforming on the CPU and re-uploading the stream every animation frame. The prototype tables are
     // per .MMS and immutable; the only per-frame upload is the channel records.
     static constexpr UINT kMaxMorphChannelRecords = 4096;   // 24 B each -> 96 KB per frame-in-flight
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_MorphChannelBuffer[kBackBufferMax];   // persistently-mapped UPLOAD
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_MorphChannelBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_MorphChannelBuffer[kBackBufferMax];   // persistently-mapped UPLOAD
     uint8_t* m_MorphChannelBufferPtr[kBackBufferMax] = {};
     bool m_MorphChannelOverflowLogged = false;
     // One entry per MorphGpu::Prototype, uploaded on the first frame that folds it and kept for the session
     // (~1 MB in total). Keyed by the opaque Prototype pointer so this header need not include MorphGpu.h.
     struct MorphTableGpu {
-        Microsoft::WRL::ComPtr<ID3D12Resource>      Positions;
-        Microsoft::WRL::ComPtr<D3D12MA::Allocation> PositionsAlloc;
-        Microsoft::WRL::ComPtr<ID3D12Resource>      Indices;
-        Microsoft::WRL::ComPtr<D3D12MA::Allocation> IndicesAlloc;
+        Microsoft::WRL::ComPtr<Rhi::Resource>      Positions;
+        Microsoft::WRL::ComPtr<Rhi::Resource>      Indices;
     };
     std::unordered_map<const void*, MorphTableGpu> m_MorphTables;
     std::vector<D3D12ResourceTransition> m_MorphBarriers;   // scratch; keeps its capacity across frames
@@ -1179,8 +1156,7 @@ private:
     // three owners: D3D12ShadowMap::Prepare owns the head [0, kWetnessCbOffset) (cascade view-projs + sun dir +
     // strength + texel sizes), then UploadWetnessConstants and UploadSkyIblConstants each own a tail block —
     // with an unused 80-byte hole between them (kAoReprojCbOffset) — and the wet-sky block (kWetSkyCbOffset) ends it.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_ShadowCB[kBackBufferMax];
     uint8_t* m_ShadowCBMapped[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferMax] = {};
     bool CreateShadowConstantBuffer();   // the shared per-frame shadow CB ring (once, at init)
@@ -1198,8 +1174,7 @@ private:
     // (NumTilesX * NumTilesY * kNumZSlices clusters). Lives permanently in UNORDERED_ACCESS. m_NumTilesX/Y =
     // screen-tile grid dimensions for the current resolution (Z slice count is the compile-time kNumZSlices).
     // Light-cull pipeline (RootSig/PSO/blob) now lives in m_Pipelines.LightCull
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numClusters * 8 B)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightGridBufferAlloc;  // recreated on resize
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numClusters * 8 B)
     UINT m_NumTilesX = 0;
     UINT m_NumTilesY = 0;
     // The grid buffer round-trips UNORDERED_ACCESS (cull CS writes) -> PIXEL_SHADER_RESOURCE (lit PS reads)
@@ -1221,10 +1196,8 @@ private:
     static constexpr int kBloomMaxMips = 6;
     static constexpr int kBloomMinMipSize = 8;
     int m_BloomMipCount = 0;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_BloomDown[kBloomMaxMips];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_BloomDownAlloc[kBloomMaxMips];
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_BloomUp[kBloomMaxMips];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_BloomUpAlloc[kBloomMaxMips];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_BloomDown[kBloomMaxMips];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_BloomUp[kBloomMaxMips];
     INT2 m_BloomMipSize[kBloomMaxMips] = {};
     UINT m_BloomDownSrvSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };   // down[i]'s canonical SRV (downsample-chain reads + upsample t1)
     UINT m_BloomDownUavSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
@@ -1269,8 +1242,7 @@ private:
     // texture cannot do to itself, so they ping-pong through two scratches; the LAST one renders into the real
     // display target, which can never be a chain source (the swapchain is RENDER_TARGET_OUTPUT only).
     // Both match the display target byte-for-byte and rest in RENDER_TARGET; rebuilt on resize.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_LdrScratch[2];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LdrScratchAlloc[2];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_LdrScratch[2];
     UINT m_LdrScratchSrvSlot[2] = { UINT_MAX, UINT_MAX };
     D3D12_CPU_DESCRIPTOR_HANDLE m_LdrScratchRtv[2] = {};   // RTV heap slots kBackBufferMax+6 / +7
     bool m_LdrCopyReady = false;              // BOTH scratches exist; every chain pass guards on it
@@ -1287,7 +1259,7 @@ private:
         render into - never the same resource. When Valid() is false the caller must skip its work. */
     struct DisplayChainStep {
         UINT                        SrcSrvSlot = UINT_MAX;
-        ID3D12Resource*             Dst = nullptr;
+        Rhi::Resource*             Dst = nullptr;
         D3D12_CPU_DESCRIPTOR_HANDLE DstRtv = {};
         bool Valid() const { return SrcSrvSlot != UINT_MAX && Dst != nullptr; }
     };
@@ -1301,7 +1273,7 @@ private:
     bool WillRunUnderwaterFX() const;
     const class D3D12Texture* UnderwaterDistortionTexture() const;   // distortion2.dds, or the 1x1 white fallback
     // The display target ignoring the chain — what GetDisplayTarget()/GetDisplayRtv() return once it is done.
-    ID3D12Resource*             RealDisplayTarget() const;
+    Rhi::Resource*             RealDisplayTarget() const;
     D3D12_CPU_DESCRIPTOR_HANDLE RealDisplayRtv() const;
 
     // Post-tonemap sharpening (RendererSettings.SharpeningMode / SharpenFactor — SHARPEN_CAS by default, same
@@ -1336,10 +1308,8 @@ private:
     // m_AOMask in PIXEL_SHADER_RESOURCE for the lit geometry passes (World/Vob/Skeletal PS) to sample bindlessly.
     // m_ActiveAOMaskSrvSlot is refreshed every frame by RenderSSAO: the AO mask's slot when SSAO ran, else the white texture's
     // slot (mask = no occlusion) — mirrors D3D11's white-clear "AO disabled" default.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_AOMask;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AOMaskAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_AOBlurTemp;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AOBlurTempAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_AOMask;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_AOBlurTemp;
     UINT m_AOMaskSrvSlot = UINT_MAX;    // bindless index the lit PS reads (final blurred result)
     UINT m_AOMaskUavSlot = UINT_MAX;    // main-pass output + blur-pass-2 output
     // Second UAV over the SAME m_AOMask texels, typed R8_UINT instead of R8_UNORM. That is why m_AOMask is
@@ -1419,8 +1389,7 @@ private:
     // AO-term ping-pong buffers, and the Half-mode downsampled depth - is a D3D12RenderGraph transient
     // acquired fresh every RenderGTAO() call instead. m_GtaoWorkingDepth can't follow: it needs a per-mip
     // UAV 5-level MIP chain, which the render-graph's texture types only support single-mip.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GtaoWorkingDepth;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GtaoWorkingDepthAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_GtaoWorkingDepth;
     static constexpr UINT kGtaoDepthMipLevels = 5;   // must match XE_GTAO_DEPTH_MIP_LEVELS (hard-coded to 5)
     UINT m_GtaoWorkingDepthSrvSlot = UINT_MAX;                   // full MIP chain, read by the main pass
     UINT m_GtaoWorkingDepthUavSlot[kGtaoDepthMipLevels] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
@@ -1445,10 +1414,8 @@ private:
     //                      LoadNormal). Untouched by the fill pass: a pixel with no prepass coverage has no
     //                      meaningful normal, so it keeps the kGBufferNormalSentinel clear and AO treats it as
     //                      "no geometry" rather than integrating against an invented orientation.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VelocityBuffer;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VelocityAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_NormalBuffer;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_NormalAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VelocityBuffer;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_NormalBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE m_VelocityRtv = {};   // RTV heap slot kBackBufferMax+4
     D3D12_CPU_DESCRIPTOR_HANDLE m_NormalRtv = {};     // RTV heap slot kBackBufferMax+5
     UINT m_VelocitySrvSlot = UINT_MAX;    // SRV for the debug overlay + future TAA/FSR3 consumers
@@ -1471,8 +1438,7 @@ private:
     // Per-frame-in-flight 256-byte UPLOAD slabs holding MotionCBData, bound as a root CBV by the *GBuf prepass
     // PSOs (b5 world-family / b9 skeletal) and by the fill pass (b0). One allocation per frame in flight rather
     // than a ring: the contents are frame-global, written once in UploadMotionConstants.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_MotionCB[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_MotionCBAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_MotionCB[kBackBufferMax];
     uint8_t* m_MotionCBMapped[kBackBufferMax] = {};
     struct MotionCBData {
         XMFLOAT4X4 PrevViewProj;
@@ -1516,15 +1482,13 @@ private:
     // Two history buffers ping-pong: the resolve reads m_TaaHistory[1 - m_TaaHistoryIndex] and writes
     // m_TaaHistory[m_TaaHistoryIndex], whose .a carries the accumulated confidence weight (Intel's [0.5, 1)
     // range). The result is then copied back over the scene colour for the rest of the chain.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TaaHistory[2];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TaaHistoryAlloc[2];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_TaaHistory[2];
     UINT m_TaaHistorySrvSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_TaaHistoryUavSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_TaaHistoryIndex = 0;
     // TAA needs the PREVIOUS frame's depth for its disocclusion test — nothing else in the frame keeps one, so
     // this is a private snapshot taken at the end of RenderTAA.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TaaPrevDepth;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TaaPrevDepthAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_TaaPrevDepth;
     // Rest state of that snapshot: the combined shader-read state, flipped to COPY_DEST and straight back once
     // per frame by the snapshot copy.
     static constexpr D3D12_RESOURCE_STATES kPrevDepthReadState =
@@ -1566,8 +1530,7 @@ private:
     // implicit bilinear upscale into a 1:1 blit whenever FSR3 actually ran.
     struct FfxFsr3UpscalerContext* m_Fsr3Context = nullptr;   // heap-allocated: the FFX header stays out of here
     void* m_Fsr3Scratch = nullptr;                            // backend scratch; must outlive the context
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_Fsr3Output;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Fsr3OutputAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_Fsr3Output;
     UINT m_Fsr3OutputSrvSlot = UINT_MAX;
     bool m_Fsr3OutputReady = false;
     bool m_Fsr3OutputInUavState = false;   // UNORDERED_ACCESS (FSR writes) vs PIXEL_SHADER_RESOURCE (rest)
@@ -1575,8 +1538,7 @@ private:
     // { dilatedDepth, dilatedMotionVectors, reconstructedPrevNearestDepth }. Sized/formatted from
     // ffxFsr3UpscalerGetSharedResourceDescriptions. We never touch their contents; the rest state below is
     // both where they are created and what every dispatch declares (see CreateFsr3SharedResources).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_Fsr3Shared[3];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Fsr3SharedAlloc[3];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_Fsr3Shared[3];
     static constexpr D3D12_RESOURCE_STATES kFsr3SharedRestState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     bool m_Fsr3SharedReady = false;
     // True until a dispatch succeeds after a discontinuity (world load, resize, fresh context/output): tells
@@ -1614,8 +1576,7 @@ private:
     // (see D3D12DoF.cpp's RenderDepthOfField) — first live consumer of the render graph's actual resource
     // system. That also removes the need for the old "did the resolution change without us following" guard:
     // asking the graph for the CURRENT resolution's size every call handles a resize for free.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_DoFFocus[2];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DoFFocusAlloc[2];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_DoFFocus[2];
     UINT m_DoFFocusSrvSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_DoFFocusUavSlot[2] = { UINT_MAX, UINT_MAX };
     UINT m_DoFFocusIndex = 0;
@@ -1649,10 +1610,8 @@ private:
     static constexpr UINT kSkyEnvSize = 128;   // mip-0 face resolution of the specular cube
     static constexpr UINT kSkyEnvMips = 6;     // 128,64,32,16,8,4 -> roughness 0.0 .. 1.0
     static constexpr UINT kSkyIrradSize = 16;  // irradiance is very low frequency; 16^2 is plenty
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyEnvCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyEnvCubeAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyIrradCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyIrradCubeAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_SkyEnvCube;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_SkyIrradCube;
     UINT m_SkyEnvSrvSlot = UINT_MAX;               // full-chain TextureCube SRV — the bindless index the lit PS samples
     UINT m_SkyEnvMip0SrvSlot = UINT_MAX;           // mip-0-ONLY TextureCube SRV — the prefilter/irradiance source.
                                                    // Must be mip-0-only: the prefilter writes mips 1..N as a UAV in the
@@ -1702,8 +1661,7 @@ private:
     // Per-frame-in-flight 256-byte UPLOAD CB holding just the AtmosphereConstantBuffer the pixel shader reads
     // at b1. Small and separate on purpose: the sky is drawn very early in OnStartWorldRendering, long before
     // RenderFogAndGodRays / DrawWaterSurfaces fill their own atmosphere blocks, so it cannot share either.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyCB[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyCBAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_SkyCB[kBackBufferMax];
     uint8_t* m_SkyCBMapped[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_SkyCBGpu[kBackBufferMax] = {};
     bool CreateSkyConstantBuffers();          // one-time: the per-frame-in-flight atmosphere CB ring
@@ -1727,8 +1685,7 @@ private:
     static constexpr UINT kFogAtmosphereCbOffset = 256;
     // [512,768): TransparencyFrameData (include/TransparencyFog.hlsl), refilled by PrepareTransparencyFrame.
     static constexpr UINT kTransparencyFrameCbOffset = 512;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FogCB[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FogCBAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_FogCB[kBackBufferMax];
     uint8_t* m_FogCBMapped[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_FogCBGpu[kBackBufferMax] = {};
     // True for frames where the height-fog composition actually runs. The lit geometry shaders' cheap linear
@@ -1767,8 +1724,7 @@ private:
     // reflect_cube.dds as a real TextureCube — the static sky/environment reflection D3D11 binds at t3, and
     // the fallback whenever an SSR ray misses or leaves the screen. D3D12Texture is Texture2D-only, so this
     // is loaded by a small dedicated 6-face DDS parser in D3D12Water.cpp rather than through it.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_ReflectionCube;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ReflectionCubeAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_ReflectionCube;
     UINT m_ReflectionCubeSrvSlot = UINT_MAX;   // UINT_MAX => shader skips the cube (SSR/refraction only)
 
     // Per-frame-in-flight water CB: 512 B split into two 256-B-aligned blocks — [0,256) the WaterCB the
@@ -1776,8 +1732,7 @@ private:
     // RenderFogAndGodRays, so it cannot share m_FogCB's atmosphere block (that one is only filled when the
     // height-fog composition actually runs, later in the frame).
     static constexpr UINT kWaterAtmosphereCbOffset = 256;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterCB[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterCBAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_WaterCB[kBackBufferMax];
     uint8_t* m_WaterCBMapped[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WaterCBGpu[kBackBufferMax] = {};
 
@@ -1801,10 +1756,8 @@ private:
     // always happens-before that write, so no second buffer is needed to avoid a cross-frame race.
     //
     // Readers: the AO pass (previous frame) and the transparent passes' gamma-space add (this frame).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevColor;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SsrPrevColorAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SsrPrevDepth;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SsrPrevDepthAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_SsrPrevColor;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_SsrPrevDepth;
     static constexpr D3D12_RESOURCE_STATES kSsrPrevReadState =
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     UINT m_SsrPrevColorSrvSlot = UINT_MAX;
@@ -1827,8 +1780,7 @@ private:
     bool m_TransparencyFogActive = false;          // RenderFogAndGodRays wrote this frame's fog blocks
     UINT m_TransparencyFrameIndex = UINT_MAX;
     // Fogged scene copy for the gamma-space add, taken after the fog pass. Lazy (VA), like the DoF textures.
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_TransparencyBackdrop;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_TransparencyBackdropAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_TransparencyBackdrop;
     UINT m_TransparencyBackdropSrvSlot = UINT_MAX;
     bool m_TransparencyBackdropAttempted = false;
     bool CreateTransparencyBackdrop( INT2 size );
@@ -1845,10 +1797,8 @@ private:
     // ever reads/writes them as StructuredBuffers, so neither needs a descriptor-heap slot at this stage.
     // Rebuilt whenever RainRadiusRange/RainHeightRange/RainNumParticles change, mirroring D3D11Effect::
     // DrawRain_CS's dirty-check (D3D11Effect.cpp:314-316).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainBufferStatic;   // StructuredBuffer<RainParticleStatic>, UPLOAD heap, written once
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainBufferStaticAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainBufferDynamic;  // RWStructuredBuffer<RainParticleDynamic>, DEFAULT heap
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainBufferDynamicAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainBufferStatic;   // StructuredBuffer<RainParticleStatic>, UPLOAD heap, written once
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainBufferDynamic;  // RWStructuredBuffer<RainParticleDynamic>, DEFAULT heap
     UINT  m_RainParticleCount = 0;       // particle count backing the CURRENT buffers (128-aligned, like D3D11's alignedCount)
     float m_RainLastRadius = -1.0f;
     float m_RainLastHeight = -1.0f;
@@ -1871,18 +1821,16 @@ private:
     // R8 Texture2DArrays, loaded once and sampled bindlessly (ResourceDescriptorHeap) by Shaders/D3D12/
     // Rain.hlsl's PS. Parsed via the shared DDSArrayLoader.h ParseTextureArrayDDS (device-agnostic CPU
     // parse — D3D11's D3D11Effect::LoadRainResources uses the same parser for its own D3D11 arrays).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainTextureArray;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainTextureArrayAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainTextureArray;
     UINT m_RainTextureArraySrvSlot = UINT_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SnowTextureArray;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SnowTextureArrayAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_SnowTextureArray;
     UINT m_SnowTextureArraySrvSlot = UINT_MAX;
     bool m_RainTexturesLoaded = false;
     // One-time (or on-demand retry) load of both arrays; non-fatal on failure — DrawRainParticles guards
     // on m_RainTexturesLoaded and stays on the step-2 flat-white placeholder if this never succeeds.
     bool LoadRainTextures();
-    bool LoadRainTextureArray( const char* prefix, int count, Microsoft::WRL::ComPtr<ID3D12Resource>& outTex,
-        Microsoft::WRL::ComPtr<D3D12MA::Allocation>& outAlloc, UINT& outSrvSlot );
+    bool LoadRainTextureArray( const char* prefix, int count, Microsoft::WRL::ComPtr<Rhi::Resource>& outTex,
+        UINT& outSrvSlot );
 
     // Rain shadowmap (D3D12 rain parity, step 4): a single-slice normal-Z depth map rendered from an
     // orthographic camera looking along the (inverted) rain-velocity direction. Casters are the world mesh
@@ -1904,8 +1852,7 @@ private:
     // BELOW the camera stay inside the map when the player stands on a hill).
     static constexpr float kRainShadowUpRange = 6000.0f;
     static constexpr float kRainShadowDepth = 20000.0f;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainShadowMap;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainShadowMapAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainShadowMap;
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap> m_RainShadowDsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE m_RainShadowDsv = {};
     UINT m_RainShadowSrvSlot = UINT_MAX;
@@ -1926,8 +1873,7 @@ private:
     // under them instead of casting a solid quad. Own (smaller-capped) ring rather than sharing the
     // main-view one: this pass is built at a different point in the frame and must not disturb it.
     static constexpr UINT kMaxRainVobDrawCommands = 8192;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainVobDrawArgs[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainVobDrawArgsAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainVobDrawArgs[kBackBufferMax];
     uint8_t* m_RainVobDrawArgsPtr[kBackBufferMax] = {};
     UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
     UINT     m_RainVobOpaqueDrawCount = 0;   // alpha-test partition — see m_WorldOpaqueDrawCount
@@ -1977,10 +1923,8 @@ private:
     // itself, not an opt-in effect like bloom.
     UINT m_LumGroupsX = 0, m_LumGroupsY = 0;      // reduce-pass dispatch dims for the current resolution
     UINT m_LumPartialCapacity = 0;                // groups the current m_LumPartialBuffer can hold
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_LumPartialBuffer;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LumPartialBufferAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_LumAdaptedBuffer;       // RWStructuredBuffer<float>[1], persistent
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LumAdaptedBufferAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_LumPartialBuffer;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_LumAdaptedBuffer;       // RWStructuredBuffer<float>[1], persistent
     D3D12_RESOURCE_STATES m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     bool m_LumAdaptInitialized = false;   // false until the first successful adapt dispatch (snap instead of blend)
     bool CreateLumPartialBuffer( INT2 size );   // (re)builds the resolution-dependent per-group partial-sum buffer
@@ -1989,8 +1933,7 @@ private:
 
     // Instanced static VOBs (reuses the shared world root sig; slot 0 = packed vertex, slot 1 = per-instance
     // data). Lit PSO/blobs now live in m_Pipelines.World (VobPSO/VobVsBlob/VobPsBlob); the buffers stay here.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstanceBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_VobInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
     uint8_t* m_VobInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
@@ -2006,8 +1949,7 @@ private:
     // Slice index: cascade c uses slot c; the rain shadowmap uses kRainInstanceRingSlot.
     static constexpr UINT kShadowInstanceRingSlots = kShadowCascades + 1;
     static constexpr UINT kRainInstanceRingSlot    = kShadowCascades;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobInstanceBuffer[kBackBufferMax];
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobInstanceBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_ShadowVobInstanceBuffer[kBackBufferMax];
     uint8_t* m_ShadowVobInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_ShadowInstanceSliceCapacity = 0;   // bytes per slot (NOT the whole buffer)
     // Per-slot, so one busy cascade overflowing doesn't silence the warning for the others. Reset each
@@ -2024,8 +1966,7 @@ private:
     // StructuredBuffer of the frame's visible point lights, rebuilt each frame from CollectVisibleVobs and
     // bound as a root SRV (t1) to the world/VOB pixel shaders, which loop it per pixel (N.L + attenuation)
     // on top of the baked vertex lighting. Root SRV => no descriptor-heap slot consumed.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightBuffer[kBackBufferMax]; // persistently-mapped UPLOAD, GPULight[]
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LightBuffer[kBackBufferMax]; // persistently-mapped UPLOAD, GPULight[]
     uint8_t* m_LightBufferPtr[kBackBufferMax] = {};
     UINT m_LightBufferCapacity = 0;                               // max lights per frame
     UINT m_FrameLightCount = 0;                                   // lights written this frame
@@ -2041,8 +1982,7 @@ private:
     // b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0), lit + depth-prepass PSOs, and their blobs now
     // live in m_Pipelines.Skeletal. The per-frame CB ring below holds each vob's instance CB + bone matrices
     // (root CBVs into it, 256-byte aligned).
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalCBBuffer[kBackBufferMax]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalCBBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_SkeletalCBBuffer[kBackBufferMax]; // persistently-mapped upload ring
     uint8_t* m_SkeletalCBBufferPtr[kBackBufferMax] = {};
     UINT m_SkeletalCBBufferCapacity = 0;
     UINT m_SkeletalCBBufferOffset = 0;                             // reset each OnBeginFrame
@@ -2050,8 +1990,7 @@ private:
 
     // Particle (PFX) path — instanced camera-facing billboards, one instance per live particle. The root sig,
     // shaders, and per-BlendKey PSO cache now live in m_Pipelines.Particle. Per-frame instance ring stays here.
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_ParticleInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ParticleInstanceBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_ParticleInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
     uint8_t* m_ParticleInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_ParticleInstanceBufferCapacity = 0;
     UINT m_ParticleInstanceBufferOffset = 0;                       // reset each OnBeginFrame
@@ -2061,11 +2000,9 @@ private:
     // instanced with a per-decal world matrix (world*offset*scale; ViewProj applies view+proj) + ghost
     // alpha. The root sig, shaders, fixed lit PSO, and per-BlendKey transparent PSO cache now live in
     // m_Pipelines.Decal. The shared unit-quad VB + per-frame instance ring stay here (GPU resources).
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalQuadVB;          // shared unit quad (6 verts), static
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalQuadVBAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_DecalQuadVB;          // shared unit quad (6 verts), static
     D3D12_VERTEX_BUFFER_VIEW m_DecalQuadVBV = {};
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalInstanceBufferAlloc[kBackBufferMax];
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_DecalInstanceBuffer[kBackBufferMax]; // persistently-mapped upload ring
     uint8_t* m_DecalInstanceBufferPtr[kBackBufferMax] = {};
     UINT m_DecalInstanceBufferCapacity = 0;
     UINT m_DecalInstanceBufferOffset = 0;                          // reset each OnBeginFrame

@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <d3d12.h>
 #include <mutex>
 #include <vector>
@@ -115,8 +116,8 @@ public:
     const std::vector<MeshInfo*>& DynamicMeshes() const { return m_Dynamic; }
 
     bool Ready() const { return m_VertexBuffer != nullptr && m_IndexBuffer != nullptr && m_VertexCursor > 0; }
-    ID3D12Resource* GetVertexBuffer() const { return m_VertexBuffer.Get(); }
-    ID3D12Resource* GetIndexBuffer() const { return m_IndexBuffer.Get(); }
+    Rhi::Resource* GetVertexBuffer() const { return m_VertexBuffer.Get(); }
+    Rhi::Resource* GetIndexBuffer() const { return m_IndexBuffer.Get(); }
     UINT GetVertexBytes() const { return m_VertexCapacity * kVertexStride; }
     UINT GetIndexBytes() const { return m_IndexCapacity * kIndexStride; }
     static constexpr UINT VertexStride() { return kVertexStride; }
@@ -136,10 +137,8 @@ private:
     bool Reallocate( D3D12GraphicsEngine* engine );
     bool UploadMesh( D3D12GraphicsEngine* engine, MeshInfo* mesh, const Range& range );
 
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VertexBuffer;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VertexAlloc;
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_IndexBuffer;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_IndexAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_VertexBuffer;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_IndexBuffer;
 
     UINT m_VertexCapacity = 0;   // vertices the buffer can hold
     UINT m_IndexCapacity = 0;    // indices the buffer can hold

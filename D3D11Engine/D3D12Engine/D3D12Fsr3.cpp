@@ -240,11 +240,11 @@ namespace {
     // Both calls pass every argument explicitly: these go through function pointers, and a pointer
     // type carries no default arguments. FFX_API_RESOURCE_USAGE_READ_ONLY is what the header
     // defaults ffxGetResourceDescriptionDX12's second parameter to.
-    FfxApiResource AsFfxResource( ID3D12Resource* res, const wchar_t* name, FfxApiResourceState state ) {
+    FfxApiResource AsFfxResource( Rhi::Resource* res, const wchar_t* name, FfxApiResourceState state ) {
         if ( !res ) return FfxApiResource{};
         const FfxApiResourceDescription desc =
-            g_Ffx.GetResourceDescription( res, FFX_API_RESOURCE_USAGE_READ_ONLY );
-        return g_Ffx.GetResource( res, desc, name, static_cast<uint32_t>( state ) );
+            g_Ffx.GetResourceDescription( D3D12Rhi::Native( res ), FFX_API_RESOURCE_USAGE_READ_ONLY );
+        return g_Ffx.GetResource( D3D12Rhi::Native( res ), desc, name, static_cast<uint32_t>( state ) );
     }
 
     /** DXGI format for one of the shared resources FFX asks us to allocate. Covers exactly what
@@ -324,7 +324,7 @@ void D3D12GraphicsEngine::EnsureFsr3Ready() {
 bool D3D12GraphicsEngine::CreateFsr3Output( INT2 size ) {
     m_Fsr3OutputReady = false;
     if ( size.x < 4 || size.y < 4 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Allocator ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
@@ -340,9 +340,8 @@ bool D3D12GraphicsEngine::CreateFsr3Output( INT2 size ) {
     dd.SampleDesc.Count = 1;
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;   // FSR3's final RCAS pass writes it as a UAV
-    if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        nullptr, m_Fsr3OutputAlloc.ReleaseAndGetAddressOf(),
-        IID_PPV_ARGS( m_Fsr3Output.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+        nullptr, m_Fsr3Output.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the FSR3 output target ({}x{}).", size.x, size.y );
         return false;
     }
@@ -451,8 +450,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     before-state mismatch on one of these, this assumption is the thing to revisit first. */
 bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
     m_Fsr3SharedReady = false;
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device || !m_Allocator || !m_Fsr3Context ) return false;
+    if ( !m_Rhi || !m_Allocator || !m_Fsr3Context ) return false;
 
     FfxFsr3UpscalerSharedResourceDescriptions shared = {};
     if ( g_Ffx.GetSharedResourceDescriptions( m_Fsr3Context, &shared ) != FFX_OK ) {
@@ -486,9 +484,8 @@ bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, kFsr3SharedRestState, nullptr,
-            m_Fsr3SharedAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_Fsr3Shared[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, kFsr3SharedRestState, nullptr,
+            m_Fsr3Shared[i].ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create FSR3 shared resource {}.", Toolbox::ToMultiByte( kSharedNames[i] ) );
             return false;
         }
@@ -516,7 +513,6 @@ void D3D12GraphicsEngine::DestroyFsr3Context() {
     m_Fsr3SharedReady = false;
     for ( UINT i = 0; i < 3; ++i ) {
         m_Fsr3Shared[i].Reset();
-        m_Fsr3SharedAlloc[i].Reset();
     }
 }
 
@@ -529,7 +525,6 @@ void D3D12GraphicsEngine::ReleaseFsr3() {
     DestroyFsr3Context();
     m_Fsr3OutputReady = false;
     m_Fsr3Output.Reset();
-    m_Fsr3OutputAlloc.Reset();
     m_Fsr3OutputInUavState = false;
     // The SRV heap slot is deliberately KEPT (like the bloom/TAA slots) and re-pointed by CreateFsr3Output.
     m_Fsr3RanThisFrame = false;
@@ -560,16 +555,16 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     {
         D3D12_RESOURCE_BARRIER pre[4];
         UINT n = 0;
-        pre[n++] = TransitionBarrier( m_SceneColor.Get(),
+        pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_SceneColor.Get() ),
             m_SceneColorInPixelState ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
                                      : D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        pre[n++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_DepthBuffer.Get() ), D3D12_RESOURCE_STATE_DEPTH_WRITE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        pre[n++] = TransitionBarrier( m_VelocityBuffer.Get(),
+        pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_VelocityBuffer.Get() ),
             m_VelocityInPixelState ? kVelocityReadState : D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        pre[n++] = TransitionBarrier( m_Fsr3Output.Get(),
+        pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_Fsr3Output.Get() ),
             m_Fsr3OutputInUavState ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                    : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
@@ -650,13 +645,13 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     {
         D3D12_RESOURCE_BARRIER post[4];
         UINT n = 0;
-        post[n++] = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        post[n++] = TransitionBarrier( D3D12Rhi::Native( m_SceneColor.Get() ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-        post[n++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        post[n++] = TransitionBarrier( D3D12Rhi::Native( m_DepthBuffer.Get() ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_DEPTH_WRITE );
-        post[n++] = TransitionBarrier( m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        post[n++] = TransitionBarrier( D3D12Rhi::Native( m_VelocityBuffer.Get() ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             kVelocityReadState );
-        post[n++] = TransitionBarrier( m_Fsr3Output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        post[n++] = TransitionBarrier( D3D12Rhi::Native( m_Fsr3Output.Get() ), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
         m_CmdList->ResourceBarrier( n, post );
         m_VelocityInPixelState = true;

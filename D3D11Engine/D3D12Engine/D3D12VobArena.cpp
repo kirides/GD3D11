@@ -148,14 +148,13 @@ bool D3D12VobArena::UploadMesh( D3D12GraphicsEngine* engine, MeshInfo* mesh, con
 
 
 bool D3D12VobArena::Reallocate( D3D12GraphicsEngine* engine ) {
-    D3D12MA::Allocator* allocator = engine->GetAllocator();
-    if ( !allocator ) return false;
+    Rhi::Device* rhi = engine->GetRhi();
+    if ( !rhi ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource>      vb, ib;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> vbAlloc, ibAlloc;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      vb, ib;
 
     // COMMON, with no barriers anywhere: a BUFFER always promotes implicitly out of COMMON (to COPY_DEST
     // for the uploads on the copy queue, to VERTEX_AND_CONSTANT_BUFFER / INDEX_BUFFER for the draws on the
@@ -163,11 +162,9 @@ bool D3D12VobArena::Reallocate( D3D12GraphicsEngine* engine ) {
     // completion is ordered against the direct queue by the Wait FlushTextureUploads issues.
     D3D12_RESOURCE_DESC vbDesc = MakeBufferDesc( static_cast<UINT64>( m_VertexCapacity ) * kVertexStride );
     D3D12_RESOURCE_DESC ibDesc = MakeBufferDesc( static_cast<UINT64>( m_IndexCapacity ) * kIndexStride );
-    if ( FAILED( allocator->CreateResource( &heapDefault, &vbDesc, D3D12_RESOURCE_STATE_COMMON, nullptr,
-        vbAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( vb.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( rhi->CreateResource( heapDefault.HeapType, &vbDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, vb.ReleaseAndGetAddressOf() ) ) )
         return false;
-    if ( FAILED( allocator->CreateResource( &heapDefault, &ibDesc, D3D12_RESOURCE_STATE_COMMON, nullptr,
-        ibAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( ib.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( rhi->CreateResource( heapDefault.HeapType, &ibDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, ib.ReleaseAndGetAddressOf() ) ) )
         return false;
 
     vb->SetName( L"VobVertexArena" );
@@ -176,16 +173,13 @@ bool D3D12VobArena::Reallocate( D3D12GraphicsEngine* engine ) {
     // Frames already in flight may still be reading the old pair off the IA, so it cannot be dropped here —
     // hand it to the fence-deferred cleanup and let the ComPtrs die when the GPU has passed this frame.
     if ( m_VertexBuffer || m_IndexBuffer ) {
-        engine->QueueCleanupJob( [oldVb = m_VertexBuffer, oldVbAlloc = m_VertexAlloc,
-            oldIb = m_IndexBuffer, oldIbAlloc = m_IndexAlloc]() mutable {
+        engine->QueueCleanupJob( [oldVb = m_VertexBuffer, oldIb = m_IndexBuffer]() mutable {
                 // Keeps the old arena alive until the calling frame's fence completes.
             } );
     }
 
     m_VertexBuffer = std::move( vb );
-    m_VertexAlloc = std::move( vbAlloc );
     m_IndexBuffer = std::move( ib );
-    m_IndexAlloc = std::move( ibAlloc );
 
     // Re-upload every resident sub-mesh at its EXISTING offsets, straight out of the CPU-side vectors
     // MeshInfo keeps — which is what makes previously handed-out ranges survive a reallocation untouched.

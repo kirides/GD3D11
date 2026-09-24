@@ -344,17 +344,17 @@ public:
     /** syncBeforeHint/syncAfterHint narrow the enhanced-barrier sync scope for callers that know exactly
         which pipeline stage(s) touch the resource on each side; leave at kBarrierSyncUnspecified for the
         table's conservative (but always-correct) scope. */
-    void TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
+    void TransitionBarrier( Rhi::Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after,
         UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
         D3D12_BARRIER_SYNC syncBeforeHint = kBarrierSyncUnspecified, D3D12_BARRIER_SYNC syncAfterHint = kBarrierSyncUnspecified );
     void TransitionBarriers( std::initializer_list<D3D12ResourceTransition> transitions ) { TransitionBarriers( transitions.begin(), static_cast<UINT>( transitions.size() ) ); }
     void TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count );
-    void UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
-    void UAVBarriers( std::initializer_list<ID3D12Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
-    void UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
+    void UAVBarrier( Rhi::Resource* resource, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
+    void UAVBarriers( std::initializer_list<Rhi::Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
+    void UAVBarriers( Rhi::Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
     /** Activates freshly placed texture `after` (left in RENDER_TARGET, contents discarded), retiring `before`
         (may be null; currently in `beforeState`) that shared its memory. */
-    void AliasingBarrier( ID3D12Resource* before, D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after );
+    void AliasingBarrier( Rhi::Resource* before, D3D12_RESOURCE_STATES beforeState, Rhi::Resource* after );
 
     static void SetEnhancedBarriersDeviceSupport( bool supported ) noexcept { s_DeviceSupportsEnhancedBarriers = supported; }
     /** Queried by D3D12ResourceCreate.h to decide CreateResource3 (D3D12_BARRIER_LAYOUT initial layout)
@@ -371,9 +371,10 @@ public:
         m_List->DrawIndexedInstanced( indexCount, instanceCount, startIndex, baseVertex, startInstance );
     }
     void Dispatch( UINT x, UINT y, UINT z ) { m_List->Dispatch( x, y, z ); }
-    void ExecuteIndirect( Rhi::CommandSignature* sig, UINT maxCount, ID3D12Resource* argBuffer,
-        UINT64 argOffset, ID3D12Resource* countBuffer, UINT64 countOffset ) {
-        m_List->ExecuteIndirect( D3D12Rhi::Native( sig ), maxCount, argBuffer, argOffset, countBuffer, countOffset );
+    void ExecuteIndirect( Rhi::CommandSignature* sig, UINT maxCount, Rhi::Resource* argBuffer,
+        UINT64 argOffset, Rhi::Resource* countBuffer, UINT64 countOffset ) {
+        m_List->ExecuteIndirect( D3D12Rhi::Native( sig ), maxCount, D3D12Rhi::Native( argBuffer ), argOffset,
+            D3D12Rhi::Native( countBuffer ), countOffset );
         // NOT a passthrough: a command signature can WRITE bindings from the argument stream — VBVs, the
         // IBV, root constants and root CBV/SRV/UAVs (this backend uses all four) — and D3D12 leaves every
         // one of them UNDEFINED once the call returns, so anything the shadow still claims is a lie.
@@ -389,14 +390,23 @@ public:
         UINT8 stencil, UINT numRects, const D3D12_RECT* rects ) {
         m_List->ClearDepthStencilView( dsv, flags, depth, stencil, numRects, rects );
     }
-    void DiscardResource( ID3D12Resource* resource ) { m_List->DiscardResource( resource, nullptr ); }
-    void CopyResource( ID3D12Resource* dst, ID3D12Resource* src ) { m_List->CopyResource( dst, src ); }
-    void CopyBufferRegion( ID3D12Resource* dst, UINT64 dstOffset, ID3D12Resource* src, UINT64 srcOffset, UINT64 bytes ) {
-        m_List->CopyBufferRegion( dst, dstOffset, src, srcOffset, bytes );
+    void DiscardResource( Rhi::Resource* resource ) { m_List->DiscardResource( D3D12Rhi::Native( resource ), nullptr ); }
+    void CopyResource( Rhi::Resource* dst, Rhi::Resource* src ) { m_List->CopyResource( D3D12Rhi::Native( dst ), D3D12Rhi::Native( src ) ); }
+    void CopyBufferRegion( Rhi::Resource* dst, UINT64 dstOffset, Rhi::Resource* src, UINT64 srcOffset, UINT64 bytes ) {
+        m_List->CopyBufferRegion( D3D12Rhi::Native( dst ), dstOffset, D3D12Rhi::Native( src ), srcOffset, bytes );
     }
-    void CopyTextureRegion( const D3D12_TEXTURE_COPY_LOCATION* dst, UINT dstX, UINT dstY, UINT dstZ,
-        const D3D12_TEXTURE_COPY_LOCATION* src, const D3D12_BOX* srcBox ) {
-        m_List->CopyTextureRegion( dst, dstX, dstY, dstZ, src, srcBox );
+    void CopyTextureRegion( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,
+        const Rhi::TextureCopyLocation* src, const D3D12_BOX* srcBox ) {
+        auto toNative = []( const Rhi::TextureCopyLocation& l ) {
+            D3D12_TEXTURE_COPY_LOCATION n = {};
+            n.pResource = D3D12Rhi::Native( l.pResource );
+            n.Type = l.Type;
+            if ( l.Type == D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT ) n.PlacedFootprint = l.PlacedFootprint;
+            else n.SubresourceIndex = l.SubresourceIndex;
+            return n;
+        };
+        const D3D12_TEXTURE_COPY_LOCATION d = toNative( *dst ), sLoc = toNative( *src );
+        m_List->CopyTextureRegion( &d, dstX, dstY, dstZ, &sLoc, srcBox );
     }
 
 private:

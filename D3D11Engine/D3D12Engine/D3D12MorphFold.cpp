@@ -48,7 +48,7 @@ bool D3D12GraphicsEngine::CreateMorphFoldResources() {
         return false;
     }
 
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Allocator ) {
         MorphGpu::SetBackendAvailable( false );
         return false;
@@ -72,9 +72,7 @@ bool D3D12GraphicsEngine::CreateMorphFoldResources() {
     bd.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_MorphChannelBufferAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_MorphChannelBuffer[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_MorphChannelBuffer[i].ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the morph-fold channel ring." );
             MorphGpu::SetBackendAvailable( false );
             return false;
@@ -171,11 +169,9 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
             td.Flags = D3D12_RESOURCE_FLAG_NONE;
 
             td.Width = posBytes;
-            bool ok = SUCCEEDED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
-                table.PositionsAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( table.Positions.ReleaseAndGetAddressOf() ) ) );
+            bool ok = SUCCEEDED( m_Rhi->CreateResource( heapDefault.HeapType, &td, D3D12_RESOURCE_STATE_COMMON, nullptr, table.Positions.ReleaseAndGetAddressOf() ) );
             td.Width = idxBytes;
-            ok = ok && SUCCEEDED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
-                table.IndicesAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( table.Indices.ReleaseAndGetAddressOf() ) ) );
+            ok = ok && SUCCEEDED( m_Rhi->CreateResource( heapDefault.HeapType, &td, D3D12_RESOURCE_STATE_COMMON, nullptr, table.Indices.ReleaseAndGetAddressOf() ) );
             ok = ok && UploadBufferData( table.Positions.Get(), job.Proto->Positions.data(), static_cast<UINT>( posBytes ) );
             ok = ok && UploadBufferData( table.Indices.Get(), job.Proto->Indices.data(), static_cast<UINT>( idxBytes ) );
             if ( !ok ) {
