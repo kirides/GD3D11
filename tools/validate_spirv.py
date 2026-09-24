@@ -48,7 +48,7 @@ CALLS = {"CompileFromFile": 4, "makeComputePSO": 5}
 
 def find_tool(explicit, name):
     if explicit:
-        return explicit
+        return os.path.abspath(explicit)   # DXC runs with cwd = the shader folder
     candidates = []
     if os.environ.get("VULKAN_SDK"):
         candidates.append(os.path.join(os.environ["VULKAN_SDK"], "Bin", name))
