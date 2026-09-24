@@ -228,7 +228,8 @@ namespace VulkanRhi {
 
         /** Next internal point for a queue signal of `value`. Caller holds the queue lock. */
         uint64_t PrepareSignal( UINT64 value );
-        /** Internal point a GPU wait for `value` must reach; 0 = already reached (or never signalled). */
+        /** Internal point a GPU wait for `value` must reach; 0 = never signalled. A retired value still returns
+            its point, so the wait keeps its memory dependency. */
         uint64_t InternalPointFor( UINT64 value ) const;
 
         DeviceImpl* m_Device;
@@ -236,6 +237,7 @@ namespace VulkanRhi {
         mutable std::mutex m_Mutex;
         mutable std::deque<std::pair<uint64_t, UINT64>> m_Pending;   // (internal point, D3D12 value), submit order
         mutable UINT64 m_Completed = 0;
+        mutable uint64_t m_CompletedPoint = 0;   // internal point of the last retired signal
         uint64_t m_NextInternal = 0;
 
     private:
@@ -301,6 +303,9 @@ namespace VulkanRhi {
         VkQueue m_Queue;
         std::mutex& m_Mutex;
         VkSemaphore m_SerialTimeline = VK_NULL_HANDLE;
+        /** Global barrier at the head of every submit: D3D12 flushes between ExecuteCommandLists, Vulkan doesn't. */
+        VkCommandPool m_BoundaryPool = VK_NULL_HANDLE;
+        VkCommandBuffer m_Boundary = VK_NULL_HANDLE;
         std::atomic<uint64_t> m_Serial{ 0 };
         static constexpr uint32_t kMaxPendingWaits = 16;
         VkSemaphoreSubmitInfo m_PendingWaits[kMaxPendingWaits] = {};   // guarded by m_Mutex
