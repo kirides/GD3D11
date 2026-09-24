@@ -98,6 +98,8 @@ namespace VulkanRhi {
         VkImageView GetView( const ViewKey& key );
         /** Drops every cached view (swapchain images that were rebuilt). */
         void ReleaseViews();
+        /** CPU address of a host-visible buffer, mapped on first use and kept; null for device-local memory. */
+        const uint8_t* HostPointer();
 
         DeviceImpl* m_Device;
         D3D12_RESOURCE_DESC m_Desc = {};
@@ -122,6 +124,7 @@ namespace VulkanRhi {
     private:
         std::mutex m_ViewMutex;
         std::vector<std::pair<ViewKey, VkImageView>> m_Views;
+        std::atomic<uint8_t*> m_HostPointer{ nullptr };
     };
 
     class DescriptorHeapImpl final : public Rhi::DescriptorHeap {

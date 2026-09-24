@@ -131,6 +131,8 @@ namespace VulkanRhi {
         void SetRootVa( BindState& b, UINT param, D3D12_GPU_VIRTUAL_ADDRESS a );
         bool FlushBindings( BindState& b, VkPipelineBindPoint point );
         bool PrepareDraw();
+        void ReplayIndirect( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
+            ResourceImpl* count, UINT64 countOffset );
 
         void BeginRenderingScope( const Descriptor* colors, uint32_t colorCount, const Descriptor* depth,
             const VkAttachmentLoadOp* colorLoad, const VkClearValue* colorClear, VkAttachmentLoadOp depthLoad,
@@ -580,12 +582,9 @@ namespace VulkanRhi {
         CommandSignatureImpl* s = static_cast<CommandSignatureImpl*>( sig );
         ResourceImpl* argBuf = ToImpl( args );
         ResourceImpl* countBuf = ToImpl( count );
-        if ( !s || !argBuf || s->m_Args.size() != 1 ) {
-            // Per-draw root arguments need the DrawIndex path from VULKAN_IMPLEMENTATION_PLAN.md 5.4 (Phase 4).
-            if ( !m_LoggedIndirect ) {
-                m_LoggedIndirect = true;
-                Logging::Wrn( "Vulkan: ExecuteIndirect with per-draw arguments is not lowered yet; those draws are skipped." );
-            }
+        if ( !s || !argBuf || !argBuf->m_Buffer ) return;
+        if ( s->m_Args.size() != 1 ) {
+            ReplayIndirect( *s, maxCount, argBuf, argOffset, countBuf, countOffset );
             return;
         }
         switch ( s->m_Args[0].Type ) {
@@ -605,6 +604,93 @@ namespace VulkanRhi {
             break;
         default:
             break;
+        }
+    }
+
+    void CommandListImpl::ReplayIndirect( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
+        ResourceImpl* count, UINT64 countOffset ) {
+        // Per-draw root arguments have no core Vulkan equivalent. Commands the CPU wrote (UPLOAD rings) are read
+        // back at record time and replayed as ordinary argument sets + draws; GPU-written ones need the DrawIndex
+        // path (VULKAN_IMPLEMENTATION_PLAN.md 5.4).
+        const uint8_t* base = args->HostPointer();
+        const uint8_t* countPtr = count ? count->HostPointer() : nullptr;
+        if ( !base || ( count && !countPtr ) ) {
+            if ( !m_LoggedIndirect ) {
+                m_LoggedIndirect = true;
+                Logging::Wrn( "Vulkan: GPU-written ExecuteIndirect arguments with per-draw root arguments are not lowered yet; skipped." );
+            }
+            return;
+        }
+        UINT n = maxCount;
+        if ( countPtr && countOffset + sizeof( UINT ) <= count->m_Size ) {
+            UINT gpuCount = 0;
+            std::memcpy( &gpuCount, countPtr + countOffset, sizeof( gpuCount ) );
+            n = std::min( n, gpuCount );
+        }
+        const bool compute = s.m_Args.back().Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+        BindState& b = compute ? m_Compute : m_Gfx;
+        for ( UINT i = 0; i < n; ++i ) {
+            const UINT64 at = argOffset + static_cast<UINT64>( i ) * s.m_Stride;
+            if ( at + s.m_Stride > args->m_Size ) break;
+            const uint8_t* p = base + at;
+            for ( const D3D12_INDIRECT_ARGUMENT_DESC& a : s.m_Args ) {
+                switch ( a.Type ) {
+                case D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT:
+                    SetConstants( b, a.Constant.RootParameterIndex, a.Constant.Num32BitValuesToSet, p, a.Constant.DestOffsetIn32BitValues );
+                    p += a.Constant.Num32BitValuesToSet * sizeof( uint32_t );
+                    break;
+                case D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW: {
+                    D3D12_VERTEX_BUFFER_VIEW v;
+                    std::memcpy( &v, p, sizeof( v ) );
+                    IASetVertexBuffers( a.VertexBuffer.Slot, 1, &v );
+                    p += sizeof( v );
+                    break;
+                }
+                case D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW: {
+                    D3D12_INDEX_BUFFER_VIEW v;
+                    std::memcpy( &v, p, sizeof( v ) );
+                    IASetIndexBuffer( &v );
+                    p += sizeof( v );
+                    break;
+                }
+                case D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW:
+                case D3D12_INDIRECT_ARGUMENT_TYPE_SHADER_RESOURCE_VIEW:
+                case D3D12_INDIRECT_ARGUMENT_TYPE_UNORDERED_ACCESS_VIEW: {
+                    D3D12_GPU_VIRTUAL_ADDRESS va;
+                    std::memcpy( &va, p, sizeof( va ) );
+                    // The three views share the RootParameterIndex position in the union.
+                    SetRootVa( b, a.ConstantBufferView.RootParameterIndex, va );
+                    p += sizeof( va );
+                    break;
+                }
+                case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: {
+                    D3D12_DRAW_INDEXED_ARGUMENTS d;
+                    std::memcpy( &d, p, sizeof( d ) );
+                    if ( d.IndexCountPerInstance && d.InstanceCount )
+                        DrawIndexedInstanced( d.IndexCountPerInstance, d.InstanceCount, d.StartIndexLocation, d.BaseVertexLocation, d.StartInstanceLocation );
+                    p += sizeof( d );
+                    break;
+                }
+                case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: {
+                    D3D12_DRAW_ARGUMENTS d;
+                    std::memcpy( &d, p, sizeof( d ) );
+                    if ( d.VertexCountPerInstance && d.InstanceCount )
+                        DrawInstanced( d.VertexCountPerInstance, d.InstanceCount, d.StartVertexLocation, d.StartInstanceLocation );
+                    p += sizeof( d );
+                    break;
+                }
+                case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: {
+                    D3D12_DISPATCH_ARGUMENTS d;
+                    std::memcpy( &d, p, sizeof( d ) );
+                    if ( d.ThreadGroupCountX && d.ThreadGroupCountY && d.ThreadGroupCountZ )
+                        Dispatch( d.ThreadGroupCountX, d.ThreadGroupCountY, d.ThreadGroupCountZ );
+                    p += sizeof( d );
+                    break;
+                }
+                default:
+                    return;
+                }
+            }
         }
     }
 

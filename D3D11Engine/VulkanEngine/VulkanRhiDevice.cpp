@@ -42,8 +42,10 @@ namespace VulkanRhi {
         VkImage image = m_OwnsImage ? m_Image : VK_NULL_HANDLE;
         VmaAllocation allocation = m_Allocation;
         const uint32_t id = m_BufferId;
-        device->DeferDestroy( [device, views = std::move( views ), buffer, image, allocation, id]() {
+        const bool hostMapped = m_HostPointer.load() != nullptr;
+        device->DeferDestroy( [device, views = std::move( views ), buffer, image, allocation, id, hostMapped]() {
             for ( VkImageView v : views ) vkDestroyImageView( device->Vk(), v, nullptr );
+            if ( hostMapped ) vmaUnmapMemory( device->Allocator(), allocation );
             if ( buffer ) vmaDestroyBuffer( device->Allocator(), buffer, allocation );
             else if ( image && allocation ) vmaDestroyImage( device->Allocator(), image, allocation );
             else if ( image ) vkDestroyImage( device->Vk(), image, nullptr );
@@ -68,6 +70,17 @@ namespace VulkanRhi {
             vmaFlushAllocation( m_Device->Allocator(), m_Allocation, writtenRange ? writtenRange->Begin : 0,
                 writtenRange ? writtenRange->End - writtenRange->Begin : VK_WHOLE_SIZE );
         vmaUnmapMemory( m_Device->Allocator(), m_Allocation );
+    }
+
+    const uint8_t* ResourceImpl::HostPointer() {
+        if ( uint8_t* p = m_HostPointer.load( std::memory_order_acquire ) ) return p;
+        if ( !m_Buffer || !m_Allocation || m_HeapType == D3D12_HEAP_TYPE_DEFAULT ) return nullptr;
+        std::lock_guard<std::mutex> lock( m_ViewMutex );
+        if ( uint8_t* p = m_HostPointer.load() ) return p;
+        void* mapped = nullptr;
+        if ( vmaMapMemory( m_Device->Allocator(), m_Allocation, &mapped ) != VK_SUCCESS ) return nullptr;
+        m_HostPointer.store( static_cast<uint8_t*>( mapped ), std::memory_order_release );
+        return static_cast<uint8_t*>( mapped );
     }
 
     void ResourceImpl::SetName( LPCWSTR name ) {
