@@ -303,6 +303,7 @@ namespace VulkanRhi {
         m_Stats.Pushes += s.Pushes;
         m_Stats.Writes += s.Writes;
         m_Stats.Scopes += s.Scopes;
+        m_Stats.PushConstants += s.PushConstants;
         m_Stats.IndirectTicks += s.IndirectTicks;
         m_Stats.DrawTicks += s.DrawTicks;
         m_Stats.PushTicks += s.PushTicks;
@@ -338,10 +339,11 @@ namespace VulkanRhi {
             m_StatsGeneration = generation;
             Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, GPU busy {:.2f} ms; CPU blocked: fences {:.2f}, acquire {:.2f}, "
                 "present {:.2f}, submit {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
-                "{} render scopes, {} submits; over all {} frames: {} pipelines and {} resources created, {} heap descriptor writes.",
+                "{} push-constant updates, {} render scopes, {} submits; over all {} frames: {} pipelines and {} resources created, "
+                "{} heap descriptor writes.",
                 f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
                 waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
-                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.Scopes / f, submits / f,
+                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.PushConstants / f, s.Scopes / f, submits / f,
                 f, pipelines, m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
             Logging::Inf( "Vulkan recording per frame, summed over threads: ExecuteIndirect {:.2f} ms, direct draws/dispatches {:.2f} ms; "
                 "of both, driver push descriptors {:.2f} ms and driver draw calls {:.2f} ms.",

@@ -299,6 +299,7 @@ namespace VulkanRhi {
         if ( b.Pso != p ) {
             b.Pso = p;
             b.PsoDirty = true;
+            b.DirtyParams |= p->m_UboFallback;   // its uniform copies may not have been pushed for the previous pipeline
         }
     }
 
@@ -508,6 +509,11 @@ namespace VulkanRhi {
             const RootSignatureImpl::Param& p = rs->m_Params[i];
             switch ( p.Kind ) {
             case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS: {
+                if ( p.PushOffset != RootSignatureImpl::kNoPush ) {
+                    vkCmdPushConstants( m_Cmd, rs->m_Layout, p.PushStages, p.PushOffset, p.ConstDwords * 4, &b.Consts[p.ConstOffset] );
+                    ++m_Stats.PushConstants;
+                    if ( !( b.Pso->m_UboFallback & ( 1u << i ) ) ) break;
+                }
                 const VkDeviceSize size = ( p.ConstDwords * 4 + 15 ) & ~15u;
                 if ( b.ConstDirty[i] || !b.ConstBuffer[i] ) {
                     void* cpu = nullptr;

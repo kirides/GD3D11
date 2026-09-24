@@ -42,7 +42,7 @@ bool D3D12PipelineState::CreateInventoryItem() {
     if ( !device ) return false;
 
     D3D12RootLayout& rs = Layout( "InventoryItem" );
-    rs.AddConstants( 0, 2, D3D12_SHADER_VISIBILITY_VERTEX );                               // 0: b0 { instance, texture }
+    rs.AddPerDrawConstants( 0, 2, D3D12_SHADER_VISIBILITY_VERTEX );                        // 0: b0 { instance, texture }
     rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 instances (UI ring)
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b1 bone palette (skeletal ring)
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );

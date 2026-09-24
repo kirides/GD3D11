@@ -126,12 +126,12 @@ bool D3D12PipelineState::CreateWorld() {
     // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly. The 3rd value is
     // the bindless diffuse index; the 4th the normal-perturb strength (World.hlsl's wet-ground path only —
     // Vob.hlsl/Skeletal.hlsl's own MaterialCB declarations just don't read it).
-    rs.AddConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 10: b6 MaterialCB
+    rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 10: b6 MaterialCB
 
     // 11 = wind sway CB (b4, VS only) — read by Vob.hlsl's VSMain (flags/foliage sway + hero-affects-
     // bushes push); World.hlsl/Skeletal.hlsl don't declare b4 so they simply never read it. Only
     // DrawVobsInstanced needs to bind it before its draws; other users of this root sig leave it unbound.
-    rs.AddConstants( 4, 12, D3D12_SHADER_VISIBILITY_VERTEX );  // 11: b4 WindCB (VS_ExConstantBuffer_Wind, 48 bytes)
+    rs.AddPerDrawConstants( 4, 12, D3D12_SHADER_VISIBILITY_VERTEX );  // 11: b4 WindCB (VS_ExConstantBuffer_Wind, 48 bytes)
 
     // 12 = simple-SSAO mask bindless SRV-heap index (b7 AOCB, PS only), set ONCE per frame (not per
     // draw/ExecuteIndirect command) by DrawWorldMesh/DrawVobsInstanced/DrawSkeletalColor's attachment pass —
@@ -280,7 +280,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     // 1: b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 EnvCamPosWS; uint EnvCubeIndex; float3 pad }
     // The env tail is written only by the env-map overlay draw; the first 5 DWORDs keep their old meaning.
     rs.AddConstants( 5, 12, D3D12_SHADER_VISIBILITY_PIXEL );
-    rs.AddConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
+    rs.AddPerDrawConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
     // 3: b4 TransparencyViewCB { float4x4 View } — portal VS only
     rs.AddConstants( 4, 16, D3D12_SHADER_VISIBILITY_VERTEX );
 
