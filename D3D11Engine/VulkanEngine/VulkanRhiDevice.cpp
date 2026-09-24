@@ -622,8 +622,13 @@ namespace VulkanRhi {
         VmaAllocationCreateInfo ai = {};
         ai.usage = VMA_MEMORY_USAGE_AUTO;
         switch ( heapType ) {
-        case D3D12_HEAP_TYPE_UPLOAD:   ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT; break;
-        case D3D12_HEAP_TYPE_READBACK: ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; break;
+        case D3D12_HEAP_TYPE_UPLOAD:
+        case D3D12_HEAP_TYPE_READBACK:
+            // Cached system memory, like D3D12's UPLOAD heap: ExecuteIndirect replay reads the args back on the CPU,
+            // and a write-combined ReBAR placement made each of those reads a PCIe round trip.
+            ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+            ai.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;   // Map/Unmap never flush
+            break;
         case D3D12_HEAP_TYPE_GPU_UPLOAD:
             ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
