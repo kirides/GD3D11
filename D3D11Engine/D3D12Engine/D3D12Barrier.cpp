@@ -285,11 +285,31 @@ void D3D12CmdList::UAVBarriersChunk( ID3D12Resource* const* resources, UINT coun
     m_List->ResourceBarrier( numLegacy, legacyBarriers );
 }
 
-void D3D12CmdList::AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after ) {
-    // Enhanced barriers don't model resource aliasing 1:1 (aliasing is instead expressed through
-    // D3D12_BARRIER_LAYOUT_UNDEFINED on the first use of the aliased resource); no call site needs
-    // that yet, so this stays on the well-understood legacy path unconditionally rather than guessing
-    // at a translation nothing has exercised.
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Aliasing( before, after );
-    m_List->ResourceBarrier( 1, &barrier );
+void D3D12CmdList::AliasingBarrier( ID3D12Resource* before, D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after ) {
+    if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
+        // Mixing a legacy aliasing barrier into enhanced-tracked textures is invalid (debug layer #1350), so
+        // aliasing uses the spec's model: deactivate `before`, then activate `after` from UNDEFINED + DISCARD.
+        D3D12_BARRIER_SYNC sync;
+        D3D12_BARRIER_ACCESS access;
+        D3D12_BARRIER_LAYOUT layout;
+        if ( before && MapResourceState( beforeState, sync, access, layout ) && sync != D3D12_BARRIER_SYNC_NONE ) {
+            CD3DX12_TEXTURE_BARRIER deactivate( sync, D3D12_BARRIER_SYNC_NONE, access, D3D12_BARRIER_ACCESS_NO_ACCESS,
+                layout, layout, before, SubresourceRange( before, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) );
+            CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &deactivate ) );
+            List7()->Barrier( 1, &group );
+        }
+        CD3DX12_TEXTURE_BARRIER activate( before ? D3D12_BARRIER_SYNC_ALL : D3D12_BARRIER_SYNC_NONE, D3D12_BARRIER_SYNC_RENDER_TARGET,
+            D3D12_BARRIER_ACCESS_NO_ACCESS, D3D12_BARRIER_ACCESS_RENDER_TARGET,
+            D3D12_BARRIER_LAYOUT_UNDEFINED, D3D12_BARRIER_LAYOUT_RENDER_TARGET, after,
+            SubresourceRange( after, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ), D3D12_TEXTURE_BARRIER_FLAG_DISCARD );
+        CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &activate ) );
+        List7()->Barrier( 1, &group );
+        return;
+    }
+    if ( before ) {
+        CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Aliasing( before, after );
+        m_List->ResourceBarrier( 1, &barrier );
+    }
+    // Placed RT textures must be initialized by a Clear/Copy/Discard before first use (debug layer #1422).
+    m_List->DiscardResource( after, nullptr );
 }

@@ -24,13 +24,8 @@ class D3D12CmdList;
     (from earlier in the same frame, or held over from last frame) and the new one. Callers never need to
     barrier manually; see Acquire().
 
-    Deliberately on the LEGACY D3D12_RESOURCE_BARRIER_TYPE_ALIASING path throughout (both here and in
-    D3D12CmdList::AliasingBarrier) rather than the enhanced-barrier UNDEFINED-layout model — see
-    AliasingBarrier's own comment for why. Resources are created via the plain (legacy-state)
-    CreatePlacedResource to match; D3D12CmdList::TransitionBarrier still transparently upgrades their
-    later transitions to enhanced barriers when the device supports them (see D3D12Barrier.cpp), so this
-    does not opt a resource out of enhanced-barrier tracking for anything except the aliasing hazard
-    itself. */
+    On enhanced-barrier devices resources are created layout-tracked (CreatePlacedResource2) and aliased via
+    UNDEFINED+DISCARD; otherwise legacy CreatePlacedResource + aliasing barrier + DiscardResource. */
 class D3D12AliasedTextureArena {
 public:
     // Arena capacity. Fixed rather than growable — see D3D12PooledDescriptorHeap for the same reasoning
@@ -101,6 +96,7 @@ private:
     Slot* FindOrCreateSlot( UINT64 offset );
 
     ID3D12Device* m_Device = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Device10> m_Device10;   // CreatePlacedResource2; null without enhanced-barrier support
     D3D12GraphicsEngine* m_Engine = nullptr;
     Microsoft::WRL::ComPtr<ID3D12Heap> m_Heap;
     D3D12PooledDescriptorHeap m_RtvHeap;

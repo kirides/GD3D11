@@ -2,6 +2,7 @@
 #include "D3D12AliasedTextureArena.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12StateCache.h"
+#include "D3D12ResourceCreate.h"
 #include "../Logger.h"
 
 namespace {
@@ -25,6 +26,7 @@ bool D3D12AliasedTextureArena::Attach( D3D12GraphicsEngine& engine ) {
     m_Engine = &engine;
     m_Device = engine.GetD3DDevice();
     if ( !m_Device ) return false;
+    m_Device->QueryInterface( IID_PPV_ARGS( m_Device10.ReleaseAndGetAddressOf() ) );
 
     D3D12_HEAP_DESC heapDesc = {};
     heapDesc.SizeInBytes = kArenaCapacityBytes;
@@ -91,10 +93,18 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
     clear.Format = format;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> newResource;
-    // Legacy CreatePlacedResource (not CreatePlacedResource2/3) on purpose — matches AliasingBarrier
-    // staying on the legacy aliasing-barrier path; see this class' header comment.
-    if ( FAILED( m_Device->CreatePlacedResource( m_Heap.Get(), slotOffset, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &clear, IID_PPV_ARGS( newResource.ReleaseAndGetAddressOf() ) ) ) ) {
+    // Enhanced-barrier devices need the resource layout-tracked from creation; a legacy RENDER_TARGET
+    // initial state can't be touched by enhanced barriers (debug layer #1350).
+    HRESULT hr = E_FAIL;
+    if ( D3D12CmdList::EnhancedBarriersSupported() && m_Device10 ) {
+        const D3D12_RESOURCE_DESC1 desc1 = D3D12ResourceCreate::ToDesc1( desc );
+        hr = m_Device10->CreatePlacedResource2( m_Heap.Get(), slotOffset, &desc1, D3D12_BARRIER_LAYOUT_RENDER_TARGET,
+            &clear, 0, nullptr, IID_PPV_ARGS( newResource.ReleaseAndGetAddressOf() ) );
+    } else {
+        hr = m_Device->CreatePlacedResource( m_Heap.Get(), slotOffset, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET,
+            &clear, IID_PPV_ARGS( newResource.ReleaseAndGetAddressOf() ) );
+    }
+    if ( FAILED( hr ) ) {
         if ( !m_LoggedExhaustion ) {
             Logging::Wrn( "D3D12AliasedTextureArena: failed to place a {}x{} transient texture at offset {}.", width, height, slotOffset );
             m_LoggedExhaustion = true;
@@ -104,20 +114,21 @@ D3D12RenderTarget* D3D12AliasedTextureArena::Acquire( UINT64 slotOffset, UINT wi
     newResource->SetName( L"D3D12RenderGraph_Aliased" );
 
     if ( !slot->Texture ) {
-        // First-ever resource at this offset: no aliasing barrier required before the first use of a
-        // placed resource in virgin heap memory (D3D12 spec).
+        // First-ever resource at this offset: nothing to alias against, but it still needs initializing.
         slot->Texture = std::make_unique<D3D12RenderTarget>();
         if ( !slot->Texture->InitPlaced( m_Device, newResource.Get(), m_Engine, &m_RtvHeap, width, height, format, needsUav, L"D3D12RenderGraph_Aliased" ) ) {
             slot->Texture.reset();
             return nullptr;
         }
+        cmdList.AliasingBarrier( nullptr, D3D12_RESOURCE_STATE_COMMON, newResource.Get() );
     } else {
         ID3D12Resource* oldResource = slot->Texture->GetResource();
+        const D3D12_RESOURCE_STATES oldState = slot->Texture->State;
         if ( !slot->Texture->ReplaceResource( m_Device, newResource.Get(), width, height, format, needsUav ) )
             return nullptr;   // old resource/views stay bound to what was there before — still valid, just stale
         // oldResource is kept alive by ReplaceResource's deferred-release queue, so it is still a valid
         // pointer here even though slot->Texture no longer holds its own reference to it.
-        cmdList.AliasingBarrier( oldResource, newResource.Get() );
+        cmdList.AliasingBarrier( oldResource, oldState, newResource.Get() );
     }
 
     slot->Width = width;
