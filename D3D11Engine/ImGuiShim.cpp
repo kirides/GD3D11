@@ -1052,13 +1052,13 @@ void ImGuiShim::RenderSettingsWindow()
                 // D3D12 bakes the scene-colour format into every PSO, so it only reads this at startup.
                 const bool uavOk = Engine::GraphicsEngine->GetDeviceCapabilities().TypedUAVLoadAdditionalFormats;
                 const bool taa = settings.AntiAliasingMode == GothicRendererSettings::AA_TAA;
-                ImGui::BeginDisabled( ( Engine::IsD3D12Backend && !uavOk ) || taa );
+                ImGui::BeginDisabled( ( Engine::IsModernBackend() && !uavOk ) || taa );
                 if ( ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer ) ) {
                     Engine::GAPI->UpdateCompressBackBuffer();
                 }
                 if ( taa && ImGui::IsItemHovered( ImGuiHoveredFlags_AllowWhenDisabled ) ) {
                     ImGui::SetTooltip( "Ignored while TAA is enabled: TAA needs the full-precision backbuffer." );
-                } else if ( Engine::IsD3D12Backend && ImGui::IsItemHovered() ) {
+                } else if ( Engine::IsModernBackend() && ImGui::IsItemHovered() ) {
                     ImGui::SetTooltip( uavOk ? "Takes effect after a restart."
                         : "Unavailable: this device can't use R11G11B10 as a typed UAV." );
                 }
@@ -1170,7 +1170,7 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             // See RenderSettingsWindowModern: D3D12 has FSR 3 but no FSR 1.
-            const bool noFsr1 = Engine::IsD3D12Backend;
+            const bool noFsr1 = Engine::IsModernBackend();
 
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
             if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {

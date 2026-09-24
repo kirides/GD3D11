@@ -573,7 +573,7 @@ public:
     // Passes in `failedOptional` failed too, but Init() already tolerates them individually (their PSO
     // ends up null/whatever it was and every draw site already guards on that) — no rollback needed for
     // those alone. Returns true only if failedFatal ended up empty.
-    bool ReloadAll( bool hdrEncodeActive, std::vector<std::string>& failedFatal, std::vector<std::string>& failedOptional );
+    bool ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std::vector<std::string>& failedFatal, std::vector<std::string>& failedOptional );
 
     // --- Per-pass pipeline creation (pure pipeline state; no GPU buffers/textures) ---
     bool CreateWorld();        // shared world root sig + lit world-mesh PSO (must run before the two below)

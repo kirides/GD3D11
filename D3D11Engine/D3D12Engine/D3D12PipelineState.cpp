@@ -3953,7 +3953,8 @@ bool D3D12PipelineState::CreateLines() {
     return true;
 }
 
-bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::string>& failedFatal, std::vector<std::string>& failedOptional ) {
+bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std::vector<std::string>& failedFatal,
+    std::vector<std::string>& failedOptional ) {
     // "Fatal" mirrors exactly the Create*() calls D3D12GraphicsEngine::Init() treats as XR_FAILED-worthy
     // (world/UI/lighting-critical passes nothing else falls back for); "optional" mirrors the ones Init()
     // already logs-and-continues on. See the big comment block in Init() for the per-pass reasoning — kept
@@ -3970,6 +3971,16 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, std::vector<std::strin
     runFatal( "UI", &D3D12PipelineState::CreateUI );
     UI.Pipelines.clear();   // blend-keyed cache; entries were built from the blobs CreateUI() just replaced
     runOptional( "UI2D", &D3D12PipelineState::CreateUI2D );
+    if ( !sceneEnabled ) {
+        // Display-only mode (Vulkan until the scene passes are lowered): what Init() created.
+        runOptional( "Preview", &D3D12PipelineState::CreatePreview );
+        runOptional( "PreviewSkeletal", &D3D12PipelineState::CreatePreviewSkeletal );
+        runOptional( "InventoryItem", &D3D12PipelineState::CreateInventoryItem );
+        runOptional( "Video", &D3D12PipelineState::CreateVideo );
+        runOptional( "GammaCorrect", &D3D12PipelineState::CreateGammaCorrect );
+        runOptional( "Lines", &D3D12PipelineState::CreateLines );
+        return failedFatal.empty();
+    }
     runFatal( "World", &D3D12PipelineState::CreateWorld );
     World.QuadMarkPipelines.clear();
     runFatal( "DepthPrepass", &D3D12PipelineState::CreateDepthPrepass );

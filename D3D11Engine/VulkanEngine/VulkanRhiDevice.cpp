@@ -940,6 +940,10 @@ namespace VulkanRhi {
 }
 
 namespace VulkanRhi {
+    VulkanDevice& NativeDevice( Rhi::Device* device ) { return static_cast<DeviceImpl*>( device )->Base(); }
+    int VkFormatOf( DXGI_FORMAT format ) { return static_cast<int>( ToVkFormat( format ) ); }
+    std::mutex& QueueMutex( Rhi::Device* device ) { return static_cast<DeviceImpl*>( device )->Base().GetGraphicsQueueMutex(); }
+
     Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice() {
         ComPtr<DeviceImpl> device;
         device.Attach( new DeviceImpl() );

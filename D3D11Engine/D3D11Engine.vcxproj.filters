@@ -813,12 +813,6 @@
     <ClInclude Include="VulkanEngine\VulkanSwapchain.h">
       <Filter>Engine\Vulkan</Filter>
     </ClInclude>
-    <ClInclude Include="VulkanEngine\VulkanNullResources.h">
-      <Filter>Engine\Vulkan</Filter>
-    </ClInclude>
-    <ClInclude Include="VulkanEngine\VulkanGraphicsEngine.h">
-      <Filter>Engine\Vulkan</Filter>
-    </ClInclude>
     <ClInclude Include="RHI\Rhi.h">
       <Filter>Engine\RHI</Filter>
     </ClInclude>
@@ -1108,12 +1102,6 @@
       <Filter>Engine\Vulkan</Filter>
     </ClCompile>
     <ClCompile Include="VulkanEngine\VulkanSwapchain.cpp">
-      <Filter>Engine\Vulkan</Filter>
-    </ClCompile>
-    <ClCompile Include="VulkanEngine\VulkanNullResources.cpp">
-      <Filter>Engine\Vulkan</Filter>
-    </ClCompile>
-    <ClCompile Include="VulkanEngine\VulkanGraphicsEngine.cpp">
       <Filter>Engine\Vulkan</Filter>
     </ClCompile>
     <ClCompile Include="VulkanEngine\VulkanImGui.cpp">
