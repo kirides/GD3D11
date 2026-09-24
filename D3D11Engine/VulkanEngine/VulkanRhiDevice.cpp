@@ -303,6 +303,10 @@ namespace VulkanRhi {
         m_Stats.Pushes += s.Pushes;
         m_Stats.Writes += s.Writes;
         m_Stats.Scopes += s.Scopes;
+        m_Stats.IndirectTicks += s.IndirectTicks;
+        m_Stats.DrawTicks += s.DrawTicks;
+        m_Stats.PushTicks += s.PushTicks;
+        m_Stats.DriverDrawTicks += s.DriverDrawTicks;
     }
 
     void DeviceImpl::NotePresent() {
@@ -339,6 +343,9 @@ namespace VulkanRhi {
                 waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
                 s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.Scopes / f, submits / f,
                 f, pipelines, m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
+            Logging::Inf( "Vulkan recording per frame, summed over threads: ExecuteIndirect {:.2f} ms, direct draws/dispatches {:.2f} ms; "
+                "of both, driver push descriptors {:.2f} ms and driver draw calls {:.2f} ms.",
+                ms( s.IndirectTicks ), ms( s.DrawTicks ), ms( s.PushTicks ), ms( s.DriverDrawTicks ) );
             m_StatsPresents = 0;
             m_StatsStart = now.QuadPart;
         }

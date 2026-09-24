@@ -91,6 +91,18 @@ namespace VulkanRhi {
         uint32_t Pushes = 0;     // vkCmdPushDescriptorSetKHR calls
         uint32_t Writes = 0;     // descriptors those pushes wrote
         uint32_t Scopes = 0;     // vkCmdBeginRendering calls
+        int64_t IndirectTicks = 0;     // QPC ticks inside ExecuteIndirect, CPU replay included
+        int64_t DrawTicks = 0;         // inside direct draws and dispatches
+        int64_t PushTicks = 0;         // inside vkCmdPushDescriptorSetKHR
+        int64_t DriverDrawTicks = 0;   // inside the vkCmdDraw*/vkCmdDispatch* calls
+    };
+
+    /** Adds the ticks spent in its scope to `sink`. */
+    struct TickScope {
+        explicit TickScope( int64_t& sink ) : Sink( sink ), Start( QpcNow() ) {}
+        ~TickScope() { Sink += QpcNow() - Start; }
+        int64_t& Sink;
+        int64_t Start;
     };
 
     // ---- Objects ----------------------------------------------------------------------------------
