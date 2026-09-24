@@ -648,12 +648,19 @@ namespace VulkanRhi {
 
     void CommandListImpl::ReplayIndirect( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
         ResourceImpl* count, UINT64 countOffset ) {
-        // Per-draw root arguments have no core Vulkan equivalent. Commands the CPU wrote (UPLOAD rings) are read
-        // back at record time and replayed as ordinary argument sets + draws; GPU-written ones need the DrawIndex
-        // path (VULKAN_IMPLEMENTATION_PLAN.md 5.4).
-        const uint8_t* base = args->HostPointer();
+        // Per-draw root arguments have no core Vulkan equivalent: CPU-written commands are read back at record time
+        // and replayed. A device-local copy replays from its host source, drawing from the GPU buffer (the cull patches it).
+        const uint8_t* cmds = nullptr;
+        UINT64 available = 0;
+        bool gpuDraws = false;
+        if ( const uint8_t* host = args->HostPointer() ) {
+            cmds = host + argOffset;
+            available = args->m_Size > argOffset ? args->m_Size - argOffset : 0;
+        } else {
+            gpuDraws = args->MirroredHostPointer( argOffset, cmds, available );
+        }
         const uint8_t* countPtr = count ? count->HostPointer() : nullptr;
-        if ( !base || ( count && !countPtr ) ) {
+        if ( !cmds || ( count && !countPtr ) ) {
             if ( !m_LoggedIndirect ) {
                 m_LoggedIndirect = true;
                 Logging::Wrn( "Vulkan: GPU-written ExecuteIndirect arguments with per-draw root arguments are not lowered yet; skipped." );
@@ -669,9 +676,11 @@ namespace VulkanRhi {
         const bool compute = s.m_Args.back().Type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
         BindState& b = compute ? m_Compute : m_Gfx;
         for ( UINT i = 0; i < n; ++i ) {
-            const UINT64 at = argOffset + static_cast<UINT64>( i ) * s.m_Stride;
-            if ( at + s.m_Stride > args->m_Size ) break;
-            const uint8_t* p = base + at;
+            const UINT64 at = static_cast<UINT64>( i ) * s.m_Stride;
+            if ( at + s.m_Stride > available ) break;
+            const uint8_t* cmd = cmds + at;
+            const uint8_t* p = cmd;
+            const VkDeviceSize gpuAt = argOffset + at;   // this command inside the GPU buffer
             for ( const D3D12_INDIRECT_ARGUMENT_DESC& a : s.m_Args ) {
                 switch ( a.Type ) {
                 case D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT:
@@ -705,24 +714,36 @@ namespace VulkanRhi {
                 case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED: {
                     D3D12_DRAW_INDEXED_ARGUMENTS d;
                     std::memcpy( &d, p, sizeof( d ) );
-                    if ( d.IndexCountPerInstance && d.InstanceCount )
+                    if ( gpuDraws ) {
+                        if ( PrepareDraw() )
+                            vkCmdDrawIndexedIndirect( m_Cmd, args->m_Buffer, gpuAt + ( p - cmd ), 1, sizeof( VkDrawIndexedIndirectCommand ) );
+                    } else if ( d.IndexCountPerInstance && d.InstanceCount ) {
                         DrawIndexedInstanced( d.IndexCountPerInstance, d.InstanceCount, d.StartIndexLocation, d.BaseVertexLocation, d.StartInstanceLocation );
+                    }
                     p += sizeof( d );
                     break;
                 }
                 case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW: {
                     D3D12_DRAW_ARGUMENTS d;
                     std::memcpy( &d, p, sizeof( d ) );
-                    if ( d.VertexCountPerInstance && d.InstanceCount )
+                    if ( gpuDraws ) {
+                        if ( PrepareDraw() ) vkCmdDrawIndirect( m_Cmd, args->m_Buffer, gpuAt + ( p - cmd ), 1, sizeof( VkDrawIndirectCommand ) );
+                    } else if ( d.VertexCountPerInstance && d.InstanceCount ) {
                         DrawInstanced( d.VertexCountPerInstance, d.InstanceCount, d.StartVertexLocation, d.StartInstanceLocation );
+                    }
                     p += sizeof( d );
                     break;
                 }
                 case D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH: {
                     D3D12_DISPATCH_ARGUMENTS d;
                     std::memcpy( &d, p, sizeof( d ) );
-                    if ( d.ThreadGroupCountX && d.ThreadGroupCountY && d.ThreadGroupCountZ )
+                    if ( gpuDraws ) {
+                        EndRenderingScope();
+                        if ( FlushBindings( m_Compute, VK_PIPELINE_BIND_POINT_COMPUTE ) )
+                            vkCmdDispatchIndirect( m_Cmd, args->m_Buffer, gpuAt + ( p - cmd ) );
+                    } else if ( d.ThreadGroupCountX && d.ThreadGroupCountY && d.ThreadGroupCountZ ) {
                         Dispatch( d.ThreadGroupCountX, d.ThreadGroupCountY, d.ThreadGroupCountZ );
+                    }
                     p += sizeof( d );
                     break;
                 }
@@ -1064,6 +1085,8 @@ namespace VulkanRhi {
         EndRenderingScope();
         const VkBufferCopy region = { srcOffset, dstOffset, bytes };
         vkCmdCopyBuffer( m_Cmd, s->m_Buffer, d->m_Buffer, 1, &region );
+        // Staged indirect arguments: ExecuteIndirect replays their root arguments from the host copy.
+        if ( d->m_HeapType == D3D12_HEAP_TYPE_DEFAULT ) d->SetHostMirror( s->HostPointer() ? s : nullptr, srcOffset, dstOffset, bytes );
     }
 
     void CommandListImpl::CopyTextureRegionImpl( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,

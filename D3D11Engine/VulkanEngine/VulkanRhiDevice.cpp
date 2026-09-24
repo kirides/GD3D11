@@ -87,6 +87,32 @@ namespace VulkanRhi {
         return static_cast<uint8_t*>( mapped );
     }
 
+    void ResourceImpl::SetHostMirror( ResourceImpl* source, UINT64 srcOffset, UINT64 dstOffset, UINT64 size ) {
+        std::lock_guard<std::mutex> lock( m_ViewMutex );
+        m_MirrorSource = source;
+        m_MirrorSrcOffset = srcOffset;
+        m_MirrorDstOffset = dstOffset;
+        m_MirrorSize = source ? size : 0;
+    }
+
+    bool ResourceImpl::MirroredHostPointer( UINT64 offset, const uint8_t*& outData, UINT64& outAvailable ) {
+        ComPtr<ResourceImpl> source;
+        UINT64 srcOffset = 0;
+        UINT64 available = 0;
+        {
+            std::lock_guard<std::mutex> lock( m_ViewMutex );
+            if ( !m_MirrorSource || offset < m_MirrorDstOffset || offset >= m_MirrorDstOffset + m_MirrorSize ) return false;
+            source = m_MirrorSource;
+            srcOffset = m_MirrorSrcOffset + ( offset - m_MirrorDstOffset );
+            available = m_MirrorDstOffset + m_MirrorSize - offset;
+        }
+        const uint8_t* host = source->HostPointer();
+        if ( !host || srcOffset + available > source->m_Size ) return false;
+        outData = host + srcOffset;
+        outAvailable = available;
+        return true;
+    }
+
     void ResourceImpl::SetName( LPCWSTR name ) {
         const std::string n = Narrow( name );
         SetNameA( n.c_str(), static_cast<UINT>( n.size() ) );

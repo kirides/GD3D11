@@ -100,6 +100,10 @@ namespace VulkanRhi {
         void ReleaseViews();
         /** CPU address of a host-visible buffer, mapped on first use and kept; null for device-local memory. */
         const uint8_t* HostPointer();
+        /** Device-local buffers: the host buffer the last recorded copy filled [dstOffset, +size) from (null clears). */
+        void SetHostMirror( ResourceImpl* source, UINT64 srcOffset, UINT64 dstOffset, UINT64 size );
+        /** Host bytes behind `offset` per that copy, and how many follow; false if no mirror covers it. */
+        bool MirroredHostPointer( UINT64 offset, const uint8_t*& outData, UINT64& outAvailable );
 
         DeviceImpl* m_Device;
         D3D12_RESOURCE_DESC m_Desc = {};
@@ -125,6 +129,10 @@ namespace VulkanRhi {
         std::mutex m_ViewMutex;
         std::vector<std::pair<ViewKey, VkImageView>> m_Views;
         std::atomic<uint8_t*> m_HostPointer{ nullptr };
+        ComPtr<ResourceImpl> m_MirrorSource;   // guarded by m_ViewMutex, like the three below
+        UINT64 m_MirrorSrcOffset = 0;
+        UINT64 m_MirrorDstOffset = 0;
+        UINT64 m_MirrorSize = 0;
     };
 
     class DescriptorHeapImpl final : public Rhi::DescriptorHeap {

@@ -196,7 +196,7 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     constexpr ListItem<GothicRendererSettings::E_GraphicsAPI> graphicsApis[] = {
         { "Direct3D 11", GothicRendererSettings::GRAPHICS_API_D3D11 },
         { "Direct3D 12", GothicRendererSettings::GRAPHICS_API_D3D12, "Falls back to Direct3D 11 if the device can't be created." },
-        { "Vulkan (experimental)", GothicRendererSettings::GRAPHICS_API_VULKAN, "Work in progress: renders the game without GPU culling or FSR 3; expect missing effects. Falls back to Direct3D 11 without Vulkan 1.3." },
+        { "Vulkan (experimental)", GothicRendererSettings::GRAPHICS_API_VULKAN, "Work in progress: renders the game without FSR 3; expect missing effects. Falls back to Direct3D 11 without Vulkan 1.3." },
     };
     ComboRow( "Graphics API [*]", "##GraphicsAPI", graphicsApis, &settings.GraphicsAPI,
         "Takes effect after restarting the game." );
