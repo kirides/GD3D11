@@ -115,7 +115,7 @@ namespace {
 
     // Bump when the DXC argument list in CompileSource changes in a way that alters codegen.
     constexpr uint32_t kDxilCacheArgsRevision = 1;
-    constexpr uint32_t kSpirvCacheArgsRevision = 1;
+    constexpr uint32_t kSpirvCacheArgsRevision = 2;
     constexpr uint32_t kDxilCacheFormatVersion = 1;
 
     int g_CacheHits = 0;
@@ -366,7 +366,8 @@ namespace {
         // Handle Debug Configuration Flags
 #ifdef DEBUG_D3D11
         arguments.push_back( DXC_ARG_DEBUG );                 // -Zi (Enable debug information)
-        arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );    // -Od (Disable optimizations)
+        // SPIR-V at -Od keeps heap ConstantBuffer<T> locals, which fail validation; -O1 still legalizes them.
+        arguments.push_back( il == ShaderIL::SPIRV ? DXC_ARG_OPTIMIZATION_LEVEL1 : DXC_ARG_SKIP_OPTIMIZATIONS );
         if ( il == ShaderIL::DXIL ) {                          // DXIL-container-only options
             arguments.push_back( L"-Qembed_debug" );
             arguments.push_back( L"-Qsource_in_debug_module" );
