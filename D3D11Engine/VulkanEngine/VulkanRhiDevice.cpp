@@ -557,8 +557,9 @@ namespace VulkanRhi {
         VkMemoryRequirements req = req2.memoryRequirements;
         req.size = desc->SizeInBytes;
         req.alignment = std::max<VkDeviceSize>( req.alignment, desc->Alignment ? desc->Alignment : D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT );
+        // vmaAllocateMemory knows no resource, so VMA's AUTO usages are invalid here: ask for device-local directly.
         VmaAllocationCreateInfo ai = {};
-        ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         ai.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         ComPtr<HeapImpl> heap;
         heap.Attach( new HeapImpl( this ) );
