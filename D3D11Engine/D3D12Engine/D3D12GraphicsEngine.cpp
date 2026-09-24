@@ -1430,6 +1430,13 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 		m_SceneColorInPixelState = true;
 	}
 
+	// Nothing lives in the scratches yet this frame, so this is the safe spot to initialize fresh ones.
+	if ( m_LdrScratchNeedsDiscard && m_LdrCopyReady ) {
+		m_CmdList->DiscardResource( m_LdrScratch[0].Get() );
+		m_CmdList->DiscardResource( m_LdrScratch[1].Get() );
+		m_LdrScratchNeedsDiscard = false;
+	}
+
 	// Decides whether this lands in the real display target or opens the display chain in scratch 0.
 	PlanDisplayChain();
 

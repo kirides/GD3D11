@@ -1266,6 +1266,7 @@ private:
     UINT m_LdrScratchSrvSlot[2] = { UINT_MAX, UINT_MAX };
     D3D12_CPU_DESCRIPTOR_HANDLE m_LdrScratchRtv[2] = {};   // RTV heap slots kBackBufferMax+6 / +7
     bool m_LdrCopyReady = false;              // BOTH scratches exist; every chain pass guards on it
+    bool m_LdrScratchNeedsDiscard = false;    // fresh scratches must be initialized before first draw (debug layer #1422)
     bool CreateLdrCopyResource( INT2 size );  // (re)builds both scratches + their SRVs/RTVs
 
     // Where the finished display image currently lives: -1 = the real display target, 0/1 = that scratch.

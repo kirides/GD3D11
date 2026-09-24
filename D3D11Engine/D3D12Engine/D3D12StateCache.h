@@ -385,6 +385,7 @@ public:
         UINT8 stencil, UINT numRects, const D3D12_RECT* rects ) {
         m_List->ClearDepthStencilView( dsv, flags, depth, stencil, numRects, rects );
     }
+    void DiscardResource( ID3D12Resource* resource ) { m_List->DiscardResource( resource, nullptr ); }
     void CopyResource( ID3D12Resource* dst, ID3D12Resource* src ) { m_List->CopyResource( dst, src ); }
     void CopyBufferRegion( ID3D12Resource* dst, UINT64 dstOffset, ID3D12Resource* src, UINT64 srcOffset, UINT64 bytes ) {
         m_List->CopyBufferRegion( dst, dstOffset, src, srcOffset, bytes );
