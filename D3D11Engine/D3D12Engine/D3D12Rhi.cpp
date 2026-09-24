@@ -578,7 +578,8 @@ namespace {
             Native()->CreateConstantBufferView( desc, dest );
         }
 
-        HRESULT CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, Rhi::RootSignature** outRootSig ) override {
+        HRESULT CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, Rhi::RootSignature** outRootSig,
+            uint32_t ) override {
             const char* name = debugName ? debugName : "<unnamed>";
             if ( !m_Caps.RootSignature11 && !SerializeRootSignatureProc() ) {
                 Logging::Wrn( "D3D12: no root signature serialize entry point available ({}).", name );

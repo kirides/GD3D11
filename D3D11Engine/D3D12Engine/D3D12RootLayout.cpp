@@ -49,6 +49,12 @@ UINT D3D12RootLayout::AddConstants( UINT shaderRegister, UINT num32BitValues, D3
     return static_cast<UINT>( m_Params.size() - 1 );
 }
 
+UINT D3D12RootLayout::AddPerDrawConstants( UINT shaderRegister, UINT num32BitValues, D3D12_SHADER_VISIBILITY vis, UINT space ) {
+    const UINT index = AddConstants( shaderRegister, num32BitValues, vis, space );
+    if ( index < 32 ) m_PerDrawConstants |= 1u << index;
+    return index;
+}
+
 UINT D3D12RootLayout::AddDescriptorParam( D3D12_ROOT_PARAMETER_TYPE type, UINT shaderRegister,
     D3D12_SHADER_VISIBILITY vis, UINT space, D3D12_ROOT_DESCRIPTOR_FLAGS flags ) {
     ParamInfo p = {};
@@ -130,6 +136,7 @@ D3D12_STATIC_SAMPLER_DESC D3D12RootLayout::SamplerComparison( UINT shaderRegiste
 
 void D3D12RootLayout::Reset( const char* debugName ) {
     m_Params.clear();
+    m_PerDrawConstants = 0;
     m_Ranges.clear();
     m_StaticSamplers.clear();
     m_RootSig.Reset();
@@ -183,7 +190,7 @@ bool D3D12RootLayout::Build( Rhi::Device* device, D3D12_ROOT_SIGNATURE_FLAGS fla
     desc1.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
     desc1.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
     desc1.Flags = flags;
-    return SUCCEEDED( device->CreateRootSignature( desc1, m_DebugName, m_RootSig.ReleaseAndGetAddressOf() ) );
+    return SUCCEEDED( device->CreateRootSignature( desc1, m_DebugName, m_RootSig.ReleaseAndGetAddressOf(), m_PerDrawConstants ) );
 }
 
 // ---- Validation -------------------------------------------------------------------------------

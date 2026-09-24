@@ -91,6 +91,7 @@ namespace VulkanRhi {
         uint32_t Pushes = 0;     // vkCmdPushDescriptorSetKHR calls
         uint32_t Writes = 0;     // descriptors those pushes wrote
         uint32_t Scopes = 0;     // vkCmdBeginRendering calls
+        uint32_t PushConstants = 0;   // vkCmdPushConstants calls
         int64_t IndirectTicks = 0;     // QPC ticks inside ExecuteIndirect, CPU replay included
         int64_t DrawTicks = 0;         // inside direct draws and dispatches
         int64_t PushTicks = 0;         // inside vkCmdPushDescriptorSetKHR
@@ -204,8 +205,12 @@ namespace VulkanRhi {
             VkDescriptorType Type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             uint32_t ConstDwords = 0;      // 32BIT_CONSTANTS
             uint32_t ConstOffset = 0;      // DWORD offset into the command list's constant shadow
+            uint32_t PushOffset = kNoPush; // byte offset in the push-constant range (per-draw constants)
+            VkShaderStageFlags PushStages = 0;
             std::vector<TableSlot> Table;  // DESCRIPTOR_TABLE
         };
+
+        static constexpr uint32_t kNoPush = UINT32_MAX;
 
         RootSignatureImpl( DeviceImpl* device ) : m_Device( device ) {}
         ~RootSignatureImpl() override;
@@ -215,6 +220,7 @@ namespace VulkanRhi {
         std::vector<Param> m_Params;
         uint32_t m_ConstDwords = 0;
         uint32_t m_PushDescriptorCount = 0;
+        uint32_t m_PushConstantParams = 0;   // parameters with a push-constant range
         VkDescriptorSetLayout m_PushLayout = VK_NULL_HANDLE;
         VkPipelineLayout m_Layout = VK_NULL_HANDLE;
         std::vector<VkSampler> m_StaticSamplers;
@@ -232,6 +238,7 @@ namespace VulkanRhi {
         ComPtr<RootSignatureImpl> m_RootSig;
         uint32_t m_ColorCount = 0;   // attachments the rendering scope must present to this pipeline
         bool m_HasDepth = false;
+        uint32_t m_UboFallback = 0;  // push-constant parameters some stage still reads as a uniform buffer
     };
 
     class CommandSignatureImpl final : public Rhi::CommandSignature {
@@ -412,7 +419,8 @@ namespace VulkanRhi {
         void CreateDepthStencilView( Rhi::Resource* resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE dest ) override;
         void CreateConstantBufferView( const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE dest ) override;
 
-        HRESULT CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, Rhi::RootSignature** outRootSig ) override;
+        HRESULT CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, Rhi::RootSignature** outRootSig,
+            uint32_t perDrawConstants ) override;
         HRESULT CreateGraphicsPipelineState( const Rhi::GraphicsPipelineStateDesc* desc, Rhi::PipelineState** outPso ) override;
         HRESULT CreateComputePipelineState( const Rhi::ComputePipelineStateDesc* desc, Rhi::PipelineState** outPso ) override;
         HRESULT CreateCommandSignature( const D3D12_COMMAND_SIGNATURE_DESC* desc, Rhi::RootSignature* rootSig,

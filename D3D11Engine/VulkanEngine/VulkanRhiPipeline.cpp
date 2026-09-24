@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "VulkanRhiInternal.h"
+#include "VulkanSpirvPatch.h"
 #include "../Logger.h"
 
 #include <algorithm>
@@ -104,6 +105,25 @@ namespace VulkanRhi {
             return module;
         }
 
+        /** The stage's module with the root signature's per-draw constants it reads lowered to push constants;
+            parameters the stage still reads as uniform buffers are added to `uboFallback`. */
+        VkShaderModule CreateStageModule( DeviceImpl* device, const D3D12_SHADER_BYTECODE& code, const RootSignatureImpl& rs,
+            VkShaderStageFlags stage, uint32_t& uboFallback ) {
+            if ( !rs.m_PushConstantParams || code.BytecodeLength % 4 ) return CreateModule( device, code );
+            const uint32_t* first = static_cast<const uint32_t*>( code.pShaderBytecode );
+            std::vector<uint32_t> words( first, first + code.BytecodeLength / 4 );
+            for ( uint32_t i = 0; i < rs.m_Params.size(); ++i ) {
+                const RootSignatureImpl::Param& p = rs.m_Params[i];
+                if ( !( rs.m_PushConstantParams & ( 1u << i ) ) || !( p.PushStages & stage ) ) continue;
+                if ( SpirvPatch::LowerUniformToPushConstant( words, p.Binding, p.PushOffset, p.ConstDwords * 4 )
+                    == SpirvPatch::LowerResult::Unsupported ) {
+                    uboFallback |= 1u << i;
+                }
+            }
+            const D3D12_SHADER_BYTECODE patched = { words.data(), words.size() * sizeof( uint32_t ) };
+            return CreateModule( device, patched );
+        }
+
         VkBlendFactor BlendOf( D3D12_BLEND b ) {
             switch ( b ) {
             case D3D12_BLEND_ZERO:             return VK_BLEND_FACTOR_ZERO;
@@ -164,7 +184,8 @@ namespace VulkanRhi {
 
     void RootSignatureImpl::SetName( LPCWSTR ) {}
 
-    HRESULT DeviceImpl::CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, Rhi::RootSignature** outRootSig ) {
+    HRESULT DeviceImpl::CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, Rhi::RootSignature** outRootSig,
+        uint32_t perDrawConstants ) {
         const char* name = debugName ? debugName : "?";
         ComPtr<RootSignatureImpl> rs;
         rs.Attach( new RootSignatureImpl( this ) );
@@ -326,10 +347,32 @@ namespace VulkanRhi {
         if ( CheckResult( vkCreateDescriptorSetLayout( Vk(), &lci, nullptr, &rs->m_PushLayout ), "vkCreateDescriptorSetLayout (push)" ) )
             return E_FAIL;
 
+        // Per-draw constants get a push-constant range each, packed in parameter order; they keep their uniform
+        // binding for shader stages the SPIR-V rewrite can't lower (VulkanSpirvPatch.h).
+        std::vector<VkPushConstantRange> pushRanges;
+        uint32_t pushBytes = 0;
+        for ( uint32_t i = 0; i < rs->m_Params.size() && i < 32; ++i ) {
+            RootSignatureImpl::Param& p = rs->m_Params[i];
+            if ( !( perDrawConstants & ( 1u << i ) ) || p.Kind != D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS ) continue;
+            const uint32_t bytes = p.ConstDwords * 4;
+            if ( pushBytes + bytes > VkCaps().MaxPushConstantsSize ) {
+                Logging::Wrn( "Vulkan: root signature '{}' parameter {} exceeds the {}-byte push constants; it stays a uniform buffer.",
+                    name, i, VkCaps().MaxPushConstantsSize );
+                continue;
+            }
+            p.PushOffset = pushBytes;
+            p.PushStages = StagesOf( desc.pParameters[i].ShaderVisibility );
+            pushRanges.push_back( { p.PushStages, pushBytes, bytes } );
+            pushBytes += bytes;
+            rs->m_PushConstantParams |= 1u << i;
+        }
+
         const VkDescriptorSetLayout sets[] = { rs->m_PushLayout, m_BindlessLayout };
         VkPipelineLayoutCreateInfo pci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
         pci.setLayoutCount = 2;
         pci.pSetLayouts = sets;
+        pci.pushConstantRangeCount = static_cast<uint32_t>( pushRanges.size() );
+        pci.pPushConstantRanges = pushRanges.empty() ? nullptr : pushRanges.data();
         if ( CheckResult( vkCreatePipelineLayout( Vk(), &pci, nullptr, &rs->m_Layout ), "vkCreatePipelineLayout" ) ) return E_FAIL;
         SetObjectName( VK_OBJECT_TYPE_PIPELINE_LAYOUT, VkUtil::HandleToU64( rs->m_Layout ), name );
         *outRootSig = rs.Detach();
@@ -363,6 +406,7 @@ namespace VulkanRhi {
         };
         VkPipelineShaderStageCreateInfo stages[5] = {};
         SpirvInfo infos[5];
+        uint32_t uboFallback = 0;
         VkShaderModule modules[5] = {};
         uint32_t stageCount = 0;
         SpirvInfo vsInfo;
@@ -375,7 +419,7 @@ namespace VulkanRhi {
                 cleanup();
                 return E_INVALIDARG;
             }
-            modules[stageCount] = CreateModule( this, *s.Code );
+            modules[stageCount] = CreateStageModule( this, *s.Code, *rs, s.Bit, uboFallback );
             if ( !modules[stageCount] ) { cleanup(); return E_FAIL; }
             stages[stageCount] = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
             stages[stageCount].stage = s.Bit;
@@ -507,6 +551,7 @@ namespace VulkanRhi {
         pso->m_RootSig = rs;
         pso->m_ColorCount = rtCount;
         pso->m_HasDepth = desc->DSVFormat != DXGI_FORMAT_UNKNOWN;
+        pso->m_UboFallback = uboFallback;
         const VkResult result = vkCreateGraphicsPipelines( Vk(), m_PipelineCache, 1, &ci, nullptr, &pso->m_Pipeline );
         cleanup();
         OnPipelineCreated();
@@ -526,7 +571,8 @@ namespace VulkanRhi {
             Logging::Wrn( "Vulkan: a compute pipeline was handed a shader that is not SPIR-V." );
             return E_INVALIDARG;
         }
-        VkShaderModule module = CreateModule( this, desc->CS );
+        uint32_t uboFallback = 0;
+        VkShaderModule module = CreateStageModule( this, desc->CS, *rs, VK_SHADER_STAGE_COMPUTE_BIT, uboFallback );
         if ( !module ) return E_FAIL;
         VkComputePipelineCreateInfo ci = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
         ci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
@@ -539,6 +585,7 @@ namespace VulkanRhi {
         pso.Attach( new PipelineStateImpl( this ) );
         pso->m_BindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
         pso->m_RootSig = rs;
+        pso->m_UboFallback = uboFallback;
         const VkResult result = vkCreateComputePipelines( Vk(), m_PipelineCache, 1, &ci, nullptr, &pso->m_Pipeline );
         vkDestroyShaderModule( Vk(), module, nullptr );
         OnPipelineCreated();

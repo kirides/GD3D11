@@ -279,8 +279,10 @@ namespace Rhi {
         virtual void CreateConstantBufferView( const D3D12_CONSTANT_BUFFER_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE dest ) = 0;
 
         // --- Pipelines ---
-        /** Takes the 1.1 form; a device without 1.1 drops the per-parameter promises (always valid, see D3D12RootLayout). */
-        virtual HRESULT CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, RootSignature** outRootSig ) = 0;
+        /** Takes the 1.1 form; a device without 1.1 drops the per-parameter promises (always valid, see D3D12RootLayout).
+            Bit i of `perDrawConstants` marks root constants i as set per draw: Vulkan pushes them, D3D12 ignores the hint. */
+        virtual HRESULT CreateRootSignature( const D3D12_ROOT_SIGNATURE_DESC1& desc, const char* debugName, RootSignature** outRootSig,
+            uint32_t perDrawConstants ) = 0;
         virtual HRESULT CreateGraphicsPipelineState( const GraphicsPipelineStateDesc* desc, PipelineState** outPso ) = 0;
         virtual HRESULT CreateComputePipelineState( const ComputePipelineStateDesc* desc, PipelineState** outPso ) = 0;
         virtual HRESULT CreateCommandSignature( const D3D12_COMMAND_SIGNATURE_DESC* desc, RootSignature* rootSig,

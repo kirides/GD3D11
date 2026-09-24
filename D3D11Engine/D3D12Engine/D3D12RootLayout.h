@@ -85,6 +85,9 @@ public:
     // Each returns the root-parameter index it was assigned (i.e. the value to pass to
     // SetGraphicsRoot*/SetComputeRoot* at bind time). Parameters are assigned in call order.
     UINT AddConstants( UINT shaderRegister, UINT num32BitValues, D3D12_SHADER_VISIBILITY vis, UINT space = 0 );
+    // Root constants rewritten per draw (command-signature constants included). D3D12 treats them like AddConstants;
+    // Vulkan pushes them and lowers the shaders' matching cbuffer to push constants.
+    UINT AddPerDrawConstants( UINT shaderRegister, UINT num32BitValues, D3D12_SHADER_VISIBILITY vis, UINT space = 0 );
     UINT AddCBV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0,
         D3D12_ROOT_DESCRIPTOR_FLAGS flags = RootVolatile );
     UINT AddSRV( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis, UINT space = 0,
@@ -170,6 +173,7 @@ private:
                              D3D12_ROOT_DESCRIPTOR_FLAGS flags );
 
     std::vector<ParamInfo> m_Params;
+    uint32_t m_PerDrawConstants = 0;            // bit per AddPerDrawConstants parameter
     std::deque<Range> m_Ranges;                 // stable storage; tables index into this
     std::vector<D3D12_STATIC_SAMPLER_DESC> m_StaticSamplers;
     Microsoft::WRL::ComPtr<Rhi::RootSignature> m_RootSig;
