@@ -2353,6 +2353,8 @@ static void DiagnoseErrors(ID3D12Device* device) {
 
     D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 output;
     if ( SUCCEEDED( pRemovedExtendedData->GetAutoBreadcrumbsOutput1( &output ) ) ) {
+        if ( !output.pHeadAutoBreadcrumbNode )
+            Logging::Wrn( "D3D12 DiagnoseErrors: DRED reports no outstanding command lists (breadcrumbs not enabled for this device?)." );
         PrintNode( output.pHeadAutoBreadcrumbNode );
     } else {
         Logging::Wrn( "D3D12 DiagnoseErrors: GetAutoBreadcrumbsOutput1 failed, no breadcrumbs to dump." );
