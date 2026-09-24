@@ -731,23 +731,22 @@ namespace VulkanRhi {
         return S_OK;
     }
 
-    DescriptorHeapImpl* DeviceImpl::HeapById( uint32_t id ) const {
+    bool DeviceImpl::ReadGpuDescriptor( D3D12_GPU_DESCRIPTOR_HANDLE handle, Descriptor& out ) const {
+        const uint32_t id = static_cast<uint32_t>( handle.ptr >> 32 );
         std::lock_guard<std::mutex> lock( m_HeapMutex );
-        return ( id && id <= m_Heaps.size() ) ? m_Heaps[id - 1] : nullptr;
-    }
-
-    const Descriptor* DeviceImpl::ResolveGpuDescriptor( D3D12_GPU_DESCRIPTOR_HANDLE handle ) const {
-        DescriptorHeapImpl* heap = HeapById( static_cast<uint32_t>( handle.ptr >> 32 ) );
-        if ( !heap ) return nullptr;
+        DescriptorHeapImpl* heap = ( id && id <= m_Heaps.size() ) ? m_Heaps[id - 1] : nullptr;
+        if ( !heap ) return false;
         const uint64_t index = ( handle.ptr & 0xFFFFFFFFull ) / sizeof( Descriptor );
-        return index < heap->m_Desc.NumDescriptors ? &heap->m_Records[static_cast<size_t>( index )] : nullptr;
+        if ( index >= heap->m_Desc.NumDescriptors ) return false;
+        out = heap->m_Records[static_cast<size_t>( index )];
+        return true;
     }
 
     void DeviceImpl::WriteDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE dest, const Descriptor& descriptor ) {
         if ( !dest.ptr ) return;
+        std::lock_guard<std::mutex> lock( m_HeapMutex );
         *reinterpret_cast<Descriptor*>( dest.ptr ) = descriptor;
 
-        std::lock_guard<std::mutex> lock( m_HeapMutex );
         for ( DescriptorHeapImpl* heap : m_Heaps ) {
             if ( !heap || !heap->m_Set || !heap->Contains( dest.ptr ) ) continue;
             VkDescriptorImageInfo image = {};
