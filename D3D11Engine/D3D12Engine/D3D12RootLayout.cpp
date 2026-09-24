@@ -42,12 +42,11 @@ namespace {
             feature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
             if ( !device || FAILED( device->CheckFeatureSupport( D3D12_FEATURE_ROOT_SIGNATURE, &feature, sizeof( feature ) ) ) ) {
                 // CheckFeatureSupport rejects the struct outright when the runtime predates 1.1.
-                LogInfo() << "D3D12: root signature 1.1 unavailable; falling back to 1.0 (all root "
-                             "parameters stay fully volatile — no descriptor/data preload).";
+                Logging::Inf( "D3D12: root signature 1.1 unavailable; falling back to 1.0 (all root parameters stay fully volatile — no descriptor/data preload)." );
                 return D3D_ROOT_SIGNATURE_VERSION_1_0;
             }
             if ( feature.HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1_1 )
-                LogInfo() << "D3D12: driver reports root signature 1.0 only; static-data promises will be dropped.";
+                Logging::Inf( "D3D12: driver reports root signature 1.0 only; static-data promises will be dropped." );
             return feature.HighestVersion;
         }();
         return s_version;
@@ -191,7 +190,7 @@ bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS fl
         && HighestRootSignatureVersion( device ) >= D3D_ROOT_SIGNATURE_VERSION_1_1;
 
     if ( !useVersioned && !SerializeRootSignatureProc() ) {
-        LogWarn() << "D3D12: no root signature serialize entry point available (" << m_DebugName << ").";
+        Logging::Wrn( "D3D12: no root signature serialize entry point available ({}).", m_DebugName );
         return false;
     }
 
@@ -261,11 +260,11 @@ bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS fl
         serializeHr = SerializeVersionedRootSignatureProc()( &versioned, rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
 
         if ( FAILED( serializeHr ) ) {
-            LogWarn() << "D3D12: root signature '" << m_DebugName << "' 1.1 serialize failed (flags 0x"
-                      << std::hex << flags << std::dec << "); retrying unversioned 1.0.";
+            Logging::Wrn( "D3D12: root signature '{}' 1.1 serialize failed (flags 0x{:x}); retrying unversioned 1.0.",
+                      m_DebugName, static_cast<uint32_t>( flags ) );
             if ( rsErr )
-                LogWarn() << "D3D12: root signature '" << m_DebugName << "' serialize error: "
-                          << static_cast<const char*>( rsErr->GetBufferPointer() );
+                Logging::Wrn( "D3D12: root signature '{}' serialize error: {}",
+                          m_DebugName, static_cast<const char*>( rsErr->GetBufferPointer() ) );
         }
     }
 
@@ -313,32 +312,31 @@ bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS fl
                     // serializes, but any SM6.6 ResourceDescriptorHeap[...] shader bound to it will be
                     // rejected at PSO creation. D3D12Device::IsAvailable() gates on SM6.6/tier-3 up
                     // front so we normally never get here; if we do, the log says which bits went.
-                    LogWarn() << "D3D12: root signature '" << m_DebugName << "' serialized as 1.0 with reduced flags 0x"
-                              << std::hex << attempt << " (dropped 0x" << ( flags & ~attempt ) << std::dec
-                              << ") — this runtime's serializer is older than the flags requested.";
+                    Logging::Wrn( "D3D12: root signature '{}' serialized as 1.0 with reduced flags 0x{:x} (dropped 0x{:x}) — this runtime's serializer is older than the flags requested.",
+                              m_DebugName, static_cast<uint32_t>( attempt ), static_cast<uint32_t>( flags & ~attempt ) );
                 } else if ( useVersioned ) {
-                    LogInfo() << "D3D12: root signature '" << m_DebugName << "' serialized as 1.0 (1.1 rejected it).";
+                    Logging::Inf( "D3D12: root signature '{}' serialized as 1.0 (1.1 rejected it).", m_DebugName );
                 }
                 break;
             }
             if ( rsErr )
-                LogInfo() << "D3D12: root signature '" << m_DebugName << "' 1.0 serialize (flags 0x" << std::hex
-                          << attempt << std::dec << ") failed: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+                Logging::Inf( "D3D12: root signature '{}' 1.0 serialize (flags 0x{:x}) failed: {}",
+                          m_DebugName, static_cast<uint32_t>( attempt ), static_cast<const char*>( rsErr->GetBufferPointer() ) );
         }
     }
 
     if ( FAILED( serializeHr ) ) {
         if ( rsErr )
-            LogWarn() << "D3D12: root signature '" << m_DebugName << "' serialize error: "
-                      << static_cast<const char*>( rsErr->GetBufferPointer() );
+            Logging::Wrn( "D3D12: root signature '{}' serialize error: {}",
+                      m_DebugName, static_cast<const char*>( rsErr->GetBufferPointer() ) );
         else
-            LogWarn() << "D3D12: root signature '" << m_DebugName << "' failed to serialize.";
+            Logging::Wrn( "D3D12: root signature '{}' failed to serialize.", m_DebugName );
         return false;
     }
 
     if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
         IID_PPV_ARGS( m_RootSig.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateRootSignature failed for '" << m_DebugName << "'.";
+        Logging::Wrn( "D3D12: CreateRootSignature failed for '{}'.", m_DebugName );
         return false;
     }
 
@@ -520,26 +518,19 @@ void D3D12RootLayout::ValidateShaders( std::initializer_list<ShaderRef> shaders 
                     const UINT needBytes = DeclaredCBufferExtent( reflection->GetConstantBufferByName( bind.Name ) );
                     const UINT haveBytes = matched->Num32BitValues * 4;
                     if ( needBytes > haveBytes ) {
-                        LogWarn() << "D3D12 root sig '" << m_DebugName << "': " << s.Name << " cbuffer '"
-                                  << bind.Name << "' (b" << bind.BindPoint << ") declares " << needBytes
-                                  << " bytes but root parameter " << static_cast<UINT>( matched - m_Params.data() )
-                                  << " supplies only " << haveBytes << " (" << matched->Num32BitValues
-                                  << " 32-bit values) — the shader reads past the constants.";
+                        Logging::Wrn( "D3D12 root sig '{}': {} cbuffer '{}' (b{}) declares {} bytes but root parameter {} supplies only {} ({} 32-bit values) — the shader reads past the constants.",
+                                  m_DebugName, s.Name, bind.Name, bind.BindPoint, needBytes, static_cast<UINT>( matched - m_Params.data() ), haveBytes, matched->Num32BitValues );
                     }
                 }
                 continue;
             }
 
             if ( visibilityMismatch ) {
-                LogWarn() << "D3D12 root sig '" << m_DebugName << "': " << s.Name << " binds "
-                          << RegClassChar( cls ) << bind.BindPoint << " (space" << bind.Space << ", '"
-                          << bind.Name << "') but the covering root parameter is visible to "
-                          << StageName( matched ? matched->Visibility : D3D12_SHADER_VISIBILITY_ALL )
-                          << " only, not " << StageName( s.Stage ) << ".";
+                Logging::Wrn( "D3D12 root sig '{}': {} binds {}{} (space{}, '{}') but the covering root parameter is visible to {} only, not {}.",
+                          m_DebugName, s.Name, RegClassChar( cls ), bind.BindPoint, bind.Space, bind.Name, StageName( matched ? matched->Visibility : D3D12_SHADER_VISIBILITY_ALL ), StageName( s.Stage ) );
             } else {
-                LogWarn() << "D3D12 root sig '" << m_DebugName << "': " << s.Name << " binds "
-                          << RegClassChar( cls ) << bind.BindPoint << " (space" << bind.Space << ", '"
-                          << bind.Name << "') but no root parameter or static sampler covers it.";
+                Logging::Wrn( "D3D12 root sig '{}': {} binds {}{} (space{}, '{}') but no root parameter or static sampler covers it.",
+                          m_DebugName, s.Name, RegClassChar( cls ), bind.BindPoint, bind.Space, bind.Name );
             }
         }
     }

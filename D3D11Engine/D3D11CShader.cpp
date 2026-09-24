@@ -23,7 +23,7 @@ XRESULT D3D11CShader::LoadShader( const char* file, const char* entryPoint, cons
     Microsoft::WRL::ComPtr<ID3DBlob> psBlob;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-        LogInfo() << "Compilling compute shader: " << file;
+        Logging::Inf( "Compilling compute shader: {}", file );
 
     // Compile shaders
     if ( entryPoint == nullptr ) { entryPoint = "CSMain"; }

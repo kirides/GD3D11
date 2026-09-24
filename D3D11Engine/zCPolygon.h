@@ -84,13 +84,13 @@ public:
         if ( PrologueMatches( GothicMemoryLocations::zCPolygon::CheckRayPolyIntersection, sigOneSided, sizeof( sigOneSided ) ) ) {
             DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCPolygonCheckRayPolyIntersection, hooked_CheckRayPolyIntersection );
         } else {
-            LogWarn() << "zCPolygon::CheckRayPolyIntersection has an unexpected prologue - keeping ZenGin's implementation";
+            Logging::Wrn( "zCPolygon::CheckRayPolyIntersection has an unexpected prologue - keeping ZenGin's implementation" );
         }
 
         if ( PrologueMatches( GothicMemoryLocations::zCPolygon::CheckRayPolyIntersection2Sided, sigTwoSided, sizeof( sigTwoSided ) ) ) {
             DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCPolygonCheckRayPolyIntersection2Sided, hooked_CheckRayPolyIntersection2Sided );
         } else {
-            LogWarn() << "zCPolygon::CheckRayPolyIntersection2Sided has an unexpected prologue - keeping ZenGin's implementation";
+            Logging::Wrn( "zCPolygon::CheckRayPolyIntersection2Sided has an unexpected prologue - keeping ZenGin's implementation" );
         }
 #endif
     }

@@ -373,7 +373,7 @@ namespace {
         );
 
         if ( FAILED( hr ) ) {
-            LogWarn() << "D3D12: HRESULT compilation failure.";
+            Logging::Wrn( "D3D12: HRESULT compilation failure." );
             return false;
         }
 
@@ -381,7 +381,7 @@ namespace {
         ComPtr<IDxcBlobUtf8> errorBuffer;
         if ( SUCCEEDED( compileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( errorBuffer.GetAddressOf() ), nullptr ) ) ) {
             if ( errorBuffer && errorBuffer->GetStringLength() > 0 ) {
-                LogWarn() << "D3D12: DXC Shader Compilation warning/error:\n" << errorBuffer->GetStringPointer();
+                Logging::Wrn( "D3D12: DXC Shader Compilation warning/error:\n{}", errorBuffer->GetStringPointer() );
             }
         }
 
@@ -432,7 +432,7 @@ bool D3D12ShaderBackend::LoadShaderSource( const std::string& fileName, std::str
         return !outSource.empty();
     }
 
-    LogWarn() << "D3D12ShaderBackend: shader source not found (VDFS + '" << full << "'): " << fileName;
+    Logging::Wrn( "D3D12ShaderBackend: shader source not found (VDFS + '{}'): {}", full, fileName );
     return false;
 }
 

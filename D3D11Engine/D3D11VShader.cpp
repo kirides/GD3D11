@@ -279,7 +279,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
     Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
 
 
-    LogInfo() << "Compilling vertex shader: " << si.name;
+    Logging::Inf( "Compilling vertex shader: {}", si.name );
 
     // Compile shader
     if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !si.entryPoint.empty() ? si.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), macros)) ) {
@@ -309,7 +309,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
     auto layout = lookupTable.find( si.layout );
 
     if ( layout == lookupTable.end() ) {
-        LogError() << "Input layout index out of range: " << si.layout;
+        Logging::Err( "Input layout index out of range: {}", static_cast<int>( si.layout ) );
 
         std::stringstream ss;
         ss << "Invalid input layout index"  << std::endl

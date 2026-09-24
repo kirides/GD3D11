@@ -31,8 +31,8 @@ void D3D11GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         static bool logged = false;
         if ( !logged ) {
             logged = true;
-            LogWarn() << "D3D11: inventory item previews skipped, the UI target is " << targetWidth << "x" << targetHeight
-                << " but the preview depth buffer is not.";
+            Logging::Wrn( "D3D11: inventory item previews skipped, the UI target is {}x{} but the preview depth buffer is not.",
+                targetWidth, targetHeight );
         }
         return;
     }

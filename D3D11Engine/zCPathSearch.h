@@ -35,8 +35,8 @@ public:
         // this isn't the build we mapped, or if a SystemPack/Union plugin already detoured it.
         static const unsigned char expected[] = { 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF, 0x68 };
         if ( std::memcmp( reinterpret_cast<const void*>(addr), expected, sizeof( expected ) ) != 0 ) {
-            LogWarn() << "zCPathSearch::CorrectPosForNearClip has an unexpected prologue at "
-                << std::hex << addr << " - keeping ZenGin's implementation";
+            Logging::Wrn( "zCPathSearch::CorrectPosForNearClip has an unexpected prologue at {:x} - keeping ZenGin's implementation",
+                addr );
             return;
         }
 

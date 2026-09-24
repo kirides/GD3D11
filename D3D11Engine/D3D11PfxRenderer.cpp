@@ -472,7 +472,7 @@ Microsoft::WRL::ComPtr<ID3D11SamplerState>& D3D11PfxRenderer::GetSampler(const D
     ComPtr<ID3D11SamplerState> sampler;
     HRESULT hr = device->CreateSamplerState( &desc, sampler.ReleaseAndGetAddressOf() );
     if ( FAILED( hr ) ) {
-        LogError() << "Failed to create sampler";
+        Logging::Err( "Failed to create sampler" );
         static ComPtr<ID3D11SamplerState> null{};
         return null;
     }

@@ -11,7 +11,7 @@ int32_t D3D11GraphicsShader::GetInputIndex( StringID name )
         return kvp->second;
     }
 #ifdef DEBUG_D3D11
-    // LogError() << "Tried to find input index for semantic '" << name << "' but it was not found in the shader!";
+    // Logging::Err( "Tried to find input index for semantic '{}' but it was not found in the shader!", name );
 #endif
     return -1;
 }

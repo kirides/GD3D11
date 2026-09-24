@@ -559,8 +559,8 @@ void D3D12PointShadows::Prepare() {
 						if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
 						if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
 							if ( !m_VobInstOverflowLogged ) {
-								LogWarn() << "D3D12: point-shadow VOB instance ring overflow ("
-									<< m_VobInstCapacity << " bytes/frame); some cube casters dropped.";
+								Logging::Wrn( "D3D12: point-shadow VOB instance ring overflow ({} bytes/frame); some cube casters dropped.",
+									m_VobInstCapacity );
 								m_VobInstOverflowLogged = true;
 							}
 							overflow = true;
@@ -788,8 +788,8 @@ void D3D12PointShadows::Prepare() {
 					if ( dx * dx + dy * dy + dz * dz >= cullR * cullR ) continue;
 					if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
 						if ( !m_VobInstOverflowLogged ) {
-							LogWarn() << "D3D12: point-shadow VOB instance ring overflow ("
-								<< m_VobInstCapacity << " bytes/frame); some dynamic-item cube casters dropped.";
+							Logging::Wrn( "D3D12: point-shadow VOB instance ring overflow ({} bytes/frame); some dynamic-item cube casters dropped.",
+								m_VobInstCapacity );
 							m_VobInstOverflowLogged = true;
 						}
 						break;

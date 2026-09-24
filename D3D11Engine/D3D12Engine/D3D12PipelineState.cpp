@@ -181,7 +181,7 @@ bool D3D12PipelineState::CreateWorld() {
     // Lit quad marks (D3D12Fx.cpp). Non-fatal: DrawQuadMarks falls back to the unlit Fx pipeline if this
     // blob is missing, so a shader edit that breaks it costs the lighting, not the blood splats.
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSQuadMark", Shadermodel_VS, World.QuadMarkVsBlob.ReleaseAndGetAddressOf() ) ) {
-        LogWarn() << "D3D12: World.hlsl VSQuadMark failed to compile — quad marks will draw unlit.";
+        Logging::Wrn( "D3D12: World.hlsl VSQuadMark failed to compile — quad marks will draw unlit." );
         World.QuadMarkVsBlob.Reset();
     }
 
@@ -254,7 +254,7 @@ bool D3D12PipelineState::CreateWorld() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world)." );
         return false;
     }
     return true;
@@ -304,12 +304,12 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     // pass falls back to the plain PS_Simple_FF-equivalent for a kind whose blob is missing, which is what
     // those surfaces got before they were peeled out at all.
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparentFoam", Shadermodel_PS, WorldTransparency.FoamPsBlob.ReleaseAndGetAddressOf() ) ) {
-        LogWarn() << "D3D12: PSTransparentFoam failed to compile — waterfall foam falls back to the plain transparent shader.";
+        Logging::Wrn( "D3D12: PSTransparentFoam failed to compile — waterfall foam falls back to the plain transparent shader." );
         WorldTransparency.FoamPsBlob.Reset();
     }
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparentPortal", Shadermodel_VS, WorldTransparency.PortalVsBlob.ReleaseAndGetAddressOf() )
       || !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparentPortal", Shadermodel_PS, WorldTransparency.PortalPsBlob.ReleaseAndGetAddressOf() ) ) {
-        LogWarn() << "D3D12: the portal transparency shaders failed to compile — G1 forest portals will not be drawn.";
+        Logging::Wrn( "D3D12: the portal transparency shaders failed to compile — G1 forest portals will not be drawn." );
         WorldTransparency.PortalVsBlob.Reset();
         WorldTransparency.PortalPsBlob.Reset();
     }
@@ -317,7 +317,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     // overlay, leaving the base blended surface — which is exactly what shipped before the stage existed.
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparentEnv", Shadermodel_VS, WorldTransparency.EnvVsBlob.ReleaseAndGetAddressOf() )
       || !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparentEnv", Shadermodel_PS, WorldTransparency.EnvPsBlob.ReleaseAndGetAddressOf() ) ) {
-        LogWarn() << "D3D12: the env-map transparency shaders failed to compile — env-mapped surfaces lose their sheen.";
+        Logging::Wrn( "D3D12: the env-map transparency shaders failed to compile — env-mapped surfaces lose their sheen." );
         WorldTransparency.EnvVsBlob.Reset();
         WorldTransparency.EnvPsBlob.Reset();
     }
@@ -337,7 +337,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     GothicBlendStateInfo alpha;
     alpha.SetAlphaBlending();
     if ( !GetOrCreateWorldTransparencyPipeline( alpha, false ) ) {
-        LogWarn() << "D3D12: failed to create the default world-transparency blend pipeline.";
+        Logging::Wrn( "D3D12: failed to create the default world-transparency blend pipeline." );
         return false;
     }
 
@@ -346,7 +346,7 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     depthOnly.ColorWritesEnabled = false;   // D3D11's second loop: color writes off, depth-write back on
     WorldTransparency.DepthFillPSO = GetOrCreateWorldTransparencyPipeline( depthOnly, true );
     if ( !WorldTransparency.DepthFillPSO ) {
-        LogWarn() << "D3D12: failed to create the world-transparency depth-fill pipeline.";
+        Logging::Wrn( "D3D12: failed to create the world-transparency depth-fill pipeline." );
         return false;
     }
     return true;
@@ -427,7 +427,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( c
     HRESULT hr;
     LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
     if ( FAILED(hr) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for world-transparency key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for world-transparency key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -500,7 +500,7 @@ bool D3D12PipelineState::CreatePreview() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Preview.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (preview).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (preview)." );
         return false;
     }
     return true;
@@ -574,7 +574,7 @@ bool D3D12PipelineState::CreatePreviewSkeletal() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PreviewSkeletal.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skinned preview).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skinned preview)." );
         return false;
     }
     return true;
@@ -653,7 +653,7 @@ bool D3D12PipelineState::CreateGhost() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Ghost.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (ghost).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (ghost)." );
         return false;
     }
     return true;
@@ -744,7 +744,7 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( GhostSkeletal.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (ghost skeletal).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (ghost skeletal)." );
         return false;
     }
     return true;
@@ -849,7 +849,7 @@ bool D3D12PipelineState::CreateGrass() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Grass.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass)." );
         return false;
     }
 
@@ -857,8 +857,7 @@ bool D3D12PipelineState::CreateGrass() {
         // Non-fatal by design, exactly like the World-family G-buffer prepass PSOs: the lit grass PSO above is
         // untouched, and DrawVegetationDepthPrepass just skips itself. Cost is grass being absent from the depth
         // prepass again, i.e. no AO on the blades — never a broken frame.
-        LogWarn() << "D3D12: grass depth-prepass PSOs unavailable — vegetation stays out of the depth prepass "
-                     "(no screen-space AO on grass).";
+        Logging::Wrn( "D3D12: grass depth-prepass PSOs unavailable — vegetation stays out of the depth prepass (no screen-space AO on grass)." );
         Grass.DepthPrepassPSO.Reset();
         Grass.DepthPrepassGBufPSO.Reset();
     }
@@ -907,7 +906,7 @@ bool D3D12PipelineState::CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC
     pso.RTVFormats[0] = kSceneColorFormat;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Grass.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass depth prepass)." );
         return false;
     }
 
@@ -920,7 +919,7 @@ bool D3D12PipelineState::CreateGrassDepthPrepass( const D3D12_INPUT_ELEMENT_DESC
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Grass.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass G-buffer depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass G-buffer depth prepass)." );
         return false;
     }
     return true;
@@ -992,7 +991,7 @@ bool D3D12PipelineState::CreateVideo() {
     pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Video.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (video).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (video)." );
         return false;
     }
     return true;
@@ -1005,7 +1004,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     // keeps the exact reversed-Z GREATER_EQUAL depth-write state so the depth it lays down is bit-identical
     // to what the opaque world pass would write. Must run AFTER CreateWorld (needs World.RootSig).
     ID3D12Device* device = m_Device->GetDevice();
-    if ( !World.RootSig ) { LogWarn() << "D3D12: depth prepass needs the world root sig."; return false; }
+    if ( !World.RootSig ) { Logging::Wrn( "D3D12: depth prepass needs the world root sig." ); return false; }
 
     if ( !m_Shaders->CompileFromFile( "DepthPrepass.hlsl", "VSWorld", Shadermodel_VS, World.DepthPrepassVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -1046,7 +1045,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (depth prepass)." );
         return false;
     }
 
@@ -1057,8 +1056,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( World.DepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth prepass, no-alpha) — "
-                         "the world prepass keeps alpha-clipping every material.";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (depth prepass, no-alpha) — the world prepass keeps alpha-clipping every material." );
             World.DepthPrepassNoAlphaPSO.Reset();
         }
     }
@@ -1090,7 +1088,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     pso.PS = { World.DepthPrepassVobPsBlob->GetBufferPointer(), World.DepthPrepassVobPsBlob->GetBufferSize() };
     pso.InputLayout = { vobLayout, _countof( vobLayout ) };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass)." );
         return false;
     }
 
@@ -1125,14 +1123,14 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
     pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass)." );
         return false;
     }
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( World.DepthPrepassVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass, no-alpha).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass, no-alpha)." );
             World.DepthPrepassVobAttachNoAlphaPSO.Reset();
         }
     }
@@ -1144,14 +1142,14 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
     pso.InputLayout = { vobLayout, _countof( vobLayout ) };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, indirect).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, indirect)." );
         return false;
     }
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( World.DepthPrepassVobNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, no-alpha).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, no-alpha)." );
             World.DepthPrepassVobNoAlphaPSO.Reset();
         }
     }
@@ -1159,8 +1157,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     if ( !CreateDepthPrepassGBuf() ) {
         // Non-fatal by design: the plain depth-only PSOs above are untouched and still drive a correct frame.
         // Losing this costs the motion-vector + normal G-buffer (so TAA/FSR3/XeGTAO downstream), not rendering.
-        LogWarn() << "D3D12: motion-vector/normal G-buffer prepass PSOs unavailable — "
-                     "falling back to the plain depth-only prepass (no motion vectors, no normal buffer).";
+        Logging::Wrn( "D3D12: motion-vector/normal G-buffer prepass PSOs unavailable — falling back to the plain depth-only prepass (no motion vectors, no normal buffer)." );
         World.DepthPrepassGBufPSO.Reset();
         World.DepthPrepassVobGBufPSO.Reset();
         World.DepthPrepassVobAttachGBufPSO.Reset();
@@ -1219,7 +1216,7 @@ bool D3D12PipelineState::CreateDepthPrepassGBuf() {
     pso.PS = { World.DepthPrepassGBufPsBlob->GetBufferPointer(), World.DepthPrepassGBufPsBlob->GetBufferSize() };
     pso.InputLayout = { worldLayout, _countof( worldLayout ) };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world G-buffer prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world G-buffer prepass)." );
         return false;
     }
 
@@ -1243,12 +1240,12 @@ bool D3D12PipelineState::CreateDepthPrepassGBuf() {
     pso.InputLayout = { vobLayout, _countof( vobLayout ) };
     pso.VS = { World.DepthPrepassVobGBufVsBlob->GetBufferPointer(), World.DepthPrepassVobGBufVsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB G-buffer prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB G-buffer prepass)." );
         return false;
     }
     pso.VS = { World.DepthPrepassVobAttachGBufVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachGBufVsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobAttachGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment G-buffer prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment G-buffer prepass)." );
         return false;
     }
     return true;
@@ -1307,7 +1304,7 @@ bool D3D12PipelineState::CreateVob() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB)." );
         return false;
     }
 
@@ -1327,7 +1324,7 @@ bool D3D12PipelineState::CreateVob() {
     pso.VS = { World.VobAttachVsBlob->GetBufferPointer(), World.VobAttachVsBlob->GetBufferSize() };
     pso.PS = { World.VobIndirectPsBlob->GetBufferPointer(), World.VobIndirectPsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment)." );
         return false;
     }
 
@@ -1338,7 +1335,7 @@ bool D3D12PipelineState::CreateVob() {
     pso.PS = { World.VobIndirectPsBlob->GetBufferPointer(), World.VobIndirectPsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, indirect).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB, indirect)." );
         return false;
     }
 
@@ -1347,7 +1344,7 @@ bool D3D12PipelineState::CreateVob() {
     // but PSAlphaBlendBindless and blended-without-depth-write state. Non-fatal on failure: both PSOs stay null
     // and BuildVobDrawCommands then leaves these materials in the opaque set (i.e. today's behaviour).
     if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSAlphaBlendBindless", Shadermodel_PS, World.VobAlphaPsBlob.ReleaseAndGetAddressOf() ) ) {
-        LogWarn() << "D3D12: PSAlphaBlendBindless failed to compile — blended VOBs stay alpha-clipped in the opaque pass.";
+        Logging::Wrn( "D3D12: PSAlphaBlendBindless failed to compile — blended VOBs stay alpha-clipped in the opaque pass." );
         World.VobAlphaPsBlob.Reset();
         return true;
     }
@@ -1366,7 +1363,7 @@ bool D3D12PipelineState::CreateVob() {
     rt.DestBlendAlpha = D3D12_BLEND_ZERO;
     rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAlphaBlendPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, alpha-blended).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB, alpha-blended)." );
         World.VobAlphaBlendPSO.Reset();
         return true;
     }
@@ -1374,7 +1371,7 @@ bool D3D12PipelineState::CreateVob() {
     // ...and SetAdditiveBlending: same, with DestBlend = ONE.
     rt.DestBlend = D3D12_BLEND_ONE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAlphaAddPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, additive).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB, additive)." );
         World.VobAlphaAddPSO.Reset();
         // The BLEND PSO survives; DrawVobAlphaMeshes falls back to it for ADD materials.
     }
@@ -1447,7 +1444,7 @@ bool D3D12PipelineState::CreateUI() {
     GothicDepthBufferStateInfo defaultDepth;
     defaultDepth.SetDefault();
     if ( !GetOrCreateUIPipeline( defaultBlend, defaultDepth ) ) {
-        LogWarn() << "D3D12: failed to create the default 2D/UI pipeline state.";
+        Logging::Wrn( "D3D12: failed to create the default 2D/UI pipeline state." );
         return false;
     }
     return true;
@@ -1537,7 +1534,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
     HRESULT hr;
     LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
     if ( FAILED(hr) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI pipeline key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for UI pipeline key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -1580,7 +1577,7 @@ bool D3D12PipelineState::CreateParticle() {
     GothicBlendStateInfo defaultBlend;
     defaultBlend.SetAlphaBlending();
     if ( !GetOrCreateParticlePipeline( defaultBlend ) ) {
-        LogWarn() << "D3D12: failed to create the default particle pipeline.";
+        Logging::Wrn( "D3D12: failed to create the default particle pipeline." );
         return false;
     }
     return true;
@@ -1638,7 +1635,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateParticlePipeline( const Goth
     HRESULT hr;
     LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
     if ( FAILED(hr) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for particle blend key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for particle blend key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -1721,7 +1718,7 @@ bool D3D12PipelineState::CreateDecal() {
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z; coplanar decals win ties
     pso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Decal.LitPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (decal lit).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (decal lit)." );
         return false;
     }
 
@@ -1729,7 +1726,7 @@ bool D3D12PipelineState::CreateDecal() {
     GothicBlendStateInfo defaultBlend;
     defaultBlend.SetAlphaBlending();
     if ( !GetOrCreateDecalBlendPipeline( defaultBlend ) ) {
-        LogWarn() << "D3D12: failed to create the default decal blend pipeline.";
+        Logging::Wrn( "D3D12: failed to create the default decal blend pipeline." );
         return false;
     }
     return true;
@@ -1776,7 +1773,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateDecalBlendPipeline( const Go
     HRESULT hr;
     LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
     if ( FAILED(hr) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for decal blend key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for decal blend key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -1894,7 +1891,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal)." );
         return false;
     }
 
@@ -1922,14 +1919,14 @@ bool D3D12PipelineState::CreateSkeletal() {
     // prepass write nothing. Every PSO built from `pso` from here down is a prepass/G-buffer variant.
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass)." );
         return false;
     }
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( Skeletal.DepthPrepassNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass, no-alpha).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass, no-alpha)." );
             Skeletal.DepthPrepassNoAlphaPSO.Reset();
         }
     }
@@ -1952,11 +1949,11 @@ bool D3D12PipelineState::CreateSkeletal() {
         pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         pso.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Skeletal.DepthPrepassGBufPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal G-buffer prepass) — NPCs will have no per-vertex motion vectors.";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal G-buffer prepass) — NPCs will have no per-vertex motion vectors." );
             Skeletal.DepthPrepassGBufPSO.Reset();
         }
     } else {
-        LogWarn() << "D3D12: Skeletal.hlsl VSDepthGBuf/PSDepthClipGBuf failed to compile — NPCs will have no per-vertex motion vectors.";
+        Logging::Wrn( "D3D12: Skeletal.hlsl VSDepthGBuf/PSDepthClipGBuf failed to compile — NPCs will have no per-vertex motion vectors." );
         Skeletal.DepthPrepassGBufPSO.Reset();
     }
     return true;
@@ -2030,7 +2027,7 @@ bool D3D12PipelineState::CreatePointShadow() {
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z
     pso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PointShadow.CasterWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster)." );
         return false;
     }
     // No-pixel-shader twin — see PointShadowPipeline::CasterWorldNoAlphaPSO. Non-fatal.
@@ -2038,7 +2035,7 @@ bool D3D12PipelineState::CreatePointShadow() {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
         noAlpha.PS = {};
         if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( PointShadow.CasterWorldNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster, no-alpha).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster, no-alpha)." );
             PointShadow.CasterWorldNoAlphaPSO.Reset();
         }
     }
@@ -2064,14 +2061,14 @@ bool D3D12PipelineState::CreatePointShadow() {
         pso.PS = { PointShadow.PsBlob->GetBufferPointer(), PointShadow.PsBlob->GetBufferSize() };
         pso.InputLayout = { vobLayout, _countof( vobLayout ) };
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PointShadow.CasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster)." );
             return false;
         }
         {
             D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
             noAlpha.PS = {};
             if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( PointShadow.CasterVobNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster, no-alpha).";
+                Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster, no-alpha)." );
                 PointShadow.CasterVobNoAlphaPSO.Reset();
             }
         }
@@ -2116,14 +2113,14 @@ bool D3D12PipelineState::CreatePointShadow() {
         pso.PS = { PointShadow.PsBlob->GetBufferPointer(), PointShadow.PsBlob->GetBufferSize() };
         pso.InputLayout = { skelLayout, _countof( skelLayout ) };
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( PointShadow.CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster)." );
             return false;
         }
         {
             D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
             noAlpha.PS = {};
             if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( PointShadow.CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster, no-alpha).";
+                Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster, no-alpha)." );
                 PointShadow.CasterSkeletalNoAlphaPSO.Reset();
             }
         }
@@ -2189,7 +2186,7 @@ bool D3D12PipelineState::CreateTonemap() {
     pso.DepthStencilState.DepthEnable = FALSE;
     pso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Tonemap.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (tonemap)." );
         return false;
     }
 
@@ -2200,7 +2197,7 @@ bool D3D12PipelineState::CreateTonemap() {
     } else {
         pso.RTVFormats[0] = kBackBufferFormat;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( TonemapCapturePSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap capture variant).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (tonemap capture variant)." );
             return false;
         }
     }
@@ -2256,7 +2253,7 @@ bool D3D12PipelineState::CreateHdrEncode() {
     pso.DepthStencilState.DepthEnable = FALSE;
     pso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( HdrEncode.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (HDR scanout encode).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (HDR scanout encode)." );
         return false;
     }
     return true;
@@ -2290,7 +2287,7 @@ bool D3D12PipelineState::CreateLumAdapt() {
         pso.pRootSignature = LumReduce.RootSig.Get();
         pso.CS = { LumReduce.CsBlob->GetBufferPointer(), LumReduce.CsBlob->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( LumReduce.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (lum-reduce).";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (lum-reduce)." );
             return false;
         }
     }
@@ -2313,7 +2310,7 @@ bool D3D12PipelineState::CreateLumAdapt() {
         pso.pRootSignature = LumAdapt.RootSig.Get();
         pso.CS = { LumAdapt.CsBlob->GetBufferPointer(), LumAdapt.CsBlob->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( LumAdapt.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (lum-adapt).";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (lum-adapt)." );
             return false;
         }
     }
@@ -2416,7 +2413,7 @@ bool D3D12PipelineState::CreateWater() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Water.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (water).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (water)." );
         return false;
     }
 
@@ -2439,7 +2436,7 @@ bool D3D12PipelineState::CreateWater() {
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Water.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (water depth prepass).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (water depth prepass)." );
         return false;
     }
     return true;
@@ -2477,7 +2474,7 @@ bool D3D12PipelineState::CreateLightCull() {
     pso.pRootSignature = LightCull.RootSig.Get();
     pso.CS = { LightCull.CsBlob->GetBufferPointer(), LightCull.CsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( LightCull.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (light cull).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (light cull)." );
         return false;
     }
     return true;
@@ -2512,7 +2509,7 @@ bool D3D12PipelineState::CreateAdvanceRain() {
     pso.pRootSignature = AdvanceRain.RootSig.Get();
     pso.CS = { AdvanceRain.CsBlob->GetBufferPointer(), AdvanceRain.CsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( AdvanceRain.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (advance rain).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (advance rain)." );
         return false;
     }
     return true;
@@ -2599,7 +2596,7 @@ bool D3D12PipelineState::CreateRainDraw() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( RainDraw.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (rain draw).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (rain draw)." );
         return false;
     }
     return true;
@@ -2657,7 +2654,7 @@ bool D3D12PipelineState::CreateBloom() {
         pso.pRootSignature = rootSig;
         pso.CS = { cs->GetBufferPointer(), cs->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (bloom " << name << ").";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (bloom {}).", name );
             return false;
         }
         return true;
@@ -2712,7 +2709,7 @@ bool D3D12PipelineState::CreateBloom() {
         pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.StencilEnable = FALSE;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Bloom.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (bloom composite).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (bloom composite)." );
             return false;
         }
     }
@@ -2783,7 +2780,7 @@ bool D3D12PipelineState::CreateSmaa() {
         pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.StencilEnable = FALSE;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( out ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (SMAA " << name << ").";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (SMAA {}).", name );
             return false;
         }
         return true;
@@ -2860,7 +2857,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateQuadMarkPipeline( const Goth
     HRESULT hr;
     LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
     if ( FAILED(hr) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for lit quad-mark key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for lit quad-mark key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -2905,7 +2902,7 @@ bool D3D12PipelineState::CreateFx() {
     GothicBlendStateInfo defaultBlend;
     defaultBlend.SetDefault();
     if ( !GetOrCreateFxPipeline( defaultBlend, true ) ) {
-        LogWarn() << "D3D12: failed to create the default FX pipeline.";
+        Logging::Wrn( "D3D12: failed to create the default FX pipeline." );
         return false;
     }
     return true;
@@ -2966,7 +2963,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlen
     HRESULT hr;
     LE( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) );
     if ( FAILED(hr) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for FX key 0x" << std::hex << key << ".";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for FX key 0x{:x}.", key );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -3030,7 +3027,7 @@ bool D3D12PipelineState::CreateSharpen() {
         pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.StencilEnable = FALSE;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( out ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (Sharpen " << name << ").";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (Sharpen {}).", name );
             return false;
         }
         return true;
@@ -3085,7 +3082,7 @@ bool D3D12PipelineState::CreateGammaCorrect() {
     pso.DepthStencilState.DepthEnable = FALSE;
     pso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( GammaCorrect.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (GammaCorrect).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (GammaCorrect)." );
         return false;
     }
     return true;
@@ -3121,7 +3118,7 @@ bool D3D12PipelineState::CreateUnderwater() {
         pso.pRootSignature = Underwater.BlurRootSig.Get();
         pso.CS = { Underwater.BlurCsBlob->GetBufferPointer(), Underwater.BlurCsBlob->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( Underwater.BlurPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (underwater blur).";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (underwater blur)." );
             return false;
         }
     }
@@ -3167,7 +3164,7 @@ bool D3D12PipelineState::CreateUnderwater() {
         pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.StencilEnable = FALSE;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Underwater.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (underwater composite).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (underwater composite)." );
             return false;
         }
     }
@@ -3223,14 +3220,14 @@ bool D3D12PipelineState::CreateAO() {
     mainPso.pRootSignature = AO.MainRootSig.Get();
     mainPso.CS = { AO.MainCsBlob->GetBufferPointer(), AO.MainCsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &mainPso, IID_PPV_ARGS( AO.MainPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (AO main).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (AO main)." );
         return false;
     }
     D3D12_COMPUTE_PIPELINE_STATE_DESC blurPso = {};
     blurPso.pRootSignature = AO.BlurRootSig.Get();
     blurPso.CS = { AO.BlurCsBlob->GetBufferPointer(), AO.BlurCsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &blurPso, IID_PPV_ARGS( AO.BlurPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (AO blur).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (AO blur)." );
         return false;
     }
     return true;
@@ -3268,7 +3265,7 @@ bool D3D12PipelineState::CreateGtao() {
         desc.pRootSignature = Gtao.RootSig.Get();
         desc.CS = { ( *blob )->GetBufferPointer(), ( *blob )->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( pso ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (XeGTAO " << entry << ").";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (XeGTAO {}).", entry );
             return false;
         }
         return true;
@@ -3317,7 +3314,7 @@ bool D3D12PipelineState::CreateMotion() {
     fillPso.pRootSignature = Motion.FillRootSig.Get();
     fillPso.CS = { Motion.FillCsBlob->GetBufferPointer(), Motion.FillCsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &fillPso, IID_PPV_ARGS( Motion.FillPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (camera-velocity fill).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (camera-velocity fill)." );
         return false;
     }
 
@@ -3335,7 +3332,7 @@ bool D3D12PipelineState::CreateMotion() {
 
     if ( !m_Shaders->CompileFromFile( "MotionDebug.hlsl", "VSFullscreen", Shadermodel_VS, Motion.DebugVsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "MotionDebug.hlsl", "PSMain", Shadermodel_PS, Motion.DebugPsBlob.ReleaseAndGetAddressOf() ) ) {
-        LogWarn() << "D3D12: MotionDebug.hlsl failed to compile — the velocity/normal debug overlay is unavailable.";
+        Logging::Wrn( "D3D12: MotionDebug.hlsl failed to compile — the velocity/normal debug overlay is unavailable." );
         Motion.DebugPSO.Reset();
         return true;   // the fill pass above is the part that matters; the overlay is developer-only
     }
@@ -3359,7 +3356,7 @@ bool D3D12PipelineState::CreateMotion() {
     dbgPso.DepthStencilState.DepthEnable = FALSE;   // it replaces the image outright, no depth involved
     dbgPso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &dbgPso, IID_PPV_ARGS( Motion.DebugPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (motion debug overlay).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (motion debug overlay)." );
         Motion.DebugPSO.Reset();
     }
     return true;
@@ -3401,7 +3398,7 @@ bool D3D12PipelineState::CreateTaa() {
     pso.pRootSignature = Taa.RootSig.Get();
     pso.CS = { Taa.CsBlob->GetBufferPointer(), Taa.CsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( Taa.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (TAA resolve).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (TAA resolve)." );
         return false;
     }
     return true;
@@ -3459,7 +3456,7 @@ bool D3D12PipelineState::CreateDoF() {
         pso.pRootSignature = DoF.RootSig.Get();
         pso.CS = { p.cs->GetBufferPointer(), p.cs->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( p.pso->ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (depth of field, " << p.name << ").";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (depth of field, {}).", p.name );
             return false;
         }
     }
@@ -3494,7 +3491,7 @@ bool D3D12PipelineState::CreateDoF() {
     gpso.DepthStencilState.DepthEnable = FALSE;
     gpso.DepthStencilState.StencilEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &gpso, IID_PPV_ARGS( DoF.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth of field, composite).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (depth of field, composite)." );
         return false;
     }
     return true;
@@ -3574,13 +3571,13 @@ bool D3D12PipelineState::CreateSky() {
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Sky.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (sky dome).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (sky dome)." );
         return false;
     }
 
     pso.PS = { Sky.OuterPsBlob->GetBufferPointer(), Sky.OuterPsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Sky.OuterPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (sky dome, outer).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (sky dome, outer)." );
         return false;
     }
     return true;
@@ -3640,7 +3637,7 @@ bool D3D12PipelineState::CreateSkyIbl() {
         pd.pRootSignature = p.rs;
         pd.CS = { p.cs->GetBufferPointer(), p.cs->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &pd, IID_PPV_ARGS( p.pso ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (" << p.name << ").";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed ({}).", p.name );
             return false;
         }
     }
@@ -3702,14 +3699,14 @@ bool D3D12PipelineState::CreateFog() {
     maskPso.pRootSignature = Fog.GodRayRootSig.Get();
     maskPso.CS = { Fog.MaskCsBlob->GetBufferPointer(), Fog.MaskCsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &maskPso, IID_PPV_ARGS( Fog.MaskPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (god-ray mask).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (god-ray mask)." );
         return false;
     }
     D3D12_COMPUTE_PIPELINE_STATE_DESC zoomPso = {};
     zoomPso.pRootSignature = Fog.GodRayRootSig.Get();
     zoomPso.CS = { Fog.ZoomCsBlob->GetBufferPointer(), Fog.ZoomCsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &zoomPso, IID_PPV_ARGS( Fog.ZoomPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (god-ray zoom).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (god-ray zoom)." );
         return false;
     }
 
@@ -3744,7 +3741,7 @@ bool D3D12PipelineState::CreateFog() {
         rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
         rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Fog.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (fog composition).";
+            Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (fog composition)." );
             return false;
         }
     }
@@ -3768,7 +3765,7 @@ bool D3D12PipelineState::CreateCull() {
         desc.pRootSignature = rs.Get();
         desc.CS = { (*blob)->GetBufferPointer(), (*blob)->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( pso ) ) ) ) {
-            LogWarn() << "D3D12: CreateComputePipelineState failed (" << entry << ").";
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed ({}).", entry );
             return false;
         }
         return true;
@@ -3862,7 +3859,7 @@ bool D3D12PipelineState::CreateMorphFold() {
     desc.pRootSignature = MorphFold.RootSig.Get();
     desc.CS = { MorphFold.CsBlob->GetBufferPointer(), MorphFold.CsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( MorphFold.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (CSFold).";
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (CSFold)." );
         return false;
     }
     return true;
@@ -3940,7 +3937,7 @@ bool D3D12PipelineState::CreateLines() {
     pso.DepthStencilState.StencilEnable = FALSE;
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Lines.WorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world-space lines).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (world-space lines)." );
         return false;
     }
 
@@ -3950,7 +3947,7 @@ bool D3D12PipelineState::CreateLines() {
     pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
     pso.DepthStencilState.DepthEnable = FALSE;
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Lines.ScreenPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (screen-space lines).";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (screen-space lines)." );
         return false;
     }
     return true;

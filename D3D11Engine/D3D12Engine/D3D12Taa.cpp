@@ -80,7 +80,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr, m_TaaHistoryAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_TaaHistory[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create a TAA history buffer (" << size.x << "x" << size.y << ").";
+            Logging::Wrn( "D3D12: failed to create a TAA history buffer ({}x{}).", size.x, size.y );
             return false;
         }
         m_TaaHistory[i]->SetName( i == 0 ? L"TaaHistory0" : L"TaaHistory1" );
@@ -105,7 +105,7 @@ bool D3D12GraphicsEngine::CreateTaaResources( INT2 size ) {
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kPrevDepthReadState, &clear,
             m_TaaPrevDepthAlloc.ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_TaaPrevDepth.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the TAA previous-depth snapshot.";
+            Logging::Wrn( "D3D12: failed to create the TAA previous-depth snapshot." );
             return false;
         }
         m_TaaPrevDepth->SetName( L"TaaPrevDepth" );

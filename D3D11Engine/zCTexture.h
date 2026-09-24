@@ -156,7 +156,7 @@ public:
 #ifndef PUBLIC_RELEASE
             if ( 1 == 0 ) // Small debugger-only section to get the name of currently cachedin texture
             {
-                LogInfo() << "CacheIn on Texture: " << GetNameView();
+                Logging::Inf( "CacheIn on Texture: {}", GetNameView() );
             }
 #endif
             // Scoped: with the resource-manager thread running, CacheIn only *queues* the texture and

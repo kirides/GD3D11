@@ -28,7 +28,7 @@ UINT D3D12PooledDescriptorHeap::Allocate() {
     if ( m_NextFree < m_Capacity ) return m_NextFree++;
 
     if ( !m_LoggedExhaustion ) {
-        LogWarn() << "D3D12PooledDescriptorHeap: exhausted (" << m_Capacity << " descriptors) — further pooled targets will fail to allocate.";
+        Logging::Wrn( "D3D12PooledDescriptorHeap: exhausted ({} descriptors) — further pooled targets will fail to allocate.", m_Capacity );
         m_LoggedExhaustion = true;
     }
     return kInvalidSlot;

@@ -164,7 +164,7 @@ bool D3D12ShadowMap::Resize( UINT newSize ) {
 	// may be frozen next frame; force a full re-render of all cascades.
 	m_CascadeMatricesValid = false;
 
-	LogInfo() << "D3D12: shadow map resized to " << m_MapSize << "x" << m_MapSize;
+	Logging::Inf( "D3D12: shadow map resized to {}x{}", m_MapSize, m_MapSize );
 	return true;
 }
 
@@ -230,7 +230,7 @@ bool D3D12ShadowMap::Init() {
 	pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z
 	pso.DepthStencilState.StencilEnable = FALSE;
 	if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: CreateGraphicsPipelineState failed (shadow caster).";
+		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (shadow caster)." );
 		return false;
 	}
 	// No-pixel-shader twin for the casters that need no cutout — see m_CasterWorldNoAlphaPSO. These are already
@@ -239,8 +239,7 @@ bool D3D12ShadowMap::Init() {
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
 		noAlpha.PS = {};
 		if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterWorldNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (shadow caster, no-alpha) — "
-			             "world casters keep alpha-clipping every material.";
+			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (shadow caster, no-alpha) — world casters keep alpha-clipping every material." );
 			m_CasterWorldNoAlphaPSO.Reset();
 		}
 	}
@@ -270,7 +269,7 @@ bool D3D12ShadowMap::Init() {
 		pso.PS = { m_CasterVobPsBlob->GetBufferPointer(), m_CasterVobPsBlob->GetBufferSize() };
 		pso.InputLayout = { vobLayout, _countof( vobLayout ) };
 		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster).";
+			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster)." );
 			return false;
 		}
 
@@ -282,14 +281,14 @@ bool D3D12ShadowMap::Init() {
 			return false;
 		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
 		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, indirect).";
+			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, indirect)." );
 			return false;
 		}
 		{
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
 			noAlpha.PS = {};
 			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterVobIndirectNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-				LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, no-alpha).";
+				Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, no-alpha)." );
 				m_CasterVobIndirectNoAlphaPSO.Reset();
 			}
 		}
@@ -319,14 +318,14 @@ bool D3D12ShadowMap::Init() {
 		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
 		pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
 		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster).";
+			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster)." );
 			return false;
 		}
 		{
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
 			noAlpha.PS = {};
 			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-				LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster, no-alpha).";
+				Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster, no-alpha)." );
 				m_CasterVobAttachNoAlphaPSO.Reset();
 			}
 		}
@@ -353,14 +352,14 @@ bool D3D12ShadowMap::Init() {
 		pso.PS = { m_CasterSkeletalPsBlob->GetBufferPointer(), m_CasterSkeletalPsBlob->GetBufferSize() };
 		pso.InputLayout = { skelLayout, _countof( skelLayout ) };
 		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster).";
+			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster)." );
 			return false;
 		}
 		{
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
 			noAlpha.PS = {};
 			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-				LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster, no-alpha).";
+				Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster, no-alpha)." );
 				m_CasterSkeletalNoAlphaPSO.Reset();
 			}
 		}
@@ -419,7 +418,7 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 
 	ID3D12Device* device = m_E->m_Device.GetDevice();
 	if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterGrassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-		LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass shadow caster).";
+		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass shadow caster)." );
 		return false;
 	}
 	return true;

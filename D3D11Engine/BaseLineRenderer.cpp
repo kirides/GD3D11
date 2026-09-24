@@ -10,8 +10,8 @@ BaseLineRenderer::~BaseLineRenderer() {}
 XRESULT BaseLineRenderer::AddLine( const LineVertex& v1, const LineVertex& v2 ) {
     if ( LineCache.size() + 2 > kMaxCachedVertices ) {
         if ( !CacheOverflowLogged ) {
-            LogWarn() << "Debug-line cache full (" << kMaxCachedVertices
-                << " vertices). Further lines are dropped until it is flushed.";
+            Logging::Wrn( "Debug-line cache full ({} vertices). Further lines are dropped until it is flushed.",
+                kMaxCachedVertices );
             CacheOverflowLogged = true;
         }
         return XR_FAILED;
@@ -26,8 +26,8 @@ XRESULT BaseLineRenderer::AddLine( const LineVertex& v1, const LineVertex& v2 ) 
 XRESULT BaseLineRenderer::AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 ) {
     if ( ScreenSpaceLineCache.size() + 2 > kMaxCachedVertices ) {
         if ( !CacheOverflowLogged ) {
-            LogWarn() << "Screen-space debug-line cache full (" << kMaxCachedVertices
-                << " vertices). Further lines are dropped until it is flushed.";
+            Logging::Wrn( "Screen-space debug-line cache full ({} vertices). Further lines are dropped until it is flushed.",
+                kMaxCachedVertices );
             CacheOverflowLogged = true;
         }
         return XR_FAILED;

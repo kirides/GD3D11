@@ -113,8 +113,8 @@ public:
         // CMP ECX,EDI ; JZ rel32 - bail out rather than corrupt code if this isn't the build we mapped.
         static const unsigned char expected[] = { 0x3B, 0xCF, 0x0F, 0x84 };
         if ( memcmp( reinterpret_cast<const void*>(checkAddr), expected, sizeof( expected ) ) != 0 ) {
-            LogWarn() << "CGameManager::ApplySomeSettings texture-detail check not found at "
-                << std::hex << checkAddr << " - texture cache will still be purged when closing the menu";
+            Logging::Wrn( "CGameManager::ApplySomeSettings texture-detail check not found at {:x} - texture cache will still be purged when closing the menu",
+                checkAddr );
             return;
         }
 

@@ -28,7 +28,7 @@ D3D11PFX_FSR3::~D3D11PFX_FSR3() {
 
 static void Ffx_log( FfxApiMsgType type,
     const wchar_t* message ) {
-    LogError() << "FFX3 Error (" << type << "): " << message;
+    Logging::Err( "FFX3 Error ({}): {}", static_cast<int>( type ), Toolbox::ToMultiByte( message ) );
 }
 
 bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) {
@@ -57,7 +57,7 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     );
 
     if ( errorCode != FFX_OK ) {
-        LogError() << "FSR3: Failed to get DX11 interface.";
+        Logging::Err( "FSR3: Failed to get DX11 interface." );
         free( ScratchMemory );
         ScratchMemory = nullptr;
         return false;
@@ -89,7 +89,7 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     Context = new FfxFsr3UpscalerContext;
     errorCode = ffxFsr3UpscalerContextCreate( Context, &contextDesc );
     if ( errorCode != FFX_OK ) {
-        LogError() << "FSR3: Failed to create context.";
+        Logging::Err( "FSR3: Failed to create context." );
         free( ScratchMemory );
         ScratchMemory = nullptr;
         delete Context;
@@ -159,7 +159,7 @@ XRESULT D3D11PFX_FSR3::Apply(
     if ( !Initialized || (MaxInputSize != inputSize || MaxOutputSize != outputSize) ) {
         Destroy();
         if (!Init( inputSize, outputSize )) {
-            LogError() << "FSR3: Failed to initialize";
+            Logging::Err( "FSR3: Failed to initialize" );
             return XR_FAILED;
         }
     }
@@ -248,7 +248,7 @@ XRESULT D3D11PFX_FSR3::Apply(
     // Execute FSR3
     FfxErrorCode result = ffxFsr3UpscalerContextDispatch( Context, &dispatchDesc );
     if ( result != FFX_OK ) {
-        LogError() << "FSR3: Context dispatch failed.";
+        Logging::Err( "FSR3: Context dispatch failed." );
         return XR_FAILED;
     }
 

@@ -189,10 +189,10 @@ const InstructionSet::InstructionSet_Internal InstructionSet::CPU_Rep;
 // Print out supported instruction set extensions
 void LogInstructionSet() {
     auto support_message = []( std::string isa_feature, bool is_supported ) {
-        LogInfo() << isa_feature << (is_supported ? " supported" : " not supported");
+        Logging::Inf( "{}{}", isa_feature, (is_supported ? " supported" : " not supported") );
     };
 
-    LogInfo() << "[" + InstructionSet::Vendor() + "] " + InstructionSet::Brand();
+    Logging::Inf( "{}", "[" + InstructionSet::Vendor() + "] " + InstructionSet::Brand() );
 
     support_message( "AVX", InstructionSet::AVX() );
     support_message( "AVX2", InstructionSet::AVX2() );

@@ -30,7 +30,7 @@ struct RenderToTextureBuffer {
         ZeroMemory( CubeMapRTVs, sizeof( CubeMapRTVs ) );
 
         if ( SizeX == 0 || SizeY == 0 ) {
-            LogError() << "SizeX or SizeY can't be 0";
+            Logging::Err( "SizeX or SizeY can't be 0" );
         }
 
         if (bindFlags == 0) {
@@ -43,11 +43,11 @@ struct RenderToTextureBuffer {
         this->SampleCount = sampleCount;
 
         if ( Format == 0 ) {
-            LogError() << "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
+            Logging::Err( "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format" );
         }
 
         if ( sampleCount > 1 && (bindFlags & (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS)) ) {
-            LogError() << "Multisampled RenderToTextureBuffer only supports D3D11_BIND_RENDER_TARGET; stripping SRV/UAV bind flags";
+            Logging::Err( "Multisampled RenderToTextureBuffer only supports D3D11_BIND_RENDER_TARGET; stripping SRV/UAV bind flags" );
             bindFlags &= ~(D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
         }
 
@@ -122,7 +122,7 @@ struct RenderToTextureBuffer {
             LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.ReleaseAndGetAddressOf() ) );
 
             if ( FAILED( hr ) ) {
-                LogError() << "Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any).";
+                Logging::Err( "Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any)." );
                 ReleaseAll();
                 if ( Result )*Result = hr;
                 return;
@@ -143,7 +143,7 @@ struct RenderToTextureBuffer {
             hr = oldHR;
         }
 
-        //LogInfo() << "Successfully created ID3D11Texture2D, ID3D11ShaderResourceView, and ID3D11RenderTargetView.";
+        //Logging::Inf( "Successfully created ID3D11Texture2D, ID3D11ShaderResourceView, and ID3D11RenderTargetView." );
         if ( Result )*Result = hr;
     }
 
@@ -223,20 +223,20 @@ struct RenderToDepthStencilBuffer {
         HRESULT hr = S_OK;
 
         if ( arraySize != 1 && arraySize != 6 ) {
-            LogError() << "Only supporting single render targets and cubemaps ATM. Unsupported Arraysize: " << arraySize;
+            Logging::Err( "Only supporting single render targets and cubemaps ATM. Unsupported Arraysize: {}", arraySize );
             return;
         }
 
         if ( SizeX == 0 || SizeY == 0 ) {
-            LogError() << "SizeX or SizeY can't be 0";
+            Logging::Err( "SizeX or SizeY can't be 0" );
         }
 
         if ( Format == 0 ) {
-            LogError() << "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
+            Logging::Err( "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format" );
         }
 
         if ( sampleCount > 1 && arraySize > 1 ) {
-            LogError() << "Multisampled RenderToDepthStencilBuffer doesn't support array/cubemap resources";
+            Logging::Err( "Multisampled RenderToDepthStencilBuffer doesn't support array/cubemap resources" );
             return;
         }
 
@@ -258,7 +258,7 @@ struct RenderToDepthStencilBuffer {
         LE( device->CreateTexture2D( &Desc, nullptr, Texture.GetAddressOf() ) );
 
         if ( !Texture.Get() ) {
-            LogError() << "Could not create Texture!";
+            Logging::Err( "Could not create Texture!" );
             return;
         }
 
@@ -319,13 +319,13 @@ struct RenderToDepthStencilBuffer {
         LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.GetAddressOf() ) );
 
         if ( FAILED( hr ) ) {
-            LogError() << "Could not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11DepthStencilView. Killing created resources (If any).";
+            Logging::Err( "Could not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11DepthStencilView. Killing created resources (If any)." );
             if ( Result )*Result = hr;
             return;
         }
 
 
-        //LogInfo() << "RenderToDepthStencilStruct: Successfully created ID3D11Texture2D, ID3D11ShaderResourceView, and ID3D11DepthStencilView.";
+        //Logging::Inf( "RenderToDepthStencilStruct: Successfully created ID3D11Texture2D, ID3D11ShaderResourceView, and ID3D11DepthStencilView." );
         if ( Result )*Result = hr;
     }
 

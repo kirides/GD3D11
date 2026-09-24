@@ -57,7 +57,7 @@ bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
 
     if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
         m_HiZAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_HiZ.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the Hi-Z pyramid (" << m_HiZWidth << "x" << m_HiZHeight << ").";
+        Logging::Wrn( "D3D12: failed to create the Hi-Z pyramid ({}x{}).", m_HiZWidth, m_HiZHeight );
         return false;
     }
     m_HiZ->SetName( L"HiZPyramid" );
@@ -129,7 +129,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
             if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                 m_VobCullVisualsAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobCullVisuals[i].ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: failed to create the VOB cull-record ring.";
+                Logging::Wrn( "D3D12: failed to create the VOB cull-record ring." );
                 return false;
             }
             m_VobCullVisuals[i]->SetName( L"VobCullVisualRing" );
@@ -148,7 +148,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
         D3D12_RESOURCE_DESC bd = makeBufferDesc( m_VobInstanceBufferCapacity, true );
         if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
             m_VobCulledInstancesAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobCulledInstances.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the compacted VOB instance buffer.";
+            Logging::Wrn( "D3D12: failed to create the compacted VOB instance buffer." );
             return false;
         }
         m_VobCulledInstances->SetName( L"VobCulledInstances" );
@@ -158,7 +158,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
         D3D12_RESOURCE_DESC bd = makeBufferDesc( static_cast<UINT64>( kMaxCullVisuals ) * 2ull * sizeof( uint32_t ), true );
         if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
             m_VobVisibleCountsAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobVisibleCounts.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the VOB visible-count buffer.";
+            Logging::Wrn( "D3D12: failed to create the VOB visible-count buffer." );
             return false;
         }
         m_VobVisibleCounts->SetName( L"VobVisibleCounts" );
@@ -168,7 +168,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
         D3D12_RESOURCE_DESC bd = makeBufferDesc( static_cast<UINT64>( kMaxVobDrawCommands ) * sizeof( VobDrawCommand ), true );
         if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
             m_VobDrawArgsGpuAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobDrawArgsGpu.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the GPU-patched VOB indirect argument buffer.";
+            Logging::Wrn( "D3D12: failed to create the GPU-patched VOB indirect argument buffer." );
             return false;
         }
         m_VobDrawArgsGpu->SetName( L"VobDrawArgsGpu" );

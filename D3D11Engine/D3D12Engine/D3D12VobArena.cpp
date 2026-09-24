@@ -236,17 +236,13 @@ bool D3D12VobArena::Flush( D3D12GraphicsEngine* engine ) {
         if ( !Reallocate( engine ) ) {
             // Roll the whole batch back rather than leave half-registered ranges pointing into a buffer that
             // doesn't exist: Ready() goes false and the VOB path draws nothing this frame.
-            LogWarn() << "D3D12: VOB arena allocation failed ("
-                << ( static_cast<UINT64>( m_VertexCapacity ) * kVertexStride / ( 1024 * 1024 ) ) << " MB verts + "
-                << ( static_cast<UINT64>( m_IndexCapacity ) * kIndexStride / ( 1024 * 1024 ) ) << " MB indices). "
-                << "Instanced VOBs will not render.";
+            Logging::Wrn( "D3D12: VOB arena allocation failed ({} MB verts + {} MB indices). Instanced VOBs will not render.",
+                ( static_cast<UINT64>( m_VertexCapacity ) * kVertexStride / ( 1024 * 1024 ) ), ( static_cast<UINT64>( m_IndexCapacity ) * kIndexStride / ( 1024 * 1024 ) ) );
             m_AllocFailed = true;
             return false;
         }
-        LogInfo() << "D3D12: VOB arena now " << m_Ranges.size() << " sub-meshes, "
-            << ( GetBytes() / ( 1024 * 1024 ) ) << " MB ("
-            << ( GetVertexBytes() / ( 1024 * 1024 ) ) << " MB verts + "
-            << ( GetIndexBytes() / ( 1024 * 1024 ) ) << " MB indices)";
+        Logging::Inf( "D3D12: VOB arena now {} sub-meshes, {} MB ({} MB verts + {} MB indices)",
+            m_Ranges.size(), ( GetBytes() / ( 1024 * 1024 ) ), ( GetVertexBytes() / ( 1024 * 1024 ) ), ( GetIndexBytes() / ( 1024 * 1024 ) ) );
         // Reallocate() already re-uploaded everything, including what was just reserved.
         engine->FlushTextureUploads();
         return true;

@@ -26,7 +26,7 @@ D3D12TexturePool::Handle D3D12TexturePool::Acquire( const Description& desc ) {
         wchar_t name[64];
         swprintf_s( name, L"PooledRT_%zu", m_Pool.size() );
         if ( !tex->Init( m_Device, m_Allocator, m_Engine, &m_RtvHeap, desc.Width, desc.Height, desc.Format, desc.NeedsUav, name ) ) {
-            LogWarn() << "D3D12TexturePool: could not create a pooled render target (" << desc.Width << "x" << desc.Height << ").";
+            Logging::Wrn( "D3D12TexturePool: could not create a pooled render target ({}x{}).", desc.Width, desc.Height );
             return Handle( nullptr );
         }
         m_Pool.push_back( std::make_unique<PooledTexture>( PooledTexture{ std::move( tex ), desc, m_CurrentFrame, true } ) );

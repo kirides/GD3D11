@@ -86,7 +86,7 @@ bool D3D12GraphicsEngine::CreateMotionResources( INT2 size ) {
 
         if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_RENDER_TARGET,
             &clear, outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create a motion G-buffer target (" << size.x << "x" << size.y << ").";
+            Logging::Wrn( "D3D12: failed to create a motion G-buffer target ({}x{}).", size.x, size.y );
             return false;
         }
         out->SetName( name );
@@ -160,14 +160,14 @@ bool D3D12GraphicsEngine::CreateMotionConstantBuffers() {
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
         if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             m_MotionCBAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_MotionCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the motion-vector constant buffer.";
+            Logging::Wrn( "D3D12: failed to create the motion-vector constant buffer." );
             return false;
         }
         m_MotionCB[i]->SetName( L"MotionCB" );
         D3D12_RANGE noRead = { 0, 0 };
         void* mapped = nullptr;
         if ( FAILED( m_MotionCB[i]->Map( 0, &noRead, &mapped ) ) ) {
-            LogWarn() << "D3D12: failed to map the motion-vector constant buffer.";
+            Logging::Wrn( "D3D12: failed to map the motion-vector constant buffer." );
             return false;
         }
         m_MotionCBMapped[i] = static_cast<uint8_t*>( mapped );

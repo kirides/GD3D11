@@ -48,7 +48,7 @@ namespace Engine {
 
     /** Creates main graphics engine */
     void CreateGraphicsEngine() {
-        LogInfo() << "Creating Main graphics engine";
+        Logging::Inf( "Creating Main graphics engine" );
 
         // Backend selection. D3D11 is the default and the fallback. When D3D12 is requested we
         // probe it (real FL11_0 device-creation check); if available we create the D3D12 backend
@@ -82,7 +82,7 @@ namespace Engine {
         }
 
         if ( !GraphicsEngine ) {
-            LogErrorBox() << "Failed to create GraphicsEngine! Out of memory!";
+            Logging::ErrBox( "Failed to create GraphicsEngine! Out of memory!" );
             exit( 0 );
         }
 
@@ -99,23 +99,23 @@ namespace Engine {
 
     /** Creates the Global GAPI-Object */
     void CreateGothicAPI() {
-        LogInfo() << "GD3D11 " << VERSION_STRING;
+        Logging::Inf( "GD3D11 {}", VERSION_STRING );
 
-        LogInfo() << "Loading modules for stacktracer";
+        Logging::Inf( "Loading modules for stacktracer" );
         MyStackWalker::GetSingleton(); // Inits the static object in there
 
-        LogInfo() << "Initializing GothicAPI";
+        Logging::Inf( "Initializing GothicAPI" );
 
         GAPI = new GothicAPI;
         if ( !GAPI ) {
-            LogErrorBox() << "Failed to create GothicAPI!";
+            Logging::ErrBox( "Failed to create GothicAPI!" );
             exit( 0 );
         }
     }
 
     /** Called when the game is about to close */
     void OnShutDown() {
-        LogInfo() << "Shutting down...";
+        Logging::Inf( "Shutting down..." );
 
         // Explicit and ordered, ahead of the exit(0) below: closing the LAST connection to a WAL-mode
         // SQLite database is what makes it checkpoint and delete its -wal/-shm files, and this is called

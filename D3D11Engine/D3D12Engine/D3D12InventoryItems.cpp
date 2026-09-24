@@ -79,7 +79,7 @@ bool D3D12PipelineState::CreateInventoryItem() {
     sigDesc.pArgumentDescs = args;
     if ( FAILED( device->CreateCommandSignature( &sigDesc, InventoryItem.RootSig.Get(),
         IID_PPV_ARGS( InventoryItem.CmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the inventory item command signature.";
+        Logging::Wrn( "D3D12: failed to create the inventory item command signature." );
         InventoryItem.RootSig.Reset();
         return false;
     }
@@ -141,7 +141,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateInventoryItemPipeline( bool 
 
     ComPtr<ID3D12PipelineState> state;
     if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for the inventory item pipeline (skinned=" << skinned << ").";
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for the inventory item pipeline (skinned={}).", skinned );
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -159,7 +159,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         static bool logged = false;
         if ( !logged ) {
             logged = true;
-            LogWarn() << "D3D12: inventory item previews skipped, the UI is drawing into the HDR scene target.";
+            Logging::Wrn( "D3D12: inventory item previews skipped, the UI is drawing into the HDR scene target." );
         }
         return;
     }
@@ -278,8 +278,8 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
                     && boneOff + boneReserve <= m_SkeletalCBBufferCapacity;
                 if ( !bonesBound ) {
                     if ( !m_SkeletalCBOverflowLogged ) {
-                        LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
-                            << " bytes/frame). Skinned inventory preview dropped this frame.";
+                        Logging::Wrn( "D3D12: skeletal CB ring overflow ({} bytes/frame). Skinned inventory preview dropped this frame.",
+                            m_SkeletalCBBufferCapacity );
                         m_SkeletalCBOverflowLogged = true;
                     }
                     continue;

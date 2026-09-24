@@ -18,7 +18,7 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     Microsoft::WRL::ComPtr<ID3DBlob> gsBlob;
-    LogInfo() << "Compiling geometry shader: " << geometryShader;
+    Logging::Inf( "Compiling geometry shader: {}", geometryShader );
 
     if ( !createStreamOutFromVS ) {
         // Compile shaders

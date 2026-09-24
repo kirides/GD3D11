@@ -46,7 +46,6 @@ namespace Logging {
 
         const std::string& LogFilePath() {
             static std::string path = [] {
-                if ( !LOGFILE.empty() ) return LOGFILE; // set by Log::Clear(); share the one Log.txt
                 std::string p;
                 p.resize( MAX_PATH );
                 p.resize( GetModuleFileNameA( nullptr, p.data(), MAX_PATH ) );
@@ -209,10 +208,27 @@ namespace Logging {
             EmitRecord( std::back_inserter( big ), level, where, fmt, args );
             Enqueue( state, big.data(), big.size() );
         }
+
+        void WriteBox( Level level, const std::source_location& where, std::string_view fmt, std::format_args args ) {
+            Write( level, where, fmt, args );
+            Flush(); // the box blocks, so the worker gets the record onto disk meanwhile
+
+            std::string message = std::vformat( fmt, args );
+            const char* title = "GD3D11: Info!";
+            UINT icon = MB_ICONASTERISK;
+            if ( level == Level::Warn ) { title = "GD3D11: Warning!"; icon = MB_ICONEXCLAMATION; }
+            else if ( level == Level::Error ) { title = "GD3D11: Error!"; icon = MB_ICONERROR; }
+            MessageBoxA( nullptr, message.c_str(), title, MB_OK | icon | MB_TOPMOST );
+        }
     }
 
     void SetMinLevel( Level level ) noexcept {
         Detail::MinLevel.store( level, std::memory_order_relaxed );
+    }
+
+    void ClearFile() {
+        std::lock_guard fileLock( Get().FileMutex );
+        if ( FILE* f = fopen( LogFilePath().c_str(), "w" ) ) fclose( f );
     }
 
     void Flush() {

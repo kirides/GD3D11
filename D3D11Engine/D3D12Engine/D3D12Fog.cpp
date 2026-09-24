@@ -92,7 +92,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
         if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FogCBAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_FogCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the height-fog constant buffer.";
+            Logging::Wrn( "D3D12: failed to create the height-fog constant buffer." );
             return false;
         }
         m_FogCB[i]->SetName( L"HeightFogCB" );
@@ -117,7 +117,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
     }
     m_TransparencyFrameCbvReady = cbvsReady;
     if ( !cbvsReady ) {
-        LogWarn() << "D3D12: no SRV-heap slots for the transparency fog CBVs - transparent passes skip self-fog.";
+        Logging::Wrn( "D3D12: no SRV-heap slots for the transparency fog CBVs - transparent passes skip self-fog." );
     }
     return true;
 }
@@ -140,8 +140,8 @@ bool D3D12GraphicsEngine::CreateTransparencyBackdrop( INT2 size ) {
     if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_TransparencyBackdropAlloc.ReleaseAndGetAddressOf(),
         IID_PPV_ARGS( m_TransparencyBackdrop.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: failed to create the transparency backdrop (" << size.x << "x" << size.y
-            << ") - additive transparency uses the unfogged scene as its reference.";
+        Logging::Wrn( "D3D12: failed to create the transparency backdrop ({}x{}) - additive transparency uses the unfogged scene as its reference.",
+            size.x, size.y );
         return false;
     }
     m_TransparencyBackdrop->SetName( L"TransparencyBackdrop" );

@@ -200,8 +200,8 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
                 static bool warned = false;
                 if ( !warned ) {
                     warned = true;
-                    LogWarn() << "D3D12: no quad-mark pipeline for alpha func " << wantAlphaFunc
-                        << " (lit=" << litClass << ") - these marks (blood splats, ground marks) will not draw.";
+                    Logging::Wrn( "D3D12: no quad-mark pipeline for alpha func {} (lit={}) - these marks (blood splats, ground marks) will not draw.",
+                        wantAlphaFunc, litClass );
                 }
                 continue;
             }
@@ -321,8 +321,8 @@ void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
         const UINT bytes = static_cast<UINT>( vertices.size() * sizeof( ExVertexStruct ) );
         if ( m_FxVertexBufferOffset + bytes > m_FxVertexBufferCapacity ) {
             if ( !m_FxOverflowLogged ) {
-                LogWarn() << "D3D12: poly-strip vertex ring overflow (" << m_FxVertexBufferCapacity
-                    << " bytes/frame). Some trails/flashes dropped this frame.";
+                Logging::Wrn( "D3D12: poly-strip vertex ring overflow ({} bytes/frame). Some trails/flashes dropped this frame.",
+                    m_FxVertexBufferCapacity );
                 m_FxOverflowLogged = true;
             }
             break;

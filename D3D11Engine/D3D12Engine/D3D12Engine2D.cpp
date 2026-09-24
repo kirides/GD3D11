@@ -190,8 +190,8 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 bool D3D12GraphicsEngine::AllocateUIVertices( const void* vertices, unsigned int bytes, D3D12_GPU_VIRTUAL_ADDRESS& outGpuVA ) {
 	if ( m_UIVertexBufferOffset + bytes > m_UIVertexBufferCapacity ) {
 		if ( !m_UIOverflowLogged ) {
-			LogWarn() << "D3D12: 2D vertex ring overflow (" << m_UIVertexBufferCapacity
-				<< " bytes/frame). Some UI geometry dropped this frame.";
+			Logging::Wrn( "D3D12: 2D vertex ring overflow ({} bytes/frame). Some UI geometry dropped this frame.",
+				m_UIVertexBufferCapacity );
 			m_UIOverflowLogged = true;
 		}
 		return false;
@@ -292,8 +292,8 @@ XRESULT D3D12GraphicsEngine::DrawVideoVertexArray( ExVertexStruct* vertices, uns
 	const UINT bytes = stride * numVertices;
 	if ( m_UIVertexBufferOffset + bytes > m_UIVertexBufferCapacity ) {
 		if ( !m_UIOverflowLogged ) {
-			LogWarn() << "D3D12: 2D vertex ring overflow (" << m_UIVertexBufferCapacity
-				<< " bytes/frame). Some UI geometry dropped this frame.";
+			Logging::Wrn( "D3D12: 2D vertex ring overflow ({} bytes/frame). Some UI geometry dropped this frame.",
+				m_UIVertexBufferCapacity );
 			m_UIOverflowLogged = true;
 		}
 		return XR_SUCCESS;

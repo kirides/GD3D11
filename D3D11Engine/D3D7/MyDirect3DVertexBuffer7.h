@@ -65,7 +65,7 @@ public:
 		// Pass the lock-call through to our engine
 		UINT size = 0;
 		if (!SUCCEEDED(VertexBuffer->Map( D3D11VertexBuffer::EMapFlags::M_WRITE_DISCARD, lplpData, &size ))) {
-		    LogError() << "Failed to map buffer.";
+		    Logging::Err( "Failed to map buffer." );
 		    return E_FAIL;
 		}
 		if ( lpdwSize )*lpdwSize = size;
@@ -79,12 +79,12 @@ public:
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE ProcessVertices( DWORD dwVertexOp, DWORD dwDestIndex, DWORD dwCount, LPDIRECT3DVERTEXBUFFER7 lpSrcBuffer, DWORD dwSrcIndex, LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) override {
-		LogWarn() << "Unimplemented method: MyDirect3DVertexBuffer7::ProcessVertices";
+		Logging::Wrn( "Unimplemented method: MyDirect3DVertexBuffer7::ProcessVertices" );
 		return S_OK;
 	}
 
 	HRESULT __declspec(nothrow) STDMETHODCALLTYPE ProcessVerticesStrided( DWORD dwVertexOp, DWORD dwDestIndex, DWORD dwCount, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwSrcIndex, LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) override {
-		LogWarn() << "Unimplemented method: MyDirect3DVertexBuffer7::ProcessVerticesStrided";
+		Logging::Wrn( "Unimplemented method: MyDirect3DVertexBuffer7::ProcessVerticesStrided" );
 		return S_OK;
 	}
 

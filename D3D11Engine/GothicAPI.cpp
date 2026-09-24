@@ -85,8 +85,8 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
     FILE* f = fopen( infoPath.c_str(), "wb" );
 
     if ( !f ) {
-        LogError() << "Failed to open file '" << infoPath << "' for writing! Make sure the game runs in Admin mode "
-            " to get the rights to write to that directory!";
+        Logging::Err( "Failed to open file '{}' for writing! Make sure the game runs in Admin mode  to get the rights to write to that directory!",
+            infoPath );
 
         return;
     }
@@ -469,7 +469,7 @@ void GothicAPI::OnGameStart() {
 
     LoadMenuSettings( MENU_SETTINGS_FILE );
 
-    LogInfo() << "Running with Commandline: " << zCOption::GetOptions()->GetCommandline();
+    Logging::Inf( "Running with Commandline: {}", zCOption::GetOptions()->GetCommandline() );
 
     // Get forced resolution from commandline
     std::string res = zCOption::GetOptions()->ParameterValue( "ZRES" );
@@ -479,7 +479,7 @@ void GothicAPI::OnGameStart() {
         RendererState.RendererSettings.LoadedResolution.x = std::stoi( x );
         RendererState.RendererSettings.LoadedResolution.y = std::stoi( y );
 
-        LogInfo() << "Forcing resolution via zRes-Commandline to: " << RendererState.RendererSettings.LoadedResolution.toString();
+        Logging::Inf( "Forcing resolution via zRes-Commandline to: {}", RendererState.RendererSettings.LoadedResolution.toString() );
     }
 
 #ifdef PUBLIC_RELEASE
@@ -537,8 +537,7 @@ void GothicAPI::UpdateMTResourceManager() {
     if ( zCResourceManager* rsm = zCResourceManager::GetResourceManager() ) {
         rsm->SetThreadingEnabled( RendererState.RendererSettings.MTResoureceManager );
     } else {
-        LogWarn() << "zCResourceManager not created yet - MultiThreadResourceManager setting not applied, "
-            "ZENGIN keeps its own default (threading enabled)";
+        Logging::Wrn( "zCResourceManager not created yet - MultiThreadResourceManager setting not applied, ZENGIN keeps its own default (threading enabled)" );
     }
 }
 
@@ -989,9 +988,9 @@ void GothicAPI::ResetVobs() {
 
 /** Called when the game loaded a new level */
 void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
-    LogInfo() << "World loaded, getting Levelmesh now!";
-    LogInfo() << " - Found " << tree->GetNumPolys() << " polygons";
-    LogInfo() << "Extracting world";
+    Logging::Inf( "World loaded, getting Levelmesh now!" );
+    Logging::Inf( " - Found {} polygons", tree->GetNumPolys() );
+    Logging::Inf( "Extracting world" );
 
     std::vector<zCPolygon*> polys;
     tree->GetLOD0Polygons( polys );
@@ -1014,7 +1013,7 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
     }
 #endif
     BuildWorldSectionBVH();
-    LogInfo() << "Done extracting world!";
+    Logging::Inf( "Done extracting world!" );
 }
 
 /** Called when the game is about to load a new level */
@@ -1061,7 +1060,7 @@ void GothicAPI::OnWorldLoaded() {
 
     LoadCustomZENResources();
 
-    LogInfo() << "Collecting vobs...";
+    Logging::Inf( "Collecting vobs..." );
 
     static bool s_firstLoad = true;
     if ( s_firstLoad ) {
@@ -1090,9 +1089,9 @@ void GothicAPI::OnWorldLoaded() {
     }
 #endif
 
-    LogInfo() << "Done!";
+    Logging::Inf( "Done!" );
 
-    LogInfo() << "Settings sky texture for " << LoadedWorldInfo->WorldName;
+    Logging::Inf( "Settings sky texture for {}", LoadedWorldInfo->WorldName );
 
     // Hard code the original games sky textures here, since we can't modify the scripts to use the ikarus bindings without
     // installing more content like a .mod file
@@ -1145,7 +1144,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s )
         zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
     }
     if ( !Toolbox::FolderExists( zenFolder ) ) {
-        LogInfo() << "Custom ZEN-Resources. Directory not found: " << zenFolder;
+        Logging::Inf( "Custom ZEN-Resources. Directory not found: {}", zenFolder );
         return;
     }
 
@@ -1240,7 +1239,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s )
     }
     if ( !Toolbox::FolderExists( zenFolder ) ) {
         if ( !Toolbox::CreateDirectoryRecursive( zenFolder ) ) {
-            LogError() << "Could not save custom ZEN-Resources. Could not create directory: " << zenFolder;
+            Logging::Err( "Could not save custom ZEN-Resources. Could not create directory: {}", zenFolder );
             return;
         }
     }
@@ -2096,7 +2095,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
         /*oCNPC* npcVob;
         for (auto const& it : list) {
             if (npcVob = it->Vob->AsNpc()) {
-                LogInfo() << "Not removing NPC Vob: " << npcVob->GetName().ToChar();
+                Logging::Inf( "Not removing NPC Vob: {}", npcVob->GetName().ToChar() );
             }
             else {
                 OnRemovedVob(it->Vob, LoadedWorldInfo->MainWorld);
@@ -2106,7 +2105,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     if ( list.size() > 0 ) {
 #ifndef PUBLIC_RELEASE
         if ( RendererState.RendererSettings.EnableDebugLog )
-            LogInfo() << className << " had " << list.size() << " vobs";
+            Logging::Inf( "{} had {} vobs", className, list.size() );
 #endif
 
         VobsByVisual[visual].clear();
@@ -2176,7 +2175,7 @@ static void EraseVobFromLeafList( std::vector<LeafVobEntry>& list, const VobInfo
 
 /** Called when a VOB got removed from the world */
 void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
-    //LogInfo() << "Removing vob: " << vob;
+    //Logging::Inf( "Removing vob: {}", vob );
 
     // Symmetric to the OnAddVob side: an inventory preview vob never entered the engine's world-scoped state, so
     // it must not tear it down either. Skipping this matters, not just for symmetry - ZenGin adds and removes the
@@ -2666,8 +2665,8 @@ void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
         emitter->SetVisShpModel( originModel );
         zCObject_AddRef( originModel ); // matches CalcPFXMesh's orgModel->AddRef()
 
-        LogInfo() << "Repaired shape-mesh emitter for '" << originModel->GetModelName()
-            << "' - oCVisualFX started before the origin had a visual";
+        Logging::Inf( "Repaired shape-mesh emitter for '{}' - oCVisualFX started before the origin had a visual",
+            originModel->GetModelName() );
     }
 #endif
 
@@ -2684,8 +2683,7 @@ void GothicAPI::RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx ) {
             // here and we retry next frame rather than mutating Gothic's string.
             if ( zCModelNodeInst* node = originModel->SearchNode( *nodeName ) ) {
                 visFx->SetOriginNode( node );
-                LogInfo() << "Repaired VisualFX origin node '" << nodeName->ToChar() << "' on '"
-                    << originModel->GetModelName() << "'";
+                Logging::Inf( "Repaired VisualFX origin node '{}' on '{}'", nodeName->ToChar(), originModel->GetModelName() );
             }
         }
     }
@@ -2808,8 +2806,8 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
     // ticking at all while we cannot serve it. Log once per model so a regression is visible.
     static std::unordered_set<zCModel*> loggedOriginFallback;
     if ( loggedOriginFallback.insert( model ).second ) {
-        LogWarn() << "GetLowestLODPoly_SkeletalMesh: no skinned mesh data for '" << model->GetModelName()
-            << "' - particles from this shape-mesh emitter fall back to the model origin";
+        Logging::Wrn( "GetLowestLODPoly_SkeletalMesh: no skinned mesh data for '{}' - particles from this shape-mesh emitter fall back to the model origin",
+            model->GetModelName() );
     }
 
     returnPositions[0] = float3( 0.f, 0.f, 0.f );
@@ -2975,7 +2973,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 // Remove attachment. Shared, so it goes back to the registry, not deleted here.
                 WorldConverter::ReleaseNodeAttachments( nodeAttachments, i );
 
-                LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
+                Logging::Inf( "Removed attachment from model {}", vi->VisualInfo->VisualName );
 
                 continue; // Go to next attachment
             }
@@ -4012,7 +4010,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             for ( auto& kvp : items ) {
                 ss.str( std::string{} );
                 ss << "static const unsigned int " << kvp.first << " = 0x00" << std::hex << kvp.second << ";";
-                LogInfo() << ss.str();
+                Logging::Inf( "{}", ss.str() );
             }
             break;
        
@@ -4284,7 +4282,7 @@ void GothicAPI::CollectVisibleVobs(
     }
 
     if ( CameraReplacementPtr ) {
-        LogError() << "Invalid usage of legacy API. Must not use this withCameraReplacementPtr.";
+        Logging::Err( "Invalid usage of legacy API. Must not use this withCameraReplacementPtr." );
     }
 
     XMVECTOR cameraPosition = GetCameraPositionXM();
@@ -5267,7 +5265,7 @@ void GothicAPI::BuildBspLeafLinearCache() {
     LeafLinearCache.Clear();
     BspInfo* root = &BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()];
     LeafLinearCache.Build( root );
-    LogInfo() << "BspLeafLinearCache: " << LeafLinearCache.Count << " leaves indexed for SIMD culling";
+    Logging::Inf( "BspLeafLinearCache: {} leaves indexed for SIMD culling", LeafLinearCache.Count );
 }
 
 /** Cleans empty BSPNodes */
@@ -5299,7 +5297,7 @@ float GothicAPI::GetFarPlane() {
 
 /** Sets/Gets the far-plane */
 void GothicAPI::SetNearPlane( float value ) {
-    LogWarn() << "SetNearPlane not implemented yet!";
+    Logging::Wrn( "SetNearPlane not implemented yet!" );
 }
 
 float GothicAPI::GetNearPlane() {
@@ -5503,13 +5501,13 @@ void GothicAPI::LoadCustomZENResources() {
         zenFolder.append("system\\GD3D11\\ZENResources\\").append(gameName).append("\\");
     }
     if ( !Toolbox::FolderExists( zenFolder ) ) {
-        LogInfo() << "Custom ZEN-Resources. Directory not found: " << zenFolder;
+        Logging::Inf( "Custom ZEN-Resources. Directory not found: {}", zenFolder );
         return;
     }
 
     std::string& zen = zenFolder.append(LoadedWorldInfo->WorldName);
 
-    LogInfo() << "Loading custom ZEN-Resources from: " << zen;
+    Logging::Inf( "Loading custom ZEN-Resources from: {}", zen );
 
     // Suppressed Textures
     LoadSuppressedTextures( zen + ".spt" );
@@ -5534,13 +5532,13 @@ void GothicAPI::SaveCustomZENResources() {
     }
 
     if ( mkDirErr ) {
-        LogError() << "Could not save custom ZEN-Resources. Could not create directory: " << zenFolder;
+        Logging::Err( "Could not save custom ZEN-Resources. Could not create directory: {}", zenFolder );
         return;
     }
 
     std::string& zen = zenFolder.append(LoadedWorldInfo->WorldName);
 
-    LogInfo() << "Saving custom ZEN-Resources to: " << zen;
+    Logging::Inf( "Saving custom ZEN-Resources to: {}", zen );
 
     // Suppressed Textures
     SaveSuppressedTextures( zen + ".spt" );
@@ -5614,7 +5612,7 @@ void GothicAPI::SupressTexture( WorldMeshSectionInfo* section, const std::string
 XRESULT GothicAPI::SaveSuppressedTextures( const std::string& file ) {
     FILE* f = fopen( file.c_str(), "wb" );
 
-    LogInfo() << "Saving suppressed textures";
+    Logging::Inf( "Saving suppressed textures" );
 
     if ( !f )
         return XR_FAILED;
@@ -5652,7 +5650,7 @@ XRESULT GothicAPI::SaveSuppressedTextures( const std::string& file ) {
 XRESULT GothicAPI::LoadSuppressedTextures( const std::string& file ) {
     FILE* f = fopen( file.c_str(), "rb" );
 
-    LogInfo() << "Loading Suppressed textures";
+    Logging::Inf( "Loading Suppressed textures" );
 
     // Clean first
     ResetSupressedTextures();
@@ -5708,7 +5706,7 @@ XRESULT GothicAPI::LoadSuppressedTextures( const std::string& file ) {
 XRESULT GothicAPI::SaveVegetation( const std::string& file ) {
     FILE* f = fopen( file.c_str(), "wb" );
 
-    LogInfo() << "Saving vegetation";
+    Logging::Inf( "Saving vegetation" );
 
     if ( !f )
         return XR_FAILED;
@@ -5730,7 +5728,7 @@ XRESULT GothicAPI::SaveVegetation( const std::string& file ) {
 
 /** Saves vegetation to a file */
 XRESULT GothicAPI::LoadVegetation( const std::string& file ) {
-    LogInfo() << "Loading vegetation";
+    Logging::Inf( "Loading vegetation" );
 
     // Reset first
     ResetVegetation();
@@ -5774,7 +5772,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     // Get path to Gothic.Ini
     auto ini = std::string( NPath, len ).append( "\\" + file );
 
-    LogInfo() << "Saving menu settings to " << ini;
+    Logging::Inf( "Saving menu settings to {}", ini );
     GothicRendererSettings& s = RendererState.RendererSettings;
 
     WritePrivateProfileStringA( "General", "ChangeToMode", to_string_locale_independent( s.ChangeWindowPreset ).c_str(), ini.c_str() );
@@ -5966,7 +5964,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 
     GothicRendererSettings& s = RendererState.RendererSettings;
     if ( Toolbox::FileExists( ini ) ) {
-        LogInfo() << "Loading menu settings from " << ini;
+        Logging::Inf( "Loading menu settings from {}", ini );
     
         GothicRendererSettings defaultRendererSettings{};
         defaultRendererSettings.SetDefault();
@@ -6184,7 +6182,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             static_cast<int>( GothicRendererSettings::INVENTORY_RENDER_ORIGINAL ), static_cast<int>( GothicRendererSettings::INVENTORY_RENDER_FULL ) ) );
         // Full is not implemented yet; RenderItem is the closest mode.
         if ( s.InventoryRenderMode == GothicRendererSettings::INVENTORY_RENDER_FULL ) {
-            LogWarn() << "Inventory RenderMode=Full is not implemented yet, using RenderItem.";
+            Logging::Wrn( "Inventory RenderMode=Full is not implemented yet, using RenderItem." );
             s.InventoryRenderMode = GothicRendererSettings::INVENTORY_RENDER_RENDERITEM;
         }
 
@@ -6215,7 +6213,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         /*RECT r;
         GetClientRect( GetDesktopWindow(), &r );
         if ( res.x > r.right || res.y > r.bottom ) {
-            LogInfo() << "Reducing resolution from (" << res.x << ", " << res.y << " to (" << r.right << ", " << r.bottom << ") because users desktop resolution got lowered";
+            Logging::Inf( "Reducing resolution from ({}, {} to ({}, {}) because users desktop resolution got lowered", res.x, res.y, r.right, r.bottom );
             res = INT2( r.right, r.bottom );
         }*/
 
@@ -6224,11 +6222,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.LoadedResolution = res;
     }
 
-    LogInfo() << "Applying Commandline-Overrides ...";
+    Logging::Inf( "Applying Commandline-Overrides ..." );
     // Override Settings from Commandline Parameters
     if ( Engine::GAPI->HasCommandlineParameter( "ZMAXFPS" ) ) {
         s.FpsLimit = std::stoi( zCOption::GetOptions()->ParameterValue( "ZMAXFPS" ) );
-        LogInfo() << "-> FpsLimit: " << s.FpsLimit;
+        Logging::Inf( "-> FpsLimit: {}", s.FpsLimit );
     }
 
     if ( Engine::GAPI->HasCommandlineParameter( "game" ) ) {
@@ -6236,20 +6234,20 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         auto nLastDot = gameIni.find_last_of( '.' );
         if ( gameIni != "GOTHICGAME.INI" && nLastDot != std::string::npos ) {
             Engine::GAPI->SetGameName( gameIni.substr( 0, nLastDot ) );
-            LogInfo() << "-> Game: " << Engine::GAPI->GetGameName();
+            Logging::Inf( "-> Game: {}", Engine::GAPI->GetGameName() );
 #ifdef BUILD_SPACER_NET
             if ( Engine::GAPI->GetGameName() == "SPACER_NET" ) {
-                LogInfo() << "-> Running in Spacer.NET";
+                Logging::Inf( "-> Running in Spacer.NET" );
                 s.RunInSpacerNet = true;
             }
 #endif
         } else {
             Engine::GAPI->SetGameName( "Original" );
-            LogInfo() << "-> Game: Original";
+            Logging::Inf( "-> Game: Original" );
         }
     } else {
         Engine::GAPI->SetGameName( "Original" );
-        LogInfo() << "-> Game: Original";
+        Logging::Inf( "-> Game: Original" );
     }
 
     if ( s.ChangeWindowPreset ) {
@@ -6512,7 +6510,7 @@ bool GothicAPI::HasCommandlineParameter( const std::string& param ) {
 void GothicAPI::ReloadTextures() {
     zCResourceManager* resman = zCResourceManager::GetResourceManager();
 
-    LogInfo() << "Reloading textures...";
+    Logging::Inf( "Reloading textures..." );
 
     // This throws all texture out of the cache
     if ( resman )

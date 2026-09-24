@@ -119,7 +119,7 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
-    //LogInfo() << "Loading Engine-Texture: " << file;
+    //Logging::Inf( "Loading Engine-Texture: {}", file );
     Microsoft::WRL::ComPtr<ID3D11Texture2D> res;
     if ( std::filesystem::path( file ).is_absolute() ) {
         LE( CreateDDSTextureFromFileEx(
@@ -143,7 +143,7 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
             vdfsFile = zFILE_VDFS::Create( file.c_str() );
         }
         if ( !vdfsFile || !vdfsFile->Exists() || vdfsFile->Open(false) != zERROR_NONE ) {
-            LogError() << "Failed to load texture from VDFS: " << file;
+            Logging::Err( "Failed to load texture from VDFS: {}", file );
             return XR_FAILED;
         }
         fileData.resize( vdfsFile->Size() );
@@ -189,7 +189,7 @@ XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string&
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
-    //LogInfo() << "Loading Engine-Texture: " << debugFileName;
+    //Logging::Inf( "Loading Engine-Texture: {}", debugFileName );
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> res;
     LE( CreateDDSTextureFromMemory( engine->GetDevice().Get(), data, size,

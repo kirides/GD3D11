@@ -19,7 +19,7 @@ XRESULT D3D11HDShader::LoadShader( const char* hullShader, const char* domainSha
     Microsoft::WRL::ComPtr<ID3DBlob> dsBlob;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-        LogInfo() << "Compilling hull shader: " << hullShader;
+        Logging::Inf( "Compilling hull shader: {}", hullShader );
 
     // Compile shaders
     if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( hullShader, "HSMain", "hs_5_0", hsBlob.GetAddressOf(), {} ) ) ) {

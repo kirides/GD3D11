@@ -67,7 +67,7 @@ namespace MorphGpu {
 
             const float3* refPos = protoObj->GetMorphRefMeshVertPos();
             if ( !ref || !refPos || meshNumVert <= 0 ) {
-                LogWarn() << "MorphGpu: " << name << " has no usable rest mesh - folding it on the CPU.";
+                Logging::Wrn( "MorphGpu: {} has no usable rest mesh - folding it on the CPU.", name );
                 Prototype* raw = owned.get();
                 s_Prototypes.emplace( protoObj, std::move( owned ) );
                 return raw;   // Valid stays false
@@ -131,8 +131,8 @@ namespace MorphGpu {
                     // Two slots of one ani touching the same vertex means the CPU fold applies that channel
                     // TWICE to it, which a single-slot gather cannot reproduce. Not observed in shipped
                     // content; refuse the whole prototype rather than render it subtly differently.
-                    LogWarn() << "MorphGpu: " << name << " ani #" << i
-                        << " has a duplicated vertIndexList entry - folding this prototype on the CPU.";
+                    Logging::Wrn( "MorphGpu: {} ani #{} has a duplicated vertIndexList entry - folding this prototype on the CPU.",
+                        name, i );
                     Prototype* raw = owned.get();
                     s_Prototypes.emplace( protoObj, std::move( owned ) );
                     return raw;   // Valid stays false
@@ -160,9 +160,8 @@ namespace MorphGpu {
             p.Valid = !p.Positions.empty() && !p.Indices.empty();
             const size_t bytes = p.Positions.size() * sizeof( float3 ) + p.Indices.size() * sizeof( uint32_t );
             s_TableBytes += bytes;
-            LogInfo() << "MorphGpu: " << name << " tables built - " << meshNumVert << " verts, "
-                << p.Anis.size() << " anis, " << numSubmeshes << " submeshes, " << ( bytes / 1024 )
-                << " KB (" << ( s_TableBytes / 1024 ) << " KB over " << ( s_Prototypes.size() + 1 ) << " prototypes)";
+            Logging::Inf( "MorphGpu: {} tables built - {} verts, {} anis, {} submeshes, {} KB ({} KB over {} prototypes)",
+                name, meshNumVert, p.Anis.size(), numSubmeshes, ( bytes / 1024 ), ( s_TableBytes / 1024 ), ( s_Prototypes.size() + 1 ) );
 
             Prototype* raw = owned.get();
             s_Prototypes.emplace( protoObj, std::move( owned ) );
@@ -183,8 +182,8 @@ namespace MorphGpu {
         static const bool active = []() {
             const bool a = s_BackendAvailable.load( std::memory_order_acquire )
                 && Engine::GAPI->GetRendererState().RendererSettings.UseGpuMorphFold;
-            LogInfo() << "MorphGpu: GPU morph fold " << ( a ? "ACTIVE" : "off" ) << " (backend "
-                << ( s_BackendAvailable.load( std::memory_order_relaxed ) ? "supports" : "does not support" ) << " it)";
+            Logging::Inf( "MorphGpu: GPU morph fold {} (backend {} it)",
+                ( a ? "ACTIVE" : "off" ), ( s_BackendAvailable.load( std::memory_order_relaxed ) ? "supports" : "does not support" ) );
             return a;
         }();
         return active;

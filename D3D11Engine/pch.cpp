@@ -14,22 +14,22 @@ void zCObject_Release( void* o ) {
 }
 
 void DebugWrite_i( LPCSTR lpDebugMessage, void* thisptr ) {
-	//LogInfo() << "D3D7-CALL (" << thisptr << "): " << lpDebugMessage;
+	//Logging::Inf( "D3D7-CALL ({}): {}", thisptr, lpDebugMessage );
 
 	/*if (Settings::LogD3D7FunctionCalls)
 	{
 		switch(Settings::RenderingStage)
 		{
 		case ERenderingStage::RS_WORLD:
-			LogInfo() << "[WORLD] D3D7-CALL (" << thisptr << "): " << lpDebugMessage;
+			Logging::Inf( "[WORLD] D3D7-CALL ({}): {}", thisptr, lpDebugMessage );
 			break;
 
 		case ERenderingStage::RS_VOBS:
-			LogInfo() << "[VOBS] D3D7-CALL (" << thisptr << "): " << lpDebugMessage;
+			Logging::Inf( "[VOBS] D3D7-CALL ({}): {}", thisptr, lpDebugMessage );
 			break;
 
 		case ERenderingStage::RS_HUD:
-			LogInfo() << "[HUD] D3D7-CALL (" << thisptr << "): " << lpDebugMessage;
+			Logging::Inf( "[HUD] D3D7-CALL ({}): {}", thisptr, lpDebugMessage );
 			break;
 		}
 
@@ -89,7 +89,7 @@ int ComputeFVFSize( DWORD fvf ) {
 	}
 
 	if ( test != 0 )
-		LogWarn() << "FVF contains unknown bits! " << test << " leftover";
+		Logging::Wrn( "FVF contains unknown bits! {} leftover", test );
 
 	//Here is the uncompleted code for the other fvfs...
 

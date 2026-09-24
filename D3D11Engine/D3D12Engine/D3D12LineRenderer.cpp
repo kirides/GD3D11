@@ -90,8 +90,8 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     const UINT bytes = static_cast<UINT>( lines.size() * sizeof( LineVertex ) );
     if ( m_LineVertexBufferOffset + bytes > m_LineVertexBufferCapacity ) {
         if ( !m_LineOverflowLogged ) {
-            LogWarn() << "D3D12: debug-line vertex ring overflow (" << m_LineVertexBufferCapacity
-                << " bytes/frame). Some debug lines dropped this frame.";
+            Logging::Wrn( "D3D12: debug-line vertex ring overflow ({} bytes/frame). Some debug lines dropped this frame.",
+                m_LineVertexBufferCapacity );
             m_LineOverflowLogged = true;
         }
         return;

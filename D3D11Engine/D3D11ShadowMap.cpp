@@ -93,7 +93,7 @@ static void CalculateCascadeMatrices(
     float splitFar = splits[cascadeIdx + 1];
 
     if ( !playerFrustum.IsValid() || !playerFrustum.SupportsCulling() ) {
-        LogError() << "ShadowMap: Invalid Player Frustum!";
+        Logging::Err( "ShadowMap: Invalid Player Frustum!" );
     }
 
     auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
@@ -326,8 +326,8 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
         const int atlasCascade0Size = AtlasCascade0Size( clampedSize, numCascades );
         if ( atlasCascade0Size < clampedSize && m_lastLoggedAtlasCap != clampedSize ) {
             m_lastLoggedAtlasCap = clampedSize;
-            LogInfo() << "ShadowAtlas: requested " << clampedSize << " capped to " << atlasCascade0Size
-                << " per cascade (" << numCascades << " cascades share one texture)";
+            Logging::Inf( "ShadowAtlas: requested {} capped to {} per cascade ({} cascades share one texture)",
+                clampedSize, atlasCascade0Size, numCascades );
         }
         if ( !m_shadowAtlas ) {
             m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
@@ -457,7 +457,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         if ( GetSizeX() != effectiveSize
             || m_useAtlas != ShouldUseAtlas()
             || m_lastNumCascades != desiredCascades ) {
-            LogInfo() << "Shadowmap config changed, resizing to " << desiredSize << "x" << desiredSize;
+            Logging::Inf( "Shadowmap config changed, resizing to {}x{}", desiredSize, desiredSize );
             Resize( desiredSize );
             settings.ShadowMapSize = desiredSize;
         }
@@ -983,7 +983,7 @@ void D3D11ShadowMap::SelectPointShadowTechnique( EPointShadowTechnique want ) {
     m_PointTechnique->OnActivate();
 
     if ( hadPrevious ) {
-        LogInfo() << "Point-light shadow technique switched to: " << m_PointTechnique->Name();
+        Logging::Inf( "Point-light shadow technique switched to: {}", m_PointTechnique->Name() );
     }
 }
 

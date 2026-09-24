@@ -642,7 +642,7 @@ public:
         if ( !Toolbox::FolderExists( zenFolder ) ) {
             if (createPath) {
                 if ( !Toolbox::CreateDirectoryRecursive( zenFolder ) ) {
-                    LogError() << "Could not save custom ZEN-Resources. Could not create directory: " << zenFolder;
+                    Logging::Err( "Could not save custom ZEN-Resources. Could not create directory: {}", zenFolder );
                     return "";
                 }
             }

@@ -27,25 +27,25 @@ GMeshSimple::~GMeshSimple() {
 XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
     char dir[260];
     GetCurrentDirectoryA( 260, dir );
-    LogInfo() << "Loading custom mesh " << dir << "\\" << file;
+    Logging::Inf( "Loading custom mesh {}\\{}", dir, file );
 
     Importer imp;
     const aiScene* s = imp.ReadFile( file, aiProcessPreset_TargetRealtime_Fast );
 
     if ( !s ) {
-        LogError() << "Failed to open custom Mesh: " << file;
-        LogError() << " - " << imp.GetErrorString();
+        Logging::Err( "Failed to open custom Mesh: {}", file );
+        Logging::Err( " - {}", imp.GetErrorString() );
         return XR_FAILED;
     }
 
-    LogInfo() << "Loading " << s->mNumMeshes << " submeshes";
+    Logging::Inf( "Loading {} submeshes", s->mNumMeshes );
 
     int startIndex = 0;
     for ( unsigned int i = 0; i < s->mNumMeshes; i++ ) {
         aiString texture;
         s->mMaterials[s->mMeshes[i]->mMaterialIndex]->GetTexture( aiTextureType::aiTextureType_DIFFUSE, 0, &texture );
 
-        LogInfo() << " - Submesh: (Num Vertices: " << s->mMeshes[i]->mNumVertices << ") (Texture: " << texture.C_Str() << ")";
+        Logging::Inf( " - Submesh: (Num Vertices: {}) (Texture: {})", s->mMeshes[i]->mNumVertices, texture.C_Str() );
 
         SimpleObjectVertexStruct* vertices = new SimpleObjectVertexStruct[s->mMeshes[i]->mNumVertices];
         VERTEX_INDEX* indices = new VERTEX_INDEX[s->mMeshes[i]->mNumFaces * 3];
@@ -61,7 +61,7 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
 
         for ( unsigned int n = 0; n < s->mMeshes[i]->mNumFaces; n++ ) {
             if ( s->mMeshes[i]->mFaces[n].mNumIndices != 3 ) {
-                LogError() << "Mesh not triangulated!";
+                Logging::Err( "Mesh not triangulated!" );
                 continue;
             }
 
@@ -78,10 +78,10 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
         int extpos = stex.find_last_of( "." );
         if ( extpos >= 0 ) {
             ext = &stex[extpos + 1];
-            //LogInfo() << "Got file ext: " << ext;
+            //Logging::Inf( "Got file ext: {}", ext );
 
             name.resize( name.size() - (ext.size() + 1) ); // Strip file extension
-            //LogInfo() << "Got file name: " << name;
+            //Logging::Inf( "Got file name: {}", name );
         }
 
         Engine::GraphicsEngine->CreateVertexBuffer( VertexBuffer );
@@ -98,7 +98,7 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
         delete[] indices;
 
         if ( s->mNumMeshes > 1 ) {
-            LogWarn() << "SimpleMesh '" << file << "' has more than 1 submesh! SimpleMeshes should only have one!";
+            Logging::Wrn( "SimpleMesh '{}' has more than 1 submesh! SimpleMeshes should only have one!", file );
         }
 
         // Discard any other meshes

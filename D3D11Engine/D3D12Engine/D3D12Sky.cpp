@@ -100,7 +100,7 @@ bool D3D12GraphicsEngine::CreateSkyConstantBuffers() {
         if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr, m_SkyCBAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_SkyCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the sky atmosphere constant buffer.";
+            Logging::Wrn( "D3D12: failed to create the sky atmosphere constant buffer." );
             return false;
         }
         m_SkyCB[i]->SetName( L"SkyAtmosphereCB" );
@@ -108,7 +108,7 @@ bool D3D12GraphicsEngine::CreateSkyConstantBuffers() {
         D3D12_RANGE noRead = { 0, 0 };
         void* mapped = nullptr;
         if ( FAILED( m_SkyCB[i]->Map( 0, &noRead, &mapped ) ) ) {
-            LogWarn() << "D3D12: failed to map the sky atmosphere constant buffer.";
+            Logging::Wrn( "D3D12: failed to map the sky atmosphere constant buffer." );
             return false;
         }
         m_SkyCBMapped[i] = static_cast<uint8_t*>( mapped );

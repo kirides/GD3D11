@@ -24,7 +24,7 @@ XRESULT D3D11PShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
     Microsoft::WRL::ComPtr<ID3DBlob> psBlob;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-        LogInfo() << "Compilling pixel shader: " << si.name;
+        Logging::Inf( "Compilling pixel shader: {}", si.name );
 
     // Compile shaders
     if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !si.entryPoint.empty() ? si.entryPoint.c_str() : "PSMain", (FeatureLevel10Compatibility ? "ps_4_0" : "ps_5_0"), psBlob.GetAddressOf(), macros)) ) {

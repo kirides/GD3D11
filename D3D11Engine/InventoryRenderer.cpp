@@ -27,7 +27,7 @@ namespace {
     void LogOnce( bool& logged, const char* message ) {
         if ( logged ) return;
         logged = true;
-        LogWarn() << "InventoryRenderer: " << message;
+        Logging::Wrn( "InventoryRenderer: {}", message );
     }
     // Built once by Gothic's own constructors and never destroyed; lives as long as the process.
     alignas(16) uint8_t s_CameraStorage[0x1000];
@@ -57,7 +57,7 @@ namespace {
         char buffer[32];
         if ( !::GetPrivateProfileStringA( "ADV_INVENTORY", key, "", buffer, sizeof( buffer ), ini.c_str() ) ) return 1.0f;
         const float scale = static_cast<float>( std::atof( buffer ) );
-        LogInfo() << "InventoryRenderer: [ADV_INVENTORY] " << key << " = " << scale;
+        Logging::Inf( "InventoryRenderer: [ADV_INVENTORY] {} = {}", key, scale );
         return scale > 0.0f ? scale : 1.0f;
     }
 

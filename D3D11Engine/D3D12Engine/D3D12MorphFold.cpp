@@ -75,7 +75,7 @@ bool D3D12GraphicsEngine::CreateMorphFoldResources() {
         if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             m_MorphChannelBufferAlloc[i].ReleaseAndGetAddressOf(),
             IID_PPV_ARGS( m_MorphChannelBuffer[i].ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: failed to create the morph-fold channel ring.";
+            Logging::Wrn( "D3D12: failed to create the morph-fold channel ring." );
             MorphGpu::SetBackendAvailable( false );
             return false;
         }
@@ -114,8 +114,8 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
         // than not at all (each channel attenuates the ones before it), so the whole frame's fold is skipped
         // and every affected head keeps last frame's expression.
         if ( !m_MorphChannelOverflowLogged ) {
-            LogWarn() << "D3D12: morph channel ring overflow (" << channels.size() << " > "
-                << kMaxMorphChannelRecords << " records). Morph fold skipped this frame.";
+            Logging::Wrn( "D3D12: morph channel ring overflow ({} > {} records). Morph fold skipped this frame.",
+                channels.size(), kMaxMorphChannelRecords );
             m_MorphChannelOverflowLogged = true;
         }
         return;
@@ -179,8 +179,8 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
             ok = ok && UploadBufferData( table.Positions.Get(), job.Proto->Positions.data(), static_cast<UINT>( posBytes ) );
             ok = ok && UploadBufferData( table.Indices.Get(), job.Proto->Indices.data(), static_cast<UINT>( idxBytes ) );
             if ( !ok ) {
-                LogWarn() << "D3D12: failed to upload a morph prototype's fold tables (" << ( posBytes / 1024 )
-                    << " + " << ( idxBytes / 1024 ) << " KB). That head will not morph.";
+                Logging::Wrn( "D3D12: failed to upload a morph prototype's fold tables ({} + {} KB). That head will not morph.",
+                    ( posBytes / 1024 ), ( idxBytes / 1024 ) );
                 continue;
             }
             table.Positions->SetName( L"MorphPositions" );
@@ -270,9 +270,8 @@ void D3D12GraphicsEngine::DispatchMorphFold() {
         const size_t now = Engine::GAPI->GetFrameNumber();
         if ( now - s_lastReportFrame > 1200 ) {
             s_lastReportFrame = now;
-            LogInfo() << "Morph fold: " << m_MorphFoldSubmeshCount << " submeshes, " << channels.size()
-                << " channels this frame; " << m_MorphTables.size() << " prototype tables resident ("
-                << ( MorphGpu::ResidentTableBytes() / 1024 ) << " KB)";
+            Logging::Inf( "Morph fold: {} submeshes, {} channels this frame; {} prototype tables resident ({} KB)",
+                m_MorphFoldSubmeshCount, channels.size(), m_MorphTables.size(), ( MorphGpu::ResidentTableBytes() / 1024 ) );
         }
     }
 }

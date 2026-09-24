@@ -43,7 +43,7 @@ bool CreatingThumbnail = false;
 
 /** Init all hooks here */
 void HookedFunctionInfo::InitHooks() {
-    LogInfo() << "Initializing hooks";
+    Logging::Inf( "Initializing hooks" );
 
     HMODULE shw32dll = GetModuleHandleA("shw32.dll");
     if ( shw32dll ) {
@@ -85,20 +85,20 @@ void HookedFunctionInfo::InitHooks() {
 //G1 patches
 #ifdef BUILD_GOTHIC_1_08k
 #ifdef BUILD_1_12F
-    LogInfo() << "Patching: Fix integer overflow crash";
+    Logging::Inf( "Patching: Fix integer overflow crash" );
     PatchAddr( 0x00506B31, "\xEB" );
 
-    LogInfo() << "Patching: Marking texture as cached-in after cache-out - fix";
+    Logging::Inf( "Patching: Marking texture as cached-in after cache-out - fix" );
     PatchAddr( 0x005E90BE, "\x90\x90" );
 
-    LogInfo() << "Patching: Disable dx7 window transitions";
+    Logging::Inf( "Patching: Disable dx7 window transitions" );
     PatchAddr( 0x0075CA7B, "\x90\x90" );
     PatchAddr( 0x0074DAD0, "\x90\x90" );
 
-    LogInfo() << "Patching: Fix dx7 zbuffer possible crash";
+    Logging::Inf( "Patching: Fix dx7 zbuffer possible crash" );
     PatchAddr( 0x007A4B08, "\xB8\x00\x00\x00\x00\x90\x90\x90\x90\x90\x90\x90\x90\x90" );
 
-    LogInfo() << "Patching: Show correct savegame thumbnail";
+    Logging::Inf( "Patching: Show correct savegame thumbnail" );
     PatchAddr( 0x0042B4A7, "\x8B\xF8\xC6\x05\x00\x00\x00\x00\x01\x90\x90\x90\x90\x90" );
     PatchAddr( 0x00438057, "\x89\x6C\x24\x10\xEB\x21" );
     PatchAddr( 0x004381D6, "\xEB\x07" );
@@ -110,13 +110,13 @@ void HookedFunctionInfo::InitHooks() {
     memcpy( ThubmnailAddrChar, &ThubmnailAddr, 4 );
     PatchAddr( 0x0042B4AB, ThubmnailAddrChar );
 
-    LogInfo() << "Patching: Fix screen hung due to DX7 api invalidating our swapchain";
+    Logging::Inf( "Patching: Fix screen hung due to DX7 api invalidating our swapchain" );
     PatchAddr( 0x0075B5A7, "\xE9\x59\x02\x00\x00\x90" );
 
-    LogInfo() << "Patching: Fix potential crash due to handlefocusloose weird behavior";
+    Logging::Inf( "Patching: Fix potential crash due to handlefocusloose weird behavior" );
     PatchAddr( 0x00507FA1, "\xE9\x63\x04\x00\x00\x90" );
 #else
-    LogInfo() << "Patching: BroadCast fix";
+    Logging::Inf( "Patching: BroadCast fix" );
     {
         char* zSPYwnd[5];
         DWORD zSPY = reinterpret_cast<DWORD>(FindWindowA( nullptr, "[zSpy]" ));
@@ -126,21 +126,21 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x004480AF, zSPYwnd );
     }
 
-    LogInfo() << "Patching: LOW_FPS_NaN_check";
+    Logging::Inf( "Patching: LOW_FPS_NaN_check" );
     PatchAddr( 0x007CF732, "\x81\x3B\x00\x00\xC0\xFF\x0F\x84\x3B\xFF\xD4\xFF\x81\x3B\x00\x00\xC0\x7F\x0F\x84\x2F\xFF\xD4\xFF\xD9\x03\x8D\x44\x8C\x1C\xE9\x33\xFF\xD4\xFF" );
     PatchAddr( 0x0051F682, "\xE9\xAB\x00\x2B\x00\x90" );
     PatchAddr( 0x007CF755, "\x81\x7C\xE4\x20\x00\x00\xC0\xFF\x0F\x84\x43\xF0\xD4\xFF\x81\x7C\xE4\x20\x00\x00\xC0\x7F\x0F\x84\x35\xF0\xD4\xFF\xE9\xDA\xEF\xD4\xFF" );
     PatchAddr( 0x005F0EAA, "\xE8\xA6\xE8\x1D\x00" );
 
-    LogInfo() << "Patching: Fix integer overflow crash";
+    Logging::Inf( "Patching: Fix integer overflow crash" );
     PatchAddr( 0x004F4024, "\xEB" );
     PatchAddr( 0x004F43FC, "\xEB" );
 
-    LogInfo() << "Patching: Marking texture as cached-in after cache-out - fix";
+    Logging::Inf( "Patching: Marking texture as cached-in after cache-out - fix" );
     PatchAddr( 0x005CA683, "\x90\x90" );
 
 #ifndef BUILD_SPACER_NET
-    LogInfo() << "Patching: Improve loading times by disabling some unnecessary features";
+    Logging::Inf( "Patching: Improve loading times by disabling some unnecessary features" );
     PatchAddr( 0x005A4FE0, "\xC3\x90\x90" );
     PatchAddr( 0x0055848A, "\xE9\xE2\x01\x00\x00\x90" );
     PatchAddr( 0x005F7F7C, "\x1F" );
@@ -160,17 +160,17 @@ void HookedFunctionInfo::InitHooks() {
     }
 #endif
 
-    LogInfo() << "Patching: Fix using settings in freelook mode";
+    Logging::Inf( "Patching: Fix using settings in freelook mode" );
     PatchAddr( 0x00478FE2, "\x0F\x84\x9A\x00\x00\x00" );
 
-    LogInfo() << "Patching: Disable dx7 window transitions";
+    Logging::Inf( "Patching: Disable dx7 window transitions" );
     PatchAddr( 0x0072018B, "\x90\x90" );
     PatchAddr( 0x00711F70, "\x90\x90" );
 
-    LogInfo() << "Patching: Fix dx7 zbuffer possible crash";
+    Logging::Inf( "Patching: Fix dx7 zbuffer possible crash" );
     PatchAddr( 0x0075F907, "\xB8\x00\x00\x00\x00\x90\x90\x90\x90\x90\x90\x90\x90\x90" );
 
-    LogInfo() << "Patching: Show correct tris on toggle frame";
+    Logging::Inf( "Patching: Show correct tris on toggle frame" );
     {
         char* trisHndl[5];
         DWORD trisHandle = reinterpret_cast<DWORD>(&Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles);
@@ -185,7 +185,7 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x007D0104, GetProcAddressHndl );
     }
 
-    LogInfo() << "Patching: Decouple barrier from sky";
+    Logging::Inf( "Patching: Decouple barrier from sky" );
     PatchAddr( 0x00632146, "\x90\x90\x90\x90\x90" );
 
     // Show DirectX11 as currently used graphic device
@@ -204,7 +204,7 @@ void HookedFunctionInfo::InitHooks() {
         PatchJMP( 0x0071F5D9, reinterpret_cast<DWORD>(&HookedFunctionInfo::hooked_GetNumDevices) );
     }
 
-    LogInfo() << "Patching: Show correct savegame thumbnail";
+    Logging::Inf( "Patching: Show correct savegame thumbnail" );
     PatchAddr( 0x004289F4, "\x8B\xF8\xC6\x05\x00\x00\x00\x00\x01\x90" );
     PatchAddr( 0x00434167, "\x8B\xEE\xEB\x21" );
     PatchAddr( 0x004342AA, "\xEB\x07" );
@@ -216,11 +216,11 @@ void HookedFunctionInfo::InitHooks() {
     memcpy( ThubmnailAddrChar, &ThubmnailAddr, 4 );
     PatchAddr( 0x004289F8, ThubmnailAddrChar );
 
-    LogInfo() << "Patching: Fix screen hung due to DX7 api invalidating our swapchain";
+    Logging::Inf( "Patching: Fix screen hung due to DX7 api invalidating our swapchain" );
     PatchAddr( 0x0071EE02, "\xE9\x38\x02\x00\x00\x90" );
 
     if ( !IsRunningUnderUnion ) {
-        LogInfo() << "Patching: Fix zFILE_VDFS class \"B: VFILE:\" error message due to LAAHack(4GB patch)";
+        Logging::Inf( "Patching: Fix zFILE_VDFS class \"B: VFILE:\" error message due to LAAHack(4GB patch)" );
         PatchAddr( 0x004451CF, "\xE9\xCF\x7E\x0A\x00\x90\x0F\x85\xFF\x00\x00\x00" );
         PatchAddr( 0x004ED0A3, "\x83\xBE\xFC\x29\x00\x00\xFF\xE9\x26\x81\xF5\xFF" );
         PatchAddr( 0x0044572C, "\x83\xBE\xFC\x29\x00\x00\xFF\x74\x3F\x90" );
@@ -234,7 +234,7 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x00444E76, "\x74\x11\x38\x5E\x04\x75\x0C\x83\xBE\xFC\x29\x00\x00\xFF\x0F\x95\xC0\xEB\x09\x39\x9E\x8C\x00\x00\x00\x0F\x95\xC0\x83\xCF\xFF\x3A\xC3\x74\x51\x8B\xCE\xE8\x60\xB2\xFF\xFF\x38\x1D\xCC\xF2\x85\x00\x74\x42\x83\xBE\xFC\x29\x00\x00\xFF\x74\x39\x8B\x0D\xD0\xF2\x85\x00\x90\x90" );
     }
 
-    LogInfo() << "Patching: Fix potential crash due to handlefocusloose weird behavior";
+    Logging::Inf( "Patching: Fix potential crash due to handlefocusloose weird behavior" );
     PatchAddr( 0x004F556C, "\xE9\x83\x02\x00\x00\x90" );
 #endif
 #endif
@@ -244,7 +244,7 @@ void HookedFunctionInfo::InitHooks() {
     zQuat::Hook();
     zMat4::Hook();
 
-    LogInfo() << "Patching: BroadCast fix";
+    Logging::Inf( "Patching: BroadCast fix" );
     {
         char* zSPYwnd[5];
         DWORD zSPY = reinterpret_cast<DWORD>(FindWindowA( nullptr, "[zSpy]" ));
@@ -254,34 +254,34 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x0044C72F, zSPYwnd );
     }
 
-    LogInfo() << "Patching: Interupt gamestart sound";
+    Logging::Inf( "Patching: Interupt gamestart sound" );
     PatchAddr( 0x004DB89F, "\x00" );
 
-    LogInfo() << "Patching: Fix low framerate";
+    Logging::Inf( "Patching: Fix low framerate" );
     PatchAddr( 0x004DDC6F, "\x08" );
 
-    LogInfo() << "Patching: LOW_FPS_NaN_check";
+    Logging::Inf( "Patching: LOW_FPS_NaN_check" );
     PatchAddr( 0x0066E59A, "\x81\x3A\x00\x00\xC0\xFF\x0F\x84\xF3\x3C\xEC\xFF\x81\x3A\x00\x00\xC0\x7F\x0F\x84\xE7\x3C\xEC\xFF\xD9\x45\x00\x8D\x44\x8C\x20\xE9\xEB\x3C\xEC\xFF" );
     PatchAddr( 0x005322A2, "\xE9\xF3\xC2\x13\x00\x90\x90" );
     PatchAddr( 0x0066E5BE, "\x81\x7C\xE4\x20\x00\x00\xC0\xFF\x0F\x84\x2A\x2B\xEC\xFF\x81\x7C\xE4\x20\x00\x00\xC0\x7F\x0F\x84\x1C\x2B\xEC\xFF\xE9\xC1\x2A\xEC\xFF" );
     PatchAddr( 0x0061E412, "\xE8\xA7\x01\x05\x00" );
 
-    LogInfo() << "Patching: Fix integer overflow crash";
+    Logging::Inf( "Patching: Fix integer overflow crash" );
     PatchAddr( 0x00502F94, "\xEB" );
     PatchAddr( 0x00503343, "\xEB" );
 
-    LogInfo() << "Patching: Texture size is lower than 32 - fix";
+    Logging::Inf( "Patching: Texture size is lower than 32 - fix" );
     PatchAddr( 0x005F4E20, "\xC7\x05\xBC\xB3\x99\x00\x00\x40\x00\x00\xEB\x4D\x90\x90" );
 
-    LogInfo() << "Patching: Marking texture as cached-in after cache-out - fix";
+    Logging::Inf( "Patching: Marking texture as cached-in after cache-out - fix" );
     PatchAddr( 0x005F5573, "\x90\x90" );
 
-    LogInfo() << "Patching: Fix dynamic lights huge impact on FPS in some locations";
+    Logging::Inf( "Patching: Fix dynamic lights huge impact on FPS in some locations" );
     PatchAddr( 0x006092C4, "\xE9\x45\x02\x00\x00\x90" );
     PatchAddr( 0x00609544, "\xE9\x25\x02\x00\x00\x90" );
 
 #ifndef BUILD_SPACER_NET
-    LogInfo() << "Patching: Improve loading times by disabling some unnecessary features";
+    Logging::Inf( "Patching: Improve loading times by disabling some unnecessary features" );
     PatchAddr( 0x005C6E30, "\xC3\x90\x90\x90\x90\x90" );
     PatchAddr( 0x00571256, "\xE9\xC6\x02\x00\x00\x90" );
     PatchAddr( 0x006C8748, "\x90\x90\x90\x90\x90\x90" );
@@ -301,18 +301,18 @@ void HookedFunctionInfo::InitHooks() {
         PatchJMP( 0x005668B2, reinterpret_cast<DWORD>(&HookedFunctionInfo::hooked_SetLightmap) );
     }
 
-    LogInfo() << "Patching: Fix using settings in freelook mode";
+    Logging::Inf( "Patching: Fix using settings in freelook mode" );
     PatchAddr( 0x004806C2, "\x0F\x84\x9A\x00\x00\x00" );
 #endif
 
-    LogInfo() << "Patching: Disable dx7 window transitions";
+    Logging::Inf( "Patching: Disable dx7 window transitions" );
     PatchAddr( 0x00658BCB, "\x90\x90" );
     PatchAddr( 0x006483A2, "\x90\x90" );
 
-    LogInfo() << "Patching: Fix dx7 zbuffer possible crash";
+    Logging::Inf( "Patching: Fix dx7 zbuffer possible crash" );
     PatchAddr( 0x007B8FFB, "\xB8\x00\x00\x00\x00\x90\x90\x90\x90\x90\x90\x90\x90\x90" );
 
-    LogInfo() << "Patching: Show correct tris on toggle frame";
+    Logging::Inf( "Patching: Show correct tris on toggle frame" );
     {
         char* trisHndl[5];
         DWORD trisHandle = reinterpret_cast<DWORD>(&Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles);
@@ -344,7 +344,7 @@ void HookedFunctionInfo::InitHooks() {
         PatchJMP( 0x00657EA9, reinterpret_cast<DWORD>(&HookedFunctionInfo::hooked_GetNumDevices) );
     }
 
-    LogInfo() << "Patching: Show correct savegame thumbnail";
+    Logging::Inf( "Patching: Show correct savegame thumbnail" );
     PatchAddr( 0x0042A5A9, "\x8B\xF8\xC6\x05\x00\x00\x00\x00\x01\x90" );
     PatchAddr( 0x00437157, "\x8B\xEE\xEB\x21" );
     PatchAddr( 0x00437283, "\xEB\x07" );
@@ -356,11 +356,11 @@ void HookedFunctionInfo::InitHooks() {
     memcpy( ThubmnailAddrChar, &ThubmnailAddr, 4 );
     PatchAddr( 0x0042A5AD, ThubmnailAddrChar );
 
-    LogInfo() << "Patching: Fix screen hung due to DX7 api invalidating our swapchain";
+    Logging::Inf( "Patching: Fix screen hung due to DX7 api invalidating our swapchain" );
     PatchAddr( 0x006576D2, "\xE9\x38\x02\x00\x00\x90" );
 
     if ( !IsRunningUnderUnion ) {
-        LogInfo() << "Patching: Fix zFILE_VDFS class \"B: VFILE:\" error message due to LAAHack(4GB patch)";
+        Logging::Inf( "Patching: Fix zFILE_VDFS class \"B: VFILE:\" error message due to LAAHack(4GB patch)" );
         PatchAddr( 0x0044925F, "\xE9\x70\x8D\xFB\xFF\x90\x0F\x85\xFF\x00\x00\x00" );
         PatchAddr( 0x00401FD4, "\x83\xBE\xFC\x29\x00\x00\xFF\xE9\x85\x72\x04\x00" );
         PatchAddr( 0x00449A5C, "\x83\xBE\xFC\x29\x00\x00\xFF\x74\x3F\x90" );
@@ -376,14 +376,14 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x00448F06, "\x74\x11\x38\x5E\x04\x75\x0C\x83\xBE\xFC\x29\x00\x00\xFF\x0F\x95\xC0\xEB\x09\x39\x9E\x8C\x00\x00\x00\x0F\x95\xC0\x83\xCF\xFF\x3A\xC3\x74\x51\x8B\xCE\xE8\xE0\xB0\xFF\xFF\x38\x1D\xC4\x34\x8C\x00\x74\x42\x83\xBE\xFC\x29\x00\x00\xFF\x74\x39\x8B\x0D\xC8\x34\x8C\x00\x90\x90" );
     }
 
-    LogInfo() << "Patching: Fix potential crash due to handlefocusloose weird behavior";
+    Logging::Inf( "Patching: Fix potential crash due to handlefocusloose weird behavior" );
     PatchAddr( 0x00503ACB, "\xE9\x11\x09\x00\x00\x90" );
     PatchAddr( 0x00503CA2, "\xE9\x3A\x07\x00\x00\x90" );
     PatchAddr( 0x00503E78, "\xE9\x64\x05\x00\x00\x90" );
     PatchAddr( 0x0050556D, "\xE9\xDE\x02\x00\x00\x90" );
 
     // HACK Workaround to fix debuglines in godmode
-    LogInfo() << "Patching: Godmode Debuglines";
+    Logging::Inf( "Patching: Godmode Debuglines" );
     // oCMagFrontier::GetDistanceNewWorld
     PatchAddr( 0x00473f37, "\xBD\x00\x00\x00\x00" ); // replace MOV EBP, 0x1 with MOV EBP, 0x0
     // oCMagFrontier::GetDistanceDragonIsland

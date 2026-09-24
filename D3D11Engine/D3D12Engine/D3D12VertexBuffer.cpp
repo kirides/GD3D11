@@ -130,7 +130,7 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     if ( !device || !allocator ) return XR_FAILED;
 
     if ( sizeInBytes == 0 ) {
-        LogError() << "VertexBuffer size can't be 0!";
+        Logging::Err( "VertexBuffer size can't be 0!" );
         sizeInBytes = 1;
     }
     m_SizeInBytes = sizeInBytes;
@@ -291,12 +291,12 @@ XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* ver
 
     const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
     if ( numVertices > maxVertexIndex + 1 ) {
-        LogError() << "OptimizeVertices: numVertices exceeds VERTEX_INDEX range";
+        Logging::Err( "OptimizeVertices: numVertices exceeds VERTEX_INDEX range" );
         return XR_FAILED;
     }
 
     if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
-        LogError() << "OptimizeVertices: index out of range (numVertices=" << numVertices << ") - skipping";
+        Logging::Err( "OptimizeVertices: index out of range (numVertices={}) - skipping", numVertices );
         if ( outShadowIndices ) outShadowIndices->clear();
         if ( inOutLodIndices ) inOutLodIndices->clear();
         return XR_FAILED;
@@ -333,7 +333,7 @@ XRESULT D3D12VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, uint8_t* ver
     }
 
     if ( !ConvertIndicesToVertexIndex( remappedIndices, indices, numIndices ) ) {
-        LogError() << "OptimizeVertices: remapped index exceeds VERTEX_INDEX range";
+        Logging::Err( "OptimizeVertices: remapped index exceeds VERTEX_INDEX range" );
         if ( outShadowIndices ) outShadowIndices->clear();
         if ( inOutLodIndices ) inOutLodIndices->clear();
         return XR_FAILED;
@@ -356,12 +356,12 @@ XRESULT D3D12VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, uint8_t* vertic
 
     const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
     if ( numVertices > maxVertexIndex + 1 ) {
-        LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
+        Logging::Err( "OptimizeFaces: numVertices exceeds VERTEX_INDEX range" );
         return XR_FAILED;
     }
 
     if ( !IndicesWithinRange( indices, numIndices, numVertices ) ) {
-        LogError() << "OptimizeFaces: index out of range (numVertices=" << numVertices << ") - skipping";
+        Logging::Err( "OptimizeFaces: index out of range (numVertices={}) - skipping", numVertices );
         return XR_FAILED;
     }
 
@@ -410,7 +410,7 @@ XRESULT D3D12VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, uint8_t* vertic
     }
 
     if ( !ConvertIndicesToVertexIndex( indexData, indices, numIndices ) ) {
-        LogError() << "OptimizeFaces: remapped index exceeds VERTEX_INDEX range";
+        Logging::Err( "OptimizeFaces: remapped index exceeds VERTEX_INDEX range" );
         return XR_FAILED;
     }
 

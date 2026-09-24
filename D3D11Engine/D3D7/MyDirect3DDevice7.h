@@ -347,7 +347,7 @@ public:
 			if ( Stage < 2 )
 				state.GraphicsState.FF_Stages[Stage].ColorOp = static_cast<FixedFunctionStage::EColorOp>(Value);
 			else
-				LogWarn() << "Gothic uses more than 2 TextureStages!";
+				Logging::Wrn( "Gothic uses more than 2 TextureStages!" );
 			break;
 
 		case D3DTSS_COLORARG1:

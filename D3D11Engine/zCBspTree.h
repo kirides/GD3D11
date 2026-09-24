@@ -248,7 +248,7 @@ public:
 
     /** Called on level load. */
     static int __fastcall hooked_LoadBIN( void* thisptr, void* unknwn, zCFileBIN& file, int skip ) {
-        LogInfo() << "Loading world!";
+        Logging::Inf( "Loading world!" );
 
         // Make sure worker thread don't work on any point light
         Engine::WorkerThreadPool->clearAndFlush();
