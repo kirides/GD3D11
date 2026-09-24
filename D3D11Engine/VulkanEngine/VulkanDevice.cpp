@@ -46,6 +46,32 @@ namespace {
             []( const VkLayerProperties& l ) { return strcmp( l.layerName, "VK_LAYER_KHRONOS_validation" ) == 0; } );
     }
 
+    /** Layers can be injected from outside (overlays, Vulkan Configurator, env vars); a forced validation layer is very slow. */
+    void LogInstanceLayers() {
+        static bool s_Logged = false;
+        if ( s_Logged ) return;
+        s_Logged = true;
+        uint32_t count = 0;
+        vkEnumerateInstanceLayerProperties( &count, nullptr );
+        std::vector<VkLayerProperties> layers( count );
+        vkEnumerateInstanceLayerProperties( &count, layers.data() );
+        std::string names;
+        bool configurator = false;
+        for ( uint32_t i = 0; i < count; ++i ) {
+            if ( !names.empty() ) names += ", ";
+            names += layers[i].layerName;
+            configurator |= strcmp( layers[i].layerName, "VK_LAYER_LUNARG_override" ) == 0;
+        }
+        Logging::Inf( "Vulkan: instance layers available: {}.", names.empty() ? "none" : names );
+        if ( configurator )
+            Logging::Wrn( "Vulkan: Vulkan Configurator is overriding layers (VK_LAYER_LUNARG_override); forced validation is very slow." );
+        for ( const char* env : { "VK_INSTANCE_LAYERS", "VK_LOADER_LAYERS_ENABLE" } ) {
+            char value[512] = {};
+            if ( GetEnvironmentVariableA( env, value, sizeof( value ) ) )
+                Logging::Wrn( "Vulkan: {}={} forces layers into the game.", env, value );
+        }
+    }
+
     VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback( VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* data, void* ) {
         const char* id = data && data->pMessageIdName ? data->pMessageIdName : "";
@@ -72,6 +98,7 @@ namespace {
             if ( reason ) *reason = "the Vulkan loader only supports " + VkUtil::VersionToString( loaderVersion ) + " (1.3 is required)";
             return false;
         }
+        LogInstanceLayers();
 
         const auto available = InstanceExtensions( nullptr );
         std::vector<const char*> extensions;
