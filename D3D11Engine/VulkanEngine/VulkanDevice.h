@@ -44,6 +44,7 @@ struct VulkanDeviceCaps {
     bool DynamicAlphaToCoverage = false;
     /** VK_KHR/EXT_vertex_attribute_divisor: D3D12 InstanceDataStepRate > 1 (and 0 with the zero-divisor feature). */
     bool InstanceDivisor = false;
+    bool Maintenance5 = false;          // vkCmdBindIndexBuffer2 (sized index buffers), buffer usage flags 2
     bool InstanceDivisorZero = false;
 
     uint32_t MaxPushDescriptors = 0;

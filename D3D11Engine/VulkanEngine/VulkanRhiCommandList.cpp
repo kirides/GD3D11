@@ -684,8 +684,13 @@ namespace VulkanRhi {
         if ( m_IbDirty ) {
             VkDeviceSize offset = 0;
             ResourceImpl* r = m_Ib.BufferLocation ? m_Device->ResolveAddress( m_Ib.BufferLocation, offset ) : nullptr;
-            if ( r && r->m_Buffer )
-                vkCmdBindIndexBuffer( m_Cmd, r->m_Buffer, offset, m_Ib.Format == DXGI_FORMAT_R32_UINT ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16 );
+            const VkIndexType type = m_Ib.Format == DXGI_FORMAT_R32_UINT ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+            // Sized like the D3D12 view, so reads past it return zero instead of the rest of the buffer.
+            const VkDeviceSize rest = r && r->m_Size > offset ? r->m_Size - offset : 0;
+            if ( r && r->m_Buffer && m_Device->VkCaps().Maintenance5 && m_Ib.SizeInBytes && rest )
+                vkCmdBindIndexBuffer2KHR( m_Cmd, r->m_Buffer, offset, std::min<VkDeviceSize>( m_Ib.SizeInBytes, rest ), type );
+            else if ( r && r->m_Buffer )
+                vkCmdBindIndexBuffer( m_Cmd, r->m_Buffer, offset, type );
             m_IbDirty = false;
         }
         if ( !FlushBindings( m_Gfx, VK_PIPELINE_BIND_POINT_GRAPHICS ) ) return false;
