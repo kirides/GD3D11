@@ -229,11 +229,36 @@ namespace VulkanRhi {
     bool DeviceImpl::CheckResult( VkResult result, const char* what ) {
         if ( result >= VK_SUCCESS ) return false;
         if ( result == VK_ERROR_DEVICE_LOST ) {
-            if ( !m_DeviceLost.exchange( true ) ) Logging::Err( "Vulkan: device lost ({}).", what );
+            if ( !m_DeviceLost.exchange( true ) ) {
+                Logging::Err( "Vulkan: device lost ({}).", what );
+                LogDeviceFault();
+            }
         } else {
             VkUtil::Failed( result, what );
         }
         return true;
+    }
+
+    void DeviceImpl::LogDeviceFault() const {
+        // VK_EXT_device_fault: the driver's own account of what faulted (the counterpart of D3D12's DRED dump).
+        if ( !VkCaps().DeviceFault ) {
+            Logging::Wrn( "Vulkan: VK_EXT_device_fault is unavailable; no fault details." );
+            return;
+        }
+        VkDeviceFaultCountsEXT counts = { VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT };
+        if ( vkGetDeviceFaultInfoEXT( Vk(), &counts, nullptr ) < VK_SUCCESS ) return;
+        std::vector<VkDeviceFaultAddressInfoEXT> addresses( counts.addressInfoCount );
+        std::vector<VkDeviceFaultVendorInfoEXT> vendor( counts.vendorInfoCount );
+        VkDeviceFaultInfoEXT info = { VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT };
+        info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+        info.pVendorInfos = vendor.empty() ? nullptr : vendor.data();
+        counts.vendorBinarySize = 0;   // the binary dump is vendor tooling input; skip it
+        if ( vkGetDeviceFaultInfoEXT( Vk(), &counts, &info ) < VK_SUCCESS ) return;
+        Logging::Err( "Vulkan device fault: {}", info.description );
+        for ( const VkDeviceFaultAddressInfoEXT& a : addresses )
+            Logging::Err( "  address 0x{:016X} (+/-0x{:X}), kind {}", a.reportedAddress, a.addressPrecision, static_cast<int>( a.addressType ) );
+        for ( const VkDeviceFaultVendorInfoEXT& v : vendor )
+            Logging::Err( "  vendor: {} (code 0x{:X}, data 0x{:X})", v.description, v.vendorFaultCode, v.vendorFaultData );
     }
 
     bool DeviceImpl::CreateBindlessLayout() {

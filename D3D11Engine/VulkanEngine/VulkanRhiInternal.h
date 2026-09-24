@@ -418,6 +418,7 @@ namespace VulkanRhi {
 
     private:
         bool CreateBindlessLayout();
+        void LogDeviceFault() const;
 
         VulkanDevice m_Vk;
         VmaAllocator m_Allocator = VK_NULL_HANDLE;
