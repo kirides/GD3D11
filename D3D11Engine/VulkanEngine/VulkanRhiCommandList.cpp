@@ -542,7 +542,9 @@ namespace VulkanRhi {
                     VkImageView view = ( d && d->Type == want ) ? d->View : VK_NULL_HANDLE;
                     if ( !view && !nullDescriptors ) { warnOnce( "a texture table slot is empty or of the wrong type" ); continue; }
                     write( slot.Binding, slot.Type );
-                    images[n++] = { VK_NULL_HANDLE, view, storage ? VK_IMAGE_LAYOUT_GENERAL : SampledLayout( *d ) };
+                    // A null view (empty slot, null descriptors on) ignores the layout, and `d` may be null then.
+                    const VkImageLayout layout = storage ? VK_IMAGE_LAYOUT_GENERAL : view ? SampledLayout( *d ) : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+                    images[n++] = { VK_NULL_HANDLE, view, layout };
                 }
                 break;
             default:
