@@ -510,6 +510,9 @@ namespace VulkanRhi {
         std::mutex m_StatsMutex;
         RecordStats m_Stats;
         std::array<std::atomic<int64_t>, static_cast<size_t>( Wait::Count )> m_WaitTicks{};
+        std::atomic<uint32_t> m_ResourcesCreated{ 0 };
+        std::atomic<uint32_t> m_HeapWrites{ 0 };   // bindless-set updates
+        uint32_t m_StatsGeneration = 0;            // pipeline generation at the last stats line
         uint32_t m_StatsPresents = 0;   // render thread only, like the start time
         int64_t m_StatsStart = 0;
         friend class DescriptorHeapImpl;

@@ -329,11 +329,16 @@ namespace VulkanRhi {
             auto ms = [&]( int64_t ticks ) { return static_cast<double>( ticks ) * 1000.0 / static_cast<double>( freq.QuadPart ) / f; };
             auto waited = [&]( Wait w ) { return ms( m_WaitTicks[static_cast<uint32_t>( w )].exchange( 0 ) ); };
             const double gpuMs = static_cast<double>( m_Queue->TakeGpuTicks() ) * VkCaps().TimestampPeriod / 1e6 / f;
+            const uint32_t generation = m_PipelineGeneration.load( std::memory_order_relaxed );
+            const uint32_t pipelines = generation - m_StatsGeneration;
+            m_StatsGeneration = generation;
             Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, GPU busy {:.2f} ms; CPU blocked: fences {:.2f}, acquire {:.2f}, "
                 "present {:.2f}, submit {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
-                "{} render scopes, {} submits.", f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
+                "{} render scopes, {} submits; over all {} frames: {} pipelines and {} resources created, {} heap descriptor writes.",
+                f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
                 waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
-                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.Scopes / f, submits / f );
+                s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.Scopes / f, submits / f,
+                f, pipelines, m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
             m_StatsPresents = 0;
             m_StatsStart = now.QuadPart;
         }
@@ -601,6 +606,7 @@ namespace VulkanRhi {
     HRESULT DeviceImpl::CreateResource( D3D12_HEAP_TYPE heapType, const D3D12_RESOURCE_DESC* desc, D3D12_RESOURCE_STATES initialState,
         const D3D12_CLEAR_VALUE*, Rhi::Resource** outResource, uint32_t ) {
         if ( !desc || !outResource ) return E_INVALIDARG;
+        m_ResourcesCreated.fetch_add( 1, std::memory_order_relaxed );
         ComPtr<ResourceImpl> r;
         r.Attach( new ResourceImpl( this ) );
         r->m_Desc = *desc;
@@ -721,6 +727,7 @@ namespace VulkanRhi {
         const D3D12_CLEAR_VALUE*, Rhi::Resource** outResource ) {
         HeapImpl* h = static_cast<HeapImpl*>( heap );
         if ( !h || !desc || !outResource ) return E_INVALIDARG;
+        m_ResourcesCreated.fetch_add( 1, std::memory_order_relaxed );
         ComPtr<ResourceImpl> r;
         r.Attach( new ResourceImpl( this ) );
         r->m_Desc = *desc;
@@ -937,6 +944,7 @@ namespace VulkanRhi {
                 return;
             }
             vkUpdateDescriptorSets( Vk(), 1, &w, 0, nullptr );
+            m_HeapWrites.fetch_add( 1, std::memory_order_relaxed );
             return;
         }
     }
