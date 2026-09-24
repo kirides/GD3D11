@@ -1088,6 +1088,19 @@ namespace VulkanRhi {
     int VkFormatOf( DXGI_FORMAT format ) { return static_cast<int>( ToVkFormat( format ) ); }
     std::mutex& QueueMutex( Rhi::Device* device ) { return static_cast<DeviceImpl*>( device )->Base().GetGraphicsQueueMutex(); }
 
+    bool SampledImageOf( Rhi::Device* device, D3D12_GPU_DESCRIPTOR_HANDLE srv, ComPtr<Rhi::Resource>& outResource, uint64_t& outView,
+        int& outLayout ) {
+        Descriptor d;
+        if ( !device || !static_cast<DeviceImpl*>( device )->ReadGpuDescriptor( srv, d ) ) return false;
+        if ( d.Type != Descriptor::Kind::SampledImage || !d.Resource || !d.View ) return false;
+        const uint32_t sub = d.Key.BaseMip + d.Key.BaseLayer * d.Resource->m_Mips;
+        const bool general = sub < d.Resource->m_Layouts.size() && d.Resource->m_Layouts[sub] == VK_IMAGE_LAYOUT_GENERAL;
+        outResource = d.Resource;
+        outView = VkUtil::HandleToU64( d.View );
+        outLayout = general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+        return true;
+    }
+
     Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice() {
         ComPtr<DeviceImpl> device;
         device.Attach( new DeviceImpl() );

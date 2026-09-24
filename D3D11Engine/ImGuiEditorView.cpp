@@ -3,6 +3,7 @@
 #include "zCMaterial.h"
 #include "Engine.h"
 #include "GothicAPI.h"
+#include "ImGuiShim.h"
 #include "BaseGraphicsEngine.h"
 #include "BaseLineRenderer.h"
 #include "GVegetationBox.h"
@@ -37,6 +38,13 @@ static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
         if (auto d3d12 = D3D12Texture::From(tex)) {
             if (d3d12->GetSrvSlot() != 0xFFFFFFFFu) {
                 return (ImTextureID)d3d12->GetSrvGpuHandle().ptr;
+            }
+        }
+        return ImTextureID{};
+    case EGraphicsEngineBackend::Vulkan:
+        if (auto texture = D3D12Texture::From(tex)) {
+            if (texture->GetSrvSlot() != 0xFFFFFFFFu) {
+                return Engine::ImGuiHandle->GetVulkanTextureId(texture->GetSrvGpuHandle());
             }
         }
         return ImTextureID{};

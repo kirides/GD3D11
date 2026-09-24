@@ -14,8 +14,8 @@
 #include "ImGuiEditorView.h"
 
 class D3D12GraphicsEngine;
-class VulkanDevice;
 struct VkCommandBuffer_T;
+namespace Rhi { class Device; class Resource; }
 
 class ImGuiShim {
 public:
@@ -35,7 +35,7 @@ public:
 
     /** Vulkan initialization path: imgui_impl_vulkan with dynamic rendering into a `colorFormat` (VkFormat)
         target and its own small descriptor pool. */
-    virtual void InitVulkan( HWND Window, VulkanDevice& device, int colorFormat, uint32_t minImageCount, uint32_t imageCount );
+    virtual void InitVulkan( HWND Window, Rhi::Device* device, int colorFormat, uint32_t minImageCount, uint32_t imageCount );
 
     virtual void RenderLoop();
 
@@ -47,6 +47,8 @@ public:
     virtual void RenderLoopVulkan( VkCommandBuffer_T* commandBuffer );
     /** Call after a swapchain rebuild changed the image count. */
     void SetVulkanMinImageCount( uint32_t minImageCount );
+    /** ImTextureID of a shader-visible SRV on Vulkan: an imgui_impl_vulkan descriptor set, cached while in use. */
+    ImTextureID GetVulkanTextureId( D3D12_GPU_DESCRIPTOR_HANDLE srv );
     virtual LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
     virtual void OnResize( INT2 newSize );
     bool Initiated = false;
@@ -112,7 +114,16 @@ private:
     /** Invokes the GDX_IMGUI_ENDFRAME Daedalus hook (if present) — called after RenderDrawData. */
     void CallEndFrameScript();
 
+    /** Frees Vulkan user textures unused for a while, once the GPU can no longer be reading their sets. */
+    void CollectVulkanTextures();
+
     Backend m_Backend = Backend::None;
+    // Vulkan user textures; each holds a reference on its image. Retired ones wait out the frames in flight.
+    struct VulkanUserTexture { Rhi::Resource* Resource = nullptr; uint64_t View = 0; uint64_t Set = 0; uint64_t Frame = 0; };
+    std::vector<VulkanUserTexture> m_VulkanTextures;
+    std::vector<VulkanUserTexture> m_VulkanRetired;
+    uint64_t m_VulkanFrame = 0;
+    Rhi::Device* m_VulkanRhi = nullptr;
     bool m_lastFrameBlockGameInput = false;
     bool m_FrameStatisticsVisible = false;
 
