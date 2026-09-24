@@ -435,6 +435,7 @@ namespace VulkanRhi {
         // Vertex input: strides are dynamic (they come with each vertex buffer view, as in D3D12).
         std::vector<VkVertexInputAttributeDescription> attributes;
         std::vector<VkVertexInputBindingDescription> vbBindings;
+        std::vector<VkVertexInputBindingDivisorDescriptionKHR> divisors;   // D3D12 InstanceDataStepRate != 1
         UINT slotOffsets[D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = {};
         for ( UINT i = 0; i < desc->InputLayout.NumElements; ++i ) {
             const D3D12_INPUT_ELEMENT_DESC& e = desc->InputLayout.pInputElementDescs[i];
@@ -444,8 +445,17 @@ namespace VulkanRhi {
             auto binding = std::find_if( vbBindings.begin(), vbBindings.end(),
                 [&]( const VkVertexInputBindingDescription& b ) { return b.binding == e.InputSlot; } );
             if ( binding == vbBindings.end() ) {
-                vbBindings.push_back( { e.InputSlot, 0, e.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA
-                    ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX } );
+                const bool instanced = e.InputSlotClass == D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA;
+                vbBindings.push_back( { e.InputSlot, 0, instanced ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX } );
+                if ( instanced && e.InstanceDataStepRate != 1 ) {
+                    const bool ok = VkCaps().InstanceDivisor && ( e.InstanceDataStepRate || VkCaps().InstanceDivisorZero );
+                    if ( ok ) {
+                        divisors.push_back( { e.InputSlot, e.InstanceDataStepRate } );
+                    } else {
+                        Logging::Wrn( "Vulkan: instance step rate {} on slot {} is unsupported here; the stream advances every instance.",
+                            e.InstanceDataStepRate, e.InputSlot );
+                    }
+                }
             }
             const int location = LocationOf( vsInfo, e.SemanticName, e.SemanticIndex );
             if ( location < 0 ) continue;   // not consumed by the shader
@@ -456,6 +466,10 @@ namespace VulkanRhi {
         vi.pVertexBindingDescriptions = vbBindings.data();
         vi.vertexAttributeDescriptionCount = static_cast<uint32_t>( attributes.size() );
         vi.pVertexAttributeDescriptions = attributes.data();
+        VkPipelineVertexInputDivisorStateCreateInfoKHR divisorInfo = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO_KHR };
+        divisorInfo.vertexBindingDivisorCount = static_cast<uint32_t>( divisors.size() );
+        divisorInfo.pVertexBindingDivisors = divisors.data();
+        if ( !divisors.empty() ) vi.pNext = &divisorInfo;
 
         VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
         switch ( desc->PrimitiveTopologyType ) {
@@ -593,6 +607,8 @@ namespace VulkanRhi {
         for ( const auto& b : vbBindings ) add( b );
         add( attributes.size() );
         for ( const auto& a : attributes ) add( a );
+        add( divisors.size() );
+        for ( const auto& dv : divisors ) add( dv );
         add( ia.topology );
         add( rtCount );
         for ( UINT i = 0; i < rtCount; ++i ) add( colorFormats[i] );
