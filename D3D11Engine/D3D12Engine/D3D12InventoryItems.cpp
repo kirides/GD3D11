@@ -38,7 +38,7 @@ namespace {
 }
 
 bool D3D12PipelineState::CreateInventoryItem() {
-    ID3D12Device* device = m_Device->GetDevice();
+    Rhi::Device* device = m_Device;
     if ( !device ) return false;
 
     D3D12RootLayout& rs = Layout( "InventoryItem" );
@@ -78,7 +78,7 @@ bool D3D12PipelineState::CreateInventoryItem() {
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
     if ( FAILED( device->CreateCommandSignature( &sigDesc, InventoryItem.RootSig.Get(),
-        IID_PPV_ARGS( InventoryItem.CmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+        InventoryItem.CmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the inventory item command signature." );
         InventoryItem.RootSig.Reset();
         return false;
@@ -91,7 +91,7 @@ bool D3D12PipelineState::CreateInventoryItem() {
     return true;
 }
 
-ID3D12PipelineState* D3D12PipelineState::GetOrCreateInventoryItemPipeline( bool skinned ) {
+Rhi::PipelineState* D3D12PipelineState::GetOrCreateInventoryItemPipeline( bool skinned ) {
     const uint32_t key = skinned ? 1u : 0u;
     if ( auto it = InventoryItem.Pipelines.find( key ); it != InventoryItem.Pipelines.end() ) return it->second.Get();
     if ( !InventoryItem.RootSig ) return nullptr;
@@ -115,7 +115,7 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateInventoryItemPipeline( bool 
     };
 
     ID3DBlob* vsBlob = skinned ? InventoryItem.VsSkinnedBlob.Get() : InventoryItem.VsStaticBlob.Get();
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    Rhi::GraphicsPipelineStateDesc pso = {};
     pso.pRootSignature = InventoryItem.RootSig.Get();
     pso.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
     pso.PS = { InventoryItem.PsBlob->GetBufferPointer(), InventoryItem.PsBlob->GetBufferSize() };
@@ -139,12 +139,12 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateInventoryItemPipeline( bool 
     pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
     pso.DepthStencilState.StencilEnable = FALSE;
 
-    ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+    ComPtr<Rhi::PipelineState> state;
+    if ( FAILED( m_Device->CreateGraphicsPipelineState( &pso, state.GetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed for the inventory item pipeline (skinned={}).", skinned );
         return nullptr;
     }
-    ID3D12PipelineState* raw = state.Get();
+    Rhi::PipelineState* raw = state.Get();
     InventoryItem.Pipelines.emplace( key, std::move( state ) );
     return raw;
 }
@@ -253,7 +253,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
     };
 
     // Bound draws go before the indirect submit: ExecuteIndirect leaves b0 behind the state cache's back.
-    ID3D12PipelineState* staticPso = m_Pipelines.GetOrCreateInventoryItemPipeline( false );
+    Rhi::PipelineState* staticPso = m_Pipelines.GetOrCreateInventoryItemPipeline( false );
     if ( staticPso && !unbound.empty() ) {
         m_CmdList->SetPipelineState( staticPso );
         for ( const UIItemDraw* draw : unbound ) {
@@ -261,7 +261,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         }
     }
 
-    ID3D12PipelineState* skinnedPso = skinned.empty() ? nullptr : m_Pipelines.GetOrCreateInventoryItemPipeline( true );
+    Rhi::PipelineState* skinnedPso = skinned.empty() ? nullptr : m_Pipelines.GetOrCreateInventoryItemPipeline( true );
     if ( skinnedPso ) {
         m_CmdList->SetPipelineState( skinnedPso );
 

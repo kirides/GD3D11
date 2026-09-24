@@ -11,6 +11,7 @@
 #include "../WorldConverter.h"   // SHADOW_LOD_FIRST_CASCADE
 #include <span>
 #include "D3D12Device.h"
+#include "D3D12Rhi.h"
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -466,6 +467,9 @@ private:
     // creation through m_Allocator->CreateResource and hold a parallel ...Alloc member alongside the resource.
     Microsoft::WRL::ComPtr<D3D12MA::Allocator> m_Allocator;
 
+    // The RHI over m_Device + m_Allocator (D3D12Rhi.h). The renderer creates its objects through it.
+    Microsoft::WRL::ComPtr<Rhi::Device> m_Rhi;
+
     Microsoft::WRL::ComPtr<IDXGISwapChain3>        m_SwapChain;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV
     UINT m_RtvDescriptorSize = 0;
@@ -776,7 +780,7 @@ private:
         D3D12_DRAW_INDEXED_ARGUMENTS Draw;          // IndexCountPerInstance, InstanceCount, Start*, BaseVertex, StartInstance
     };
     static constexpr UINT kMaxWorldDrawCommands = 16384;
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_WorldIndirectCmdSig;   // b6(4 consts)@param10 + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_WorldIndirectCmdSig;   // b6(4 consts)@param10 + DrawIndexed
     Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferMax]; // persistently-mapped UPLOAD ring
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_WorldDrawArgsPtr[kBackBufferMax] = {};
@@ -888,8 +892,8 @@ private:
     // bump would multiply across 3 cascades x kBackBufferCount rings and cost real 32-bit address space.
     static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
     static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + DrawIndexed
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobBoundIndirectCmdSig;   // + VBVx2 + IBV (node attachments)
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobBoundIndirectCmdSig;   // + VBVx2 + IBV (node attachments)
     // Every static VOB sub-mesh in one DEFAULT-heap VB/IB pair — see D3D12VobArena.h. Filled from OnAddVob
     // (which fires per vob during world load, so the world is resident before the first frame) and flushed
     // once per frame at the top of UploadFrameVobInstances.
@@ -983,7 +987,7 @@ private:
     // sub-meshes; overflow logs once and drops the tail (same contract as the VOB/world rings).
     static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
     static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_SkeletalIndirectCmdSig;  // CBV(b1) + CBV(b2) + VBV + IBV + b6(3) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // CBV(b1) + CBV(b2) + VBV + IBV + b6(3) + DrawIndexed
     Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalDrawArgs[kBackBufferMax];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};

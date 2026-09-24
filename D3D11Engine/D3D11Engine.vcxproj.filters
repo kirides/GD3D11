@@ -106,6 +106,9 @@
     <Filter Include="Engine\Vulkan">
       <UniqueIdentifier>{bd78cd84-23f0-47b8-b0e8-3825ff5baa24}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\RHI">
+      <UniqueIdentifier>{ba171d3f-ae6f-4805-8656-ddd7bd164db5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -816,6 +819,12 @@
     <ClInclude Include="VulkanEngine\VulkanGraphicsEngine.h">
       <Filter>Engine\Vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="RHI\Rhi.h">
+      <Filter>Engine\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12Rhi.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1100,6 +1109,9 @@
     </ClCompile>
     <ClCompile Include="VulkanEngine\VulkanImGui.cpp">
       <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Rhi.cpp">
+      <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>

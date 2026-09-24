@@ -1,5 +1,6 @@
 #pragma once
 #include <d3d12.h>
+#include "../RHI/Rhi.h"
 #include <wrl/client.h>
 #include <deque>
 #include <vector>
@@ -19,9 +20,8 @@
 //  3. The declaration is RETAINED after Build(), which is what makes ValidateShaders() possible —
 //     see below.
 //
-// d3d12.dll is loaded dynamically (no d3d12.lib link, to keep the D3D11 path's Windows 7 floor), so
-// the serialize entry point is resolved by GetProcAddress. The builder caches that resolution once
-// for the process instead of re-resolving it per root signature.
+// Build() hands the 1.1 form to the RHI device: D3D12 serializes it (falling back to 1.0), Vulkan lowers it
+// to a pipeline layout.
 //
 // ---- Root signature 1.1 -----------------------------------------------------------------------
 // Layouts are serialized as VERSION_1_1 when the driver supports it (falling back to 1_0 — see Build()).
@@ -122,12 +122,11 @@ public:
     void Reset( const char* debugName );
 
     // ---- Build --------------------------------------------------------------------------------
-    // Serializes + creates the root signature from what was declared above. Returns false having
-    // logged the reason.
-    bool Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS flags = D3D12_ROOT_SIGNATURE_FLAG_NONE );
+    // Creates the root signature from what was declared above. Returns false having logged the reason.
+    bool Build( Rhi::Device* device, D3D12_ROOT_SIGNATURE_FLAGS flags = D3D12_ROOT_SIGNATURE_FLAG_NONE );
 
-    ID3D12RootSignature* Get() const { return m_RootSig.Get(); }
-    const Microsoft::WRL::ComPtr<ID3D12RootSignature>& RootSig() const { return m_RootSig; }
+    Rhi::RootSignature* Get() const { return m_RootSig.Get(); }
+    const Microsoft::WRL::ComPtr<Rhi::RootSignature>& RootSig() const { return m_RootSig; }
     const char* Name() const { return m_DebugName; }
 
     // ---- Validation (dev builds only) ---------------------------------------------------------
@@ -173,6 +172,6 @@ private:
     std::vector<ParamInfo> m_Params;
     std::deque<Range> m_Ranges;                 // stable storage; tables index into this
     std::vector<D3D12_STATIC_SAMPLER_DESC> m_StaticSamplers;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_RootSig;
+    Microsoft::WRL::ComPtr<Rhi::RootSignature> m_RootSig;
     const char* m_DebugName = "<unnamed>";
 };

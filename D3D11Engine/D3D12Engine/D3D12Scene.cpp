@@ -1467,7 +1467,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const UINT frame = m_FrameIndex;
 	uint32_t lastFogMode = UINT32_MAX;
-	ID3D12PipelineState* lastPso = nullptr;
+	Rhi::PipelineState* lastPso = nullptr;
 	unsigned int drawnTris = 0;
 
 	for ( auto& [tex, instances] : particles ) {
@@ -1475,7 +1475,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 
 		// Blend mode for this texture bucket (falls back to alpha blend if somehow unlisted).
 		auto infoIt = info.find( tex );
-		ID3D12PipelineState* pso = infoIt != info.end()
+		Rhi::PipelineState* pso = infoIt != info.end()
 			? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState )
 			: nullptr;
 		if ( !pso ) {
@@ -1804,7 +1804,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
 	m_CmdList->IASetVertexBuffers( 0, 2, views );
 
-	ID3D12PipelineState* lastPso = nullptr;
+	Rhi::PipelineState* lastPso = nullptr;
 	if ( lighting ) { m_CmdList->SetPipelineState( m_Pipelines.Decal.LitPSO.Get() ); lastPso = m_Pipelines.Decal.LitPSO.Get(); }
 
 	zCTexture* lastTex = nullptr;
@@ -1823,7 +1823,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			// D3D11 skips those too rather than falling back to alpha blending.
 			default: continue;
 			}
-			ID3D12PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
+			Rhi::PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
 			if ( !pso ) continue;
 			if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 		}
@@ -2162,7 +2162,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	// world/VOB/skeletal draws chose, this must choose too, or the PSO's RT formats won't match what is bound.
 	const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
 	const bool gbuf = motionCb && MotionGBufferActive();
-	ID3D12PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
+	Rhi::PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
 	                                : m_Pipelines.Grass.DepthPrepassPSO.Get();
 	if ( !pso ) return;
 
@@ -2981,8 +2981,8 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	sigDesc.NumArgumentDescs = _countof( args );
 	sigDesc.pArgumentDescs = args;
 	// A command that sets root constants must carry the root signature its param index refers to.
-	if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
-		IID_PPV_ARGS( m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
+		m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: failed to create the world indirect command signature." );
 		return false;
 	}
@@ -3299,8 +3299,8 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
     // Commands set root constants (b6/b4), so the signature must carry the root signature those param indices refer to.
-    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
-        IID_PPV_ARGS( m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
+        m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the VOB indirect command signature." );
         return false;
     }
@@ -3326,8 +3326,8 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     boundDesc.ByteStride = sizeof( VobBoundDrawCommand );
     boundDesc.NumArgumentDescs = _countof( boundArgs );
     boundDesc.pArgumentDescs = boundArgs;
-    if ( FAILED( device->CreateCommandSignature( &boundDesc, m_Pipelines.World.RootSig.Get(),
-        IID_PPV_ARGS( m_VobBoundIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateCommandSignature( &boundDesc, m_Pipelines.World.RootSig.Get(),
+        m_VobBoundIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the bound VOB indirect command signature." );
         return false;
     }
@@ -3795,8 +3795,8 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
     sigDesc.pArgumentDescs = args;
     // Commands set root descriptors (b1/b2) and root constants (b6), so the signature must carry the root
     // signature those parameter indices refer to.
-    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
-        IID_PPV_ARGS( m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
+        m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the skeletal indirect command signature." );
         return false;
     }

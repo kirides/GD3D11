@@ -81,7 +81,7 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     if ( !m_SwapChainReady || !m_FrameOpen || lines.empty() ) return;
     if ( !m_Pipelines.Lines.RootSig || !m_LineVertexBuffer[m_FrameIndex] ) return;
 
-    ID3D12PipelineState* pso = screenSpace ? m_Pipelines.Lines.ScreenPSO.Get() : m_Pipelines.Lines.WorldPSO.Get();
+    Rhi::PipelineState* pso = screenSpace ? m_Pipelines.Lines.ScreenPSO.Get() : m_Pipelines.Lines.WorldPSO.Get();
     if ( !pso ) return;
 
     DX_ZONE( m_CmdList.Get(), "Draw debug lines" );

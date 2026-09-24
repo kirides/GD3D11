@@ -650,7 +650,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     g_RainShadowIb = nullptr;
     m_RainVobDrawCount = 0;
 
-    ID3D12PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
+    Rhi::PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
     if ( !m_FrameOpen || !casterPso || !m_Pipelines.World.RootSig || !m_BlackTexture || GetDefaultOrmSrvSlot() == UINT_MAX )
         return;
 
@@ -819,10 +819,10 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
         // Per-draw PSO choice (this is a CPU draw loop, not an ExecuteIndirect): the casters whose diffuse has
         // no alpha channel can't be clipped, so they run with no pixel shader bound. See m_CasterWorldNoAlphaPSO.
-        ID3D12PipelineState* const clipPso = m_ShadowMap.GetWorldCasterPSO();
-        ID3D12PipelineState* const noAlphaPso = m_ShadowMap.GetWorldCasterNoAlphaPSO()
+        Rhi::PipelineState* const clipPso = m_ShadowMap.GetWorldCasterPSO();
+        Rhi::PipelineState* const noAlphaPso = m_ShadowMap.GetWorldCasterNoAlphaPSO()
             ? m_ShadowMap.GetWorldCasterNoAlphaPSO() : clipPso;
-        ID3D12PipelineState* boundPso = nullptr;
+        Rhi::PipelineState* boundPso = nullptr;
 
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
@@ -833,7 +833,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         cmdList->IASetIndexBuffer( &ibv );
 
         for ( const RainShadowDraw& d : g_RainShadowDraws ) {
-            ID3D12PipelineState* wantPso = d.alphaTested ? clipPso : noAlphaPso;
+            Rhi::PipelineState* wantPso = d.alphaTested ? clipPso : noAlphaPso;
             if ( wantPso != boundPso ) {
                 cmdList->SetPipelineState( wantPso );
                 boundPso = wantPso;
@@ -859,7 +859,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
         // BuildVobDrawCommands partitioned this command set opaque-first (m_RainVobOpaqueDrawCount), so the
         // leading run draws with no pixel shader — same split the CSM cascades do.
-        ID3D12PipelineState* const vobNoAlphaPso = m_ShadowMap.GetVobIndirectCasterNoAlphaPSO();
+        Rhi::PipelineState* const vobNoAlphaPso = m_ShadowMap.GetVobIndirectCasterNoAlphaPSO();
         cmdList->SetPipelineState( vobNoAlphaPso ? vobNoAlphaPso : m_ShadowMap.GetVobIndirectCasterPSO() );
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );

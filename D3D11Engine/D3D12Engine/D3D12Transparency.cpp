@@ -161,7 +161,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
     int lastAlphaFunc = zMAT_ALPHA_FUNC_MAT_DEFAULT;
     uint32_t fogMode = kTransparencyFogBlend;   // BindWorldTransparencyFrameState's b5[10]
 
-    ID3D12PipelineState* pso = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
+    Rhi::PipelineState* pso = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
     if ( !pso ) return;
     m_CmdList->SetPipelineState( pso );
 
@@ -197,7 +197,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             lastAlphaFunc = alphaFunc;
             fogMode = TransparencyFogModeForAlphaFunc( alphaFunc );
             m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &fogMode, 10 );
-            ID3D12PipelineState* next = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
+            Rhi::PipelineState* next = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
             if ( !next ) continue;
             m_CmdList->SetPipelineState( next );
         }
@@ -222,7 +222,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) envBlend.SetAdditiveBlending();
             else                                         envBlend.SetAlphaBlending();
 
-            ID3D12PipelineState* envPso = m_Pipelines.GetOrCreateWorldTransparencyPipeline(
+            Rhi::PipelineState* envPso = m_Pipelines.GetOrCreateWorldTransparencyPipeline(
                 envBlend, false, EKind::Env );
             if ( envPso ) {
                 m_CmdList->SetPipelineState( envPso );
@@ -243,7 +243,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
 
                 // The overlay replaced the PSO and overwrote b5's TextureFactor, so the next item has to
                 // re-establish both instead of hitting these caches.
-                ID3D12PipelineState* restore = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
+                Rhi::PipelineState* restore = m_Pipelines.GetOrCreateWorldTransparencyPipeline( blend, depthWrite, kind );
                 if ( restore ) m_CmdList->SetPipelineState( restore );
                 m_CmdList->SetGraphicsRoot32BitConstants( 1, 1, &fogMode, 10 );
                 lastMat = nullptr;
@@ -396,14 +396,14 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
 
     // ADD falls back to the plain blend PSO when its own failed to create (see CreateVob) — a slightly wrong
     // blend beats dropping the geometry.
-    ID3D12PipelineState* const blendPso = m_Pipelines.World.VobAlphaBlendPSO.Get();
-    ID3D12PipelineState* const addPso = m_Pipelines.World.VobAlphaAddPSO
+    Rhi::PipelineState* const blendPso = m_Pipelines.World.VobAlphaBlendPSO.Get();
+    Rhi::PipelineState* const addPso = m_Pipelines.World.VobAlphaAddPSO
         ? m_Pipelines.World.VobAlphaAddPSO.Get() : blendPso;
 
     // b8: bits 0-30 = TransparencyFrameData CBV + 1 (0 = none), bit 31 = ADD (Vob.hlsl).
     const uint32_t frameValue = m_TransparencyFrameIndex != UINT_MAX ? m_TransparencyFrameIndex + 1 : 0u;
 
-    ID3D12PipelineState* current = nullptr;
+    Rhi::PipelineState* current = nullptr;
     unsigned int drawnTriangles = 0;
     for ( const TransparentItem& item : items ) {
         const uint32_t entryIndex = queue.GetIndices( item ).BatchIndex;
@@ -411,7 +411,7 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
         const VobAlphaMesh& e = g_FrameVobAlpha[entryIndex];
         if ( e.NumInstances == 0 || e.IndexCount == 0 ) continue;
 
-        ID3D12PipelineState* want = e.Additive ? addPso : blendPso;
+        Rhi::PipelineState* want = e.Additive ? addPso : blendPso;
         if ( want != current ) {
             m_CmdList->SetPipelineState( want );
             current = want;

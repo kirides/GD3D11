@@ -7,51 +7,6 @@
 using Microsoft::WRL::ComPtr;
 
 namespace {
-    // Both serialize entry points are exported from the already-loaded d3d12.dll (we don't link
-    // d3d12.lib — see D3D12Device.cpp). Resolved once for the process rather than per root signature.
-    typedef HRESULT( WINAPI* PFN_SERIALIZE_ROOT_SIG )( const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob** );
-    typedef HRESULT( WINAPI* PFN_SERIALIZE_VERSIONED_ROOT_SIG )( const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*, ID3DBlob**, ID3DBlob** );
-
-    HMODULE D3D12Module() {
-        static HMODULE s_module = LoadLibraryA( "d3d12.dll" );
-        return s_module;
-    }
-
-    PFN_SERIALIZE_ROOT_SIG SerializeRootSignatureProc() {
-        static PFN_SERIALIZE_ROOT_SIG s_pfn = D3D12Module()
-            ? reinterpret_cast<PFN_SERIALIZE_ROOT_SIG>( GetProcAddress( D3D12Module(), "D3D12SerializeRootSignature" ) )
-            : nullptr;
-        return s_pfn;
-    }
-
-    // Present since the 1.1 root signature was introduced (Win10 1511 / any Agility SDK d3d12.dll).
-    // Absent only on a d3d12.dll old enough that 1.1 doesn't exist at all, which the version query
-    // below independently reports as 1_0 — either check alone is enough to force the fallback.
-    PFN_SERIALIZE_VERSIONED_ROOT_SIG SerializeVersionedRootSignatureProc() {
-        static PFN_SERIALIZE_VERSIONED_ROOT_SIG s_pfn = D3D12Module()
-            ? reinterpret_cast<PFN_SERIALIZE_VERSIONED_ROOT_SIG>( GetProcAddress( D3D12Module(), "D3D12SerializeVersionedRootSignature" ) )
-            : nullptr;
-        return s_pfn;
-    }
-
-    // Highest root-signature version this device accepts. Cached per process: the backend only ever
-    // drives one D3D12 device, and every layout is built against it during Init.
-    D3D_ROOT_SIGNATURE_VERSION HighestRootSignatureVersion( ID3D12Device* device ) {
-        static D3D_ROOT_SIGNATURE_VERSION s_version = [device] {
-            D3D12_FEATURE_DATA_ROOT_SIGNATURE feature = {};
-            feature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
-            if ( !device || FAILED( device->CheckFeatureSupport( D3D12_FEATURE_ROOT_SIGNATURE, &feature, sizeof( feature ) ) ) ) {
-                // CheckFeatureSupport rejects the struct outright when the runtime predates 1.1.
-                Logging::Inf( "D3D12: root signature 1.1 unavailable; falling back to 1.0 (all root parameters stay fully volatile — no descriptor/data preload)." );
-                return D3D_ROOT_SIGNATURE_VERSION_1_0;
-            }
-            if ( feature.HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1_1 )
-                Logging::Inf( "D3D12: driver reports root signature 1.0 only; static-data promises will be dropped." );
-            return feature.HighestVersion;
-        }();
-        return s_version;
-    }
-
     D3D12_STATIC_SAMPLER_DESC MakeSampler( UINT shaderRegister, D3D12_SHADER_VISIBILITY vis,
         D3D12_FILTER filter, D3D12_TEXTURE_ADDRESS_MODE address ) {
         D3D12_STATIC_SAMPLER_DESC s = {};
@@ -181,174 +136,54 @@ void D3D12RootLayout::Reset( const char* debugName ) {
     m_DebugName = debugName ? debugName : "<unnamed>";
 }
 
-bool D3D12RootLayout::Build( ID3D12Device* device, D3D12_ROOT_SIGNATURE_FLAGS flags ) {
-    // Serialize as 1.1 when both the runtime export and the device support it, so the per-parameter
-    // DATA_STATIC*/DESCRIPTORS_* promises declared above actually reach the driver. Otherwise fall
-    // back to 1.0, which simply drops them — every layout stays valid under 1.0 semantics by
-    // construction (the flags only ever *narrow* what the layout is allowed to do, never widen it).
-    const bool useVersioned = SerializeVersionedRootSignatureProc() != nullptr
-        && HighestRootSignatureVersion( device ) >= D3D_ROOT_SIGNATURE_VERSION_1_1;
-
-    if ( !useVersioned && !SerializeRootSignatureProc() ) {
-        Logging::Wrn( "D3D12: no root signature serialize entry point available ({}).", m_DebugName );
-        return false;
-    }
-
-    // Materialize the retained declaration into the flat D3D12 structs. Ranges point into m_Ranges,
-    // which is stable for the lifetime of this object. Both version layouts are built — they are
-    // small, and it keeps the two serialize paths from each re-walking the declaration.
-    std::vector<D3D12_DESCRIPTOR_RANGE> ranges( m_Ranges.size() );
+bool D3D12RootLayout::Build( Rhi::Device* device, D3D12_ROOT_SIGNATURE_FLAGS flags ) {
+    // Materialize the retained declaration into the 1.1 structs. The per-parameter DATA_STATIC*/DESCRIPTORS_*
+    // promises reach the driver only on a 1.1 device; the RHI drops them otherwise, which is always valid
+    // (they only ever *narrow* what the layout may do).
     std::vector<D3D12_DESCRIPTOR_RANGE1> ranges1( m_Ranges.size() );
     for ( size_t i = 0; i < m_Ranges.size(); ++i ) {
         const Range& r = m_Ranges[i];
-        ranges[i] = {};
-        ranges[i].RangeType = r.Type;
-        ranges[i].NumDescriptors = r.NumDescriptors;   // UINT_MAX == unbounded, as D3D12 expects
-        ranges[i].BaseShaderRegister = r.BaseRegister;
-        ranges[i].RegisterSpace = r.Space;
-        ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
         ranges1[i] = {};
         ranges1[i].RangeType = r.Type;
-        ranges1[i].NumDescriptors = r.NumDescriptors;
+        ranges1[i].NumDescriptors = r.NumDescriptors;   // UINT_MAX == unbounded, as D3D12 expects
         ranges1[i].BaseShaderRegister = r.BaseRegister;
         ranges1[i].RegisterSpace = r.Space;
         ranges1[i].Flags = r.Flags;
         ranges1[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     }
 
-    std::vector<D3D12_ROOT_PARAMETER> params( m_Params.size() );
     std::vector<D3D12_ROOT_PARAMETER1> params1( m_Params.size() );
     for ( size_t i = 0; i < m_Params.size(); ++i ) {
         const ParamInfo& src = m_Params[i];
-        D3D12_ROOT_PARAMETER& dst = params[i];
         D3D12_ROOT_PARAMETER1& dst1 = params1[i];
-        dst = {};
         dst1 = {};
-        dst.ParameterType = dst1.ParameterType = src.Type;
-        dst.ShaderVisibility = dst1.ShaderVisibility = src.Visibility;
+        dst1.ParameterType = src.Type;
+        dst1.ShaderVisibility = src.Visibility;
         switch ( src.Type ) {
         case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
-            dst.Constants.ShaderRegister = dst1.Constants.ShaderRegister = src.ShaderRegister;
-            dst.Constants.RegisterSpace = dst1.Constants.RegisterSpace = src.Space;
-            dst.Constants.Num32BitValues = dst1.Constants.Num32BitValues = src.Num32BitValues;
+            dst1.Constants.ShaderRegister = src.ShaderRegister;
+            dst1.Constants.RegisterSpace = src.Space;
+            dst1.Constants.Num32BitValues = src.Num32BitValues;
             break;
         case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
-            dst.DescriptorTable.NumDescriptorRanges = static_cast<UINT>( src.RangeCount );
-            dst.DescriptorTable.pDescriptorRanges = src.RangeCount ? &ranges[src.FirstRange] : nullptr;
             dst1.DescriptorTable.NumDescriptorRanges = static_cast<UINT>( src.RangeCount );
             dst1.DescriptorTable.pDescriptorRanges = src.RangeCount ? &ranges1[src.FirstRange] : nullptr;
             break;
         default:   // CBV / SRV / UAV root descriptors
-            dst.Descriptor.ShaderRegister = dst1.Descriptor.ShaderRegister = src.ShaderRegister;
-            dst.Descriptor.RegisterSpace = dst1.Descriptor.RegisterSpace = src.Space;
-            dst1.Descriptor.Flags = src.DescriptorFlags;   // 1.1 only — 1.0 is implicitly volatile
+            dst1.Descriptor.ShaderRegister = src.ShaderRegister;
+            dst1.Descriptor.RegisterSpace = src.Space;
+            dst1.Descriptor.Flags = src.DescriptorFlags;
             break;
         }
     }
 
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    HRESULT serializeHr = E_FAIL;
-    if ( useVersioned ) {
-        D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned = {};
-        versioned.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        versioned.Desc_1_1.NumParameters = static_cast<UINT>( params1.size() );
-        versioned.Desc_1_1.pParameters = params1.empty() ? nullptr : params1.data();
-        versioned.Desc_1_1.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
-        versioned.Desc_1_1.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
-        versioned.Desc_1_1.Flags = flags;
-        serializeHr = SerializeVersionedRootSignatureProc()( &versioned, rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
-
-        if ( FAILED( serializeHr ) ) {
-            Logging::Wrn( "D3D12: root signature '{}' 1.1 serialize failed (flags 0x{:x}); retrying unversioned 1.0.",
-                      m_DebugName, static_cast<uint32_t>( flags ) );
-            if ( rsErr )
-                Logging::Wrn( "D3D12: root signature '{}' serialize error: {}",
-                          m_DebugName, static_cast<const char*>( rsErr->GetBufferPointer() ) );
-        }
-    }
-
-    // Unversioned 1.0 fallback — used both when 1.1 is unavailable and when its serializer rejected
-    // the desc. The case that matters in practice is a serializer older than the flag bits we ask for:
-    // the exported serialize entry points live in the *global* D3D12 state, which can be older than
-    // the Agility core the device itself came from (see D3D12Device.cpp), and such a serializer
-    // rejects the whole desc over one flag bit it doesn't recognize. The parameter layout is always
-    // valid under 1.0 by construction (1.1's per-parameter promises only ever narrow what a layout may
-    // do), but the *flags* are not, so the retry first keeps only the flag bits the original D3D12
-    // release defined and then drops the flags entirely.
-    if ( FAILED( serializeHr ) && SerializeRootSignatureProc() ) {
-        // The bits that shipped with D3D12 itself. Everything above them (LOCAL_ROOT_SIGNATURE,
-        // DENY_AMPLIFICATION/MESH, the two *_HEAP_DIRECTLY_INDEXED bindless bits) arrived in later
-        // runtimes and is what an old serializer chokes on.
-        constexpr D3D12_ROOT_SIGNATURE_FLAGS legacyMask =
-            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-            | D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS
-            | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
-            | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
-            | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS
-            | D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS
-            | D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
-
-        const D3D12_ROOT_SIGNATURE_FLAGS attempts[] = { flags, flags & legacyMask, D3D12_ROOT_SIGNATURE_FLAG_NONE };
-        D3D12_ROOT_SIGNATURE_FLAGS tried = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>( ~0u );   // no legal flag set
-        for ( D3D12_ROOT_SIGNATURE_FLAGS attempt : attempts ) {
-            if ( attempt == tried ) continue;   // identical to the previous try — nothing new to learn
-            tried = attempt;
-
-            D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-            rsDesc.NumParameters = static_cast<UINT>( params.size() );
-            rsDesc.pParameters = params.empty() ? nullptr : params.data();
-            rsDesc.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
-            rsDesc.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
-            rsDesc.Flags = attempt;
-
-            rsBlob.Reset();
-            rsErr.Reset();
-            serializeHr = SerializeRootSignatureProc()( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-                rsBlob.GetAddressOf(), rsErr.GetAddressOf() );
-            if ( SUCCEEDED( serializeHr ) ) {
-                if ( attempt != flags ) {
-                    // Loud on purpose: a layout that lost CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED here still
-                    // serializes, but any SM6.6 ResourceDescriptorHeap[...] shader bound to it will be
-                    // rejected at PSO creation. D3D12Device::IsAvailable() gates on SM6.6/tier-3 up
-                    // front so we normally never get here; if we do, the log says which bits went.
-                    Logging::Wrn( "D3D12: root signature '{}' serialized as 1.0 with reduced flags 0x{:x} (dropped 0x{:x}) — this runtime's serializer is older than the flags requested.",
-                              m_DebugName, static_cast<uint32_t>( attempt ), static_cast<uint32_t>( flags & ~attempt ) );
-                } else if ( useVersioned ) {
-                    Logging::Inf( "D3D12: root signature '{}' serialized as 1.0 (1.1 rejected it).", m_DebugName );
-                }
-                break;
-            }
-            if ( rsErr )
-                Logging::Inf( "D3D12: root signature '{}' 1.0 serialize (flags 0x{:x}) failed: {}",
-                          m_DebugName, static_cast<uint32_t>( attempt ), static_cast<const char*>( rsErr->GetBufferPointer() ) );
-        }
-    }
-
-    if ( FAILED( serializeHr ) ) {
-        if ( rsErr )
-            Logging::Wrn( "D3D12: root signature '{}' serialize error: {}",
-                      m_DebugName, static_cast<const char*>( rsErr->GetBufferPointer() ) );
-        else
-            Logging::Wrn( "D3D12: root signature '{}' failed to serialize.", m_DebugName );
-        return false;
-    }
-
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_RootSig.ReleaseAndGetAddressOf() ) ) ) ) {
-        Logging::Wrn( "D3D12: CreateRootSignature failed for '{}'.", m_DebugName );
-        return false;
-    }
-
-#ifdef DEBUG_D3D11
-    // Names the object for PIX / the debug layer, so a validation message points at a pass name.
-    {
-        wchar_t wide[128];
-        int n = MultiByteToWideChar( CP_UTF8, 0, m_DebugName, -1, wide, _countof( wide ) );
-        if ( n > 0 ) m_RootSig->SetName( wide );
-    }
-#endif
-    return true;
+    D3D12_ROOT_SIGNATURE_DESC1 desc1 = {};
+    desc1.NumParameters = static_cast<UINT>( params1.size() );
+    desc1.pParameters = params1.empty() ? nullptr : params1.data();
+    desc1.NumStaticSamplers = static_cast<UINT>( m_StaticSamplers.size() );
+    desc1.pStaticSamplers = m_StaticSamplers.empty() ? nullptr : m_StaticSamplers.data();
+    desc1.Flags = flags;
+    return SUCCEEDED( device->CreateRootSignature( desc1, m_DebugName, m_RootSig.ReleaseAndGetAddressOf() ) );
 }
 
 // ---- Validation -------------------------------------------------------------------------------

@@ -190,7 +190,7 @@ void D3D12GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
             // transparent geometry drawn after them.
             const int wantAlphaFunc = mat->GetAlphaFunc();
             const bool depthWrite = ( wantAlphaFunc == zMAT_ALPHA_FUNC_NONE || wantAlphaFunc == zMAT_ALPHA_FUNC_TEST );
-            ID3D12PipelineState* next = litClass
+            Rhi::PipelineState* next = litClass
                 ? m_Pipelines.GetOrCreateQuadMarkPipeline( blend, depthWrite )
                 : m_Pipelines.GetOrCreateFxPipeline( blend, false );
             if ( !next ) {
@@ -285,7 +285,7 @@ void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
     blend.SetDefault();
     int lastAlphaFunc = -1;
     constexpr bool depthWrite = false;
-    ID3D12PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
+    Rhi::PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
     if ( !pso ) return;
     m_CmdList->SetPipelineState( pso );
     const UINT frame = m_FrameIndex;
@@ -313,7 +313,7 @@ void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
             else if ( blendBlend ) blend.SetAlphaBlending();
             else                   blend.SetDefault();
             lastAlphaFunc = matAlphaFunc;
-            ID3D12PipelineState* next = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
+            Rhi::PipelineState* next = m_Pipelines.GetOrCreateFxPipeline( blend, depthWrite );
             if ( !next ) continue;
             m_CmdList->SetPipelineState( next );
         }
@@ -386,7 +386,7 @@ void D3D12GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     // PSO switch at all.
     GothicBlendStateInfo blend;
     blend.SetDefault();
-    ID3D12PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, false, true );
+    Rhi::PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, false, true );
     if ( !pso ) return;
     m_CmdList->SetPipelineState( pso );
     int lastBlend = zRND_ALPHA_FUNC_NONE;
@@ -424,7 +424,7 @@ void D3D12GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             default:                    blend.SetDefault();          break;
             }
             lastBlend = currentBlend;
-            ID3D12PipelineState* next = m_Pipelines.GetOrCreateFxPipeline( blend, false, true );
+            Rhi::PipelineState* next = m_Pipelines.GetOrCreateFxPipeline( blend, false, true );
             if ( !next ) continue;
             m_CmdList->SetPipelineState( next );
         }

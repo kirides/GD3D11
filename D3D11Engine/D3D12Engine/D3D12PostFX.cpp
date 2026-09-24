@@ -708,7 +708,7 @@ void D3D12GraphicsEngine::RenderSharpen() {
 	// back to a bilinear resolve still gets sharpened here.
 	if ( !WillRunSharpen() ) return;
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-	ID3D12PipelineState* pso = ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS )
+	Rhi::PipelineState* pso = ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS )
 		? m_Pipelines.Sharpen.CasPSO.Get()
 		: m_Pipelines.Sharpen.SimplePSO.Get();
 
