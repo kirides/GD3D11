@@ -209,6 +209,7 @@ namespace VulkanRhi {
         // Mapping maps a whole VkDeviceMemory block, so the default 256 MiB blocks would eat the 32-bit VA.
         ci.preferredLargeHeapBlockSize = 16ull * 1024 * 1024;
         if ( VkCaps().MemoryBudget ) ci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+        if ( VkCaps().MemoryPriority ) ci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_PRIORITY_BIT;
         if ( VkCaps().DeviceGeneratedCommands ) ci.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
         VmaVulkanFunctions functions = {};
         if ( VkUtil::Failed( vmaImportVulkanFunctionsFromVolk( &ci, &functions ), "vmaImportVulkanFunctionsFromVolk" ) ) return false;
@@ -625,6 +626,8 @@ namespace VulkanRhi {
 
         VmaAllocationCreateInfo ai = {};
         ai.usage = VMA_MEMORY_USAGE_AUTO;
+        // Render targets and depth stay resident when device-local memory runs short; textures page out first.
+        ai.priority = ( desc->Flags & ( D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL ) ) ? 1.0f : 0.5f;
         switch ( heapType ) {
         case D3D12_HEAP_TYPE_UPLOAD:
         case D3D12_HEAP_TYPE_READBACK:
@@ -735,6 +738,7 @@ namespace VulkanRhi {
         VmaAllocationCreateInfo ai = {};
         ai.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         ai.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        ai.priority = 1.0f;   // aliased render targets
         ComPtr<HeapImpl> heap;
         heap.Attach( new HeapImpl( this ) );
         if ( CheckResult( vmaAllocateMemory( m_Allocator, &req, &ai, &heap->m_Allocation, nullptr ), "vmaAllocateMemory (heap)" ) )
