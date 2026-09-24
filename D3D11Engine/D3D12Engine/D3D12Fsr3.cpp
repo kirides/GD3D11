@@ -305,7 +305,7 @@ void D3D12GraphicsEngine::EnsureFsr3Ready() {
         && settings.ResolutionScalePercent <= 100;
     if ( !wanted || m_Fsr3InitFailed ) return;
     if ( m_Fsr3Context && m_Fsr3SharedReady && m_Fsr3OutputReady ) return;
-    if ( !m_SwapChainReady || !m_Allocator ) return;
+    if ( !m_SwapChainReady || !m_Rhi ) return;
     if ( m_Resolution.x < 4 || m_Resolution.y < 4 ) return;
     if ( m_BackbufferResolution.x < 4 || m_BackbufferResolution.y < 4 ) return;
 
@@ -325,7 +325,7 @@ bool D3D12GraphicsEngine::CreateFsr3Output( INT2 size ) {
     m_Fsr3OutputReady = false;
     if ( size.x < 4 || size.y < 4 ) return false;
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) return false;
+    if ( !device ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -376,7 +376,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     // First point where FSR 3 is actually wanted, so this is where the DLL gets loaded.
     if ( !g_Ffx.Load() ) return false;
 
-    ID3D12Device* device = m_Device.GetDevice();
+    ID3D12Device* device = D3D12Rhi::NativeDevice( m_Rhi.Get() );
     if ( !device ) return false;
 
     const size_t scratchSize = g_Ffx.GetScratchMemorySize( FFX_FSR3UPSCALER_CONTEXT_COUNT );
@@ -450,7 +450,7 @@ bool D3D12GraphicsEngine::CreateFsr3Context( INT2 renderSize, INT2 upscaleSize )
     before-state mismatch on one of these, this assumption is the thing to revisit first. */
 bool D3D12GraphicsEngine::CreateFsr3SharedResources() {
     m_Fsr3SharedReady = false;
-    if ( !m_Rhi || !m_Allocator || !m_Fsr3Context ) return false;
+    if ( !m_Rhi || !m_Fsr3Context ) return false;
 
     FfxFsr3UpscalerSharedResourceDescriptions shared = {};
     if ( g_Ffx.GetSharedResourceDescriptions( m_Fsr3Context, &shared ) != FFX_OK ) {

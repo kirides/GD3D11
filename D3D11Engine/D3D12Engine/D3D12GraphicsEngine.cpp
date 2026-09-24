@@ -81,33 +81,28 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
 }
 
 XRESULT D3D12GraphicsEngine::Init() {
-    if ( !m_Device.Init() ) {
+    m_Rhi = D3D12Rhi::CreateDevice();
+    if ( !m_Rhi ) {
         Logging::Err( "D3D12GraphicsEngine::Init: device creation failed." );
         return XR_FAILED;
     }
     InitGpuScopeMarkers();
 
-    m_DeviceCapabilities.DeviceDescription = m_Device.GetDeviceDescription();
-    DXGI_ADAPTER_DESC1 adapterDesc = {};
-    if ( m_Device.GetAdapter() && SUCCEEDED( m_Device.GetAdapter()->GetDesc1( &adapterDesc ) ) ) {
-        m_DeviceCapabilities.VendorId = adapterDesc.VendorId;
-    }
+    const Rhi::Caps& caps = m_Rhi->GetCaps();
+    m_DeviceCapabilities.DeviceDescription = m_Rhi->GetDescription();
+    m_DeviceCapabilities.VendorId = caps.VendorId;
     // No vendor driver extensions in this backend - indirect draws and explicit UAV barriers are core D3D12.
     m_DeviceCapabilities.DriverExtensions = false;
     m_DeviceCapabilities.MultiDrawIndirect = true;
     m_DeviceCapabilities.UAVOverlap = true;
     m_DeviceCapabilities.Native16BitTextures = true;
-    m_DeviceCapabilities.LayeredRendering = m_Device.LayeredRenderingSupported();
+    m_DeviceCapabilities.LayeredRendering = caps.LayeredRendering;
     // Gated at adapter selection (DeviceSupportsBindless), so a device that got this far has it.
     m_DeviceCapabilities.BindlessResources = true;
-    m_DeviceCapabilities.EnhancedBarriers = m_Device.EnhancedBarriersSupported();
-    m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = m_Device.TypedUAVLoadAdditionalFormatsSupported();
+    m_DeviceCapabilities.EnhancedBarriers = caps.EnhancedBarriers;
+    m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = caps.TypedUAVLoadAdditionalFormats;
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 
-    if ( !CreateAllocators() ) {
-        Logging::Err( "D3D12GraphicsEngine::Init: failed to create allocators." );
-        return XR_FAILED;
-    }
     if ( !CreateUploadObjects() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create upload objects." );
         return XR_FAILED;
@@ -428,30 +423,6 @@ XRESULT D3D12GraphicsEngine::Init() {
 }
 
 
-bool D3D12GraphicsEngine::CreateAllocators() {
-    D3D12MA::ALLOCATOR_DESC allocatorDesc{};
-    allocatorDesc.pDevice = m_Device.GetDevice();
-    allocatorDesc.pAdapter = m_Device.GetAdapter();
-    allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_DEFAULT_POOLS_NOT_ZEROED;
-
-    if ( GetModuleHandleA( "renderdoc.dll" ) != NULL ) {
-        allocatorDesc.Flags |= D3D12MA::ALLOCATOR_FLAGS::ALLOCATOR_FLAG_ALWAYS_COMMITTED;
-    }
-
-    if (FAILED(D3D12MA::CreateAllocator(&allocatorDesc, m_Allocator.ReleaseAndGetAddressOf()))) {
-        return false;
-    }
-	if ( m_Allocator->IsGPUUploadHeapSupported() ) {
-	    // Holy hell, D3D12_HEAP_TYPE_GPU_UPLOAD is fucking expensive ?? Do not use if doing many updates! this completely tanks FPS
-	    // for example for dynamic verticies, this causes 99% usage in FixedFunction vertex updates
-		// DefaultUploadHeapType = D3D12_HEAP_TYPE_GPU_UPLOAD;
-	}
-
-    m_Rhi = D3D12Rhi::CreateDevice( m_Device, m_Allocator.Get() );
-    return m_Allocator != nullptr;
-}
-
-
 bool D3D12GraphicsEngine::CreateUploadObjects() {
     Rhi::Device* device = m_Rhi.Get();
     if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, m_UploadAllocator.ReleaseAndGetAddressOf() ) ) )
@@ -514,7 +485,7 @@ void D3D12GraphicsEngine::WaitForCopyFence( UINT64 fenceValue ) {
 
 
 void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( Rhi::Resource* texture ) {
-    if ( !texture || !m_Device.GetDevice() ) return;
+    if ( !texture || !m_Rhi ) return;
 
     // Use the active frame's existing command list instead of creating temporary allocators & command lists
     if ( m_FrameOpen && m_CmdList ) {
@@ -1471,24 +1442,7 @@ void D3D12GraphicsEngine::DetectHdrOutputCapability() {
 
 	if ( !Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor ) return;
 
-	IDXGIAdapter1* adapter = m_Device.GetAdapter();
-	if ( !adapter ) return;
-
-	ComPtr<IDXGIOutput> output;
-	for ( UINT i = 0; adapter->EnumOutputs( i, output.ReleaseAndGetAddressOf() ) != DXGI_ERROR_NOT_FOUND; ++i ) {
-		ComPtr<IDXGIOutput6> output6;
-		if ( FAILED( output.As( &output6 ) ) ) continue;   // pre-Windows-10-1703: no HDR metadata at all
-
-		DXGI_OUTPUT_DESC1 desc = {};
-		if ( FAILED( output6->GetDesc1( &desc ) ) ) continue;
-		if ( desc.ColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) continue;   // display not in HDR mode
-
-		m_HdrOutputActive = true;
-		m_HdrMonitorMaxNits = desc.MaxLuminance;
-		m_HdrMonitorMinNits = desc.MinLuminance;
-		m_HdrMonitorMaxFullFrameNits = desc.MaxFullFrameLuminance;
-		break;
-	}
+	m_HdrOutputActive = m_Rhi->GetHdrOutput( m_HdrMonitorMaxNits, m_HdrMonitorMinNits, m_HdrMonitorMaxFullFrameNits );
 
 	if ( !m_HdrOutputActive ) {
 		Logging::Inf( "D3D12: HDR output requested but no HDR-enabled display was found on this adapter; using SDR." );
@@ -1513,35 +1467,9 @@ void D3D12GraphicsEngine::ApplySwapChainColorSpace() {
 
 	// Refresh the luminance metadata from the output the window actually ended up on — on a multi-monitor
 	// setup that need not be the one Init found, and the settings UI reports these numbers to the player.
-	ComPtr<IDXGIOutput> output;
-	if ( SUCCEEDED( m_SwapChain->GetContainingOutput( output.GetAddressOf() ) ) ) {
-		ComPtr<IDXGIOutput6> output6;
-		DXGI_OUTPUT_DESC1 desc = {};
-		if ( SUCCEEDED( output.As( &output6 ) ) && SUCCEEDED( output6->GetDesc1( &desc ) )
-			&& desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
-			m_HdrMonitorMaxNits = desc.MaxLuminance;
-			m_HdrMonitorMinNits = desc.MinLuminance;
-			m_HdrMonitorMaxFullFrameNits = desc.MaxFullFrameLuminance;
-		}
-	}
+	m_SwapChain->GetContainingOutputHdr( m_HdrMonitorMaxNits, m_HdrMonitorMinNits, m_HdrMonitorMaxFullFrameNits );
 
-	constexpr DXGI_COLOR_SPACE_TYPE kHdr10 = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-	UINT support = 0;
-	if ( FAILED( m_SwapChain->CheckColorSpaceSupport( kHdr10, &support ) )
-		|| !( support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT )
-		|| FAILED( m_SwapChain->SetColorSpace1( kHdr10 ) ) ) {
-		Logging::Wrn( "D3D12: the swapchain refused the HDR10 colour space; presenting SDR from the HDR display buffer." );
-		return;
-	}
-	m_HdrEncodePQ = true;
-
-	// Mastering metadata (optional, best-effort): tells the display what range we actually authored for, so its
-	// own tone mapping doesn't second-guess a signal we already rolled off. Chromaticities are Rec.709 (our
-	// working primaries) in DXGI's 1/50000 units; luminance is the effective peak, i.e. what the user's slider
-	// or the monitor's own report put us at. IDXGISwapChain4 is Windows 10 1703+; skip quietly without it.
-	ComPtr<IDXGISwapChain4> swapChain4;
-	if ( FAILED( m_SwapChain.As( &swapChain4 ) ) ) return;
-
+	// Mastering metadata: Rec.709 primaries in DXGI's 1/50000 units, luminance from the effective peak.
 	const float maxNits = GetHdrMaxBrightnessNits();
 	DXGI_HDR_METADATA_HDR10 meta = {};
 	meta.RedPrimary[0] = 32000;   meta.RedPrimary[1] = 16500;    // 0.640, 0.330
@@ -1552,7 +1480,11 @@ void D3D12GraphicsEngine::ApplySwapChainColorSpace() {
 	meta.MinMasteringLuminance = static_cast<UINT>( std::max( 0.0f, m_HdrMonitorMinNits ) * 10000.0f );
 	meta.MaxContentLightLevel = static_cast<UINT16>( std::min( 65535.0f, maxNits ) );
 	meta.MaxFrameAverageLightLevel = static_cast<UINT16>( std::min( 65535.0f, GetHdrPaperWhiteNits() ) );
-	swapChain4->SetHDRMetaData( DXGI_HDR_METADATA_TYPE_HDR10, sizeof( meta ), &meta );
+	if ( !m_SwapChain->SetHdr10( &meta ) ) {
+		Logging::Wrn( "D3D12: the swapchain refused the HDR10 colour space; presenting SDR from the HDR display buffer." );
+		return;
+	}
+	m_HdrEncodePQ = true;
 }
 
 
@@ -1706,16 +1638,6 @@ void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<Rhi::R
 }
 
 
-static bool CheckTearingSupport() {
-    BOOL allowTearing = FALSE;
-    ComPtr<IDXGIFactory5> factory5;
-    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory5)))) {
-        factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing));
-    }
-    return allowTearing == TRUE;
-}
-
-
 /** Render resolution = backbuffer * ResolutionScalePercent, clamp included — see
     D3D11GraphicsEngine::RecreateBuffers. RendererSettings.Upscaler (FSR 1/3) is ignored: the vendored
     FidelityFX SDK ships only ffx_backend_dx11_x86.lib, so the tonemap resolve is the only upscaler here. */
@@ -1840,34 +1762,19 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     m_BackbufferResolution = size;
     m_Resolution = ComputeRenderResolution( size );
 
-    m_TearingSupported = CheckTearingSupport();
-    
-    DXGI_SWAP_CHAIN_DESC1 scd = {};
+    m_TearingSupported = m_Rhi->GetCaps().TearingSupported;
+
+    Rhi::SwapchainDesc scd;
+    scd.Window = m_OutputWindow;
     scd.Width = static_cast<UINT>( size.x );
     scd.Height = static_cast<UINT>( size.y );
-    scd.Format = kBackBufferFormat;
-    scd.SampleDesc.Count = 1;
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = kBackBufferCount;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.Format = kBackBufferFormat;
     scd.Flags = ( m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0 )
         | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-    scd.Scaling = DXGI_SCALING_STRETCH;
-    scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-
-    ComPtr<IDXGISwapChain1> swapChain1;
-    HRESULT hr = m_Device.GetFactory()->CreateSwapChainForHwnd(
-        m_Device.GetDirectQueue(), m_OutputWindow, &scd, nullptr, nullptr, swapChain1.GetAddressOf() );
+    const HRESULT hr = m_Rhi->CreateSwapchain( scd, m_SwapChain.ReleaseAndGetAddressOf() );
     if ( FAILED( hr ) ) {
-        Logging::Err( "D3D12: CreateSwapChainForHwnd failed (0x{:08X}).", static_cast<uint32_t>( hr ) );
-        return false;
-    }
-
-    // GD3D11 manages fullscreen itself; disable DXGI's Alt+Enter handling.
-    m_Device.GetFactory()->MakeWindowAssociation( m_OutputWindow, DXGI_MWA_NO_ALT_ENTER );
-
-    if ( FAILED( swapChain1.As( &m_SwapChain ) ) ) {
-        Logging::Err( "D3D12: the swapchain does not support IDXGISwapChain3." );
+        Logging::Err( "D3D12: swapchain creation failed (0x{:08X}).", static_cast<uint32_t>( hr ) );
         return false;
     }
     m_BackBufferIndex = m_SwapChain->GetCurrentBackBufferIndex();
@@ -1905,8 +1812,8 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         // The overlay draws into the display target (m_HdrDisplay when HDR output is up), so it must be
         // built for that RTV format, not the swapchain's. It needs no HDR awareness beyond that: the display
         // buffer holds the same gamma-encoded values it would write to an SDR swapchain.
-        Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, m_Device.GetDevice(),
-            m_Device.GetDirectQueue(), kBackBufferCount, m_Pipelines.DisplayFormat, D3D12Rhi::Native( m_SrvHeap.Get() ) );
+        Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, D3D12Rhi::NativeDevice( m_Rhi.Get() ),
+            D3D12Rhi::Native( m_Rhi->GetDirectQueue() ), kBackBufferCount, m_Pipelines.DisplayFormat, D3D12Rhi::Native( m_SrvHeap.Get() ) );
     }
     return true;
 }
@@ -1959,10 +1866,8 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
     Rhi::Device* device = m_Rhi.Get();
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        ComPtr<ID3D12Resource> buffer;
-        if ( FAILED( m_SwapChain->GetBuffer( i, IID_PPV_ARGS( buffer.GetAddressOf() ) ) ) )
+        if ( FAILED( m_SwapChain->GetBuffer( i, m_BackBuffers[i].ReleaseAndGetAddressOf() ) ) )
             return false;
-        m_BackBuffers[i] = D3D12Rhi::WrapResource( buffer.Get() );
         m_BackBuffers[i]->SetName( i == 0 ? L"BackBuffer0" : L"BackBuffer1" );
         device->CreateRenderTargetView( m_BackBuffers[i].Get(), nullptr, rtvHandle );
         m_CmdList.InvalidateRenderTargets();
@@ -2292,7 +2197,7 @@ void D3D12GraphicsEngine::InitGpuScopeMarkers() {
     constexpr SIZE_T kBytes = 64 * 1024;
     static_assert( GpuScopeMarkers::kSlots * sizeof( UINT ) <= kBytes );
     ComPtr<ID3D12Device3> device3;
-    if ( FAILED( m_Device.GetDevice()->QueryInterface( IID_PPV_ARGS( device3.GetAddressOf() ) ) ) ) return;
+    if ( FAILED( D3D12Rhi::NativeDevice( m_Rhi.Get() )->QueryInterface( IID_PPV_ARGS( device3.GetAddressOf() ) ) ) ) return;
     void* memory = VirtualAlloc( nullptr, kBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE );
     if ( !memory ) return;
 
@@ -2353,7 +2258,7 @@ static void PrintGpuScopeMarkers() {
 void D3D12GraphicsEngine::HandleDeviceRemoved( HRESULT removedReason, const char* context ) {
     // Best-effort: the device may itself be in a state where this queries nothing, but DiagnoseErrors
     // handles that (logs and returns) rather than crashing here on top of the original failure.
-    DiagnoseErrors( m_Device.GetDevice() );
+    DiagnoseErrors( D3D12Rhi::NativeDevice( m_Rhi.Get() ) );
 
     auto msg = std::format( "D3D12 device removed at {} (reason: 0x{:08X}). See Log.txt for GPU breadcrumbs.",
         context, static_cast<uint32_t>( removedReason ) );
@@ -2426,7 +2331,7 @@ XRESULT D3D12GraphicsEngine::Present() {
     if ( FAILED( hr ) ) {
         auto r = static_cast<uint32_t>(hr);
         if ( hr == DXGI_ERROR_DEVICE_REMOVED) {
-            auto removedReason = m_Device.GetDevice()->GetDeviceRemovedReason();
+            auto removedReason = m_Rhi->GetDeviceRemovedReason();
             HandleDeviceRemoved( removedReason, "Present" ); // [[noreturn]]
         } else {
             auto msg = std::format( "D3D12 Present failed (0x{:08X})", r );
@@ -2453,8 +2358,7 @@ bool D3D12GraphicsEngine::WaitOnFrameFence( UINT64 value, const char* site ) {
         if ( WaitForSingleObject( m_FenceEvent, kFenceWaitTimeoutMs ) == WAIT_OBJECT_0 )
             return true;
 
-        const HRESULT removedReason = m_Device.GetDevice()
-            ? m_Device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
+        const HRESULT removedReason = m_Rhi ? m_Rhi->GetDeviceRemovedReason() : E_FAIL;
 
         UINT64 copyPending = 0, copyDone = 0;
         {
@@ -3138,7 +3042,7 @@ XRESULT D3D12GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* m
     if ( !modeList ) return XR_SUCCESS;
 
     modeList->clear();
-    if ( XR_SUCCESS != DXGI_GetDisplayModeList( m_Device.GetDevice()->GetAdapterLuid(), m_OutputWindow, &m_CachedDisplayModes ) ) {
+    if ( XR_SUCCESS != DXGI_GetDisplayModeList( m_Rhi->GetCaps().AdapterLuid, m_OutputWindow, &m_CachedDisplayModes ) ) {
         m_CachedDisplayModes.clear();
         m_CachedDisplayModes.push_back( DisplayModeInfo( std::max<int>( 1, m_BackbufferResolution.x ), std::max<int>( 1, m_BackbufferResolution.y ), 60, 1 ) );
     }

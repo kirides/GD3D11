@@ -3,14 +3,12 @@
 #include <D3D12MemAlloc.h>
 #include <wrl/client.h>
 
-class D3D12Device;
-
 /** The D3D12 implementation of the RHI: thin forwarders over the native objects, so the renderer behaves
     exactly as it did when it called D3D12 directly. */
 namespace D3D12Rhi {
 
-    /** Wraps the engine's device + allocator (non-owning: both outlive every Rhi object the engine holds). */
-    Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice( D3D12Device& device, D3D12MA::Allocator* allocator );
+    /** Creates the native device, queues and memory allocator; null (logged) on failure. */
+    Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice();
 
     /** Adopts a native resource created outside the RHI (swapchain buffers, FFX interop). */
     Microsoft::WRL::ComPtr<Rhi::Resource> WrapResource( ID3D12Resource* resource, D3D12MA::Allocation* allocation = nullptr );

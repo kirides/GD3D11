@@ -188,8 +188,8 @@ static_assert( sizeof( FogConstants ) == 32, "FogConstants must be 8 DWORDs to m
 // exported for the passes that live in their own TU and bind the same b1.
 FogConstants MakeSceneFogConstants();
 
-// Upload-heap type used by every persistently-mapped ring / staging allocation. A single knob (kept
-// as an inline variable so all split TUs see the same value); the GPU_UPLOAD path is future work.
+// Upload-heap type for every persistently-mapped ring / staging allocation. GPU_UPLOAD (Caps::GpuUploadHeap)
+// tanked FPS on per-frame dynamic updates (FF vertex streams), so it stays UPLOAD.
 inline D3D12_HEAP_TYPE DefaultUploadHeapType = D3D12_HEAP_TYPE_UPLOAD;
 inline bool GetSkipDefaultHeapCopyAfterUpload() {
     return DefaultUploadHeapType == D3D12_HEAP_TYPE_GPU_UPLOAD;

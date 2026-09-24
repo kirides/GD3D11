@@ -10,7 +10,7 @@
 #include "../TransparencyQueue.h" // the frame's sorted alpha-blended draw list
 #include "../WorldConverter.h"   // SHADOW_LOD_FIRST_CASCADE
 #include <span>
-#include "D3D12Device.h"
+#include <dxgi1_6.h>
 #include "D3D12Rhi.h"
 #include <memory>
 #include <unordered_map>
@@ -139,7 +139,7 @@ public:
         screenSpace=false -> world-space, ViewProj-transformed, depth-tested against the finished scene;
         screenSpace=true  -> pre-transformed xyzrhw 2D overlay, no depth. */
     void DrawLines( const std::vector<struct LineVertex>& lines, bool screenSpace );
-    const std::string& GetGraphicsDeviceName() override { return m_Device.GetDeviceDescription(); }
+    const std::string& GetGraphicsDeviceName() override { return m_DeviceCapabilities.DeviceDescription; }
 
     bool GetHdrOutputInfo( float& maxNits, float& minNits, float& maxFullFrameNits ) const override {
         if ( !m_HdrOutputActive ) return false;
@@ -150,7 +150,7 @@ public:
     }
 
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
-    ID3D12Device* GetD3DDevice() const { return m_Device.GetDevice(); }
+    ID3D12Device* GetD3DDevice() const { return D3D12Rhi::NativeDevice( m_Rhi.Get() ); }
     /** The RHI device every renderer object is created through. */
     Rhi::Device* GetRhi() const { return m_Rhi.Get(); }
 
@@ -245,7 +245,7 @@ public:
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual
-    D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }
+    D3D12MA::Allocator* GetAllocator() const { return D3D12Rhi::NativeAllocator( m_Rhi.Get() ); }
 
     /** Savegame-thumbnail / screenshot readback (MyDirectDrawSurface7::Lock's DDLOCK_READONLY hack).
         Re-tonemaps the just-rendered HDR scene into a CPU-readable 32bpp BGRA8 buffer at either 256x256
@@ -256,7 +256,6 @@ private:
     void QueueCleanupJob(std::move_only_function<void()> callback); // cleanup job runs after the calling frames fence value is completed.
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandleLocked( UINT slot ) const; // caller holds m_SrvHeapMutex
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandleLocked( UINT slot ) const; // caller holds m_SrvHeapMutex
-    bool CreateAllocators();
     bool CreateSwapChain( INT2 size );
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads
@@ -459,19 +458,11 @@ private:
     // FlushCommandListSync() leaves the command list freshly Reset with nothing bound.
     void RestoreFrameRenderTarget();
 
-    D3D12Device m_Device;
-
-    // D3D12 Memory Allocator (GPUOpen). Declared here — right after m_Device — deliberately: members are
-    // destroyed in reverse declaration order, so keeping this near the top guarantees the allocator outlives
-    // every D3D12MA::Allocation member below it (an Allocation frees back into the allocator on release, so
-    // releasing one after the allocator is gone is a use-after-free). All persistent resources route their
-    // creation through m_Allocator->CreateResource and hold a parallel ...Alloc member alongside the resource.
-    Microsoft::WRL::ComPtr<D3D12MA::Allocator> m_Allocator;
-
-    // The RHI over m_Device + m_Allocator (D3D12Rhi.h). The renderer creates its objects through it.
+    // The RHI device; owns the native device and the memory allocator. Declared before every resource member
+    // so it is destroyed after them: an allocation must not outlive its allocator.
     Microsoft::WRL::ComPtr<Rhi::Device> m_Rhi;
 
-    Microsoft::WRL::ComPtr<IDXGISwapChain3>        m_SwapChain;
+    Microsoft::WRL::ComPtr<Rhi::Swapchain>        m_SwapChain;
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV
     UINT m_RtvDescriptorSize = 0;
 

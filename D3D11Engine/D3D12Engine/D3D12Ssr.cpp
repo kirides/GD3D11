@@ -23,7 +23,7 @@ bool D3D12GraphicsEngine::CreateSsrHistoryResources( INT2 size ) {
     m_SsrHistoryValid = false;   // stale after any resize — last frame's buffer covered a different resolution
     if ( size.x < 4 || size.y < 4 ) return false;
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) return false;
+    if ( !device ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;

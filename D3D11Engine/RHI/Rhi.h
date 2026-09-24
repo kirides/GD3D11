@@ -248,6 +248,8 @@ namespace Rhi {
         virtual const Caps& GetCaps() const = 0;
         virtual const char* GetDescription() const = 0;
         virtual HRESULT GetDeviceRemovedReason() const = 0;
+        /** Luminance of the first output on this adapter that is in HDR mode; false when none is. */
+        virtual bool GetHdrOutput( float& maxNits, float& minNits, float& maxFullFrameNits ) const = 0;
 
         virtual CommandQueue* GetDirectQueue() const = 0;
         virtual CommandQueue* GetCopyQueue() const = 0;

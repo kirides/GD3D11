@@ -98,7 +98,7 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     m_GtaoResourcesReady = false;
     if ( size.x < 16 || size.y < 16 ) return false;
     Rhi::Device* device = m_Rhi.Get();
-    if ( !device || !m_Allocator ) return false;
+    if ( !device ) return false;
     if ( !m_Pipelines.Gtao.RootSig || !m_Pipelines.Gtao.PrefilterPSO ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
