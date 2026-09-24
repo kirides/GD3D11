@@ -2,8 +2,12 @@
 #include "VulkanRhi.h"
 #include "VulkanRhiInternal.h"
 #include "../Logger.h"
+#include "../Engine.h"
+#include "../GothicAPI.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 namespace VulkanRhi {
 
@@ -150,6 +154,10 @@ namespace VulkanRhi {
     DeviceImpl::~DeviceImpl() {
         if ( m_Vk.GetDevice() ) vkDeviceWaitIdle( m_Vk.GetDevice() );
         m_Waiter.Stop();
+        if ( m_PipelineCache ) {
+            if ( m_PipelineGeneration.load() != m_SavedGeneration ) SavePipelineCache();
+            vkDestroyPipelineCache( Vk(), m_PipelineCache, nullptr );
+        }
         {
             std::lock_guard<std::mutex> lock( m_GarbageMutex );
             for ( auto& g : m_Garbage ) g.second();
@@ -183,6 +191,7 @@ namespace VulkanRhi {
             return false;
         }
         if ( !CreateBindlessLayout() ) return false;
+        LoadPipelineCache();
 
         m_Queue.Attach( new QueueImpl( this, m_Vk.GetGraphicsQueue(), m_Vk.GetGraphicsQueueMutex() ) );
         if ( !m_Queue->Init() ) return false;
@@ -202,6 +211,77 @@ namespace VulkanRhi {
         m_Caps.VendorId = vk.VendorId;
         if ( vk.HasLuid ) m_Caps.AdapterLuid = vk.Luid;
         return true;
+    }
+
+    void DeviceImpl::LoadPipelineCache() {
+        if ( Engine::GAPI ) m_PipelineCachePath = Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\vulkan_pipelines.bin)";
+        std::vector<char> data;
+        if ( !m_PipelineCachePath.empty() ) {
+            std::ifstream in( m_PipelineCachePath, std::ios::binary | std::ios::ate );
+            const std::streamoff size = in ? static_cast<std::streamoff>( in.tellg() ) : 0;
+            if ( size > 0 && size <= ( 64 << 20 ) ) {
+                data.resize( static_cast<size_t>( size ) );
+                in.seekg( 0 );
+                if ( !in.read( data.data(), size ) ) data.clear();
+            }
+        }
+        // Drivers should reject foreign data themselves; some crash instead, so check the header first.
+        VkPhysicalDeviceProperties props = {};
+        vkGetPhysicalDeviceProperties( m_Vk.GetPhysicalDevice(), &props );
+        VkPipelineCacheHeaderVersionOne header = {};
+        if ( data.size() >= sizeof( header ) ) memcpy( &header, data.data(), sizeof( header ) );
+        if ( header.headerVersion != VK_PIPELINE_CACHE_HEADER_VERSION_ONE || header.headerSize < sizeof( header )
+            || header.vendorID != props.vendorID || header.deviceID != props.deviceID
+            || memcmp( header.pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE ) != 0 ) {
+            if ( !data.empty() ) Logging::Inf( "Vulkan: the pipeline cache belongs to another GPU or driver; starting empty." );
+            data.clear();
+        }
+
+        VkPipelineCacheCreateInfo ci = { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+        ci.initialDataSize = data.size();
+        ci.pInitialData = data.empty() ? nullptr : data.data();
+        if ( vkCreatePipelineCache( Vk(), &ci, nullptr, &m_PipelineCache ) != VK_SUCCESS && !data.empty() ) {
+            ci.initialDataSize = 0;
+            ci.pInitialData = nullptr;
+            if ( vkCreatePipelineCache( Vk(), &ci, nullptr, &m_PipelineCache ) != VK_SUCCESS ) m_PipelineCache = VK_NULL_HANDLE;
+        }
+        if ( m_PipelineCache && !data.empty() ) Logging::Inf( "Vulkan: loaded the pipeline cache ({} KiB).", data.size() / 1024 );
+    }
+
+    void DeviceImpl::SavePipelineCache() {
+        if ( !m_PipelineCache || m_PipelineCachePath.empty() ) return;
+        size_t size = 0;
+        if ( vkGetPipelineCacheData( Vk(), m_PipelineCache, &size, nullptr ) != VK_SUCCESS || size == 0 ) return;
+        std::vector<char> data( size );
+        if ( vkGetPipelineCacheData( Vk(), m_PipelineCache, &size, data.data() ) != VK_SUCCESS ) return;
+
+        // Write aside and swap in, so a crash mid-write never leaves a truncated cache behind.
+        std::error_code ec;
+        std::filesystem::create_directories( std::filesystem::path( m_PipelineCachePath ).parent_path(), ec );
+        const std::string temp = m_PipelineCachePath + ".tmp";
+        {
+            std::ofstream out( temp, std::ios::binary | std::ios::trunc );
+            if ( !out || !out.write( data.data(), static_cast<std::streamsize>( size ) ) ) return;
+        }
+        if ( !MoveFileExA( temp.c_str(), m_PipelineCachePath.c_str(), MOVEFILE_REPLACE_EXISTING ) ) {
+            Logging::Wrn( "Vulkan: could not save the pipeline cache to {}.", m_PipelineCachePath );
+            return;
+        }
+        Logging::Inf( "Vulkan: saved the pipeline cache ({} KiB).", size / 1024 );
+    }
+
+    void DeviceImpl::NotePresent() {
+        constexpr uint32_t kQuietPresents = 300;   // ~5 s at 60 fps without a new pipeline
+        const uint32_t generation = m_PipelineGeneration.load( std::memory_order_relaxed );
+        if ( generation == m_SavedGeneration ) return;
+        if ( generation != m_SeenGeneration ) {
+            m_SeenGeneration = generation;
+            m_QuietPresents = 0;
+            return;
+        }
+        if ( ++m_QuietPresents < kQuietPresents ) return;
+        SavePipelineCache();
+        m_SavedGeneration = generation;
     }
 
     bool DeviceImpl::GetHdrOutput( float& maxNits, float& minNits, float& maxFullFrameNits ) const {

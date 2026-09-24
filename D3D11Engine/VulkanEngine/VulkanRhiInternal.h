@@ -416,9 +416,17 @@ namespace VulkanRhi {
         FenceWaiter& Waiter() { return m_Waiter; }
         void SetObjectName( VkObjectType type, uint64_t handle, const char* name ) const { m_Vk.SetObjectName( type, handle, name ); }
 
+        /** Shared by every PSO. The engine never destroys the device, so it is saved once creation goes quiet. */
+        VkPipelineCache PipelineCache() const { return m_PipelineCache; }
+        void OnPipelineCreated() { m_PipelineGeneration.fetch_add( 1, std::memory_order_relaxed ); }
+        /** Render thread, once per present: saves the pipeline cache after a quiet spell. */
+        void NotePresent();
+
     private:
         bool CreateBindlessLayout();
         void LogDeviceFault() const;
+        void LoadPipelineCache();
+        void SavePipelineCache();
 
         VulkanDevice m_Vk;
         VmaAllocator m_Allocator = VK_NULL_HANDLE;
@@ -453,6 +461,13 @@ namespace VulkanRhi {
         VkBuffer m_Scratch = VK_NULL_HANDLE;
         VmaAllocation m_ScratchAllocation = VK_NULL_HANDLE;
         VkDeviceSize m_ScratchSize = 0;
+
+        VkPipelineCache m_PipelineCache = VK_NULL_HANDLE;
+        std::string m_PipelineCachePath;
+        std::atomic<uint32_t> m_PipelineGeneration{ 0 };
+        uint32_t m_SavedGeneration = 0;   // render thread only, like the two below
+        uint32_t m_SeenGeneration = 0;
+        uint32_t m_QuietPresents = 0;
         friend class DescriptorHeapImpl;
     };
 

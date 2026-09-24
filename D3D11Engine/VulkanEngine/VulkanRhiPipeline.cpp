@@ -507,8 +507,9 @@ namespace VulkanRhi {
         pso->m_RootSig = rs;
         pso->m_ColorCount = rtCount;
         pso->m_HasDepth = desc->DSVFormat != DXGI_FORMAT_UNKNOWN;
-        const VkResult result = vkCreateGraphicsPipelines( Vk(), VK_NULL_HANDLE, 1, &ci, nullptr, &pso->m_Pipeline );
+        const VkResult result = vkCreateGraphicsPipelines( Vk(), m_PipelineCache, 1, &ci, nullptr, &pso->m_Pipeline );
         cleanup();
+        OnPipelineCreated();
         if ( CheckResult( result, "vkCreateGraphicsPipelines" ) ) {
             pso->m_Pipeline = VK_NULL_HANDLE;
             return E_FAIL;
@@ -538,8 +539,9 @@ namespace VulkanRhi {
         pso.Attach( new PipelineStateImpl( this ) );
         pso->m_BindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
         pso->m_RootSig = rs;
-        const VkResult result = vkCreateComputePipelines( Vk(), VK_NULL_HANDLE, 1, &ci, nullptr, &pso->m_Pipeline );
+        const VkResult result = vkCreateComputePipelines( Vk(), m_PipelineCache, 1, &ci, nullptr, &pso->m_Pipeline );
         vkDestroyShaderModule( Vk(), module, nullptr );
+        OnPipelineCreated();
         if ( CheckResult( result, "vkCreateComputePipelines" ) ) {
             pso->m_Pipeline = VK_NULL_HANDLE;
             return E_FAIL;
