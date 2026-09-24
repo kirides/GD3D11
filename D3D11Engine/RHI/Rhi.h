@@ -207,6 +207,8 @@ namespace Rhi {
     class Swapchain : public Object {
     public:
         virtual HRESULT GetBuffer( UINT index, Resource** outBuffer ) = 0;
+        /** Images actually created; Vulkan may hand out more than requested. */
+        virtual UINT GetBufferCount() = 0;
         /** Vulkan acquires here, lazily once per frame; the next submit on the present queue waits for it. */
         virtual UINT GetCurrentBackBufferIndex() = 0;
         /** DXGI semantics: syncInterval 0/1, DXGI_PRESENT_* flags. */

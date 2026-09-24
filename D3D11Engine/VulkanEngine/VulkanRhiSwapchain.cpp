@@ -19,6 +19,7 @@ namespace VulkanRhi {
         bool Init( const Rhi::SwapchainDesc& desc );
 
         HRESULT GetBuffer( UINT index, Rhi::Resource** outBuffer ) override;
+        UINT GetBufferCount() override { return static_cast<UINT>( m_Images.size() ); }
         UINT GetCurrentBackBufferIndex() override;
         HRESULT Present( UINT syncInterval, UINT flags ) override;
         HRESULT ResizeBuffers( UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags ) override;

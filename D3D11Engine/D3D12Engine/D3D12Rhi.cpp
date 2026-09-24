@@ -237,6 +237,10 @@ namespace {
             *outBuffer = D3D12Rhi::WrapResource( buffer.Get() ).Detach();
             return S_OK;
         }
+        UINT GetBufferCount() override {
+            DXGI_SWAP_CHAIN_DESC1 desc = {};
+            return SUCCEEDED( m_Swapchain->GetDesc1( &desc ) ) ? desc.BufferCount : 0;
+        }
         UINT GetCurrentBackBufferIndex() override { return m_Swapchain->GetCurrentBackBufferIndex(); }
         HRESULT Present( UINT syncInterval, UINT flags ) override { return m_Swapchain->Present( syncInterval, flags ); }
         HRESULT ResizeBuffers( UINT count, UINT width, UINT height, DXGI_FORMAT format, UINT flags ) override {
