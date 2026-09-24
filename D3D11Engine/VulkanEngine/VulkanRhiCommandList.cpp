@@ -36,6 +36,14 @@ namespace VulkanRhi {
             return { std::max( 1u, r->m_Extent.width >> mip ), std::max( 1u, r->m_Extent.height >> mip ) };
         }
 
+        /** Layout a pushed SRV reads the image in: its tracked one when that's sampleable. */
+        VkImageLayout SampledLayout( const Descriptor& d ) {
+            const ResourceImpl* r = d.Resource;
+            const uint32_t sub = d.Key.BaseMip + d.Key.BaseLayer * ( r ? r->m_Mips : 1 );
+            const VkImageLayout l = r && sub < r->m_Layouts.size() ? r->m_Layouts[sub] : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+            return l == VK_IMAGE_LAYOUT_GENERAL ? l : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+        }
+
         /** The attachment's current layout (a read-only DSV sits in READ_ONLY_OPTIMAL); `fallback` if untracked. */
         VkImageLayout AttachmentLayout( const Descriptor& d, VkImageLayout fallback ) {
             const ResourceImpl* r = d.Resource;
@@ -97,10 +105,13 @@ namespace VulkanRhi {
         void ClearDepthStencilView( D3D12_CPU_DESCRIPTOR_HANDLE dsv, D3D12_CLEAR_FLAGS flags, FLOAT depth, UINT8 stencil,
             UINT numRects, const D3D12_RECT* rects ) override;
         void DiscardResource( Rhi::Resource* ) override {}
-        void CopyResource( Rhi::Resource* dst, Rhi::Resource* src ) override;
+        void CopyResource( Rhi::Resource* dst, Rhi::Resource* src ) override { CopyResourceImpl( dst, src ); DecayPromoted(); }
         void CopyBufferRegion( Rhi::Resource* dst, UINT64 dstOffset, Rhi::Resource* src, UINT64 srcOffset, UINT64 bytes ) override;
         void CopyTextureRegion( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,
-            const Rhi::TextureCopyLocation* src, const D3D12_BOX* srcBox ) override;
+            const Rhi::TextureCopyLocation* src, const D3D12_BOX* srcBox ) override {
+            CopyTextureRegionImpl( dst, dstX, dstY, dstZ, src, srcBox );
+            DecayPromoted();
+        }
 
         void BeginEvent( const wchar_t* wide, UINT wideLength, const char* narrow ) override;
         void EndEvent() override;
@@ -152,6 +163,11 @@ namespace VulkanRhi {
         /** Implicit D3D12 promotion: puts the touched subresources into `layout` for a copy if they aren't already. */
         void EnsureLayout( ResourceImpl* r, uint32_t mip, uint32_t mipCount, uint32_t layer, uint32_t layerCount, VkImageLayout layout,
             VkPipelineStageFlags2 stage, VkAccessFlags2 access );
+        /** D3D12's implicit decay: subresources a copy promoted return to where they rested. */
+        void DecayPromoted();
+        void CopyResourceImpl( Rhi::Resource* dst, Rhi::Resource* src );
+        void CopyTextureRegionImpl( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,
+            const Rhi::TextureCopyLocation* src, const D3D12_BOX* srcBox );
         /** Depth <-> colour copy (no vkCmdCopyImage between them in core 1.3): image -> scratch buffer -> image. */
         void CopyViaBuffer( ResourceImpl* s, uint32_t sMip, uint32_t sLayer, VkOffset3D sOffset,
             ResourceImpl* d, uint32_t dMip, uint32_t dLayer, VkOffset3D dOffset, VkExtent3D extent );
@@ -187,6 +203,11 @@ namespace VulkanRhi {
         bool m_ScopeHasDepth = false;
         VkRect2D m_RenderArea = {};
         uint32_t m_RenderLayers = 1;
+
+        struct Promotion { ResourceImpl* Resource; uint32_t Subresource; VkImageLayout Rest; VkImageLayout Copy; };
+        static constexpr uint32_t kMaxPromotions = 64;
+        Promotion m_Promoted[kMaxPromotions] = {};
+        uint32_t m_PromotedCount = 0;
 
         uint32_t m_LabelDepth = 0;
         bool m_LoggedIndirect = false;
@@ -234,6 +255,7 @@ namespace VulkanRhi {
         m_TargetsDirty = true;
         m_InRendering = false;
         m_LabelDepth = 0;
+        m_PromotedCount = 0;
     }
 
     HRESULT CommandListImpl::Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
@@ -500,8 +522,9 @@ namespace VulkanRhi {
             case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
                 for ( const RootSignatureImpl::TableSlot& slot : p.Table ) {
                     if ( n >= kMaxWrites ) break;
+                    Descriptor record;
                     const Descriptor* d = b.Tables[i].ptr
-                        ? m_Device->ResolveGpuDescriptor( { b.Tables[i].ptr + slot.Offset * sizeof( Descriptor ) } ) : nullptr;
+                        && m_Device->ReadGpuDescriptor( { b.Tables[i].ptr + slot.Offset * sizeof( Descriptor ) }, record ) ? &record : nullptr;
                     if ( slot.Type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
                         if ( !d || d->Type != Descriptor::Kind::UniformBuffer ) { warnOnce( "a CBV table slot is empty" ); continue; }
                         write( slot.Binding, slot.Type );
@@ -513,7 +536,7 @@ namespace VulkanRhi {
                     VkImageView view = ( d && d->Type == want ) ? d->View : VK_NULL_HANDLE;
                     if ( !view && !nullDescriptors ) { warnOnce( "a texture table slot is empty or of the wrong type" ); continue; }
                     write( slot.Binding, slot.Type );
-                    images[n++] = { VK_NULL_HANDLE, view, storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL };
+                    images[n++] = { VK_NULL_HANDLE, view, storage ? VK_IMAGE_LAYOUT_GENERAL : SampledLayout( *d ) };
                 }
                 break;
             default:
@@ -834,10 +857,36 @@ namespace VulkanRhi {
                 b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 b.image = r->m_Image;
                 b.subresourceRange = { r->m_Aspect, m, 1, l, 1 };
+                if ( m_PromotedCount < kMaxPromotions ) m_Promoted[m_PromotedCount++] = { r, m + l * r->m_Mips, current, layout };
                 current = layout;
             }
         }
         FlushBarriers( batch );
+    }
+
+    void CommandListImpl::DecayPromoted() {
+        BarrierBatch batch;
+        for ( uint32_t i = 0; i < m_PromotedCount; ++i ) {
+            const Promotion& p = m_Promoted[i];
+            VkImageLayout& current = p.Resource->m_Layouts[p.Subresource];
+            if ( current != p.Copy ) continue;   // an explicit barrier moved it meanwhile
+            if ( batch.ImageCount == kMaxBatch ) FlushBarriers( batch );
+            VkImageMemoryBarrier2& b = batch.Images[batch.ImageCount++];
+            b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            b.oldLayout = p.Copy;
+            b.newLayout = p.Rest;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = p.Resource->m_Image;
+            b.subresourceRange = { p.Resource->m_Aspect, p.Subresource % p.Resource->m_Mips, 1, p.Subresource / p.Resource->m_Mips, 1 };
+            current = p.Rest;
+        }
+        FlushBarriers( batch );
+        m_PromotedCount = 0;
     }
 
     // ---- Clears ---------------------------------------------------------------------------------
@@ -918,7 +967,7 @@ namespace VulkanRhi {
 
     // ---- Copies ---------------------------------------------------------------------------------
 
-    void CommandListImpl::CopyResource( Rhi::Resource* dst, Rhi::Resource* src ) {
+    void CommandListImpl::CopyResourceImpl( Rhi::Resource* dst, Rhi::Resource* src ) {
         ResourceImpl* d = ToImpl( dst );
         ResourceImpl* s = ToImpl( src );
         if ( !d || !s ) return;
@@ -970,7 +1019,7 @@ namespace VulkanRhi {
         vkCmdCopyBuffer( m_Cmd, s->m_Buffer, d->m_Buffer, 1, &region );
     }
 
-    void CommandListImpl::CopyTextureRegion( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,
+    void CommandListImpl::CopyTextureRegionImpl( const Rhi::TextureCopyLocation* dst, UINT dstX, UINT dstY, UINT dstZ,
         const Rhi::TextureCopyLocation* src, const D3D12_BOX* srcBox ) {
         ResourceImpl* d = ToImpl( dst->pResource );
         ResourceImpl* s = ToImpl( src->pResource );

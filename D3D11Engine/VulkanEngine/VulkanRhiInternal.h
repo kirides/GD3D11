@@ -406,9 +406,9 @@ namespace VulkanRhi {
 
         /** Writes a descriptor record; a shader-visible heap slot is mirrored into the bindless set. */
         void WriteDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE dest, const Descriptor& descriptor );
-        /** GPU handle of a shader-visible heap -> its record (nullptr for a foreign handle). */
-        const Descriptor* ResolveGpuDescriptor( D3D12_GPU_DESCRIPTOR_HANDLE handle ) const;
-        DescriptorHeapImpl* HeapById( uint32_t id ) const;
+        /** Copies the record behind a shader-visible heap's GPU handle; false for a foreign handle. Worker threads
+            rewrite records while the render thread records, so both sides go through the heap lock. */
+        bool ReadGpuDescriptor( D3D12_GPU_DESCRIPTOR_HANDLE handle, Descriptor& out ) const;
 
         VkDescriptorSetLayout BindlessLayout() const { return m_BindlessLayout; }
         /** Device-local scratch for copies core Vulkan can't do image to image (depth <-> colour). Grows only. */

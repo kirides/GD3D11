@@ -18,7 +18,11 @@ namespace VulkanRhi {
             }
             s.Stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             s.Access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-            s.Layout = VK_IMAGE_LAYOUT_GENERAL;
+            // D3D12 samples a COMMON texture through implicit promotion, with no barrier: a plain texture
+            // therefore rests where the sampled descriptors expect it. Copies promote and decay around it.
+            constexpr VkImageUsageFlags kWritable = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+            s.Layout = image && !( resource->m_Usage & kWritable ) ? VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
             return s;
         }
 
