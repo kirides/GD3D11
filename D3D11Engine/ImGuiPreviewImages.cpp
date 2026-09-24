@@ -28,7 +28,7 @@ namespace {
         case EGraphicsEngineBackend::D3D11:
             return (ImTextureID)(intptr_t)D3D11Texture::From( tex )->GetShaderResourceView().Get();
         case EGraphicsEngineBackend::D3D12:
-            return (ImTextureID)(intptr_t)D3D12Texture::From( tex )->GetSrvGpuHandle().ptr;
+            return (ImTextureID)D3D12Texture::From( tex )->GetSrvGpuHandle().ptr;
         }
         return ImTextureID{};
     }

@@ -36,7 +36,7 @@ static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
     case EGraphicsEngineBackend::D3D12:
         if (auto d3d12 = D3D12Texture::From(tex)) {
             if (d3d12->GetSrvSlot() != 0xFFFFFFFFu) {
-                return (ImTextureID)(intptr_t)d3d12->GetSrvGpuHandle().ptr;
+                return (ImTextureID)d3d12->GetSrvGpuHandle().ptr;
             }
         }
         return ImTextureID{};
