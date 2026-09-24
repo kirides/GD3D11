@@ -234,7 +234,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 	// Each level's t0 (variable source) is written into the pair slot right before dispatch; t1 (down[i]) was
 	// already written once at creation (CreateBloomResources) and never changes.
 	D3D12_SHADER_RESOURCE_VIEW_DESC upSrcSrvDesc = {};
-	upSrcSrvDesc.Format = kSceneColorFormat;
+	upSrcSrvDesc.Format = kPostFxDownsampledFormat;   // views bloom mips, not the scene colour
 	upSrcSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	upSrcSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	upSrcSrvDesc.Texture2D.MipLevels = 1;
