@@ -155,6 +155,7 @@ namespace VulkanRhi {
             for ( auto& g : m_Garbage ) g.second();
             m_Garbage.clear();
         }
+        if ( m_Scratch ) vmaDestroyBuffer( m_Allocator, m_Scratch, m_ScratchAllocation );
         for ( InitCommands& c : m_InitCommands ) vkDestroyCommandPool( Vk(), c.Pool, nullptr );
         m_InitCommands.clear();
         if ( m_BindlessLayout ) vkDestroyDescriptorSetLayout( Vk(), m_BindlessLayout, nullptr );
@@ -398,6 +399,29 @@ namespace VulkanRhi {
         m_InitBarriers.clear();
         slot->Serial = serial;
         return slot->Cmd;
+    }
+
+    VkBuffer DeviceImpl::CopyScratch( VkDeviceSize size ) {
+        std::lock_guard<std::mutex> lock( m_ScratchMutex );
+        if ( m_Scratch && m_ScratchSize >= size ) return m_Scratch;
+        if ( m_Scratch ) {
+            VkBuffer old = m_Scratch;
+            VmaAllocation oldAllocation = m_ScratchAllocation;
+            DeferDestroy( [this, old, oldAllocation]() { vmaDestroyBuffer( m_Allocator, old, oldAllocation ); } );
+            m_Scratch = VK_NULL_HANDLE;
+        }
+        VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bi.size = std::max<VkDeviceSize>( size, 4ull * 1024 * 1024 );
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo ai = {};
+        ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        if ( CheckResult( vmaCreateBuffer( m_Allocator, &bi, &ai, &m_Scratch, &m_ScratchAllocation, nullptr ), "vmaCreateBuffer (copy scratch)" ) ) {
+            m_Scratch = VK_NULL_HANDLE;
+            m_ScratchSize = 0;
+            return VK_NULL_HANDLE;
+        }
+        m_ScratchSize = bi.size;
+        return m_Scratch;
     }
 
     // ---- Resources ------------------------------------------------------------------------------
