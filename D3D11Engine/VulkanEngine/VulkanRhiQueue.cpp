@@ -29,6 +29,7 @@ namespace VulkanRhi {
         }
         while ( !m_Pending.empty() && m_Pending.front().first <= reached ) {
             m_Completed = m_Pending.front().second;
+            m_CompletedPoint = m_Pending.front().first;
             m_Pending.pop_front();
         }
     }
@@ -49,7 +50,7 @@ namespace VulkanRhi {
     uint64_t FenceImpl::InternalPointFor( UINT64 value ) const {
         std::lock_guard<std::mutex> lock( m_Mutex );
         Poll();
-        if ( m_Completed >= value ) return 0;
+        if ( m_Completed >= value ) return m_CompletedPoint;
         for ( const auto& p : m_Pending )
             if ( p.second >= value ) return p.first;
         return 0;
@@ -259,10 +260,9 @@ namespace VulkanRhi {
     // ---- Queue ----------------------------------------------------------------------------------
 
     QueueImpl::~QueueImpl() {
-        if ( m_SerialTimeline ) {
-            if ( m_Device->Vk() ) vkQueueWaitIdle( m_Queue );
-            vkDestroySemaphore( m_Device->Vk(), m_SerialTimeline, nullptr );
-        }
+        if ( m_Device->Vk() ) vkQueueWaitIdle( m_Queue );
+        if ( m_BoundaryPool ) vkDestroyCommandPool( m_Device->Vk(), m_BoundaryPool, nullptr );
+        if ( m_SerialTimeline ) vkDestroySemaphore( m_Device->Vk(), m_SerialTimeline, nullptr );
     }
 
     void QueueImpl::SetName( LPCWSTR ) {}
@@ -272,7 +272,32 @@ namespace VulkanRhi {
         type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
         VkSemaphoreCreateInfo ci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         ci.pNext = &type;
-        return !m_Device->CheckResult( vkCreateSemaphore( m_Device->Vk(), &ci, nullptr, &m_SerialTimeline ), "vkCreateSemaphore (queue)" );
+        if ( m_Device->CheckResult( vkCreateSemaphore( m_Device->Vk(), &ci, nullptr, &m_SerialTimeline ), "vkCreateSemaphore (queue)" ) )
+            return false;
+
+        VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+        pci.queueFamilyIndex = m_Device->Base().GetGraphicsQueueFamily();
+        if ( m_Device->CheckResult( vkCreateCommandPool( m_Device->Vk(), &pci, nullptr, &m_BoundaryPool ), "vkCreateCommandPool (boundary)" ) )
+            return false;
+        VkCommandBufferAllocateInfo ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+        ai.commandPool = m_BoundaryPool;
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        if ( m_Device->CheckResult( vkAllocateCommandBuffers( m_Device->Vk(), &ai, &m_Boundary ), "vkAllocateCommandBuffers (boundary)" ) )
+            return false;
+        VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        vkBeginCommandBuffer( m_Boundary, &bi );
+        VkMemoryBarrier2 b = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        b.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+        b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        VkDependencyInfo dep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &b;
+        vkCmdPipelineBarrier2( m_Boundary, &dep );
+        return !m_Device->CheckResult( vkEndCommandBuffer( m_Boundary ), "vkEndCommandBuffer (boundary)" );
     }
 
     uint64_t QueueImpl::CompletedSerial() const {
@@ -292,16 +317,18 @@ namespace VulkanRhi {
     VkResult QueueImpl::Submit( const VkCommandBuffer* cmds, uint32_t cmdCount, const VkSemaphoreSubmitInfo* waits, uint32_t waitCount,
         const VkSemaphoreSubmitInfo* signals, uint32_t signalCount, FenceImpl* fence, UINT64 fenceValue ) {
         constexpr uint32_t kMaxCmds = 32, kMaxWaits = 16, kMaxSignals = 8;
-        VkCommandBufferSubmitInfo cbs[kMaxCmds + 1];
+        VkCommandBufferSubmitInfo cbs[kMaxCmds + 2];
         VkSemaphoreSubmitInfo w[kMaxWaits + kMaxPendingWaits];
         VkSemaphoreSubmitInfo s[kMaxSignals + 2];
         uint32_t nc = 0, nw = 0, ns = 0;
 
         std::lock_guard<std::mutex> lock( m_Mutex );
         const uint64_t serial = m_Serial.load() + 1;
+        if ( cmdCount && m_Boundary )
+            cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, m_Boundary, 0 };
         if ( VkCommandBuffer init = m_Device->TakeInitCommands( serial ) )
             cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, init, 0 };
-        for ( uint32_t i = 0; i < cmdCount && nc < kMaxCmds + 1; ++i )
+        for ( uint32_t i = 0; i < cmdCount && nc < kMaxCmds + 2; ++i )
             cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, cmds[i], 0 };
         for ( uint32_t i = 0; i < m_PendingWaitCount; ++i ) w[nw++] = m_PendingWaits[i];
         m_PendingWaitCount = 0;
@@ -352,7 +379,7 @@ namespace VulkanRhi {
         FenceImpl* f = static_cast<FenceImpl*>( fence );
         if ( !f ) return E_INVALIDARG;
         const uint64_t point = f->InternalPointFor( value );
-        if ( !point ) return S_OK;   // already reached (a wait on a never-signalled value would deadlock this queue)
+        if ( !point ) return S_OK;   // never signalled: a GPU wait on it would deadlock this queue
         AddPendingWait( { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, f->m_Timeline, point, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 } );
         return S_OK;
     }
