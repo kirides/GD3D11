@@ -149,6 +149,8 @@ namespace VulkanRhi {
         void SetTable( BindState& b, UINT param, D3D12_GPU_DESCRIPTOR_HANDLE h );
         void SetRootVa( BindState& b, UINT param, D3D12_GPU_VIRTUAL_ADDRESS a );
         bool FlushBindings( BindState& b, VkPipelineBindPoint point );
+        /** Sets the pipeline's dynamic graphics state, skipping what the command buffer already has. */
+        void ApplyDynamicState( const PipelineStateImpl& pso );
         bool PrepareDraw();
         void ReplayIndirect( const CommandSignatureImpl& s, UINT maxCount, ResourceImpl* args, UINT64 argOffset,
             ResourceImpl* count, UINT64 countOffset );
@@ -193,6 +195,9 @@ namespace VulkanRhi {
         bool m_ViewportDirty = true;
         bool m_ScissorDirty = true;
         bool m_StaticDynamicsSet = false;
+        PipelineStateImpl::Dynamic m_Dyn;   // what ApplyDynamicState last set; m_DynValid / m_DynBlendValid say how much
+        bool m_DynValid = false;
+        uint32_t m_DynBlendValid = 0;
 
         D3D12_VERTEX_BUFFER_VIEW m_Vbs[kMaxVertexBuffers] = {};
         uint32_t m_VbDirtyMask = 0;
@@ -257,6 +262,8 @@ namespace VulkanRhi {
         m_Topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
         m_TopologyDirty = m_ViewportDirty = m_ScissorDirty = true;
         m_StaticDynamicsSet = false;
+        m_DynValid = false;
+        m_DynBlendValid = 0;
         m_VbDirtyMask = 0;
         m_IbDirty = false;
         for ( auto& v : m_Vbs ) v = {};
@@ -474,6 +481,7 @@ namespace VulkanRhi {
         if ( !rs || !b.Pso ) return false;
         if ( b.PsoDirty ) {
             vkCmdBindPipeline( m_Cmd, point, b.Pso->m_Pipeline );
+            if ( point == VK_PIPELINE_BIND_POINT_GRAPHICS ) ApplyDynamicState( *b.Pso );
             b.PsoDirty = false;
         }
         if ( b.HeapDirty && m_Heap ) {
@@ -579,6 +587,61 @@ namespace VulkanRhi {
         }
         b.DirtyParams = 0;
         return true;
+    }
+
+    void CommandListImpl::ApplyDynamicState( const PipelineStateImpl& pso ) {
+        const PipelineStateImpl::Dynamic& d = pso.m_Dynamic;
+        PipelineStateImpl::Dynamic& s = m_Dyn;
+        const bool all = !m_DynValid;
+        const VulkanDeviceCaps& caps = m_Device->VkCaps();
+        auto sameStencil = []( const VkStencilOpState& a, const VkStencilOpState& b ) {
+            return a.failOp == b.failOp && a.passOp == b.passOp && a.depthFailOp == b.depthFailOp && a.compareOp == b.compareOp
+                && a.compareMask == b.compareMask && a.writeMask == b.writeMask;
+        };
+
+        if ( all || s.CullMode != d.CullMode ) vkCmdSetCullMode( m_Cmd, d.CullMode );
+        if ( all || s.FrontFace != d.FrontFace ) vkCmdSetFrontFace( m_Cmd, d.FrontFace );
+        if ( all || s.DepthTest != d.DepthTest ) vkCmdSetDepthTestEnable( m_Cmd, d.DepthTest );
+        if ( all || s.DepthWrite != d.DepthWrite ) vkCmdSetDepthWriteEnable( m_Cmd, d.DepthWrite );
+        if ( all || s.DepthCompare != d.DepthCompare ) vkCmdSetDepthCompareOp( m_Cmd, d.DepthCompare );
+        if ( all || s.StencilTest != d.StencilTest ) vkCmdSetStencilTestEnable( m_Cmd, d.StencilTest );
+        auto stencil = [&]( VkStencilFaceFlags face, const VkStencilOpState& now, const VkStencilOpState& before ) {
+            if ( !all && sameStencil( now, before ) ) return;
+            vkCmdSetStencilOp( m_Cmd, face, now.failOp, now.passOp, now.depthFailOp, now.compareOp );
+            vkCmdSetStencilCompareMask( m_Cmd, face, now.compareMask );
+            vkCmdSetStencilWriteMask( m_Cmd, face, now.writeMask );
+        };
+        stencil( VK_STENCIL_FACE_FRONT_BIT, d.Front, s.Front );
+        stencil( VK_STENCIL_FACE_BACK_BIT, d.Back, s.Back );
+        if ( all || s.DepthBias != d.DepthBias ) vkCmdSetDepthBiasEnable( m_Cmd, d.DepthBias );
+        if ( all || s.BiasConstant != d.BiasConstant || s.BiasClamp != d.BiasClamp || s.BiasSlope != d.BiasSlope )
+            vkCmdSetDepthBias( m_Cmd, d.BiasConstant, d.BiasClamp, d.BiasSlope );
+        if ( caps.DynamicDepthClamp && ( all || s.DepthClamp != d.DepthClamp ) ) vkCmdSetDepthClampEnableEXT( m_Cmd, d.DepthClamp );
+        if ( caps.DynamicPolygonMode && ( all || s.PolygonMode != d.PolygonMode ) ) vkCmdSetPolygonModeEXT( m_Cmd, d.PolygonMode );
+        if ( caps.DynamicAlphaToCoverage && ( all || s.AlphaToCoverage != d.AlphaToCoverage ) )
+            vkCmdSetAlphaToCoverageEnableEXT( m_Cmd, d.AlphaToCoverage );
+
+        if ( caps.DynamicBlend && d.ColorCount ) {
+            const uint32_t mask = ( 1u << d.ColorCount ) - 1;
+            const bool blendValid = !all && ( m_DynBlendValid & mask ) == mask;
+            auto differs = [&]( const auto& a, const auto& b ) { return !blendValid || memcmp( a, b, sizeof( a[0] ) * d.ColorCount ) != 0; };
+            if ( differs( d.BlendEnable, s.BlendEnable ) ) vkCmdSetColorBlendEnableEXT( m_Cmd, 0, d.ColorCount, d.BlendEnable );
+            if ( differs( d.Blend, s.Blend ) ) vkCmdSetColorBlendEquationEXT( m_Cmd, 0, d.ColorCount, d.Blend );
+            if ( differs( d.WriteMask, s.WriteMask ) ) vkCmdSetColorWriteMaskEXT( m_Cmd, 0, d.ColorCount, d.WriteMask );
+            m_DynBlendValid = ( all ? 0u : m_DynBlendValid ) | mask;
+        } else if ( all ) {
+            m_DynBlendValid = 0;
+        }
+
+        // Attachments past this pipeline's count keep what the command buffer still has for them.
+        const PipelineStateImpl::Dynamic before = s;
+        s = d;
+        for ( uint32_t i = d.ColorCount; i < 8; ++i ) {
+            s.BlendEnable[i] = before.BlendEnable[i];
+            s.Blend[i] = before.Blend[i];
+            s.WriteMask[i] = before.WriteMask[i];
+        }
+        m_DynValid = true;
     }
 
     bool CommandListImpl::PrepareDraw() {
@@ -1315,6 +1378,8 @@ namespace VulkanRhi {
         }
         m_ViewportDirty = m_ScissorDirty = m_TopologyDirty = true;
         m_StaticDynamicsSet = false;
+        m_DynValid = false;   // the raw recorder's pipelines had these states static
+        m_DynBlendValid = 0;
         for ( uint32_t i = 0; i < kMaxVertexBuffers; ++i )
             if ( m_Vbs[i].BufferLocation ) m_VbDirtyMask |= 1u << i;
         m_IbDirty = m_Ib.BufferLocation != 0;

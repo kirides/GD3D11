@@ -37,6 +37,11 @@ struct VulkanDeviceCaps {
     uint32_t DgcMaxIndirectStride = 0;
     uint32_t DgcMaxSequenceCount = 0;
     VkShaderStageFlags DgcShaderStages = 0;
+    // VK_EXT_extended_dynamic_state3: these become dynamic, so PSOs differing only in them share a VkPipeline.
+    bool DynamicBlend = false;             // colour blend enable + equation + write mask
+    bool DynamicDepthClamp = false;
+    bool DynamicPolygonMode = false;
+    bool DynamicAlphaToCoverage = false;
 
     uint32_t MaxPushDescriptors = 0;
     uint32_t MaxPushConstantsSize = 0;
