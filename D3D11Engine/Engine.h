@@ -43,6 +43,9 @@ namespace Engine {
     /** Creates main graphics engine */
     void CreateGraphicsEngine();
 
+    /** True when the ini/CLI asks for the D3D12 backend (before any probe or fallback). */
+    bool IsD3D12Requested();
+
     /** Creates the Global GAPI-Object */
     void CreateGothicAPI();
 

@@ -46,6 +46,10 @@ namespace Engine {
         return requested;
     }
 
+    bool IsD3D12Requested() {
+        return ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12;
+    }
+
     /** Creates main graphics engine */
     void CreateGraphicsEngine() {
         Logging::Inf( "Creating Main graphics engine" );
