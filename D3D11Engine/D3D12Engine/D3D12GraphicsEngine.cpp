@@ -2305,10 +2305,11 @@ void D3D12GraphicsEngine::HandleDeviceRemoved( HRESULT removedReason, const char
     // handles that (logs and returns) rather than crashing here on top of the original failure.
     if ( m_Api == Rhi::Backend::D3D12 ) DiagnoseErrors( D3D12Rhi::NativeDevice( m_Rhi.Get() ) );
 
-    auto msg = std::format( "D3D12 device removed at {} (reason: 0x{:08X}). See Log.txt for GPU breadcrumbs.",
-        context, static_cast<uint32_t>( removedReason ) );
+    const bool vulkan = m_Api == Rhi::Backend::Vulkan;
+    auto msg = std::format( "{} device removed at {} (reason: 0x{:08X}). See Log.txt for GPU breadcrumbs.",
+        vulkan ? "Vulkan" : "D3D12", context, static_cast<uint32_t>( removedReason ) );
     Logging::Wrn( "{}", msg.c_str() );
-    MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Device Removed", MB_OK );
+    MessageBoxA( NULL, msg.c_str(), vulkan ? "GD3D11 (Vulkan): Device Removed" : "GD3D11 (DX12): Device Removed", MB_OK );
     exit( removedReason );
 }
 
