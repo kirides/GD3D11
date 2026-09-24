@@ -113,7 +113,7 @@ namespace VulkanRhi {
     void FenceWaiter::Add( const FenceImpl* fence, UINT64 value, HANDLE event ) {
         {
             std::lock_guard<std::mutex> lock( m_Mutex );
-            m_Entries.push_back( { fence, value, event } );
+            m_Entries.push_back( { fence, value, event, QpcNow() } );
         }
         m_Cv.notify_all();
     }
@@ -135,6 +135,8 @@ namespace VulkanRhi {
             }
             for ( size_t i = 0; i < m_Entries.size(); ) {
                 if ( m_Entries[i].Fence->GetCompletedValue() >= m_Entries[i].Value ) {
+                    // The caller blocks on the event right after registering, so this is its wait.
+                    m_Entries[i].Fence->m_Device->AddWait( DeviceImpl::Wait::Fence, QpcNow() - m_Entries[i].Registered );
                     SetEvent( m_Entries[i].Event );
                     m_Entries[i] = m_Entries.back();
                     m_Entries.pop_back();
@@ -261,6 +263,7 @@ namespace VulkanRhi {
 
     QueueImpl::~QueueImpl() {
         if ( m_Device->Vk() ) vkQueueWaitIdle( m_Queue );
+        if ( m_TimePool ) vkDestroyQueryPool( m_Device->Vk(), m_TimePool, nullptr );
         if ( m_BoundaryPool ) vkDestroyCommandPool( m_Device->Vk(), m_BoundaryPool, nullptr );
         if ( m_SerialTimeline ) vkDestroySemaphore( m_Device->Vk(), m_SerialTimeline, nullptr );
     }
@@ -297,7 +300,58 @@ namespace VulkanRhi {
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers = &b;
         vkCmdPipelineBarrier2( m_Boundary, &dep );
-        return !m_Device->CheckResult( vkEndCommandBuffer( m_Boundary ), "vkEndCommandBuffer (boundary)" );
+        if ( m_Device->CheckResult( vkEndCommandBuffer( m_Boundary ), "vkEndCommandBuffer (boundary)" ) ) return false;
+
+        // GPU busy time for the per-frame log; optional.
+        if ( m_Device->VkCaps().TimestampQueries ) {
+            VkQueryPoolCreateInfo qi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qi.queryCount = kTimePairs * 2;
+            VkCommandBuffer cmds[kTimePairs * 2] = {};
+            ai.commandBufferCount = kTimePairs * 2;
+            if ( vkCreateQueryPool( m_Device->Vk(), &qi, nullptr, &m_TimePool ) != VK_SUCCESS
+                || vkAllocateCommandBuffers( m_Device->Vk(), &ai, cmds ) != VK_SUCCESS ) {
+                if ( m_TimePool ) vkDestroyQueryPool( m_Device->Vk(), m_TimePool, nullptr );
+                m_TimePool = VK_NULL_HANDLE;
+                return true;
+            }
+            for ( uint32_t i = 0; i < kTimePairs; ++i ) {
+                TimePair& p = m_TimePairs[i];
+                p.Begin = cmds[i * 2];
+                p.End = cmds[i * 2 + 1];
+                vkBeginCommandBuffer( p.Begin, &bi );
+                vkCmdResetQueryPool( p.Begin, m_TimePool, i * 2, 2 );
+                vkCmdWriteTimestamp2( p.Begin, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, m_TimePool, i * 2 );
+                vkEndCommandBuffer( p.Begin );
+                vkBeginCommandBuffer( p.End, &bi );
+                vkCmdWriteTimestamp2( p.End, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, m_TimePool, i * 2 + 1 );
+                vkEndCommandBuffer( p.End );
+            }
+        }
+        return true;
+    }
+
+    void QueueImpl::HarvestTimesLocked() {
+        const uint64_t completed = CompletedSerial();
+        for ( uint32_t i = 0; i < kTimePairs; ++i ) {
+            TimePair& p = m_TimePairs[i];
+            if ( !p.Pending || p.Serial > completed ) continue;
+            uint64_t t[2] = {};
+            if ( vkGetQueryPoolResults( m_Device->Vk(), m_TimePool, i * 2, 2, sizeof( t ), t, sizeof( uint64_t ), VK_QUERY_RESULT_64_BIT ) == VK_SUCCESS
+                && t[1] > t[0] ) {
+                m_GpuTicks += t[1] - t[0];
+            }
+            p.Pending = false;
+        }
+    }
+
+    uint64_t QueueImpl::TakeGpuTicks() {
+        std::lock_guard<std::mutex> lock( m_Mutex );
+        if ( !m_TimePool ) return 0;
+        HarvestTimesLocked();
+        const uint64_t ticks = m_GpuTicks;
+        m_GpuTicks = 0;
+        return ticks;
     }
 
     uint64_t QueueImpl::CompletedSerial() const {
@@ -316,8 +370,9 @@ namespace VulkanRhi {
 
     VkResult QueueImpl::Submit( const VkCommandBuffer* cmds, uint32_t cmdCount, const VkSemaphoreSubmitInfo* waits, uint32_t waitCount,
         const VkSemaphoreSubmitInfo* signals, uint32_t signalCount, FenceImpl* fence, UINT64 fenceValue ) {
+        const int64_t start = QpcNow();
         constexpr uint32_t kMaxCmds = 32, kMaxWaits = 16, kMaxSignals = 8;
-        VkCommandBufferSubmitInfo cbs[kMaxCmds + 2];
+        VkCommandBufferSubmitInfo cbs[kMaxCmds + 4];
         VkSemaphoreSubmitInfo w[kMaxWaits + kMaxPendingWaits];
         VkSemaphoreSubmitInfo s[kMaxSignals + 2];
         uint32_t nc = 0, nw = 0, ns = 0;
@@ -328,8 +383,18 @@ namespace VulkanRhi {
             cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, m_Boundary, 0 };
         if ( VkCommandBuffer init = m_Device->TakeInitCommands( serial ) )
             cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, init, 0 };
-        for ( uint32_t i = 0; i < cmdCount && nc < kMaxCmds + 2; ++i )
+        TimePair* timed = nullptr;
+        if ( cmdCount && m_TimePool ) {
+            TimePair& p = m_TimePairs[serial % kTimePairs];
+            if ( p.Pending ) HarvestTimesLocked();
+            if ( !p.Pending ) {
+                timed = &p;
+                cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, p.Begin, 0 };
+            }
+        }
+        for ( uint32_t i = 0; i < cmdCount && i < kMaxCmds; ++i )
             cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, cmds[i], 0 };
+        if ( timed ) cbs[nc++] = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, timed->End, 0 };
         for ( uint32_t i = 0; i < m_PendingWaitCount; ++i ) w[nw++] = m_PendingWaits[i];
         m_PendingWaitCount = 0;
         for ( uint32_t i = 0; i < waitCount && i < kMaxWaits; ++i ) w[nw++] = waits[i];
@@ -349,8 +414,16 @@ namespace VulkanRhi {
         si.pSignalSemaphoreInfos = s;
         const VkResult r = vkQueueSubmit2( m_Queue, 1, &si, VK_NULL_HANDLE );
         ++m_SubmitCount;
-        if ( r == VK_SUCCESS ) m_Serial.store( serial );
-        else m_Device->CheckResult( r, "vkQueueSubmit2" );
+        if ( r == VK_SUCCESS ) {
+            m_Serial.store( serial );
+            if ( timed ) {
+                timed->Serial = serial;
+                timed->Pending = true;
+            }
+        } else {
+            m_Device->CheckResult( r, "vkQueueSubmit2" );
+        }
+        m_Device->AddWait( DeviceImpl::Wait::Submit, QpcNow() - start );
         return r;
     }
 

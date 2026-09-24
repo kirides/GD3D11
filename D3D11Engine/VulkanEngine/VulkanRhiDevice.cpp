@@ -326,8 +326,13 @@ namespace VulkanRhi {
             LARGE_INTEGER freq = {};
             QueryPerformanceFrequency( &freq );
             const uint32_t f = m_StatsPresents;
-            Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
-                "{} render scopes, {} submits.", f, static_cast<double>( now.QuadPart - m_StatsStart ) * 1000.0 / freq.QuadPart / f,
+            auto ms = [&]( int64_t ticks ) { return static_cast<double>( ticks ) * 1000.0 / static_cast<double>( freq.QuadPart ) / f; };
+            auto waited = [&]( Wait w ) { return ms( m_WaitTicks[static_cast<uint32_t>( w )].exchange( 0 ) ); };
+            const double gpuMs = static_cast<double>( m_Queue->TakeGpuTicks() ) * VkCaps().TimestampPeriod / 1e6 / f;
+            Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, GPU busy {:.2f} ms; CPU blocked: fences {:.2f}, acquire {:.2f}, "
+                "present {:.2f}, submit {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
+                "{} render scopes, {} submits.", f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
+                waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
                 s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.Scopes / f, submits / f );
             m_StatsPresents = 0;
             m_StatsStart = now.QuadPart;

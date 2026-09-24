@@ -78,6 +78,12 @@ namespace VulkanRhi {
         VkDeviceSize Range = 0;
     };
 
+    inline int64_t QpcNow() {
+        LARGE_INTEGER t = {};
+        QueryPerformanceCounter( &t );
+        return t.QuadPart;
+    }
+
     /** CPU-side recording counters; command lists add theirs at Close and the swapchain logs them per frame. */
     struct RecordStats {
         uint32_t Draws = 0;      // draws reaching the command buffer, replayed ones included
@@ -328,6 +334,16 @@ namespace VulkanRhi {
         VkSemaphoreSubmitInfo m_PendingWaits[kMaxPendingWaits] = {};   // guarded by m_Mutex
         uint32_t m_PendingWaitCount = 0;
         uint32_t m_SubmitCount = 0;   // guarded by m_Mutex; taken by DeviceImpl::NotePresent
+
+        /** GPU time of the timed submits that retired since the last call, in timestamp ticks. */
+        uint64_t TakeGpuTicks();
+        // A timestamp pair after each submit's head barrier and after its last list; guarded by m_Mutex.
+        struct TimePair { VkCommandBuffer Begin = VK_NULL_HANDLE; VkCommandBuffer End = VK_NULL_HANDLE; uint64_t Serial = 0; bool Pending = false; };
+        static constexpr uint32_t kTimePairs = 128;
+        void HarvestTimesLocked();
+        VkQueryPool m_TimePool = VK_NULL_HANDLE;
+        std::array<TimePair, kTimePairs> m_TimePairs;
+        uint64_t m_GpuTicks = 0;
     };
 
     /** Signals Win32 events once fences reach a value, like ID3D12Fence::SetEventOnCompletion. */
@@ -341,7 +357,7 @@ namespace VulkanRhi {
         void Remove( const FenceImpl* fence );
 
     private:
-        struct Entry { const FenceImpl* Fence; UINT64 Value; HANDLE Event; };
+        struct Entry { const FenceImpl* Fence; UINT64 Value; HANDLE Event; int64_t Registered; };
         void Run();
         VkDevice m_Device = VK_NULL_HANDLE;
         std::mutex m_Mutex;
@@ -440,6 +456,9 @@ namespace VulkanRhi {
         /** Render thread, once per present: saves the pipeline cache after a quiet spell. */
         void NotePresent();
         void AddRecordStats( const RecordStats& stats );
+        /** CPU time spent blocked, in QPC ticks, for the per-frame log. */
+        enum class Wait : uint32_t { Fence, Acquire, Present, Submit, Count };
+        void AddWait( Wait kind, int64_t ticks ) { m_WaitTicks[static_cast<uint32_t>( kind )].fetch_add( ticks, std::memory_order_relaxed ); }
 
     private:
         bool CreateBindlessLayout();
@@ -490,6 +509,7 @@ namespace VulkanRhi {
 
         std::mutex m_StatsMutex;
         RecordStats m_Stats;
+        std::array<std::atomic<int64_t>, static_cast<size_t>( Wait::Count )> m_WaitTicks{};
         uint32_t m_StatsPresents = 0;   // render thread only, like the start time
         int64_t m_StatsStart = 0;
         friend class DescriptorHeapImpl;
