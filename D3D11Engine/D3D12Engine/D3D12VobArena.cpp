@@ -215,6 +215,10 @@ bool D3D12VobArena::Flush( D3D12GraphicsEngine* engine ) {
     if ( m_AllocFailed )
         return false;
 
+    // RefreshDynamicVobArena writes the vertex arena on the direct queue; those in-flight writes must land
+    // before the copy queue writes the same buffer (debug layer #1047).
+    engine->CopyQueueWaitForDirectQueue();
+
     // Reserve first (pure bookkeeping), so the growth decision below sees the exact final cursors instead
     // of a per-mesh estimate.
     std::vector<MeshInfo*> reserved;

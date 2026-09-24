@@ -348,9 +348,9 @@ public:
     void UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
     void UAVBarriers( std::initializer_list<ID3D12Resource*> resources ) { UAVBarriers( resources.begin(), static_cast<UINT>( resources.size() ) ); }
     void UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint = kBarrierSyncUnspecified );
-    /** Stays on the legacy D3D12_RESOURCE_BARRIER_TYPE_ALIASING path -- see D3D12Barrier.cpp for why
-        aliasing doesn't map cleanly onto the enhanced-barrier model. */
-    void AliasingBarrier( ID3D12Resource* before, ID3D12Resource* after );
+    /** Activates freshly placed texture `after` (left in RENDER_TARGET, contents discarded), retiring `before`
+        (may be null; currently in `beforeState`) that shared its memory. */
+    void AliasingBarrier( ID3D12Resource* before, D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after );
 
     static void SetEnhancedBarriersDeviceSupport( bool supported ) noexcept { s_DeviceSupportsEnhancedBarriers = supported; }
     /** Queried by D3D12ResourceCreate.h to decide CreateResource3 (D3D12_BARRIER_LAYOUT initial layout)
@@ -385,6 +385,7 @@ public:
         UINT8 stencil, UINT numRects, const D3D12_RECT* rects ) {
         m_List->ClearDepthStencilView( dsv, flags, depth, stencil, numRects, rects );
     }
+    void DiscardResource( ID3D12Resource* resource ) { m_List->DiscardResource( resource, nullptr ); }
     void CopyResource( ID3D12Resource* dst, ID3D12Resource* src ) { m_List->CopyResource( dst, src ); }
     void CopyBufferRegion( ID3D12Resource* dst, UINT64 dstOffset, ID3D12Resource* src, UINT64 srcOffset, UINT64 bytes ) {
         m_List->CopyBufferRegion( dst, dstOffset, src, srcOffset, bytes );

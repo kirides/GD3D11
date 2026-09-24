@@ -530,6 +530,7 @@ bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
 	m_DisplaySlot = -1;
 	m_DisplayChainRemaining = 0;
 	m_DisplayChainSrc = -1;
+	m_LdrScratchNeedsDiscard = true;
 	m_LdrCopyReady = true;
 	return true;
 }

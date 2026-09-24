@@ -855,6 +855,12 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 		return;
 	}
 
+	// Copy-queue order is FIFO, so one wait also covers every later batch.
+	if ( m_CopyWaitsForDirect.exchange( false ) ) {
+		const UINT64 directValue = m_LastDirectSignal.load();
+		if ( directValue ) m_CopyQueue->Wait( m_Fence.Get(), directValue );
+	}
+
 	ID3D12CommandList* lists[] = { m_CopyBatchList.Get() };
 	m_CopyQueue->ExecuteCommandLists( 1, lists );
 
@@ -1428,6 +1434,13 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	if ( !m_SceneColorInPixelState ) {
 		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 		m_SceneColorInPixelState = true;
+	}
+
+	// Nothing lives in the scratches yet this frame, so this is the safe spot to initialize fresh ones.
+	if ( m_LdrScratchNeedsDiscard && m_LdrCopyReady ) {
+		m_CmdList->DiscardResource( m_LdrScratch[0].Get() );
+		m_CmdList->DiscardResource( m_LdrScratch[1].Get() );
+		m_LdrScratchNeedsDiscard = false;
 	}
 
 	// Decides whether this lands in the real display target or opens the display chain in scratch 0.
@@ -2585,6 +2598,7 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     }
 
     m_Device.GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
+    m_LastDirectSignal.store( currentFenceValue );
 
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
 
@@ -2650,6 +2664,7 @@ void D3D12GraphicsEngine::WaitForGpuIdle() {
     // Because GPU execution is sequential, this milestone is only reached 
     // when ALL work previously queued has finished.
     if ( FAILED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), idleValue ) ) ) return;
+    m_LastDirectSignal.store( idleValue );
 
     // Perform a CPU wait using a transient local event.
     if ( m_Fence->GetCompletedValue() < idleValue ) {
@@ -2688,6 +2703,7 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
 
     const UINT64 waitValue = ++m_FenceValues[m_FrameIndex];
     if ( SUCCEEDED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), waitValue ) ) ) {
+        m_LastDirectSignal.store( waitValue );
         WaitOnFrameFence( waitValue, "FlushCommandListSync" );
     }
 
