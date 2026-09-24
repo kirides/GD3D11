@@ -582,16 +582,17 @@ bool VulkanDevice::Init() {
         VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
+    m_Caps.Maintenance5 = enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) && info->Maintenance5.maintenance5,
+        VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
     constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     // -VKNODGC / GD3D11_VULKAN_NO_DGC=1 fall back to CPU replay, for A/B tests and driver trouble.
     const bool dgcDisabled = strstr( GetCommandLineA(), "-VKNODGC" ) || strstr( GetCommandLineA(), "-vknodgc" )
         || GetEnvironmentVariableA( "GD3D11_VULKAN_NO_DGC", nullptr, 0 ) > 0;
     m_Caps.DeviceGeneratedCommands = !dgcDisabled && info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
-        && info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) && info->Maintenance5.maintenance5 && info->Features12.bufferDeviceAddress
+        && m_Caps.Maintenance5 && info->Features12.bufferDeviceAddress
         && ( info->DgcProps.supportedIndirectCommandsShaderStages & kDgcStages ) == kDgcStages;
     if ( m_Caps.DeviceGeneratedCommands ) {
-        extensions.push_back( VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
         extensions.push_back( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME );
         m_Caps.DgcMaxIndirectStride = info->DgcProps.maxIndirectCommandsIndirectStride;
         m_Caps.DgcMaxSequenceCount = info->DgcProps.maxIndirectSequenceCount;
@@ -692,10 +693,8 @@ bool VulkanDevice::Init() {
     void** tail = &mutableFeatures.pNext;
     if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
     if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
-    if ( m_Caps.DeviceGeneratedCommands ) {
-        *tail = &maintenance5; tail = &maintenance5.pNext;
-        *tail = &dgc; tail = &dgc.pNext;
-    }
+    if ( m_Caps.Maintenance5 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
+    if ( m_Caps.DeviceGeneratedCommands ) { *tail = &dgc; tail = &dgc.pNext; }
     if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
     if ( m_Caps.PageableMemory ) { *tail = &pageable; tail = &pageable.pNext; }
     if ( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage ) {
