@@ -1,4 +1,5 @@
 #include "../pch.h"
+#include "VulkanRhi.h"
 #include "VulkanRhiInternal.h"
 #include "../Logger.h"
 
@@ -96,6 +97,9 @@ namespace VulkanRhi {
         void BeginEvent( const wchar_t* wide, UINT wideLength, const char* narrow ) override;
         void EndEvent() override;
 
+        VkCommandBuffer BeginNative();
+        void EndNative();
+
         VkCommandBuffer m_Cmd = VK_NULL_HANDLE;
 
     private:
@@ -176,6 +180,14 @@ namespace VulkanRhi {
 
     VkCommandBuffer CommandBufferOf( Rhi::CommandList* list ) {
         return list ? static_cast<CommandListImpl*>( list )->m_Cmd : VK_NULL_HANDLE;
+    }
+
+    VkCommandBuffer_T* BeginNativeRendering( Rhi::CommandList* list ) {
+        return list ? static_cast<CommandListImpl*>( list )->BeginNative() : nullptr;
+    }
+
+    void EndNativeRendering( Rhi::CommandList* list ) {
+        if ( list ) static_cast<CommandListImpl*>( list )->EndNative();
     }
 
     HRESULT DeviceImpl::CreateCommandList( D3D12_COMMAND_LIST_TYPE type, Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState,
@@ -936,6 +948,28 @@ namespace VulkanRhi {
             ci.pRegions = &region;
             vkCmdCopyImage2( m_Cmd, &ci );
         }
+    }
+
+    // ---- Raw recording --------------------------------------------------------------------------
+
+    VkCommandBuffer CommandListImpl::BeginNative() {
+        if ( m_TargetsDirty || !m_InRendering ) {
+            EndRenderingScope();
+            BeginRenderingScope( m_Rtvs, m_RtvCount, m_HasDsv ? &m_Dsv : nullptr, nullptr, nullptr,
+                VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_LOAD, nullptr );
+            m_TargetsDirty = false;
+        }
+        return m_Cmd;
+    }
+
+    void CommandListImpl::EndNative() {
+        // The raw recorder bound its own pipeline, descriptor sets, buffers and dynamic state.
+        for ( BindState* b : { &m_Gfx, &m_Compute } ) b->PsoDirty = b->HeapDirty = b->Dirty = true;
+        m_ViewportDirty = m_ScissorDirty = m_TopologyDirty = true;
+        m_StaticDynamicsSet = false;
+        for ( uint32_t i = 0; i < kMaxVertexBuffers; ++i )
+            if ( m_Vbs[i].BufferLocation ) m_VbDirtyMask |= 1u << i;
+        m_IbDirty = m_Ib.BufferLocation != 0;
     }
 
     // ---- Debug labels ---------------------------------------------------------------------------

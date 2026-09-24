@@ -7,7 +7,6 @@
 #include "ImGuiShim.h"
 #include "D3D12Engine/D3D12Device.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
-#include "VulkanEngine/VulkanGraphicsEngine.h"
 #include "SqliteBlobStore.h"
 
 #include <algorithm>
@@ -68,12 +67,12 @@ namespace Engine {
         const auto requestedApi = ReadRequestedGraphicsAPI();
         if ( requestedApi == GothicRendererSettings::GRAPHICS_API_VULKAN ) {
             GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_VULKAN;
-            GraphicsEngine = new VulkanGraphicsEngine;
+            GraphicsEngine = new D3D12GraphicsEngine( Rhi::Backend::Vulkan );
             if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
                 initialized = true;
                 IsVulkanBackend = true;
             } else {
-                // VulkanDevice::Init has already logged the capability report and the reason.
+                // VulkanDevice::Init / the engine have already logged the reason.
                 SAFE_DELETE( GraphicsEngine );
                 Logging::Wrn( "The Vulkan backend failed to initialize. Falling back to Direct3D 11." );
             }

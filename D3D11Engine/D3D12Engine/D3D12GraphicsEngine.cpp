@@ -16,6 +16,7 @@
 #include "../GMeshSimple.h"
 
 #include "D3D12TracyDebug.h"
+#include "../VulkanEngine/VulkanRhi.h"
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
@@ -35,7 +36,7 @@ namespace {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 }
 
-D3D12GraphicsEngine::D3D12GraphicsEngine() {
+D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ) {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
@@ -81,12 +82,13 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
 }
 
 XRESULT D3D12GraphicsEngine::Init() {
-    m_Rhi = D3D12Rhi::CreateDevice();
+    m_Rhi = m_Api == Rhi::Backend::Vulkan ? VulkanRhi::CreateDevice() : D3D12Rhi::CreateDevice();
     if ( !m_Rhi ) {
         Logging::Err( "D3D12GraphicsEngine::Init: device creation failed." );
         return XR_FAILED;
     }
-    InitGpuScopeMarkers();
+    m_SceneEnabled = m_Api == Rhi::Backend::D3D12;
+    if ( m_Api == Rhi::Backend::D3D12 ) InitGpuScopeMarkers();
 
     const Rhi::Caps& caps = m_Rhi->GetCaps();
     m_DeviceCapabilities.DeviceDescription = m_Rhi->GetDescription();
@@ -173,6 +175,12 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     LoadDistortionTexture();   // non-fatal: wet ground just skips the no-normalmap fallback if this is missing
+    if ( !m_SceneEnabled ) {
+        CreateDisplayOnlyPipelines();
+        D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
+        Logging::Inf( "D3D12GraphicsEngine initialized on Vulkan: menus and UI only, the 3D scene is not drawn yet." );
+        return XR_SUCCESS;
+    }
     if ( !m_Pipelines.CreateWorld() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline." );
         return XR_FAILED;
@@ -424,6 +432,21 @@ XRESULT D3D12GraphicsEngine::Init() {
 }
 
 
+void D3D12GraphicsEngine::CreateDisplayOnlyPipelines() {
+    // Everything the menus, HUD, 2D inventory, video and the overlay draw with; all non-fatal here.
+    if ( !m_Pipelines.CreatePreview() )
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline." );
+    if ( !m_Pipelines.CreateInventoryItem() )
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the batched inventory item pipeline." );
+    if ( !m_Pipelines.CreateVideo() )
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the video (Bink) pipeline." );
+    if ( !m_Pipelines.CreateGammaCorrect() )
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the gamma-correct pipeline." );
+    if ( !m_Pipelines.CreateLines() || !CreateLineVertexBuffers() )
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the debug-line pipeline." );
+}
+
+
 bool D3D12GraphicsEngine::CreateUploadObjects() {
     Rhi::Device* device = m_Rhi.Get();
     if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, m_UploadAllocator.ReleaseAndGetAddressOf() ) ) )
@@ -505,9 +528,14 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( Rhi::Resource* te
         transitionAllocator.Get(), nullptr, transitionCmdList.ReleaseAndGetAddressOf() ) ) )
         return;
 
-    // This transient list lives outside the per-frame recording path, so it stays on the legacy transition API.
-    auto toSRV = TransitionBarrier( D3D12Rhi::Native( texture ), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-    D3D12Rhi::Native( transitionCmdList.Get() )->ResourceBarrier( 1, &toSRV );
+    if ( m_Api == Rhi::Backend::D3D12 ) {
+        // This transient list lives outside the per-frame recording path, so it stays on the legacy transition API.
+        auto toSRV = TransitionBarrier( D3D12Rhi::Native( texture ), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+        D3D12Rhi::Native( transitionCmdList.Get() )->ResourceBarrier( 1, &toSRV );
+    } else {
+        const Rhi::ResourceTransition toSRV = { texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE };
+        transitionCmdList->TransitionBarriers( &toSRV, 1 );
+    }
     if ( FAILED( transitionCmdList->Close() ) ) return;
 
     Rhi::CommandList* lists[] = { transitionCmdList.Get() };
@@ -1679,7 +1707,7 @@ bool D3D12GraphicsEngine::RebakeMipLodBias( float newBias ) {
 
     D3D12PipelineState backup = m_Pipelines;   // cheap AddRef pass — see ApplyPendingShaderReload
     std::vector<std::string> failedFatal, failedOptional;
-    if ( !m_Pipelines.ReloadAll( m_HdrOutputActive, failedFatal, failedOptional ) ) {
+    if ( !m_Pipelines.ReloadAll( m_HdrOutputActive, m_SceneEnabled, failedFatal, failedOptional ) ) {
         m_Pipelines = backup;
         D3D12RootLayout::SetAnisoMipLodBias( previousBias );
         std::string names;
@@ -1810,8 +1838,13 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         // The overlay draws into the display target (m_HdrDisplay when HDR output is up), so it must be
         // built for that RTV format, not the swapchain's. It needs no HDR awareness beyond that: the display
         // buffer holds the same gamma-encoded values it would write to an SDR swapchain.
-        Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, D3D12Rhi::NativeDevice( m_Rhi.Get() ),
-            D3D12Rhi::Native( m_Rhi->GetDirectQueue() ), kBackBufferCount, m_Pipelines.DisplayFormat, D3D12Rhi::Native( m_SrvHeap.Get() ) );
+        if ( m_Api == Rhi::Backend::Vulkan ) {
+            Engine::ImGuiHandle->InitVulkan( m_OutputWindow, VulkanRhi::NativeDevice( m_Rhi.Get() ), VulkanRhi::VkFormatOf( m_Pipelines.DisplayFormat ),
+                kBackBufferCount, std::max( kBackBufferCount, m_SwapChainImageCount ) );
+        } else {
+            Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, D3D12Rhi::NativeDevice( m_Rhi.Get() ),
+                D3D12Rhi::Native( m_Rhi->GetDirectQueue() ), kBackBufferCount, m_Pipelines.DisplayFormat, D3D12Rhi::Native( m_SrvHeap.Get() ) );
+        }
     }
     return true;
 }
@@ -2263,7 +2296,7 @@ static void PrintGpuScopeMarkers() {
 void D3D12GraphicsEngine::HandleDeviceRemoved( HRESULT removedReason, const char* context ) {
     // Best-effort: the device may itself be in a state where this queries nothing, but DiagnoseErrors
     // handles that (logs and returns) rather than crashing here on top of the original failure.
-    DiagnoseErrors( D3D12Rhi::NativeDevice( m_Rhi.Get() ) );
+    if ( m_Api == Rhi::Backend::D3D12 ) DiagnoseErrors( D3D12Rhi::NativeDevice( m_Rhi.Get() ) );
 
     auto msg = std::format( "D3D12 device removed at {} (reason: 0x{:08X}). See Log.txt for GPU breadcrumbs.",
         context, static_cast<uint32_t>( removedReason ) );
@@ -2301,7 +2334,14 @@ XRESULT D3D12GraphicsEngine::Present() {
         TracyD3D12ZoneCGX( m_CmdList.Get(), "ImGui" );
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
         m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
-        Engine::ImGuiHandle->RenderLoopD3D12( D3D12Rhi::Native( m_CmdList.Get() ) );
+        if ( m_Api == Rhi::Backend::Vulkan ) {
+            VkCommandBuffer_T* cmd = VulkanRhi::BeginNativeRendering( m_CmdList.Get() );
+            std::lock_guard<std::mutex> lock( VulkanRhi::QueueMutex( m_Rhi.Get() ) );   // imgui_impl_vulkan submits texture uploads itself
+            Engine::ImGuiHandle->RenderLoopVulkan( cmd );
+            VulkanRhi::EndNativeRendering( m_CmdList.Get() );
+        } else {
+            Engine::ImGuiHandle->RenderLoopD3D12( D3D12Rhi::Native( m_CmdList.Get() ) );
+        }
         // imgui_impl_dx12 records on the RAW list: its own PSO, root signature, descriptor heaps, RTV,
         // viewport, scissor, topology, blend factor and vertex/index buffers. The state cache cannot see
         // any of it, so drop the whole shadow — this is the one place in the backend that goes behind it.
@@ -2996,7 +3036,7 @@ void D3D12GraphicsEngine::ApplyPendingShaderReload() {
     D3D12PipelineState backup = m_Pipelines;
 
     std::vector<std::string> failedFatal, failedOptional;
-    const bool ok = m_Pipelines.ReloadAll( m_HdrOutputActive, failedFatal, failedOptional );
+    const bool ok = m_Pipelines.ReloadAll( m_HdrOutputActive, m_SceneEnabled, failedFatal, failedOptional );
 
     if ( !ok ) {
         m_Pipelines = backup;   // whole-state rollback — see ReloadAll's header comment for why this is safe

@@ -68,10 +68,13 @@ public:
         never changes afterwards (switching it requires a restart, like D3D11's swapchain waitable flag). */
     UINT kBackBufferCount = 3;
 
-    D3D12GraphicsEngine();
+    /** The modern renderer on either RHI backend; Vulkan draws menus and UI only until Phase 4. */
+    explicit D3D12GraphicsEngine( Rhi::Backend api = Rhi::Backend::D3D12 );
     ~D3D12GraphicsEngine() override;
 
-    EGraphicsEngineBackend GetBackendAPI() const override { return EGraphicsEngineBackend::D3D12; }
+    EGraphicsEngineBackend GetBackendAPI() const override {
+        return m_Api == Rhi::Backend::Vulkan ? EGraphicsEngineBackend::Vulkan : EGraphicsEngineBackend::D3D12;
+    }
 
     /** Creates the D3D12 device + command queues (swapchain waits for the window). */
     XRESULT Init() override;
@@ -463,6 +466,9 @@ private:
     // The RHI device; owns the native device and the memory allocator. Declared before every resource member
     // so it is destroyed after them: an allocation must not outlive its allocator.
     Microsoft::WRL::ComPtr<Rhi::Device> m_Rhi;
+    Rhi::Backend m_Api = Rhi::Backend::D3D12;
+    bool m_SceneEnabled = true;   // false on Vulkan until the scene passes are lowered
+    void CreateDisplayOnlyPipelines();
 
     Microsoft::WRL::ComPtr<Rhi::Swapchain>        m_SwapChain;
     Microsoft::WRL::ComPtr<Rhi::DescriptorHeap>   m_RtvHeap;   // kBackBufferMax swapchain RTVs + 1 HDR scene-color RTV

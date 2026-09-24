@@ -31,6 +31,9 @@ namespace Engine {
     /** True only when the Vulkan backend was actually created AND initialized. Same rules as IsD3D12Backend. */
     __declspec(selectany) bool IsVulkanBackend;
 
+    /** The modern renderer (D3D12Engine/) is up, on either RHI backend. */
+    inline bool IsModernBackend() { return IsD3D12Backend || IsVulkanBackend; }
+
     /** Global GothicAPI object */
     __declspec(selectany) GothicAPI* GAPI;
 

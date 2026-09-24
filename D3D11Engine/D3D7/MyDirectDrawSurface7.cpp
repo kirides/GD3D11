@@ -352,7 +352,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         const std::pair<const char*, EAdditionalMaterial> d3d11Variants[] = {
             { "_FX.DDS",    EAdditionalMaterial::Specular },
         };
-        const bool isD3D12 = Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12;
+        const bool isD3D12 = Engine::IsModernBackend();
         using VariantSpan = std::span<const std::pair<const char*, EAdditionalMaterial>>;
         const VariantSpan variants = isD3D12 ? VariantSpan{ d3d12Variants } : VariantSpan{ d3d11Variants };
 
