@@ -304,6 +304,7 @@ void D3D12GraphicsEngine::EnsureFsr3Ready() {
         && settings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3
         && settings.ResolutionScalePercent <= 100;
     if ( !wanted || m_Fsr3InitFailed ) return;
+    if ( m_Api != Rhi::Backend::D3D12 ) return;   // the FFX backend here is DX12-only
     if ( m_Fsr3Context && m_Fsr3SharedReady && m_Fsr3OutputReady ) return;
     if ( !m_SwapChainReady || !m_Rhi ) return;
     if ( m_Resolution.x < 4 || m_Resolution.y < 4 ) return;

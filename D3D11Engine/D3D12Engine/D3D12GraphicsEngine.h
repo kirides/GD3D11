@@ -68,7 +68,7 @@ public:
         never changes afterwards (switching it requires a restart, like D3D11's swapchain waitable flag). */
     UINT kBackBufferCount = 3;
 
-    /** The modern renderer on either RHI backend; Vulkan draws menus and UI only until Phase 4. */
+    /** The modern renderer on either RHI backend. */
     explicit D3D12GraphicsEngine( Rhi::Backend api = Rhi::Backend::D3D12 );
     ~D3D12GraphicsEngine() override;
 
@@ -467,7 +467,7 @@ private:
     // so it is destroyed after them: an allocation must not outlive its allocator.
     Microsoft::WRL::ComPtr<Rhi::Device> m_Rhi;
     Rhi::Backend m_Api = Rhi::Backend::D3D12;
-    bool m_SceneEnabled = true;   // false on Vulkan until the scene passes are lowered
+    bool m_SceneEnabled = true;   // false only on Vulkan when InitScene failed: menus and UI still run
     void CreateDisplayOnlyPipelines();
     bool InitScene();
 
