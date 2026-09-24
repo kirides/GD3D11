@@ -1846,7 +1846,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         // built for that RTV format, not the swapchain's. It needs no HDR awareness beyond that: the display
         // buffer holds the same gamma-encoded values it would write to an SDR swapchain.
         if ( m_Api == Rhi::Backend::Vulkan ) {
-            Engine::ImGuiHandle->InitVulkan( m_OutputWindow, VulkanRhi::NativeDevice( m_Rhi.Get() ), VulkanRhi::VkFormatOf( m_Pipelines.DisplayFormat ),
+            Engine::ImGuiHandle->InitVulkan( m_OutputWindow, m_Rhi.Get(), VulkanRhi::VkFormatOf( m_Pipelines.DisplayFormat ),
                 kBackBufferCount, std::max( kBackBufferCount, m_SwapChainImageCount ) );
         } else {
             Engine::ImGuiHandle->InitD3D12( m_OutputWindow, this, D3D12Rhi::NativeDevice( m_Rhi.Get() ),

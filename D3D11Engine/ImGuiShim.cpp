@@ -3,6 +3,7 @@
 #include "D3D11PipelineStateCache.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include "VulkanEngine/VulkanDevice.h"
+#include "VulkanEngine/VulkanRhi.h"
 #define IMGUI_IMPL_VULKAN_USE_VOLK
 #include <imgui_impl_vulkan.h>
 #include <VersionHelpers.h>
@@ -218,8 +219,10 @@ void ImGuiShim::InitD3D12(
     FinishImGuiInit( Window, Resolutions, m_EditorView );
 }
 
-void ImGuiShim::InitVulkan( HWND Window, VulkanDevice& device, int colorFormat, uint32_t minImageCount, uint32_t imageCount )
+void ImGuiShim::InitVulkan( HWND Window, Rhi::Device* rhi, int colorFormat, uint32_t minImageCount, uint32_t imageCount )
 {
+    VulkanDevice& device = VulkanRhi::NativeDevice( rhi );
+    m_VulkanRhi = rhi;
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -266,6 +269,60 @@ void ImGuiShim::SetVulkanMinImageCount( uint32_t minImageCount )
     if ( Initiated && m_Backend == Backend::Vulkan ) ImGui_ImplVulkan_SetMinImageCount( minImageCount );
 }
 
+ImTextureID ImGuiShim::GetVulkanTextureId( D3D12_GPU_DESCRIPTOR_HANDLE srv )
+{
+    if ( !Initiated || m_Backend != Backend::Vulkan || !srv.ptr ) return ImTextureID_Invalid;
+    Microsoft::WRL::ComPtr<Rhi::Resource> resource;
+    uint64_t view = 0;
+    int layout = 0;
+    if ( !VulkanRhi::SampledImageOf( m_VulkanRhi, srv, resource, view, layout ) ) return ImTextureID_Invalid;
+    for ( VulkanUserTexture& t : m_VulkanTextures ) {
+        if ( t.View != view ) continue;
+        t.Frame = m_VulkanFrame;
+        return static_cast<ImTextureID>( t.Set );
+    }
+
+    // InitVulkan's pool has 64 sets beyond the font atlas; retired sets still hold theirs.
+    constexpr size_t kMaxUserTextures = 56;
+    if ( m_VulkanTextures.size() + m_VulkanRetired.size() >= kMaxUserTextures ) {
+        static bool s_Warned = false;
+        if ( !s_Warned ) Logging::Wrn( "Vulkan: more than {} ImGui textures in use; dropping the rest.", kMaxUserTextures );
+        s_Warned = true;
+        return ImTextureID_Invalid;
+    }
+    const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture( (VkImageView)view, static_cast<VkImageLayout>( layout ) );
+    if ( set == VK_NULL_HANDLE ) return ImTextureID_Invalid;
+    VulkanUserTexture t;
+    t.Resource = resource.Detach();
+    t.View = view;
+    t.Set = VkUtil::HandleToU64( set );
+    t.Frame = m_VulkanFrame;
+    m_VulkanTextures.push_back( t );
+    return static_cast<ImTextureID>( t.Set );
+}
+
+void ImGuiShim::CollectVulkanTextures()
+{
+    constexpr uint64_t kUnusedFrames = 120;
+    constexpr uint64_t kRetireFrames = 8;   // more than the frames in flight
+    for ( size_t i = 0; i < m_VulkanRetired.size(); ) {
+        VulkanUserTexture& t = m_VulkanRetired[i];
+        if ( m_VulkanFrame < t.Frame + kRetireFrames ) { ++i; continue; }
+        ImGui_ImplVulkan_RemoveTexture( (VkDescriptorSet)t.Set );
+        t.Resource->Release();
+        t = m_VulkanRetired.back();
+        m_VulkanRetired.pop_back();
+    }
+    for ( size_t i = 0; i < m_VulkanTextures.size(); ) {
+        VulkanUserTexture& t = m_VulkanTextures[i];
+        if ( m_VulkanFrame < t.Frame + kUnusedFrames ) { ++i; continue; }
+        t.Frame = m_VulkanFrame;
+        m_VulkanRetired.push_back( t );
+        t = m_VulkanTextures.back();
+        m_VulkanTextures.pop_back();
+    }
+}
+
 
 ImGuiShim::~ImGuiShim()
 {
@@ -274,6 +331,10 @@ ImGuiShim::~ImGuiShim()
         if ( m_Backend == Backend::D3D12 ) {
             ImGui_ImplDX12_Shutdown();
         } else if ( m_Backend == Backend::Vulkan ) {
+            for ( auto* list : { &m_VulkanTextures, &m_VulkanRetired } ) {   // the pool goes with the shutdown
+                for ( VulkanUserTexture& t : *list ) t.Resource->Release();
+                list->clear();
+            }
             ImGui_ImplVulkan_Shutdown();
         } else {
             ImGui_ImplDX11_Shutdown();
@@ -771,6 +832,8 @@ void ImGuiShim::RenderLoopD3D12( ID3D12GraphicsCommandList* commandList )
 
 void ImGuiShim::RenderLoopVulkan( VkCommandBuffer_T* commandBuffer )
 {
+    ++m_VulkanFrame;
+    CollectVulkanTextures();
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();

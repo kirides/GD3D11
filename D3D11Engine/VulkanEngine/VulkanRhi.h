@@ -21,4 +21,7 @@ namespace VulkanRhi {
     void EndNativeRendering( Rhi::CommandList* list );
     /** Queue lock for code that submits on its own (imgui_impl_vulkan's texture uploads). */
     std::mutex& QueueMutex( Rhi::Device* device );
+    /** The image behind a shader-visible SRV, its VkImageView and the VkImageLayout to sample it in (imgui_impl_vulkan). */
+    bool SampledImageOf( Rhi::Device* device, D3D12_GPU_DESCRIPTOR_HANDLE srv, Microsoft::WRL::ComPtr<Rhi::Resource>& outResource,
+        uint64_t& outView, int& outLayout );
 }

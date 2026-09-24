@@ -4,6 +4,7 @@
 #include "GfxTexture.h"
 #include "D3D11Texture.h"
 #include "D3D12Engine/D3D12Texture.h"
+#include "ImGuiShim.h"
 #include "zFILE_VDFS.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -29,6 +30,8 @@ namespace {
             return (ImTextureID)(intptr_t)D3D11Texture::From( tex )->GetShaderResourceView().Get();
         case EGraphicsEngineBackend::D3D12:
             return (ImTextureID)D3D12Texture::From( tex )->GetSrvGpuHandle().ptr;
+        case EGraphicsEngineBackend::Vulkan:
+            return Engine::ImGuiHandle->GetVulkanTextureId( D3D12Texture::From( tex )->GetSrvGpuHandle() );
         default:
             return ImTextureID{};
         }
