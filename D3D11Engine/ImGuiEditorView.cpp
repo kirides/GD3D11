@@ -40,6 +40,8 @@ static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
             }
         }
         return ImTextureID{};
+    default:
+        return ImTextureID{};
     }
     return ImTextureID{};
 }

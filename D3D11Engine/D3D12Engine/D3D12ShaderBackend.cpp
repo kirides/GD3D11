@@ -32,34 +32,56 @@ namespace {
 
     typedef HRESULT( __stdcall* PFN_DXC_CREATE_INSTANCE )( REFCLSID rclsid, REFIID riid, LPVOID* ppv );
 
-    // Resolves DxcCreateInstance from dxcompiler.dll at runtime instead of linking dxcompiler.lib, so
-    // the DLL is a soft dependency like d3d12.dll/dxgi.dll (see D3D12Device.cpp) rather than a hard one
-    // shipped on systems that never touch D3D12. dxil.dll is probed too: dxcompiler.dll loads it
-    // internally to sign/validate DXIL, and without it compiled shaders only load in developer mode —
-    // better to fall back cleanly here than fail obscurely at first Compile().
-    PFN_DXC_CREATE_INSTANCE ResolveDxcCreateInstance() {
-        static PFN_DXC_CREATE_INSTANCE s_pfn = nullptr;
-        static bool s_attempted = false;
-        if ( s_attempted ) return s_pfn;
-        s_attempted = true;
-
-        if ( !LoadLibraryA( "dxil.dll" ) ) {
+    // dxcompiler.dll loads dxil.dll internally to sign/validate DXIL, and without it compiled shaders only
+    // load in developer mode — better to fall back cleanly here than fail obscurely at first Compile().
+    // SPIR-V needs no signing, so Vulkan never loads it.
+    bool EnsureDxilLoaded() {
+        static const bool s_loaded = [] {
+            if ( LoadLibraryA( "dxil.dll" ) ) return true;
             Logging::Err( "D3D12: dxil.dll not found; DXIL shaders would fail validation outside "
                 "developer mode. D3D12 shader compilation is unavailable." );
-            return nullptr;
-        }
+            return false;
+        }();
+        return s_loaded;
+    }
 
-        HMODULE hDxCompiler = LoadLibraryA( "dxcompiler.dll" );
-        if ( !hDxCompiler ) {
-            Logging::Err( "D3D12: dxcompiler.dll not found. D3D12 shader compilation is unavailable." );
-            return nullptr;
-        }
-
-        s_pfn = reinterpret_cast<PFN_DXC_CREATE_INSTANCE>( GetProcAddress( hDxCompiler, "DxcCreateInstance" ) );
-        if ( !s_pfn ) {
-            Logging::Err( "D3D12: dxcompiler.dll is missing the DxcCreateInstance export. D3D12 shader compilation is unavailable." );
-        }
+    // Resolves DxcCreateInstance from dxcompiler.dll at runtime instead of linking dxcompiler.lib, so
+    // the DLL is a soft dependency like d3d12.dll/dxgi.dll (see D3D12Device.cpp) rather than a hard one
+    // shipped on systems that never touch D3D12 or Vulkan.
+    PFN_DXC_CREATE_INSTANCE ResolveDxcCompiler() {
+        static const PFN_DXC_CREATE_INSTANCE s_pfn = []() -> PFN_DXC_CREATE_INSTANCE {
+            HMODULE hDxCompiler = LoadLibraryA( "dxcompiler.dll" );
+            if ( !hDxCompiler ) {
+                Logging::Err( "DXC: dxcompiler.dll not found. Runtime shader compilation is unavailable." );
+                return nullptr;
+            }
+            auto pfn = reinterpret_cast<PFN_DXC_CREATE_INSTANCE>( GetProcAddress( hDxCompiler, "DxcCreateInstance" ) );
+            if ( !pfn ) {
+                Logging::Err( "DXC: dxcompiler.dll is missing the DxcCreateInstance export. Runtime shader compilation is unavailable." );
+            }
+            return pfn;
+        }();
         return s_pfn;
+    }
+
+    // dxil.dll first, so dxcompiler.dll resolves it by name to the already-loaded module.
+    PFN_DXC_CREATE_INSTANCE ResolveDxcCreateInstance( ShaderIL il = ShaderIL::DXIL ) {
+        if ( il == ShaderIL::DXIL && !EnsureDxilLoaded() ) return nullptr;
+        return ResolveDxcCompiler();
+    }
+
+    // Vulkan lowering of the D3D12 binding model (VULKAN_IMPLEMENTATION_PLAN.md 5.3/5.7): space-0 registers
+    // shift into disjoint set-0 ranges, ResourceDescriptorHeap becomes set 1 binding 0. Keep in sync with
+    // tools/validate_spirv.py.
+    void AppendSpirvArguments( std::vector<LPCWSTR>& arguments ) {
+        static const LPCWSTR kArgs[] = {
+            L"-spirv", L"-fspv-target-env=vulkan1.3", L"-fvk-use-dx-layout",
+            L"-fspv-use-unknown-image-format", L"-fvk-support-nonzero-base-instance",
+            L"-fvk-b-shift", L"0", L"0", L"-fvk-t-shift", L"16", L"0",
+            L"-fvk-u-shift", L"32", L"0", L"-fvk-s-shift", L"48", L"0",
+            L"-fvk-bind-resource-heap", L"0", L"1",
+        };
+        arguments.insert( arguments.end(), std::begin( kArgs ), std::end( kArgs ) );
     }
 
     std::wstring ToWideString( LPCSTR str ) {
@@ -93,6 +115,7 @@ namespace {
 
     // Bump when the DXC argument list in CompileSource changes in a way that alters codegen.
     constexpr uint32_t kDxilCacheArgsRevision = 1;
+    constexpr uint32_t kSpirvCacheArgsRevision = 1;
     constexpr uint32_t kDxilCacheFormatVersion = 1;
 
     int g_CacheHits = 0;
@@ -111,36 +134,38 @@ namespace {
         return h ? h : 1;
     }
 
-    // Deliberately not the GPU adapter/driver identity: DXIL is portable IR produced by these two
+    uint64_t HashLoadedModule( const char* moduleName ) {
+        HMODULE module = GetModuleHandleA( moduleName );
+        char path[MAX_PATH] = {};
+        if ( !module || !GetModuleFileNameA( module, path, MAX_PATH ) ) return 0;
+        return HashFileContents( path );
+    }
+
+    // Deliberately not the GPU adapter/driver identity: DXIL/SPIR-V is portable IR produced by these
     // DLLs alone; the driver JITs it to native ISA later using its own separate, self-invalidating cache.
-    uint64_t DxcVersionHash() {
-        static uint64_t s_hash = [] () -> uint64_t {
-            if ( !ResolveDxcCreateInstance() ) return 0;   // ensures dxcompiler.dll + dxil.dll are loaded
-
-            HMODULE hCompiler = GetModuleHandleA( "dxcompiler.dll" );
-            HMODULE hDxil = GetModuleHandleA( "dxil.dll" );
-            if ( !hCompiler || !hDxil ) return 0;
-
-            char compilerPath[MAX_PATH] = {};
-            char dxilPath[MAX_PATH] = {};
-            if ( !GetModuleFileNameA( hCompiler, compilerPath, MAX_PATH ) ||
-                !GetModuleFileNameA( hDxil, dxilPath, MAX_PATH ) ) {
-                return 0;
-            }
-
-            const uint64_t hCompilerFile = HashFileContents( compilerPath );
-            const uint64_t hDxilFile = HashFileContents( dxilPath );
+    uint64_t DxcVersionHash( ShaderIL il ) {
+        static const uint64_t s_dxilHash = [] () -> uint64_t {
+            if ( !ResolveDxcCreateInstance( ShaderIL::DXIL ) ) return 0;   // ensures dxcompiler.dll + dxil.dll are loaded
+            const uint64_t hCompilerFile = HashLoadedModule( "dxcompiler.dll" );
+            const uint64_t hDxilFile = HashLoadedModule( "dxil.dll" );
             if ( hCompilerFile == 0 || hDxilFile == 0 ) return 0;
 
             uint64_t h = HashBytes( &hCompilerFile, sizeof( hCompilerFile ) );
             h = HashBytes( &hDxilFile, sizeof( hDxilFile ), h );
             return h ? h : 1;   // never 0 on success — 0 is the "unavailable" sentinel
         }( );
-        return s_hash;
+        static const uint64_t s_spirvHash = [] () -> uint64_t {
+            if ( !ResolveDxcCreateInstance( ShaderIL::SPIRV ) ) return 0;
+            const uint64_t hCompilerFile = HashLoadedModule( "dxcompiler.dll" );
+            if ( hCompilerFile == 0 ) return 0;
+            const uint64_t h = HashBytes( &hCompilerFile, sizeof( hCompilerFile ) );
+            return h ? h : 1;
+        }( );
+        return il == ShaderIL::SPIRV ? s_spirvHash : s_dxilHash;
     }
 
     uint64_t ComputeCacheKey( const std::string& fileName, const std::string& source, const char* entryPoint,
-        const char* target, const D3D_SHADER_MACRO* defines ) {
+        const char* target, const D3D_SHADER_MACRO* defines, ShaderIL il ) {
         uint64_t h = HashString( fileName.c_str() );
         h = HashBytes( source.data(), source.size(), h );
         h = HashString( entryPoint, h );
@@ -151,28 +176,34 @@ namespace {
                 h = HashString( m->Definition ? m->Definition : "", h );
             }
         }
-        const uint32_t argsRev = kDxilCacheArgsRevision;
+        // DXIL keys hash exactly what they did before SPIR-V existed, so existing caches stay valid.
+        const uint32_t argsRev = il == ShaderIL::SPIRV ? kSpirvCacheArgsRevision : kDxilCacheArgsRevision;
         h = HashBytes( &argsRev, sizeof( argsRev ), h );
+        if ( il == ShaderIL::SPIRV ) h = HashString( "spirv", h );
 #ifdef DEBUG_D3D11
         h = HashString( "dbg", h );   // the debug build compiles -Od -Zi; never share those blobs with release
 #else
         h = HashString( "rel", h );
 #endif
-        const uint64_t dxc = DxcVersionHash();
+        const uint64_t dxc = DxcVersionHash( il );
         return HashBytes( &dxc, sizeof( dxc ), h );
     }
 
-    SqliteBlobStore& GetCacheStore() {
-        // Magic-static: constructed once, on whichever thread compiles the first shader.
+    SqliteBlobStore& GetCacheStore( ShaderIL il ) {
+        // Magic-statics: constructed once, on whichever thread compiles the first shader of that IL.
+        if ( il == ShaderIL::SPIRV ) {
+            static SqliteBlobStore s_spirvStore( Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\vulkan_shaders.db)" );
+            return s_spirvStore;
+        }
         static SqliteBlobStore s_store( Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\d3d12_shaders.db)" );
         return s_store;
     }
 
     /** Reads the entry, re-hashes every recorded #include and, if they all still match, hands back the
-        stored DXIL. Any inconsistency (including a truncated/corrupt record) is just a miss. */
-    bool TryLoadCachedBlob( uint64_t key, ID3DBlob** ppCode ) {
+        stored DXIL/SPIR-V. Any inconsistency (including a truncated/corrupt record) is just a miss. */
+    bool TryLoadCachedBlob( SqliteBlobStore& store, uint64_t key, ID3DBlob** ppCode ) {
         std::vector<uint8_t> blob;
-        if ( !GetCacheStore().TryGet( key, blob ) || blob.size() < 4 ) return false;
+        if ( !store.TryGet( key, blob ) || blob.size() < 4 ) return false;
         if ( memcmp( blob.data(), "GDXC", 4 ) != 0 ) return false;
 
         ByteCursor::Reader in( blob.data() + 4, blob.size() - 4 );
@@ -207,7 +238,7 @@ namespace {
     }
 
     /** Best-effort store (a missing cache only costs time). */
-    void StoreCachedBlob( uint64_t key, const ShaderDeps& deps, ID3DBlob* code ) {
+    void StoreCachedBlob( SqliteBlobStore& store, uint64_t key, const ShaderDeps& deps, ID3DBlob* code ) {
         if ( !code || code->GetBufferSize() == 0 || deps.size() > 256 ) return;
 
         std::vector<uint8_t> blob;
@@ -224,7 +255,7 @@ namespace {
         ByteCursor::AppendPod( blob, static_cast<uint32_t>( code->GetBufferSize() ) );
         ByteCursor::AppendBytes( blob, code->GetBufferPointer(), code->GetBufferSize() );
 
-        GetCacheStore().Put( key, blob.data(), blob.size() );
+        store.Put( key, blob.data(), blob.size() );
     }
 
     // Resolves #include directives inside D3D12 HLSL sources through the same VDFS+physical-fallback
@@ -281,8 +312,8 @@ namespace {
         ShaderDeps m_Deps;   // every #include this compile resolved, for the DXIL cache entry
     };
 
-    // Runtime DXC compilation of an in-memory HLSL source block into a DXIL ID3DBlob (SM6+).
-    // On success `outDeps` (when given) receives every #include the compile resolved, for the DXIL cache.
+    // Runtime DXC compilation of an in-memory HLSL source block into a DXIL or SPIR-V ID3DBlob (SM6+).
+    // On success `outDeps` (when given) receives every #include the compile resolved, for the shader cache.
     bool CompileSource(
         LPCVOID pSrcData,
         SIZE_T SrcDataSize,
@@ -291,10 +322,11 @@ namespace {
         LPCSTR pEntrypoint,
         LPCSTR pTarget,
         ID3DBlob** ppCode,
-        ShaderDeps* outDeps = nullptr )
+        ShaderDeps* outDeps = nullptr,
+        ShaderIL il = ShaderIL::DXIL )
     {
-        // 1. Resolve dxcompiler.dll/dxil.dll dynamically and initialize the DXC compiler instances
-        PFN_DXC_CREATE_INSTANCE dxcCreateInstance = ResolveDxcCreateInstance();
+        // 1. Resolve dxcompiler.dll (+ dxil.dll for DXIL) dynamically and initialize the DXC compiler instances
+        PFN_DXC_CREATE_INSTANCE dxcCreateInstance = ResolveDxcCreateInstance( il );
         if ( !dxcCreateInstance ) {
             return false; // already logged by ResolveDxcCreateInstance
         }
@@ -335,13 +367,19 @@ namespace {
 #ifdef DEBUG_D3D11
         arguments.push_back( DXC_ARG_DEBUG );                 // -Zi (Enable debug information)
         arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );    // -Od (Disable optimizations)
-        arguments.push_back( L"-Qembed_debug");
-        arguments.push_back( L"-Qsource_in_debug_module");
+        if ( il == ShaderIL::DXIL ) {                          // DXIL-container-only options
+            arguments.push_back( L"-Qembed_debug" );
+            arguments.push_back( L"-Qsource_in_debug_module" );
+        }
 #else
         arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
 #endif
         arguments.push_back( L"-enable-16bit-types" ); // Enable 16-bit types for SM6+ (half, min16float, etc.)
-        arguments.push_back( L"-all-resources-bound" ); // Let the GPU know that we ensure all resources exist.
+        if ( il == ShaderIL::SPIRV ) {
+            AppendSpirvArguments( arguments );
+        } else {
+            arguments.push_back( L"-all-resources-bound" ); // Let the GPU know that we ensure all resources exist.
+        }
 
         // Translate any legacy macro preprocessors into modern DXC -D parameters
         std::vector<std::wstring> wDefinesStore;
@@ -372,8 +410,9 @@ namespace {
             IID_PPV_ARGS( compileResult.GetAddressOf() )
         );
 
+        const char* ilName = il == ShaderIL::SPIRV ? "SPIR-V" : "D3D12";
         if ( FAILED( hr ) ) {
-            Logging::Wrn( "D3D12: HRESULT compilation failure." );
+            Logging::Wrn( "{}: HRESULT compilation failure.", ilName );
             return false;
         }
 
@@ -381,7 +420,7 @@ namespace {
         ComPtr<IDxcBlobUtf8> errorBuffer;
         if ( SUCCEEDED( compileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( errorBuffer.GetAddressOf() ), nullptr ) ) ) {
             if ( errorBuffer && errorBuffer->GetStringLength() > 0 ) {
-                Logging::Wrn( "D3D12: DXC Shader Compilation warning/error:\n{}", errorBuffer->GetStringPointer() );
+                Logging::Wrn( "{}: DXC Shader Compilation warning/error:\n{}", ilName, errorBuffer->GetStringPointer() );
             }
         }
 
@@ -469,7 +508,7 @@ bool D3D12ShaderBackend::Reflect( ID3DBlob* code, ID3D12ShaderReflection** ppRef
 }
 
 bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const char* entryPoint,
-    const char* target, ID3DBlob** ppCode, const D3D_SHADER_MACRO* defines ) {
+    const char* target, ID3DBlob** ppCode, const D3D_SHADER_MACRO* defines, ShaderIL il ) {
     std::string source;
     if ( !LoadShaderSource( fileName, source ) )
         return false;
@@ -484,20 +523,51 @@ bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const cha
     AppendGlobalMacros( macros );
     macros.push_back( { nullptr, nullptr } );
 
-    // On-disk DXIL cache — see the notes above ShaderDeps.
-    const uint64_t cacheKey = ComputeCacheKey( fileName, source, entryPoint, target, macros.data() );
-    if ( TryLoadCachedBlob( cacheKey, ppCode ) ) {
+    // On-disk shader cache — see the notes above ShaderDeps.
+    SqliteBlobStore& store = GetCacheStore( il );
+    const uint64_t cacheKey = ComputeCacheKey( fileName, source, entryPoint, target, macros.data(), il );
+    if ( TryLoadCachedBlob( store, cacheKey, ppCode ) ) {
         ++g_CacheHits;
         return true;
     }
     ++g_CacheMisses;
 
     ShaderDeps deps;
-    if ( !CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode, &deps ) )
+    if ( !CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode, &deps, il ) )
         return false;
 
-    StoreCachedBlob( cacheKey, deps, *ppCode );
+    StoreCachedBlob( store, cacheKey, deps, *ppCode );
     return true;
+}
+
+bool D3D12ShaderBackend::IsSpirvCodegenAvailable( std::string* outReason ) {
+    static std::string s_reason;
+    static const bool s_available = [] {
+        if ( !ResolveDxcCreateInstance( ShaderIL::SPIRV ) ) {
+            s_reason = "dxcompiler.dll could not be loaded";
+            return false;
+        }
+        // Same argument set as a real compile, so a DLL that rejects any of our flags fails here too.
+        static const char kProbe[] =
+            "float4 main( float4 p : SV_Position ) : SV_Target {"
+            " Texture2D t = ResourceDescriptorHeap[0]; return t.Load( int3( p.xy, 0 ) ); }";
+        ComPtr<ID3DBlob> code;
+        if ( !CompileSource( kProbe, sizeof( kProbe ) - 1, "SpirvProbe.hlsl", nullptr, "main", "ps_6_6",
+            code.GetAddressOf(), nullptr, ShaderIL::SPIRV ) ) {
+            s_reason = "dxcompiler.dll was built without SPIR-V code generation (or rejects the Vulkan flags)";
+            return false;
+        }
+        constexpr uint32_t kSpirvMagic = 0x07230203u;
+        uint32_t magic = 0;
+        if ( code->GetBufferSize() >= sizeof( magic ) ) memcpy( &magic, code->GetBufferPointer(), sizeof( magic ) );
+        if ( magic != kSpirvMagic ) {
+            s_reason = "dxcompiler.dll returned something that is not SPIR-V";
+            return false;
+        }
+        return true;
+    }();
+    if ( !s_available && outReason ) *outReason = s_reason;
+    return s_available;
 }
 
 void D3D12ShaderBackend::LogAndResetCacheStats( const char* context ) {

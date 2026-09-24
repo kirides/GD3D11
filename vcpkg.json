@@ -7,6 +7,9 @@
     "directxtk",
     "directx-headers",
     "directx12-agility",
-    "sqlite3"
+    "sqlite3",
+    "volk",
+    "vulkan-headers",
+    "vulkan-memory-allocator"
   ]
 }

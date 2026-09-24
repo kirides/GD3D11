@@ -29,8 +29,9 @@ namespace {
             return (ImTextureID)(intptr_t)D3D11Texture::From( tex )->GetShaderResourceView().Get();
         case EGraphicsEngineBackend::D3D12:
             return (ImTextureID)D3D12Texture::From( tex )->GetSrvGpuHandle().ptr;
+        default:
+            return ImTextureID{};
         }
-        return ImTextureID{};
     }
 
     Preview LoadFromVdfs( const std::string& file, const std::string& debugName ) {
@@ -129,6 +130,10 @@ void ImPreview::DrawPinned( const ImVec2& anchorMin, const ImVec2& anchorMax ) {
     if ( !preview ) {
         return;
     }
+    const ImTextureID textureId = ToImTextureID( preview->Tex.get() );
+    if ( !textureId ) {
+        return;   // backend without ImGui texture support
+    }
 
     const ImVec2 imageSize = FitSize( *preview );
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -150,7 +155,7 @@ void ImPreview::DrawPinned( const ImVec2& anchorMin, const ImVec2& anchorMax ) {
         | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
         | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if ( ImGui::Begin( "##SettingPreview", nullptr, flags ) ) {
-        ImGui::Image( ToImTextureID( preview->Tex.get() ), imageSize );
+        ImGui::Image( textureId, imageSize );
         if ( !s_HintCaption.empty() ) {
             ImGui::TextUnformatted( s_HintCaption.c_str() );
         }

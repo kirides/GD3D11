@@ -51,6 +51,7 @@ enum WindowModes {
 enum class EGraphicsEngineBackend {
     D3D11,
     D3D12,
+    Vulkan,
 };
 
 /** Backend-neutral rendering stage. Scene code (GothicAPI) queries the active engine
