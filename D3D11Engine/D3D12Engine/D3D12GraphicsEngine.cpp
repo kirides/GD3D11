@@ -1759,40 +1759,6 @@ void D3D12GraphicsEngine::QueueAllocationForRelease( Microsoft::WRL::ComPtr<D3D1
 }
 
 
-/** Sizes the actual OS window to the target resolution and tells Gothic about the mode so its 2D
-    UI coordinate space matches. Mirrors the windowed / borderless branch of the D3D11 backend. */
-void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
-    if ( !m_OutputWindow || size.x <= 0 || size.y <= 0 ) return;
-
-#ifndef BUILD_SPACER
-    RECT desktopRect = {};
-    GetClientRect( GetDesktopWindow(), &desktopRect );
-    const bool borderless = ( size.x >= desktopRect.right && size.y >= desktopRect.bottom );
-
-    if ( borderless ) {
-        // Fullscreen-borderless: strip the frame and cover the desktop.
-        ApplyWindowStyle( WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, RECT{ 0, 0, desktopRect.right, desktopRect.bottom } );
-    } else {
-        // Windowed: fixed-size window whose CLIENT area equals the target resolution.
-        LONG style = ( WS_OVERLAPPEDWINDOW | WS_VISIBLE ) & ~( WS_MAXIMIZEBOX | WS_THICKFRAME );
-        RECT wr = { 0, 0, size.x, size.y };
-        AdjustWindowRectEx( &wr, style, FALSE, WS_EX_APPWINDOW );
-
-        RECT cur = {};
-        int x = 0, y = 0;
-        if ( GetWindowRect( m_OutputWindow, &cur ) ) { x = cur.left; y = cur.top; }
-        ApplyWindowStyle( WindowModes::WINDOW_MODE_WINDOWED, RECT{ x, y, x + (wr.right - wr.left), y + (wr.bottom - wr.top) } );
-    }
-
-    zCView::SetWindowMode( size.x, size.y, 32 );
-    // Inform Gothic of the resolution (drives its virtual UI coordinate space).
-    zCView::SetVirtualMode( size.x, size.y, 32 );
-    POINT virtualSize = { 8192, 8192 };
-    zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
-#endif
-}
-
-
 static bool CheckTearingSupport() {
     BOOL allowTearing = FALSE;
     ComPtr<IDXGIFactory5> factory5;
@@ -2194,28 +2160,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_BackbufferResolution.x ), static_cast<float>( m_BackbufferResolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_BackbufferResolution.x, m_BackbufferResolution.y };
 
-    // Only when the resolution actually changed, like D3D11 does from OnResize. SetVirtualMode ends in
-    // zCView::SetMode, which rewrites vid_xdim/ydim + screen->psizex and then RecalcChildsSize/Pos over every
-    // open view; running that per frame re-derives layouts that were set in pixels (oCViewDocument sizes the
-    // book that way) and ratchets them smaller each frame. First frame still applies it.
-    if ( m_AppliedZViewMode.x != m_BackbufferResolution.x || m_AppliedZViewMode.y != m_BackbufferResolution.y ) {
-        m_AppliedZViewMode = m_BackbufferResolution;
-
-        zCView::SetWindowMode(
-            m_BackbufferResolution.x,
-            m_BackbufferResolution.y,
-            32 );
-
-        zCView::SetVirtualMode(
-            static_cast<int>(m_BackbufferResolution.x),
-            static_cast<int>(m_BackbufferResolution.y),
-            32 );
-
-        // SetMode leaves the zCViewDraw screen's virtual size derived from pixels; restore the 8192 space the
-        // document/page views are authored in (D3D11 OnResize does the same right after its SetVirtualMode).
-        POINT virtualSize = { 8192, 8192 };
-        zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
-    }
+    ApplyZViewModeIfChanged( m_BackbufferResolution );
 
     m_OpaqueSceneCapturedThisFrame = false;
     m_FrameOpen = true;

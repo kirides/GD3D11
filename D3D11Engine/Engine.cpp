@@ -7,7 +7,7 @@
 #include "ImGuiShim.h"
 #include "D3D12Engine/D3D12Device.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
-#include "VulkanEngine/VulkanDevice.h"
+#include "VulkanEngine/VulkanGraphicsEngine.h"
 #include "SqliteBlobStore.h"
 
 #include <algorithm>
@@ -68,12 +68,14 @@ namespace Engine {
         const auto requestedApi = ReadRequestedGraphicsAPI();
         if ( requestedApi == GothicRendererSettings::GRAPHICS_API_VULKAN ) {
             GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_VULKAN;
-            // Phase 0: probe + capability report only; there is no Vulkan renderer yet.
-            std::string deviceDesc, reason;
-            if ( VulkanDevice::IsAvailable( &deviceDesc, &reason ) ) {
-                Logging::Wrn( "Vulkan is available ({}), but the Vulkan backend is not implemented yet. Using Direct3D 11.", deviceDesc );
+            GraphicsEngine = new VulkanGraphicsEngine;
+            if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
+                initialized = true;
+                IsVulkanBackend = true;
             } else {
-                Logging::Wrn( "Vulkan was requested but is unavailable: {}. Using Direct3D 11.", reason );
+                // VulkanDevice::Init has already logged the capability report and the reason.
+                SAFE_DELETE( GraphicsEngine );
+                Logging::Wrn( "The Vulkan backend failed to initialize. Falling back to Direct3D 11." );
             }
         } else if ( requestedApi == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
             GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D12;

@@ -1,6 +1,7 @@
 #include "BaseGraphicsEngine.h"
 #include "ImGuiShim.h"
 #include "GothicAPI.h"
+#include "zCView.h"
 #include <algorithm>
 #include <iostream>
 #include <string>
@@ -278,4 +279,50 @@ XRESULT BaseGraphicsEngine::AppendCachedDisplayModes( std::vector<DisplayModeInf
     }
 
     return XR_SUCCESS;
+}
+
+void BaseGraphicsEngine::ResizeOutputWindow( INT2 size ) {
+    if ( !m_OutputWindow || size.x <= 0 || size.y <= 0 ) return;
+
+#ifndef BUILD_SPACER
+    RECT desktopRect = {};
+    GetClientRect( GetDesktopWindow(), &desktopRect );
+    const bool borderless = ( size.x >= desktopRect.right && size.y >= desktopRect.bottom );
+
+    if ( borderless ) {
+        // Fullscreen-borderless: strip the frame and cover the desktop.
+        ApplyWindowStyle( WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, RECT{ 0, 0, desktopRect.right, desktopRect.bottom } );
+    } else {
+        // Windowed: fixed-size window whose CLIENT area equals the target resolution.
+        LONG style = ( WS_OVERLAPPEDWINDOW | WS_VISIBLE ) & ~( WS_MAXIMIZEBOX | WS_THICKFRAME );
+        RECT wr = { 0, 0, size.x, size.y };
+        AdjustWindowRectEx( &wr, style, FALSE, WS_EX_APPWINDOW );
+
+        RECT cur = {};
+        int x = 0, y = 0;
+        if ( GetWindowRect( m_OutputWindow, &cur ) ) { x = cur.left; y = cur.top; }
+        ApplyWindowStyle( WindowModes::WINDOW_MODE_WINDOWED, RECT{ x, y, x + (wr.right - wr.left), y + (wr.bottom - wr.top) } );
+    }
+
+    zCView::SetWindowMode( size.x, size.y, 32 );
+    // Inform Gothic of the resolution (drives its virtual UI coordinate space).
+    zCView::SetVirtualMode( size.x, size.y, 32 );
+    POINT virtualSize = { 8192, 8192 };
+    zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
+#endif
+}
+
+void BaseGraphicsEngine::ApplyZViewModeIfChanged( INT2 backbufferSize ) {
+    // Running SetMode per frame re-derives layouts that were set in pixels (oCViewDocument sizes the book
+    // that way) and ratchets them smaller each frame. First frame still applies it.
+    if ( m_AppliedZViewMode.x == backbufferSize.x && m_AppliedZViewMode.y == backbufferSize.y ) return;
+    m_AppliedZViewMode = backbufferSize;
+
+    zCView::SetWindowMode( backbufferSize.x, backbufferSize.y, 32 );
+    zCView::SetVirtualMode( backbufferSize.x, backbufferSize.y, 32 );
+
+    // SetMode leaves the zCViewDraw screen's virtual size derived from pixels; restore the 8192 space the
+    // document/page views are authored in (D3D11 OnResize does the same right after its SetVirtualMode).
+    POINT virtualSize = { 8192, 8192 };
+    zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
 }

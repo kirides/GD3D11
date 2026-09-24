@@ -642,9 +642,9 @@ bool VulkanDevice::Init() {
     m_Caps.NonCoherentAtomSize = props.limits.nonCoherentAtomSize;
     m_Caps.TimestampPeriod = props.limits.timestampPeriod;
 
-    SetObjectName( VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64_t>( m_GraphicsQueue ), "GraphicsQueue" );
+    SetObjectName( VK_OBJECT_TYPE_QUEUE, VkUtil::HandleToU64( m_GraphicsQueue ), "GraphicsQueue" );
     if ( m_TransferQueue != m_GraphicsQueue )
-        SetObjectName( VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64_t>( m_TransferQueue ), "TransferQueue" );
+        SetObjectName( VK_OBJECT_TYPE_QUEUE, VkUtil::HandleToU64( m_TransferQueue ), "TransferQueue" );
 
     Logging::Inf( "Vulkan device created on: {}", m_DeviceDescription );
     VkUtil::LogAddressSpace( "after Vulkan device creation" );
