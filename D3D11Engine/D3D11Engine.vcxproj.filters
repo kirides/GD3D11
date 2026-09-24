@@ -1143,6 +1143,9 @@
     <ClCompile Include="VulkanEngine\VulkanRhiPipeline.cpp">
       <Filter>Engine\Vulkan</Filter>
     </ClCompile>
+    <ClCompile Include="VulkanEngine\VulkanRhiCommandList.cpp">
+      <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
