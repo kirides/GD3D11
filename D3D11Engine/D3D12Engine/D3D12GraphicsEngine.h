@@ -170,6 +170,9 @@ public:
     bool InitCopyQueue();
     UINT64 GetCopyFenceValue() const { return m_CopyFenceValue; }
     void WaitForCopyFence( UINT64 fenceValue );
+    /** The next copy-batch submit first waits for all direct-queue work submitted so far; for uploads into a
+        resource the direct queue also writes (the VOB arena's morph refresh). */
+    void CopyQueueWaitForDirectQueue() { m_CopyWaitsForDirect.store( true, std::memory_order_relaxed ); }
     void TransitionTextureToSRVOnDirectQueue( ID3D12Resource* texture );
 
     /** Gothic's 2D/UI draw entry (menus, fonts, HUD). Uploads the transformed ExVertexStruct verts to
@@ -535,6 +538,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_CopyFence;
     UINT64 m_CopyFenceValue = 0;
     HANDLE m_CopyFenceEvent = nullptr;
+    std::atomic<UINT64> m_LastDirectSignal{ 0 };     // latest m_Fence value signalled on the direct queue
+    std::atomic<bool>   m_CopyWaitsForDirect{ false };
     bool m_TearingSupported;
 
     /** DXGI frame-latency waitable handle (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT),
