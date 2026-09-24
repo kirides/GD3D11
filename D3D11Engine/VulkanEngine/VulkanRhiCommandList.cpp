@@ -170,6 +170,8 @@ namespace VulkanRhi {
         bool m_HasDsv = false;
         bool m_TargetsDirty = true;
         bool m_InRendering = false;
+        uint32_t m_ScopeColorCount = 0;
+        bool m_ScopeHasDepth = false;
         VkRect2D m_RenderArea = {};
         uint32_t m_RenderLayers = 1;
 
@@ -402,6 +404,8 @@ namespace VulkanRhi {
         ri.pStencilAttachment = hasDepth && HasStencil( depth->Resource->m_Format ) ? &stencilInfo : nullptr;
         vkCmdBeginRendering( m_Cmd, &ri );
         m_InRendering = true;
+        m_ScopeColorCount = colorCount;
+        m_ScopeHasDepth = hasDepth;
         m_RenderArea = ri.renderArea;
         m_RenderLayers = ri.layerCount;
     }
@@ -512,9 +516,16 @@ namespace VulkanRhi {
     }
 
     bool CommandListImpl::PrepareDraw() {
-        if ( m_TargetsDirty || !m_InRendering ) {
+        // Vulkan wants the scope's attachments to match the pipeline's formats; D3D12 lets a PSO without a
+        // depth format draw with a DSV bound. So the scope follows the bound pipeline.
+        const PipelineStateImpl* pso = m_Gfx.Pso;
+        const uint32_t colors = pso ? std::min( pso->m_ColorCount, kMaxRenderTargets ) : m_RtvCount;
+        const bool depth = m_HasDsv && ( !pso || pso->m_HasDepth );
+        if ( m_TargetsDirty || !m_InRendering || colors != m_ScopeColorCount || depth != m_ScopeHasDepth ) {
             EndRenderingScope();
-            BeginRenderingScope( m_Rtvs, m_RtvCount, m_HasDsv ? &m_Dsv : nullptr, nullptr, nullptr,
+            Descriptor targets[kMaxRenderTargets];
+            for ( uint32_t i = 0; i < colors; ++i ) targets[i] = i < m_RtvCount ? m_Rtvs[i] : Descriptor();
+            BeginRenderingScope( targets, colors, depth ? &m_Dsv : nullptr, nullptr, nullptr,
                 VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_LOAD, nullptr );
             m_TargetsDirty = false;
         }
@@ -747,7 +758,7 @@ namespace VulkanRhi {
         // Inside an open scope that renders to this target: clear in place.
         int attachment = -1;
         if ( m_InRendering && !m_TargetsDirty ) {
-            for ( uint32_t i = 0; i < m_RtvCount; ++i )
+            for ( uint32_t i = 0; i < std::min( m_RtvCount, m_ScopeColorCount ); ++i )
                 if ( m_Rtvs[i].Resource == d.Resource && m_Rtvs[i].Key == d.Key ) { attachment = static_cast<int>( i ); break; }
         }
         if ( attachment < 0 ) {
@@ -783,7 +794,7 @@ namespace VulkanRhi {
         const bool clearDepth = ( flags & D3D12_CLEAR_FLAG_DEPTH ) != 0;
         const bool clearStencil = ( flags & D3D12_CLEAR_FLAG_STENCIL ) != 0 && HasStencil( d.Resource->m_Format );
 
-        const bool bound = m_InRendering && !m_TargetsDirty && m_HasDsv && m_Dsv.Resource == d.Resource && m_Dsv.Key == d.Key;
+        const bool bound = m_InRendering && !m_TargetsDirty && m_ScopeHasDepth && m_Dsv.Resource == d.Resource && m_Dsv.Key == d.Key;
         if ( !bound ) {
             EndRenderingScope();
             const VkAttachmentLoadOp depthLoad = !numRects && clearDepth ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
