@@ -215,6 +215,8 @@ namespace VulkanRhi {
 
         uint32_t m_LabelDepth = 0;
         RecordStats m_Stats;   // handed to the device at Close
+        bool m_InIndirect = false;     // draws replayed by ExecuteIndirect count as its time
+        int64_t m_UntimedTicks = 0;
         bool m_LoggedIndirect = false;
         bool m_LoggedBinding = false;
     };
@@ -558,7 +560,10 @@ namespace VulkanRhi {
             }
         }
         if ( n ) {
-            vkCmdPushDescriptorSetKHR( m_Cmd, point, rs->m_Layout, 0, n, writes );
+            {
+                TickScope timer( m_Stats.PushTicks );
+                vkCmdPushDescriptorSetKHR( m_Cmd, point, rs->m_Layout, 0, n, writes );
+            }
             ++m_Stats.Pushes;
             m_Stats.Writes += n;
         }
@@ -616,16 +621,25 @@ namespace VulkanRhi {
     }
 
     void CommandListImpl::DrawInstanced( UINT vertexCount, UINT instanceCount, UINT startVertex, UINT startInstance ) {
-        if ( PrepareDraw() ) vkCmdDraw( m_Cmd, vertexCount, instanceCount, startVertex, startInstance );
+        TickScope timer( m_InIndirect ? m_UntimedTicks : m_Stats.DrawTicks );
+        if ( !PrepareDraw() ) return;
+        TickScope driver( m_Stats.DriverDrawTicks );
+        vkCmdDraw( m_Cmd, vertexCount, instanceCount, startVertex, startInstance );
     }
 
     void CommandListImpl::DrawIndexedInstanced( UINT indexCount, UINT instanceCount, UINT startIndex, INT baseVertex, UINT startInstance ) {
-        if ( PrepareDraw() ) vkCmdDrawIndexed( m_Cmd, indexCount, instanceCount, startIndex, baseVertex, startInstance );
+        TickScope timer( m_InIndirect ? m_UntimedTicks : m_Stats.DrawTicks );
+        if ( !PrepareDraw() ) return;
+        TickScope driver( m_Stats.DriverDrawTicks );
+        vkCmdDrawIndexed( m_Cmd, indexCount, instanceCount, startIndex, baseVertex, startInstance );
     }
 
     void CommandListImpl::Dispatch( UINT x, UINT y, UINT z ) {
+        TickScope timer( m_InIndirect ? m_UntimedTicks : m_Stats.DrawTicks );
         EndRenderingScope();
-        if ( FlushBindings( m_Compute, VK_PIPELINE_BIND_POINT_COMPUTE ) ) vkCmdDispatch( m_Cmd, x, y, z );
+        if ( !FlushBindings( m_Compute, VK_PIPELINE_BIND_POINT_COMPUTE ) ) return;
+        TickScope driver( m_Stats.DriverDrawTicks );
+        vkCmdDispatch( m_Cmd, x, y, z );
     }
 
     void CommandListImpl::ExecuteIndirect( Rhi::CommandSignature* sig, UINT maxCount, Rhi::Resource* args, UINT64 argOffset,
@@ -634,10 +648,14 @@ namespace VulkanRhi {
         ResourceImpl* argBuf = ToImpl( args );
         ResourceImpl* countBuf = ToImpl( count );
         if ( !s || !argBuf || !argBuf->m_Buffer ) return;
+        TickScope timer( m_Stats.IndirectTicks );
+        m_InIndirect = true;
+        struct Leave { bool& Flag; ~Leave() { Flag = false; } } leave{ m_InIndirect };
         if ( s->m_Args.size() != 1 ) {
             ReplayIndirect( *s, maxCount, argBuf, argOffset, countBuf, countOffset );
             return;
         }
+        TickScope driver( m_Stats.DriverDrawTicks );
         switch ( s->m_Args[0].Type ) {
         case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED:
             if ( !PrepareDraw() ) return;
@@ -728,8 +746,10 @@ namespace VulkanRhi {
                     D3D12_DRAW_INDEXED_ARGUMENTS d;
                     std::memcpy( &d, p, sizeof( d ) );
                     if ( gpuDraws ) {
-                        if ( PrepareDraw() )
+                        if ( PrepareDraw() ) {
+                            TickScope driver( m_Stats.DriverDrawTicks );
                             vkCmdDrawIndexedIndirect( m_Cmd, args->m_Buffer, gpuAt + ( p - cmd ), 1, sizeof( VkDrawIndexedIndirectCommand ) );
+                        }
                     } else if ( d.IndexCountPerInstance && d.InstanceCount ) {
                         DrawIndexedInstanced( d.IndexCountPerInstance, d.InstanceCount, d.StartIndexLocation, d.BaseVertexLocation, d.StartInstanceLocation );
                     }
