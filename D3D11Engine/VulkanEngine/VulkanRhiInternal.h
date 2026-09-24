@@ -411,6 +411,8 @@ namespace VulkanRhi {
         DescriptorHeapImpl* HeapById( uint32_t id ) const;
 
         VkDescriptorSetLayout BindlessLayout() const { return m_BindlessLayout; }
+        /** Device-local scratch for copies core Vulkan can't do image to image (depth <-> colour). Grows only. */
+        VkBuffer CopyScratch( VkDeviceSize size );
         FenceWaiter& Waiter() { return m_Waiter; }
         void SetObjectName( VkObjectType type, uint64_t handle, const char* name ) const { m_Vk.SetObjectName( type, handle, name ); }
 
@@ -445,6 +447,11 @@ namespace VulkanRhi {
         std::vector<DescriptorHeapImpl*> m_Heaps;   // index = id - 1
         VkDescriptorSetLayout m_BindlessLayout = VK_NULL_HANDLE;
         std::vector<VkDescriptorType> m_MutableTypes;   // what the bindless array's slots may hold
+
+        std::mutex m_ScratchMutex;
+        VkBuffer m_Scratch = VK_NULL_HANDLE;
+        VmaAllocation m_ScratchAllocation = VK_NULL_HANDLE;
+        VkDeviceSize m_ScratchSize = 0;
         friend class DescriptorHeapImpl;
     };
 

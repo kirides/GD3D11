@@ -152,6 +152,9 @@ namespace VulkanRhi {
         /** Implicit D3D12 promotion: puts the touched subresources into `layout` for a copy if they aren't already. */
         void EnsureLayout( ResourceImpl* r, uint32_t mip, uint32_t mipCount, uint32_t layer, uint32_t layerCount, VkImageLayout layout,
             VkPipelineStageFlags2 stage, VkAccessFlags2 access );
+        /** Depth <-> colour copy (no vkCmdCopyImage between them in core 1.3): image -> scratch buffer -> image. */
+        void CopyViaBuffer( ResourceImpl* s, uint32_t sMip, uint32_t sLayer, VkOffset3D sOffset,
+            ResourceImpl* d, uint32_t dMip, uint32_t dLayer, VkOffset3D dOffset, VkExtent3D extent );
 
         DeviceImpl* m_Device;
         D3D12_COMMAND_LIST_TYPE m_Type;
@@ -927,6 +930,16 @@ namespace VulkanRhi {
         }
         if ( d->IsBuffer() || s->IsBuffer() ) return;
         EnsureLayout( s, 0, s->m_Mips, 0, s->m_Layers, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT );
+        if ( IsDepthFormat( s->m_Format ) != IsDepthFormat( d->m_Format ) ) {
+            EnsureLayout( d, 0, d->m_Mips, 0, d->m_Layers, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT );
+            for ( uint32_t l = 0; l < std::min( s->m_Layers, d->m_Layers ); ++l ) {
+                for ( uint32_t m = 0; m < std::min( s->m_Mips, d->m_Mips ); ++m ) {
+                    const VkExtent2D e = MipExtent( s, m );
+                    CopyViaBuffer( s, m, l, {}, d, m, l, {}, { e.width, e.height, 1 } );
+                }
+            }
+            return;
+        }
         EnsureLayout( d, 0, d->m_Mips, 0, d->m_Layers, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT );
         VkImageCopy2 regions[16];
         const uint32_t mips = std::min( { d->m_Mips, s->m_Mips, 16u } );
@@ -1030,6 +1043,20 @@ namespace VulkanRhi {
             SubresourceOf( d, dst->SubresourceIndex, dMip, dLayer );
             EnsureLayout( s, sMip, 1, sLayer, 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT );
             EnsureLayout( d, dMip, 1, dLayer, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT );
+            if ( IsDepthFormat( s->m_Format ) != IsDepthFormat( d->m_Format ) ) {
+                VkOffset3D srcOffset = {};
+                VkExtent3D extent = {};
+                if ( srcBox ) {
+                    srcOffset = { static_cast<int32_t>( srcBox->left ), static_cast<int32_t>( srcBox->top ), static_cast<int32_t>( srcBox->front ) };
+                    extent = { srcBox->right - srcBox->left, srcBox->bottom - srcBox->top, srcBox->back - srcBox->front };
+                } else {
+                    const VkExtent2D e = MipExtent( s, sMip );
+                    extent = { e.width, e.height, 1 };
+                }
+                CopyViaBuffer( s, sMip, sLayer, srcOffset, d, dMip, dLayer,
+                    { static_cast<int32_t>( dstX ), static_cast<int32_t>( dstY ), static_cast<int32_t>( dstZ ) }, extent );
+                return;
+            }
             VkImageCopy2 region = { VK_STRUCTURE_TYPE_IMAGE_COPY_2 };
             region.srcSubresource = { s->m_Aspect, sMip, sLayer, 1 };
             region.dstSubresource = { d->m_Aspect, dMip, dLayer, 1 };
@@ -1072,6 +1099,54 @@ namespace VulkanRhi {
         for ( uint32_t i = 0; i < kMaxVertexBuffers; ++i )
             if ( m_Vbs[i].BufferLocation ) m_VbDirtyMask |= 1u << i;
         m_IbDirty = m_Ib.BufferLocation != 0;
+    }
+
+    void CommandListImpl::CopyViaBuffer( ResourceImpl* s, uint32_t sMip, uint32_t sLayer, VkOffset3D sOffset,
+        ResourceImpl* d, uint32_t dMip, uint32_t dLayer, VkOffset3D dOffset, VkExtent3D extent ) {
+        auto texelBytes = []( VkFormat f ) -> VkDeviceSize {
+            switch ( f ) {
+            case VK_FORMAT_D16_UNORM: case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SFLOAT: case VK_FORMAT_R16_UINT: return 2;
+            default: return 4;   // D32 / D24 depth aspect / R32 - the pairs the renderer copies
+            }
+        };
+        const VkDeviceSize size = static_cast<VkDeviceSize>( extent.width ) * extent.height * std::max( 1u, extent.depth ) * texelBytes( s->m_Format );
+        VkBuffer scratch = m_Device->CopyScratch( size );
+        if ( !scratch ) return;
+        auto transferBarrier = [&]( VkAccessFlags2 src, VkAccessFlags2 dst ) {
+            VkMemoryBarrier2 b = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            b.srcAccessMask = src;
+            b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+            b.dstAccessMask = dst;
+            VkDependencyInfo dep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.memoryBarrierCount = 1;
+            dep.pMemoryBarriers = &b;
+            vkCmdPipelineBarrier2( m_Cmd, &dep );
+        };
+        // The scratch is shared: order against its previous use, then write -> read.
+        transferBarrier( VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT );
+        VkBufferImageCopy2 down = { VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2 };
+        down.imageSubresource = { IsDepthFormat( s->m_Format ) ? VkImageAspectFlags( VK_IMAGE_ASPECT_DEPTH_BIT ) : s->m_Aspect, sMip, sLayer, 1 };
+        down.imageOffset = sOffset;
+        down.imageExtent = extent;
+        VkCopyImageToBufferInfo2 toBuffer = { VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2 };
+        toBuffer.srcImage = s->m_Image;
+        toBuffer.srcImageLayout = s->m_Layouts[sMip + sLayer * s->m_Mips];
+        toBuffer.dstBuffer = scratch;
+        toBuffer.regionCount = 1;
+        toBuffer.pRegions = &down;
+        vkCmdCopyImageToBuffer2( m_Cmd, &toBuffer );
+        transferBarrier( VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_ACCESS_2_TRANSFER_READ_BIT );
+        VkBufferImageCopy2 up = down;
+        up.imageSubresource = { IsDepthFormat( d->m_Format ) ? VkImageAspectFlags( VK_IMAGE_ASPECT_DEPTH_BIT ) : d->m_Aspect, dMip, dLayer, 1 };
+        up.imageOffset = dOffset;
+        VkCopyBufferToImageInfo2 toImage = { VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2 };
+        toImage.srcBuffer = scratch;
+        toImage.dstImage = d->m_Image;
+        toImage.dstImageLayout = d->m_Layouts[dMip + dLayer * d->m_Mips];
+        toImage.regionCount = 1;
+        toImage.pRegions = &up;
+        vkCmdCopyBufferToImage2( m_Cmd, &toImage );
     }
 
     // ---- Debug labels ---------------------------------------------------------------------------
