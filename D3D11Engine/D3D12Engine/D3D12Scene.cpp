@@ -2400,7 +2400,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// The engine sadly works like that.
 	// the first OnStartWorldRendering after a Present() will be the correct one to draw the world.
 	if ( m_PresentPending ) return XR_SUCCESS;
-	if ( !m_SceneEnabled ) return XR_SUCCESS;   // Vulkan: scene passes not lowered yet
+	if ( !m_SceneEnabled ) return XR_SUCCESS;   // Vulkan whose scene failed to initialize: menus and UI only
 
     TracyD3D12ZoneCGX(m_CmdList.Get(), "OnStartWorldRendering");
     

@@ -180,6 +180,8 @@ bool D3D12GraphicsEngine::EvaluateGpuVobCulling() const {
     // Every stage of the frame has to agree on this (the distance-only collect happens long before the cull
     // dispatch), so it is evaluated ONCE per frame in OnStartWorldRendering and cached in m_GpuVobCullActive.
     if ( !Engine::GAPI->GetRendererState().RendererSettings.GpuVobCulling ) return false;
+    // Vulkan replays per-draw indirect arguments on the CPU, so they must stay CPU-written (the UPLOAD ring).
+    if ( m_Api == Rhi::Backend::Vulkan ) return false;
     if ( !m_VobCullReady || !m_VobIndirectCmdSig ) return false;
     if ( !m_Pipelines.Cull.VobCullPSO || !m_Pipelines.Cull.VobCullNoMotionPSO
         || !m_Pipelines.Cull.VobCullRootSig ) return false;

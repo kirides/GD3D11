@@ -87,7 +87,6 @@ XRESULT D3D12GraphicsEngine::Init() {
         Logging::Err( "D3D12GraphicsEngine::Init: device creation failed." );
         return XR_FAILED;
     }
-    m_SceneEnabled = m_Api == Rhi::Backend::D3D12;
     if ( m_Api == Rhi::Backend::D3D12 ) InitGpuScopeMarkers();
 
     const Rhi::Caps& caps = m_Rhi->GetCaps();
@@ -175,13 +174,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     LoadDistortionTexture();   // non-fatal: wet ground just skips the no-normalmap fallback if this is missing
-    if ( !m_SceneEnabled ) {
+    if ( !InitScene() ) {
+        if ( m_Api == Rhi::Backend::D3D12 ) return XR_FAILED;
+        // Vulkan keeps menus and UI without a scene; the line above names the pass that failed.
+        Logging::Wrn( "D3D12GraphicsEngine::Init: the scene failed to initialize on Vulkan; drawing menus and UI only." );
+        m_SceneEnabled = false;
         CreateDisplayOnlyPipelines();
-        D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
-        Logging::Inf( "D3D12GraphicsEngine initialized on Vulkan: menus and UI only, the 3D scene is not drawn yet." );
-        return XR_SUCCESS;
     }
-    if ( !InitScene() ) return XR_FAILED;
     D3D12ShaderBackend::LogAndResetCacheStats( "startup" );
     Logging::Inf( "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set." );
     return XR_SUCCESS;
