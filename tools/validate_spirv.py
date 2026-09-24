@@ -6,8 +6,10 @@ MSBuild never compiles HLSL: both backends compile at runtime. This script finds
 same DXC SPIR-V arguments the engine uses (D3D12ShaderBackend.cpp: AppendSpirvArguments) and runs
 spirv-val on the result.
 
-Usage:  python tools/validate_spirv.py [--dxc PATH] [--spirv-val PATH] [--filter SUBSTR] [--keep DIR]
+Usage:  python tools/validate_spirv.py [--dxc PATH] [--spirv-val PATH] [--filter SUBSTR] [--keep DIR] [--debug]
 Needs the Vulkan SDK (dxc.exe with SPIR-V codegen + spirv-val.exe); found via VULKAN_SDK or C:\\VulkanSDK.
+To test the x86 dxcompiler.dll the game ships (older than the SDK's), pass --dxc tools/dxc_x86/dxc_x86.exe
+with DXC_DLL set to that DLL; --debug uses the -Zi -O1 flags of DEBUG_D3D11 builds.
 """
 import argparse
 import concurrent.futures
@@ -148,7 +150,11 @@ def main():
     ap.add_argument("--filter", help="only files/entries containing this substring")
     ap.add_argument("--keep", help="keep the .spv files in this directory")
     ap.add_argument("--list", action="store_true", help="only list the extracted entries")
+    ap.add_argument("--debug", action="store_true", help="-Zi -O1 like DEBUG_D3D11 builds instead of -O3")
     opts = ap.parse_args()
+    if opts.debug:
+        i = SPIRV_ARGS.index("-O3")
+        SPIRV_ARGS[i:i + 1] = ["-Zi", "-O1"]
 
     entries, unresolved = collect_entries()
     if opts.filter:

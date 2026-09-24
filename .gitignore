@@ -282,3 +282,5 @@ cmake-build-debug
 D3D11Engine/D3D11Engine/Spacer_NET_G1
 D3D11Engine/Spacer_NET_G1
 vcpkg_installed
+/tools/dxc_x86/*.exe
+/tools/dxc_x86/*.obj
