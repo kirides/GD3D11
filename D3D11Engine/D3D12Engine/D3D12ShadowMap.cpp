@@ -3,7 +3,6 @@
 #include "../pch.h"
 #include "D3D12ShadowMap.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
@@ -99,7 +98,7 @@ bool D3D12ShadowMap::CreateTextureAndViews( UINT size ) {
 	// Builds/rebuilds just the sized GPU state: the resource + its per-cascade DSVs + the array SRV. Called once
 	// from Init (after the DSV heap + SRV slot are allocated) and again from Resize whenever the resolution
 	// setting changes — the heap/slot themselves don't depend on resolution, so they're untouched.
-	ID3D12Device* device = m_E->m_Device.GetDevice();
+	Rhi::Device* device = m_E->m_Rhi.Get();
 
 	D3D12MA::ALLOCATION_DESC allocDesc = {};
 	allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -120,11 +119,8 @@ bool D3D12ShadowMap::CreateTextureAndViews( UINT size ) {
 	clear.DepthStencil.Depth = 1.0f;        // normal-Z: 1.0 == far (NOT reversed-Z)
 
 	// Born in DEPTH_WRITE; each frame Prepare() writes then transitions to PIXEL_SHADER_RESOURCE and back.
-	m_MapAlloc.Reset();
 	m_Map.Reset();
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), allocDesc, dd,
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_MapAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_Map.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_Map.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) )
 		return false;
 	m_Map->SetName( L"SunShadowMap(D32 array)" );
 	m_InPixelState = false;
@@ -174,7 +170,7 @@ bool D3D12ShadowMap::Init() {
 	// 1.0) state — the directional caster is NOT reversed-Z (mirrors the D3D11 shadow map). Created once at init
 	// (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_Pipelines.World.RootSig to exist.
 	if ( !m_E ) return false;   // Attach() must have run (engine constructor)
-	ID3D12Device* device = m_E->m_Device.GetDevice();
+	Rhi::Device* device = m_E->m_Rhi.Get();
 	if ( !m_E->m_Pipelines.World.RootSig || !m_E->m_Pipelines.World.DepthPrepassVsBlob ) return false;
 
 	// Resolution from the shared quality setting (same knob D3D11 uses), clamped to a sane range. Bigger = smaller
@@ -188,9 +184,9 @@ bool D3D12ShadowMap::Init() {
 	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
 	dsvHeapDesc.NumDescriptors = kShadowCascades;
 	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_DsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateDescriptorHeap( &dsvHeapDesc, m_DsvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
-	m_DsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+	m_DsvSize = m_E->m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
 
 	// Array SRV (R32_FLOAT) covering all cascades — bound by the lit passes. The slot itself is permanent (bindless
 	// index baked into shaders/CBs elsewhere); Resize just re-points it at the new resource.
@@ -208,7 +204,7 @@ bool D3D12ShadowMap::Init() {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 	};
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+	Rhi::GraphicsPipelineStateDesc pso = {};
 	pso.pRootSignature = m_E->m_Pipelines.World.RootSig.Get();
 	pso.VS = { m_E->m_Pipelines.World.DepthPrepassVsBlob->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVsBlob->GetBufferSize() };
 	pso.PS = { m_CasterPsBlob->GetBufferPointer(), m_CasterPsBlob->GetBufferSize() };
@@ -229,16 +225,16 @@ bool D3D12ShadowMap::Init() {
 	pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
 	pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z
 	pso.DepthStencilState.StencilEnable = FALSE;
-	if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterWorldPSO.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (shadow caster)." );
 		return false;
 	}
 	// No-pixel-shader twin for the casters that need no cutout — see m_CasterWorldNoAlphaPSO. These are already
 	// NumRenderTargets=0 / void-PS PSOs, so dropping the PS entirely is a one-field change. Non-fatal.
 	{
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+		Rhi::GraphicsPipelineStateDesc noAlpha = pso;
 		noAlpha.PS = {};
-		if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterWorldNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &noAlpha, m_CasterWorldNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (shadow caster, no-alpha) — world casters keep alpha-clipping every material." );
 			m_CasterWorldNoAlphaPSO.Reset();
 		}
@@ -268,7 +264,7 @@ bool D3D12ShadowMap::Init() {
 		pso.VS = { m_E->m_Pipelines.World.DepthPrepassVobVsBlob->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVobVsBlob->GetBufferSize() };
 		pso.PS = { m_CasterVobPsBlob->GetBufferPointer(), m_CasterVobPsBlob->GetBufferSize() };
 		pso.InputLayout = { vobLayout, _countof( vobLayout ) };
-		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterVobPSO.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster)." );
 			return false;
 		}
@@ -280,14 +276,14 @@ bool D3D12ShadowMap::Init() {
 		if ( !m_E->m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClipBindless", Shadermodel_PS, vobIndirectShadowPs.ReleaseAndGetAddressOf() ) )
 			return false;
 		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
-		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, indirect)." );
 			return false;
 		}
 		{
-			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+			Rhi::GraphicsPipelineStateDesc noAlpha = pso;
 			noAlpha.PS = {};
-			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterVobIndirectNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+			if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &noAlpha, m_CasterVobIndirectNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
 				Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, no-alpha)." );
 				m_CasterVobIndirectNoAlphaPSO.Reset();
 			}
@@ -317,14 +313,14 @@ bool D3D12ShadowMap::Init() {
 		pso.VS = { m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
 		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
 		pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
-		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster)." );
 			return false;
 		}
 		{
-			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+			Rhi::GraphicsPipelineStateDesc noAlpha = pso;
 			noAlpha.PS = {};
-			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+			if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &noAlpha, m_CasterVobAttachNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
 				Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster, no-alpha)." );
 				m_CasterVobAttachNoAlphaPSO.Reset();
 			}
@@ -351,14 +347,14 @@ bool D3D12ShadowMap::Init() {
 		pso.VS = { m_E->m_Pipelines.Skeletal.DepthPrepassVsBlob->GetBufferPointer(), m_E->m_Pipelines.Skeletal.DepthPrepassVsBlob->GetBufferSize() };
 		pso.PS = { m_CasterSkeletalPsBlob->GetBufferPointer(), m_CasterSkeletalPsBlob->GetBufferSize() };
 		pso.InputLayout = { skelLayout, _countof( skelLayout ) };
-		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster)." );
 			return false;
 		}
 		{
-			D3D12_GRAPHICS_PIPELINE_STATE_DESC noAlpha = pso;
+			Rhi::GraphicsPipelineStateDesc noAlpha = pso;
 			noAlpha.PS = {};
-			if ( FAILED( device->CreateGraphicsPipelineState( &noAlpha, IID_PPV_ARGS( m_CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+			if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &noAlpha, m_CasterSkeletalNoAlphaPSO.ReleaseAndGetAddressOf() ) ) ) {
 				Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster, no-alpha)." );
 				m_CasterSkeletalNoAlphaPSO.Reset();
 			}
@@ -395,7 +391,7 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 		{ "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 	};
 
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+	Rhi::GraphicsPipelineStateDesc pso = {};
 	pso.pRootSignature = m_E->m_Pipelines.Grass.RootSig.Get();
 	pso.VS = { m_CasterGrassVsBlob->GetBufferPointer(), m_CasterGrassVsBlob->GetBufferSize() };
 	pso.PS = { m_CasterGrassPsBlob->GetBufferPointer(), m_CasterGrassPsBlob->GetBufferSize() };
@@ -416,8 +412,8 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 	pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z, matches the other casters
 	pso.DepthStencilState.StencilEnable = FALSE;
 
-	ID3D12Device* device = m_E->m_Device.GetDevice();
-	if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterGrassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+	Rhi::Device* device = m_E->m_Rhi.Get();
+	if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterGrassPSO.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (grass shadow caster)." );
 		return false;
 	}
@@ -434,9 +430,7 @@ bool D3D12ShadowMap::CreateWorldArgRings( const D3D12_RESOURCE_DESC& bufferDesc 
 	upload.HeapType = DefaultUploadHeapType;
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
 		for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-			if ( FAILED( m_E->m_Allocator->CreateResource( &upload, &bufferDesc,
-				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgsAlloc[c][i].ReleaseAndGetAddressOf(),
-				IID_PPV_ARGS( m_WorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
+			if ( FAILED( m_E->m_Rhi->CreateResource( upload.HeapType, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) )
 				return false;
 
 			m_WorldDrawArgs[c][i]->SetName( L"ShadowWorldDrawArgsRing" );
@@ -468,8 +462,7 @@ bool D3D12ShadowMap::CreateVobArgRings( UINT commandStride ) {
 
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
 		for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-			if ( FAILED( m_E->m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-				m_VobDrawArgsAlloc[c][i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_VobDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
+			if ( FAILED( m_E->m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) )
 				return false;
 			m_VobDrawArgs[c][i]->SetName( L"ShadowVobDrawArgsRing" );
 			D3D12_RANGE noRead = { 0, 0 };
@@ -1185,7 +1178,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	// A freshly-Reset command list carries no descriptor heap. On the serial path m_CmdList already has the same
 	// heap bound, so re-binding is a no-op — hence unconditional rather than branched on the caller.
 	if ( m_E->m_SrvHeap ) {
-		ID3D12DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
+		Rhi::DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
 		cmdList->SetDescriptorHeaps( 1, heaps );
 	}
 
@@ -1300,10 +1293,10 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 		// Per-material PSO choice rather than a partitioned command set: this is a CPU draw loop, not an
 		// ExecuteIndirect, so switching when the flag flips is cheaper than reordering the records.
-		ID3D12PipelineState* const skelClipPso = m_CasterSkeletalPSO.Get();
-		ID3D12PipelineState* const skelNoAlphaPso = m_CasterSkeletalNoAlphaPSO ? m_CasterSkeletalNoAlphaPSO.Get()
+		Rhi::PipelineState* const skelClipPso = m_CasterSkeletalPSO.Get();
+		Rhi::PipelineState* const skelNoAlphaPso = m_CasterSkeletalNoAlphaPSO ? m_CasterSkeletalNoAlphaPSO.Get()
 		                                                                      : skelClipPso;
-		ID3D12PipelineState* boundPso = nullptr;
+		Rhi::PipelineState* boundPso = nullptr;
 
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
@@ -1326,7 +1319,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 				// visible solid shadow, a needless clip is only slower).
 				const bool alphaTested = !haveSlot || (*matSrvs)[matIdx].alphaTested;
 				++matIdx;
-				ID3D12PipelineState* wantPso = alphaTested ? skelClipPso : skelNoAlphaPso;
+				Rhi::PipelineState* wantPso = alphaTested ? skelClipPso : skelNoAlphaPso;
 				if ( wantPso != boundPso ) {
 					cmdList->SetPipelineState( wantPso );
 					boundPso = wantPso;
@@ -1357,16 +1350,16 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		// Attachment variant (Fatness/Scaling instead of wind, needs NORMAL) — must match the depth prepass/
 		// color pass PSO choice for the same reason the wind fix required it (bit-identical transform).
 		// Per-attachment PSO choice, same scheme as the skeletal loop above (CPU draw loop, so switch on flip).
-		ID3D12PipelineState* const attClipPso = m_CasterVobAttachPSO.Get();
-		ID3D12PipelineState* const attNoAlphaPso = m_CasterVobAttachNoAlphaPSO ? m_CasterVobAttachNoAlphaPSO.Get()
+		Rhi::PipelineState* const attClipPso = m_CasterVobAttachPSO.Get();
+		Rhi::PipelineState* const attNoAlphaPso = m_CasterVobAttachNoAlphaPSO ? m_CasterVobAttachNoAlphaPSO.Get()
 		                                                                      : attClipPso;
-		ID3D12PipelineState* boundAttachPso = nullptr;
+		Rhi::PipelineState* boundAttachPso = nullptr;
 
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 		for ( const FrameAttachDraw& a : AttachDraws[c] ) {
 			if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
-			ID3D12PipelineState* wantPso = a.alphaTested ? attClipPso : attNoAlphaPso;
+			Rhi::PipelineState* wantPso = a.alphaTested ? attClipPso : attNoAlphaPso;
 			if ( wantPso != boundAttachPso ) {
 				cmdList->SetPipelineState( wantPso );
 				boundAttachPso = wantPso;

@@ -63,9 +63,7 @@ bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_UIVertexBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_UIVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_UIVertexBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_UIVertexBuffer[i]->SetName( i == 0 ? L"UIVertexRing0" : L"UIVertexRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -224,7 +222,7 @@ XRESULT D3D12GraphicsEngine::SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, 
 	const bool frontCCW = rs.RasterizerState.FrontCounterClockwise;
 
 	// Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-	ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode,
+	Rhi::PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode,
 		m_ColorTargetIsHDR, isSkyPass, frontCCW, ffVbLayout );
 	if ( !pso ) return XR_SUCCESS;
 

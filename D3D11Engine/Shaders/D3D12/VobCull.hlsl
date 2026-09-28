@@ -73,7 +73,7 @@ RWStructuredBuffer<uint>           VisibleCounts : register( u1 );
 
 float3x4 BuildWorldMatrix( VobInstanceGpu inst )
 {
-    // The rows are the matrix; see Vob.hlsl's VobWorld.
+    // The rows are the matrix, as in Vob.hlsl's row_major iworld input.
     return float3x4( inst.World0, inst.World1, inst.World2 );
 }
 

@@ -1,6 +1,5 @@
 #include "../pch.h"
 #include "D3D12Barrier.h"
-#include "D3D12StateCache.h"
 #include "../Logger.h"
 #include <d3dx12_barriers.h>
 
@@ -126,9 +125,17 @@ namespace {
 
 } // namespace
 
-void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
-    D3D12_RESOURCE_STATES after, UINT subresource, D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint ) {
-    if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
+namespace {
+    void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+        const D3D12NativeTransition* transitions, UINT count );
+    void UAVBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+        ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint );
+}
+
+void D3D12Barriers::Transition( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* resource,
+    D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, UINT subresource,
+    D3D12_BARRIER_SYNC syncBeforeHint, D3D12_BARRIER_SYNC syncAfterHint ) {
+    if ( list7 ) {
         D3D12_BARRIER_SYNC syncBefore, syncAfter;
         D3D12_BARRIER_ACCESS accessBefore, accessAfter;
         D3D12_BARRIER_LAYOUT layoutBefore, layoutAfter;
@@ -141,40 +148,43 @@ void D3D12CmdList::TransitionBarrier( ID3D12Resource* resource, D3D12_RESOURCE_S
             if ( IsBufferResource( resource ) ) {
                 CD3DX12_BUFFER_BARRIER bufferBarrier( syncBefore, syncAfter, accessBefore, accessAfter, resource );
                 CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
-                List7()->Barrier( 1, &group );
+                list7->Barrier( 1, &group );
             } else {
                 CD3DX12_TEXTURE_BARRIER textureBarrier( syncBefore, syncAfter, accessBefore, accessAfter,
                     layoutBefore, layoutAfter, resource, SubresourceRange( resource, subresource ) );
                 CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &textureBarrier ) );
-                List7()->Barrier( 1, &group );
+                list7->Barrier( 1, &group );
             }
             return;
         }
     }
     CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition( resource, before, after, subresource );
-    m_List->ResourceBarrier( 1, &barrier );
+    list->ResourceBarrier( 1, &barrier );
 }
 
-void D3D12CmdList::TransitionBarriers( const D3D12ResourceTransition* transitions, UINT count ) {
+void D3D12Barriers::Transitions( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+    const D3D12NativeTransition* transitions, UINT count ) {
     // Batches larger than kMaxBatchedBarriers are issued as multiple grouped Barrier() calls
     // (still far fewer than one call per element) rather than degrading to one Barrier() per
     // transition, which would defeat the point of batching for e.g. point-shadow slot updates.
     for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
         const UINT chunk = std::min( count - offset, kMaxBatchedBarriers );
-        TransitionBarriersChunk( transitions + offset, chunk );
+        TransitionBarriersChunk( list, list7, transitions + offset, chunk );
     }
 }
 
-void D3D12CmdList::TransitionBarriersChunk( const D3D12ResourceTransition* transitions, UINT count ) {
+namespace {
+void TransitionBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+    const D3D12NativeTransition* transitions, UINT count ) {
     if ( count == 0 ) return;
 
-    if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
+    if ( list7 ) {
         D3D12_TEXTURE_BARRIER textureBarriers[kMaxBatchedBarriers];
         D3D12_BUFFER_BARRIER bufferBarriers[kMaxBatchedBarriers];
         UINT numTexture = 0, numBuffer = 0;
         bool ok = true;
         for ( UINT i = 0; i < count; ++i ) {
-            const D3D12ResourceTransition& t = transitions[i];
+            const D3D12NativeTransition& t = transitions[i];
             D3D12_BARRIER_SYNC syncBefore, syncAfter;
             D3D12_BARRIER_ACCESS accessBefore, accessAfter;
             D3D12_BARRIER_LAYOUT layoutBefore, layoutAfter;
@@ -197,7 +207,7 @@ void D3D12CmdList::TransitionBarriersChunk( const D3D12ResourceTransition* trans
             UINT numGroups = 0;
             if ( numTexture > 0 ) groups[numGroups++] = CD3DX12_BARRIER_GROUP( numTexture, textureBarriers );
             if ( numBuffer > 0 ) groups[numGroups++] = CD3DX12_BARRIER_GROUP( numBuffer, bufferBarriers );
-            if ( numGroups > 0 ) List7()->Barrier( numGroups, groups );
+            if ( numGroups > 0 ) list7->Barrier( numGroups, groups );
             return;
         }
         // A mapping failure partway through: fall through to the legacy batch below rather than
@@ -207,49 +217,54 @@ void D3D12CmdList::TransitionBarriersChunk( const D3D12ResourceTransition* trans
     D3D12_RESOURCE_BARRIER legacyBarriers[kMaxBatchedBarriers];
     UINT numLegacy = 0;
     for ( UINT i = 0; i < count; ++i ) {
-        const D3D12ResourceTransition& t = transitions[i];
+        const D3D12NativeTransition& t = transitions[i];
         legacyBarriers[numLegacy++] = CD3DX12_RESOURCE_BARRIER::Transition( t.Resource, t.Before, t.After, t.Subresource );
     }
-    m_List->ResourceBarrier( numLegacy, legacyBarriers );
+    list->ResourceBarrier( numLegacy, legacyBarriers );
 }
+}   // namespace
 
-void D3D12CmdList::UAVBarrier( ID3D12Resource* resource, D3D12_BARRIER_SYNC syncHint ) {
-    if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
+void D3D12Barriers::UAV( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* resource,
+    D3D12_BARRIER_SYNC syncHint ) {
+    if ( list7 ) {
         const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
         constexpr D3D12_BARRIER_ACCESS kAccess = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
         if ( resource && IsBufferResource( resource ) ) {
             CD3DX12_BUFFER_BARRIER bufferBarrier( kSync, kSync, kAccess, kAccess, resource );
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_BUFFER_BARRIER*>( &bufferBarrier ) );
-            List7()->Barrier( 1, &group );
+            list7->Barrier( 1, &group );
         } else if ( resource ) {
             CD3DX12_TEXTURE_BARRIER textureBarrier( kSync, kSync, kAccess, kAccess,
                 D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS, resource,
                 SubresourceRange( resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) );
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &textureBarrier ) );
-            List7()->Barrier( 1, &group );
+            list7->Barrier( 1, &group );
         } else {
             CD3DX12_GLOBAL_BARRIER globalBarrier( kSync, kSync, kAccess, kAccess );
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_GLOBAL_BARRIER*>( &globalBarrier ) );
-            List7()->Barrier( 1, &group );
+            list7->Barrier( 1, &group );
         }
         return;
     }
     CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::UAV( resource );
-    m_List->ResourceBarrier( 1, &barrier );
+    list->ResourceBarrier( 1, &barrier );
 }
 
-void D3D12CmdList::UAVBarriers( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
+void D3D12Barriers::UAVs( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+    ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
     // See TransitionBarriers() -- chunk rather than degrade to one Barrier() per element.
     for ( UINT offset = 0; offset < count; offset += kMaxBatchedBarriers ) {
         const UINT chunk = std::min( count - offset, kMaxBatchedBarriers );
-        UAVBarriersChunk( resources + offset, chunk, syncHint );
+        UAVBarriersChunk( list, list7, resources + offset, chunk, syncHint );
     }
 }
 
-void D3D12CmdList::UAVBarriersChunk( ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
+namespace {
+void UAVBarriersChunk( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7,
+    ID3D12Resource* const* resources, UINT count, D3D12_BARRIER_SYNC syncHint ) {
     if ( count == 0 ) return;
 
-    if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
+    if ( list7 ) {
         const D3D12_BARRIER_SYNC kSync = ( syncHint != kBarrierSyncUnspecified ) ? syncHint : D3D12_BARRIER_SYNC_ALL_SHADING;
         constexpr D3D12_BARRIER_ACCESS kAccess = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
         D3D12_TEXTURE_BARRIER textureBarriers[kMaxBatchedBarriers];
@@ -273,7 +288,7 @@ void D3D12CmdList::UAVBarriersChunk( ID3D12Resource* const* resources, UINT coun
         if ( numTexture > 0 ) groups[numGroups++] = CD3DX12_BARRIER_GROUP( numTexture, textureBarriers );
         if ( numBuffer > 0 ) groups[numGroups++] = CD3DX12_BARRIER_GROUP( numBuffer, bufferBarriers );
         if ( numGlobal > 0 ) groups[numGroups++] = CD3DX12_BARRIER_GROUP( numGlobal, globalBarriers );
-        if ( numGroups > 0 ) List7()->Barrier( numGroups, groups );
+        if ( numGroups > 0 ) list7->Barrier( numGroups, groups );
         return;
     }
 
@@ -282,11 +297,13 @@ void D3D12CmdList::UAVBarriersChunk( ID3D12Resource* const* resources, UINT coun
     for ( UINT i = 0; i < count; ++i ) {
         legacyBarriers[numLegacy++] = CD3DX12_RESOURCE_BARRIER::UAV( resources[i] );
     }
-    m_List->ResourceBarrier( numLegacy, legacyBarriers );
+    list->ResourceBarrier( numLegacy, legacyBarriers );
 }
+}   // namespace
 
-void D3D12CmdList::AliasingBarrier( ID3D12Resource* before, D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after ) {
-    if ( s_DeviceSupportsEnhancedBarriers && List7() ) {
+void D3D12Barriers::Aliasing( ID3D12GraphicsCommandList* list, ID3D12GraphicsCommandList7* list7, ID3D12Resource* before,
+    D3D12_RESOURCE_STATES beforeState, ID3D12Resource* after ) {
+    if ( list7 ) {
         // Mixing a legacy aliasing barrier into enhanced-tracked textures is invalid (debug layer #1350), so
         // aliasing uses the spec's model: deactivate `before`, then activate `after` from UNDEFINED + DISCARD.
         D3D12_BARRIER_SYNC sync;
@@ -296,20 +313,20 @@ void D3D12CmdList::AliasingBarrier( ID3D12Resource* before, D3D12_RESOURCE_STATE
             CD3DX12_TEXTURE_BARRIER deactivate( sync, D3D12_BARRIER_SYNC_NONE, access, D3D12_BARRIER_ACCESS_NO_ACCESS,
                 layout, layout, before, SubresourceRange( before, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ) );
             CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &deactivate ) );
-            List7()->Barrier( 1, &group );
+            list7->Barrier( 1, &group );
         }
         CD3DX12_TEXTURE_BARRIER activate( before ? D3D12_BARRIER_SYNC_ALL : D3D12_BARRIER_SYNC_NONE, D3D12_BARRIER_SYNC_RENDER_TARGET,
             D3D12_BARRIER_ACCESS_NO_ACCESS, D3D12_BARRIER_ACCESS_RENDER_TARGET,
             D3D12_BARRIER_LAYOUT_UNDEFINED, D3D12_BARRIER_LAYOUT_RENDER_TARGET, after,
             SubresourceRange( after, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ), D3D12_TEXTURE_BARRIER_FLAG_DISCARD );
         CD3DX12_BARRIER_GROUP group( 1u, static_cast<const D3D12_TEXTURE_BARRIER*>( &activate ) );
-        List7()->Barrier( 1, &group );
+        list7->Barrier( 1, &group );
         return;
     }
     if ( before ) {
         CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Aliasing( before, after );
-        m_List->ResourceBarrier( 1, &barrier );
+        list->ResourceBarrier( 1, &barrier );
     }
     // Placed RT textures must be initialized by a Clear/Copy/Discard before first use (debug layer #1422).
-    m_List->DiscardResource( after, nullptr );
+    list->DiscardResource( after, nullptr );
 }

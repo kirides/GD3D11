@@ -6,7 +6,6 @@
 // resources do.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
@@ -78,7 +77,7 @@ namespace {
 
 bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
     m_RainBuffersReady = false;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || numParticles == 0 ) return false;
 
     // 128-thread groups, like D3D11Effect::DrawRain_CS (D3D11Effect.cpp:323).
@@ -104,8 +103,7 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
         bd.SampleDesc.Count = 1;
         bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_RainBufferStaticAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainBufferStatic.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_RainBufferStatic.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the rain static-particle buffer." );
             return false;
         }
@@ -136,8 +134,7 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
         bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr,
-            m_RainBufferDynamicAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainBufferDynamic.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr, m_RainBufferDynamic.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the rain dynamic-particle buffer." );
             return false;
         }
@@ -311,15 +308,15 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     m_CmdList->DrawInstanced( 4, numParticles, 0, 0 );
 }
 
-bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, ComPtr<ID3D12Resource>& outTex,
-    ComPtr<D3D12MA::Allocation>& outAlloc, UINT& outSrvSlot ) {
+bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, ComPtr<Rhi::Resource>& outTex,
+    UINT& outSrvSlot ) {
     ParsedTextureArray parsed;
     if ( FAILED( ParseTextureArrayDDS( prefix, count, zVdfsReadFile, parsed ) ) ) {
         Logging::Wrn( "D3D12: failed to parse rain/snow texture array at prefix {}", prefix );
         return false;
     }
 
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     D3D12_RESOURCE_DESC td = {};
@@ -339,8 +336,7 @@ bool D3D12GraphicsEngine::LoadRainTextureArray( const char* prefix, int count, C
     // below is a copy-queue CopyTextureRegion (buffers/textures implicitly promote COMMON->COPY_DEST for
     // that), and reading it afterward as an SRV also implicitly promotes from COMMON, so no explicit
     // barrier is needed either side of the upload for a plain (non-simultaneous-access) texture.
-    if ( FAILED( m_Allocator->CreateResource( &heapDefault, &td, D3D12_RESOURCE_STATE_COMMON, nullptr,
-        outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( outTex.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &td, D3D12_RESOURCE_STATE_COMMON, nullptr, outTex.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create rain/snow texture array resource (prefix {}).", prefix );
         return false;
     }
@@ -380,11 +376,11 @@ bool D3D12GraphicsEngine::LoadRainTextures() {
     // backends share.
     Logging::Inf( "D3D12: loading rain-drop textures" );
     const bool rainOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370,
-        m_RainTextureArray, m_RainTextureArrayAlloc, m_RainTextureArraySrvSlot );
+        m_RainTextureArray, m_RainTextureArraySrvSlot );
 
     Logging::Inf( "D3D12: loading snow-flake textures" );
     const bool snowOk = LoadRainTextureArray( R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256,
-        m_SnowTextureArray, m_SnowTextureArrayAlloc, m_SnowTextureArraySrvSlot );
+        m_SnowTextureArray, m_SnowTextureArraySrvSlot );
 
     m_RainTexturesLoaded = rainOk && snowOk;
     return m_RainTexturesLoaded;
@@ -446,14 +442,14 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
 
 bool D3D12GraphicsEngine::CreateRainShadowResources() {
     if ( m_RainShadowResourcesReady ) return true;
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device ) return false;
 
     if ( !m_RainShadowDsvHeap ) {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         hd.NumDescriptors = 1;
-        if ( FAILED( device->CreateDescriptorHeap( &hd, IID_PPV_ARGS( m_RainShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateDescriptorHeap( &hd, m_RainShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the rain shadowmap DSV heap." );
             return false;
         }
@@ -485,8 +481,7 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     clear.Format = DXGI_FORMAT_D32_FLOAT;
     clear.DepthStencil.Depth = 1.0f;   // normal-Z: 1.0 == far (not reversed-Z, matches the CSM sun map)
 
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), allocDesc, dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
-        m_RainShadowMapAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainShadowMap.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_RainShadowMap.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Wrn( "D3D12: failed to create the rain shadow map resource." );
         return false;
     }
@@ -526,8 +521,7 @@ bool D3D12GraphicsEngine::CreateRainVobArgRings( UINT commandStride ) {
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            m_RainVobDrawArgsAlloc[i].ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_RainVobDrawArgs[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_RainVobDrawArgs[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_RainVobDrawArgs[i]->SetName( L"RainVobDrawArgsRing" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -650,7 +644,7 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     g_RainShadowIb = nullptr;
     m_RainVobDrawCount = 0;
 
-    ID3D12PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
+    Rhi::PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
     if ( !m_FrameOpen || !casterPso || !m_Pipelines.World.RootSig || !m_BlackTexture || GetDefaultOrmSrvSlot() == UINT_MAX )
         return;
 
@@ -794,7 +788,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
     // A freshly-Reset pool list carries no descriptor heap; on m_CmdList this is a redundant no-op.
     if ( m_SrvHeap ) {
-        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         cmdList->SetDescriptorHeaps( 1, heaps );
     }
 
@@ -819,10 +813,10 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
         // Per-draw PSO choice (this is a CPU draw loop, not an ExecuteIndirect): the casters whose diffuse has
         // no alpha channel can't be clipped, so they run with no pixel shader bound. See m_CasterWorldNoAlphaPSO.
-        ID3D12PipelineState* const clipPso = m_ShadowMap.GetWorldCasterPSO();
-        ID3D12PipelineState* const noAlphaPso = m_ShadowMap.GetWorldCasterNoAlphaPSO()
+        Rhi::PipelineState* const clipPso = m_ShadowMap.GetWorldCasterPSO();
+        Rhi::PipelineState* const noAlphaPso = m_ShadowMap.GetWorldCasterNoAlphaPSO()
             ? m_ShadowMap.GetWorldCasterNoAlphaPSO() : clipPso;
-        ID3D12PipelineState* boundPso = nullptr;
+        Rhi::PipelineState* boundPso = nullptr;
 
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
@@ -833,7 +827,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         cmdList->IASetIndexBuffer( &ibv );
 
         for ( const RainShadowDraw& d : g_RainShadowDraws ) {
-            ID3D12PipelineState* wantPso = d.alphaTested ? clipPso : noAlphaPso;
+            Rhi::PipelineState* wantPso = d.alphaTested ? clipPso : noAlphaPso;
             if ( wantPso != boundPso ) {
                 cmdList->SetPipelineState( wantPso );
                 boundPso = wantPso;
@@ -859,7 +853,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
 
         // BuildVobDrawCommands partitioned this command set opaque-first (m_RainVobOpaqueDrawCount), so the
         // leading run draws with no pixel shader — same split the CSM cascades do.
-        ID3D12PipelineState* const vobNoAlphaPso = m_ShadowMap.GetVobIndirectCasterNoAlphaPSO();
+        Rhi::PipelineState* const vobNoAlphaPso = m_ShadowMap.GetVobIndirectCasterNoAlphaPSO();
         cmdList->SetPipelineState( vobNoAlphaPso ? vobNoAlphaPso : m_ShadowMap.GetVobIndirectCasterPSO() );
         cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );

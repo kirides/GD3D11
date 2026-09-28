@@ -10,7 +10,6 @@
 // m_PrevViewProjUnjittered) is the next increment; see D3D12_SSR_WET_SURFACES_PLAN.md (repo root).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
@@ -23,8 +22,8 @@ using Microsoft::WRL::ComPtr;
 bool D3D12GraphicsEngine::CreateSsrHistoryResources( INT2 size ) {
     m_SsrHistoryValid = false;   // stale after any resize — last frame's buffer covered a different resolution
     if ( size.x < 4 || size.y < 4 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device || !m_Allocator ) return false;
+    Rhi::Device* device = m_Rhi.Get();
+    if ( !device ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -40,9 +39,7 @@ bool D3D12GraphicsEngine::CreateSsrHistoryResources( INT2 size ) {
         dd.Format = kSceneColorFormat;
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kSsrPrevReadState,
-            nullptr, m_SsrPrevColorAlloc.ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_SsrPrevColor.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, kSsrPrevReadState, nullptr, m_SsrPrevColor.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create the SSR previous-frame color history ({}x{}).", size.x, size.y );
             return false;
         }
@@ -63,9 +60,7 @@ bool D3D12GraphicsEngine::CreateSsrHistoryResources( INT2 size ) {
         dd.Format = DXGI_FORMAT_R32_FLOAT;
         dd.SampleDesc.Count = 1;
         dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, kSsrPrevReadState,
-            nullptr, m_SsrPrevDepthAlloc.ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_SsrPrevDepth.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, kSsrPrevReadState, nullptr, m_SsrPrevDepth.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
             Logging::Wrn( "D3D12: failed to create the SSR previous-frame depth history ({}x{}).", size.x, size.y );
             return false;
         }

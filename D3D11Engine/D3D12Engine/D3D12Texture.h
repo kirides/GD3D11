@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <wrl/client.h>
 #include <d3d12.h>
 #include <D3D12MemAlloc.h>
@@ -44,7 +45,7 @@ public:
 
     uint16_t GetID() override { return m_ID; }
 
-    ID3D12Resource* GetResource() const { return m_Texture.Get(); }
+    Rhi::Resource* GetResource() const { return m_Texture.Get(); }
     DXGI_FORMAT GetFormat() const { return m_Format; }
     INT2 GetSize() const { return m_Size; }
     unsigned int GetMipMapCount() const { return m_MipMapCount; }
@@ -66,8 +67,7 @@ private:
     bool CreateAndUpload( const void* data );   // committed resource (+ synchronous upload when data != null)
     void CreateSRV();                     // (re)creates the shader-visible SRV for the current resource
 
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Allocation; // Retains ownership of memory + ID3D12Resource
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_Texture;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Texture;
     DXGI_FORMAT  m_Format = DXGI_FORMAT_UNKNOWN;
     INT2         m_Size = {};
     unsigned int m_MipMapCount = 1;

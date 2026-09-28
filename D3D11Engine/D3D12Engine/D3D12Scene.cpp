@@ -701,7 +701,7 @@ D3D12CmdList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
 	// open list (nullptr on failure — the caller then leaves that slot unrecorded and FinishShadowPasses
 	// re-issues the pass inline). Safe without a GPU wait: this pair was last used kBackBufferCount frames ago
 	// and Present() already fenced on that frame.
-	ID3D12CommandAllocator* alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
+	Rhi::CommandAllocator*  alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
 	D3D12CmdList&           cl    = m_ShadowCmdLists[slot][m_FrameIndex];
 	if ( !alloc || !cl ) return nullptr;
 	if ( FAILED( alloc->Reset() ) ) return nullptr;
@@ -839,12 +839,12 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		g_ShadowRecordJobs.clear();
 		m_ShadowRecordingPending = false;
 
-		ID3D12CommandList* lists[kShadowRecordSlots] = {};
+		Rhi::CommandList* lists[kShadowRecordSlots] = {};
 		UINT numLists = 0;
 		for ( UINT s = 0; s < kShadowRecordSlots; ++s )
 			if ( m_ShadowListRecorded[s] ) lists[numLists++] = m_ShadowCmdLists[s][m_FrameIndex].Get();
 		if ( numLists > 0 )
-			m_Device.GetDirectQueue()->ExecuteCommandLists( numLists, lists );
+			m_Rhi->GetDirectQueue()->ExecuteCommandLists( numLists, lists );
 
 		bool anyFailed = false;
 		// Only when the jobs were SUPPOSED to record into their own lists — otherwise 2a already emitted every
@@ -928,7 +928,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	// created in UNORDERED_ACCESS; each frame DispatchLightCulling writes it (UAV) then transitions it to
 	// PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back.
 	if ( size.x <= 0 || size.y <= 0 ) return false;
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 
 	constexpr UINT kTileSize = 16;
 	m_NumTilesX = (static_cast<UINT>(size.x) + kTileSize - 1) / kTileSize;
@@ -942,7 +942,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	D3D12MA::ALLOCATION_DESC heapDefault = {};
 	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-	auto makeUavBuffer = [&]( UINT64 bytes, const wchar_t* name, ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc ) -> bool {
+	auto makeUavBuffer = [&]( UINT64 bytes, const wchar_t* name, ComPtr<Rhi::Resource>& out ) -> bool {
 		D3D12_RESOURCE_DESC bd = {};
 		bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		bd.Width = bytes;
@@ -952,18 +952,15 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 		bd.SampleDesc.Count = 1;
 		bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+		if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: failed to create a light-cull UAV buffer." );
 			return false;
 		}
 		out->SetName( name );
-		outAlloc->SetName( name );
 		return true;
 		};
 
-	if ( !makeUavBuffer( static_cast<UINT64>(numClusters) * kWordsPerCluster * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer, m_LightGridBufferAlloc ) )
+	if ( !makeUavBuffer( static_cast<UINT64>(numClusters) * kWordsPerCluster * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer ) )
 		return false;
 	m_LightGridInPixelState = false;   // freshly created in UNORDERED_ACCESS (see DispatchLightCulling round-trip)
 	return true;
@@ -972,7 +969,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 
 
 bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	D3D12MA::ALLOCATION_DESC uploadHeap = {};
 	uploadHeap.HeapType = DefaultUploadHeapType;
 
@@ -987,12 +984,9 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_VobInstanceBuffer[i]->SetName( i == 0 ? L"VobInstanceRing0" : L"VobInstanceRing1" );
-		m_VobInstanceBufferAlloc[i]->SetName( i == 0 ? L"AllocVobInstanceRing0" : L"AllocVobInstanceRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
 		if ( FAILED( m_VobInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_VobInstanceBufferPtr[i] ) ) ) )
 			return false;
@@ -1004,12 +998,9 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 	// That is what makes a cascade's instance upload safe on its own worker thread.
 	bufDesc.Width = static_cast<UINT64>( kShadowInstanceSliceBytes ) * kShadowInstanceRingSlots;
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowVobInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_ShadowVobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowVobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_ShadowVobInstanceBuffer[i]->SetName( i == 0 ? L"ShadowVobInstanceRing0" : L"ShadowVobInstanceRing1" );
-		m_ShadowVobInstanceBufferAlloc[i]->SetName( i == 0 ? L"AllocShadowVobInstanceRing0" : L"AllocShadowVobInstanceRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
 		if ( FAILED( m_ShadowVobInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_ShadowVobInstanceBufferPtr[i] ) ) ) )
 			return false;
@@ -1133,7 +1124,7 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 	// Per-frame point-light StructuredBuffers (one per in-flight frame). The whole visible-light list is
 	// rewritten from offset 0 each frame, so these are plain persistently-mapped UPLOAD snapshots, bound
 	// as a root SRV. Sized kMaxFrameLights * sizeof(GPULight).
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	D3D12MA::ALLOCATION_DESC uploadHeap = {};
 	uploadHeap.HeapType = DefaultUploadHeapType;
 
@@ -1148,12 +1139,9 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LightBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_LightBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LightBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_LightBuffer[i]->SetName( i == 0 ? L"PointLightBuffer0" : L"PointLightBuffer1" );
-		m_LightBufferAlloc[i]->SetName( i == 0 ? L"AllocPointLightBuffer0" : L"AllocPointLightBuffer1" );
 		D3D12_RANGE noRead = { 0, 0 };
 		if ( FAILED( m_LightBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_LightBufferPtr[i] ) ) ) )
 			return false;
@@ -1390,7 +1378,7 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 
 
 bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	D3D12MA::ALLOCATION_DESC uploadHeap = {};
 	uploadHeap.HeapType = DefaultUploadHeapType;
 
@@ -1405,9 +1393,7 @@ bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ParticleInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_ParticleInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ParticleInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_ParticleInstanceBuffer[i]->SetName( i == 0 ? L"ParticleInstanceRing0" : L"ParticleInstanceRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -1467,7 +1453,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	const UINT frame = m_FrameIndex;
 	uint32_t lastFogMode = UINT32_MAX;
-	ID3D12PipelineState* lastPso = nullptr;
+	Rhi::PipelineState* lastPso = nullptr;
 	unsigned int drawnTris = 0;
 
 	for ( auto& [tex, instances] : particles ) {
@@ -1475,7 +1461,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 
 		// Blend mode for this texture bucket (falls back to alpha blend if somehow unlisted).
 		auto infoIt = info.find( tex );
-		ID3D12PipelineState* pso = infoIt != info.end()
+		Rhi::PipelineState* pso = infoIt != info.end()
 			? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState )
 			: nullptr;
 		if ( !pso ) {
@@ -1536,7 +1522,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 
 
 bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	D3D12MA::ALLOCATION_DESC uploadHeap = {};
 	uploadHeap.HeapType = DefaultUploadHeapType;
 
@@ -1551,9 +1537,7 @@ bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_DecalInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_DecalInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_DecalInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_DecalInstanceBuffer[i]->SetName( i == 0 ? L"DecalInstanceRing0" : L"DecalInstanceRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -1566,7 +1550,7 @@ bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
 
 
 bool D3D12GraphicsEngine::CreateDecalQuadVB() {
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 
 	// Shared unit quad (two triangles, corners +/-0.5, UV 0..1) — same 6 verts as D3D11's decal quad, so
 	// the per-decal scale matrix's Y-flip (-DecalSize.y*2) lands the sprite the same way. GPU resource, so
@@ -1591,9 +1575,7 @@ bool D3D12GraphicsEngine::CreateDecalQuadVB() {
 	bufDesc.Format = DXGI_FORMAT_UNKNOWN;
 	bufDesc.SampleDesc.Count = 1;
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &bufDesc,
-		D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_DecalQuadVBAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) )
 		return false;
 	m_DecalQuadVB->SetName( L"DecalQuadVB" );
 	void* mapped = nullptr;
@@ -1791,7 +1773,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[frame] );                         // b3 shadow CB
 	m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
 	m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );  // t5 cubes
-	m_CmdList->SetGraphicsRoot32BitConstants( 10, 1, &m_ActiveAOMaskSrvSlot, 0 );                    // b7 AOCB
+	m_CmdList->SetGraphicsRoot32BitConstants( 6, 1, &m_ActiveAOMaskSrvSlot, 0 );                     // b7 AOCB
 
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -1804,7 +1786,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
 	m_CmdList->IASetVertexBuffers( 0, 2, views );
 
-	ID3D12PipelineState* lastPso = nullptr;
+	Rhi::PipelineState* lastPso = nullptr;
 	if ( lighting ) { m_CmdList->SetPipelineState( m_Pipelines.Decal.LitPSO.Get() ); lastPso = m_Pipelines.Decal.LitPSO.Get(); }
 
 	zCTexture* lastTex = nullptr;
@@ -1823,7 +1805,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 			// D3D11 skips those too rather than falling back to alpha blending.
 			default: continue;
 			}
-			ID3D12PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
+			Rhi::PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
 			if ( !pso ) continue;
 			if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 		}
@@ -2162,7 +2144,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 	// world/VOB/skeletal draws chose, this must choose too, or the PSO's RT formats won't match what is bound.
 	const D3D12_GPU_VIRTUAL_ADDRESS motionCb = GetMotionCbAddress();
 	const bool gbuf = motionCb && MotionGBufferActive();
-	ID3D12PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
+	Rhi::PipelineState* pso = gbuf ? m_Pipelines.Grass.DepthPrepassGBufPSO.Get()
 	                                : m_Pipelines.Grass.DepthPrepassPSO.Get();
 	if ( !pso ) return;
 
@@ -2226,7 +2208,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );         // b1 GrassCB (the sway)
-			if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b6 MotionCB
+			if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 8, motionCb );   // b6 MotionCB
 			m_CmdList->RSSetViewports( 1, &vp );
 			m_CmdList->RSSetScissorRects( 1, &sc );
 			m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -2376,7 +2358,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 
 
 bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	D3D12MA::ALLOCATION_DESC uploadAlloc = {};
 	uploadAlloc.HeapType = DefaultUploadHeapType;
 
@@ -2391,9 +2373,7 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &bufDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_SkeletalCBBufferAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_SkeletalCBBuffer[i]->SetName( i == 0 ? L"SkeletalCBRing0" : L"SkeletalCBRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -2420,6 +2400,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// The engine sadly works like that.
 	// the first OnStartWorldRendering after a Present() will be the correct one to draw the world.
 	if ( m_PresentPending ) return XR_SUCCESS;
+	if ( !m_SceneEnabled ) return XR_SUCCESS;   // Vulkan whose scene failed to initialize: menus and UI only
 
     TracyD3D12ZoneCGX(m_CmdList.Get(), "OnStartWorldRendering");
     
@@ -2966,7 +2947,7 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	// the depth prepass and the color pass ExecuteIndirect over the SAME per-frame buffer (identical opaque draw
 	// set — water peeled at build time). The arg buffer is UPLOAD (permanently GENERIC_READ, which INCLUDES
 	// INDIRECT_ARGUMENT), rebuilt each frame by BuildWorldDrawCommands — no DEFAULT-heap copy needed.
-	ID3D12Device* device = m_Device.GetDevice();
+	Rhi::Device* device = m_Rhi.Get();
 	if ( !device || !m_Pipelines.World.RootSig ) return false;
 
 	D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
@@ -2981,8 +2962,8 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	sigDesc.NumArgumentDescs = _countof( args );
 	sigDesc.pArgumentDescs = args;
 	// A command that sets root constants must carry the root signature its param index refers to.
-	if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
-		IID_PPV_ARGS( m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+	if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
+		m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
 		Logging::Wrn( "D3D12: failed to create the world indirect command signature." );
 		return false;
 	}
@@ -2997,9 +2978,7 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
     bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &upload, &bd,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgsAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_WorldDrawArgs[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgs[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_WorldDrawArgs[i]->SetName( L"WorldDrawArgsRing" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -3273,7 +3252,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     // The second ("bound") signature is the old six-argument shape, kept for node attachments, whose geometry
     // comes and goes with NPCs. Arg order MUST match each struct's member layout. Both rings stay
     // UPLOAD/GENERIC_READ (which includes INDIRECT_ARGUMENT) and are rebuilt each frame.
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Pipelines.World.RootSig ) return false;
 
     // The trailing 8 bytes (VisualIndex + LodBucket) sit PAST the arguments the GPU reads; ByteStride only has
@@ -3299,8 +3278,8 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
     // Commands set root constants (b6/b4), so the signature must carry the root signature those param indices refer to.
-    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
-        IID_PPV_ARGS( m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
+        m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the VOB indirect command signature." );
         return false;
     }
@@ -3326,8 +3305,8 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     boundDesc.ByteStride = sizeof( VobBoundDrawCommand );
     boundDesc.NumArgumentDescs = _countof( boundArgs );
     boundDesc.pArgumentDescs = boundArgs;
-    if ( FAILED( device->CreateCommandSignature( &boundDesc, m_Pipelines.World.RootSig.Get(),
-        IID_PPV_ARGS( m_VobBoundIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateCommandSignature( &boundDesc, m_Pipelines.World.RootSig.Get(),
+        m_VobBoundIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the bound VOB indirect command signature." );
         return false;
     }
@@ -3341,10 +3320,9 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    auto makeRing = [&]( UINT maxCommands, Microsoft::WRL::ComPtr<ID3D12Resource>& res, Microsoft::WRL::ComPtr<D3D12MA::Allocation>& alloc, uint8_t*& ptr, const wchar_t* name ) -> bool {
+    auto makeRing = [&]( UINT maxCommands, Microsoft::WRL::ComPtr<Rhi::Resource>& res, uint8_t*& ptr, const wchar_t* name ) -> bool {
         bd.Width = static_cast<UINT64>( maxCommands ) * sizeof( VobDrawCommand );
-        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            alloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( res.ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, res.ReleaseAndGetAddressOf() ) ) )
             return false;
         res->SetName( name );
         D3D12_RANGE noRead = { 0, 0 };
@@ -3355,7 +3333,7 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
         };
 
     for ( UINT i = 0; i < kBackBufferCount; ++i )
-        if ( !makeRing( kMaxVobDrawCommands, m_VobDrawArgs[i], m_VobDrawArgsAlloc[i], m_VobDrawArgsPtr[i], L"VobDrawArgsRing" ) )
+        if ( !makeRing( kMaxVobDrawCommands, m_VobDrawArgs[i], m_VobDrawArgsPtr[i], L"VobDrawArgsRing" ) )
             return false;
     // The CSM cascades and the rain shadowmap submit through the same signature; their (smaller-capped) rings
     // are owned by the shadow module / the rain pass respectively.
@@ -3423,7 +3401,7 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 }
 
 
-bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, ID3D12Resource* instances, UINT instanceBytes ) {
+bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes ) {
     if ( !m_VobArena.Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
@@ -3763,7 +3741,7 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
     // (signature-less) arg rings for the node attachments, which submit through the existing VOB signature.
     // Must run AFTER CreateVobIndirect — the attachment rings are sized on VobBoundDrawCommand and the
     // attachment passes reuse m_VobBoundIndirectCmdSig itself.
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Pipelines.Skeletal.RootSig || !m_Pipelines.World.RootSig ) return false;
 
     // The GPU reads each command as tightly-packed native argument structs in pArgumentDescs order. The two root
@@ -3795,8 +3773,8 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
     sigDesc.pArgumentDescs = args;
     // Commands set root descriptors (b1/b2) and root constants (b6), so the signature must carry the root
     // signature those parameter indices refer to.
-    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
-        IID_PPV_ARGS( m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
+        m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the skeletal indirect command signature." );
         return false;
     }
@@ -3810,10 +3788,9 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
     bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    auto makeRing = [&]( UINT64 bytes, Microsoft::WRL::ComPtr<ID3D12Resource>& res, Microsoft::WRL::ComPtr<D3D12MA::Allocation>& alloc, uint8_t*& ptr, const wchar_t* name ) -> bool {
+    auto makeRing = [&]( UINT64 bytes, Microsoft::WRL::ComPtr<Rhi::Resource>& res, uint8_t*& ptr, const wchar_t* name ) -> bool {
         bd.Width = bytes;
-        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            alloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( res.ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( upload.HeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, res.ReleaseAndGetAddressOf() ) ) )
             return false;
         res->SetName( name );
         D3D12_RANGE noRead = { 0, 0 };
@@ -3825,10 +3802,10 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
         if ( !makeRing( static_cast<UINT64>( kMaxSkeletalDrawCommands ) * sizeof( SkeletalDrawCommand ),
-            m_SkeletalDrawArgs[i], m_SkeletalDrawArgsAlloc[i], m_SkeletalDrawArgsPtr[i], L"SkeletalDrawArgsRing" ) )
+            m_SkeletalDrawArgs[i], m_SkeletalDrawArgsPtr[i], L"SkeletalDrawArgsRing" ) )
             return false;
         if ( !makeRing( static_cast<UINT64>( kMaxAttachDrawCommands ) * sizeof( VobBoundDrawCommand ),
-            m_AttachDrawArgs[i], m_AttachDrawArgsAlloc[i], m_AttachDrawArgsPtr[i], L"AttachDrawArgsRing" ) )
+            m_AttachDrawArgs[i], m_AttachDrawArgsPtr[i], L"AttachDrawArgsRing" ) )
             return false;
     }
     return true;
@@ -4574,7 +4551,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassVobIndirectPSO || !m_Pipelines.World.RootSig
         || !m_VobIndirectCmdSig || !m_DepthBuffer )
         return;
-    ID3D12Resource* drawArgs = GetVobDrawArgsBuffer();
+    Rhi::Resource* drawArgs = GetVobDrawArgsBuffer();
     if ( m_VobDrawCount == 0 || !drawArgs ) return;
 
     DX_ZONE( m_CmdList.Get(), "Depth Prepass (vobs)" );
@@ -4651,7 +4628,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
     if ( !rs.RendererSettings.DrawVOBs )
         return XR_SUCCESS;
-    ID3D12Resource* drawArgs = GetVobDrawArgsBuffer();
+    Rhi::Resource* drawArgs = GetVobDrawArgsBuffer();
     if ( m_VobDrawCount == 0 || !drawArgs )
         return XR_SUCCESS;
 
@@ -5168,7 +5145,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
                                                              : m_Pipelines.Skeletal.DepthPrepassPSO.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-        if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b9 MotionCB
+        if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 7, motionCb );   // b9 MotionCB
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

@@ -13,7 +13,6 @@
 // All eight PSOs share one bindless (SM6.6) root signature - two root-constant blocks, no tables.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
@@ -98,8 +97,8 @@ namespace {
 bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     m_GtaoResourcesReady = false;
     if ( size.x < 16 || size.y < 16 ) return false;
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device || !m_Allocator ) return false;
+    Rhi::Device* device = m_Rhi.Get();
+    if ( !device ) return false;
     if ( !m_Pipelines.Gtao.RootSig || !m_Pipelines.Gtao.PrefilterPSO ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
@@ -117,8 +116,7 @@ bool D3D12GraphicsEngine::CreateGtaoResources( INT2 size ) {
     dd.SampleDesc.Count = 1;
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr, m_GtaoWorkingDepthAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_GtaoWorkingDepth.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_GtaoWorkingDepth.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Wrn( "D3D12: failed to create the XeGTAO working-depth pyramid ({}x{}).", size.x, size.y );
         return false;
     }

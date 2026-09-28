@@ -2450,7 +2450,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
 
             // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
             OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices,
-                Engine::IsD3D12Backend ? &mi->LodIndices : nullptr );
+                Engine::IsModernBackend() ? &mi->LodIndices : nullptr );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );

@@ -12,7 +12,6 @@
 // exactly like D3D11 (`DrawFog && isOutdoor`, `EnableGodRays && isOutdoor`).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12RenderGraph.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
@@ -89,9 +88,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
         "AtmosphereConstantBuffer must fit in the second 256-byte block of the fog CB" );
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FogCBAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_FogCB[i].ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FogCB[i].ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: failed to create the height-fog constant buffer." );
             return false;
         }
@@ -104,7 +101,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
     }
 
     // Permanent CBVs over the three blocks, so transparent shaders reach them bindlessly. Non-fatal.
-    ID3D12Device* device = m_Device.GetDevice();
+    Rhi::Device* device = m_Rhi.Get();
     bool cbvsReady = true;
     for ( UINT i = 0; i < kBackBufferCount && cbvsReady; ++i ) {
         UINT* const slots[3] = { &m_FogHeightfogCbvSlot[i], &m_FogAtmosphereCbvSlot[i], &m_TransparencyFrameCbvSlot[i] };
@@ -124,8 +121,7 @@ bool D3D12GraphicsEngine::CreateFogConstantBuffers() {
 
 bool D3D12GraphicsEngine::CreateTransparencyBackdrop( INT2 size ) {
     m_TransparencyBackdrop.Reset();
-    m_TransparencyBackdropAlloc.Reset();
-    if ( size.x < 4 || size.y < 4 || !m_Allocator ) return false;
+    if ( size.x < 4 || size.y < 4 || !m_Rhi ) return false;
 
     D3D12MA::ALLOCATION_DESC heapDefault = {};
     heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -137,9 +133,7 @@ bool D3D12GraphicsEngine::CreateTransparencyBackdrop( INT2 size ) {
     dd.MipLevels = 1;
     dd.Format = kSceneColorFormat;
     dd.SampleDesc.Count = 1;
-    if ( FAILED( D3D12ResourceCreate::CreateTexture( m_Allocator.Get(), heapDefault, dd,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_TransparencyBackdropAlloc.ReleaseAndGetAddressOf(),
-        IID_PPV_ARGS( m_TransparencyBackdrop.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Rhi->CreateResource( heapDefault.HeapType, &dd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_TransparencyBackdrop.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
         Logging::Wrn( "D3D12: failed to create the transparency backdrop ({}x{}) - additive transparency uses the unfogged scene as its reference.",
             size.x, size.y );
         return false;
@@ -153,7 +147,7 @@ bool D3D12GraphicsEngine::CreateTransparencyBackdrop( INT2 size ) {
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv.Texture2D.MipLevels = 1;
     srv.Format = kSceneColorFormat;
-    m_Device.GetDevice()->CreateShaderResourceView( m_TransparencyBackdrop.Get(), &srv,
+    m_Rhi->CreateShaderResourceView( m_TransparencyBackdrop.Get(), &srv,
         GetSrvCpuHandle( m_TransparencyBackdropSrvSlot ) );
     return true;
 }

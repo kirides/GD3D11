@@ -16,7 +16,7 @@
 namespace Engine {
 
     /** Reads the requested graphics backend before the full settings load runs.
-        INI: [Display] GraphicsAPI=D3D11|D3D12 (absent -> D3D11). CLI: -GD3D12 / -GD3D11 override. */
+        INI: [Display] GraphicsAPI=D3D11|D3D12|Vulkan (absent -> D3D11). CLI: -GD3D12 / -GD3D11 / -GVULKAN override. */
     static GothicRendererSettings::E_GraphicsAPI ReadRequestedGraphicsAPI() {
         auto requested = GothicRendererSettings::GRAPHICS_API_D3D11;
 
@@ -31,15 +31,16 @@ namespace Engine {
             ini.append( "\\" ).append( MENU_SETTINGS_FILE );
             char apiBuf[64] = {};
             ::GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", apiBuf, sizeof( apiBuf ), ini.c_str() );
-            if ( _stricmp( apiBuf, "D3D12" ) == 0 )
-                requested = GothicRendererSettings::GRAPHICS_API_D3D12;
+            requested = GothicRendererSettings::ParseGraphicsAPI( apiBuf );
         }
 
         // CLI override (parity with the other -G* switches). Uppercase-normalized substring match.
         if ( const char* cmdLine = GetCommandLineA() ) {
             std::string upper = cmdLine;
             std::transform( upper.begin(), upper.end(), upper.begin(), ::toupper );
-            if ( upper.find( "-GD3D12" ) != std::string::npos )
+            if ( upper.find( "-GVULKAN" ) != std::string::npos )
+                requested = GothicRendererSettings::GRAPHICS_API_VULKAN;
+            else if ( upper.find( "-GD3D12" ) != std::string::npos )
                 requested = GothicRendererSettings::GRAPHICS_API_D3D12;
             else if ( upper.find( "-GD3D11" ) != std::string::npos )
                 requested = GothicRendererSettings::GRAPHICS_API_D3D11;
@@ -55,18 +56,32 @@ namespace Engine {
         return ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12;
     }
 
+    bool IsVulkanRequested() {
+        return ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_VULKAN;
+    }
+
     /** Creates main graphics engine */
     void CreateGraphicsEngine() {
         Logging::Inf( "Creating Main graphics engine" );
 
-        // Backend selection. D3D11 is the default and the fallback. When D3D12 is requested we
-        // probe it (real FL11_0 device-creation check); if available we create the D3D12 backend
-        // (Phase 1: first-light — device + swapchain + per-frame clear/present, rest stubbed),
-        // otherwise we log + show a one-time notice and fall back to D3D11.
+        // Backend selection. D3D11 is the default and the fallback for both D3D12 and Vulkan.
         GraphicsEngine = nullptr;
         IsD3D12Backend = false;
+        IsVulkanBackend = false;
         bool initialized = false;   // set when the chosen backend's Init() has already run below
-        if ( ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+        const auto requestedApi = ReadRequestedGraphicsAPI();
+        if ( requestedApi == GothicRendererSettings::GRAPHICS_API_VULKAN ) {
+            GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_VULKAN;
+            GraphicsEngine = new D3D12GraphicsEngine( Rhi::Backend::Vulkan );
+            if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
+                initialized = true;
+                IsVulkanBackend = true;
+            } else {
+                // VulkanDevice::Init / the engine have already logged the reason.
+                SAFE_DELETE( GraphicsEngine );
+                Logging::Wrn( "The Vulkan backend failed to initialize. Falling back to Direct3D 11." );
+            }
+        } else if ( requestedApi == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
             GAPI->GetRendererState().RendererSettings.GraphicsAPI = GothicRendererSettings::GRAPHICS_API_D3D12;
             GraphicsEngine = new D3D12GraphicsEngine;
             if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {

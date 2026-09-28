@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include "../GfxVertexBuffer.h"
 #include <d3d12.h>
 #include <vector>
@@ -62,9 +63,9 @@ public:
     /** Native resource + GPU address for direct IA binding. For a ring-buffered dynamic buffer these
         return the CURRENT frame's copy (stable for the whole frame, so multiple passes drawing the same
         mesh in one frame all see the same data). */
-    ID3D12Resource* GetResource() const { return Current().Resource.Get(); }
+    Rhi::Resource* GetResource() const { return Current().Resource.Get(); }
     D3D12_GPU_VIRTUAL_ADDRESS GetGpuVirtualAddress() const {
-        ID3D12Resource* res = Current().Resource.Get();
+        Rhi::Resource* res = Current().Resource.Get();
         return res ? res->GetGPUVirtualAddress() : 0;
     }
 
@@ -118,8 +119,7 @@ private:
     static constexpr UINT kNoSlot = 0xFFFFFFFFu;   // "no copy has ever been written"
 
     struct Copy {
-        Microsoft::WRL::ComPtr<D3D12MA::Allocation> Allocation;
-        Microsoft::WRL::ComPtr<ID3D12Resource>      Resource;
+        Microsoft::WRL::ComPtr<Rhi::Resource>      Resource;
         uint8_t* MappedPtr = nullptr;
     };
     Copy m_Copies[kMaxCopies];

@@ -38,11 +38,11 @@ void D3D12RGBuilder::MarkExternalEffect() {
     m_pass.m_hasExternalSideEffect = true;
 }
 
-void D3D12RGBuilder::TransitionExternal( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
+void D3D12RGBuilder::TransitionExternal( Rhi::Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
     m_pass.m_preTransitions.push_back( { resource, before, after } );
 }
 
-void D3D12RGBuilder::TransitionExternalAfter( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
+void D3D12RGBuilder::TransitionExternalAfter( Rhi::Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
     m_pass.m_postTransitions.push_back( { resource, before, after } );
 }
 

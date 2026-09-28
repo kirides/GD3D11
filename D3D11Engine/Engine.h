@@ -28,6 +28,12 @@ namespace Engine {
         D3D11 is the address-space-starved path and must not pay for buffers it never binds. */
     __declspec(selectany) bool IsD3D12Backend;
 
+    /** True only when the Vulkan backend was actually created AND initialized. Same rules as IsD3D12Backend. */
+    __declspec(selectany) bool IsVulkanBackend;
+
+    /** The modern renderer (D3D12Engine/) is up, on either RHI backend. */
+    inline bool IsModernBackend() { return IsD3D12Backend || IsVulkanBackend; }
+
     /** Global GothicAPI object */
     __declspec(selectany) GothicAPI* GAPI;
 
@@ -45,6 +51,9 @@ namespace Engine {
 
     /** True when the ini/CLI asks for the D3D12 backend (before any probe or fallback). */
     bool IsD3D12Requested();
+
+    /** True when the ini/CLI asks for the Vulkan backend (before any probe or fallback). */
+    bool IsVulkanRequested();
 
     /** Creates the Global GAPI-Object */
     void CreateGothicAPI();

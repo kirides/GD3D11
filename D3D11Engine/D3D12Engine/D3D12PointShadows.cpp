@@ -3,7 +3,6 @@
 #include "../pch.h"
 #include "D3D12PointShadows.h"
 #include "D3D12GraphicsEngine.h"
-#include "D3D12ResourceCreate.h"
 #include "D3D12VertexBuffer.h"
 #include "D3D12Texture.h"
 #include "../Engine.h"
@@ -119,7 +118,7 @@ bool D3D12PointShadows::Init() {
 	// heaps, the TextureCubeArray SRV, and the per-frame face-matrix CB + VOB-instance rings. The caster
 	// PIPELINES (root sigs, shaders, PSOs) live in m_Pipelines.PointShadow (CreatePointShadow).
 	if ( !m_E ) return false;   // Attach() must have run (engine constructor)
-	ID3D12Device* device = m_E->m_Device.GetDevice();
+	Rhi::Device* device = m_E->m_Rhi.Get();
 	if ( !device ) return false;
 
 	// --- STATIC (core) cube array: Texture2DArray with kMaxStaticCubes*6 R16 slices, NORMAL-Z (clear 1.0,
@@ -141,12 +140,9 @@ bool D3D12PointShadows::Init() {
 	D3D12_CLEAR_VALUE clear = {};
 	clear.Format = DXGI_FORMAT_D16_UNORM;
 	clear.DepthStencil.Depth = 1.0f;
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, dd,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_StaticCubeAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_StaticCube.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateResource( defaultAlloc.HeapType, &dd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_StaticCube.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) )
 		return false;
 	m_StaticCube->SetName( L"PointShadowStaticCubeArray(D16)" );
-	m_StaticCubeAlloc->SetName( L"AllocPointShadowStaticCubeArray" );
 	for ( D3D12_RESOURCE_STATES& s : m_StaticSlotState ) s = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 	// One DSV per cube slot: a 6-slice Texture2DArray view (FirstArraySlice = slot*6). SV_RenderTargetArrayIndex
@@ -154,9 +150,9 @@ bool D3D12PointShadows::Init() {
 	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
 	dsvHeapDesc.NumDescriptors = kMaxStaticCubes;
 	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_StaticDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateDescriptorHeap( &dsvHeapDesc, m_StaticDsvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
-	m_DsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+	m_DsvSize = m_E->m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
 	D3D12_CPU_DESCRIPTOR_HANDLE dsvH = m_StaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	for ( UINT s = 0; s < kMaxStaticCubes; ++s ) {
 		D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
@@ -186,18 +182,15 @@ bool D3D12PointShadows::Init() {
 	yd.Width = kDynCubeSize;
 	yd.Height = kDynCubeSize;
 	yd.DepthOrArraySize = static_cast<UINT16>(kMaxDynCubes * 6);
-	if ( FAILED( D3D12ResourceCreate::CreateTexture( m_E->m_Allocator.Get(), defaultAlloc, yd,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_DynCubeAlloc.ReleaseAndGetAddressOf(),
-		IID_PPV_ARGS( m_DynCube.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateResource( defaultAlloc.HeapType, &yd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_DynCube.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) )
 		return false;
 	m_DynCube->SetName( L"PointShadowDynCubeArray(D16)" );
-	m_DynCubeAlloc->SetName( L"AllocPointShadowDynCubeArray" );
 	for ( D3D12_RESOURCE_STATES& s : m_DynSlotState ) s = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 	D3D12_DESCRIPTOR_HEAP_DESC dynDsvHeapDesc = {};
 	dynDsvHeapDesc.NumDescriptors = kMaxDynCubes;
 	dynDsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dynDsvHeapDesc, IID_PPV_ARGS( m_DynDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+	if ( FAILED( m_E->m_Rhi->CreateDescriptorHeap( &dynDsvHeapDesc, m_DynDsvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
 	D3D12_CPU_DESCRIPTOR_HANDLE sdsvH = m_DynDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	for ( UINT s = 0; s < kMaxDynCubes; ++s ) {
@@ -232,9 +225,7 @@ bool D3D12PointShadows::Init() {
 	cbDesc.SampleDesc.Count = 1;
 	cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_E->m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FaceCBAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_FaceCB[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_E->m_Rhi->CreateResource( uploadAlloc.HeapType, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_FaceCB[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_FaceCB[i]->SetName( L"PointShadowFaceCB" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -259,12 +250,9 @@ bool D3D12PointShadows::Init() {
 	viDesc.SampleDesc.Count = 1;
 	viDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_E->m_Allocator->CreateResource( &uploadAlloc, &viDesc,
-			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobInstAlloc[i].ReleaseAndGetAddressOf(),
-			IID_PPV_ARGS( m_VobInst[i].ReleaseAndGetAddressOf() ) ) ) )
+		if ( FAILED( m_E->m_Rhi->CreateResource( uploadAlloc.HeapType, &viDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobInst[i].ReleaseAndGetAddressOf() ) ) )
 			return false;
 		m_VobInst[i]->SetName( L"PointShadowVobInstRing" );
-		m_VobInstAlloc[i]->SetName( L"AllocPointShadowVobInstRing" );
 		D3D12_RANGE noRead = { 0, 0 };
 		void* mapped = nullptr;
 		if ( FAILED( m_VobInst[i]->Map( 0, &noRead, &mapped ) ) ) return false;
@@ -879,7 +867,7 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// A freshly-Reset pool list carries no descriptor heap. On m_CmdList (serial fallback) the same heap is
 	// already bound, so this is a no-op — hence unconditional rather than branched on the caller.
 	if ( m_E->m_SrvHeap ) {
-		ID3D12DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
+		Rhi::DescriptorHeap* heaps[] = { m_E->m_SrvHeap.Get() };
 		cmdList->SetDescriptorHeaps( 1, heaps );
 	}
 
@@ -899,7 +887,7 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// ---- Per-slot (6-subresource) barriers. Never transition these two cubes with ALL_SUBRESOURCES — see the
 	// m_StaticSlotState comment in the header. Transitions are batched into g_PsBarriers and issued in one call
 	// per phase so the GPU pays one pipeline flush per phase rather than one per slot.
-	auto pushSlot = [&]( ID3D12Resource* res, D3D12_RESOURCE_STATES* slotStates, UINT slot, D3D12_RESOURCE_STATES after ) {
+	auto pushSlot = [&]( Rhi::Resource* res, D3D12_RESOURCE_STATES* slotStates, UINT slot, D3D12_RESOURCE_STATES after ) {
 		if ( slotStates[slot] == after ) return;   // already there — no redundant barrier
 		for ( UINT face = 0; face < 6; ++face ) {
 			g_PsBarriers.push_back( { res, slotStates[slot], after, slot * 6 + face } );
@@ -930,9 +918,9 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// root CBVs, the bound PSO survives a root-signature change, so one filter spanning all four phases is both
 	// correct and the fewest switches. `noAlpha` falls back to the clipping PSO when the twin failed to build,
 	// which collapses the filter back to today's behaviour without a second code path.
-	ID3D12PipelineState* boundPso = nullptr;
-	auto bindCasterPso = [&]( ID3D12PipelineState* clip, ID3D12PipelineState* noAlpha, bool alphaTested ) {
-		ID3D12PipelineState* want = ( alphaTested || !noAlpha ) ? clip : noAlpha;
+	Rhi::PipelineState* boundPso = nullptr;
+	auto bindCasterPso = [&]( Rhi::PipelineState* clip, Rhi::PipelineState* noAlpha, bool alphaTested ) {
+		Rhi::PipelineState* want = ( alphaTested || !noAlpha ) ? clip : noAlpha;
 		if ( want != boundPso ) {
 			cmdList->SetPipelineState( want );
 			boundPso = want;
@@ -965,7 +953,7 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// scratch does not keep a one-off capacity for the rest of the session.
 	if ( m_NeedsInitialClear ) {
 		m_NeedsInitialClear = false;
-		auto clearAll = [&]( ID3D12Resource* res, D3D12_RESOURCE_STATES* states, UINT count,
+		auto clearAll = [&]( Rhi::Resource* res, D3D12_RESOURCE_STATES* states, UINT count,
 			D3D12_CPU_DESCRIPTOR_HANDLE base ) {
 			constexpr UINT kChunk = 32;
 			for ( UINT first = 0; first < count; first += kChunk ) {

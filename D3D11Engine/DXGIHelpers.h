@@ -1,5 +1,5 @@
 #pragma once
-#include <dxgi.h>
+#include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <vector>
@@ -94,4 +94,29 @@ inline XRESULT DXGI_GetDisplayModeList(
 
     modeList->erase( firstJunk, lastJunk );
     return XR_SUCCESS;
+}
+
+/** HDR10 state of the output the window is on, for backends that don't present through DXGI (Vulkan).
+    Returns false when that output is not in the G2084/P2020 colour space (Windows HDR off). Nits values. */
+inline bool DXGI_QueryHdrOutput( LUID deviceLuid, HWND windowHandle, float& maxNits, float& minNits, float& maxFullFrameNits ) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IDXGIFactory4> factory;
+    ComPtr<IDXGIAdapter> adapter;
+    if ( FAILED( CreateDXGIFactory1( IID_PPV_ARGS( &factory ) ) )
+        || FAILED( factory->EnumAdapterByLuid( deviceLuid, IID_PPV_ARGS( &adapter ) ) ) ) {
+        return false;
+    }
+    const HMONITOR monitor = MonitorFromWindow( windowHandle, MONITOR_DEFAULTTONEAREST );
+    ComPtr<IDXGIOutput> output;
+    for ( UINT i = 0; adapter->EnumOutputs( i, output.ReleaseAndGetAddressOf() ) != DXGI_ERROR_NOT_FOUND; ++i ) {
+        ComPtr<IDXGIOutput6> output6;
+        DXGI_OUTPUT_DESC1 desc = {};
+        if ( FAILED( output.As( &output6 ) ) || FAILED( output6->GetDesc1( &desc ) ) || desc.Monitor != monitor ) continue;
+        if ( desc.ColorSpace != DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) return false;
+        maxNits = desc.MaxLuminance;
+        minNits = desc.MinLuminance;
+        maxFullFrameNits = desc.MaxFullFrameLuminance;
+        return true;
+    }
+    return false;
 }

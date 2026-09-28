@@ -1,4 +1,5 @@
 #pragma once
+#include "../RHI/Rhi.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -6,7 +7,8 @@
 #include "D3D12RenderPass.h"
 #include "D3D12AliasedTextureArena.h"
 
-class D3D12CmdList;
+namespace Rhi { class CmdList; }
+using D3D12CmdList = Rhi::CmdList;
 
 // Handle bit-packing, mirrors RenderGraph.h's free functions exactly (kept as a separate copy rather
 // than shared with the D3D11 side: RGResourceHandle is a plain uint32_t typedef with no backend
@@ -44,12 +46,12 @@ public:
     // Declare a transition of a resource the graph does NOT own (e.g. the depth buffer, m_SceneColor),
     // folded into this pass's own TransitionPassResources() batch, before its callback runs. As with
     // Read()/Write(), `before` stays the caller's responsibility.
-    void TransitionExternal( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+    void TransitionExternal( Rhi::Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
 
     // Same as TransitionExternal(), but fires immediately AFTER this pass's callback returns — for a
     // transition that must wait until the pass's GPU work is actually recorded (e.g. a UAV the pass
     // itself wrote, flipped to shader-read).
-    void TransitionExternalAfter( ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
+    void TransitionExternalAfter( Rhi::Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after );
 
 private:
     D3D12RenderGraph& m_graph;

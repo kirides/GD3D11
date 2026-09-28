@@ -63,9 +63,7 @@ bool D3D12GraphicsEngine::CreateLineVertexBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LineVertexBufferAlloc[i].ReleaseAndGetAddressOf(),
-            IID_PPV_ARGS( m_LineVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LineVertexBuffer[i].ReleaseAndGetAddressOf() ) ) )
             return false;
         m_LineVertexBuffer[i]->SetName( i == 0 ? L"LineVertexRing0" : L"LineVertexRing1" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -81,7 +79,7 @@ void D3D12GraphicsEngine::DrawLines( const std::vector<LineVertex>& lines, bool 
     if ( !m_SwapChainReady || !m_FrameOpen || lines.empty() ) return;
     if ( !m_Pipelines.Lines.RootSig || !m_LineVertexBuffer[m_FrameIndex] ) return;
 
-    ID3D12PipelineState* pso = screenSpace ? m_Pipelines.Lines.ScreenPSO.Get() : m_Pipelines.Lines.WorldPSO.Get();
+    Rhi::PipelineState* pso = screenSpace ? m_Pipelines.Lines.ScreenPSO.Get() : m_Pipelines.Lines.WorldPSO.Get();
     if ( !pso ) return;
 
     DX_ZONE( m_CmdList.Get(), "Draw debug lines" );

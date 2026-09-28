@@ -69,7 +69,9 @@ struct VS_IN
 {
     float3   pos    : POSITION;
     float2   uv     : TEXCOORD0;
-    float4x4 iworld : INSTANCE_WORLD_MATRIX;   // already transposed on upload (GVegetationBox::InitSpotsRandom)
+    // Transposed on upload (GVegetationBox::InitSpotsRandom), applied as mul(M, v). row_major so element k is
+    // row k in both DXIL and SPIR-V: DXC's SPIR-V ignores column_major on stage inputs.
+    row_major float4x4 iworld : INSTANCE_WORLD_MATRIX;
 };
 // `clip` is `precise`: VSMain/VSDepth/VSDepthGBuf independently compute the same `mul(GrassWorldPos(...),
 // ViewProj)`, but nothing guarantees bit-identical FP rounding across separately-compiled entry points -
@@ -83,7 +85,7 @@ struct VS_OUT { precise float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3
 // frame, which is why D3D12GraphicsEngine::MakeGrassConstants exists.
 float3 GrassWorldPos( VS_IN i, float time )
 {
-    float3 wpos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    float3 wpos = mul( i.iworld, float4( i.pos, 1.0 ) ).xyz;
 
     float wind = sin( i.pos.z * 0.001f ) * 0.5f + 0.5f;
     wind += sin( i.pos.x * 0.001f ) * 0.5f + 0.5f;

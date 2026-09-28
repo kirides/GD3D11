@@ -14,11 +14,13 @@
 #include "ImGuiEditorView.h"
 
 class D3D12GraphicsEngine;
+struct VkCommandBuffer_T;
+namespace Rhi { class Device; class Resource; }
 
 class ImGuiShim {
 public:
     /** Which renderer backend the ImGui context was initialized for. */
-    enum class Backend { None, D3D11, D3D12 };
+    enum class Backend { None, D3D11, D3D12, Vulkan };
 
     ImGuiShim() {};
     virtual ~ImGuiShim();
@@ -31,11 +33,22 @@ public:
     virtual void InitD3D12( HWND Window, D3D12GraphicsEngine* engine, ID3D12Device* device,
         ID3D12CommandQueue* queue, int numFramesInFlight, DXGI_FORMAT rtvFormat, ID3D12DescriptorHeap* srvHeap );
 
+    /** Vulkan initialization path: imgui_impl_vulkan with dynamic rendering into a `colorFormat` (VkFormat)
+        target and its own small descriptor pool. */
+    virtual void InitVulkan( HWND Window, Rhi::Device* device, int colorFormat, uint32_t minImageCount, uint32_t imageCount );
+
     virtual void RenderLoop();
 
     /** D3D12 per-frame UI: builds the frame and records the ImGui draw data into the supplied command
         list (which must have the engine's shader-visible SRV heap bound and a render target set). */
     virtual void RenderLoopD3D12( ID3D12GraphicsCommandList* commandList );
+
+    /** Vulkan per-frame UI, recorded inside an open dynamic-rendering scope on the display target. */
+    virtual void RenderLoopVulkan( VkCommandBuffer_T* commandBuffer );
+    /** Call after a swapchain rebuild changed the image count. */
+    void SetVulkanMinImageCount( uint32_t minImageCount );
+    /** ImTextureID of a shader-visible SRV on Vulkan: an imgui_impl_vulkan descriptor set, cached while in use. */
+    ImTextureID GetVulkanTextureId( D3D12_GPU_DESCRIPTOR_HANDLE srv );
     virtual LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
     virtual void OnResize( INT2 newSize );
     bool Initiated = false;
@@ -101,7 +114,16 @@ private:
     /** Invokes the GDX_IMGUI_ENDFRAME Daedalus hook (if present) — called after RenderDrawData. */
     void CallEndFrameScript();
 
+    /** Frees Vulkan user textures unused for a while, once the GPU can no longer be reading their sets. */
+    void CollectVulkanTextures();
+
     Backend m_Backend = Backend::None;
+    // Vulkan user textures; each holds a reference on its image. Retired ones wait out the frames in flight.
+    struct VulkanUserTexture { Rhi::Resource* Resource = nullptr; uint64_t View = 0; uint64_t Set = 0; uint64_t Frame = 0; };
+    std::vector<VulkanUserTexture> m_VulkanTextures;
+    std::vector<VulkanUserTexture> m_VulkanRetired;
+    uint64_t m_VulkanFrame = 0;
+    Rhi::Device* m_VulkanRhi = nullptr;
     bool m_lastFrameBlockGameInput = false;
     bool m_FrameStatisticsVisible = false;
 

@@ -514,11 +514,6 @@ static void LogUnionApiPresence() {
 static void PreloadGameFolderDlls() {
     LogUnionApiPresence();
 
-    // D3D12-only DLLs are large; keep them out of the address space of D3D11 sessions.
-    if ( !Engine::IsD3D12Requested() ) {
-        return;
-    }
-
     auto preload = []( const char* path ) {
         if ( LoadLibraryA( path ) ) {
             Logging::Inf( "Preloaded {}", path );
@@ -526,6 +521,17 @@ static void PreloadGameFolderDlls() {
             Logging::Wrn( "Could not preload {} (error {})", path, GetLastError() );
         }
     };
+
+    // Vulkan compiles SPIR-V with the same dxcompiler.dll but never needs dxil.dll (it only signs DXIL).
+    if ( Engine::IsVulkanRequested() ) {
+        preload( "dxcompiler.dll" );
+        return;
+    }
+
+    // D3D12-only DLLs are large; keep them out of the address space of D3D11 sessions.
+    if ( !Engine::IsD3D12Requested() ) {
+        return;
+    }
 
     // dxil.dll first: dxcompiler.dll then resolves it by name to the already-loaded module.
     preload( "dxil.dll" );
