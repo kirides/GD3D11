@@ -216,7 +216,7 @@ bool D3D12ShadowMap::Init() {
 	pso.SampleMask = UINT_MAX;
 	pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
 	pso.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;   // cast back faces
-	pso.RasterizerState.DepthClipEnable = TRUE;
+	pso.RasterizerState.DepthClipEnable = FALSE;            // pancake casters in front of the near plane (see cullNear)
 	pso.RasterizerState.DepthBias = 0;                   // normal-Z: positive bias pushes casters away from the light
 	pso.RasterizerState.SlopeScaledDepthBias = 0.0f;
 	pso.RasterizerState.DepthBiasClamp = 0.0f;
@@ -405,7 +405,7 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 	// CULL_NONE (not FRONT like the opaque/VOB/skeletal casters above): grass cards are thin double-sided
 	// planes — matches Grass.PSO's own culling (see CreateGrass), so both faces still cast into the map.
 	pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-	pso.RasterizerState.DepthClipEnable = TRUE;
+	pso.RasterizerState.DepthClipEnable = FALSE;   // pancaked like the other casters
 	pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
 	pso.DepthStencilState.DepthEnable = TRUE;
 	pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -635,6 +635,7 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 		}
 		float orthoNear = std::max( 1.0f, minZ - dynamicPullback );
 		float orthoFar = maxZ + 5000.0f;
+		float cullNear = orthoNear;
 		if ( haveScene ) {
 			const XMFLOAT3 sc[8] = {
 				{ sceneBox.Min.x, sceneBox.Min.y, sceneBox.Min.z }, { sceneBox.Max.x, sceneBox.Min.y, sceneBox.Min.z },
@@ -648,8 +649,16 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 			}
 			orthoNear = std::min( orthoNear, sMinZ - 100.0f );
 			orthoFar = std::min( orthoFar, sMaxZ + 500.0f );
+
+			// Casters up to the world's top along the light ray are culled in; depth clip is off, so the ones in
+			// front of the near plane pancake onto it (tall cave ceilings sit far upstream of the slice).
+			float sliceMinY = FLT_MAX;
+			for ( const XMFLOAT3& p : corners ) sliceMinY = std::min( sliceMinY, p.y );
+			const float casterReach = std::max( 0.0f, sceneBox.Max.y - sliceMinY ) / lightDotUp;
+			cullNear = std::max( minZ - casterReach, sMinZ - 100.0f );
 		}
 		orthoNear = std::max( 1.0f, orthoNear );
+		cullNear = std::min( cullNear, orthoNear );
 		if ( orthoFar <= orthoNear + 1.0f ) orthoFar = orthoNear + 1.0f;
 
 		XMMATRIX proj = XMMatrixOrthographicLH( cascadeSize, cascadeSize, orthoNear, orthoFar );
@@ -660,7 +669,7 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 		m_CascadeFrustum[c].BuildOrthographic( lightView,
 			cascadeSize,
 			cascadeSize,
-			orthoNear,
+			cullNear,
 			orthoFar,
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
