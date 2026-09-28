@@ -5625,6 +5625,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         const MoonLightInfo moon = Engine::GAPI->GetSky()->GetMoonLight();
         waterParams.WP_MoonDir = moon.Direction;
         waterParams.WP_MoonGlint = moon.GlintVisibility;
+        waterParams.WP_MoonDisc = moon.DiscVisibility;
         const OceanProfile ocean = GetOceanProfile();
         waterParams.WP_OceanTint = ocean.Tint;
         waterParams.WP_OceanTintStrength = ocean.TintStrength;

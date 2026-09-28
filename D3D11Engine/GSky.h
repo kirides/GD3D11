@@ -43,6 +43,7 @@ struct MoonLightInfo {
     float AboveHorizonFade = 0.0f;              // 0 below the horizon, 1 from ~14 degrees up
     XMFLOAT3 LightColor = { 0.0f, 0.0f, 0.0f }; // gamma-space moonlight: 0 by day, indoors, in fog and heavy rain
     float GlintVisibility = 0.0f;               // strength of the moon's reflection on water
+    float DiscVisibility = 0.0f;                // how visible the moon disc is in the sky, day or night
 };
 
 class zCTexture;

@@ -76,7 +76,7 @@ namespace {
         XMFLOAT3 MoonDir;             // world space, toward the moon
         float MoonGlint;
         XMFLOAT3 OceanTint;
-        float Pad;
+        float MoonDisc;
     };
     static_assert( sizeof( WaterCBData ) == 240, "WaterCBData must match Water.hlsl's b2 layout" );
 
@@ -406,6 +406,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             const MoonLightInfo moon = sky->GetMoonLight();
             cb.MoonDir = moon.Direction;
             cb.MoonGlint = moon.GlintVisibility;
+            cb.MoonDisc = moon.DiscVisibility;
             const auto& atmo = sky->GetAtmosphereCB();
             memcpy( m_WaterCBMapped[m_FrameIndex] + kWaterAtmosphereCbOffset, &atmo, sizeof( atmo ) );
             cb.UseAtmosphere = 1;

@@ -480,6 +480,7 @@ MoonLightInfo GSky::GetMoonLight() {
     const float light = out.AboveHorizonFade * night * fog * ( 1.0f - 0.7f * rain );
     out.LightColor = XMFLOAT3( kMoonLightColor.x * light, kMoonLightColor.y * light, kMoonLightColor.z * light );
     out.GlintVisibility = out.AboveHorizonFade * night * fog * ( 1.0f - rain );
+    out.DiscVisibility = out.AboveHorizonFade * fog * ( 1.0f - rain );
     return out;
 }
 
