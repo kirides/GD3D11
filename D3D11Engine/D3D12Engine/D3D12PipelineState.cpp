@@ -91,10 +91,6 @@ bool D3D12PipelineState::CreateWorld() {
     // clustered Forward+ per-cluster mask root SRV at t2. Both non-SRV params MUST be bound
     // (BindFrameLights) by every draw using this root sig with a light-reading PSO (World.PSO/
     // World.VobPSO), else the count/grid are undefined root values and the shader loops away.
-    // Param 6 (t3) used to be the per-tile light-index list; clustered Forward+ (P2.14) replaced it with
-    // a 64-bit mask in LightGrid itself, so t3 is no longer declared by any shader and this slot is now
-    // PERMANENTLY UNBOUND — left in place (rather than renumbering every later param + BindFrameLights
-    // call site) since nothing ever reads register(t3) any more. Same pattern as the WindCB param below.
     // RootDataStatic on t1/t2: BuildFrameLightBuffer and DispatchLightCulling both write at the top of
     // OnStartWorldRendering, before any pass binds this root signature, and neither is touched again this
     // frame. Lets the driver hoist the per-pixel buffer load out of the light loop.
@@ -103,7 +99,8 @@ bool D3D12PipelineState::CreateWorld() {
     //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
     rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 per-cluster LightGrid (64-bit mask)
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );        // 6: t3 UNUSED/dead — never bound, so left volatile
+    // 6: b8 OpaqueSceneAddCB, read only by PSAlphaBlendBindless.
+    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );
 
     // 7 = shadow-sampling CB (b3) as a ROOT CBV (cascade view-projs are too big for root constants).
     // 8 = the CSM shadow-map Texture2DArray SRV (t4) via a one-entry descriptor table off the shared
@@ -148,8 +145,6 @@ bool D3D12PipelineState::CreateWorld() {
     // RootDataStatic: UploadMotionConstants writes this once per frame, well before the G-buffer
     // prepass — the only consumer — records anything.
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b5 MotionCB
-    // 14: b8 OpaqueSceneAddCB, read only by PSAlphaBlendBindless. This is the 64th and last root DWORD.
-    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );
 
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
@@ -772,7 +767,9 @@ bool D3D12PipelineState::CreateGrass() {
     // 6: b3 LightCB, grown 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
     rs.AddConstants( 3, 9, D3D12_SHADER_VISIBILITY_PIXEL );   // b3 LightCB
     rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: t3 per-cluster LightGrid (64-bit mask)
-    rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t4 UNUSED/dead — never bound, so left volatile
+    // 8 = b6 MotionCB (root CBV), read ONLY by the G-buffer depth-prepass entry points (VSDepthGBuf); every
+    // other PSO on this root signature leaves it unbound, which is legal for a parameter no shader references.
+    rs.AddCBV( 6, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 8: b6 MotionCB (see World's b5)
     rs.AddCBV( 4, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 9: b4 shadow-sampling CB (root CBV)
     rs.AddTable( D3D12RootLayout::SRVRange( 5, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 CSM shadow-map array
     // 11: t6 point-shadow cube array (PBRLighting.hlsl requires this symbol)
@@ -782,11 +779,6 @@ bool D3D12PipelineState::CreateGrass() {
     // Vegetation.hlsl's PSMain. The grass shadow CASTER (D3D12ShadowMap::CreateGrassCaster) shares this root sig
     // but reads none of this.
     rs.AddConstants( 5, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b5 AOCB { AoMaskIndex }
-    // 13 = b6 MotionCB (root CBV), read ONLY by the G-buffer depth-prepass entry points (VSDepthGBuf). b6
-    // because b0..b5 above are all spoken for; a root CBV rather than constants because it is three matrices.
-    // Every other PSO on this root signature leaves the parameter unbound, which is legal for a parameter no
-    // bound shader statically references.
-    rs.AddCBV( 6, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b6 MotionCB (see World's b5)
 
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );      // s0 diffuse
     // s2 PCF, matches World/Vob/Skeletal.
@@ -1648,8 +1640,8 @@ bool D3D12PipelineState::CreateDecal() {
 
     // Root signature: b0 = ViewProj (16 root consts, VS), t0 = diffuse SRV table (PS), static linear-clamp
     // sampler s0 (PS). CLAMP because a decal is a single [0,1] sprite; wrap would bleed the opposite edge.
-    // Params 2..10 are the Forward+ lighting set, laid out in the SAME order as the World layout so both can
-    // be bound by the same call sequence (BindFrameLights's default 3/4/5/6 lands correctly here too). Decals
+    // Params 2..9 are the Forward+ lighting set, laid out in the SAME order as the World layout so both can
+    // be bound by the same call sequence (BindFrameLights's default 3/4/5 lands correctly here too). Decals
     // are lit as of the "cobwebs blazing white" fix — see the header comment in Decal.hlsl.
     D3D12RootLayout& rs = Layout( "Decal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
@@ -1659,14 +1651,13 @@ bool D3D12PipelineState::CreateDecal() {
     // (DrawDecalList runs well after the light cull and FinishShadowPasses).
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
     // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (PBRLighting.hlsl's
-    // ComputeZSlice). Param 6 (t3, formerly the per-tile light-index list) is now dead/unbound — see World.RootSig.
+    // ComputeZSlice).
     rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 per-cluster LightGrid (64-bit mask)
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t3 UNUSED/dead — never bound, so left volatile
+    rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 6: b7 AOCB { AoMaskIndex }
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: b3 shadow CB
     rs.AddTable( D3D12RootLayout::SRVRange( 4, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
     rs.AddTable( D3D12RootLayout::SRVRange( 5, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t5 point-shadow cubes
-    rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 10: b7 AOCB { AoMaskIndex }
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
     // s2 PCF comparison for the CSM, s1 point-clamp for the SSAO mask — same roles as in the World layout;
     // ComputeSunShadow / SampleScreenSpaceAO hard-code those registers.
@@ -1801,14 +1792,15 @@ bool D3D12PipelineState::CreateSkeletal() {
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bone palette
     // 3: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
     rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
-    // Forward+ point lights (mirrors World.RootSig params 3/4/5/6, here at 4..7 — see BindFrameLights). All
+    // Forward+ point lights (mirrors World.RootSig params 3/4/5, here at 4..6 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
     // t1/t2 carry World.RootSig's RootDataStatic promise for the same reason (see there).
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 4: t1 light StructuredBuffer (root SRV)
     // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
     rs.AddConstants( 4, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 6: t2 per-cluster LightGrid (64-bit mask)
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 UNUSED/dead — never bound, so left volatile
+    // 7 = motion-vector CB (b9 — b5 is the shadow CB here), root CBV read ONLY by Skeletal.hlsl's VSDepthGBuf.
+    rs.AddCBV( 9, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 7: b9 MotionCB (see World's b5)
     // 8: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count) — same shared CB, same promise as World's b3.
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );
     // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB);
@@ -1822,10 +1814,6 @@ bool D3D12PipelineState::CreateSkeletal() {
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b8 AOCB { AoMaskIndex }
-    // 13 = motion-vector CB (b9 here — b5 is the shadow CB on this signature; World.RootSig uses b5 for the same
-    // struct). Root CBV, VS only, read ONLY by Skeletal.hlsl's VSDepthGBuf. Appended last for the same
-    // parameter-renumbering reason as World's: SkeletalDrawCommand's indirect signature pushes param 11.
-    rs.AddCBV( 9, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 13: b9 MotionCB (see World's b5)
 
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.

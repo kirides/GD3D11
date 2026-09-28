@@ -1773,7 +1773,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[frame] );                         // b3 shadow CB
 	m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );     // t4 CSM
 	m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetStaticSrvSlot() ) );  // t5 cubes
-	m_CmdList->SetGraphicsRoot32BitConstants( 10, 1, &m_ActiveAOMaskSrvSlot, 0 );                    // b7 AOCB
+	m_CmdList->SetGraphicsRoot32BitConstants( 6, 1, &m_ActiveAOMaskSrvSlot, 0 );                     // b7 AOCB
 
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -2208,7 +2208,7 @@ void D3D12GraphicsEngine::DrawVegetationDepthPrepass() {
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );         // b1 GrassCB (the sway)
-			if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b6 MotionCB
+			if ( gbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 8, motionCb );   // b6 MotionCB
 			m_CmdList->RSSetViewports( 1, &vp );
 			m_CmdList->RSSetScissorRects( 1, &sc );
 			m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -5145,7 +5145,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
                                                              : m_Pipelines.Skeletal.DepthPrepassPSO.Get() ) );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-        if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 13, motionCb );   // b9 MotionCB
+        if ( skelGbuf ) m_CmdList->SetGraphicsRootConstantBufferView( 7, motionCb );   // b9 MotionCB
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

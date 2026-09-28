@@ -418,7 +418,7 @@ void D3D12GraphicsEngine::DrawVobAlphaRun( std::span<const TransparentItem> item
             // The ADD fallback to the blend PSO must not take the ADD shader path.
             const bool addPath = want == addPso && addPso != blendPso && frameValue != 0;
             const uint32_t b8 = frameValue | ( addPath ? 0x80000000u : 0u );
-            m_CmdList->SetGraphicsRoot32BitConstant( 14, b8, 0 );
+            m_CmdList->SetGraphicsRoot32BitConstant( 6, b8, 0 );
         }
 
         const float windHeights[2] = { e.WindMinHeight, e.WindMaxHeight };
