@@ -21,12 +21,13 @@ VS_OUT VSCube( VS_IN i )
 
 // VOB caster: instanceID spans (numInstances * 6). The per-instance world stream uses InstanceDataStepRate=6, so
 // each real instance is fetched for 6 consecutive instanceIDs; face = iid % 6 picks the face view-proj + slice.
-struct VSVOB_IN { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; uint iid : SV_InstanceID; };
+// iworld is row_major (applied as mul(M, v)) so element k is row k in both DXIL and SPIR-V.
+struct VSVOB_IN { float3 pos : POSITION; float2 uv : TEXCOORD0; row_major float4x4 iworld : INSTANCE_WORLD_MATRIX; uint iid : SV_InstanceID; };
 VS_OUT VSCubeVob( VSVOB_IN i )
 {
     VS_OUT o;
     uint   face = i.iid % 6u;
-    float3 wp   = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    float3 wp   = mul( i.iworld, float4( i.pos, 1.0 ) ).xyz;
     o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[face] );
     o.uv   = i.uv;
     o.rt   = face;

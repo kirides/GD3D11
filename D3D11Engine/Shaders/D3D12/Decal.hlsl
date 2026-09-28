@@ -51,7 +51,9 @@ struct VS_IN
 {
     float3   pos    : POSITION;
     float2   uv     : TEXCOORD0;
-    float4x4 iworld : INSTANCE_WORLD_MATRIX;   // per-instance model matrix (world*offset*scale)
+    // Per-instance model matrix (world*offset*scale), applied as mul(M, v). row_major so element k is row k in
+    // both DXIL and SPIR-V: DXC's SPIR-V ignores column_major on stage inputs.
+    row_major float4x4 iworld : INSTANCE_WORLD_MATRIX;
     float4   icolor : INSTANCE_COLOR;          // .a = ghost alpha, .r = shade-lit flag, .gb unused
 };
 struct VS_OUT
@@ -68,7 +70,7 @@ struct VS_OUT
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    float3 worldPos = mul( i.iworld, float4( i.pos, 1.0 ) ).xyz;
     o.clip  = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv    = i.uv;
     o.alpha = i.icolor.a;
@@ -77,7 +79,7 @@ VS_OUT VSMain( VS_IN i )
     // The quad lies in its local XY plane, so +Z is its face normal. The instance matrix's non-uniform XY
     // scale (DecalSize * 2, y negated) doesn't rotate that axis, so transforming it by the 3x3 is exact up to
     // sign — and the sign is resolved per pixel below, since decals draw with CULL_NONE.
-    o.wnrm  = mul( float3( 0.0, 0.0, 1.0 ), (float3x3)i.iworld );
+    o.wnrm  = mul( (float3x3)i.iworld, float3( 0.0, 0.0, 1.0 ) );
     o.fogDist = distance(worldPos, CamPosWS);
     return o;
 }
