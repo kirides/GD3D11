@@ -5,6 +5,7 @@
 #include "../Logger.h"
 
 #include <algorithm>
+#include <array>
 
 namespace VulkanRhi {
 
@@ -24,12 +25,14 @@ namespace VulkanRhi {
         HRESULT Present( UINT syncInterval, UINT flags ) override;
         HRESULT ResizeBuffers( UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags ) override;
         HANDLE GetFrameLatencyWaitableObject() override { return nullptr; }
-        HRESULT SetMaximumFrameLatency( UINT ) override { return S_OK; }
+        HRESULT SetMaximumFrameLatency( UINT maxLatency ) override;
+        void WaitForFrameLatency( DWORD timeoutMs ) override;
         bool SetHdr10( const DXGI_HDR_METADATA_HDR10* metadata ) override;
         bool GetContainingOutputHdr( float& maxNits, float& minNits, float& maxFullFrameNits ) override;
 
     private:
         struct AcquireSemaphore { VkSemaphore Semaphore = VK_NULL_HANDLE; uint64_t Serial = 0; };
+        static constexpr UINT kMaxFrameLatency = 16;   // DXGI's limit
 
         bool Acquire();
         void FlushAcquireWait();
@@ -54,6 +57,12 @@ namespace VulkanRhi {
         bool m_VSync = true;
         ComPtr<Rhi::Resource> m_StandIn;
         bool m_OnStandIn = false;
+
+        UINT m_MaxFrameLatency = 3;   // DXGI's default
+        uint64_t m_PresentCount = 0;
+        std::array<uint64_t, kMaxFrameLatency> m_PresentSerials{};   // queue serial of present n at [n % size]
+        uint32_t m_PresentWaitTimeouts = 0;
+        bool m_PresentWaitDisabled = false;
     };
 
     SwapchainImpl::~SwapchainImpl() {
@@ -210,6 +219,7 @@ namespace VulkanRhi {
             m_Swapchain.GetPresentSemaphore( m_ImageIndex ), 0, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
         if ( queue->Submit( nullptr, 0, nullptr, 0, &signal, 1, nullptr, 0 ) != VK_SUCCESS ) return DXGI_ERROR_DEVICE_REMOVED;
         m_AcquireSemaphores[m_CurrentAcquire].Serial = queue->SubmittedSerial();
+        m_PresentSerials[++m_PresentCount % kMaxFrameLatency] = queue->SubmittedSerial();
 
         const int64_t presentStart = QpcNow();
         const VkResult r = m_Swapchain.Present( queue->m_Queue, queue->m_Mutex, m_ImageIndex );
@@ -220,6 +230,44 @@ namespace VulkanRhi {
         m_Device->CollectGarbage();
         m_Device->NotePresent();
         return S_OK;
+    }
+
+    HRESULT SwapchainImpl::SetMaximumFrameLatency( UINT maxLatency ) {
+        if ( maxLatency == 0 || maxLatency > kMaxFrameLatency ) return DXGI_ERROR_INVALID_CALL;
+        m_MaxFrameLatency = maxLatency;
+        return S_OK;
+    }
+
+    void SwapchainImpl::WaitForFrameLatency( DWORD timeoutMs ) {
+        const uint64_t behind = m_MaxFrameLatency - 1;
+        const int64_t start = QpcNow();
+        // Uncapped, "on screen" waits for the compositor's next refresh; DXGI with tearing doesn't, so only FIFO uses it.
+        if ( m_Swapchain.HasPresentWait() && m_Swapchain.IsVSync() && !m_PresentWaitDisabled ) {
+            // DXGI semantics: frame n+1 starts once present n - (latency - 1) is on screen.
+            const uint64_t lastId = m_Swapchain.GetLastPresentId();
+            if ( lastId <= behind || m_NeedsRebuild || !m_Swapchain.IsUsable() ) return;
+            const VkResult r = m_Swapchain.WaitForPresent( lastId - behind, static_cast<uint64_t>( timeoutMs ) * 1000000ull );
+            m_Device->AddWait( DeviceImpl::Wait::Latency, QpcNow() - start );
+            if ( r == VK_TIMEOUT ) {
+                // A present that never reports (occluded window, driver quirk) would stall every frame.
+                if ( ++m_PresentWaitTimeouts >= 3 ) {
+                    m_PresentWaitDisabled = true;
+                    Logging::Wrn( "Vulkan: present wait timed out {} times in a row; pacing on GPU completion instead.",
+                        m_PresentWaitTimeouts );
+                }
+                return;
+            }
+            m_PresentWaitTimeouts = 0;
+            if ( r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR ) m_NeedsRebuild = true;
+            else if ( r != VK_SUCCESS ) m_Device->CheckResult( r, "vkWaitForPresentKHR" );
+            return;
+        }
+        // No present wait: bound the CPU by the GPU finishing that present's work instead.
+        if ( m_PresentCount <= behind ) return;
+        const uint64_t serial = m_PresentSerials[( m_PresentCount - behind ) % kMaxFrameLatency];
+        if ( m_Device->Queue()->CompletedSerial() >= serial ) return;
+        m_Device->Queue()->WaitSerial( serial );
+        m_Device->AddWait( DeviceImpl::Wait::Latency, QpcNow() - start );
     }
 
     HRESULT SwapchainImpl::ResizeBuffers( UINT, UINT width, UINT height, DXGI_FORMAT, UINT ) {

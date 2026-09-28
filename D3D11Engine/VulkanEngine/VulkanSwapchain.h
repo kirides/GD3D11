@@ -27,7 +27,10 @@ public:
 
     /** VK_SUCCESS / VK_SUBOPTIMAL_KHR hand out an image; VK_ERROR_OUT_OF_DATE_KHR means Recreate first. */
     VkResult Acquire( VkSemaphore signal, uint32_t& outImageIndex );
+    /** Tags the present with the next present id when present-wait is available. */
     VkResult Present( VkQueue queue, std::mutex& queueMutex, uint32_t imageIndex );
+    /** Blocks until present `presentId` (or a later one) is on screen; VK_TIMEOUT after timeoutNs. */
+    VkResult WaitForPresent( uint64_t presentId, uint64_t timeoutNs );
 
     bool        IsUsable() const { return m_Swapchain != VK_NULL_HANDLE && m_Extent.width > 0 && m_Extent.height > 0; }
     VkImage     GetImage( uint32_t index ) const { return m_Images[index]; }
@@ -39,6 +42,9 @@ public:
     VkExtent2D  GetExtent() const { return m_Extent; }
     bool        IsHdr() const { return m_ColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT; }
     bool        IsVSync() const { return m_VSync; }
+    bool        HasPresentWait() const { return m_PresentWait != PresentWaitMode::None; }
+    /** Id of the last present the swapchain accepted; ids restart at 1 with every rebuilt swapchain. */
+    uint64_t    GetLastPresentId() const { return m_LastPresentId; }
 
     /** Whether the next Recreate asks for an HDR10 surface format. */
     void SetHdrRequested( bool hdr ) { m_HdrRequested = hdr; }
@@ -47,6 +53,9 @@ public:
     void SetHdrMetadata( float maxNits, float minNits, float maxFrameAverageNits );
 
 private:
+    enum class PresentWaitMode { None, PresentWait, PresentWait2 };
+
+    PresentWaitMode QueryPresentWaitMode() const;
     bool BuildSwapchain( INT2 size );
     void DestroyImageResources();
 
@@ -65,4 +74,7 @@ private:
     uint32_t         m_MinImageCount = 2;
     bool             m_VSync = true;
     bool             m_HdrRequested = false;
+    PresentWaitMode  m_PresentWait = PresentWaitMode::None;
+    uint64_t         m_PresentId = 0;       // last id handed to vkQueuePresentKHR
+    uint64_t         m_LastPresentId = 0;   // last id whose present was accepted
 };

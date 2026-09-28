@@ -18,6 +18,9 @@ struct VulkanDeviceCaps {
     bool DebugUtils = false;
     bool Validation = false;
     bool SwapchainColorSpace = false;   // HDR10 swapchain colour spaces
+    bool SurfaceCapabilities2 = false;  // VK_KHR_get_surface_capabilities2 (instance)
+    bool PresentWait = false;           // VK_KHR_present_id + present_wait
+    bool PresentWait2 = false;          // VK_KHR_present_id2 + present_wait2; still needs per-surface support
     bool HdrMetadata = false;
     bool NullDescriptor = false;        // robustness2: unbound-but-used slots read zero instead of faulting
     bool MemoryBudget = false;

@@ -1922,6 +1922,16 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
 }
 
 
+void D3D12GraphicsEngine::WaitForFrameLatencyWaitable() {
+    if ( m_FrameLatencyWaitableObject ) {
+        BaseGraphicsEngine::WaitForFrameLatencyWaitable();
+    } else if ( m_SwapChainReady && m_SwapChain ) {
+        ZoneScoped;
+        m_SwapChain->WaitForFrameLatency( 1000 );
+    }
+}
+
+
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
 

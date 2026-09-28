@@ -540,7 +540,7 @@ namespace VulkanRhi {
         void ReleaseSharedPipeline( SharedPipeline* shared );
         void AddRecordStats( const RecordStats& stats );
         /** CPU time spent blocked, in QPC ticks, for the per-frame log. */
-        enum class Wait : uint32_t { Fence, Acquire, Present, Submit, Count };
+        enum class Wait : uint32_t { Fence, Acquire, Present, Submit, Latency, Count };
         void AddWait( Wait kind, int64_t ticks ) { m_WaitTicks[static_cast<uint32_t>( kind )].fetch_add( ticks, std::memory_order_relaxed ); }
 
     private:
@@ -599,8 +599,12 @@ namespace VulkanRhi {
         std::unordered_map<std::string, SharedPipeline> m_SharedPipelines;
         std::atomic<uint32_t> m_HeapWrites{ 0 };   // bindless-set updates
         uint32_t m_StatsGeneration = 0;            // pipeline generation at the last stats line
+        static constexpr uint32_t kStatsPresents = 600;
         uint32_t m_StatsPresents = 0;   // render thread only, like the start time
         int64_t m_StatsStart = 0;
+        int64_t m_LastPresentTicks = 0;
+        uint32_t m_FrameSamples = 0;
+        std::array<float, kStatsPresents> m_FrameMs{};   // present-to-present intervals of this stats window
         friend class DescriptorHeapImpl;
     };
 

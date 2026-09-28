@@ -248,6 +248,7 @@ namespace {
         }
         HANDLE GetFrameLatencyWaitableObject() override { return m_Swapchain->GetFrameLatencyWaitableObject(); }
         HRESULT SetMaximumFrameLatency( UINT maxLatency ) override { return m_Swapchain->SetMaximumFrameLatency( maxLatency ); }
+        void WaitForFrameLatency( DWORD ) override {}
         bool SetHdr10( const DXGI_HDR_METADATA_HDR10* metadata ) override {
             constexpr DXGI_COLOR_SPACE_TYPE kHdr10 = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
             UINT support = 0;

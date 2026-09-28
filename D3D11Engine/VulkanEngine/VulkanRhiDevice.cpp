@@ -344,10 +344,15 @@ namespace VulkanRhi {
     }
 
     void DeviceImpl::NotePresent() {
-        constexpr uint32_t kStatsPresents = 600;
         LARGE_INTEGER now = {};
         QueryPerformanceCounter( &now );
+        LARGE_INTEGER freq = {};
+        QueryPerformanceFrequency( &freq );
         if ( !m_StatsStart ) m_StatsStart = now.QuadPart;
+        if ( m_LastPresentTicks && m_FrameSamples < kStatsPresents ) {
+            m_FrameMs[m_FrameSamples++] = static_cast<float>( ( now.QuadPart - m_LastPresentTicks ) * 1000.0 / freq.QuadPart );
+        }
+        m_LastPresentTicks = now.QuadPart;
         if ( ++m_StatsPresents >= kStatsPresents ) {
             RecordStats s;
             {
@@ -361,8 +366,6 @@ namespace VulkanRhi {
                 submits = m_Queue->m_SubmitCount;
                 m_Queue->m_SubmitCount = 0;
             }
-            LARGE_INTEGER freq = {};
-            QueryPerformanceFrequency( &freq );
             const uint32_t f = m_StatsPresents;
             auto ms = [&]( int64_t ticks ) { return static_cast<double>( ticks ) * 1000.0 / static_cast<double>( freq.QuadPart ) / f; };
             auto waited = [&]( Wait w ) { return ms( m_WaitTicks[static_cast<uint32_t>( w )].exchange( 0 ) ); };
@@ -371,16 +374,30 @@ namespace VulkanRhi {
             const uint32_t pipelines = generation - m_StatsGeneration;
             m_StatsGeneration = generation;
             Logging::Inf( "Vulkan per frame (avg of {}): {:.2f} ms, GPU busy {:.2f} ms; CPU blocked: fences {:.2f}, acquire {:.2f}, "
-                "present {:.2f}, submit {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
+                "present {:.2f}, submit {:.2f}, frame latency {:.2f} ms; {} draws ({} replayed indirect), {} descriptor pushes ({} descriptors), "
                 "{} push-constant updates, {} device-generated ExecuteIndirects, {} render scopes, {} submits; over all {} frames: "
                 "{} pipelines created ({} PSOs shared an existing one), {} resources created, {} heap descriptor writes.",
                 f, ms( now.QuadPart - m_StatsStart ), gpuMs, waited( Wait::Fence ),
-                waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ),
+                waited( Wait::Acquire ), waited( Wait::Present ), waited( Wait::Submit ), waited( Wait::Latency ),
                 s.Draws / f, s.Replayed / f, s.Pushes / f, s.Writes / f, s.PushConstants / f, s.Generated / f, s.Scopes / f, submits / f,
                 f, pipelines, m_SharedPipelineHits.exchange( 0 ), m_ResourcesCreated.exchange( 0 ), m_HeapWrites.exchange( 0 ) );
             Logging::Inf( "Vulkan recording per frame, summed over threads: ExecuteIndirect {:.2f} ms, direct draws/dispatches {:.2f} ms; "
                 "of both, driver push descriptors {:.2f} ms and driver draw calls {:.2f} ms.",
                 ms( s.IndirectTicks ), ms( s.DrawTicks ), ms( s.PushTicks ), ms( s.DriverDrawTicks ) );
+            if ( m_FrameSamples > 0 ) {
+                // Averages hide missed refreshes; the spread shows them.
+                float* first = m_FrameMs.data();
+                float* last = first + m_FrameSamples;
+                std::nth_element( first, first + m_FrameSamples / 2, last );
+                const float p50 = first[m_FrameSamples / 2];
+                const uint32_t slow = static_cast<uint32_t>( std::count_if( first, last, [p50]( float v ) { return v > p50 * 1.5f; } ) );
+                const uint32_t fast = static_cast<uint32_t>( std::count_if( first, last, [p50]( float v ) { return v < p50 * 0.5f; } ) );
+                const float maxMs = *std::max_element( first, last );
+                std::nth_element( first, first + m_FrameSamples * 99 / 100, last );
+                Logging::Inf( "Vulkan frame times: p50 {:.2f}, p99 {:.2f}, max {:.2f} ms; of {} frames {} over 1.5x p50, {} under 0.5x p50.",
+                    p50, first[m_FrameSamples * 99 / 100], maxMs, m_FrameSamples, slow, fast );
+            }
+            m_FrameSamples = 0;
             m_StatsPresents = 0;
             m_StatsStart = now.QuadPart;
         }

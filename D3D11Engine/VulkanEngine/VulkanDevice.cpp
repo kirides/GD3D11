@@ -90,6 +90,7 @@ namespace {
         VkInstance Instance = VK_NULL_HANDLE;
         bool DebugUtils = false;
         bool SwapchainColorSpace = false;
+        bool SurfaceCapabilities2 = false;
         bool Validation = false;
     };
 
@@ -115,6 +116,9 @@ namespace {
         if ( out.DebugUtils ) extensions.push_back( VK_EXT_DEBUG_UTILS_EXTENSION_NAME );
         out.SwapchainColorSpace = HasExtension( available, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME );
         if ( out.SwapchainColorSpace ) extensions.push_back( VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME );
+        // Surface queries for VK_KHR_present_id2/present_wait2 support.
+        out.SurfaceCapabilities2 = HasExtension( available, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
+        if ( out.SurfaceCapabilities2 ) extensions.push_back( VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME );
 
         // Validation needs the SDK's 32-bit layer, which usually isn't installed; skip quietly without it.
         std::vector<const char*> layers;
@@ -188,6 +192,10 @@ namespace {
         VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR Divisor = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR };
         const char* DivisorExtension = nullptr;   // KHR, or the older EXT
         VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT Pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
+        VkPhysicalDevicePresentIdFeaturesKHR PresentId = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
+        VkPhysicalDevicePresentWaitFeaturesKHR PresentWait = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
+        VkPhysicalDevicePresentId2FeaturesKHR PresentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
+        VkPhysicalDevicePresentWait2FeaturesKHR PresentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
         VkPhysicalDeviceMemoryProperties Memory = {};
         std::vector<VkExtensionProperties> Extensions;
 
@@ -207,6 +215,14 @@ namespace {
         bool PushDescriptorCore() const { return Core14() && Features14.pushDescriptor; }
         bool Maintenance5Core() const { return Core14() && Features14.maintenance5; }
         bool DivisorCore() const { return Core14() && Features14.vertexAttributeInstanceRateDivisor; }
+        bool PresentWaitSupported() const {
+            return Has( VK_KHR_PRESENT_ID_EXTENSION_NAME ) && Has( VK_KHR_PRESENT_WAIT_EXTENSION_NAME )
+                && PresentId.presentId && PresentWait.presentWait;
+        }
+        bool PresentWait2Supported() const {
+            return Has( VK_KHR_PRESENT_ID_2_EXTENSION_NAME ) && Has( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME )
+                && PresentId2.presentId2 && PresentWait2.presentWait2;
+        }
         bool PushDescriptors() const { return PushDescriptorCore() || Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ); }
         uint32_t MaxPushDescriptors() const { return PushDescriptorCore() ? Props14.maxPushDescriptors : PushProps.maxPushDescriptors; }
     };
@@ -269,6 +285,10 @@ namespace {
             : info.Has( VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME ) ? VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME : nullptr;
         if ( info.DivisorExtension ) { *tail = &info.Divisor; tail = &info.Divisor.pNext; }
         if ( info.Has( VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME ) ) { *tail = &info.Pageable; tail = &info.Pageable.pNext; }
+        if ( info.Has( VK_KHR_PRESENT_ID_EXTENSION_NAME ) ) { *tail = &info.PresentId; tail = &info.PresentId.pNext; }
+        if ( info.Has( VK_KHR_PRESENT_WAIT_EXTENSION_NAME ) ) { *tail = &info.PresentWait; tail = &info.PresentWait.pNext; }
+        if ( info.Has( VK_KHR_PRESENT_ID_2_EXTENSION_NAME ) ) { *tail = &info.PresentId2; tail = &info.PresentId2.pNext; }
+        if ( info.Has( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME ) ) { *tail = &info.PresentWait2; tail = &info.PresentWait2.pNext; }
         vkGetPhysicalDeviceFeatures2( device, &info.Features );
 
         vkGetPhysicalDeviceQueueFamilyProperties( device, &count, nullptr );
@@ -424,7 +444,8 @@ namespace {
             VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, VK_EXT_DEVICE_FAULT_EXTENSION_NAME, VK_AMD_BUFFER_MARKER_EXTENSION_NAME,
             VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME, VK_EXT_HDR_METADATA_EXTENSION_NAME,
             VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
-            VK_KHR_PRESENT_ID_2_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME,
+            VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME, VK_KHR_PRESENT_ID_2_EXTENSION_NAME,
+            VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME,
             VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME,
             VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
             VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
@@ -550,6 +571,7 @@ bool VulkanDevice::Init() {
     m_Instance = setup.Instance;
     m_Caps.DebugUtils = setup.DebugUtils;
     m_Caps.SwapchainColorSpace = setup.SwapchainColorSpace;
+    m_Caps.SurfaceCapabilities2 = setup.SurfaceCapabilities2;
     m_Caps.Validation = setup.Validation;
 
     if ( setup.Validation && setup.DebugUtils ) {
@@ -604,6 +626,21 @@ bool VulkanDevice::Init() {
         VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
+    // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
+    // under FIFO on AMD it paced frames in back-to-back pairs, which puts ZENGIN into slow motion.
+    const bool presentWaitEnabled = strstr( GetCommandLineA(), "-VKPRESENTWAIT" ) || strstr( GetCommandLineA(), "-vkpresentwait" )
+        || GetEnvironmentVariableA( "GD3D11_VULKAN_PRESENT_WAIT", nullptr, 0 ) > 0;
+    if ( presentWaitEnabled ) Logging::Inf( "Vulkan: present wait enabled from the command line." );
+    if ( presentWaitEnabled && info->PresentWait2Supported() && m_Caps.SurfaceCapabilities2 ) {
+        m_Caps.PresentWait2 = true;
+        extensions.push_back( VK_KHR_PRESENT_ID_2_EXTENSION_NAME );
+        extensions.push_back( VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME );
+    }
+    if ( presentWaitEnabled && info->PresentWaitSupported() ) {
+        m_Caps.PresentWait = true;
+        extensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
+        extensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
+    }
     m_Caps.Maintenance5 = maintenance5Core || enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME )
         && info->Maintenance5.maintenance5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
@@ -695,6 +732,14 @@ bool VulkanDevice::Init() {
     memoryPriority.memoryPriority = VK_TRUE;
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
     pageable.pageableDeviceLocalMemory = VK_TRUE;
+    VkPhysicalDevicePresentIdFeaturesKHR presentId = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR };
+    presentId.presentId = VK_TRUE;
+    VkPhysicalDevicePresentWaitFeaturesKHR presentWait = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR };
+    presentWait.presentWait = VK_TRUE;
+    VkPhysicalDevicePresentId2FeaturesKHR presentId2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR };
+    presentId2.presentId2 = VK_TRUE;
+    VkPhysicalDevicePresentWait2FeaturesKHR presentWait2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR };
+    presentWait2.presentWait2 = VK_TRUE;
     m_Caps.InstanceDivisor = divisorCore
         || enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
     m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( divisorCore ? info->Features14.vertexAttributeInstanceRateZeroDivisor
@@ -733,6 +778,12 @@ bool VulkanDevice::Init() {
         *tail = &eds3; tail = &eds3.pNext;
     }
     if ( m_Caps.InstanceDivisor && !core14 ) { *tail = &divisor; tail = &divisor.pNext; }
+    if ( m_Caps.PresentWait ) {
+        *tail = &presentId; presentId.pNext = &presentWait; tail = &presentWait.pNext;
+    }
+    if ( m_Caps.PresentWait2 ) {
+        *tail = &presentId2; presentId2.pNext = &presentWait2; tail = &presentWait2.pNext;
+    }
 
     // --- Queues ---
     const float priority = 1.0f;

@@ -16,6 +16,23 @@ namespace {
     }
 }
 
+VulkanSwapchain::PresentWaitMode VulkanSwapchain::QueryPresentWaitMode() const {
+    const VulkanDeviceCaps& caps = m_Device->GetCaps();
+    if ( caps.PresentWait2 ) {
+        // present_wait2 is per surface; present_wait (v1) assumes every surface supports it.
+        VkSurfaceCapabilitiesPresentWait2KHR wait2 = { VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_WAIT_2_KHR };
+        VkSurfaceCapabilitiesPresentId2KHR id2 = { VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR, &wait2 };
+        VkSurfaceCapabilities2KHR caps2 = { VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR, &id2 };
+        VkPhysicalDeviceSurfaceInfo2KHR info = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR };
+        info.surface = m_Surface;
+        if ( vkGetPhysicalDeviceSurfaceCapabilities2KHR( m_Device->GetPhysicalDevice(), &info, &caps2 ) == VK_SUCCESS
+            && id2.presentId2Supported && wait2.presentWait2Supported ) {
+            return PresentWaitMode::PresentWait2;
+        }
+    }
+    return caps.PresentWait ? PresentWaitMode::PresentWait : PresentWaitMode::None;
+}
+
 bool VulkanSwapchain::Create( VulkanDevice& device, HWND window, INT2 size, uint32_t minImageCount, bool vsync, bool hdr ) {
     m_Device = &device;
     m_Window = window;
@@ -36,6 +53,7 @@ bool VulkanSwapchain::Create( VulkanDevice& device, HWND window, INT2 size, uint
         Logging::Wrn( "Vulkan: the graphics queue cannot present to Gothic's window." );
         return false;
     }
+    m_PresentWait = QueryPresentWaitMode();
     return BuildSwapchain( size );
 }
 
@@ -149,11 +167,15 @@ bool VulkanSwapchain::BuildSwapchain( INT2 size ) {
     ci.presentMode = m_PresentMode;
     ci.clipped = VK_TRUE;
     ci.oldSwapchain = m_Swapchain;
+    if ( m_PresentWait == PresentWaitMode::PresentWait2 )
+        ci.flags |= VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR | VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR;
 
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     const VkResult r = vkCreateSwapchainKHR( device, &ci, nullptr, &swapchain );
     if ( m_Swapchain ) vkDestroySwapchainKHR( device, m_Swapchain, nullptr );   // retired either way
     m_Swapchain = VK_NULL_HANDLE;
+    m_PresentId = 0;
+    m_LastPresentId = 0;
     if ( VkUtil::Failed( r, "vkCreateSwapchainKHR" ) ) return false;
     m_Swapchain = swapchain;
     m_Extent = extent;
@@ -180,8 +202,10 @@ bool VulkanSwapchain::BuildSwapchain( INT2 size ) {
         m_Device->SetObjectName( VK_OBJECT_TYPE_IMAGE, VkUtil::HandleToU64( m_Images[i] ), name.c_str() );
     }
 
-    Logging::Inf( "Vulkan: swapchain {}x{}, {} images, format {}{}, present mode {}.", extent.width, extent.height, count,
-        static_cast<int>( m_Format ), IsHdr() ? " (HDR10 ST.2084)" : "", PresentModeName( m_PresentMode ) );
+    Logging::Inf( "Vulkan: swapchain {}x{}, {} images, format {}{}, present mode {}, frame pacing on {}.", extent.width,
+        extent.height, count, static_cast<int>( m_Format ), IsHdr() ? " (HDR10 ST.2084)" : "", PresentModeName( m_PresentMode ),
+        !m_VSync || m_PresentWait == PresentWaitMode::None ? "GPU completion"
+            : m_PresentWait == PresentWaitMode::PresentWait2 ? "present_wait2" : "present_wait" );
     return true;
 }
 
@@ -191,14 +215,37 @@ VkResult VulkanSwapchain::Acquire( VkSemaphore signal, uint32_t& outImageIndex )
 }
 
 VkResult VulkanSwapchain::Present( VkQueue queue, std::mutex& queueMutex, uint32_t imageIndex ) {
+    const uint64_t presentId = m_PresentId + 1;
+    VkPresentIdKHR id = { VK_STRUCTURE_TYPE_PRESENT_ID_KHR, nullptr, 1, &presentId };
+    VkPresentId2KHR id2 = { VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR, nullptr, 1, &presentId };
     VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    if ( m_PresentWait == PresentWaitMode::PresentWait ) pi.pNext = &id;
+    else if ( m_PresentWait == PresentWaitMode::PresentWait2 ) pi.pNext = &id2;
     pi.waitSemaphoreCount = 1;
     pi.pWaitSemaphores = &m_PresentSemaphores[imageIndex];
     pi.swapchainCount = 1;
     pi.pSwapchains = &m_Swapchain;
     pi.pImageIndices = &imageIndex;
-    std::lock_guard<std::mutex> lock( queueMutex );
-    return vkQueuePresentKHR( queue, &pi );
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> lock( queueMutex );
+        r = vkQueuePresentKHR( queue, &pi );
+    }
+    // Ids must keep increasing even past a failed present; only accepted ones can be waited on.
+    m_PresentId = presentId;
+    if ( r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR ) m_LastPresentId = presentId;
+    return r;
+}
+
+VkResult VulkanSwapchain::WaitForPresent( uint64_t presentId, uint64_t timeoutNs ) {
+    if ( !m_Swapchain || presentId == 0 || presentId > m_LastPresentId ) return VK_SUCCESS;
+    if ( m_PresentWait == PresentWaitMode::PresentWait2 ) {
+        const VkPresentWait2InfoKHR wi = { VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, nullptr, presentId, timeoutNs };
+        return vkWaitForPresent2KHR( m_Device->GetDevice(), m_Swapchain, &wi );
+    }
+    if ( m_PresentWait == PresentWaitMode::PresentWait )
+        return vkWaitForPresentKHR( m_Device->GetDevice(), m_Swapchain, presentId, timeoutNs );
+    return VK_SUCCESS;
 }
 
 void VulkanSwapchain::SetHdrMetadata( float maxNits, float minNits, float maxFrameAverageNits ) {

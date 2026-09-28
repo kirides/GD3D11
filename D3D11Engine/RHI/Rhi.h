@@ -216,6 +216,9 @@ namespace Rhi {
         virtual HRESULT ResizeBuffers( UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags ) = 0;
         virtual HANDLE GetFrameLatencyWaitableObject() = 0;
         virtual HRESULT SetMaximumFrameLatency( UINT maxLatency ) = 0;
+        /** Blocks until at most SetMaximumFrameLatency presents are outstanding. Vulkan's stand-in for the DXGI
+            waitable; the D3D12 swapchain returns at once, wait on GetFrameLatencyWaitableObject there. */
+        virtual void WaitForFrameLatency( DWORD timeoutMs ) = 0;
         /** Switches the swapchain to HDR10 (ST.2084 / Rec.2020) and publishes `metadata`. False when refused. */
         virtual bool SetHdr10( const DXGI_HDR_METADATA_HDR10* metadata ) = 0;
         /** Luminance of the output the window is on, if it is in HDR mode. */

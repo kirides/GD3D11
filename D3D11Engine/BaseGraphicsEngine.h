@@ -179,8 +179,9 @@ public:
     /** Waits on GetFrameLatencyWaitableObject(), if any, so the CPU doesn't get more than one
         frame ahead of the swapchain. Same call-site story as FrameLimiterEndFrame/BeginFrame:
         invoked once per loop iteration from CGameManagerRunLoop_PaceFrame when that patch is
-        installed, falling back to OnBeginFrame otherwise (see g_MainLoopFramePacingInstalled). */
-    void WaitForFrameLatencyWaitable() {
+        installed, falling back to OnBeginFrame otherwise (see g_MainLoopFramePacingInstalled).
+        Backends without a waitable handle (Vulkan) override this. */
+    virtual void WaitForFrameLatencyWaitable() {
         if ( HANDLE waitable = GetFrameLatencyWaitableObject() ) {
             ZoneScoped;
             WaitForSingleObjectEx( waitable, 1000, TRUE );

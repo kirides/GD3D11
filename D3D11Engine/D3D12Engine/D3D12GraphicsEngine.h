@@ -91,6 +91,8 @@ public:
     XRESULT Clear( const float4& color ) override;
 
     HANDLE GetFrameLatencyWaitableObject() const override { return m_FrameLatencyWaitableObject; }
+    /** DXGI waits on the handle; Vulkan has none and waits on present ids inside the swapchain. */
+    void WaitForFrameLatencyWaitable() override;
 
     /** Settings/ImGui-driven shader hot-reload. Only RECORDS the request (ORs into m_PendingShaderReload) —
         callable any number of times per frame (e.g. an ImGui button held/spammed, or several settings
