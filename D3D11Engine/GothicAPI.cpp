@@ -637,6 +637,10 @@ void GothicAPI::OnWorldUpdate() {
                 skyController->SetRenderLighting( renderLightning );
             }
 
+            // RenderSkyPre is skipped for the scattering dome; without this masterState (sky IBL colours) freezes.
+            if ( zCCamera::GetCamera() )
+                skyController->Interpolate();
+
             skyController->SetLastMasterTime( masterTime );
         }
 
