@@ -3584,10 +3584,11 @@ bool D3D12PipelineState::CreateSkyIbl() {
     const D3D12_STATIC_SAMPLER_DESC sampler =
         D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL );
 
-    // --- Radiance root sig: b0 20x32-bit SkyRadianceCB, u0 UAV table (no SRV — it is purely analytic) ---
+    // --- Radiance root sig: b0 24x32-bit SkyRadianceCB, u0 UAV table, b2 the sky dome's Atmosphere CB ---
     D3D12RootLayout& radianceRs = Layout( "SkyIblRadiance" );
-    radianceRs.AddConstants( 0, 20, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SkyRadianceCB
+    radianceRs.AddConstants( 0, 24, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SkyRadianceCB
     radianceRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 1: u0 OutputCube
+    radianceRs.AddCBV( 2, D3D12_SHADER_VISIBILITY_ALL );             // 2: b2 AtmoCB
     if ( !radianceRs.Build( device ) )
         return false;
     SkyIbl.RadianceRootSig = radianceRs.RootSig();

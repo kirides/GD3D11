@@ -395,10 +395,67 @@ float3 EvaluateSkyIBL( float3 N, float3 V, float3 albedo, float roughness, float
     float3 prefiltered = specTex.SampleLevel( smp, R, mip ).rgb;
     float2 ab = EnvBRDFApprox( NdotV, cr );
     float3 specular = prefiltered * ( F0 * ab.x + ab.y ) * ComputeSpecularOcclusion( NdotV, ao, cr );
+    // Multiple-scattering energy compensation (Fdez-Aguera): rough metals otherwise lose up to a third.
+    specular *= 1.0 + F0 * ( 1.0 / max( ab.x + ab.y, 0.05 ) - 1.0 );
 
     // SkyIblIntensity is NOT the raw user knob — UploadSkyIblConstants premultiplies it with the ambient
     // strength and the radiance normalization, so this one factor is the complete ambient scale.
     return ( diffuse + specular ) * SkyIblIntensity;
+}
+
+// --- Sky visibility ----------------------------------------------------------------------------------------
+// Reads the top-down rain occlusion map (RainViewProj/RainShadowIndex; its casters are back faces, so ceilings
+// and roof undersides, never the ground itself). A centre tap plus 8 directions marched outward along a ~39 deg
+// cone, so a room's walls count through the ceiling around them. 1 = open sky, 0 = enclosed, -1 = no map.
+static const float SKYVIS_BIAS = 30.0;   // world units an occluder must clear the receiver by
+static const float SKYVIS_CONE = 0.8;    // cone rise per unit of lateral distance
+static const float2 kSkyVisDirs[8] = {
+    float2( 1.0, 0.0 ), float2( 0.7071, 0.7071 ), float2( 0.0, 1.0 ), float2( -0.7071, 0.7071 ),
+    float2( -1.0, 0.0 ), float2( -0.7071, -0.7071 ), float2( 0.0, -1.0 ), float2( 0.7071, -0.7071 )
+};
+#if SKY_VISIBILITY_LITE
+static const uint  SKYVIS_DIR_STEP = 2;   // 4 directions
+static const uint  SKYVIS_RADII_COUNT = 2;
+#else
+static const uint  SKYVIS_DIR_STEP = 1;
+static const uint  SKYVIS_RADII_COUNT = 3;
+#endif
+static const float kSkyVisRadii[3] = { 150.0, 450.0, 1200.0 };
+
+float SampleSkyVisibility( float3 wpos, float3 N )
+{
+    [branch]
+    if ( RainShadowIndex == 0xFFFFFFFFu ) return -1.0;
+    Texture2D occMap = ResourceDescriptorHeap[RainShadowIndex];
+
+    float4 clip = mul( float4( wpos + N * 20.0, 1.0 ), RainViewProj );
+    float2 uv = clip.xy * float2( 0.5, -0.5 ) + 0.5;
+    if ( any( uv < 0.0 ) || any( uv > 1.0 ) || clip.z < 0.0 || clip.z > 1.0 )
+        return 1.0;   // outside the map: assume open sky, like the wetness lookup
+
+    // World -> clip scale per axis (row-vector mul, so the columns of RainViewProj).
+    float2 uvPerWorld = 0.5 * float2( length( float3( RainViewProj._11, RainViewProj._21, RainViewProj._31 ) ),
+                                      length( float3( RainViewProj._12, RainViewProj._22, RainViewProj._32 ) ) );
+    float zPerWorld = length( float3( RainViewProj._13, RainViewProj._23, RainViewProj._33 ) );
+
+    float center = occMap.SampleCmpLevelZero( shadowCmp, uv, clip.z - SKYVIS_BIAS * zPerWorld );
+    float ring = 0.0;
+    [unroll]
+    for ( uint d = 0; d < 8; d += SKYVIS_DIR_STEP )
+    {
+        float open = 1.0;
+        [unroll]
+        for ( uint r = 0; r < SKYVIS_RADII_COUNT; ++r )
+        {
+            float rad = kSkyVisRadii[r];
+            float2 tapUv = uv + kSkyVisDirs[d] * ( rad * uvPerWorld );
+            float tapZ = clip.z - ( SKYVIS_BIAS + rad * SKYVIS_CONE ) * zPerWorld;
+            open = min( open, occMap.SampleCmpLevelZero( shadowCmp, tapUv, tapZ ) );
+        }
+        ring += open;
+    }
+    ring *= float( SKYVIS_DIR_STEP ) / 8.0;
+    return lerp( center, ring, 0.6 );
 }
 
 // Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Both conventions below are the D3D11
@@ -548,45 +605,23 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
 
-    // Indirect (ambient) term.
-    //
-    // The sky-IBL path is the real one: irradiance for diffuse, a prefiltered GGX chain for specular, so metals
-    // and roughness finally respond to ambient at all. It deliberately does NOT apply AmbientStrength: its
-    // whole scale (ShadowStrength, unhalved at night, x the radiance normalization x the SkyIblIntensity user
-    // knob) arrives premultiplied in SkyIblIntensity from UploadSkyIblConstants — see the comment there for
-    // why the night halving baked into AmbientStrength must not reach this branch.
-    //
-    // The `else` branch is the historic flat ambient floor — matched to D3D11's reference formula
-    // (PS_DS_AtmosphericScattering.hlsl litPixel), which has no surface-normal/up-direction term at all. It is
-    // still the fallback for indoor worlds, a failed/disabled IBL, and SkyIblIntensity == 0. Note that a prior
-    // attempt to add directionality HERE — a hemispheric saturate(N.y*0.5+0.5) factor — had to be reverted: it
-    // zeroed the term for downward-facing normals and halved it for sideways ones, blacking out cave
-    // ceilings/walls and tree-canopy undersides to literal (0,0,0). The IBL above is the correct fix for that,
-    // because its below-horizon hemisphere carries a real ground-bounce colour for those normals to catch.
-    float3 ambientSun;
+    // Indirect (ambient) term. The flat floor is D3D11's formula (PS_DS_AtmosphericScattering.hlsl litPixel)
+    // and the whole ambient when the sky IBL is off; the IBL's scale arrives premultiplied in SkyIblIntensity
+    // (see UploadSkyIblConstants), so it deliberately does not apply AmbientStrength.
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
+    [branch]
     if ( SkySpecularIndex != 0xFFFFFFFFu )
     {
-        ambientSun = EvaluateSkyIBL( N, V, albedo, roughness, metallic, shadowAO * ssao );
-
-        // SKY VISIBILITY. The IBL is the OPEN SKY's radiance, so it must not reach anything the sky cannot
-        // see. Measured in-game: with this off, a cave at noon is lit to daylight and only goes dark at night
-        // (the sky cubes collapse after dusk) — the classic "sun bleeds into caves" report.
-        //
-        // shadowAO above cannot do this job: it is lerp(1, vertLighting, ShadowAOStrength), which FLOORS at
-        // 1-ShadowAOStrength (0.5 by default), so a pitch-black cave still caught half the daytime sky. This
-        // is the same baked-vertex-light signal applied at its own full strength instead.
-        //
-        // The zBSP_MODE_INDOOR overrides in D3D12ShadowMap::UploadSampling / RenderSkyIBL do not help here:
-        // that flag is a whole-WORLD dungeon-level marker, and Gothic's caves and portal rooms live inside
-        // OUTDOOR-mode worlds, so it never fires for them.
-        //
-        // Applied ONLY to this branch. The flat fallback below already carries vertLighting through shadowAO
-        // and is D3D11's formula verbatim (ForwardPlusLighting.hlsl FP_ComputeSunLighting) — gating it too
-        // would apply the baked light twice and push interiors darker than the D3D11 reference.
-        ambientSun *= lerp( 1.0, vertLighting, SkyOccStrength );
+        // The IBL is open-sky radiance: where the sky is blocked, hand over to the flat (D3D11) ambient instead
+        // of letting sky colour into caves and houses. Geometry from the occlusion map, capped by the baked
+        // vertex light (NPCs, grass and decals pass vertLighting = 1, so the map is all they have).
+        float skyVis = lerp( 1.0, vertLighting, SkyOccStrength );
+        float geoVis = SampleSkyVisibility( wpos, N );
+        if ( geoVis >= 0.0 ) skyVis = min( skyVis, geoVis );
+        [branch]
+        if ( skyVis > 0.0 )
+            ambientSun = lerp( ambientSun, EvaluateSkyIBL( N, V, albedo, roughness, metallic, shadowAO * ssao ), skyVis );
     }
-    else
-        ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 
     // Direct Sun term. PBR_DirectLighting saturates dot(N,L) and folds it in ONCE itself (see its final
     // `NdotL * attenuation`) — `attenuation` here must therefore be everything EXCEPT N.L (shadow/AO/

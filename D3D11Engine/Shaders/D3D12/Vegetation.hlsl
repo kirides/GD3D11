@@ -50,6 +50,7 @@ SamplerState smpAoClamp : register(s1);
 
 // DelightDiffuse, ComputeSunShadow, ComputeSunLightingPBR and AccumTiledPointLights are shared with
 // World.hlsl/Vob.hlsl/Skeletal.hlsl. PerturbNormal/CotangentFrame go unused since grass has no normal map.
+#define SKY_VISIBILITY_LITE 1   // grass overdraw: 9 sky-visibility taps instead of 25
 #include "include/PBRLighting.hlsl"
 
 // Same push-away-from-the-player falloff as D3D11's VS_GrassInstanced.hlsl.

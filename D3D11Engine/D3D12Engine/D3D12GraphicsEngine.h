@@ -1606,13 +1606,12 @@ private:
     // Cook-Torrance kD is 0, so armour/weapons/ore went black outside direct light — and made roughness
     // irrelevant to ambient. Two cubes, built by three compute passes (Shaders/D3D12/SkyIbl.hlsl):
     //   m_SkyEnvCube    128^2 RGBA16F, kSkyEnvMips mips. Mip 0 = the analytic sky radiance; mips 1..N are its
-    //                   GGX prefilter, mip m == roughness m/(N-1) (the split-sum specular chain).
+    //                   GGX prefilter, mip m == roughness (m/(N-1))^2 (the split-sum specular chain).
     //   m_SkyIrradCube  16^2 RGBA16F, 1 mip. Cosine-convolved irradiance (the diffuse term).
     // Both are tiny by design — ~1.05 MB and ~12 KB of VA, which is what makes this affordable in a 32-bit
     // process (a placed grid of localized probes would not be, and is deliberately left to a later stage).
-    // The source is ANALYTIC, not a scene capture: D3D12 draws Gothic's fixed-function skydome (DrawSky — the
-    // atmospheric-scattering path is D3D11-only), so a gradient built from Gothic's own zCSkyState master
-    // colours is both cheaper and a closer match to what is actually on screen than a scattering model.
+    // The source is analytic, not a scene capture: the scattering dome's own function when it is drawn, scaled
+    // to a gradient of Gothic's zCSkyState colours (see D3D12SkyIbl.cpp).
     static constexpr UINT kSkyEnvSize = 128;   // mip-0 face resolution of the specular cube
     static constexpr UINT kSkyEnvMips = 6;     // 128,64,32,16,8,4 -> roughness 0.0 .. 1.0
     static constexpr UINT kSkyIrradSize = 16;  // irradiance is very low frequency; 16^2 is plenty
@@ -1634,7 +1633,10 @@ private:
     struct SkyIblParams {
         XMFLOAT3 Zenith = {}; XMFLOAT3 Horizon = {}; XMFLOAT3 Ground = {};
         XMFLOAT3 SunDir = {}; XMFLOAT3 SunColor = {}; float SunIntensity = 0.0f;
+        float Overcast = 0.0f;
+        XMFLOAT3 AtmoLightPos = {}; XMFLOAT3 AtmoWavelength = {};   // only compared while Atmosphere is set
         bool Indoor = false;
+        bool Atmosphere = false;   // the scattering dome drives the upper hemisphere
     };
     SkyIblParams m_SkyLastParams;
     bool m_SkyEnvInReadState = false;              // tracks the rest state of m_SkyEnvCube (see RenderSkyIBL's barriers)
@@ -1885,6 +1887,12 @@ private:
     // False until PrepareRainShadowmap has actually produced a camera. Sampling the wetness with the
     // zero-initialized matrix above would divide by w == 0 and feed NaN UVs into the PCF loop.
     bool m_RainShadowViewProjValid = false;
+    // Dry-weather refresh of the same map as the sky-visibility source: re-rendered once the camera moved
+    // kOcclusionMapRefreshDistance from where it was last drawn, or every kOcclusionMapRefreshFrames.
+    static constexpr float kOcclusionMapRefreshDistance = 1500.0f;
+    static constexpr UINT  kOcclusionMapRefreshFrames = 120;
+    XMFLOAT3 m_OcclusionMapCenter = {};
+    UINT     m_OcclusionMapAge = 0;
     Frustum m_RainShadowFrustum;
     // Instanced-VOB rain casters. Same shape as a CSM cascade's VOB casters (D3D12ShadowMap's
     // m_VobDrawArgs/m_VobDrawCount): CollectVisibleVobs against the rain frustum fills m_RainShadowVobs,

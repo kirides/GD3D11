@@ -1984,13 +1984,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "ShadowStrength; 1.0 is neutral. 0 disables the IBL and falls back to the flat\n"
             "ambient, which has no indirect specular at all (metals go black off-sun)." );
         ImGui::DragFloat( "SkyOcclusionStrength", &settings.SkyOcclusionStrength, 0.01f, 0.0f, 1.0f, "%.2f" );
-        ImGui::SetItemTooltip( "D3D12 only. How strongly Gothic's baked vertex light gates the sky-IBL indirect\n"
-            "term. The IBL is the OPEN SKY's radiance; without this it reaches caves and portal\n"
-            "rooms unoccluded, so interiors read as sunlit at noon and only go dark at night.\n"
-            "ShadowAOStrength can't do this - it floors at 1-ShadowAOStrength (0.5), so a\n"
-            "pitch-black cave still caught half the daytime sky. 0 = off (old behaviour);\n"
-            "1 = interiors get no sky ambient at all. The default leaves a small floor so cave\n"
-            "ceilings keep a trace of bounce light instead of crushing to black." );
+        ImGui::SetItemTooltip( "D3D12 only. Where the sky is blocked the IBL hands over to the flat ambient.\n"
+            "Roofs and cave ceilings are found through the rain occlusion map; this knob\n"
+            "additionally lets Gothic's baked vertex light mark a surface as enclosed.\n"
+            "0 = occlusion map only; 1 = dark baked light fully removes the sky light." );
         ImGui::DragFloat( "SkyIblNightFloor", &settings.SkyIblNightFloor, 0.005f, 0.0f, 0.5f, "%.3f" );
         ImGui::SetItemTooltip( "D3D12 only. Minimum night sky radiance for the IBL, in linear units.\n"
             "Gothic's night is not physically lit - zCSkyState's night fogColor is (5,5,20),\n"

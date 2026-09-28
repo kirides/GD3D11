@@ -382,6 +382,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
         v.Reset();
     }
     m_RainShadowVobs.Reset();
+    m_RainShadowViewProjValid = false;   // the occlusion map shows the old world until redrawn
     // Every MeshInfo the arena indexes is about to be freed, so the ranges have to go before the new world's
     // OnAddVob calls refill them. The buffers themselves are kept — see D3D12VobArena::Reset.
     m_VobArena.Reset();

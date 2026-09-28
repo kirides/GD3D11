@@ -648,8 +648,21 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
         return;
 
     auto& state = Engine::GAPI->GetRendererState();
-    if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) return;   // matches D3D11's actual gate — see AdvanceRain's comment on RendererSettings.EnableRain
+    // Rain redraws every frame (D3D11's gate — see AdvanceRain's comment on RendererSettings.EnableRain). While dry
+    // the map is still the sky-visibility source for the IBL and for drying surfaces, so refresh it on a budget.
+    const XMFLOAT3 camNow = Engine::GAPI->GetCameraPosition();
+    if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) {
+        const bool wanted = ( state.RendererSettings.SkyIblIntensity > 0.0f && !Engine::GAPI->IsIndoorWorld() )
+            || Engine::GAPI->GetSceneWetness() > 0.0f;
+        if ( !wanted ) return;
+        const float dx = camNow.x - m_OcclusionMapCenter.x, dy = camNow.y - m_OcclusionMapCenter.y, dz = camNow.z - m_OcclusionMapCenter.z;
+        const bool stale = !m_RainShadowViewProjValid || ++m_OcclusionMapAge >= kOcclusionMapRefreshFrames
+            || dx * dx + dy * dy + dz * dz > kOcclusionMapRefreshDistance * kOcclusionMapRefreshDistance;
+        if ( !stale ) return;
+    }
     if ( !CreateRainShadowResources() ) return;
+    m_OcclusionMapCenter = camNow;
+    m_OcclusionMapAge = 0;
 
     ZoneScopedN( "Prepare rain shadowmap" );
 
@@ -689,6 +702,13 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     // cliff edge puts the whole valley floor far BELOW the camera, and the old symmetric ±4000 pushed it
     // past the far plane — out of the map, so it never got wet.
     XMVECTOR eyePos = XMVectorSubtract( camPos, XMVectorScale( forward, kRainShadowUpRange ) );
+    // Snap the eye to whole texels across the map plane so edges stay put while the camera moves.
+    const float texel = span / static_cast<float>( kRainShadowMapSize );
+    const float eyeR = XMVectorGetX( XMVector3Dot( eyePos, right ) );
+    const float eyeU = XMVectorGetX( XMVector3Dot( eyePos, up ) );
+    eyePos = XMVectorAdd( eyePos, XMVectorAdd(
+        XMVectorScale( right, std::round( eyeR / texel ) * texel - eyeR ),
+        XMVectorScale( up, std::round( eyeU / texel ) * texel - eyeU ) ) );
 
     // 3. Construct the Light's World Matrix (Inverse View) directly!
     XMMATRIX lightWorldMatrix;

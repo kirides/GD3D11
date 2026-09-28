@@ -845,7 +845,7 @@ struct GothicRendererSettings {
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         SkyIblIntensity = 0.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
-        SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
+        SkyOcclusionStrength = 0.85f; // D3D12 only: how far baked vertex light caps sky visibility on top of the occlusion map
         SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
         DefaultMaterialRoughness = 0.50f; // D3D12 only: roughness for materials with no _FX/_ORM map
 
