@@ -570,7 +570,10 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float sunAtten = shadow * worldAO * SunIntensity;
     float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, SunSpecularEnabled * sunSpecScale );
 
-    return ambientSun + directSun;
+    // Unshadowed moonlight, flat Lambert like D3D11; baked vertex light keeps it out of interiors
+    float3 moon = albedo * SrgbToLinear( MoonLight ) * saturate( dot( N, WetMoonDir ) ) * vertLighting * ao * ssao;
+
+    return ambientSun + directSun + moon;
 }
 
 // Reconstructs THIS pixel's cluster Z slice from its own hardware depth (reversed-Z), analytically — no depth-

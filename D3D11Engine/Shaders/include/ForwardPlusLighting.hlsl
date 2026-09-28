@@ -64,6 +64,10 @@ cbuffer FP_ScreenQuadConstantBuffer : register( b4 )
 
     // World-space units per texel, precomputed on CPU (x=cascade0 ... w=cascade3).
     float4 SQ_CascadeTexelSize;
+
+    float4 SQ_WetSky;       // unused here, keeps the moon fields at their DS_ScreenQuadConstantBuffer offsets
+    float4 SQ_MoonDir;      // xyz = view-space moon direction, w = above-horizon fade
+    float4 SQ_MoonLight;    // rgb = faint moonlight, 0 by day and indoors
 };
 
 // Forward+ tile data
@@ -257,6 +261,9 @@ float3 FP_ComputeSunLighting(
 
     float fresnel = pow( 1.0f - saturate( dot( normal, V ) ), 10.0f );
     litPixel += lerp( fresnel * litPixel * 0.5f, 0.0f, sun );
+
+    // Unshadowed moonlight, as in PS_DS_AtmosphericScattering
+    litPixel += diffuseColor * SQ_MoonLight.rgb * saturate( dot( normal, SQ_MoonDir.xyz ) ) * vertLighting * ssao;
 
     return litPixel;
 }

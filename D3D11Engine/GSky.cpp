@@ -12,6 +12,7 @@
 #include "zCTexture.h"
 #include "zCSkyController_Outdoor.h"
 #include "zCWorld.h"
+#include "zCBspTree.h"
 #include "corecrt_io.h"
 
 GSky::GSky() {
@@ -455,6 +456,33 @@ float3 GSky::GetSunColor() {
 
     Deliberately moon-only: the scattering dome already renders the sun as the Mie forward-scattering lobe, so
     also stamping the fixed-function sun sprite on top would double it. */
+MoonLightInfo GSky::GetMoonLight() {
+    // Faint cold light; the night ambient stays the dominant term.
+    constexpr XMFLOAT3 kMoonLightColor = { 0.09f, 0.11f, 0.15f };
+
+    MoonLightInfo out;
+    zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
+        ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+    if ( !sc ) return out;
+
+    const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( Atmosphere.SkyTimeScale );
+    XMStoreFloat3( &out.Direction, XMVector3Normalize( XMLoadFloat3( &moonWS ) ) );
+    out.AboveHorizonFade = std::clamp( out.Direction.y * 4.0f, 0.0f, 1.0f );
+
+    auto* worldInfo = Engine::GAPI->GetLoadedWorldInfo();
+    if ( worldInfo && worldInfo->BspTree && worldInfo->BspTree->GetBspTreeMode() == zBSP_MODE_INDOOR )
+        return out;
+
+    // Night only, fogged out like RenderPlanets fades the sprite; rain clouds hide the disc but still pass a little light.
+    const float night = std::clamp( -AtmosphereCB.AC_LightPos.y * 4.0f, 0.0f, 1.0f );
+    const float fog = std::clamp( 1.0f - ( 1.0f - out.Direction.y ) * sc->GetResultFogScale(), 0.0f, 1.0f );
+    const float rain = std::clamp( sc->GetRainFXWeight(), 0.0f, 1.0f );
+    const float light = out.AboveHorizonFade * night * fog * ( 1.0f - 0.7f * rain );
+    out.LightColor = XMFLOAT3( kMoonLightColor.x * light, kMoonLightColor.y * light, kMoonLightColor.z * light );
+    out.GlintVisibility = out.AboveHorizonFade * night * fog * ( 1.0f - rain );
+    return out;
+}
+
 MoonSpriteInfo GSky::ResolveMoonSprite( const INT2& resolution ) {
     MoonSpriteInfo out;
 

@@ -1337,6 +1337,17 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         WORLD_SECTION_SIZE );
 }
 
+namespace {
+    /** Moon direction (view space) and faint moonlight for the sun pass. */
+    void FillMoonConstants( DS_ScreenQuadConstantBuffer& scb, GSky* sky, FXMMATRIX view ) {
+        const MoonLightInfo moon = sky->GetMoonLight();
+        XMFLOAT3 moonVS;
+        XMStoreFloat3( &moonVS, XMVector3TransformNormal( XMLoadFloat3( &moon.Direction ), view ) );
+        scb.SQ_MoonDir = float4( moonVS.x, moonVS.y, moonVS.z, moon.AboveHorizonFade );
+        scb.SQ_MoonLight = float4( moon.LightColor.x, moon.LightColor.y, moon.LightColor.z, 0.0f );
+    }
+}
+
 DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     float rain = Engine::GAPI->GetRainFXWeight();
@@ -1435,6 +1446,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
+    FillMoonConstants( scb, sky, view );
     return scb;
 }
 
@@ -1601,16 +1613,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
         XMStoreFloat3( &skyRgb, skyColor );
         scb.SQ_WetSky = float4( skyRgb.x, skyRgb.y, skyRgb.z, std::max( 0.0f, settings.RainWetLightReflections ) );
 
-        // Moon direction (view space) for the night glint on wet ground; w fades it out below the horizon.
-        zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
-            ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
-        if ( sc ) {
-            const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( sky->GetAtmoshpereSettings().SkyTimeScale );
-            const XMVECTOR moonDir = XMVector3Normalize( XMLoadFloat3( &moonWS ) );
-            XMFLOAT3 moonVS;
-            XMStoreFloat3( &moonVS, XMVector3TransformNormal( moonDir, view ) );
-            scb.SQ_MoonDir = float4( moonVS.x, moonVS.y, moonVS.z, std::clamp( XMVectorGetY( moonDir ) * 4.0f, 0.0f, 1.0f ) );
-        }
+        FillMoonConstants( scb, sky, view );
     }
 
     psAtmo->UpdateBuffer("DS_ScreenQuadConstantBuffer", &scb, sizeof(scb));

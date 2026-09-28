@@ -1012,6 +1012,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GraphicsEventRecord.h" />
     <ClInclude Include="GraphicsShader.h" />
     <ClInclude Include="GSky.h" />
+    <ClInclude Include="WaterProfile.h" />
     <ClInclude Include="GSpriteCloud.h" />
     <ClInclude Include="GVegetationBox.h" />
     <ClInclude Include="GothicMemoryLocations2_6_fix_Spacer.h" />

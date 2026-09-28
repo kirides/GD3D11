@@ -314,6 +314,8 @@ struct DS_ScreenQuadConstantBuffer {
     float4 SQ_WetSky;
     // Rain: xyz = view-space moon direction for the night wet-ground glint, w = above-horizon fade.
     float4 SQ_MoonDir;
+    // rgb = faint moonlight (GSky::GetMoonLight), 0 by day and indoors.
+    float4 SQ_MoonLight;
 };
 
 struct CloudConstantBuffer {
@@ -464,13 +466,28 @@ struct RefractionInfoConstantBuffer {
     XMFLOAT4X4 RI_Projection;
     float2 RI_ViewportSize;
     float RI_Time;
-    float RI_Far;
+    union {
+        float RI_Far;
+        float RI_CameraUnderwater; // PS_Water: 1 while the camera is below the surface
+    };
 
     float3 RI_CameraPosition;
     float RI_SSREnabled;    // 0 disables the SSR trace at runtime (e.g. camera underwater)
 
     XMFLOAT4X4 RI_View; // World->view, for screen-space reflection ray marching
 };
+
+/** PS_Water b3: moon glint plus the ocean look; WP_IsOcean changes per texture batch. */
+struct WaterParamsConstantBuffer {
+    XMFLOAT3 WP_MoonDir;
+    float WP_MoonGlint;
+    XMFLOAT3 WP_OceanTint;
+    float WP_OceanTintStrength;
+    float WP_OceanClimate;
+    float WP_IsOcean;
+    float WP_Pad[2];
+};
+static_assert( sizeof( WaterParamsConstantBuffer ) == 48 );
 
 struct AtmosphereConstantBuffer {
     float AC_Kr4PI;

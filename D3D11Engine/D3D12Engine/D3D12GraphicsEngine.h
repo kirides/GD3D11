@@ -1913,6 +1913,7 @@ private:
     struct WetSkyCBData {
         XMFLOAT3 SkyTint; float SunHeight;
         XMFLOAT3 MoonDir; float MoonFade;
+        XMFLOAT3 MoonLight; float _pad0;   // gamma-space moonlight (GSky::GetMoonLight)
     };
     void UploadWetnessConstants();
 

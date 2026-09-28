@@ -271,6 +271,9 @@
     <ClInclude Include="GSky.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
+    <ClInclude Include="WaterProfile.h">
+      <Filter>Engine\GAPI\Objects</Filter>
+    </ClInclude>
     <ClInclude Include="GMesh.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>

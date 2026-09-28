@@ -429,13 +429,10 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
     XMStoreFloat3( &sky.SkyTint, tint );
     if ( GSky* gsky = Engine::GAPI->GetSky() ) {
         sky.SunHeight = gsky->GetAtmosphereCB().AC_LightPos.y;
-        zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
-            ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
-        if ( sc ) {
-            const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( gsky->GetAtmoshpereSettings().SkyTimeScale );
-            XMStoreFloat3( &sky.MoonDir, XMVector3Normalize( XMLoadFloat3( &moonWS ) ) );
-            sky.MoonFade = std::clamp( sky.MoonDir.y * 4.0f, 0.0f, 1.0f );
-        }
+        const MoonLightInfo moon = gsky->GetMoonLight();
+        sky.MoonDir = moon.Direction;
+        sky.MoonFade = moon.AboveHorizonFade;
+        sky.MoonLight = moon.LightColor;
     }
     memcpy( m_ShadowCBMapped[m_FrameIndex] + kWetSkyCbOffset, &sky, sizeof( sky ) );
 }

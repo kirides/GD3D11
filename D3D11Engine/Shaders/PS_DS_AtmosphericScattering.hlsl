@@ -47,6 +47,8 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float4 SQ_WetSky;
     // xyz = view-space moon direction, w = above-horizon fade.
     float4 SQ_MoonDir;
+    // rgb = faint moonlight, 0 by day and indoors.
+    float4 SQ_MoonLight;
 };
 
 //--------------------------------------------------------------------------------------
@@ -241,6 +243,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float f8 = f4*f4; 
 	float fresnel = f8*f2;
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
+
+    // Unshadowed moonlight; baked vertex light keeps it out of interiors
+    litPixel += diffuse.rgb * SQ_MoonLight.rgb * saturate(dot(normal, SQ_MoonDir.xyz)) * vertLighting * ssao;
 
 #ifdef APPLY_RAIN_EFFECTS
     // Water film: sun and moon streaks plus the sky reflected at grazing angles.

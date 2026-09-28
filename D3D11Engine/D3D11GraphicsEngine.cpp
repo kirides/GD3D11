@@ -19,6 +19,7 @@
 #include "WindAnimation.h"
 #include "GMesh.h"
 #include "GSky.h"
+#include "WaterProfile.h"
 #include "GVegetationBox.h"
 #include "RenderToTextureBuffer.h"
 #include "zCParticleFX.h"
@@ -5606,6 +5607,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         // Kill SSR while the camera is underwater: the trace assumes the eye is above the
         // surface, so from below it reflects the shoreline over the underwater view.
         ricb.RI_SSREnabled = Engine::GAPI->IsUnderWater() ? 0.0f : 1.0f;
+        ricb.RI_CameraUnderwater = Engine::GAPI->IsUnderWater() ? 1.0f : 0.0f;
         ricb.RI_View = Engine::GAPI->GetRendererState().TransformState.TransformView; // not transposed, PS takes care of proper mul-order
 
         ActivePS->UpdateBuffer("RefractionInfo", &ricb, sizeof(ricb));
@@ -5613,11 +5615,31 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         // Bind reflection cube
         GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
 
+        // Depth with the water surfaces in it, for the shore probes' coverage test; needs the read-only DSV.
+        if ( ID3D11DepthStencilView* readOnlyDsv = DepthStencilBuffer->GetDepthStencilViewReadOnly().Get() ) {
+            GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), readOnlyDsv );
+            GetContext()->PSSetShaderResources( 6, 1, DepthStencilBuffer->GetShaderResView().GetAddressOf() );
+        }
+
+        WaterParamsConstantBuffer waterParams = {};
+        const MoonLightInfo moon = Engine::GAPI->GetSky()->GetMoonLight();
+        waterParams.WP_MoonDir = moon.Direction;
+        waterParams.WP_MoonGlint = moon.GlintVisibility;
+        const OceanProfile ocean = GetOceanProfile();
+        waterParams.WP_OceanTint = ocean.Tint;
+        waterParams.WP_OceanTintStrength = ocean.TintStrength;
+        waterParams.WP_OceanClimate = ocean.Climate;
+        auto bindWaterParams = [&]( zCTexture* texture ) {
+            waterParams.WP_IsOcean = IsOceanWaterTexture( texture ) ? 1.0f : 0.0f;
+            BindDynamicCBToPixelShader( 3, AllocateDynamicCB( &waterParams ) );
+        };
+
         if ( !FeatureLevel10Compatibility ) {
             // MDI path: one MDI call per texture batch
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
+                bindWaterParams( batch.texture );
 
                 DrawMultiIndexedInstancedIndirect( Context.Get(),
                     batch.drawCount,
@@ -5629,6 +5651,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
+                bindWaterParams( batch.texture );
 
                 for ( unsigned int i = 0; i < batch.drawCount; i++ ) {
                     const auto& args = waterDrawArgs[batch.argsOffset + i];
@@ -5639,7 +5662,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    GetContext()->PSSetShaderResources( 0, 6, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 0, 7, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );

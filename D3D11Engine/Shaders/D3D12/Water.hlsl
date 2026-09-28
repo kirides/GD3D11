@@ -51,7 +51,19 @@ cbuffer WaterCB : register(b2)
     uint   SsrMaxSteps;          // 0 disables SSR entirely (WATER_SSR_DISABLED)
     uint   SsrRefineSteps;
     uint   UseAtmosphere;        // 0 when GSky had no atmosphere data this frame (skip scattering)
+
+    uint   CameraUnderwater;     // 1 while the camera is below the surface: no water body above it
+    uint   SurfaceDepthIndex;    // depth after the water prepass, for shore probes (0xFFFFFFFF = unavailable)
+    float  OceanClimate;         // 0 = coastal Khorinis, 1 = clear Jharkendar
+    float  OceanTintStrength;
+
+    float3 MoonDir;              // world space, toward the moon
+    float  MoonGlint;            // 0 by day, below the horizon, in fog and rain
+    float3 OceanTint;            // luma-neutral regional ocean tint
+    float  WaterCBPad;
 };
+
+cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
 
 Texture2D    tx  : register(t0);   // per-material diffuse (descriptor table — rebound per texture batch)
 SamplerState smp : register(s0);   // linear WRAP  — diffuse + the world-space distortion lookups
@@ -158,6 +170,32 @@ float SSR_SceneZ( float2 uv )
     return LinearizeWaterDepth( depthTex.Load( int3( px, 0 ) ).r );
 }
 
+// Backend hooks for include/WaterShading.hlsl
+float WaterSceneRawDepth( float2 uv )
+{
+    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    return depthTex.SampleLevel( smpClamp, uv, 0 ).r;
+}
+
+float WaterSurfaceRawDepth( float2 uv )
+{
+    if ( SurfaceDepthIndex == 0xFFFFFFFFu ) return 0.0f;
+    Texture2D<float> depthTex = ResourceDescriptorHeap[SurfaceDepthIndex];
+    return depthTex.SampleLevel( smpClamp, uv, 0 ).r;
+}
+
+float WaterLinearDepth( float raw ) { return LinearizeWaterDepth( raw ); }
+float3 WaterWorldToView( float3 p ) { return mul( float4( p, 1.0f ), RI_View ).xyz; }
+
+bool WaterViewToUV( float3 posVS, out float2 uv )
+{
+    float4 clip = mul( float4( posVS, 1.0f ), RI_Projection );
+    uv = ( clip.xy / max( clip.w, 0.0001f ) ) * float2( 0.5f, -0.5f ) + 0.5f;
+    return clip.w > 0.0f;
+}
+
+#include "../include/WaterShading.hlsl"
+
 //--------------------------------------------------------------------------------------
 // Screen-space reflections — a direct port of PS_Water.hlsl's TraceWaterSSR. Marches the (wave-perturbed)
 // reflection ray in view space against the copied scene depth and returns the scene color at the hit. On
@@ -263,7 +301,7 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 }
 
 //--------------------------------------------------------------------------------------
-// Pixel Shader — line-for-line port of PS_Water.hlsl's PSMain.
+// Pixel Shader — PS_Water.hlsl's PSMain in linear space.
 //--------------------------------------------------------------------------------------
 float4 PSMain( VS_OUT Input ) : SV_TARGET
 {
@@ -271,10 +309,17 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     Texture2D distortionTex = ResourceDescriptorHeap[DistortionIndex];
 
     float2 screenUV = Input.clip.xy / RI_ViewportSize;
+    float surfaceViewZ = Input.vz.x;
+    float pxDistance = Input.vz.y;
+    bool isOcean = IsOcean != 0;
+    float cameraBelow = CameraUnderwater != 0 ? 1.0f : 0.0f;
+    float rain = UseAtmosphere != 0 ? saturate( AC_RainFXWeight ) : 0.0f;
+    float night = saturate( ( -AC_LightPos.y + 0.12f ) * 2.2f );
 
     // Linear depth of whatever the opaque scene put behind this water pixel.
-    float depth = SampleSceneDepth( screenUV );
-    float shallowDepth = saturate( ( depth - Input.vz.x ) * 0.01f );
+    float rawCenterDepth = WaterSceneRawDepth( screenUV );
+    float depth = LinearizeWaterDepth( rawCenterDepth );
+    float shallowDepth = saturate( ( depth - surfaceViewZ ) * 0.01f );
 
     // Camera direction
     float3 viewDirection = normalize( Input.wpos - RI_CameraPosition );
@@ -297,12 +342,17 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     // Refracted depth
     float depthRefracted = SampleSceneDepth( distUV );
 
-    distUV = CleanRefraction( distUV, screenUV, depthRefracted, Input.vz.x );
+    distUV = CleanRefraction( distUV, screenUV, depthRefracted, surfaceViewZ );
     distUV = saturate( distUV );
 
+    // Re-fetch at the cleaned UV so the water column matches the scene texel actually refracted
+    float rawDepthRefracted = WaterSceneRawDepth( distUV );
+    depthRefracted = LinearizeWaterDepth( rawDepthRefracted );
+    float refractedValid = step( 0.000001f, rawDepthRefracted );
+
     // Wave vectors
-    float3 wavesDist = normalize( distortionSmall.xzy * float3( 1, 100, 1 ) );
     float3 wavesFres = normalize( distortionBig.xzy * float3( 1, 10, 1 ) );
+    float3 wavesSmall = normalize( distortionSmall.xzy * float3( 1, 10, 1 ) );
 
     // Scene color (this is what makes the water see-through — D3D11 does the same and writes opaque)
     float3 scene = sceneTex.SampleLevel( smpClamp, distUV, 0 ).rgb;
@@ -311,78 +361,118 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     // Fresnel from waves
     float fresnel = min( 0.5f, saturate( pow( 1.0f - saturate( dot( -viewDirection, wavesFres ) ), 10.0f ) ) );
 
-    // Reflection: the static sky/environment cube is the fallback for off-screen / missed SSR rays.
+    // Reflection: the static sky/environment cube, replaced by screen-space hits on on-screen geometry.
     float3 reflect_vec = reflect( -viewDirection, wavesFres );
-    float3 reflection = float3( 0.0f, 0.0f, 0.0f );
+    float3 cube = float3( 0.0f, 0.0f, 0.0f );
     if ( ReflectionCubeIndex != 0xFFFFFFFFu )
     {
         TextureCube reflectionCube = ResourceDescriptorHeap[ReflectionCubeIndex];
-        reflection = reflectionCube.Sample( smp, reflect_vec ).xyz;
+        cube = reflectionCube.Sample( smp, reflect_vec ).xyz;
     }
 
     float ssrConfidence = 0.0f;
+    float3 ssrColor = float3( 0.0f, 0.0f, 0.0f );
     if ( SsrMaxSteps > 0 )
     {
-        // reflect_vec above is negated (reflect(-viewDirection,N)) for the cube lookup. The true
-        // eye-reflection direction, which marches UP into the scene, is reflect(viewDirection, N).
-        // Flatten the wave normal so reflection rays stay coherent (mirror-like) instead of scattering
-        // into many off-screen misses.
+        // The eye reflection marching UP into the scene is reflect(viewDirection, N); a half-flattened wave
+        // normal keeps the rays coherent instead of scattering into off-screen misses.
         float3 ssrNormal = normalize( lerp( float3( 0.0f, 1.0f, 0.0f ), wavesFres, 0.5f ) );
         float3 ssrDir = reflect( viewDirection, ssrNormal );
-        float3 ssrColor = TraceWaterSSR( Input.wpos, ssrDir, ssrConfidence );
-        reflection = lerp( reflection, ssrColor, saturate( ssrConfidence ) );
+        ssrColor = TraceWaterSSR( Input.wpos, ssrDir, ssrConfidence );
+    }
+    ssrConfidence = saturate( ssrConfidence );
+
+    // Fresnel picks how much reflection shows; ssrConfidence only picks the source and adds a modest boost.
+    float NdotV = saturate( dot( -viewDirection, wavesFres ) );
+    float reflectFresnel = kPow3( 1.0f - NdotV );
+
+    // Waterfalls: near-vertical sheets get neither reflections nor a shoreline
+    float flatness = WaterFlatness( Input.wnrm );
+    float waterfallMask = 1.0f - flatness;
+    float reflectAmount = saturate( mad( reflectFresnel, 1.0f - 0.35f, 0.35f ) * mad( ssrConfidence, 1.0f - 0.5f, 0.5f ) * reflectFresnel ) * lerp( 0.12f, 1.0f, flatness );
+
+    // Shoreline: water thickness along the view ray, and the vertical depth below this pixel
+    float column = WaterColumnLength( depthRefracted, surfaceViewZ, pxDistance );
+    float colorColumn = min( column, WaterColumnLength( depth, surfaceViewZ, pxDistance ) );
+    float columnDeriv = fwidth( column );
+    float colorColumnDeriv = fwidth( colorColumn );
+    float shoreException = step( WATER_DEEP_WATER_DEPTH,
+        WaterDepthBelowSurface( Input.wpos, surfaceViewZ, rawCenterDepth, RI_CameraPosition ) );
+    [branch] if ( shoreException < 0.5f && cameraBelow < 0.5f )
+        shoreException = WaterShoreProbeException( Input.wpos, RI_CameraPosition );
+    float2 shore = isOcean ? OceanShore( column, columnDeriv ) : LegacyShore( column, columnDeriv, colorColumn, colorColumnDeriv );
+    shore = lerp( shore, 1.0f, max( max( shoreException, waterfallMask ), cameraBelow ) );
+
+    float3 reflect_vecSmall = reflect( -viewDirection, wavesSmall );
+    float3 color;
+    [branch] if ( !isOcean )
+    {
+        // Water body; sky behind the surface (depth 0) has no floor to absorb against. The scene is linear, so
+        // absorb at 2.2x (= D3D11's gamma-space transmittance) and linearize the scatter color.
+        if ( refractedValid > 0.5f && cameraBelow < 0.5f )
+            scene = ApplyWaterVolume( scene, column, WATER_VOLUME_ABSORPTION * 2.2f, SrgbToLinear( WATER_VOLUME_SCATTER ) );
+
+        scene = lerp( scene, diffuse, 0.73f * max( pow( fresnel, 8.0f ), 0.5f ) );
+        color = lerp( scene, sceneClean, kPow4( saturate( pxDistance / 35000.0f ) ) );
+        color = lerp( color, WaterSceneHue( color, sceneClean ), refractedValid * flatness * 0.42f );
+        color = lerp( sceneClean, color, shore.y );
+
+        float3 reflection = lerp( cube, ssrColor, ssrConfidence );
+        color = lerp( color, reflection * lerp( 1.0f, diffuse, 0.6f ), reflectAmount * shore.x );
+        color = lerp( color, WaterSceneHue( color, sceneClean ), refractedValid * waterfallMask * 0.14f );
+
+        if ( UseAtmosphere != 0 )
+            color.rgb = ApplyAtmosphericScatteringGround( Input.wpos, color.rgb );
+
+        // Do spec lighting
+        float3 sunOrange = float3( 0.6, 0.3, 0.1 ) * 2.0f;
+        float3 sunColor = lerp( sunOrange, 1.0f, AC_LightPos.y ) * 5.0f;
+        float cos_spec = saturate( dot( reflect_vecSmall, -AC_LightPos.xyz ) );
+        float sun_spot = pow( cos_spec, 500.0f ) * 0.5f * shore.x;
+        // Input.col is the packed R8G8B8A8 vertex DWORD; D3D11's vDiffuse.y is the GREEN channel, which the
+        // BGRA-ordered DWORD puts in .g here as well — no swizzle needed for this one component.
+        color.rgb += lerp( sunColor * sun_spot, float3( 0.0f, 0.0f, 0.0f ), step( step( 0.0f, AC_LightPos.y ) * Input.col.g, 0.5f ) );
+
+        // darken / lighten water based on the day / night cycle
+        color /= 2.0f - AC_LightPos.y;
+    }
+    else
+    {
+        // Ocean: the water body replaces the texture; night and rain use their own scatter colors
+        float underThick = clamp( abs( depthRefracted - surfaceViewZ ) * 0.35f, 0.0f, 1400.0f );
+        float3 absorption, scatter;
+        GetOceanOptics( OceanClimate, rain, night, cameraBelow, dot( diffuse, WATER_LUMA ), absorption, scatter );
+        float3 transmittance = exp( -absorption * 2.2f * lerp( column, underThick, cameraBelow ) );
+        scatter = SrgbToLinear( scatter );
+        float3 volume = scene * transmittance + scatter * ( 1.0f - transmittance );
+        volume = lerp( scatter, volume, saturate( refractedValid + cameraBelow ) );
+        volume = lerp( sceneClean, volume, shore.y );
+        // From below: sky through the surface stays clear, geometry above water only partly tinted
+        volume = lerp( volume, scene, cameraBelow * ( 1.0f - refractedValid ) );
+        volume = lerp( volume, lerp( scene, volume, 0.32f ), cameraBelow * refractedValid );
+
+        float3 reflection = lerp( LimitOceanCube( cube, volume, night, OceanClimate ), ssrColor, ssrConfidence );
+        float amount = reflectAmount * shore.x * ( 1.0f - cameraBelow ) * lerp( 0.82f, 1.0f, OceanClimate );
+        color = lerp( volume, reflection, amount );
+
+        float sunSpot = pow( saturate( dot( reflect_vecSmall, -AC_LightPos.xyz ) ), 500.0f ) * 0.5f
+            * smoothstep( -0.04f, 0.08f, AC_LightPos.y ) * ( 1.0f - rain ) * ( 1.0f - cameraBelow );
+        color += lerp( float3( 1.2f, 0.6f, 0.2f ), float3( 5.0f, 5.0f, 5.0f ), saturate( AC_LightPos.y ) )
+            * sunSpot * shore.x * lerp( 0.82f, 1.0f, OceanClimate );
+
+        // Regional tint, luma-neutral; a gamma-space multiply is the 2.2 power in linear
+        float tintStrength = saturate( OceanTintStrength ) * lerp( 1.0f, 0.35f, rain ) * lerp( 1.0f, 0.20f, night ) * shore.y;
+        color *= pow( lerp( 1.0f, OceanTint, tintStrength ), 2.2f );
+
+        if ( UseAtmosphere != 0 )
+            color.rgb = ApplyAtmosphericScatteringGround( Input.wpos, color.rgb );
     }
 
-    // Darken the scene, to make a wet surface
-    float f = 1 - saturate( pow( 1 - shallowDepth, 8.0f ) + clamp( kPow2(distortionSmall.y), 0.5f, 1.0f ) );
-
-    float3 sceneWet = lerp( sceneClean, sceneClean * 0.01f, f );                       // Darken border-scene
-    scene = lerp( scene, scene * float3( 4, 0.2f, 0.1f ) * 0.05f, f );                 // Darken distorted scene
-
-    float pxDistance = Input.vz.y;
-    scene = lerp( scene, diffuse, 0.73f * max( pow( fresnel, 8.0f ), 0.5f ) );
-    float3 color = lerp( scene, sceneClean, kPow4(saturate( pxDistance / 35000.0f )) );
-    color = lerp( color, sceneWet, ( 1 - shallowDepth ) );
-
-    // Reflection compositing.
-    // Fresnel (view angle) is the primary driver of how much reflection shows, same as real water:
-    // looking straight down mostly shows the water body's own color, looking at a grazing angle mostly
-    // shows the reflection. ssrConfidence only picks *which* reflection source to use (real on-screen
-    // geometry vs the static cube, chosen above) and gives it a modest boost — it must not override the
-    // angle-based blend entirely, or the water reads as a flat mirror regardless of the viewing angle.
-    float NdotV = saturate( dot( -viewDirection, wavesFres ) );
-    float reflectFresnel = kPow3(1.0f - NdotV);
-
-    // Waterfalls (surface normal pointing mostly sideways rather than up) get a strong, distracting
-    // reflection because the geometry is nearly vertical while the shader still treats it like flat,
-    // horizontal water. Use the true geometric normal (not the wave-perturbed one) to detect this and
-    // fade the reflection out.
-    float waterfallFactor = 1.0f - saturate( abs( normalize( Input.wnrm ).y ) );
-    float reflectSuppress = mad(waterfallFactor, 0.12f - 1.0f, 1.0f);
-
-    float reflectAmount = saturate( mad(reflectFresnel, 1.0f - 0.35f, 0.35f) * mad(saturate( ssrConfidence ), 1.0f - 0.5f, 0.5f) * reflectFresnel ) * reflectSuppress;
-    color = lerp( color, reflection * lerp( 1.0f, diffuse, 0.6f ), reflectAmount );
-
-    if ( UseAtmosphere != 0 )
-        color.rgb = ApplyAtmosphericScatteringGround( Input.wpos, color.rgb );
-
-    // Do spec lighting
-    float3 sunOrange = float3( 0.6, 0.3, 0.1 ) * 2.0f;
-    float3 sunColor = lerp( sunOrange, 1.0f, AC_LightPos.y ) * 5.0f;
-
-    float3 reflect_vecSmall = reflect( -viewDirection, normalize( distortionSmall.xzy * float3( 1, 10, 1 ) ) );
-
-    float cos_spec = saturate(dot( reflect_vecSmall, -AC_LightPos.xyz ));
-    float sun_spot = pow( cos_spec, 500.0f ) * 0.5f;
-    // Input.col is the packed R8G8B8A8 vertex DWORD; D3D11's vDiffuse.y is the GREEN channel, which the
-    // BGRA-ordered DWORD puts in .g here as well — no swizzle needed for this one component.
-    color.rgb += lerp( sunColor * sun_spot, float3( 0.0f, 0.0f, 0.0f ), step( step( 0.0f, AC_LightPos.y ) * Input.col.g, 0.5f ) );
-
-    // darken / lighten water based on the day / night cycle
-    float darknessFactor = 2.0f;
-    darknessFactor -= AC_LightPos.y;
+    // Moon on the water, after the night darkening so it keeps its brightness
+    color += SrgbToLinear( WaterMoonGlint( viewDirection, wavesSmall, wavesFres, MoonDir )
+        * MoonGlint * shore.x * flatness * ( 1.0f - cameraBelow ) );
 
     // Opaque write: the see-through look is already composited above from the scene copy, exactly like
     // D3D11 (whose water PSO has BlendEnabled = false and also returns alpha 1).
-    return float4( color / darknessFactor, 1 );
+    return float4( color, 1 );
 }

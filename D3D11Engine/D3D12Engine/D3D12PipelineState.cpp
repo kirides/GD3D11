@@ -2314,7 +2314,7 @@ bool D3D12PipelineState::CreateWater() {
     //
     // The refraction/reflection inputs (scene copy, depth copy, distortion, reflection cube) are NOT in the
     // table: they are fetched bindlessly out of the shared SRV heap by index from the water CB, hence the
-    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag. That keeps this root signature at 4 params while the D3D11
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag. That keeps this root signature small while the D3D11
     // equivalent needs five fixed t-slots, and avoids having to build a heap-contiguous descriptor run for
     // resources that live in unrelated slots.
     D3D12RootLayout& rs = Layout( "Water" );
@@ -2324,6 +2324,7 @@ bool D3D12PipelineState::CreateWater() {
     // DrawWaterSurfaces completes before it binds them, and no later pass rewrites them this frame.
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: b1 AtmosphereConstantBuffer
+    rs.AddConstants( 3, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 4: b3 IsOcean, per texture batch
 
     // s0 — diffuse + the world-space distortion lookups.
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,

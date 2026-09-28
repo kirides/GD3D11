@@ -37,6 +37,14 @@ struct MoonSpriteInfo {
     float RotationAngle = 0.0f;
 };
 
+/** The moon as a light source. Direction is world space, toward the moon; zero when there is no outdoor sky. */
+struct MoonLightInfo {
+    XMFLOAT3 Direction = { 0.0f, 0.0f, 0.0f };
+    float AboveHorizonFade = 0.0f;              // 0 below the horizon, 1 from ~14 degrees up
+    XMFLOAT3 LightColor = { 0.0f, 0.0f, 0.0f }; // gamma-space moonlight: 0 by day, indoors, in fog and heavy rain
+    float GlintVisibility = 0.0f;               // strength of the moon's reflection on water
+};
+
 class zCTexture;
 class zCSkyLayer;
 class zCSkyState;
@@ -102,6 +110,9 @@ public:
         Port of the planets[1] half of zCSkyControler_Outdoor::RenderPlanets - see GSky.cpp. Used by both
         backends' atmospheric-scattering sky, which draws no planets of its own. */
     MoonSpriteInfo ResolveMoonSprite( const INT2& resolution );
+
+    /** Moon direction plus the faint light and water glint it gives at night. */
+    MoonLightInfo GetMoonLight();
 
 protected:
     /** Loads the sky textures */
