@@ -11,6 +11,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
     constexpr uint32_t kRequiredApiVersion = VK_API_VERSION_1_3;
+    // Requested as the instance apiVersion so 1.4 devices expose their 1.4 core features.
+    constexpr uint32_t kRequestedApiVersion = VK_API_VERSION_1_4;
     // The widest D3D12 root signature lowers to 18 push descriptors (plan 5.3); the spec minimum is 32.
     constexpr uint32_t kRequiredPushDescriptors = 18;
 
@@ -133,7 +135,7 @@ namespace {
         app.pApplicationName = "Gothic";
         app.pEngineName = "GD3D11";
         app.engineVersion = VK_MAKE_API_VERSION( 0, 17, 0, 0 );
-        app.apiVersion = kRequiredApiVersion;
+        app.apiVersion = kRequestedApiVersion;   // 1.1+ loaders accept a newer apiVersion than they implement
 
         // Synchronization validation on, GPU-assisted validation off (plan 5.10).
         const VkValidationFeatureEnableEXT enables[] = { VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT };
@@ -168,11 +170,13 @@ namespace {
         VkPhysicalDeviceVulkan11Properties Props11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES };
         VkPhysicalDeviceVulkan12Properties Props12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
         VkPhysicalDeviceVulkan13Properties Props13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES };
+        VkPhysicalDeviceVulkan14Properties Props14 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES };
         VkPhysicalDevicePushDescriptorPropertiesKHR PushProps = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR };
         VkPhysicalDeviceFeatures2 Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
         VkPhysicalDeviceVulkan11Features Features11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
         VkPhysicalDeviceVulkan12Features Features12 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
         VkPhysicalDeviceVulkan13Features Features13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        VkPhysicalDeviceVulkan14Features Features14 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
         VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT Mutable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
         VkPhysicalDeviceRobustness2FeaturesKHR Robustness2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR };
         VkPhysicalDeviceFaultFeaturesEXT Fault = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT };
@@ -198,6 +202,13 @@ namespace {
         bool Has( const char* ext ) const { return HasExtension( Extensions, ext ); }
         const char* Name() const { return Props.properties.deviceName; }
         uint32_t ApiVersion() const { return Props.properties.apiVersion; }
+        bool Core14() const { return ApiVersion() >= VK_API_VERSION_1_4; }
+        // Promoted to 1.4 core: usable without their extension names being listed.
+        bool PushDescriptorCore() const { return Core14() && Features14.pushDescriptor; }
+        bool Maintenance5Core() const { return Core14() && Features14.maintenance5; }
+        bool DivisorCore() const { return Core14() && Features14.vertexAttributeInstanceRateDivisor; }
+        bool PushDescriptors() const { return PushDescriptorCore() || Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ); }
+        uint32_t MaxPushDescriptors() const { return PushDescriptorCore() ? Props14.maxPushDescriptors : PushProps.maxPushDescriptors; }
     };
 
     const char* DeviceTypeName( VkPhysicalDeviceType type ) {
@@ -236,6 +247,7 @@ namespace {
         info.Props11.pNext = &info.Props12;
         info.Props12.pNext = &info.Props13;
         void** propsTail = &info.Props13.pNext;
+        if ( info.Core14() ) { *propsTail = &info.Props14; propsTail = &info.Props14.pNext; }
         if ( info.Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ) ) { *propsTail = &info.PushProps; propsTail = &info.PushProps.pNext; }
         if ( info.Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) ) { *propsTail = &info.DgcProps; propsTail = &info.DgcProps.pNext; }
         vkGetPhysicalDeviceProperties2( device, &info.Props );
@@ -244,6 +256,7 @@ namespace {
         info.Features.pNext = &info.Features11;
         info.Features11.pNext = &info.Features12;
         info.Features12.pNext = &info.Features13;
+        if ( info.Core14() ) { *tail = &info.Features14; tail = &info.Features14.pNext; }
         if ( info.MutableExtension ) { *tail = &info.Mutable; tail = &info.Mutable.pNext; }
         if ( info.Robustness2Extension ) { *tail = &info.Robustness2; tail = &info.Robustness2.pNext; }
         if ( info.Has( VK_EXT_DEVICE_FAULT_EXTENSION_NAME ) ) { *tail = &info.Fault; tail = &info.Fault.pNext; }
@@ -287,7 +300,7 @@ namespace {
         }
         require( info.GraphicsFamily != UINT32_MAX, "a graphics+compute queue that can present to a window" );
         require( info.Has( VK_KHR_SWAPCHAIN_EXTENSION_NAME ), VK_KHR_SWAPCHAIN_EXTENSION_NAME );
-        require( info.Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ), VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME );
+        require( info.PushDescriptors(), "push descriptors (Vulkan 1.4 or " VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ")" );
         require( info.MutableExtension && info.Mutable.mutableDescriptorType, VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME );
 
         const VkPhysicalDeviceFeatures& f = info.Features.features;
@@ -334,7 +347,7 @@ namespace {
         const auto& l12 = info.Props12;
         const uint32_t heap = VulkanDevice::kBindlessHeapSize;
         require( l.maxBoundDescriptorSets >= 2, "maxBoundDescriptorSets >= 2" );
-        require( info.PushProps.maxPushDescriptors >= kRequiredPushDescriptors, "maxPushDescriptors >= 18" );
+        require( info.MaxPushDescriptors() >= kRequiredPushDescriptors, "maxPushDescriptors >= 18" );
         require( l12.maxDescriptorSetUpdateAfterBindSampledImages >= heap
             && l12.maxPerStageDescriptorUpdateAfterBindSampledImages >= heap, "65536 update-after-bind sampled images" );
         require( l12.maxDescriptorSetUpdateAfterBindStorageImages >= heap
@@ -390,7 +403,7 @@ namespace {
             info.TransferFamily, info.TransferFamily != info.GraphicsFamily ? " (dedicated)" : " (shared)", yn( info.TimestampQueries ) );
         Logging::Inf( "Vulkan: limits: maxPushDescriptors {}, maxPushConstantsSize {}, minUniformBufferOffsetAlignment {}, "
             "minStorageBufferOffsetAlignment {}, optimalBufferCopyRowPitchAlignment {}, nonCoherentAtomSize {}, maxImageArrayLayers {}.",
-            info.PushProps.maxPushDescriptors, l.maxPushConstantsSize, l.minUniformBufferOffsetAlignment,
+            info.MaxPushDescriptors(), l.maxPushConstantsSize, l.minUniformBufferOffsetAlignment,
             l.minStorageBufferOffsetAlignment, l.optimalBufferCopyRowPitchAlignment, l.nonCoherentAtomSize, l.maxImageArrayLayers );
         Logging::Inf( "Vulkan: update-after-bind limits: sampled {}, storage images {}, uniform buffers {}, storage buffers {}, "
             "per-stage resources {}.", info.Props12.maxDescriptorSetUpdateAfterBindSampledImages,
@@ -401,6 +414,11 @@ namespace {
             yn( info.Robustness2Extension && info.Robustness2.nullDescriptor ), yn( info.Features11.storageBuffer16BitAccess ),
             yn( info.Features.features.fragmentStoresAndAtomics ), yn( info.Features.features.depthBiasClamp ),
             yn( info.Features.features.fillModeNonSolid ) );
+        auto source = []( bool core, bool ext ) { return core ? "1.4 core" : ext ? "extension" : "no"; };
+        Logging::Inf( "Vulkan: promoted: push descriptors {}, maintenance5 {}, vertex attribute divisor {}.",
+            source( info.PushDescriptorCore(), info.Has( VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME ) ),
+            source( info.Maintenance5Core(), info.Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) && info.Maintenance5.maintenance5 ),
+            source( info.DivisorCore(), info.DivisorExtension && info.Divisor.vertexAttributeInstanceRateDivisor ) );
 
         static const char* const kOptionalExtensions[] = {
             VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, VK_EXT_DEVICE_FAULT_EXTENSION_NAME, VK_AMD_BUFFER_MARKER_EXTENSION_NAME,
@@ -553,13 +571,17 @@ bool VulkanDevice::Init() {
     m_TransferQueueFamily = info->TransferFamily;
 
     // --- Extensions ---
-    std::vector<const char*> extensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, info->MutableExtension,
-    };
+    std::vector<const char*> extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, info->MutableExtension };
     auto enableIf = [&]( bool condition, const char* ext ) {
         if ( condition ) extensions.push_back( ext );
         return condition;
     };
+    // 1.4 core features are enabled through VkPhysicalDeviceVulkan14Features instead of their extensions.
+    const bool core14 = info->Core14();
+    const bool pushDescriptorCore = info->PushDescriptorCore();
+    const bool maintenance5Core = info->Maintenance5Core();
+    const bool divisorCore = info->DivisorCore();
+    enableIf( !pushDescriptorCore, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME );
     m_Caps.NullDescriptor = enableIf( info->Robustness2Extension && info->Robustness2.nullDescriptor, info->Robustness2Extension );
     m_Caps.MemoryBudget = enableIf( info->Has( VK_EXT_MEMORY_BUDGET_EXTENSION_NAME ), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME );
     m_Caps.MemoryPriority = enableIf( info->Has( VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME ) && info->MemoryPriority.memoryPriority,
@@ -582,8 +604,8 @@ bool VulkanDevice::Init() {
         VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME );
     m_Caps.HdrMetadata = enableIf( m_Caps.SwapchainColorSpace && info->Has( VK_EXT_HDR_METADATA_EXTENSION_NAME ),
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
-    m_Caps.Maintenance5 = enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME ) && info->Maintenance5.maintenance5,
-        VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
+    m_Caps.Maintenance5 = maintenance5Core || enableIf( info->Has( VK_KHR_MAINTENANCE_5_EXTENSION_NAME )
+        && info->Maintenance5.maintenance5, VK_KHR_MAINTENANCE_5_EXTENSION_NAME );
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
     constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     // -VKNODGC / GD3D11_VULKAN_NO_DGC=1 fall back to CPU replay, for A/B tests and driver trouble.
@@ -673,8 +695,10 @@ bool VulkanDevice::Init() {
     memoryPriority.memoryPriority = VK_TRUE;
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT };
     pageable.pageableDeviceLocalMemory = VK_TRUE;
-    m_Caps.InstanceDivisor = enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
-    m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && info->Divisor.vertexAttributeInstanceRateZeroDivisor;
+    m_Caps.InstanceDivisor = divisorCore
+        || enableIf( info->DivisorExtension && info->Divisor.vertexAttributeInstanceRateDivisor, info->DivisorExtension );
+    m_Caps.InstanceDivisorZero = m_Caps.InstanceDivisor && ( divisorCore ? info->Features14.vertexAttributeInstanceRateZeroDivisor
+        : info->Divisor.vertexAttributeInstanceRateZeroDivisor );
     VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR divisor = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_KHR };
     divisor.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
     divisor.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
@@ -686,21 +710,29 @@ bool VulkanDevice::Init() {
     eds3.extendedDynamicState3PolygonMode = m_Caps.DynamicPolygonMode;
     eds3.extendedDynamicState3AlphaToCoverageEnable = m_Caps.DynamicAlphaToCoverage;
 
+    // With the 1.4 struct chained, its promoted features (maintenance5, divisor) must be enabled there, not standalone.
+    VkPhysicalDeviceVulkan14Features f14 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES };
+    f14.pushDescriptor = pushDescriptorCore;
+    f14.maintenance5 = m_Caps.Maintenance5;
+    f14.vertexAttributeInstanceRateDivisor = m_Caps.InstanceDivisor;
+    f14.vertexAttributeInstanceRateZeroDivisor = m_Caps.InstanceDivisorZero;
+
     features.pNext = &f11;
     f11.pNext = &f12;
     f12.pNext = &f13;
     f13.pNext = &mutableFeatures;
     void** tail = &mutableFeatures.pNext;
+    if ( core14 ) { *tail = &f14; tail = &f14.pNext; }
     if ( m_Caps.NullDescriptor ) { *tail = &robustness2; tail = &robustness2.pNext; }
     if ( m_Caps.DeviceFault ) { *tail = &fault; tail = &fault.pNext; }
-    if ( m_Caps.Maintenance5 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
+    if ( m_Caps.Maintenance5 && !core14 ) { *tail = &maintenance5; tail = &maintenance5.pNext; }
     if ( m_Caps.DeviceGeneratedCommands ) { *tail = &dgc; tail = &dgc.pNext; }
     if ( m_Caps.MemoryPriority ) { *tail = &memoryPriority; tail = &memoryPriority.pNext; }
     if ( m_Caps.PageableMemory ) { *tail = &pageable; tail = &pageable.pNext; }
     if ( m_Caps.DynamicBlend || m_Caps.DynamicDepthClamp || m_Caps.DynamicPolygonMode || m_Caps.DynamicAlphaToCoverage ) {
         *tail = &eds3; tail = &eds3.pNext;
     }
-    if ( m_Caps.InstanceDivisor ) { *tail = &divisor; tail = &divisor.pNext; }
+    if ( m_Caps.InstanceDivisor && !core14 ) { *tail = &divisor; tail = &divisor.pNext; }
 
     // --- Queues ---
     const float priority = 1.0f;
@@ -726,6 +758,9 @@ bool VulkanDevice::Init() {
         return false;
     }
     volkLoadDevice( m_Device );
+    // KHR entry points only load with their extension enabled; the core ones have the same signatures.
+    if ( pushDescriptorCore ) vkCmdPushDescriptorSetKHR = vkCmdPushDescriptorSet;
+    if ( maintenance5Core ) vkCmdBindIndexBuffer2KHR = vkCmdBindIndexBuffer2;
     vkGetDeviceQueue( m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue );
     vkGetDeviceQueue( m_Device, m_TransferQueueFamily, 0, &m_TransferQueue );
 
@@ -738,7 +773,7 @@ bool VulkanDevice::Init() {
     m_Caps.HasLuid = info->Props11.deviceLUIDValid;
     if ( m_Caps.HasLuid ) memcpy( &m_Caps.Luid, info->Props11.deviceLUID, sizeof( LUID ) );
     m_Caps.DeviceLocalBytes = info->DeviceLocalBytes;
-    m_Caps.MaxPushDescriptors = info->PushProps.maxPushDescriptors;
+    m_Caps.MaxPushDescriptors = info->MaxPushDescriptors();
     m_Caps.MaxPushConstantsSize = props.limits.maxPushConstantsSize;
     m_Caps.MinUniformBufferOffsetAlignment = props.limits.minUniformBufferOffsetAlignment;
     m_Caps.MinStorageBufferOffsetAlignment = props.limits.minStorageBufferOffsetAlignment;
