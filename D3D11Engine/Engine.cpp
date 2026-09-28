@@ -20,10 +20,15 @@ namespace Engine {
     static GothicRendererSettings::E_GraphicsAPI ReadRequestedGraphicsAPI() {
         auto requested = GothicRendererSettings::GRAPHICS_API_D3D11;
 
-        // INI (mirrors GothicAPI's LoadMenuSettings path resolution)
-        char NPath[MAX_PATH];
-        if ( int len = GetCurrentDirectoryA( MAX_PATH, NPath ) ) {
-            std::string ini = std::string( NPath, len ).append( "\\" ).append( MENU_SETTINGS_FILE );
+        // INI, resolved from the exe (<game>\System\Gothic2.exe -> <game>\) since the CWD isn't the game root yet
+        std::string ini( MAX_PATH, '\0' );
+        ini.resize( GetModuleFileNameA( nullptr, ini.data(), MAX_PATH ) );
+        for ( int i = 0; i < 2; ++i ) { // strip exe name, then the System folder
+            const auto sep = ini.find_last_of( "\\/" );
+            ini.erase( sep == std::string::npos ? 0 : sep );
+        }
+        if ( !ini.empty() ) {
+            ini.append( "\\" ).append( MENU_SETTINGS_FILE );
             char apiBuf[64] = {};
             ::GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", apiBuf, sizeof( apiBuf ), ini.c_str() );
             if ( _stricmp( apiBuf, "D3D12" ) == 0 )
