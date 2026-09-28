@@ -483,8 +483,9 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	// ortho Z bounds from the slice + the scene BBox. Replaces the old camera-centred concentric boxes.
 	Engine::GAPI->GetSky()->RenderSky(); // <-- does not render, but calculates atmosphere data like AC_LightPos
 
-	float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
-	XMVECTOR rawToSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
+	// The sun by day, the moon at night
+	const XMFLOAT3 lp = Engine::GAPI->GetSky()->GetMainLightDirection();
+	XMVECTOR rawToSun = XMVector3Normalize( XMLoadFloat3( &lp ) );
 	// Temporal smoothing (P2.9c-3c), now driven by the same user-facing knobs D3D11 exposes
 	// (settings.SmoothShadowCameraUpdate / SmoothShadowFrequency — see D3D11ShadowMap::CalculateTemporalInterpolatedPosition,
 	// which this mirrors): ON lerps toward the live sun dir by a frequency-derived blend factor and then quantizes
@@ -494,7 +495,8 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	// (real-time), trading that texel crawl for a shadow that never lags the sun.
 	XMVECTOR toSun;
 	const auto& shadowDirSettings = Engine::GAPI->GetRendererState().RendererSettings;
-	if ( !m_SunDirInitialized ) {
+	// The sun/moon hand-over and savegame loads jump the direction: snap rather than sweep the shadows across
+	if ( !m_SunDirInitialized || XMVectorGetX( XMVector3Dot( XMLoadFloat3( &m_SmoothedSunDir ), rawToSun ) ) < 0.9995f ) {
 		toSun = rawToSun;
 		m_SunDirInitialized = true;
 	} else if ( shadowDirSettings.SmoothShadowCameraUpdate ) {
@@ -716,6 +718,11 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	} else {
 		cb.SunColor = XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z );
 		cb.SunIntensity = sunUp ? sunStrength : 0.0f;   // no direct sun when it's below the horizon
+		const MoonLightInfo moon = Engine::GAPI->GetSky()->GetMoonLight();
+		if ( !sunUp && moon.IsMainLight ) {             // the moon is the directional light at night
+			cb.SunColor = moon.Tint;
+			cb.SunIntensity = moon.Intensity;
+		}
 		cb.AmbientStrength = ambient;
 		cb.WorldAOStrength = set.WorldAOStrength;
 	}
@@ -777,19 +784,22 @@ void D3D12ShadowMap::Prepare() {
 	ComputeCascadeMatrices();
 
 	// Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip ALL casting.
-	const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
+	GSky* sky = Engine::GAPI->GetSky();
+	const float3 lp = sky->GetAtmosphereCB().AC_LightPos;
 	// Indoor levels (mines, dungeons) have no sun at all — ZenGin runs them off a zCSkyControler_Indoor.
 	// Treating the sun as down is the cheapest way to reach D3D11's indoor behaviour (which skips
 	// DrawWorldShadow outright for !isOutdoor and zeroes SQ_ShadowStrength): every cascade clears to
 	// unshadowed and phases A/B/C are skipped entirely, so a mine pays no shadow cost and nothing
 	// double-darkens the baked interior lighting.
 	const bool sunUp = !Engine::GAPI->IsIndoorWorld() && (lp.y > 0.0f);
+	// At night the moon casts instead; sunUp stays the real sun for the ambient level
+	const bool mainLightUp = !Engine::GAPI->IsIndoorWorld() && sky->IsMainLightUp();
 
 	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each slice
 	// to SHADOWED instead of far and cull/build/draw no casters. Safe to read here - CollectVisibleVobs (and
 	// BspPortalCuller::Solve) ran before Prepare().
-	const bool sunFullyOccluded = sunUp && Engine::GAPI->AreSunShadowsFullyOccluded();
-	const bool castersNeeded = sunUp && !sunFullyOccluded;
+	const bool sunFullyOccluded = mainLightUp && Engine::GAPI->AreSunShadowsFullyOccluded();
+	const bool castersNeeded = mainLightUp && !sunFullyOccluded;
 
 	m_SunUp = castersNeeded;            // RecordCascade runs on a pool thread; it can re-read neither
 	m_SunOccluded = sunFullyOccluded;   // the sky nor the portal culler

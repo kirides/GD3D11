@@ -63,6 +63,14 @@ public:
     /** Renders the godrays-Effect */
     XRESULT RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depth);
 
+    /** Ray-marches the half-resolution low cloud layer (clouds, footprint depth, clouds against the sky). */
+    XRESULT RenderLowCloudLayer( ID3D11RenderTargetView* cloudRTV, ID3D11RenderTargetView* depthRTV,
+        ID3D11RenderTargetView* skyRTV, INT2 layerSize, ID3D11ShaderResourceView* sceneDepth );
+
+    /** Blends the low cloud layer onto outputRTV (premultiplied, no scene copy). */
+    XRESULT CompositeLowClouds( ID3D11RenderTargetView* outputRTV, ID3D11ShaderResourceView* cloudSRV,
+        ID3D11ShaderResourceView* cloudDepthSRV, ID3D11ShaderResourceView* skySRV, ID3D11ShaderResourceView* sceneDepth );
+
     /** Renders the depth-of-field effect. backbuffer = scene SRV, depthSrv sampled with normalized
         UVs, output = result RTV, resolution = working (output) resolution. */
     XRESULT RenderDepthOfField(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution);

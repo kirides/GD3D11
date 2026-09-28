@@ -5779,6 +5779,13 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "AtmosphericScattering", to_string_locale_independent( s.AtmosphericScattering ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableFog", to_string_locale_independent( s.DrawFog ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FogRange", float_to_string( s.FogRange , 2).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableLowClouds", to_string_locale_independent( s.EnableLowClouds ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudDensity", float_to_string( s.LowCloudDensity, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudScale", float_to_string( s.LowCloudScale, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudHeight", float_to_string( s.LowCloudHeight, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudDistance", float_to_string( s.LowCloudDistance, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudSpeed", float_to_string( s.LowCloudSpeed, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudSunLight", float_to_string( s.LowCloudSunLight, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5865,6 +5872,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "BacklitVegetation", to_string_locale_independent( s.BacklitVegetation ? TRUE : FALSE ).c_str(), ini.c_str() );
     
 
     WritePrivateProfileStringA( "Shadows", "EnableShadows", to_string_locale_independent( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5973,6 +5981,13 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ChangeWindowPreset = GetPrivateProfileIntA( "General", "ChangeToMode", 0, ini.c_str() );
         s.DrawFog = GetPrivateProfileBoolA( "General", "EnableFog", ds.DrawFog, ini );
         s.FogRange = GetPrivateProfileFloatA( "General", "FogRange", ds.FogRange, ini.c_str() );
+        s.EnableLowClouds = GetPrivateProfileBoolA( "General", "EnableLowClouds", ds.EnableLowClouds, ini );
+        s.LowCloudDensity = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudDensity", ds.LowCloudDensity, ini.c_str() ), 0.0f, 4.0f );
+        s.LowCloudScale = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudScale", ds.LowCloudScale, ini.c_str() ), 0.35f, 4.0f );
+        s.LowCloudHeight = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudHeight", ds.LowCloudHeight, ini.c_str() ), 0.35f, 4.0f );
+        s.LowCloudDistance = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudDistance", ds.LowCloudDistance, ini.c_str() ), 0.45f, 4.0f );
+        s.LowCloudSpeed = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSpeed", ds.LowCloudSpeed, ini.c_str() ), 0.0f, 10.0f );
+        s.LowCloudSunLight = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSunLight", ds.LowCloudSunLight, ini.c_str() ), 0.0f, 4.0f );
         s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", ds.AtmosphericScattering, ini );
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
@@ -6124,6 +6139,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
         s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
+        s.BacklitVegetation = GetPrivateProfileBoolA( "Display", "BacklitVegetation", ds.BacklitVegetation, ini );
 
         if ( GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini ) ) {
             s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;

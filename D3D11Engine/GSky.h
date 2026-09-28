@@ -41,9 +41,13 @@ struct MoonSpriteInfo {
 struct MoonLightInfo {
     XMFLOAT3 Direction = { 0.0f, 0.0f, 0.0f };
     float AboveHorizonFade = 0.0f;              // 0 below the horizon, 1 from ~14 degrees up
-    XMFLOAT3 LightColor = { 0.0f, 0.0f, 0.0f }; // gamma-space moonlight: 0 by day, indoors, in fog and heavy rain
+    XMFLOAT3 LightColor = { 0.0f, 0.0f, 0.0f }; // gamma-space direct moonlight, 0 unless the moon is the main light
     float GlintVisibility = 0.0f;               // strength of the moon's reflection on water
     float DiscVisibility = 0.0f;                // how visible the moon disc is in the sky, day or night
+    XMFLOAT3 NightFill = { 0.0f, 0.0f, 0.0f };  // gamma-space indirect night light for outdoor worlds
+    XMFLOAT3 Tint = { 0.42f, 0.56f, 1.0f };     // LightColor = Tint * Intensity
+    float Intensity = 0.0f;
+    bool IsMainLight = false;                   // the moon drives the shadow cascades instead of the sun
 };
 
 class zCTexture;
@@ -112,8 +116,20 @@ public:
         backends' atmospheric-scattering sky, which draws no planets of its own. */
     MoonSpriteInfo ResolveMoonSprite( const INT2& resolution );
 
-    /** Moon direction plus the faint light and water glint it gives at night. */
+    /** Moon direction plus the light and water glint it gives at night. */
     MoonLightInfo GetMoonLight();
+
+    /** Direction toward the shadow-casting light: the sun by day, the moon at night. */
+    XMFLOAT3 GetMainLightDirection();
+
+    /** True while the sun is above the horizon or the moon has taken over as the main light. */
+    bool IsMainLightUp();
+
+    /** Whether the low cloud passes run this frame (setting, outdoor world, not drowned by rain or fog). */
+    bool AreLowCloudsVisible();
+
+    /** Constants for Shaders/include/LowClouds.hlsl, shared by both backends. */
+    void FillLowCloudConstants( LowCloudConstantBuffer& cb );
 
 protected:
     /** Loads the sky textures */

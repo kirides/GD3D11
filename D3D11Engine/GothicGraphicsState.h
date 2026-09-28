@@ -745,6 +745,14 @@ struct GothicRendererSettings {
 
         DrawSky = true;
         DrawFog = true;
+        EnableLowClouds = false;
+        LowCloudDensity = 1.0f;
+        LowCloudScale = 1.0f;
+        LowCloudHeight = 1.0f;
+        LowCloudDistance = 1.0f;
+        LowCloudSpeed = 1.0f;
+        LowCloudSunLight = 1.0f;
+        LowCloudDayColor = SwitchG1G2( XMFLOAT3( 0.90f, 0.80f, 0.65f ), XMFLOAT3( 1.05f, 1.15f, 1.15f ) );
         FogRange = SwitchG1G2(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
@@ -872,6 +880,7 @@ struct GothicRendererSettings {
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
+        BacklitVegetation = true;
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
@@ -1059,6 +1068,7 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.00018f;
         FogColorMod = float3::FromColor( 189, 146, 107 );
         FogHeight = 4000;
+        LowCloudDayColor = XMFLOAT3( 0.90f, 0.80f, 0.65f );
     }
 
     void SetupNewWorldSpecificValues() {
@@ -1066,6 +1076,7 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.0005f;
         FogColorMod = float3::FromColor( 180, 180, 255 );
         FogHeight = 800;
+        LowCloudDayColor = XMFLOAT3( 1.05f, 1.15f, 1.15f );
     }
 
     void SetupAddonWorldSpecificValues() {
@@ -1073,6 +1084,7 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.0005f;
         FogColorMod = float3::FromColor( 128, 173, 239 );
         FogHeight = 0;
+        LowCloudDayColor = XMFLOAT3( 1.05f, 1.15f, 1.15f );
     }
 
     void DisableEverything() {}
@@ -1111,9 +1123,18 @@ struct GothicRendererSettings {
     bool DrawParticleEffects;
     bool DrawSky;
     bool DrawFog;
+    bool EnableLowClouds;       // ray-marched cloud banks above the fog height (both backends)
+    float LowCloudDensity;
+    float LowCloudScale;        // horizontal size of the cloud islands
+    float LowCloudHeight;       // vertical extent of the cloud band
+    float LowCloudDistance;     // how far out the clouds start and end
+    float LowCloudSpeed;
+    float LowCloudSunLight;     // sun glow on cloud tops and through thin cloud
+    XMFLOAT3 LowCloudDayColor;  // per world, not persisted (SetupXWorldSpecificValues)
     float FogRange;
     int WindQuality;
     bool HeroAffectsObjects;
+    bool BacklitVegetation;   // D3D12: sun/moon light shines through leaves and thin plants
     bool SortedTransparency;
     bool DrawG1ForestPortals;
     bool G1HighlightInteractiveFocus;

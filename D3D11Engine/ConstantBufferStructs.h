@@ -314,8 +314,10 @@ struct DS_ScreenQuadConstantBuffer {
     float4 SQ_WetSky;
     // Rain: xyz = view-space moon direction for the night wet-ground glint, w = above-horizon fade.
     float4 SQ_MoonDir;
-    // rgb = faint moonlight (GSky::GetMoonLight), 0 by day and indoors.
+    // rgb = direct moonlight, w = 1 while the moon is the main (shadow-casting) light.
     float4 SQ_MoonLight;
+    // rgb = indirect night fill, 0 by day and indoors.
+    float4 SQ_NightFill;
 };
 
 struct CloudConstantBuffer {
@@ -476,6 +478,24 @@ struct RefractionInfoConstantBuffer {
 
     XMFLOAT4X4 RI_View; // World->view, for screen-space reflection ray marching
 };
+
+/** Low cloud passes (Shaders/include/LowClouds.hlsl); filled by GSky::FillLowCloudConstants. */
+struct LowCloudConstantBuffer {
+    XMFLOAT4X4 LC_InvView;
+    XMFLOAT2 LC_InvProj;          float LC_Time;           float LC_NightFogBrightness;
+    XMFLOAT3 LC_CameraPos;        float LC_FogHeight;
+    XMFLOAT3 LC_FogColor;         float LC_FogOverride;
+    XMFLOAT3 LC_DayColor;         float LC_Density;
+    XMFLOAT3 LC_RainColor;        float LC_Scale;
+    XMFLOAT3 LC_NightColor;       float LC_Speed;
+    XMFLOAT3 LC_MoonDir;          float LC_HeightScale;
+    float LC_DistanceScale;       float LC_SunLight;       float LC_SunVisibility;  float LC_MoonVisibility;
+    XMFLOAT4 LC_SunScreen;        // xy = uv, z = visibility
+    XMFLOAT4 LC_MoonScreen;
+    float LC_Frame;               // march jitter phase under TAA/FSR, 0 otherwise
+    float LC_Pad[3];
+};
+static_assert( sizeof( LowCloudConstantBuffer ) == 240 );
 
 /** PS_Water b3: moon glint plus the ocean look; WP_IsOcean changes per texture batch. */
 struct WaterParamsConstantBuffer {

@@ -57,6 +57,9 @@ cbuffer WaterCB : register(b2)
     float  MoonGlint;            // 0 by day, below the horizon, in fog and rain
     float3 OceanTint;            // luma-neutral regional ocean tint
     float  MoonDisc;             // visibility of the moon disc in the sky
+
+    uint   LowCloudIndex;        // premultiplied low cloud layer (0xFFFFFFFF = none)
+    uint3  WaterCBPad;
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -305,6 +308,13 @@ float3 WaterScatterGround( float3 worldPos, float3 color )
 }
 
 bool WaterSSREnabled() { return SsrMaxSteps > 0; }
+
+float4 WaterLowClouds( float2 uv )   // stored in gamma space like the shading here
+{
+    if ( LowCloudIndex == 0xFFFFFFFFu ) return float4( 0.0f, 0.0f, 0.0f, 0.0f );
+    Texture2D clouds = ResourceDescriptorHeap[LowCloudIndex];
+    return clouds.SampleLevel( smpClamp, uv, 0 );
+}
 
 float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out float hitDistance )
 {

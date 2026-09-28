@@ -56,7 +56,8 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     // and the world-space moon direction + above-horizon fade for the night glint.
     float3   WetSkyTint;         float WetSunHeight;
     float3   WetMoonDir;         float WetMoonFade;
-    float3   MoonLight;          float MoonLightPad;   // gamma-space moonlight, 0 by day and indoors
+    float3   NightFill;          float MoonMainLight;  // gamma-space night fill; 1 while the moon is the directional light
+    float    BacklitStrength;    float3 BacklitPad;    // 0 when backlit vegetation is off
 };
 
 #endif // D3D12_SHADOWCB_HLSL

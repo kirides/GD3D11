@@ -546,6 +546,9 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
 
     ImGui::SeparatorText( "Weather & Water" );
 
+    CheckRow( "Low Clouds", &settings.EnableLowClouds,
+        "Drifting cloud banks above the valleys and along the horizon. Costs a half-resolution ray march.", "LowClouds" );
+
     CheckRow( "Rain", &settings.EnableRain, nullptr, "Rain" );
     ImGui::BeginDisabled( !settings.EnableRain );
     CheckRow( "Rain Effects", &settings.EnableRainEffects,
@@ -581,6 +584,12 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         shadersToReload |= ShaderCategory::Other;
     }
 #endif //BUILD_GOTHIC_2_6_fix
+
+    if ( IsD3D12() ) {
+        CheckRow( "Backlit Vegetation", &settings.BacklitVegetation,
+            "Sun and moonlight shine through leaves and thin plants when they are between you and the light.",
+            "BacklitVegetation" );
+    }
 
     ImGui::EndTabItem();
 }

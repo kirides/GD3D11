@@ -223,6 +223,9 @@ void ShaderRegistry::Build() {
             list.push_back( { "COMPOSE_HEIGHTFOG", s.DrawFog ? "1" : "0" } );
         } ) );
 
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LowClouds>( "PS_PFX_LowClouds.hlsl" ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LowCloudComposite>( "PS_PFX_LowCloudComposite.hlsl" ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
         .with_category(ShaderCategory::Tonemapping)
         .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {

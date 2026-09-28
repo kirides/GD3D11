@@ -48,6 +48,7 @@ TextureCube	TX_ReflectionCube : register( t3 );
 Texture2D	TX_Distortion : register( t4 );
 Texture2D	TX_Scene : register( t5 );
 Texture2D	TX_WaterSurfaceDepth : register( t6 ); // live depth after the water prepass, for shore probes
+Texture2D	TX_LowClouds : register( t7 );         // premultiplied low cloud layer; unbound = no clouds
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -239,6 +240,7 @@ float3 WaterDistortion( float2 uv ) { return TX_Distortion.Sample( SS_Linear, uv
 float3 WaterDiffuse( float2 uv ) { return TX_Diffuse.Sample( SS_Linear, uv ).rgb; }
 float3 WaterCube( float3 dir ) { return TX_ReflectionCube.Sample( SS_Linear, dir ).xyz; }
 float3 WaterScatterGround( float3 worldPos, float3 color ) { return ApplyAtmosphericScatteringGround( worldPos, color ); }
+float4 WaterLowClouds( float2 uv ) { return TX_LowClouds.SampleLevel( SS_Linear, uv, 0 ); }
 
 bool WaterSSREnabled()
 {

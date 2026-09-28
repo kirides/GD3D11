@@ -1497,6 +1497,26 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::PopID();
         }
 
+        ImGui::SeparatorText( "Low Clouds" );
+        {
+            ImGui::PushID( "LowCloudSettings" );
+            ImGui::Checkbox( "Low Clouds", &settings.EnableLowClouds );
+            ImGui::BeginDisabled( !settings.EnableLowClouds );
+            ImGui::SliderFloat( "Density", &settings.LowCloudDensity, 0.0f, 4.0f );
+            ImGui::SliderFloat( "Scale", &settings.LowCloudScale, 0.35f, 4.0f );
+            ImGui::SetItemTooltip( "Horizontal size of the cloud islands." );
+            ImGui::SliderFloat( "Height", &settings.LowCloudHeight, 0.35f, 4.0f );
+            ImGui::SetItemTooltip( "Vertical extent of the cloud band above the fog height." );
+            ImGui::SliderFloat( "Distance", &settings.LowCloudDistance, 0.45f, 4.0f );
+            ImGui::SetItemTooltip( "How far from the camera the clouds start and end." );
+            ImGui::SliderFloat( "Speed", &settings.LowCloudSpeed, 0.0f, 10.0f );
+            ImGui::SliderFloat( "Sun Light", &settings.LowCloudSunLight, 0.0f, 4.0f );
+            ImGui::ColorEdit3( "Day Color", &settings.LowCloudDayColor.x );
+            ImGui::SetItemTooltip( "Set per world on load; not saved." );
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+
         ImGui::SeparatorText( "Depth of Field" );
         {
             ImGui::PushID( "DoFSettings" );

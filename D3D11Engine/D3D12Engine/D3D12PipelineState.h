@@ -470,6 +470,17 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CompositePSO;    // fog (alpha) + rays (additive) -> scene color
     };
 
+    // Low clouds (Shaders/D3D12/LowClouds.hlsl): half-res compute march + fullscreen premultiplied composite.
+    struct LowCloudPipeline {
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> GenerateRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            GenerateCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> GeneratePSO;
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> CompositeRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositeVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositePsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> CompositePSO;
+    };
+
     // GPU-driven instanced-VOB culling. The CPU-side collection only distance-culls (see
     // RndCullContext::drawFlags.SkipVobFrustumCull); these four compute passes do the rest on the GPU:
     // Shaders/D3D12/HiZ.hlsl builds a min-reduced (conservative, reversed-Z) depth pyramid from the
@@ -625,6 +636,7 @@ public:
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateSky();         // procedural scattering sky dome (own bindless root sig + inner/outer PSOs); dome mesh is GSky's
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
+    bool CreateLowClouds();   // low clouds: the half-res march (compute) + the composite (fullscreen blend)
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
@@ -689,6 +701,7 @@ public:
     SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
     SkyPipeline      Sky;           // procedural scattering sky dome (Shaders/D3D12/Sky.hlsl)
     FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
+    LowCloudPipeline LowClouds;  // low clouds (Shaders/D3D12/LowClouds.hlsl)
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
     CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)

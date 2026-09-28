@@ -77,8 +77,11 @@ namespace {
         float MoonGlint;
         XMFLOAT3 OceanTint;
         float MoonDisc;
+
+        UINT LowCloudIndex;           // premultiplied low cloud layer; 0xFFFFFFFF => none
+        UINT Pad2[3];
     };
-    static_assert( sizeof( WaterCBData ) == 240, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 256, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of both water copies. PIXEL_SHADER_RESOURCE (not the combined NON_PIXEL|PIXEL the fog
     // pass uses) because only the water PS ever reads them.
@@ -392,6 +395,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             cb.CameraUnderwater = 1;
         }
         cb.SurfaceDepthIndex = UINT_MAX;   // patched after the prepass copy below
+        cb.LowCloudIndex = m_LowCloudLayerSrvSlot;   // set by GenerateLowClouds this frame, UINT_MAX without clouds
 
         const OceanProfile ocean = GetOceanProfile();
         cb.OceanClimate = ocean.Climate;

@@ -2648,6 +2648,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// SSR march before water/transparents draw over it. See D3D12Ssr.cpp.
 	CaptureSsrOpaqueHistory();
 
+	// Low clouds are marched before water, which reflects them, and blended in after the fog.
+	GenerateLowClouds();
+
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 
@@ -2656,6 +2659,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	{
 		D3D12RenderGraph fogGraph( &m_AliasArena );
 		RenderFogAndGodRays( fogGraph );
+		AddLowCloudCompositePass( fogGraph );
 		fogGraph.Compile();
 		fogGraph.Execute( m_CmdList );
 	}
@@ -3005,7 +3009,28 @@ namespace {
     // the single bound texture are meaningful, instead of always assuming a full _ORM.DDS (R=AO,G=Rough,B=Metal).
     // Mirrored by SampleOrm() in Shaders/D3D12/include/PBRLighting.hlsl — keep the two in sync.
     constexpr uint32_t kOrmFormatShift = 30;
-    constexpr uint32_t kOrmIndexMask   = 0x3FFFFFFFu;   // 1 billion+ slots — nowhere near the real heap size
+    constexpr uint32_t kOrmIndexMask   = 0x0FFFFFFFu;   // 268 million slots — nowhere near the real heap size
+
+    // Bits 28-29: backlit vegetation class for PBRLighting.hlsl (1 = leaf foliage, 2 = thin two-sided plant).
+    constexpr uint32_t kOrmBacklitShift = 28;
+    constexpr uint32_t kBacklitFoliage  = 1u << kOrmBacklitShift;
+    constexpr uint32_t kBacklitThin     = 2u << kOrmBacklitShift;
+
+    /** Grass groups, bushes and crops whose cards are lit alike from both sides (MarcoMarwin's list). */
+    bool IsThinTwoSidedPlant( const std::string& visualName ) {
+        static constexpr std::string_view kPrefixes[] = {
+            "NW_NATURE_GRASSGROUP", "OW_NATURE_BUSH_02", "OW_NATURE_BUSH_03", "NW_NATURE_PLANT_03",
+            "NW_KORN", "OW_GRASS_WINTER", "NW_NATURE_WATERGRASS_56P",
+        };
+        const size_t slash = visualName.find_last_of( "\\/" );
+        const std::string_view stem = slash == std::string::npos
+            ? std::string_view( visualName ) : std::string_view( visualName ).substr( slash + 1 );
+        for ( std::string_view prefix : kPrefixes ) {
+            if ( stem.size() >= prefix.size() && _strnicmp( stem.data(), prefix.data(), prefix.size() ) == 0 )
+                return true;
+        }
+        return false;
+    }
 
     // Packs an SRV heap slot with the FxMap's channel layout for the D3D12 PS to unpack (see kOrmFormatShift).
     // EAdditionalMaterial::None/Specular (no _FX loaded, or the legacy D3D11-only _FX.dds) fall through to format
@@ -3207,7 +3232,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
             WorldDrawCommand c{};
             c.MatNormalIndex     = normalIdx;
-            c.MatOrmIndex        = ormIdx;
+            c.MatOrmIndex        = ormIdx | ( alphaTested ? kBacklitFoliage : 0u );
             c.MatDiffuseIndex    = diffuseIdx;
             c.MatNormalStrength  = normalStrength;
             c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
@@ -3557,6 +3582,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // cutout that means chunks of the silhouette disappearing rather than getting coarser.
             const bool alphaTested = ( tex && tex->HasAlphaChannel() )
                 || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+            if ( alphaTested )
+                ormIdx |= IsThinTwoSidedPlant( visual->VisualName ) ? kBacklitThin : kBacklitFoliage;
 
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() ) continue;

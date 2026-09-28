@@ -235,7 +235,7 @@ float ComputeSunShadow( float3 wpos, float3 N, float vertLighting )
 // D3D12GraphicsEngine.cpp's EncodeOrmSlot (mirrors MyDirectDrawSurface7::AvailableMaterials). This lets one
 // bound texture stand in for whatever _ORM/_OR/_R map the material actually shipped, instead of every material
 // paying for a full 3-channel _ORM.DDS. Keep the two in sync.
-static const uint ORM_INDEX_MASK  = 0x3FFFFFFFu;
+static const uint ORM_INDEX_MASK  = 0x0FFFFFFFu;   // bits 28-29: backlit class, 30-31: FxMap layout
 static const uint ORM_FORMAT_SHIFT = 30;
 
 // Returns {AO, Roughness, Metallic}, decoded per the packed format:
@@ -507,9 +507,37 @@ float3 PerturbNormal( float3 N, float3 p, float4 vertexTangent, Texture2D nrmTex
     return normalize( mul( nrm, TangentFrameExplicit( normalize( N ), vertexTangent.xyz, vertexTangent.w ) ) );
 }
 
+// Backlit vegetation class packed into MatOrmIndex by D3D12Scene.cpp: 1 = leaf foliage, 2 = thin two-sided plant.
+uint BacklitClassOf( uint packedOrmIndex ) { return ( packedOrmIndex >> 28 ) & 3u; }
+
+// Sun or moon light through leaves (after MarcoMarwin's GD3D11): thin plants take a share of the light on
+// their back faces, and green foliage glows when the viewer looks into the light through it.
+float3 ApplyBacklitVegetation( float3 lit, uint backlitClass, float3 albedo, float3 lightColor, float3 N, float3 V,
+                               float3 L, float shadow, float vertLighting, float worldAO )
+{
+    float thin = backlitClass == 2u ? 1.0 : 0.0;
+    float back = saturate( dot( -N, L ) );
+    float3 radiance = albedo * ( 1.0 / PBR_PI ) * lightColor * SunIntensity;   // same units as PBR_DirectLighting
+
+    float backDirect = saturate( back * 0.55 + back * back * 0.25 ) * thin;
+    lit += radiance * backDirect * shadow * worldAO;
+
+    float3 g = pow( max( albedo, 0.0 ), 1.0 / 2.2 );   // the leaf test is tuned on gamma-space colors
+    float leafMask = max( saturate( g.g * 1.25 - g.r * 0.45 - g.b * 0.25 ),
+                          saturate( ( g.g - max( g.r, g.b ) ) * 1.8 + 0.10 ) ) * ( 1.0 - thin );
+    float rimBase = 1.0 - saturate( abs( dot( N, V ) ) );
+    float intoLight = saturate( dot( L, -V ) );
+    float core = intoLight * intoLight * leafMask + back * lerp( 0.25, 0.75, rimBase * rimBase ) * thin;
+    float gate = lerp( 0.55, 1.0, saturate( shadow ) ) * lerp( 0.35, 1.0, saturate( vertLighting * 1.5 ) );
+    float lowSun = MoonMainLight > 0.5 ? 1.0 : saturate( ( L.y + 0.08 ) * 3.0 );
+    float3 transmission = radiance * saturate( core * gate * BacklitStrength * 2.4 * lowSun );
+    return thin > 0.5 ? max( lit, transmission ) : lit + transmission;
+}
+
 // PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao, float ssao, float sunSpecScale = 1.0 )
+                              float roughness, float metallic, float ao, float ssao, float sunSpecScale = 1.0,
+                              uint backlitClass = 0u )
 {
     float3 V = normalize( CamPosWS - wpos );
     float3 L = SunDirWS;                            // dir toward the sun (world space)
@@ -570,10 +598,13 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float sunAtten = shadow * worldAO * SunIntensity;
     float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten, SunSpecularEnabled * sunSpecScale );
 
-    // Unshadowed moonlight, flat Lambert like D3D11; baked vertex light keeps it out of interiors
-    float3 moon = albedo * SrgbToLinear( MoonLight ) * saturate( dot( N, WetMoonDir ) ) * vertLighting * ao * ssao;
+    // Indirect night light (flat, like D3D11), so faces the moon misses don't sink to black
+    float3 nightFill = albedo * SrgbToLinear( NightFill ) * worldAO;
+    float3 lit = ambientSun + directSun + nightFill;
 
-    return ambientSun + directSun + moon;
+    [branch] if ( backlitClass != 0u && BacklitStrength > 0.0 && SunIntensity > 0.0 )
+        lit = ApplyBacklitVegetation( lit, backlitClass, albedo, sunCol, N, V, L, shadow, vertLighting, worldAO );
+    return lit;
 }
 
 // Reconstructs THIS pixel's cluster Z slice from its own hardware depth (reversed-Z), analytically — no depth-

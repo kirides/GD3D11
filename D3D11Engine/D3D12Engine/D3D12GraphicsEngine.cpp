@@ -417,6 +417,11 @@ bool D3D12GraphicsEngine::InitScene() {
     } else if ( !CreateFogConstantBuffers() ) {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the height-fog constant buffers (falling back to the shaders' linear distance fog)." );
     }
+    if ( !m_Pipelines.CreateLowClouds() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the low cloud pipelines (low clouds unavailable)." );
+    } else if ( !CreateLowCloudConstantBuffers() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the low cloud constant buffers (low clouds unavailable)." );
+    }
     if ( !m_Pipelines.CreateAdvanceRain() ) {
         // Non-fatal: rain/snow is an opt-in weather effect (RendererSettings.EnableRain). AdvanceRain() guards
         // on the PSO existing and just skips advancing/drawing particles if this failed.

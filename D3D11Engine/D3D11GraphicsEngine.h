@@ -612,6 +612,7 @@ public:
     GMesh* InverseUnitSphereMesh;
     /** Reflection */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
+    ID3D11ShaderResourceView* WaterLowCloudSRV = nullptr;   // this frame's low cloud layer while water draws
 private:
     bool PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals );
     void UnbindWindMetadata();

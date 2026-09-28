@@ -4057,13 +4057,46 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // never write depth, so if they drew first the water blend pass would have no depth info about
     // them and would always composite over them, even when a particle (e.g. a held fireball) is
     // actually closer to the camera than the water surface and should occlude it instead.
+    // Low clouds: the half-resolution layer is marched before water, which reflects it, and blended in after the fog
+    const bool lowClouds = !FeatureLevel10Compatibility && Engine::GAPI->GetSky()->AreLowCloudsVisible();
+    RGResourceHandle lowCloudLayerHandle = RG_INVALID_HANDLE;
+    RGResourceHandle lowCloudDepthHandle = RG_INVALID_HANDLE;
+    RGResourceHandle skyLowCloudHandle = RG_INVALID_HANDLE;
+    if ( lowClouds ) {
+        const INT2 layerSize( std::max( 1, ( GetResolution().x + 1 ) / 2 ), std::max( 1, ( GetResolution().y + 1 ) / 2 ) );
+        graph.AddPass( RG_PASS_NAME("Generate Low Clouds"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            const uint32_t w = static_cast<uint32_t>( layerSize.x );
+            const uint32_t h = static_cast<uint32_t>( layerSize.y );
+            lowCloudLayerHandle = builder.CreateTexture( { w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"LowCloudLayer" } );
+            lowCloudDepthHandle = builder.CreateTexture( { w, h, DXGI_FORMAT_R32_FLOAT, L"LowCloudDepth" } );
+            skyLowCloudHandle = builder.CreateTexture( { w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"SkyLowCloudLayer" } );
+            builder.Write( lowCloudLayerHandle );
+            builder.Write( lowCloudDepthHandle );
+            builder.Write( skyLowCloudHandle );
+
+            pass.m_executeCallback = [this, layerSize, lowCloudLayerHandle, lowCloudDepthHandle, skyLowCloudHandle]( const RenderGraph& graph ) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Generate Low Clouds" );
+                auto* layer = graph.GetPhysicalTexture( lowCloudLayerHandle );
+                auto* depth = graph.GetPhysicalTexture( lowCloudDepthHandle );
+                auto* sky = graph.GetPhysicalTexture( skyLowCloudHandle );
+                if ( !layer || !depth || !sky ) return;
+                PfxRenderer->RenderLowCloudLayer( layer->GetRenderTargetView().Get(), depth->GetRenderTargetView().Get(),
+                    sky->GetRenderTargetView().Get(), layerSize, GetDepthBuffer()->GetShaderResView().Get() );
+            };
+        } );
+    }
+
     graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
+        if ( lowClouds ) builder.Read( lowCloudLayerHandle );
 
-        pass.m_executeCallback = [this](const RenderGraph&) {
+        pass.m_executeCallback = [this, lowClouds, lowCloudLayerHandle](const RenderGraph& graph) {
+            auto* cloudLayer = lowClouds ? graph.GetPhysicalTexture( lowCloudLayerHandle ) : nullptr;
+            WaterLowCloudSRV = cloudLayer ? cloudLayer->GetShaderResView().Get() : nullptr;
             SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
             DrawWaterSurfaces();
+            WaterLowCloudSRV = nullptr;
         };
     });
 
@@ -4157,6 +4190,27 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
+    if ( lowClouds ) {
+        graph.AddPass( RG_PASS_NAME("Composite Low Clouds"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( lowCloudLayerHandle );
+            builder.Read( lowCloudDepthHandle );
+            builder.Read( skyLowCloudHandle );
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle, lowCloudLayerHandle, lowCloudDepthHandle, skyLowCloudHandle]( const RenderGraph& graph ) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Composite Low Clouds" );
+                auto* backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+                auto* layer = graph.GetPhysicalTexture( lowCloudLayerHandle );
+                auto* depth = graph.GetPhysicalTexture( lowCloudDepthHandle );
+                auto* sky = graph.GetPhysicalTexture( skyLowCloudHandle );
+                if ( !backBuffer || !layer || !depth || !sky ) return;
+                PfxRenderer->CompositeLowClouds( backBuffer->GetRenderTargetView().Get(), layer->GetShaderResView().Get(),
+                    depth->GetShaderResView().Get(), sky->GetShaderResView().Get(), GetDepthBuffer()->GetShaderResView().Get() );
+            };
+        } );
+    }
+
     graph.AddPass( RG_PASS_NAME("Reset RenderTargets (Fog)"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
         pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
@@ -5615,6 +5669,9 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         // Bind reflection cube
         GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
 
+        // Low cloud layer for the reflected sky (unbound = no clouds)
+        GetContext()->PSSetShaderResources( 7, 1, &WaterLowCloudSRV );
+
         // Depth with the water surfaces in it, for the shore probes' coverage test; needs the read-only DSV.
         if ( ID3D11DepthStencilView* readOnlyDsv = DepthStencilBuffer->GetDepthStencilViewReadOnly().Get() ) {
             GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), readOnlyDsv );
@@ -5663,7 +5720,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    GetContext()->PSSetShaderResources( 0, 7, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 0, 8, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );

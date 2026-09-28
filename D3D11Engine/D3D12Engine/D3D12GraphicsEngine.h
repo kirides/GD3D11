@@ -1706,6 +1706,20 @@ private:
     // header / D3D12RenderDepthOfField's declaration above for why.
     void RenderFogAndGodRays( class D3D12RenderGraph& graph );   // god-ray mask+zoom compute, then the fullscreen composition blend
 
+    // --- Low clouds (D3D12LowClouds.cpp) --------------------------------------------------------------------
+    // [0,256) LowCloudConstantBuffer (b2), [256,512) the atmosphere (b1); filled once per frame by GenerateLowClouds.
+    static constexpr UINT kLowCloudAtmosphereCbOffset = 256;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LowCloudCB[kBackBufferMax];
+    uint8_t* m_LowCloudCBMapped[kBackBufferMax] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_LowCloudCBGpu[kBackBufferMax] = {};
+    // This frame's half-resolution layer (arena textures), UINT_MAX while low clouds are off
+    UINT m_LowCloudLayerSrvSlot = UINT_MAX;
+    UINT m_LowCloudDepthSrvSlot = UINT_MAX;
+    UINT m_SkyLowCloudSrvSlot = UINT_MAX;
+    bool CreateLowCloudConstantBuffers();
+    void GenerateLowClouds();                                      // before water, which reflects the layer
+    void AddLowCloudCompositePass( class D3D12RenderGraph& graph );   // after the fog composition
+
     // ---- Water refraction / reflection (D3D12Water.cpp) — port of D3D11's DrawWaterSurfaces + PS_Water ----
     // Water is drawn OPAQUE and does its own see-through compositing from copies of the finished opaque
     // scene, exactly like D3D11 (which CopyTextureToRTVs the HDR backbuffer into PfxRenderer's temp buffer
@@ -1913,7 +1927,8 @@ private:
     struct WetSkyCBData {
         XMFLOAT3 SkyTint; float SunHeight;
         XMFLOAT3 MoonDir; float MoonFade;
-        XMFLOAT3 MoonLight; float _pad0;   // gamma-space moonlight (GSky::GetMoonLight)
+        XMFLOAT3 NightFill; float MoonMainLight;   // gamma-space night fill; 1 while the moon casts the shadows
+        float BacklitStrength; float _pad0[3];     // 0 when backlit vegetation is off
     };
     void UploadWetnessConstants();
 

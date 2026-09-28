@@ -4,7 +4,7 @@
 // MarcoMarwin's GD3D11 fork. Everything here works in D3D11's gamma space; D3D12 converts at its hooks.
 // The includer defines: WaterSceneRawDepth, WaterSurfaceRawDepth, WaterLinearDepth, WaterWorldToView,
 // WaterViewToUV, WaterSceneColor, WaterDistortion, WaterDiffuse, WaterCube, WaterSSREnabled,
-// WaterTraceSSR and WaterScatterGround, plus the Atmosphere constants (AC_LightPos, AC_RainFXWeight).
+// WaterTraceSSR, WaterScatterGround and WaterLowClouds, plus the Atmosphere constants (AC_LightPos, AC_RainFXWeight).
 
 static const float3 WATER_LUMA = float3( 0.2126f, 0.7152f, 0.0722f );
 static const float3 WATER_UP = float3( 0.0f, 1.0f, 0.0f );
@@ -228,6 +228,24 @@ float3 WaterReflectionFallback( float3 cube, float rain, float night, bool isOce
     return lerp( lerp( cube, dayRain, rain ), lerp( clearNight, rainNight, rain ), night );
 }
 
+// The low cloud layer (premultiplied) as seen in the reflected sky: rain hides it, rain and night veil it.
+float4 ResolveWaterLowClouds( float4 rawClouds, float3 skyColor )
+{
+    float rain = saturate( AC_RainFXWeight );
+    float nightBlend = smoothstep( 0.0f, 1.0f, saturate( -AC_LightPos.y * 4.0f ) );
+    float visibility = 1.0f - smoothstep( 0.18f, 0.88f, rain );
+    float veil = saturate( rain * lerp( 0.050f, 0.22f, nightBlend ) + ( 1.0f - rain ) * nightBlend * 0.12f );
+    float alpha = saturate( rawClouds.a ) * visibility;
+    float3 premultiplied = max( rawClouds.rgb, 0.0f ) * visibility;
+    if ( alpha > 0.001f && veil > 0.0001f )
+    {
+        float3 cloudColor = lerp( premultiplied / max( alpha, 0.001f ), skyColor, veil * lerp( 0.65f, 1.0f, nightBlend ) );
+        alpha *= 1.0f - veil * lerp( 0.08f, 0.22f, nightBlend );
+        premultiplied = cloudColor * alpha;
+    }
+    return float4( premultiplied, alpha );
+}
+
 // Tames screen-space hits: soft HDR roll-off, a little contrast, compressed daylight highlights.
 float3 ProcessWaterHitReflection( float3 c, float night )
 {
@@ -356,9 +374,14 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float skyValid = 0.0f;
     [branch] if ( ssrOn > 0.5f && topSide > 0.5f && skyDir.y > 0.0001f )
         skyValid = WaterSkyMarch( px.worldPos, skyDir, skyUV );
-    float3 skyReflection = skyValid > 0.5f
-        ? WaterSkyWithoutCelestialBodies( skyUV, skyDir, fallback, fr.viewportSize, sunVisibility, fr.moonDir, fr.moonDisc )
-        : fallback;
+    float3 skyReflection = fallback;
+    [branch] if ( skyValid > 0.5f )
+    {
+        skyReflection = WaterSkyWithoutCelestialBodies( skyUV, skyDir, fallback, fr.viewportSize, sunVisibility, fr.moonDir, fr.moonDisc );
+        float4 clouds = ResolveWaterLowClouds( WaterLowClouds( skyUV ), skyReflection );
+        skyReflection = max( skyReflection + ( skyReflection * ( 1.0f - clouds.a ) + clouds.rgb - skyReflection )
+                                           * lerp( 1.12f, 1.30f, saturate( clouds.a ) ), 0.0f );
+    }
     float2 skyEdge = saturate( abs( skyUV - 0.5f ) * 2.0f );
     float skyWeight = skyValid * ( 1.0f - smoothstep( 0.78f, 1.0f, max( skyEdge.x, skyEdge.y ) ) ) * hemi;
     float skyConfidence = saturate( skyWeight * lerp( 0.90f, 0.80f, rain ) );

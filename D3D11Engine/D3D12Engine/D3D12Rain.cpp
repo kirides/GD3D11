@@ -432,7 +432,9 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
         const MoonLightInfo moon = gsky->GetMoonLight();
         sky.MoonDir = moon.Direction;
         sky.MoonFade = moon.AboveHorizonFade;
-        sky.MoonLight = moon.LightColor;
+        sky.NightFill = moon.NightFill;
+        sky.MoonMainLight = moon.IsMainLight ? 1.0f : 0.0f;
+        sky.BacklitStrength = set.BacklitVegetation ? 0.5f : 0.0f;
     }
     memcpy( m_ShadowCBMapped[m_FrameIndex] + kWetSkyCbOffset, &sky, sizeof( sky ) );
 }
