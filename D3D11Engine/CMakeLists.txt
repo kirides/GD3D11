@@ -11,6 +11,10 @@ target_precompile_headers(D3D11Engine PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE
 set(_gd3d11_third_party_sources ${GD3D11_ENGINE_SOURCES})
 list(FILTER _gd3d11_third_party_sources INCLUDE REGEX "^(include|vendor|Detours)/")
 set_source_files_properties(${_gd3d11_third_party_sources} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  # CMake only adds this for GNU-target clang; instantiates the PCH's templates once instead of per TU.
+  target_compile_options(D3D11Engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fpch-instantiate-templates>)
+endif()
 
 target_include_directories(D3D11Engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
