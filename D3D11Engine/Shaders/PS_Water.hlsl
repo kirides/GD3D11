@@ -33,7 +33,7 @@ cbuffer WaterParams : register( b3 )
 	float WP_OceanClimate;      // 0 = coastal Khorinis, 1 = clear Jharkendar
 	float WP_IsOcean;           // per texture batch: NW_WATER_LAKE*
 	float WP_MoonDisc;          // visibility of the moon disc in the sky
-	float WP_Pad;
+	float WP_SkyReflection;     // 1 = march the reflected sky in screen space
 };
 
 //--------------------------------------------------------------------------------------
@@ -289,6 +289,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	fr.moonDir = WP_MoonDir;
 	fr.moonGlint = WP_MoonGlint;
 	fr.moonDisc = WP_MoonDisc;
+	fr.skyReflection = WP_SkyReflection;
 
 	return float4( ShadeWater( px, fr ), 1.0f );
 }

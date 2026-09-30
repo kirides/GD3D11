@@ -695,6 +695,18 @@ struct GothicRendererSettings {
         WATER_SSR_HIGH     = 3,
     };
 
+    enum E_WaterReflectionMode {
+        WATER_REFLECTION_GEOMETRY     = 0,   // SSR geometry hits, the reflection cube elsewhere
+        WATER_REFLECTION_GEOMETRY_SKY = 1,   // plus the screen-space sky march
+    };
+
+    enum E_OceanColor {
+        OCEAN_COLOR_NATURAL   = 0,   // the coastal Khorinis sea in every world
+        OCEAN_COLOR_PER_WORLD = 1,   // Jharkendar gets the clear turquoise sea
+        OCEAN_COLOR_TROPICAL  = 2,   // clear turquoise sea everywhere
+        OCEAN_COLOR_CUSTOM    = 3,   // OceanCustomColor/Strength/Clarity
+    };
+
     enum class TX_QUALITY : uint16_t {
         VeryLow = 128,
         Low = 256,
@@ -954,6 +966,11 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
+        WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
+        OceanColor = OCEAN_COLOR_NATURAL;
+        OceanCustomColor = float3( 0.85f, 0.975f, 1.0f );
+        OceanCustomColorStrength = 0.18f;
+        OceanCustomClarity = 0.0f;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
@@ -1381,6 +1398,11 @@ struct GothicRendererSettings {
     // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —
     // same quality/cost tradeoff, different geometry class. See D3D12_SSR_WET_SURFACES_PLAN.md.
     E_WaterSSRQuality OpaqueSSRQuality;
+    E_WaterReflectionMode WaterReflectionMode;   // sky march needs WaterSSRQuality != DISABLED
+    E_OceanColor OceanColor;
+    float3 OceanCustomColor;          // hue only; the shader keeps the water's brightness
+    float OceanCustomColorStrength;
+    float OceanCustomClarity;         // 0 = dense coastal water, 1 = clear tropical water
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

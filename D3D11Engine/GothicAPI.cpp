@@ -5914,6 +5914,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "OceanColor", to_string_locale_independent( (int)s.OceanColor ).c_str(), ini.c_str() );
+    WritePrivateProfileRGB( "Display", "OceanCustomColor", s.OceanCustomColor, ini );
+    WritePrivateProfileStringA( "Display", "OceanCustomColorStrength", float_to_string( s.OceanCustomColorStrength, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "OceanCustomClarity", float_to_string( s.OceanCustomClarity, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "BacklitVegetation", to_string_locale_independent( s.BacklitVegetation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6182,6 +6187,13 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
         s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
+        s.WaterReflectionMode = static_cast<GothicRendererSettings::E_WaterReflectionMode>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterReflectionMode", ds.WaterReflectionMode, ini.c_str() ), 0, 1 ) );
+        s.OceanColor = static_cast<GothicRendererSettings::E_OceanColor>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "OceanColor", ds.OceanColor, ini.c_str() ), 0, 3 ) );
+        s.OceanCustomColor = ds.OceanCustomColor;
+        GetPrivateProfileRGB( "Display", "OceanCustomColor", s.OceanCustomColor, ini );
+        s.OceanCustomColor = float3( std::clamp( s.OceanCustomColor.x, 0.0f, 1.0f ), std::clamp( s.OceanCustomColor.y, 0.0f, 1.0f ), std::clamp( s.OceanCustomColor.z, 0.0f, 1.0f ) );
+        s.OceanCustomColorStrength = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomColorStrength", ds.OceanCustomColorStrength, ini ), 0.0f, 1.0f );
+        s.OceanCustomClarity = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomClarity", ds.OceanCustomClarity, ini ), 0.0f, 1.0f );
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
         s.BacklitVegetation = GetPrivateProfileBoolA( "Display", "BacklitVegetation", ds.BacklitVegetation, ini );
 
