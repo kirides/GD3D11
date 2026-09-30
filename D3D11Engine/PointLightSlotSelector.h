@@ -177,6 +177,9 @@ public:
     /** True if this vob rides an NPC's transform. Such a caster is never baked into a cached static cube, so
         its comings and goings must not invalidate one either. */
     static bool IsNpcAttached( const zCVob* vob );
+    /** The player vob if `item` sits in one of its slots, else nullptr. The vob tree can't answer this: a torch
+        lit from the inventory is unparented from its NPC by oCAIVobMove::Init. */
+    static const zCVob* FindCarryingPlayer( const zCVob* item );
 
     /** Park a vob that just entered the world or moved; the invalidation happens at the top of the next
         Select(). Deferred because neither its position nor its NPC parent link is settled when Gothic reports

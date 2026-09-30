@@ -315,16 +315,16 @@ bool D3D12PointShadows::BuildExcludeList( zCVobLight* lightVob, std::vector<cons
 
 	// Only lights attached to a carried item get exclusion (mirrors D3D11 GetHasOriginVob): walk the light
 	// vob's ancestor chain looking for an oCVisualFX whose origin is an oCItem, or an oCItem ancestor directly.
-	bool hasOriginVob = false;
+	const zCVob* item = nullptr;
 	for ( const zCVob* vob = lightVob->GetVobParent(); vob; vob = vob->GetVobParent() ) {
 		if ( auto visFx = vob->As<oCVisualFX>() ) {
-			if ( const zCVob* origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) { hasOriginVob = true; break; }
+			if ( const zCVob* origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) { item = origin; break; }
 		} else if ( vob->As<oCItem>() ) {
-			hasOriginVob = true;
+			item = vob;
 			break;
 		}
 	}
-	if ( !hasOriginVob ) return false;
+	if ( !item ) return false;
 
 	// Collect the light vob's full ancestor chain, also following any oCVisualFX origin sideways (mirrors
 	// D3D11 CollectVobTreeToExclude) — e.g. a torch item's owning NPC ends up excluded from its own light's
@@ -340,6 +340,11 @@ bool D3D12PointShadows::BuildExcludeList( zCVobLight* lightVob, std::vector<cons
 			if ( zCVob* origin = vfx->GetOrigin() ) stack.push_back( origin );
 		}
 		if ( zCVob* parent = vob->GetVobParent() ) stack.push_back( parent );
+	}
+	// A torch lit from the inventory is no longer parented to the player, so the walk above misses them.
+	if ( const zCVob* player = PointLightSlotSelector::FindCarryingPlayer( item );
+		player && std::find( excludeOut.begin(), excludeOut.end(), player ) == excludeOut.end() ) {
+		excludeOut.push_back( player );
 	}
 	return true;
 }

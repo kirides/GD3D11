@@ -8,6 +8,8 @@
 #include "GothicAPI.h"
 #include "zCVob.h"
 #include "zCVobLight.h"
+#include "oCNPC.h"
+#include "zCModel.h"
 #include "BspPortalCuller.h"
 
 using namespace DirectX;
@@ -168,6 +170,28 @@ bool PointLightSlotSelector::IsNpcAttached( const zCVob* vob ) {
         if ( v->GetVobType() == zVOB_TYPE_NSC ) return true;
     }
     return false;
+}
+
+
+const zCVob* PointLightSlotSelector::FindCarryingPlayer( const zCVob* item ) {
+    if ( !item || !GothicMemoryLocations::oCNPC::GetInvSlot_zString ) return nullptr;
+    zCVob* playerVob = Engine::GAPI->GetPlayerVob();
+    oCNPC* player = playerVob ? playerVob->As<oCNPC>() : nullptr;
+    zCModel* model = player ? static_cast<zCModel*>( player->GetVisual() ) : nullptr;
+    if ( !model ) return nullptr;
+    // Prefilter only: skips the slot lookups for items nowhere near the player.
+    constexpr float kReachSq = 400.0f * 400.0f;
+    if ( XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( item->GetPositionWorldXM(), player->GetPositionWorldXM() ) ) ) > kReachSq )
+        return nullptr;
+
+    // Any slot, not just the hands: mods hang lights on e.g. the waist. Slots are the model's ZS_* nodes.
+    const zCArray<zCModelNodeInst*>* nodes = model->GetNodeList();
+    for ( int i = 0; i < nodes->NumInArray; ++i ) {
+        const zCModelNodeInst* node = nodes->Array[i];
+        if ( !node || !node->ProtoNode || !node->ProtoNode->NodeName.ToView().starts_with( "ZS_" ) ) continue;
+        if ( TNpcSlot* slot = player->GetInvSlot( node->ProtoNode->NodeName ); slot && slot->vob == item ) return player;
+    }
+    return nullptr;
 }
 
 
