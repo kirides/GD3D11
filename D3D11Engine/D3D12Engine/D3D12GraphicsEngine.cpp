@@ -557,10 +557,8 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( Rhi::Resource* te
     if ( FAILED( transitionCmdList->Close() ) ) return;
 
     Rhi::CommandList* lists[] = { transitionCmdList.Get() };
-    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
-
     const UINT64 waitValue = ++m_UploadFenceValue;
-    if ( FAILED( m_Rhi->GetDirectQueue()->Signal( m_UploadFence.Get(), waitValue ) ) ) return;
+    if ( FAILED( m_Rhi->GetDirectQueue()->ExecuteCommandListsAndSignal( 1, lists, m_UploadFence.Get(), waitValue ) ) ) return;
 
     // OPTIMIZATION: Defer deletion to m_PerFrameCleanupItems via fence value instead of CPU blocking with WaitForSingleObject!
     QueueCleanupJob( [allocator = transitionAllocator, list = transitionCmdList]() {
@@ -850,10 +848,8 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	}
 
 	Rhi::CommandList* lists[] = { m_CopyBatchList.Get() };
-	m_Rhi->GetCopyQueue()->ExecuteCommandLists( 1, lists );
-
 	const UINT64 fenceValue = ++m_CopyFenceValue;
-	m_Rhi->GetCopyQueue()->Signal( m_CopyFence.Get(), fenceValue );
+	m_Rhi->GetCopyQueue()->ExecuteCommandListsAndSignal( 1, lists, m_CopyFence.Get(), fenceValue );
 
 	// ONE cross-queue GPU wait for the whole batch: the direct (render) queue won't sample any of
 	// these textures until the batch's copies complete. Replaces the old per-texture render stall.
@@ -2390,8 +2386,18 @@ XRESULT D3D12GraphicsEngine::Present() {
 
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;
 
+    // Close the cleanup ordinal for this frame BEFORE its fence signal: from here on any QueueCleanupJob
+    // (render thread or worker) belongs to the next frame.
+    const UINT64 frameFenceValue = m_FenceValues[m_FrameIndex];
+    uint64_t submittedOrdinal = 0;
+    {
+        std::lock_guard<std::mutex> lock( m_CleanupMutex );
+        submittedOrdinal = m_CleanupFrameOrdinal++;
+    }
+    // Signalled with the execute (one submit on Vulkan) rather than after Present, which queues no GPU work of ours.
     Rhi::CommandList* lists[] = { m_CmdList.Get() };
-    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
+    m_Rhi->GetDirectQueue()->ExecuteCommandListsAndSignal( 1, lists, m_Fence.Get(), frameFenceValue );
+    m_LastDirectSignal.store( frameFenceValue );
 
     const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
     const UINT syncInterval = vsync ? 1 : 0;
@@ -2416,7 +2422,7 @@ XRESULT D3D12GraphicsEngine::Present() {
         return XR_FAILED;
     }
 
-    MoveToNextFrame();
+    MoveToNextFrame( frameFenceValue, submittedOrdinal );
     return XR_SUCCESS;
 }
 
@@ -2455,21 +2461,7 @@ bool D3D12GraphicsEngine::WaitOnFrameFence( UINT64 value, const char* site ) {
 }
 
 
-void D3D12GraphicsEngine::MoveToNextFrame() {
-    const UINT64 currentFenceValue = m_FenceValues[m_FrameIndex];
-
-    // Close the ordinal for the frame we are about to submit BEFORE its Signal: from here on any
-    // QueueCleanupJob (render thread or worker) belongs to the next frame. Doing it after the Signal
-    // would let a job that is really the next frame's be tagged with a fence that is already going down.
-    uint64_t submittedOrdinal = 0;
-    {
-        std::lock_guard<std::mutex> lock( m_CleanupMutex );
-        submittedOrdinal = m_CleanupFrameOrdinal++;
-    }
-
-    m_Rhi->GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
-    m_LastDirectSignal.store( currentFenceValue );
-
+void D3D12GraphicsEngine::MoveToNextFrame( UINT64 currentFenceValue, uint64_t submittedOrdinal ) {
     // Frame slots cycle on their own; the swapchain image is tracked separately (Vulkan may acquire out of order).
     m_FrameIndex = ( m_FrameIndex + 1 ) % kBackBufferCount;
     m_BackBufferIndex = m_SwapChain->GetCurrentBackBufferIndex();
@@ -2571,10 +2563,8 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
     if ( FAILED( m_CmdList->Close() ) ) return;
 
     Rhi::CommandList* lists[] = { m_CmdList.Get() };
-    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
-
     const UINT64 waitValue = ++m_FenceValues[m_FrameIndex];
-    if ( SUCCEEDED( m_Rhi->GetDirectQueue()->Signal( m_Fence.Get(), waitValue ) ) ) {
+    if ( SUCCEEDED( m_Rhi->GetDirectQueue()->ExecuteCommandListsAndSignal( 1, lists, m_Fence.Get(), waitValue ) ) ) {
         m_LastDirectSignal.store( waitValue );
         WaitOnFrameFence( waitValue, "FlushCommandListSync" );
     }
@@ -2617,7 +2607,7 @@ bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
 }
 
 
-void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
+void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen( Rhi::CommandList* const* after, UINT afterCount ) {
     // Closes + submits m_CmdList and immediately reopens it on the SAME frame allocator. Unlike
     // FlushCommandListSync there is NO fence wait and NO allocator Reset: resetting the allocator would pull
     // the memory out from under the list we just submitted, and waiting would defeat the point. Recording new
@@ -2635,9 +2625,16 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
     // wait then precedes both this batch and the cascade lists that follow it.
     FlushTextureUploads();
 
-    if ( FAILED( m_CmdList->Close() ) ) return;
-    Rhi::CommandList* lists[] = { m_CmdList.Get() };
-    m_Rhi->GetDirectQueue()->ExecuteCommandLists( 1, lists );
+    if ( FAILED( m_CmdList->Close() ) ) {
+        if ( afterCount ) m_Rhi->GetDirectQueue()->ExecuteCommandLists( afterCount, after );
+        return;
+    }
+    // `after` rides in the same ExecuteCommandLists: every call boundary drains the GPU.
+    Rhi::CommandList* lists[1 + kShadowRecordSlots];
+    UINT count = 0;
+    lists[count++] = m_CmdList.Get();
+    for ( UINT i = 0; i < afterCount && count < std::size( lists ); ++i ) lists[count++] = after[i];
+    m_Rhi->GetDirectQueue()->ExecuteCommandLists( count, lists );
 
     if ( FAILED( m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr ) ) ) return;
 
@@ -2645,6 +2642,25 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
         Rhi::DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
         m_CmdList->SetDescriptorHeaps( 1, heaps );
     }
+}
+
+
+bool D3D12GraphicsEngine::GpuCaughtUp() const {
+    return m_Fence && m_Fence->GetCompletedValue() >= m_LastDirectSignal.load();
+}
+
+
+bool D3D12GraphicsEngine::FlushSceneIfGpuCaughtUp() {
+    // A submit boundary drains the GPU, so only split the frame once it has run out of earlier frames to chew on.
+    if ( !m_FrameOpen || !GpuCaughtUp() ) return false;
+    SubmitRecordedCommandsAndReopen();
+    BindSceneColorTarget();
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    return true;
 }
 
 

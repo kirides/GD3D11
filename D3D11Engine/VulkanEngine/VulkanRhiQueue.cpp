@@ -40,11 +40,22 @@ namespace VulkanRhi {
         return m_Completed;
     }
 
-    uint64_t FenceImpl::PrepareSignal( UINT64 value ) {
-        std::lock_guard<std::mutex> lock( m_Mutex );
-        const uint64_t point = ++m_NextInternal;
-        m_Pending.emplace_back( point, value );
+    uint64_t FenceImpl::PrepareSignal( UINT64 value, const QueueImpl* queue ) {
+        uint64_t point = 0;
+        {
+            std::lock_guard<std::mutex> lock( m_Mutex );
+            point = ++m_NextInternal;
+            m_Pending.emplace_back( point, value );
+            if ( m_SignalQueue && m_SignalQueue != queue ) m_MultiQueue = true;
+            m_SignalQueue = queue;
+        }
+        m_Device->Waiter().NoteSignalQueued();
         return point;
+    }
+
+    bool FenceImpl::OnlySignalledBy( const QueueImpl* queue ) const {
+        std::lock_guard<std::mutex> lock( m_Mutex );
+        return !m_MultiQueue && ( !m_SignalQueue || m_SignalQueue == queue );
     }
 
     uint64_t FenceImpl::InternalPointFor( UINT64 value ) const {
@@ -97,6 +108,12 @@ namespace VulkanRhi {
     void FenceWaiter::Start( VkDevice device ) {
         m_Device = device;
         m_Quit = false;
+        VkSemaphoreTypeCreateInfo type = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+        type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        VkSemaphoreCreateInfo ci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        ci.pNext = &type;
+        if ( vkCreateSemaphore( m_Device, &ci, nullptr, &m_Wake ) != VK_SUCCESS ) m_Wake = VK_NULL_HANDLE;
+        m_WakeValue = 0;
         m_Thread = std::thread( [this]() { Run(); } );
     }
 
@@ -105,15 +122,27 @@ namespace VulkanRhi {
             std::lock_guard<std::mutex> lock( m_Mutex );
             if ( !m_Thread.joinable() ) return;
             m_Quit = true;
+            WakeLocked();
         }
         m_Cv.notify_all();
         m_Thread.join();
+        if ( m_Wake ) vkDestroySemaphore( m_Device, m_Wake, nullptr );
+        m_Wake = VK_NULL_HANDLE;
+    }
+
+    void FenceWaiter::WakeLocked() {
+        if ( !m_Wake || !m_Waiting ) return;
+        VkSemaphoreSignalInfo si = { VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO };
+        si.semaphore = m_Wake;
+        si.value = ++m_WakeValue;
+        vkSignalSemaphore( m_Device, &si );
     }
 
     void FenceWaiter::Add( const FenceImpl* fence, UINT64 value, HANDLE event ) {
         {
             std::lock_guard<std::mutex> lock( m_Mutex );
             m_Entries.push_back( { fence, value, event, QpcNow() } );
+            WakeLocked();
         }
         m_Cv.notify_all();
     }
@@ -122,11 +151,19 @@ namespace VulkanRhi {
         std::unique_lock<std::mutex> lock( m_Mutex );
         m_Entries.erase( std::remove_if( m_Entries.begin(), m_Entries.end(), [fence]( const Entry& e ) { return e.Fence == fence; } ),
             m_Entries.end() );
-        // The thread may be inside vkWaitSemaphores on this fence's semaphore; let that bounded wait finish.
-        m_Cv.wait( lock, [this, fence]() { return m_WaitingOn != fence; } );
+        // The thread may be inside vkWaitSemaphores on this fence's semaphore; interrupt it and let it return.
+        WakeLocked();
+        m_Cv.wait( lock, [this]() { return !m_Waiting; } );
+    }
+
+    void FenceWaiter::NoteSignalQueued() {
+        if ( !m_AwaitingSignal.load() ) return;
+        std::lock_guard<std::mutex> lock( m_Mutex );
+        WakeLocked();
     }
 
     void FenceWaiter::Run() {
+        constexpr uint32_t kMaxWait = 32;
         std::unique_lock<std::mutex> lock( m_Mutex );
         while ( !m_Quit ) {
             if ( m_Entries.empty() ) {
@@ -146,21 +183,36 @@ namespace VulkanRhi {
             }
             if ( m_Entries.empty() ) continue;
 
-            const Entry e = m_Entries.front();
-            const uint64_t point = e.Fence->InternalPointFor( e.Value );
-            m_WaitingOn = e.Fence;
+            // One wait on every pending point plus the wake semaphore: returns on the first signal, no polling.
+            VkSemaphore semaphores[kMaxWait + 1];
+            uint64_t values[kMaxWait + 1];
+            uint32_t n = 0;
+            bool awaiting = false;
+            // Raised before the scan, so a signal queued after its fence was scanned still wakes the wait below.
+            m_AwaitingSignal.store( true );
+            for ( const Entry& e : m_Entries ) {
+                const uint64_t point = e.Fence->InternalPointFor( e.Value );
+                if ( !point ) { awaiting = true; continue; }
+                if ( n < kMaxWait ) { semaphores[n] = e.Fence->m_Timeline; values[n++] = point; }
+            }
+            if ( !awaiting ) m_AwaitingSignal.store( false );
+            const bool canWake = m_Wake != VK_NULL_HANDLE;
+            if ( canWake ) { semaphores[n] = m_Wake; values[n++] = m_WakeValue + 1; }
+            m_Waiting = true;
             lock.unlock();
-            if ( point ) {
+            if ( n > 0 ) {
                 VkSemaphoreWaitInfo wi = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
-                wi.semaphoreCount = 1;
-                wi.pSemaphores = &e.Fence->m_Timeline;
-                wi.pValues = &point;
-                vkWaitSemaphores( m_Device, &wi, 2'000'000 );   // 2 ms, so new entries and removals get noticed
+                wi.flags = VK_SEMAPHORE_WAIT_ANY_BIT;
+                wi.semaphoreCount = n;
+                wi.pSemaphores = semaphores;
+                wi.pValues = values;
+                // The wake semaphore makes the timeout a safety net only; without it, stay responsive to new entries.
+                vkWaitSemaphores( m_Device, &wi, canWake ? 100000000ull : 2000000ull );
             } else {
-                Sleep( 1 );   // the value hasn't been signalled on any queue yet
+                Sleep( 1 );
             }
             lock.lock();
-            m_WaitingOn = nullptr;
+            m_Waiting = false;
             m_Cv.notify_all();
         }
     }
@@ -443,7 +495,7 @@ namespace VulkanRhi {
         for ( uint32_t i = 0; i < waitCount && i < kMaxWaits; ++i ) w[nw++] = waits[i];
         for ( uint32_t i = 0; i < signalCount && i < kMaxSignals; ++i ) s[ns++] = signals[i];
         if ( fence ) {
-            s[ns++] = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, fence->m_Timeline, fence->PrepareSignal( fenceValue ),
+            s[ns++] = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, fence->m_Timeline, fence->PrepareSignal( fenceValue, this ),
                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
         }
         s[ns++] = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, m_SerialTimeline, serial, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 };
@@ -477,13 +529,18 @@ namespace VulkanRhi {
     }
 
     void QueueImpl::ExecuteCommandLists( UINT count, Rhi::CommandList* const* lists ) {
+        ExecuteCommandListsAndSignal( count, lists, nullptr, 0 );
+    }
+
+    HRESULT QueueImpl::ExecuteCommandListsAndSignal( UINT count, Rhi::CommandList* const* lists, Rhi::Fence* fence, UINT64 value ) {
         constexpr UINT kMax = 32;
         VkCommandBuffer cmds[kMax];
         uint32_t n = 0;
         for ( UINT i = 0; i < count && n < kMax; ++i )
             if ( VkCommandBuffer cmd = CommandBufferOf( lists[i] ) ) cmds[n++] = cmd;
-        Submit( cmds, n, nullptr, 0, nullptr, 0, nullptr, 0 );
+        const VkResult r = Submit( cmds, n, nullptr, 0, nullptr, 0, static_cast<FenceImpl*>( fence ), value );
         m_Device->CollectGarbage();
+        return r == VK_SUCCESS ? S_OK : DXGI_ERROR_DEVICE_REMOVED;
     }
 
     HRESULT QueueImpl::Signal( Rhi::Fence* fence, UINT64 value ) {
@@ -495,6 +552,9 @@ namespace VulkanRhi {
     HRESULT QueueImpl::Wait( Rhi::Fence* fence, UINT64 value ) {
         FenceImpl* f = static_cast<FenceImpl*>( fence );
         if ( !f ) return E_INVALIDARG;
+        // Our own signals need no semaphore wait: the boundary barrier heading every submit orders later work
+        // after them, while a timeline wait can hold the submit back in the OS scheduler.
+        if ( f->OnlySignalledBy( this ) ) return S_OK;
         const uint64_t point = f->InternalPointFor( value );
         if ( !point ) return S_OK;   // never signalled: a GPU wait on it would deadlock this queue
         AddPendingWait( { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, nullptr, f->m_Timeline, point, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0 } );

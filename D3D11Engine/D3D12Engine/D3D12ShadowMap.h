@@ -93,6 +93,8 @@ public:
     void RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool sunUp );
     // The single join point for the concurrent per-cascade jobs (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
     void WaitCascadeJobs();
+    /** Non-blocking: every cascade job launched this frame has finished. */
+    bool CascadeJobsDone() const;
     // True when this frame's cascades recorded into their OWN command lists inside their jobs. False whenever
     // no job could do that (threading off, sun down, per-slot lists missing, or Prepare() bailed), in which
     // case FinishShadowPasses still has to emit each cascade's draws inline on the main command list.

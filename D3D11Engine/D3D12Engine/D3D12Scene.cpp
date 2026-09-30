@@ -698,6 +698,12 @@ namespace {
 	// Kept file-static (not a member) so D3D12GraphicsEngine.h doesn't have to pull in <future>; cleared rather
 	// than reconstructed each frame so the vector keeps its capacity.
 	std::vector<std::future<void>> g_ShadowRecordJobs;
+
+	bool ShadowRecordJobsDone() {
+		for ( const auto& j : g_ShadowRecordJobs )
+			if ( j.valid() && j.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready ) return false;
+		return true;
+	}
 }
 
 
@@ -738,9 +744,8 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 	// GPU VOB cull, the light cull and SSAO into m_CmdList while the pool records shadows into its own lists.
 	//
 	// Queue ordering: the finished lists must land AHEAD of the lit geometry passes (the first readers of the
-	// cascade map / point cubes). So close+submit m_CmdList here and reopen it on the SAME frame allocator;
-	// FinishShadowPasses then executes the shadow lists while the reopened list is still open, giving the GPU
-	// [part A][part B1][cascades][point cubes][rain map][part B2] even though the CPU recorded B1 first.
+	// cascade map / point cubes). FinishShadowPasses executes them behind everything m_CmdList holds so far,
+	// giving the GPU [part A][part B1][cascades][point cubes][rain map][part B2] even though the CPU recorded B1 first.
 	m_ShadowRecordingPending = false;
 	m_ShadowThreadedRecord = false;
 	// ONLY the point/rain slots. The cascade slots belong to the per-cascade jobs launched way back in
@@ -758,6 +763,8 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 		&& Engine::RenderingThreadPool != nullptr;
 
 	m_ShadowThreadedRecord = threadedRecord;
+	// Part A only goes out early if the GPU is otherwise idle; B1 or the shadow submit carries it at the latest.
+	FlushSceneIfGpuCaughtUp();
 	if ( !threadedRecord ) {
 		// Degrade to the original single-threaded driver: record inline, right here. Same output, same queue
 		// order — just no overlap with the prepass. (The cascades still record in FinishShadowPasses, since
@@ -770,8 +777,6 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 		return;
 	}
 
-	SubmitRecordedCommandsAndReopen();
-	// The reopen Resets m_CmdList, which drops its render targets/viewport along with everything else.
 	BindSceneColorTarget();
 
 	// NOTE: only the point-cube and rain passes are fanned out here. The CSM cascades cannot be recorded yet —
@@ -816,6 +821,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 	//      and reopened m_CmdList, so GPU order ends up [part A][part B1][shadows][part B2].
 	// Anything that failed to record is re-issued inline rather than dropped: skipping a pass would desync its
 	// cross-frame resource-state tracking (D3D12PointShadows' per-slot cube states, m_RainShadowInReadState).
+	const bool submitMain = std::exchange( m_SubmitMainWithShadows, false );
 	if ( !m_FrameOpen ) return;
 
 	// --- 1. join the per-cascade cull -> build -> record chains ---
@@ -848,8 +854,12 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 		UINT numLists = 0;
 		for ( UINT s = 0; s < kShadowRecordSlots; ++s )
 			if ( m_ShadowListRecorded[s] ) lists[numLists++] = m_ShadowCmdLists[s][m_FrameIndex].Get();
-		if ( numLists > 0 )
-			m_Rhi->GetDirectQueue()->ExecuteCommandLists( numLists, lists );
+		if ( numLists > 0 ) {
+			if ( submitMain ) {
+				SubmitRecordedCommandsAndReopen( lists, numLists );
+				BindSceneColorTarget();   // the reopen dropped it; inline re-issues below record into this list
+			} else m_Rhi->GetDirectQueue()->ExecuteCommandLists( numLists, lists );
+		}
 
 		bool anyFailed = false;
 		// Only when the jobs were SUPPOSED to record into their own lists — otherwise 2a already emitted every
@@ -2594,6 +2604,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		// FillCameraVelocity flips them at the end of the frame.
 		EndMotionGBuffer();
     }
+	// Get the prepass running while the CPU records the light cull, SSAO and sky IBL.
+	FlushSceneIfGpuCaughtUp();
 	// Forward+ tiled light cull: consume this frame's light buffer + the prepass depth to record which point
 	// lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
 	DispatchLightCulling();
@@ -2608,15 +2620,15 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// sky; the shaders fall back to the old flat ambient whenever the indices are the 0xFFFFFFFF sentinel.
 	RenderSkyIBL();
 
-	// Submit part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) now instead of
-	// letting it ride along to Present, which left the GPU idle from the shadow lists to the end of the frame.
-	// Ordering is [A][B1][shadows][B2]: nothing in B1 reads what a shadow pass writes, while FinishShadowPasses'
-	// TransitionToReadState and the lit passes are recorded into the reopened list and stay behind the shadows.
+	// Part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) must reach the queue ahead of
+	// the shadow lists: [A][B1][shadows][B2]. Nothing in B1 reads what a shadow pass writes. If the shadow lists are
+	// already recorded, or the GPU still has earlier work, B1 shares their ExecuteCommandLists (one drain, not two);
+	// otherwise it goes out now so the GPU runs it during the join.
 	if ( m_FrameOpen ) {
-		SubmitRecordedCommandsAndReopen();
-		// The reopen Resets m_CmdList, dropping its render targets/viewport, and a cascade re-issued inline
-		// records before FinishShadowPasses re-establishes them.
-		BindSceneColorTarget();
+		const bool ownLists = m_ShadowRecordingPending || ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() );
+		m_SubmitMainWithShadows = ownLists
+			&& ( ( m_ShadowMap.CascadeJobsDone() && ShadowRecordJobsDone() ) || !GpuCaughtUp() );
+		if ( !m_SubmitMainWithShadows ) FlushSceneIfGpuCaughtUp();
 	}
 
 	// Join the shadow recorders and slot their lists in between — the lit passes below are the first thing this
@@ -2648,6 +2660,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (opaque)" );
 		DrawDecalList( decals, true );
 	}
+	// Opaque scene done: hand it to the GPU while the CPU records water, fog and transparency.
+	FlushSceneIfGpuCaughtUp();
 
 	// Opaque scene is now final (world/skeletal/VOBs/vegetation/opaque decals) — snapshot it for NEXT frame's
 	// SSR march before water/transparents draw over it. See D3D12Ssr.cpp.
@@ -2670,6 +2684,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	}
 	PrepareTransparencyFrame( m_TransparencyFogActive ? CaptureTransparencyBackdrop() : UINT_MAX );
 	BindSceneColorTarget();   // the fog composite and the backdrop copy leave no DSV bound
+	FlushSceneIfGpuCaughtUp();
 
 	// Everything else that blends, in ONE back-to-front pass: world transparency surfaces, blended instanced
 	// VOBs, ghosts, blended decals, quad marks and poly strips. After the fog pass; these fog themselves.
@@ -2692,6 +2707,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw rain" );
 		DrawRainParticles();
 	}
+	FlushSceneIfGpuCaughtUp();
 
 	// Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
 	// Done here (not in DrawVobsInstanced) so it runs even when DrawVOBs is off and that pass early-outs.
@@ -2817,6 +2833,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	postFxGraph.Compile();
 	postFxGraph.Execute( m_CmdList );
+
+	// The 3D frame is final; Gothic's UI and game code run before Present, so let the GPU start on it now.
+	if ( m_FrameOpen && GpuCaughtUp() ) {
+		SubmitRecordedCommandsAndReopen();
+		const D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
+		m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+		m_ColorTargetIsHDR = false;
+	}
 
 	// (Debug/editor lines used to be flushed here; see the call site above RenderTAA.)
 

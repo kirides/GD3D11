@@ -33,8 +33,12 @@ namespace VulkanRhi {
     private:
         struct AcquireSemaphore { VkSemaphore Semaphore = VK_NULL_HANDLE; uint64_t Serial = 0; };
         static constexpr UINT kMaxFrameLatency = 16;   // DXGI's limit
+        static constexpr size_t kMaxAcquireSemaphores = 16;
+        bool m_LoggedAcquireCap = false;
 
         bool Acquire();
+        /** An acquire semaphore whose last wait has retired, growing the pool rather than blocking on the GPU. */
+        uint32_t FreeAcquireSemaphore();
         void FlushAcquireWait();
         bool Rebuild();
         void SyncWrappers();
@@ -162,6 +166,27 @@ namespace VulkanRhi {
         m_OnStandIn = true;
     }
 
+    uint32_t SwapchainImpl::FreeAcquireSemaphore() {
+        const uint64_t completed = m_Device->Queue()->CompletedSerial();
+        const uint32_t count = static_cast<uint32_t>( m_AcquireSemaphores.size() );
+        for ( uint32_t i = 0; i < count; ++i ) {
+            const uint32_t index = ( m_NextAcquire + i ) % count;
+            if ( m_AcquireSemaphores[index].Serial <= completed ) return index;
+        }
+        if ( count < kMaxAcquireSemaphores ) {
+            VkSemaphoreCreateInfo ci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+            AcquireSemaphore a;
+            if ( !m_Device->CheckResult( vkCreateSemaphore( m_Device->Vk(), &ci, nullptr, &a.Semaphore ), "vkCreateSemaphore (acquire)" ) ) {
+                m_AcquireSemaphores.push_back( a );
+                return count;
+            }
+        } else if ( !m_LoggedAcquireCap ) {
+            m_LoggedAcquireCap = true;
+            Logging::Wrn( "Vulkan: all {} acquire semaphores are still in flight; acquire waits on the GPU.", count );
+        }
+        return m_NextAcquire;   // caller waits for its serial
+    }
+
     bool SwapchainImpl::Acquire() {
         // Minimized: nothing to acquire, and no present will report OUT_OF_DATE, so retry once it is restored.
         if ( !m_Swapchain.IsUsable() && IsIconic( m_Desc.Window ) ) return false;
@@ -169,9 +194,10 @@ namespace VulkanRhi {
         if ( !m_Swapchain.IsUsable() || m_AcquireSemaphores.empty() ) return false;
         if ( m_OnStandIn ) SyncWrappers();
         for ( int attempt = 0; attempt < 2; ++attempt ) {
+            m_NextAcquire = FreeAcquireSemaphore();
             AcquireSemaphore& a = m_AcquireSemaphores[m_NextAcquire];
             const int64_t start = QpcNow();
-            if ( a.Serial && !m_Device->Queue()->WaitSerial( a.Serial ) ) return false;
+            if ( a.Serial > m_Device->Queue()->CompletedSerial() && !m_Device->Queue()->WaitSerial( a.Serial ) ) return false;
             uint32_t index = 0;
             const VkResult r = m_Swapchain.Acquire( a.Semaphore, index );
             m_Device->AddWait( DeviceImpl::Wait::Acquire, QpcNow() - start );

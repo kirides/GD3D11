@@ -994,6 +994,14 @@ void D3D12ShadowMap::WaitCascadeJobs() {
 }
 
 
+bool D3D12ShadowMap::CascadeJobsDone() const {
+	if ( !m_CullingPending ) return true;
+	for ( const auto& j : g_CullJobs )
+		if ( j.valid() && j.wait_for( std::chrono::seconds( 0 ) ) != std::future_status::ready ) return false;
+	return true;
+}
+
+
 void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	// Phase C for ONE cascade: turn its culled VOB set into an instance upload + an ExecuteIndirect command set.
 	// This used to be a serial main-thread loop over all cascades (FinishPrepare) because it shared the main
