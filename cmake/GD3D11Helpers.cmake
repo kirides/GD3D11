@@ -10,6 +10,8 @@ function(gd3d11_collect_vcxproj_sources vcxproj out_var)
     message(FATAL_ERROR "Missing vcxproj file: ${vcxproj}")
   endif()
 
+  # Re-run configure when the vcxproj's source list changes.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${vcxproj}")
   file(STRINGS "${vcxproj}" _compile_lines REGEX "<ClCompile Include=\"[^\"]+\"")
   set(_sources)
 
@@ -21,6 +23,18 @@ function(gd3d11_collect_vcxproj_sources vcxproj out_var)
 
   list(REMOVE_DUPLICATES _sources)
   set(${out_var} "${_sources}" PARENT_SCOPE)
+endfunction()
+
+# Largest sources first: the generators queue compiles in list order, so the longest ones no longer start last.
+function(gd3d11_sort_sources_by_size_desc base_dir list_var)
+  set(_keyed)
+  foreach(_source IN LISTS ${list_var})
+    file(SIZE "${base_dir}/${_source}" _size)
+    list(APPEND _keyed "${_size}|${_source}")
+  endforeach()
+  list(SORT _keyed COMPARE NATURAL ORDER DESCENDING)
+  list(TRANSFORM _keyed REPLACE "^[0-9]+\\|" "")
+  set(${list_var} "${_keyed}" PARENT_SCOPE)
 endfunction()
 
 function(gd3d11_link_if_target target_name dependency_name)

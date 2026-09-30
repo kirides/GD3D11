@@ -1,4 +1,5 @@
 gd3d11_collect_vcxproj_sources("${CMAKE_CURRENT_SOURCE_DIR}/D3D11Engine.vcxproj" GD3D11_ENGINE_SOURCES)
+gd3d11_sort_sources_by_size_desc("${CMAKE_CURRENT_SOURCE_DIR}" GD3D11_ENGINE_SOURCES)
 
 add_library(D3D11Engine SHARED ${GD3D11_ENGINE_SOURCES} ddraw.def)
 
