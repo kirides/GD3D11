@@ -967,7 +967,7 @@ void D3D11ShadowMap::SelectPointShadowTechnique( EPointShadowTechnique want ) {
         // Every light's shadow state belongs to the technique that made it. Destroying the light objects
         // is what makes "nothing of the old technique survives a switch" provable rather than a checklist;
         // they are re-created lazily under the new one.
-        for ( auto& it : Engine::GAPI->VobLightMap ) {
+        for ( auto& it : Engine::GAPI->GetVobLightMap() ) {
             VobLightInfo* light = it.second;
             if ( !light ) continue;
             light->LightShadowBuffers.reset();

@@ -310,8 +310,8 @@ bool D3D12PointShadows::BuildExcludeList( zCVobLight* lightVob, std::vector<cons
 
 	// PFX-spawned lights (spell effects etc.) aren't excluded — mirrors D3D11 GetHasOriginVob's
 	// `!info->IsPFXVobLight` gate (only carried-item lights get self-shadow exclusion).
-	auto li = Engine::GAPI->VobLightMap.find( lightVob );
-	if ( li != Engine::GAPI->VobLightMap.end() && li->second->IsPFXVobLight ) return false;
+	auto li = Engine::GAPI->GetVobLightMap().find( lightVob );
+	if ( li != Engine::GAPI->GetVobLightMap().end() && li->second->IsPFXVobLight ) return false;
 
 	// Only lights attached to a carried item get exclusion (mirrors D3D11 GetHasOriginVob): walk the light
 	// vob's ancestor chain looking for an oCVisualFX whose origin is an oCItem, or an oCItem ancestor directly.

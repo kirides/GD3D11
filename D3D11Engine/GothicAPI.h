@@ -14,7 +14,6 @@
 #include "ShaderIDs.h"
 #include "TransparencyQueue.h"
 #include "ThreadPool.h"
-#include <shared_mutex>
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
@@ -346,6 +345,7 @@ class MyDirectDrawSurface7;
 class GVegetationBox;
 class zCMorphMesh;
 class zCDecal;
+struct GothicAPIState;
 
 class GothicAPI {
 public:
@@ -915,7 +915,7 @@ public:
     void AddVegetationBox( GVegetationBox* box );
 
     /** Returns the list of current GVegentationBoxes */
-    const std::list<GVegetationBox*>& GetVegetationBoxes() { return VegetationBoxes; }
+    const std::list<GVegetationBox*>& GetVegetationBoxes();
 
     /** Removes a vegetationbox from the world */
     void RemoveVegetationBox( GVegetationBox* box );
@@ -927,10 +927,13 @@ public:
     zCVob* GetPlayerVob();
 
     /** Returns the map of static mesh visuals */
-    const gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals() { return StaticMeshVisuals; }
+    const gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals();
+
+    /** Every registered light */
+    gtl::flat_hash_map<zCVobLight*, VobLightInfo*>& GetVobLightMap();
 
     /** Returns the collection of PolyStrip meshes infos */
-    const std::map<zCTexture*, PolyStripInfo>& GetPolyStripInfos() { return PolyStripInfos; };
+    const std::map<zCTexture*, PolyStripInfo>& GetPolyStripInfos();
 
     /** Removes the given texture from the given section and stores the supression, so we can load it next time */
     void SupressTexture( WorldMeshSectionInfo* section, const std::string& texture );
@@ -979,7 +982,7 @@ public:
         const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture );
 
     /** Gets a list of the staging textures for this frame */
-    std::deque<DeferredMipUpload>& GetStagingTextures() { return FrameStagingTextures; }
+    std::deque<DeferredMipUpload>& GetStagingTextures();
 
     /** Adds a mip map generation deferred command */
     void AddMipMapGeneration( GfxTexture* texture );
@@ -989,7 +992,7 @@ public:
     void RemovePendingTextureCommands( GfxTexture* texture );
 
     /** Gets a list of the mip map generation commands for this frame */
-    std::deque<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
+    std::deque<GfxTexture*>& GetMipMapGeneration();
 
     /** Adds a texture to the list of the loaded textures for this frame */
     void AddFrameLoadedTexture( MyDirectDrawSurface7* srf );
@@ -1008,7 +1011,7 @@ public:
     std::map<zCTexture*, ParticleRenderInfo>& GetFrameParticleInfo();
 
     /** Returns this frame's collected particle instances (populated by DrawParticlesSimple). */
-    std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& GetFrameParticles() { return FrameParticles; }
+    std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& GetFrameParticles();
 
     /** Checks if the normalmaps are there */
     bool CheckNormalmapFilesOld();
@@ -1124,11 +1127,9 @@ private:
     /** Currently bound textures from gothic */
     zCTexture* BoundTextures[8];
 
-    std::map<zCTexture*, std::vector<ParticleInstanceInfo>> FrameParticles;
-    std::map<zCTexture*, ParticleRenderInfo> FrameParticleInfo;
+    /** Container members, see GothicAPIState.h */
+    std::unique_ptr<GothicAPIState> State;
 
-    /** Loaded game sections */
-    std::map<int, std::map<int, WorldMeshSectionInfo>> WorldSections;
     std::vector<WorldSectionBVHNode> WorldSectionBVHNodes;
     std::vector<WorldMeshSectionInfo*> WorldSectionBVHSections;
     bool WorldSectionBVHValid = false;
@@ -1148,38 +1149,13 @@ private:
     /** List of Vobs having a zCParticleFX-Visual */
     std::vector<zCVob*> ParticleEffectVobs;
     std::vector<zCVob*> DecalVobs;
-    std::unordered_map<zCVob*, std::string> tempParticleNames;
 
     /** DrawHelperVisuals scratch, reused across frames */
     std::vector<zCBspBase*> HelperVisualNodes;
     std::vector<zCVob*> HelperVisualVobs;
     size_t HelperVisualFrame = static_cast<size_t>( -1 );
 
-    /** List of Meshes derived from a zCParticleFX-Visual */
-    std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>> ParticleEffectProgMeshes;
-
-    /** Poly strip Visuals */
-    std::set<zCPolyStrip*> PolyStripVisuals;
-
-    /** Flash Visuals */
-    std::unordered_map<zCFlash*, zCVob*> FlashVisuals;
     std::vector<zCPolyStrip*> FrameThunderPolyStrips;
-
-    /** Set of Materials */
-    std::set<zCMaterial*> LoadedMaterials;
-
-    /** List of meshes rendered for this frame */
-    std::set<MeshVisualInfo*> FrameMeshInstances;
-
-    /** Map for static mesh visuals */
-    gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*> StaticMeshVisuals;
-
-    /** Collection of poly strip infos (includes mesh and material data) */
-    std::map<zCTexture*, PolyStripInfo> PolyStripInfos;
-
-    /** Map for skeletal mesh visuals */
-    gtl::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
-    gtl::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
     /** Bumped once per OnWorldUpdate. See GetFrameNumber(). */
     size_t FrameNumber = 0;
@@ -1210,41 +1186,15 @@ private:
      *  missed it (origin had no visual yet). Cheap no-op once the shape is set. */
     void RepairShapeMeshEmitter( zCVob* source, zCParticleFX* fx );
 
-    /** Set of all vobs we registered by now */
-    gtl::flat_hash_set<zCVob*> RegisteredVobs;
-
     /** List of dynamically added vobs */
     std::vector<VobInfo*> DynamicallyAddedVobs;
-
-    /** Map of vobs and VobIndfos */
-    gtl::flat_hash_map<zCVob*, VobInfo*> VobMap;
 public:
-    // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
-    gtl::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
     // Bumped on every VobLightInfo delete; a BspInfo::Lights stamped with an older value may dangle.
     uint32_t LightMirrorEpoch = 0;
     // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
     BspLeafLinearCache LeafLinearCache;
 private:
     BspPortalCuller PortalCuller;
-
-    gtl::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
-
-    /** Map of VobInfo-Lists for zCBspLeafs */
-    std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
-
-    /** Map for the material infos.
-        Guarded because mesh extraction runs on worker threads (WorldConverter::ExtractNodeVisualAsync,
-        GothicAPI::LoadzCModelData) and resolves MaterialInfos while the main thread keeps looking them
-        up per draw. Values are unique_ptr so returned pointers stay valid across a rehash. */
-    gtl::flat_hash_map<void*, std::unique_ptr<MaterialInfo>> MaterialInfos;
-    std::shared_mutex MaterialInfosMutex;
-
-    /** Maps visuals to vobs */
-    gtl::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
-
-    /** Map of textures */
-    gtl::flat_hash_map<std::string, MyDirectDrawSurface7*> SurfacesByName;
 
     /** Directory we started in */
     std::string StartDirectory;
@@ -1268,31 +1218,14 @@ private:
     /** Replacement values for the camera */
     CameraReplacement* CameraReplacementPtr;
 
-    /** List of available GVegetationBoxes */
-    std::list<GVegetationBox*> VegetationBoxes;
-
     /** Gothics output window */
     HWND OutputWindow;
-
-    /** Suppressed textures for the sections */
-    std::map<WorldMeshSectionInfo*, std::vector<std::string>> SuppressedTexturesBySection;
 
     /** Current camera, stored to find out about camera switches */
     zCCamera* CurrentCamera;
 
     /** The id of the main thread */
     DWORD MainThreadID;
-
-    /** Textures loaded this frame */
-    std::deque<DeferredMipUpload> FrameStagingTextures;
-    std::deque<GfxTexture*> FrameMipMapGenerations;
-    std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
-
-    /** Quad marks loaded in the world */
-    std::unordered_map<zCQuadMark*, QuadMarkInfo> QuadMarks;
-
-    /** Map of parameters from the .ini */
-    std::map<std::string, int> ConfigIntValues;
 
     /** The overall wetness of the current scene */
     float SceneWetness;

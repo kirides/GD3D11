@@ -167,7 +167,7 @@ void TiledCubeArrayTechnique::OnLightVobRemoved( const zCVob* lightVob ) {
 void TiledCubeArrayTechnique::ReconcileSlots() {
     // The WHOLE light map, not just this frame's candidates: a light whose slot was handed to somebody else
     // must let go of its end of it, and it can be anywhere at all when that happens.
-    for ( auto& it : Engine::GAPI->VobLightMap ) {
+    for ( auto& it : Engine::GAPI->GetVobLightMap() ) {
         VobLightInfo* light = it.second;
         if ( !light || !light->Vob ) continue;
         D3D11PointLight* pl = light->LightShadowBuffers

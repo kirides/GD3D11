@@ -24,7 +24,7 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 
     // Ensure this light is actually in the VobLightMap
     // some lights don't seem to be in here!
-    Engine::GAPI->VobLightMap[info->Vob] = info;
+    Engine::GAPI->GetVobLightMap()[info->Vob] = info;
 
     LastUpdatePosition = LightInfo->Vob->GetPositionWorld();
 

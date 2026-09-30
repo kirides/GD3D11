@@ -630,7 +630,7 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
     VobLightInfo* nearestInfo = nullptr;
     float nearestDistSq = std::numeric_limits<float>::max();
 
-    for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {
+    for ( auto& vobLightPair : Engine::GAPI->GetVobLightMap() ) {
         VobLightInfo* info = vobLightPair.second;
         if ( !info || !info->Vob || !info->LightShadowBuffers ) {
             continue;
@@ -2115,7 +2115,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                         "resource. Re-bake after toggling." );
 
                     if ( ImGui::Button( "Force re-bake all point light shadows" ) ) {
-                        for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {
+                        for ( auto& vobLightPair : Engine::GAPI->GetVobLightMap() ) {
                             VobLightInfo* info = vobLightPair.second;
                             if ( !info || !info->LightShadowBuffers ) {
                                 continue;

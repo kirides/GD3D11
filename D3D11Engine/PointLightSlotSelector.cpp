@@ -274,7 +274,7 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
     }
 
     // Every registered light, not this frame's visible set: a light you turned away from must keep its cube.
-    for ( const auto& [vob, info] : Engine::GAPI->VobLightMap ) {
+    for ( const auto& [vob, info] : Engine::GAPI->GetVobLightMap() ) {
         if ( !info || !info->Vob ) continue;
         if ( info->IsStaticVobLight && dropStaticLights ) continue;
 
