@@ -7,9 +7,7 @@
 #include "GfxVertexBuffer.h"
 #include "GfxTexture.h"
 #include "GraphicsDeviceCapabilities.h"
-#include "fpslimiter.h"
 #include "widenarrow.h"
-#include "UIRenderer2D.h"
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
@@ -20,6 +18,11 @@ struct SkeletalMeshVisualInfo;
 struct VobInfo;
 struct VobLightInfo;
 class zFont;
+class UIRenderer2D;
+struct FpsLimiter;
+struct UIVertex2D;
+struct UIBatch2D;
+struct UIItemFrame;
 
 static void UpdateShouldBlockGameInput();
 
@@ -111,8 +114,8 @@ public:
         UI_ToggleAdvancedSettings,
     };
 
-    BaseGraphicsEngine() = default;
-    virtual ~BaseGraphicsEngine() = default;
+    BaseGraphicsEngine();
+    virtual ~BaseGraphicsEngine();
     
     /** Returns which concrete backend this engine is. Lets external code replace
         blind reinterpret_casts of Engine::GraphicsEngine with a checked downcast. */
@@ -377,7 +380,7 @@ public:
     virtual void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {};
 
     /** Draws recorded 2D UI batches (UIRenderer2D). Vertices are in Gothic UI pixels; item batches index `items`. */
-    virtual void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items ) {}
+    virtual void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items );
     /** Bindless SRV index for a UI texture, or UINT_MAX when the backend binds textures per batch. */
     virtual UINT GetUITextureIndex( GfxTexture* texture ) { return UINT_MAX; }
     /** Whether DrawUI2D works; without it the ZenGin 2D hooks keep the fixed-function path. */
@@ -385,9 +388,9 @@ public:
 
     /** True when ZenGin's 2D draws should be recorded into GetUIRenderer2D(). */
     bool UseUIRenderer2D() const;
-    UIRenderer2D& GetUIRenderer2D() { return m_UIRenderer2D; }
+    UIRenderer2D& GetUIRenderer2D() { return *m_UIRenderer2D; }
     /** Draws pending UI; call before anything else draws so painter's order holds. */
-    void FlushUI2D() { m_UIRenderer2D.Flush(); }
+    void FlushUI2D();
     /** While open, ZenGin's 2D is recorded even with NativeUIRenderer off (the native inventory). */
     void BeginUI2DScope() { ++m_UI2DScopeDepth; }
     void EndUI2DScope() { if ( m_UI2DScopeDepth > 0 ) --m_UI2DScopeDepth; }
@@ -475,7 +478,7 @@ protected:
     /** Glyph-scale multiplier set by Union's font plugins. 1 = untouched. */
     float m_CustomFontMultiplier = 1.0f;
 
-    UIRenderer2D m_UIRenderer2D{ *this };
+    std::unique_ptr<UIRenderer2D> m_UIRenderer2D;
     int m_UI2DScopeDepth = 0;
 
     HWND m_OutputWindow = nullptr;
@@ -486,7 +489,7 @@ protected:
     std::vector<DisplayModeInfo> m_CachedDisplayModes;
 
     /** Shared by every backend via FrameLimiterBeginFrame/FrameLimiterEndFrame. */
-    std::unique_ptr<FpsLimiter> m_FrameLimiter = std::make_unique<FpsLimiter>();
+    std::unique_ptr<FpsLimiter> m_FrameLimiter;
 
     /** Resolves the limit for the frame about to start: the inactive-window lock, the user's
         FpsLimit and the paused/menu cap, whichever is lowest. 0 means "no limit". */
@@ -495,7 +498,7 @@ protected:
     /** Separate limiter instance for the nested paused/menu loop, so arming or waiting there
         can never disturb the main loop's own in-flight frame timing. Costs nothing until the
         first paused frame actually arms it. */
-    std::unique_ptr<FpsLimiter> m_PausedFrameLimiter = std::make_unique<FpsLimiter>();
+    std::unique_ptr<FpsLimiter> m_PausedFrameLimiter;
 
     /** g_MainLoopFrameTick as of the previous PausedFrameLimiterBeginFrame(). */
     unsigned int m_LastSeenMainLoopTick = 0;

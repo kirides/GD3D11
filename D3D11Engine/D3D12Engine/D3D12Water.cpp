@@ -33,6 +33,7 @@
 #include "../DDSFormat.h"
 #include "../WorldObjects.h"
 #include "../zCTexture.h"
+#include "../WaterProfile.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 
 #include <fstream>
@@ -66,8 +67,21 @@ namespace {
         UINT SsrMaxSteps;             // 0 => SSR off
         UINT SsrRefineSteps;
         UINT UseAtmosphere;           // 0 => skip ApplyAtmosphericScatteringGround (no GSky data)
+
+        UINT CameraUnderwater;        // 1 => no water-body absorption (the column above is air)
+        UINT SurfaceDepthIndex;       // depth after the water prepass (shore probes); 0xFFFFFFFF => unavailable
+        float OceanClimate;
+        float OceanTintStrength;
+
+        XMFLOAT3 MoonDir;             // world space, toward the moon
+        float MoonGlint;
+        XMFLOAT3 OceanTint;
+        float MoonDisc;
+
+        UINT LowCloudIndex;           // premultiplied low cloud layer; 0xFFFFFFFF => none
+        UINT Pad2[3];
     };
-    static_assert( sizeof( WaterCBData ) == 192, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 256, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of both water copies. PIXEL_SHADER_RESOURCE (not the combined NON_PIXEL|PIXEL the fog
     // pass uses) because only the water PS ever reads them.
@@ -378,13 +392,25 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         if ( Engine::GAPI->IsUnderWater() ) {
             cb.SsrMaxSteps = 0;
             cb.SsrRefineSteps = 0;
+            cb.CameraUnderwater = 1;
         }
+        cb.SurfaceDepthIndex = UINT_MAX;   // patched after the prepass copy below
+        cb.LowCloudIndex = m_LowCloudLayerSrvSlot;   // set by GenerateLowClouds this frame, UINT_MAX without clouds
+
+        const OceanProfile ocean = GetOceanProfile();
+        cb.OceanClimate = ocean.Climate;
+        cb.OceanTintStrength = ocean.TintStrength;
+        cb.OceanTint = ocean.Tint;
 
         // GSky::RenderSky() refreshes the AC_* constants every frame (DrawSky runs before this), even though
         // D3D12 renders Gothic's fixed-function sky — same reasoning as RenderFogAndGodRays. Without them the
         // scattering math would divide by a zeroed wavelength/radius set, so the shader skips it instead.
         GSky* sky = Engine::GAPI->GetSky();
         if ( sky ) {
+            const MoonLightInfo moon = sky->GetMoonLight();
+            cb.MoonDir = moon.Direction;
+            cb.MoonGlint = moon.GlintVisibility;
+            cb.MoonDisc = moon.DiscVisibility;
             const auto& atmo = sky->GetAtmosphereCB();
             memcpy( m_WaterCBMapped[m_FrameIndex] + kWaterAtmosphereCbOffset, &atmo, sizeof( atmo ) );
             cb.UseAtmosphere = 1;
@@ -417,6 +443,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // Bind a dummy diffuse for the whole call: the depth prepass' PS reads nothing, but root parameter 1
     // must still be initialized before any draw on this root signature. The color loop below rebinds it.
     m_CmdList->SetGraphicsRootDescriptorTable( 1, blackSrv );
+    m_CmdList->SetGraphicsRoot32BitConstant( 4, 0u, 0 );   // b3 IsOcean, set per batch in the color loop
 
     // === Z-Prepass === (mirrors D3D11's DrawWaterSurfaces::ZPrepass)
     // The color pass below is depth-read-only, so without this the main depth buffer would still hold the
@@ -447,6 +474,40 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         return;
     }
 
+    // Depth with the water surfaces in it, for the shore probes' coverage test. The color pass keeps the
+    // writable DSV bound, so it reads a copy rather than the live buffer.
+    if ( m_Pipelines.Water.DepthPrepassPSO ) {
+        D3D12RenderGraph surfaceGraph( &m_AliasArena );
+        RGResourceHandle surfaceHandle = RG_INVALID_HANDLE;
+        surfaceGraph.AddPass( RG_PASS_NAME( "Water Surface Depth Copy" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
+            surfaceHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
+                static_cast<int>( DXGI_FORMAT_R32_FLOAT ), L"WaterSurfaceDepthCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
+            builder.MarkExternalEffect();
+
+            pass.m_executeCallback = [this, surfaceHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
+                D3D12RenderTarget* surface = g.GetPhysicalTexture( surfaceHandle );
+                if ( !surface ) return;
+                cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+                cmdList.TransitionBarriers( {
+                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
+                    } );
+                cmdList.CopyResource( surface->GetResource(), m_DepthBuffer.Get() );
+                cmdList.TransitionBarriers( {
+                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
+                    { surface->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
+                    } );
+                surface->State = kWaterCopyReadState;
+                };
+            } );
+        surfaceGraph.Compile();
+        surfaceGraph.Execute( m_CmdList );
+
+        // The CB is plain upload memory the GPU reads at execution, so patching it after recording the prepass is safe.
+        if ( D3D12RenderTarget* surface = surfaceGraph.GetPhysicalTexture( surfaceHandle ) )
+            reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] )->SurfaceDepthIndex = surface->GetSrvSlot();
+        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &mainDsv );
+    }
+
     m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
     unsigned int drawnIndices = 0;
     for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
@@ -460,6 +521,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             }
         }
         m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+        m_CmdList->SetGraphicsRoot32BitConstant( 4, IsOceanWaterTexture( tex ) ? 1u : 0u, 0 );
         for ( MeshInfo* mesh : meshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
             m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,

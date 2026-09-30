@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Adds source/header files that live in a D3D11Engine subfolder to D3D11Engine.vcxproj + .filters.
+"""Adds source/header files to D3D11Engine.vcxproj + .filters.
 
-Subfolder .cpp files need the per-config `../pch.h` PrecompiledHeaderFile override (CLAUDE.md), which is
-copied from D3D12Engine\\D3D12Device.cpp's entry. Usage:
+pch.h is force-included project-wide, so .cpp entries need no per-file PCH metadata. Usage:
     python tools/vcxproj_add.py --filter "Engine\\Vulkan" VulkanEngine\\Foo.cpp VulkanEngine\\Foo.h
 Files already listed are skipped.
 """
 import argparse
 import os
-import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,17 +28,11 @@ def write(p, s):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--filter", required=True)
-    ap.add_argument("--no-pch-override", action="store_true", help="for .cpp files outside a subfolder")
     ap.add_argument("files", nargs="+")
     opts = ap.parse_args()
 
     proj = read(PROJ).replace("\r\n", "\n")
     filters = read(FILTERS).replace("\r\n", "\n")
-
-    m = re.search(r'    <ClCompile Include="' + re.escape(TEMPLATE_CPP) + r'">\n(.*?)    </ClCompile>\n', proj, re.S)
-    if not m:
-        sys.exit("template entry not found")
-    pch_block = m.group(1)
 
     if f'<Filter Include="{opts.filter}">' not in filters:
         guid = "{" + __import__("uuid").uuid4().__str__() + "}"
@@ -55,9 +47,8 @@ def main():
             print("skip (already listed)", f)
             continue
         if is_cpp:
-            body = "" if opts.no_pch_override else pch_block
-            item = f'    <ClCompile Include="{f}">\n{body}    </ClCompile>\n' if body else f'    <ClCompile Include="{f}" />\n'
-            anchor = f'    <ClCompile Include="{TEMPLATE_CPP}">'
+            item = f'    <ClCompile Include="{f}" />\n'
+            anchor = f'    <ClCompile Include="{TEMPLATE_CPP}" />'
         else:
             item = f'    <ClInclude Include="{f}" />\n'
             anchor = '    <ClInclude Include="D3D12Engine\\D3D12Device.h" />'

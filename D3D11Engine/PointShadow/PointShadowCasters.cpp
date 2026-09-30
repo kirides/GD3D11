@@ -83,7 +83,8 @@ namespace PointShadowCasters {
 
     void CollectExcludedVobs( const VobLightInfo* info, std::vector<const zCVob*>& out ) {
         // Keeps e.g. the Returning belt light from throwing a huge shadow of its own wearer all around.
-        if ( !GetOriginVob( info ) ) return;
+        const zCVob* item = GetOriginVob( info );
+        if ( !item ) return;
 
         const size_t first = out.size();
         auto seen = [&]( const zCVob* vob ) { return std::find( out.begin() + first, out.end(), vob ) != out.end(); };
@@ -94,6 +95,10 @@ namespace PointShadowCasters {
                     out.push_back( origin );
                 }
             }
+        }
+        // A torch lit from the inventory is no longer parented to the player, so the walk above misses them.
+        if ( const zCVob* player = PointLightSlotSelector::FindCarryingPlayer( item ); player && !seen( player ) ) {
+            out.push_back( player );
         }
     }
 

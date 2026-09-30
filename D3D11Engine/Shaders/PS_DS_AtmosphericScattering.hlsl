@@ -47,6 +47,10 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float4 SQ_WetSky;
     // xyz = view-space moon direction, w = above-horizon fade.
     float4 SQ_MoonDir;
+    // rgb = direct moonlight, w = 1 while the moon is the main (shadow-casting) light.
+    float4 SQ_MoonLight;
+    // rgb = indirect night fill, 0 by day and indoors.
+    float4 SQ_NightFill;
 };
 
 //--------------------------------------------------------------------------------------
@@ -168,7 +172,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
 
     [branch]
-    if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
+    if(AC_LightPos.y > 0 || SQ_MoonLight.w > 0.5f) // the sun by day, the moon at night
 	{
         float3 wsLightDirection = SQ_LightDirectionWS;
 
@@ -229,9 +233,20 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength);
     float worldAO = lerp(1.0f, vertLighting, SQ_WorldAOStrength);
 	
-    float3 litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
-							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun)
-				  + specColored;
+    float3 litPixel;
+    [branch]
+    if (SQ_MoonLight.w > 0.5f)
+    {
+        // Night base unchanged; the moon only adds light, so its shadows never darken the night
+        litPixel = diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao
+                 + (diffuse.rgb * worldAO + spec * 0.25f) * SQ_MoonLight.rgb * sun;
+    }
+    else
+    {
+        litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
+                        diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun)
+                 + specColored;
+    }
 	
     float f = 1.0f - saturate(dot(normal, V));
     // float fresnel = pow(f, 10.0f);
@@ -241,6 +256,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float f8 = f4*f4; 
 	float fresnel = f8*f2;
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
+
+    // Indirect night light, so faces the moon misses don't sink to black
+    litPixel += diffuse.rgb * SQ_NightFill.rgb * worldAO;
 
 #ifdef APPLY_RAIN_EFFECTS
     // Water film: sun and moon streaks plus the sky reflected at grazing angles.
@@ -252,7 +270,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
         float skyOcclusion = worldAO * ssao;
 
         // Not gated by SQ_SunSpecularEnabled: that toggles material highlights, not rain reflections.
-        float wetSun = WetCoatSpecular(coatN, V, normalize(SQ_LightDirectionVS), WET_SUN_DISTANCE, wet.roughness) * shadow;
+        float wetSun = WetCoatSpecular(coatN, V, normalize(SQ_LightDirectionVS), WET_SUN_DISTANCE, wet.roughness) * shadow
+                     * (1.0f - SQ_MoonLight.w); // the moon has its own glint below
         // Moonlight diffused by the clouds, so wet ground still reads at night without torches.
         float wetMoon = WetCoatSpecular(coatN, V, SQ_MoonDir.xyz, WET_MOON_DISTANCE, wet.roughness)
                       * SQ_MoonDir.w * nightBlend * skyOcclusion;

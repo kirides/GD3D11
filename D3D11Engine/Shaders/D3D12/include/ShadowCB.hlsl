@@ -26,12 +26,12 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
     float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
     float    ShadowAOStrength;  float WorldAOStrength;   // vertLighting -> AO modulation weights
-    // How hard baked vertex light gates the sky-IBL AMBIENT term (PBRLighting.hlsl ComputeSunLightingPBR).
-    // 0 = the old unoccluded behaviour, 1 = interiors get no sky ambient at all. See the note there.
+    // How much baked vertex light caps sky visibility on top of the occlusion map (ComputeSunLightingPBR).
     float    SkyOccStrength;    float SunSpecularEnabled;
     // --- Scene wetness (rain) tail, uploaded separately by UploadWetnessConstants after the rain shadow
     // pass has computed this frame's rain camera. RainShadowIndex/DistortionIndex are 0xFFFFFFFF when the
-    // rain shadowmap / distortion2.dds isn't available, which disables the effect entirely.
+    // rain shadowmap / distortion2.dds isn't available, which disables the effect entirely. The rain map
+    // doubles as the sky-visibility map (SampleSkyVisibility) and is kept fresh while dry for it.
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float WetLightReflections; float _wetpad;
@@ -56,6 +56,8 @@ cbuffer ShadowCB : register(SHADOWCB_REGISTER)
     // and the world-space moon direction + above-horizon fade for the night glint.
     float3   WetSkyTint;         float WetSunHeight;
     float3   WetMoonDir;         float WetMoonFade;
+    float3   NightFill;          float MoonMainLight;  // gamma-space night fill; 1 while the moon is the directional light
+    float    BacklitStrength;    float3 BacklitPad;    // 0 when backlit vegetation is off
 };
 
 #endif // D3D12_SHADOWCB_HLSL

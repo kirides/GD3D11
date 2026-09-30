@@ -412,6 +412,100 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     return XR_SUCCESS;
 }
 
+XRESULT D3D11PfxRenderer::RenderLowCloudLayer( ID3D11RenderTargetView* cloudRTV, ID3D11RenderTargetView* depthRTV,
+    ID3D11RenderTargetView* skyRTV, INT2 layerSize, ID3D11ShaderResourceView* sceneDepth ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& context = engine->GetContext();
+    auto ps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_LowClouds );
+    if ( !ps ) return XR_FAILED;
+    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    ps->Apply();
+
+    GSky* sky = Engine::GAPI->GetSky();
+    LowCloudConstantBuffer cb;
+    sky->FillLowCloudConstants( cb );
+    ps->UpdateBuffer( "LowCloudCB", &cb, sizeof( cb ) );
+    ps->UpdateBuffer( "Atmosphere", &sky->GetAtmosphereCB(), sizeof( sky->GetAtmosphereCB() ) );
+
+    D3D11_VIEWPORT vp = {};
+    vp.Width = static_cast<float>( layerSize.x );
+    vp.Height = static_cast<float>( layerSize.y );
+    vp.MaxDepth = 1.0f;
+    context->RSSetViewports( 1, &vp );
+
+    ID3D11RenderTargetView* rtvs[3] = { cloudRTV, depthRTV, skyRTV };
+    context->OMSetRenderTargets( 3, rtvs, nullptr );
+    context->PSSetShaderResources( 0, 1, &sceneDepth );
+
+    Engine::GAPI->GetRendererState().BlendState.SetDefault();
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    auto& depthState = Engine::GAPI->GetRendererState().DepthState;
+    depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    depthState.DepthWriteEnabled = false;
+    depthState.SetDirty();
+
+    DrawFullScreenQuad();
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    context->PSSetShaderResources( 0, 1, &nullSRV );
+    ID3D11RenderTargetView* nullRTVs[3] = {};
+    context->OMSetRenderTargets( 3, nullRTVs, nullptr );
+    depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::DEFAULT_DEPTH_COMP_STATE;
+    depthState.DepthWriteEnabled = true;
+    depthState.SetDirty();
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11PfxRenderer::CompositeLowClouds( ID3D11RenderTargetView* outputRTV, ID3D11ShaderResourceView* cloudSRV,
+    ID3D11ShaderResourceView* cloudDepthSRV, ID3D11ShaderResourceView* skySRV, ID3D11ShaderResourceView* sceneDepth ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& context = engine->GetContext();
+    auto ps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_LowCloudComposite );
+    if ( !ps ) return XR_FAILED;
+    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    ps->Apply();
+
+    GSky* sky = Engine::GAPI->GetSky();
+    LowCloudConstantBuffer cb;
+    sky->FillLowCloudConstants( cb );
+    ps->UpdateBuffer( "LowCloudCB", &cb, sizeof( cb ) );
+    ps->UpdateBuffer( "Atmosphere", &sky->GetAtmosphereCB(), sizeof( sky->GetAtmosphereCB() ) );
+
+    const INT2 res = engine->GetResolution();
+    D3D11_VIEWPORT vp = {};
+    vp.Width = static_cast<float>( res.x );
+    vp.Height = static_cast<float>( res.y );
+    vp.MaxDepth = 1.0f;
+    context->RSSetViewports( 1, &vp );
+
+    context->OMSetRenderTargets( 1, &outputRTV, nullptr );
+    ID3D11ShaderResourceView* srvs[4] = { cloudSRV, cloudDepthSRV, skySRV, sceneDepth };
+    context->PSSetShaderResources( 0, 4, srvs );
+
+    // Premultiplied clouds over the scene; the target's alpha stays as it is
+    auto& blend = Engine::GAPI->GetRendererState().BlendState;
+    blend.SetAlphaBlending();
+    blend.SrcBlend = GothicBlendStateInfo::BF_ONE;
+    blend.SrcBlendAlpha = GothicBlendStateInfo::BF_ZERO;
+    blend.DestBlendAlpha = GothicBlendStateInfo::BF_ONE;
+    blend.SetDirty();
+    auto& depthState = Engine::GAPI->GetRendererState().DepthState;
+    depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    depthState.DepthWriteEnabled = false;
+    depthState.SetDirty();
+
+    DrawFullScreenQuad();
+
+    ID3D11ShaderResourceView* nullSRVs[4] = {};
+    context->PSSetShaderResources( 0, 4, nullSRVs );
+    blend.SetDefault();
+    blend.SetDirty();
+    depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::DEFAULT_DEPTH_COMP_STATE;
+    depthState.DepthWriteEnabled = true;
+    depthState.SetDirty();
+    return XR_SUCCESS;
+}
+
 XRESULT D3D11PfxRenderer::RenderASSAO( ID3D11RenderTargetView* outputRTV, ID3D11ShaderResourceView* depthCopy, ID3D11ShaderResourceView* normals )
 {
     if ( !PFX_ASSAO ) {

@@ -25,6 +25,8 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "D3D12VobArena.h"
+#include "../MorphGpu.h"
 
 namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
@@ -36,7 +38,7 @@ namespace {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 }
 
-D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ) {
+D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ) {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
@@ -59,6 +61,10 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ) {
     m_ShadowMap.Attach( *this );
     m_PointShadows.Attach( *this );
 }
+
+void D3D12GraphicsEngine::OnInventoryVisualUsed( MeshVisualInfo* visual ) { m_VobArena->QueueVisual( visual ); }
+
+void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) { m_VobArena->Forget( mesh ); }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     if ( m_SwapChainReady ) {
@@ -416,6 +422,11 @@ bool D3D12GraphicsEngine::InitScene() {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the height-fog/god-ray pipeline (falling back to the shaders' linear distance fog)." );
     } else if ( !CreateFogConstantBuffers() ) {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the height-fog constant buffers (falling back to the shaders' linear distance fog)." );
+    }
+    if ( !m_Pipelines.CreateLowClouds() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the low cloud pipelines (low clouds unavailable)." );
+    } else if ( !CreateLowCloudConstantBuffers() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the low cloud constant buffers (low clouds unavailable)." );
     }
     if ( !m_Pipelines.CreateAdvanceRain() ) {
         // Non-fatal: rain/snow is an opt-in weather effect (RendererSettings.EnableRain). AdvanceRain() guards

@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "WorldObjects.h"
+#include "WorldMeshSection.h"
+#include "zCPolygon.h"
 #include "GothicAPI.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
@@ -63,6 +65,30 @@ void SkeletalVobInfo::UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& c
 
 void SkeletalVobInfo::UpdateState() {
     WorldMatrix = *Vob->GetWorldMatrixPtr();
+}
+
+WorldMeshSectionInfo::~WorldMeshSectionInfo() {
+    for ( auto& [k, mesh] : WorldMeshes ) {
+        delete mesh;
+    }
+
+    for ( auto& [k, mesh] : SuppressedMeshes ) {
+        delete mesh;
+    }
+
+    for ( auto& [texture, meshes] : WorldMeshesByCustomTexture ) {
+        delete texture; // Meshes are stored in "WorldMeshes". Only delete the texture
+    }
+
+    for ( VobInfo* vob : Vobs ) {
+        delete vob;
+    }
+
+    for ( zCPolygon* poly : SectionPolygons ) {
+        delete poly;
+    }
+
+    delete FullStaticMesh;
 }
 
 SectionInstanceCache::~SectionInstanceCache() {

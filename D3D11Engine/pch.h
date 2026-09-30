@@ -24,7 +24,12 @@
 #include <chrono>
 #include <magic_enum/magic_enum.hpp>
 #include <d3d11_4.h>
+#include <d3d12.h> // declarations only; d3d12.dll is still loaded dynamically
 #include <DirectXMath.h>
+#include <DirectXCollision.h>
+#include <deque>
+#include <queue>
+#include <random>
 #include <future>
 #include <list>
 #include <map>

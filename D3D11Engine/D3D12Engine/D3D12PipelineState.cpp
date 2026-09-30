@@ -2314,7 +2314,7 @@ bool D3D12PipelineState::CreateWater() {
     //
     // The refraction/reflection inputs (scene copy, depth copy, distortion, reflection cube) are NOT in the
     // table: they are fetched bindlessly out of the shared SRV heap by index from the water CB, hence the
-    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag. That keeps this root signature at 4 params while the D3D11
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag. That keeps this root signature small while the D3D11
     // equivalent needs five fixed t-slots, and avoids having to build a heap-contiguous descriptor run for
     // resources that live in unrelated slots.
     D3D12RootLayout& rs = Layout( "Water" );
@@ -2324,6 +2324,7 @@ bool D3D12PipelineState::CreateWater() {
     // DrawWaterSurfaces completes before it binds them, and no later pass rewrites them this frame.
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: b1 AtmosphereConstantBuffer
+    rs.AddConstants( 3, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 4: b3 IsOcean, per texture batch
 
     // s0 — diffuse + the world-space distortion lookups.
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
@@ -3583,10 +3584,11 @@ bool D3D12PipelineState::CreateSkyIbl() {
     const D3D12_STATIC_SAMPLER_DESC sampler =
         D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL );
 
-    // --- Radiance root sig: b0 20x32-bit SkyRadianceCB, u0 UAV table (no SRV — it is purely analytic) ---
+    // --- Radiance root sig: b0 24x32-bit SkyRadianceCB, u0 UAV table, b2 the sky dome's Atmosphere CB ---
     D3D12RootLayout& radianceRs = Layout( "SkyIblRadiance" );
-    radianceRs.AddConstants( 0, 20, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SkyRadianceCB
+    radianceRs.AddConstants( 0, 24, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SkyRadianceCB
     radianceRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 1: u0 OutputCube
+    radianceRs.AddCBV( 2, D3D12_SHADER_VISIBILITY_ALL );             // 2: b2 AtmoCB
     if ( !radianceRs.Build( device ) )
         return false;
     SkyIbl.RadianceRootSig = radianceRs.RootSig();
@@ -3734,6 +3736,77 @@ bool D3D12PipelineState::CreateFog() {
         }
     }
 
+    return true;
+}
+
+
+bool D3D12PipelineState::CreateLowClouds() {
+    // Non-fatal: GenerateLowClouds()/AddLowCloudCompositePass() guard on every PSO below.
+    Rhi::Device* device = m_Device;
+    if ( !device ) return false;
+
+    // Same parameters for both: b0 4 pass constants (bindless indices), b2 LowCloudCB, b1 atmosphere.
+    auto buildLayout = [&]( const char* name, D3D12_SHADER_VISIBILITY vis, D3D12_ROOT_SIGNATURE_FLAGS flags ) -> D3D12RootLayout* {
+        D3D12RootLayout& rs = Layout( name );
+        rs.AddConstants( 0, 4, vis );
+        rs.AddCBV( 2, vis, 0, D3D12RootLayout::RootDataStatic );
+        rs.AddCBV( 1, vis, 0, D3D12RootLayout::RootDataStatic );
+        return rs.Build( device, flags | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) ? &rs : nullptr;
+    };
+    D3D12RootLayout* generateRs = buildLayout( "LowCloudGenerate", D3D12_SHADER_VISIBILITY_ALL, D3D12_ROOT_SIGNATURE_FLAG_NONE );
+    D3D12RootLayout* compositeRs = buildLayout( "LowCloudComposite", D3D12_SHADER_VISIBILITY_PIXEL, D3D12_ROOT_SIGNATURE_FLAG_NONE );
+    if ( !generateRs || !compositeRs ) return false;
+    LowClouds.GenerateRootSig = generateRs->RootSig();
+    LowClouds.CompositeRootSig = compositeRs->RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "LowClouds.hlsl", "CSGenerate", Shadermodel_CS, LowClouds.GenerateCsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "LowClouds.hlsl", "VSFullscreen", Shadermodel_VS, LowClouds.CompositeVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "LowClouds.hlsl", "PSComposite", Shadermodel_PS, LowClouds.CompositePsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    generateRs->ValidateShaders( { { LowClouds.GenerateCsBlob.Get(), "LowClouds.hlsl:CSGenerate", D3D12_SHADER_VISIBILITY_ALL } } );
+    compositeRs->ValidateShaders( {
+        { LowClouds.CompositeVsBlob.Get(), "LowClouds.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { LowClouds.CompositePsBlob.Get(), "LowClouds.hlsl:PSComposite",  D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
+    Rhi::ComputePipelineStateDesc generatePso = {};
+    generatePso.pRootSignature = LowClouds.GenerateRootSig.Get();
+    generatePso.CS = { LowClouds.GenerateCsBlob->GetBufferPointer(), LowClouds.GenerateCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &generatePso, LowClouds.GeneratePSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (low clouds)." );
+        return false;
+    }
+
+    // Fullscreen triangle, premultiplied ONE / INV_SRC_ALPHA onto the HDR scene, alpha channel untouched.
+    Rhi::GraphicsPipelineStateDesc pso = {};
+    pso.pRootSignature = LowClouds.CompositeRootSig.Get();
+    pso.VS = { LowClouds.CompositeVsBlob->GetBufferPointer(), LowClouds.CompositeVsBlob->GetBufferSize() };
+    pso.PS = { LowClouds.CompositePsBlob->GetBufferPointer(), LowClouds.CompositePsBlob->GetBufferSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    auto& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_ONE;
+    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, LowClouds.CompositePSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (low cloud composite)." );
+        return false;
+    }
     return true;
 }
 
@@ -4008,6 +4081,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runOptional( "SkyIbl", &D3D12PipelineState::CreateSkyIbl );
     runOptional( "Sky", &D3D12PipelineState::CreateSky );
     runOptional( "Fog", &D3D12PipelineState::CreateFog );
+    runOptional( "LowClouds", &D3D12PipelineState::CreateLowClouds );
     runOptional( "AdvanceRain", &D3D12PipelineState::CreateAdvanceRain );
     runOptional( "RainDraw", &D3D12PipelineState::CreateRainDraw );
     runOptional( "Lines", &D3D12PipelineState::CreateLines );

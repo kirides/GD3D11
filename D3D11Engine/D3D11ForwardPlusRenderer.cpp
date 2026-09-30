@@ -16,6 +16,8 @@
 #include "GSky.h"
 #include "zCTexture.h"
 #include "zCMaterial.h"
+#include "D3D11PShader.h"
+#include "D3D11ShaderManager.h"
 
 static ID3D11ShaderResourceView* s_nullSRVs[16] = { nullptr };
 

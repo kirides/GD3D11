@@ -30,6 +30,7 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../TransparencyQueue.h"
 
 // Declared in D3D12EngineCommon.h; filled by BuildWorldDrawCommands (D3D12Scene.cpp), drained here.
 std::vector<WorldTransparencyMesh> g_FrameWorldTransparency;

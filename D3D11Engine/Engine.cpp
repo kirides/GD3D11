@@ -126,7 +126,7 @@ namespace Engine {
         Logging::Inf( "GD3D11 {}", VERSION_STRING );
 
         Logging::Inf( "Loading modules for stacktracer" );
-        MyStackWalker::GetSingleton(); // Inits the static object in there
+        InitCrashStackWalker();
 
         Logging::Inf( "Initializing GothicAPI" );
 

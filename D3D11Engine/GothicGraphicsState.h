@@ -163,13 +163,6 @@ struct GothicPipelineKeyHasher {
     }
 };
 
-namespace GothicStateCache {
-    /** Hashmap for caching the state-objects */
-    __declspec(selectany) std::unordered_map<GothicDepthBufferStateInfo, BaseDepthBufferState*, GothicPipelineKeyHasher> s_DepthBufferMap;
-    __declspec(selectany) std::unordered_map<GothicBlendStateInfo, BaseBlendStateInfo*, GothicPipelineKeyHasher> s_BlendStateMap;
-    __declspec(selectany) std::unordered_map<GothicRasterizerStateInfo, BaseRasterizerStateInfo*, GothicPipelineKeyHasher> s_RasterizerStateMap;
-};
-
 /** Depth buffer state information */
 class BaseDepthBufferState;
 
@@ -210,12 +203,7 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
     ECompareFunc DepthBufferCompareFunc;
 
     /** Deletes all cached states */
-    static void DeleteCachedObjects() {
-        for ( const auto& [k, depthBufferState] : GothicStateCache::s_DepthBufferMap ) {
-            delete depthBufferState;
-        }
-        GothicStateCache::s_DepthBufferMap.clear();
-    }
+    static void DeleteCachedObjects();
 
     GothicDepthBufferStateInfo Clone() {
         GothicDepthBufferStateInfo c;
@@ -355,12 +343,7 @@ struct GothicBlendStateInfo : public GothicPipelineState {
     bool Padding;
 
     /** Deletes all cached states */
-    static void DeleteCachedObjects() {
-        for ( const auto& [k, blendState] : GothicStateCache::s_BlendStateMap ) {
-            delete blendState;
-        }
-        GothicStateCache::s_BlendStateMap.clear();
-    }
+    static void DeleteCachedObjects();
 
     GothicBlendStateInfo Clone() {
         GothicBlendStateInfo c;
@@ -431,12 +414,12 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
     float SlopeScaledDepthBias;
 
     /** Deletes all cached states */
-    static void DeleteCachedObjects() {
-        for ( const auto& [k, rasterizerState] : GothicStateCache::s_RasterizerStateMap ) {
-            delete rasterizerState;
-        }
-        GothicStateCache::s_RasterizerStateMap.clear();
-    }
+    static void DeleteCachedObjects();
+};
+
+struct ParticleRenderInfo {
+    GothicBlendStateInfo BlendState;
+    int BlendMode;
 };
 
 /** Sampler state information */
@@ -745,6 +728,14 @@ struct GothicRendererSettings {
 
         DrawSky = true;
         DrawFog = true;
+        EnableLowClouds = false;
+        LowCloudDensity = 1.0f;
+        LowCloudScale = 1.0f;
+        LowCloudHeight = 1.0f;
+        LowCloudDistance = 1.0f;
+        LowCloudSpeed = 1.0f;
+        LowCloudSunLight = 1.0f;
+        LowCloudDayColor = SwitchG1G2( XMFLOAT3( 0.90f, 0.80f, 0.65f ), XMFLOAT3( 1.05f, 1.15f, 1.15f ) );
         FogRange = SwitchG1G2(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
@@ -836,10 +827,10 @@ struct GothicRendererSettings {
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
-        SkyIblIntensity = 0.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
-        SkyOcclusionStrength = 0.85f; // D3D12 only: how hard a roof cuts the sky ambient (0 = off, 1 = interiors get none)
-        SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
-        DefaultMaterialRoughness = 0.50f; // D3D12 only: roughness for materials with no _FX/_ORM map
+        SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
+        SkyOcclusionStrength = 1.0f; // D3D12 only: how far baked vertex light caps sky visibility on top of the occlusion map
+        SkyIblNightFloor = 0.10f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
+        DefaultMaterialRoughness = 0.65f; // D3D12 only: roughness for materials with no _FX/_ORM map
 
         BloomStrength = 1.0f;
         EnableBloom = false;
@@ -872,6 +863,7 @@ struct GothicRendererSettings {
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
+        BacklitVegetation = true;
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
@@ -931,7 +923,7 @@ struct GothicRendererSettings {
         //DisableEverything();
 
         LimitLightIntesity = true;
-        AllowNormalmaps = 0;
+        AllowNormalmaps = 1;
         CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
@@ -963,15 +955,16 @@ struct GothicRendererSettings {
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
 
-        GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
-        ShadowQuality = E_GraphicsPreset::GRAPHICS_MEDIUM;
-        AllowSelfShadowingPointlights = false;
+        GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
+        ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
+        AllowSelfShadowingPointlights = true;
         PointlightShadowCasterFlags = PLSC_DYNAMIC_LIGHTS;
         DisableStaticPointlights = false;
         SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
 
         ApplyGraphicsPreset();
         ApplyAssaoPreset(1);
+        ApplyShadowPreset();
 
         ResetDebugSettings();
     }
@@ -985,6 +978,7 @@ struct GothicRendererSettings {
         ShadowStrength = 0.20f;
         
         EnableBloom = true;
+        Upscaler = UPSCALER_DEFAULT; // no FSR1 available yet.
     }
 
     /** Resolves the capability-driven FeatureSet entries: FEATURE_AUTO takes the device's answer, a
@@ -1059,6 +1053,7 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.00018f;
         FogColorMod = float3::FromColor( 189, 146, 107 );
         FogHeight = 4000;
+        LowCloudDayColor = XMFLOAT3( 0.90f, 0.80f, 0.65f );
     }
 
     void SetupNewWorldSpecificValues() {
@@ -1066,6 +1061,7 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.0005f;
         FogColorMod = float3::FromColor( 180, 180, 255 );
         FogHeight = 800;
+        LowCloudDayColor = XMFLOAT3( 1.05f, 1.15f, 1.15f );
     }
 
     void SetupAddonWorldSpecificValues() {
@@ -1073,6 +1069,7 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.0005f;
         FogColorMod = float3::FromColor( 128, 173, 239 );
         FogHeight = 0;
+        LowCloudDayColor = XMFLOAT3( 1.05f, 1.15f, 1.15f );
     }
 
     void DisableEverything() {}
@@ -1111,9 +1108,18 @@ struct GothicRendererSettings {
     bool DrawParticleEffects;
     bool DrawSky;
     bool DrawFog;
+    bool EnableLowClouds;       // ray-marched cloud banks above the fog height (both backends)
+    float LowCloudDensity;
+    float LowCloudScale;        // horizontal size of the cloud islands
+    float LowCloudHeight;       // vertical extent of the cloud band
+    float LowCloudDistance;     // how far out the clouds start and end
+    float LowCloudSpeed;
+    float LowCloudSunLight;     // sun glow on cloud tops and through thin cloud
+    XMFLOAT3 LowCloudDayColor;  // per world, not persisted (SetupXWorldSpecificValues)
     float FogRange;
     int WindQuality;
     bool HeroAffectsObjects;
+    bool BacklitVegetation;   // D3D12: sun/moon light shines through leaves and thin plants
     bool SortedTransparency;
     bool DrawG1ForestPortals;
     bool G1HighlightInteractiveFocus;

@@ -279,7 +279,7 @@ XRESULT LegacyCubeTechnique::DrawShadows( std::vector<VobLightInfo*>& lights ) {
 
     // Never on the first absent frame, or a blinking light could never finish a bake that sticks.
     constexpr int kPointLightSlotRetentionFrames = 120;
-    for ( auto& it : Engine::GAPI->VobLightMap ) {
+    for ( auto& it : Engine::GAPI->GetVobLightMap() ) {
         if ( !it.second->LightShadowBuffers ) continue;
         if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>( it.second->LightShadowBuffers.get() ) ) {
             LegacyCubeLightState* state = pl->AsLegacy();

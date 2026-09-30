@@ -233,7 +233,7 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
         settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
         // Display "levels" as typical for FSR
-        constexpr ListItem<int> fsrLevels[] = {
+        static constexpr ListItem<int> fsrLevels[] = {
             { "Native AA", 100 },
             { "High Quality", 83 },
             { "Quality", 75 },
@@ -252,12 +252,12 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         shim.CurrentResolution.x * settings.ResolutionScalePercent / 100,
         shim.CurrentResolution.y * settings.ResolutionScalePercent / 100 );
 
-    constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
+    static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
         { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
         { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
         { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
     };
-    constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
+    static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
         { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
         { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
     };
@@ -270,9 +270,20 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         ComboRow( "Upscaler", "##Upscaler", upscalers, &settings.Upscaler );
     }
 
-    ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 || !settings.Upscaler );
-    SliderFloatRow( "Upscaler Sharpening", "##SharpenFactor", &settings.SharpenFactor, 0.0f, 1.0f, "%.2f" );
-    ImGui::EndDisabled();
+    static constexpr ListItem<GothicRendererSettings::E_SharpeningMode> sharpeners[] = {
+        { "Disabled", GothicRendererSettings::E_SharpeningMode::SHARPEN_NONE },
+        { "Simple", GothicRendererSettings::E_SharpeningMode::SHARPEN_SIMPLE },
+        { "CAS", GothicRendererSettings::E_SharpeningMode::SHARPEN_CAS },
+    };
+    if (!settings.Upscaler)
+    {
+        ComboRow( "Sharpener", "##Sharpener", sharpeners, &settings.SharpeningMode, nullptr,
+            [] {} );
+    }
+    
+    if (settings.SharpeningMode || settings.Upscaler) {
+        SliderFloatRow( "Sharpening factor", "##SharpenFactor", &settings.SharpenFactor, 0.0f, 1.0f, "%.2f" );
+    }
 
     ImGui::SeparatorText( "Image" );
 
@@ -430,6 +441,12 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
     }
     ImGui::EndDisabled();
 
+    if ( IsD3D12() ) {
+        SliderFloatRow( "Sky Light", "##SkyIblIntensity", &settings.SkyIblIntensity, 0.0f, 2.0f, "%.2f",
+            "How strongly the sky's colour lights surfaces out of direct sunlight.\n"
+            "0 = plain flat ambient light, as in D3D11." );
+    }
+
     ImText( "Specular Highlights", ImVec2( LabelWidth, 0 ) );
     ImGui::SetItemTooltip( "Some players find specular highlights (bright glints on lit surfaces) visually\n"
         "distracting. Untick a category to keep its diffuse lighting but drop its highlight." );
@@ -546,6 +563,9 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
 
     ImGui::SeparatorText( "Weather & Water" );
 
+    CheckRow( "Low Clouds", &settings.EnableLowClouds,
+        "Drifting cloud banks above the valleys and along the horizon. Costs a half-resolution ray march.", "LowClouds" );
+
     CheckRow( "Rain", &settings.EnableRain, nullptr, "Rain" );
     ImGui::BeginDisabled( !settings.EnableRain );
     CheckRow( "Rain Effects", &settings.EnableRainEffects,
@@ -581,6 +601,12 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         shadersToReload |= ShaderCategory::Other;
     }
 #endif //BUILD_GOTHIC_2_6_fix
+
+    if ( IsD3D12() ) {
+        CheckRow( "Backlit Vegetation", &settings.BacklitVegetation,
+            "Sun and moonlight shine through leaves and thin plants when they are between you and the light.",
+            "BacklitVegetation" );
+    }
 
     ImGui::EndTabItem();
 }

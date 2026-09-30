@@ -14,6 +14,7 @@
 #include "zCVobLight.h"
 #include "D3D11Effect.h"
 #include "D3D11ShadowMap.h"
+#include "D3D11ShaderManager.h"
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;

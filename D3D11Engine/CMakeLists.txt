@@ -1,10 +1,21 @@
 gd3d11_collect_vcxproj_sources("${CMAKE_CURRENT_SOURCE_DIR}/D3D11Engine.vcxproj" GD3D11_ENGINE_SOURCES)
+gd3d11_sort_sources_by_size_desc("${CMAKE_CURRENT_SOURCE_DIR}" GD3D11_ENGINE_SOURCES)
 
 add_library(D3D11Engine SHARED ${GD3D11_ENGINE_SOURCES} ddraw.def)
 
 set_target_properties(D3D11Engine PROPERTIES
   OUTPUT_NAME ddraw
 )
+
+# Mirrors the vcxproj: pch.h is precompiled and force-included; third-party sources stay PCH-free.
+target_precompile_headers(D3D11Engine PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/pch.h>")
+set(_gd3d11_third_party_sources ${GD3D11_ENGINE_SOURCES})
+list(FILTER _gd3d11_third_party_sources INCLUDE REGEX "^(include|vendor|Detours)/")
+set_source_files_properties(${_gd3d11_third_party_sources} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  # CMake only adds this for GNU-target clang; instantiates the PCH's templates once instead of per TU.
+  target_compile_options(D3D11Engine PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fpch-instantiate-templates>)
+endif()
 
 target_include_directories(D3D11Engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -59,10 +70,12 @@ find_package(directxtk CONFIG REQUIRED)
 # supplies the D3D12 IIDs this project needs, and D3D12 stays dynamically loaded
 # (LoadLibrary + GetProcAddress in D3D12Device.cpp) with no hard d3d12.lib link.
 find_package(directx-headers CONFIG REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 target_link_libraries(D3D11Engine PRIVATE
   Microsoft::DirectXMath
   Microsoft::DirectXTK
+  unofficial::sqlite3::sqlite3
 )
 
 # The Windows SDK ships its own (older) DirectXMath/DirectXCollision/XAudio2/D3D12

@@ -3,6 +3,7 @@
 
 #include "zTypes.h"
 #include "zFont.h"
+#include "zCArray.h"
 enum zTRnd_AlphaBlendFunc;
 class zFont;
 struct zColor;

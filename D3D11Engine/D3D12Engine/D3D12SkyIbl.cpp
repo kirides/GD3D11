@@ -13,11 +13,12 @@
 //   3. CSIrradiance   -> m_SkyIrradCube: cosine-convolved diffuse irradiance.
 // The lit shaders then do a standard split-sum lookup (see EvaluateSkyIBL in include/PBRLighting.hlsl).
 //
-// Why analytic rather than a scene capture. D3D12 renders Gothic's FIXED-FUNCTION skydome (DrawSky — the
-// atmospheric-scattering path is D3D11-only and was never ported), so an atmospheric-scattering IBL would not
-// match the sky actually on screen. Driving a gradient from Gothic's OWN zCSkyState master colours tracks time
-// of day and weather exactly, costs one small dispatch instead of six scene re-renders, and needs no re-entrant
-// render path. Localized, placed probes (BSP-sector-driven, parallax-corrected) are deliberately a later stage.
+// Sources. With the atmospheric-scattering dome on screen (D3D12Sky.cpp), the upper hemisphere is that dome's own
+// scattering function, rescaled to the brightness of a gradient built from Gothic's zCSkyState master colours;
+// otherwise the gradient alone. Both track time of day and weather at one small dispatch per change.
+//
+// Occlusion. The cubes are open-sky radiance; ComputeSunLightingPBR fades them out wherever the rain occlusion
+// map (D3D12Rain.cpp, kept fresh while dry for this) sees a ceiling or roof overhead.
 //
 // Cost. ~1.05 MB of VA for the specular cube and ~12 KB for the irradiance cube — negligible against the 32-bit
 // address-space budget, which is exactly why this stage comes before a probe grid.
@@ -83,6 +84,15 @@ namespace {
     // (AtmosphericScattering.h:138, nightColor = (0.2,0.2,0.4) * NIGHT_BRIGHTNESS = (0.4,0.4,0.8)). This floor
     // is that fill, expressed in the IBL's units.
     constexpr XMFLOAT3 kNightFloorTint = { 0.86f, 1.0f, 1.43f };   // relative; x SkyIblNightFloor
+
+    // Circumsolar brightening in the cube: broad and dim. A tight sun disc would duplicate the direct GGX sun
+    // highlight and reflect it again in shadow, where the direct term is correctly masked.
+    constexpr float kSunAureoleExponent = 8.0f;
+    constexpr float kSunAureoleStrength = 0.06f;
+    // Mie asymmetry cap for the IBL's copy of the dome: its real g makes the sun itself, see above.
+    constexpr float kIblMieG = 0.75f;
+    // Rain desaturates the sky toward grey (full effect at RainFXWeight 0.5).
+    constexpr float kOvercastDesaturation = 0.6f;
     XMFLOAT3 MaxFloor3( const XMFLOAT3& c, const XMFLOAT3& floorCol ) {
         return XMFLOAT3( ( std::max )( c.x, floorCol.x ), ( std::max )( c.y, floorCol.y ), ( std::max )( c.z, floorCol.z ) );
     }
@@ -181,9 +191,10 @@ void D3D12GraphicsEngine::UploadSkyIblConstants() {
     if ( !m_ShadowCBMapped[m_FrameIndex] ) return;
 
     const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
+    // Indoor (zBSP_MODE_INDOOR) worlds have no sky; the flat ambient is their whole indirect term.
     const bool valid = m_SkyIblResourcesReady && m_SkyIblValid
         && m_SkyEnvSrvSlot != UINT_MAX && m_SkyIrradSrvSlot != UINT_MAX
-        && set.SkyIblIntensity > 0.0f;
+        && set.SkyIblIntensity > 0.0f && !Engine::GAPI->IsIndoorWorld();
 
     SkyIblCBData cb = {};
     // 0xFFFFFFFF is the shaders' "no IBL, use the flat ambient" sentinel; it is never dereferenced.
@@ -224,9 +235,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     // --- Resolve this frame's sky parameters from Gothic's own state --------------------------------------
     SkyIblParams p;
 
-    // Indoor worlds see no sky. Suppressing the IBL there keeps the existing indoor lighting balance intact
-    // (the CSM sampling CB already gives interiors a neutral sun + non-zero flat ambient) and
-    // avoids reflecting an outdoor gradient onto cave walls.
+    // Indoor worlds see no sky; UploadSkyIblConstants unpublishes the cubes there so the flat ambient applies.
     if ( auto* wi = Engine::GAPI->GetLoadedWorldInfo() )
         if ( wi->BspTree )
             p.Indoor = ( wi->BspTree->GetBspTreeMode() == zBSP_MODE_INDOOR );
@@ -319,6 +328,14 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     // bouncing off a dim albedo is doubly dim — correct physically, useless for a game Gothic never lit that way).
     p.Ground = MaxFloor3( groundLin, Scale3( floorCol, 0.5f ) );
 
+    // Rain flattens the sky toward grey; the dome only drives the IBL while it is the sky actually drawn.
+    p.Overcast = kOvercastDesaturation * std::min( 1.0f, rain * 2.0f );
+    const AtmosphereConstantBuffer& atmo = Engine::GAPI->GetSky()->GetAtmosphereCB();
+    p.Atmosphere = set.AtmosphericScattering && !p.Indoor && m_SkyCBMapped[m_FrameIndex]
+        && atmo.AC_CameraHeight < atmo.AC_OuterRadius;
+    p.AtmoLightPos = XMFLOAT3( atmo.AC_LightPos.x, atmo.AC_LightPos.y, atmo.AC_LightPos.z );
+    p.AtmoWavelength = XMFLOAT3( atmo.AC_Wavelength.x, atmo.AC_Wavelength.y, atmo.AC_Wavelength.z );
+
     // --- Dirty check --------------------------------------------------------------------------------------
     // Colours move continuously through Gothic's day cycle, so an exact compare would rebuild every frame. The
     // epsilon is deliberately loose: this is very low-frequency lighting and a visible step would need a much
@@ -330,7 +347,11 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
         || !NearlyEqual3( p.Ground, m_SkyLastParams.Ground, 0.004f )
         || !NearlyEqual3( p.SunDir, m_SkyLastParams.SunDir, 0.01f )
         || !NearlyEqual3( p.SunColor, m_SkyLastParams.SunColor, 0.004f )
-        || std::fabs( p.SunIntensity - m_SkyLastParams.SunIntensity ) > 0.01f;
+        || std::fabs( p.SunIntensity - m_SkyLastParams.SunIntensity ) > 0.01f
+        || std::fabs( p.Overcast - m_SkyLastParams.Overcast ) > 0.01f
+        || p.Atmosphere != m_SkyLastParams.Atmosphere
+        || ( p.Atmosphere && ( !NearlyEqual3( p.AtmoLightPos, m_SkyLastParams.AtmoLightPos, 0.01f )
+                            || !NearlyEqual3( p.AtmoWavelength, m_SkyLastParams.AtmoWavelength, 0.001f ) ) );
     if ( !dirty ) return;
 
     DX_ZONE( m_CmdList.Get(), "Sky IBL" );
@@ -355,29 +376,40 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
         float Ground[3];   float GroundBlend;
         float SunDir[3];   float SunLobeIntensity;
         float SunColor[3]; float FaceSize;
+        float AtmoBlend;   float Overcast;
+        float AtmoMieG;    float _pad;
     } rcb = {};
     rcb.Zenith[0] = p.Zenith.x; rcb.Zenith[1] = p.Zenith.y; rcb.Zenith[2] = p.Zenith.z;
     rcb.Horizon[0] = p.Horizon.x; rcb.Horizon[1] = p.Horizon.y; rcb.Horizon[2] = p.Horizon.z;
     rcb.Ground[0] = p.Ground.x; rcb.Ground[1] = p.Ground.y; rcb.Ground[2] = p.Ground.z;
     rcb.SunDir[0] = p.SunDir.x; rcb.SunDir[1] = p.SunDir.y; rcb.SunDir[2] = p.SunDir.z;
     rcb.SunColor[0] = p.SunColor.x; rcb.SunColor[1] = p.SunColor.y; rcb.SunColor[2] = p.SunColor.z;
-    // A tight lobe (high exponent) keeps the sun a small bright disc rather than a broad wash — the disc is
-    // what a low-roughness surface reflects, while the broad wash would double-count the direct sun term.
-    rcb.SunSharpness = 256.0f;
-    rcb.SunLobeIntensity = p.SunIntensity;
+    rcb.SunSharpness = kSunAureoleExponent;
+    rcb.SunLobeIntensity = p.SunIntensity * kSunAureoleStrength;
     rcb.GroundBlend = 0.6f;
     // Indoors the sky contributes nothing; build a black cube rather than skipping the passes, so the shaders
     // do not have to distinguish "no IBL" from "IBL that happens to be dark" and the indoor flat ambient in
     // the CSM sampling CB stays the only interior ambient (unchanged behaviour).
     rcb.SkyIntensity = p.Indoor ? 0.0f : 1.0f;
     rcb.FaceSize = static_cast<float>( kSkyEnvSize );
-    static_assert( sizeof( SkyRadianceCB ) == 20 * sizeof( float ), "SkyRadianceCB must match the 20 root constants" );
+    rcb.AtmoBlend = p.Atmosphere ? 1.0f : 0.0f;
+    rcb.Overcast = p.Overcast;
+    rcb.AtmoMieG = std::copysign( std::min( std::fabs( atmo.AC_g ), kIblMieG ), atmo.AC_g );
+    static_assert( sizeof( SkyRadianceCB ) == 24 * sizeof( float ), "SkyRadianceCB must match the 24 root constants" );
+
+    // b2 must always be bound; without the dome it points at the shadow CB and the shader never reads it.
+    D3D12_GPU_VIRTUAL_ADDRESS atmoCb = m_ShadowCBGpu[m_FrameIndex];
+    if ( p.Atmosphere ) {
+        memcpy( m_SkyCBMapped[m_FrameIndex], &atmo, sizeof( atmo ) );   // DrawAtmosphereSkyDome writes the same bytes
+        atmoCb = m_SkyCBGpu[m_FrameIndex];
+    }
 
     const UINT g0 = ( kSkyEnvSize + 7 ) / 8;
     m_CmdList->SetPipelineState( m_Pipelines.SkyIbl.RadiancePSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.SkyIbl.RadianceRootSig.Get() );
-    m_CmdList->SetComputeRoot32BitConstants( 0, 20, &rcb, 0 );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 24, &rcb, 0 );
     m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_SkyEnvUavSlot[0] ) );
+    m_CmdList->SetComputeRootConstantBufferView( 2, atmoCb );
     m_CmdList->Dispatch( g0, g0, 6 );   // .z = cube face
 
     // Mip 0 alone flips to a shader-read state; mips 1..N stay UNORDERED_ACCESS because the very next dispatch
@@ -404,7 +436,9 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     for ( UINT m = 1; m < kSkyEnvMips; ++m ) {
         const UINT mipSize = kSkyEnvSize >> m;
         pcb.FaceSize = static_cast<float>( mipSize );
-        pcb.Roughness = static_cast<float>( m ) / static_cast<float>( kSkyEnvMips - 1 );
+        // Squared: EvaluateSkyIBL reads mip = sqrt(roughness) * (N-1), so mip m must hold roughness (m/(N-1))^2.
+        const float t = static_cast<float>( m ) / static_cast<float>( kSkyEnvMips - 1 );
+        pcb.Roughness = t * t;
         // Rougher mips integrate a wider lobe and so need more samples, but they are also much smaller — 32 at
         // mip 1 up to 128 at the last one keeps total work roughly flat across the chain.
         pcb.NumSamples = 32u << std::min( m - 1, 2u );

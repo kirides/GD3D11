@@ -7,6 +7,7 @@
 #include "../D3D11_Helpers.h"
 #include "../zFILE_VDFS.h"
 #include "../ThreadPool.h"
+#include "../UIRenderer2D.h"
 
 #define DebugWriteTex(x)  DebugWrite(x)
 

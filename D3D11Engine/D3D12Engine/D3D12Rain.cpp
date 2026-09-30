@@ -24,6 +24,8 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
+#include "D3D12VobArena.h"
 
 namespace {
     const float2 snowScale( 3.0f, 3.0f );
@@ -429,13 +431,12 @@ void D3D12GraphicsEngine::UploadWetnessConstants() {
     XMStoreFloat3( &sky.SkyTint, tint );
     if ( GSky* gsky = Engine::GAPI->GetSky() ) {
         sky.SunHeight = gsky->GetAtmosphereCB().AC_LightPos.y;
-        zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
-            ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
-        if ( sc ) {
-            const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( gsky->GetAtmoshpereSettings().SkyTimeScale );
-            XMStoreFloat3( &sky.MoonDir, XMVector3Normalize( XMLoadFloat3( &moonWS ) ) );
-            sky.MoonFade = std::clamp( sky.MoonDir.y * 4.0f, 0.0f, 1.0f );
-        }
+        const MoonLightInfo moon = gsky->GetMoonLight();
+        sky.MoonDir = moon.Direction;
+        sky.MoonFade = moon.AboveHorizonFade;
+        sky.NightFill = moon.NightFill;
+        sky.MoonMainLight = moon.IsMainLight ? 1.0f : 0.0f;
+        sky.BacklitStrength = set.BacklitVegetation ? 0.5f : 0.0f;
     }
     memcpy( m_ShadowCBMapped[m_FrameIndex] + kWetSkyCbOffset, &sky, sizeof( sky ) );
 }
@@ -649,8 +650,21 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
         return;
 
     auto& state = Engine::GAPI->GetRendererState();
-    if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) return;   // matches D3D11's actual gate — see AdvanceRain's comment on RendererSettings.EnableRain
+    // Rain redraws every frame (D3D11's gate — see AdvanceRain's comment on RendererSettings.EnableRain). While dry
+    // the map is still the sky-visibility source for the IBL and for drying surfaces, so refresh it on a budget.
+    const XMFLOAT3 camNow = Engine::GAPI->GetCameraPosition();
+    if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) {
+        const bool wanted = ( state.RendererSettings.SkyIblIntensity > 0.0f && !Engine::GAPI->IsIndoorWorld() )
+            || Engine::GAPI->GetSceneWetness() > 0.0f;
+        if ( !wanted ) return;
+        const float dx = camNow.x - m_OcclusionMapCenter.x, dy = camNow.y - m_OcclusionMapCenter.y, dz = camNow.z - m_OcclusionMapCenter.z;
+        const bool stale = !m_RainShadowViewProjValid || ++m_OcclusionMapAge >= kOcclusionMapRefreshFrames
+            || dx * dx + dy * dy + dz * dz > kOcclusionMapRefreshDistance * kOcclusionMapRefreshDistance;
+        if ( !stale ) return;
+    }
     if ( !CreateRainShadowResources() ) return;
+    m_OcclusionMapCenter = camNow;
+    m_OcclusionMapAge = 0;
 
     ZoneScopedN( "Prepare rain shadowmap" );
 
@@ -690,6 +704,13 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     // cliff edge puts the whole valley floor far BELOW the camera, and the old symmetric ±4000 pushed it
     // past the far plane — out of the map, so it never got wet.
     XMVECTOR eyePos = XMVectorSubtract( camPos, XMVectorScale( forward, kRainShadowUpRange ) );
+    // Snap the eye to whole texels across the map plane so edges stay put while the camera moves.
+    const float texel = span / static_cast<float>( kRainShadowMapSize );
+    const float eyeR = XMVectorGetX( XMVector3Dot( eyePos, right ) );
+    const float eyeU = XMVectorGetX( XMVector3Dot( eyePos, up ) );
+    eyePos = XMVectorAdd( eyePos, XMVectorAdd(
+        XMVectorScale( right, std::round( eyeR / texel ) * texel - eyeR ),
+        XMVectorScale( up, std::round( eyeU / texel ) * texel - eyeU ) ) );
 
     // 3. Construct the Light's World Matrix (Inverse View) directly!
     XMMATRIX lightWorldMatrix;
@@ -841,7 +862,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     // Same viewport/scissor/topology the world block set (both are unconditional there... except when the
     // world had no casters), so re-establish them here rather than depending on that branch having run.
     if ( m_RainVobDrawCount > 0 && m_ShadowMap.GetVobIndirectCasterPSO() && m_VobIndirectCmdSig
-        && m_RainVobDrawArgs[m_FrameIndex] && m_VobArena.Ready() ) {
+        && m_RainVobDrawArgs[m_FrameIndex] && m_VobArena->Ready() ) {
         DX_ZONE( cmdList.Get(), "Vobs" );
         TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 

@@ -156,10 +156,10 @@ float AC_getNearIntersection( float3 v3Pos, float3 v3Ray, float fDistance2, floa
 }
 
 // Camera INSIDE the atmosphere shell — the normal in-game case (AC_CameraHeight < AC_OuterRadius).
-float3 ApplyAtmosphericScatteringSky( float3 worldPosition )
+// vPos = the point on the shell relative to AC_SpherePosition; mieG = the Mie asymmetry (AC_g for the dome).
+float3 AC_ScatterSkyShell( float3 vPos, float mieG )
 {
     float3 camPos = AC_CameraPos;
-    float3 vPos = worldPosition - AC_SpherePosition;
     float3 vRay = vPos - camPos;
 
     float fFar = length( vRay );
@@ -206,7 +206,21 @@ float3 ApplyAtmosphericScatteringSky( float3 worldPosition )
     float fCos = dot( AC_LightPos, vDirection ) / length( vDirection );
     float fCos2 = fCos * fCos;
 
-    return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, AC_g, AC_g * AC_g ) * c1 * 2.0f;
+    return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, mieG, mieG * mieG ) * c1 * 2.0f;
+}
+
+float3 ApplyAtmosphericScatteringSky( float3 worldPosition )
+{
+    return AC_ScatterSkyShell( worldPosition - AC_SpherePosition, AC_g );
+}
+
+// The dome's radiance seen from the camera along `dir` (the far hit of the view ray with the outer shell).
+float3 AC_ScatterSkyDirection( float3 dir, float mieG )
+{
+    float b = dot( AC_CameraPos, dir );
+    float c = dot( AC_CameraPos, AC_CameraPos ) - AC_OuterRadius * AC_OuterRadius;
+    float t = -b + sqrt( max( b * b - c, 0.0 ) );
+    return AC_ScatterSkyShell( AC_CameraPos + dir * t, mieG );
 }
 
 // Camera OUTSIDE the atmosphere shell. Differs from the above by starting the march at the ray's entry point

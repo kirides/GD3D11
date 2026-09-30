@@ -64,6 +64,11 @@ cbuffer FP_ScreenQuadConstantBuffer : register( b4 )
 
     // World-space units per texel, precomputed on CPU (x=cascade0 ... w=cascade3).
     float4 SQ_CascadeTexelSize;
+
+    float4 SQ_WetSky;       // unused here, keeps the moon fields at their DS_ScreenQuadConstantBuffer offsets
+    float4 SQ_MoonDir;      // xyz = view-space moon direction, w = above-horizon fade
+    float4 SQ_MoonLight;    // rgb = direct moonlight, w = 1 while the moon is the main light
+    float4 SQ_NightFill;    // rgb = indirect night fill, 0 by day and indoors
 };
 
 // Forward+ tile data
@@ -251,12 +256,24 @@ float3 FP_ComputeSunLighting(
     float shadowAO = lerp( 1.0f, vertLighting, SQ_ShadowAOStrength );
     float worldAO = lerp( 1.0f, vertLighting, SQ_WorldAOStrength );
 
-    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
-                            diffuseColor * lightColor.rgb * lightColor.a * worldAO, sun )
-                    + specColored;
+    float3 litPixel;
+    [branch]
+    if ( SQ_MoonLight.w > 0.5f )
+    {
+        // Night base unchanged; the moon only adds light (PS_DS_AtmosphericScattering does the same)
+        litPixel = diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao
+                 + ( diffuseColor * worldAO + spec * 0.25f ) * SQ_MoonLight.rgb * sun;
+    }
+    else
+    {
+        litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
+                         diffuseColor * lightColor.rgb * lightColor.a * worldAO, sun )
+                 + specColored;
+    }
 
     float fresnel = pow( 1.0f - saturate( dot( normal, V ) ), 10.0f );
     litPixel += lerp( fresnel * litPixel * 0.5f, 0.0f, sun );
+    litPixel += diffuseColor * SQ_NightFill.rgb * worldAO;
 
     return litPixel;
 }

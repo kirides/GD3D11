@@ -11,6 +11,7 @@
 #include "GMesh.h"
 #include "D3D11Effect.h"
 #include "D3D11ShadowMap.h"
+#include "D3D11ShaderManager.h"
 
 XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     std::vector<VobLightInfo*>& lights,

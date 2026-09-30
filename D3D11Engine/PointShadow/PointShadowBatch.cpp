@@ -22,6 +22,10 @@
 #include "../zCVobLight.h"
 #include "PointShadowCasters.h"
 #include "SkeletalCubeCasters.h"
+#include "../WorldMeshSection.h"
+#include "../D3D11ShaderManager.h"
+#include "../WorldConverter.h"
+#include "../D3D11Texture.h"
 
 extern bool RequiresNvidiaTiledShadowFaceFallback;
 
@@ -559,7 +563,7 @@ namespace {
         unsigned int Triangles() const { return m_Triangles; }
 
     private:
-        auto Context() const { return m_Engine->GetContext().Get(); }
+        ID3D11DeviceContext1* Context() const { return m_Engine->GetContext().Get(); }
 
         static bool Excludes( const CubePass& pass, const zCVob* vob ) {
             const auto first = s_Excluded.begin() + pass.FirstExcluded;

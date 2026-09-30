@@ -1,12 +1,8 @@
 #pragma once
 #include "D3D11GraphicsEngineBase.h"
-#include "D3D11DeferredRenderer.h"
-#include "D3D11ForwardPlusRenderer.h"
-#include "fpslimiter.h"
 #include "GothicAPI.h"
-#include "D3D11ShadowMap.h"
-#include "D3D11ShaderManager.h"
-#include "D3D11SkeletalPoseCache.h"
+#include "RGTextureDesc.h"
+#include "ConstantBufferPool.h"
 #include <functional>
 #include <array>
 #include "D3D11TracyDebug.h"
@@ -14,8 +10,17 @@
 struct RenderToDepthStencilBuffer;
 
 class D3D11IndirectBuffer;
+struct TransparentItem;
+enum class EWorldTransparencyVariant : uint8_t;
 class D3D11VertexBuffer;
 class D3D11ShaderManager;
+class D3D11DeferredRenderer;
+class D3D11ForwardPlusRenderer;
+class D3D11ShadowMap;
+class D3D11SkeletalPoseCache;
+class ISceneRenderer;
+class RenderGraph;
+struct RenderShadowmapsParams;
 
 class D3D11NVAPI;
 
@@ -269,7 +274,7 @@ public:
     /** MSAA resources for the Forward+ renderer's opaque geometry pass (null/1 sample when MSAA is off or Deferred is active) */
     RenderToTextureBuffer* GetMSAAColorBuffer() const { return MSAAColorBuffer.get(); }
     RenderToDepthStencilBuffer* GetMSAADepthBuffer() const { return MSAADepthStencilBuffer.get(); }
-    UINT GetActiveMSAASampleCount() const { return MSAAColorBuffer ? MSAAColorBuffer->GetSampleCount() : 1; }
+    UINT GetActiveMSAASampleCount() const;
 
     /** Resolves MSAADepthStencilBuffer's sample 0 into the single-sample DepthStencilBuffer via a fullscreen pixel shader (no-op if MSAA is inactive) */
     void ResolveMSAADepth();
@@ -359,7 +364,7 @@ public:
     D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
 
     /** Every skeletal vob's bone pose this frame, shared by all passes that skin it. */
-    D3D11SkeletalPoseCache& GetSkeletalPoseCache() { return m_SkeletalPoses; }
+    D3D11SkeletalPoseCache& GetSkeletalPoseCache() { return *m_SkeletalPoses; }
 
     /** Reloads shaders */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All) override;
@@ -419,7 +424,7 @@ public:
     static ETransparencyFog TransparencyFogModeForAlphaFunc( int alphaFunc );
 
     /** Returns a dummy cube-rendertarget used for pointlight shadowmaps */
-    RenderToTextureBuffer* GetDummyCubeRT() const { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
+    RenderToTextureBuffer* GetDummyCubeRT() const;
 
     void EnsureTempVertexBufferSize( std::unique_ptr<D3D11VertexBuffer>& buffer, UINT size );
 
@@ -571,10 +576,10 @@ protected:
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
 
     /** Deferred renderer (GBuffer pass, lighting pass, shader selection) */
-    D3D11DeferredRenderer DeferredRenderer;
+    std::unique_ptr<D3D11DeferredRenderer> DeferredRenderer;
 
     /** Forward+ renderer (depth prepass, light culling, lit geometry pass) */
-    D3D11ForwardPlusRenderer ForwardPlusRenderer{ DeferredRenderer };
+    std::unique_ptr<D3D11ForwardPlusRenderer> ForwardPlusRenderer;
 
     /** Active scene renderer, selected by RendererMode setting */
     ISceneRenderer* ActiveSceneRenderer = nullptr;
@@ -612,6 +617,7 @@ public:
     GMesh* InverseUnitSphereMesh;
     /** Reflection */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
+    ID3D11ShaderResourceView* WaterLowCloudSRV = nullptr;   // this frame's low cloud layer while water draws
 private:
     bool PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals );
     void UnbindWindMetadata();
@@ -773,7 +779,7 @@ private:
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;
 
-    D3D11SkeletalPoseCache m_SkeletalPoses;
+    std::unique_ptr<D3D11SkeletalPoseCache> m_SkeletalPoses;
 
     /** FL11 bone buffer for draws without a per-frame pose: the inventory preview and the vertex-normal debug view. */
     std::unique_ptr<D3D11VertexBuffer> SkeletalBoneTransformsBufferTransient;

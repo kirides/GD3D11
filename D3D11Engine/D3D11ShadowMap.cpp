@@ -513,8 +513,9 @@ XRESULT D3D11ShadowMap::PrepareRender()
     // path, see D3D12ShadowMap::ComputeCascadeMatrices). Does not render, just computes atmosphere data.
     Engine::GAPI->GetSky()->RenderSky();
 
-    XMVECTOR currentDir = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
-    currentDir = XMVector3Normalize( currentDir );
+    // The sun by day, the moon at night
+    const XMFLOAT3 mainLightDir = Engine::GAPI->GetSky()->GetMainLightDirection();
+    XMVECTOR currentDir = XMVector3Normalize( XMLoadFloat3( &mainLightDir ) );
 
     // *** TEMPORAL SMOOTHING FOR LIGHT DIRECTION ***
     // Use static variables to maintain state across frames for smooth shadow transitions
@@ -534,6 +535,12 @@ XRESULT D3D11ShadowMap::PrepareRender()
 
     static XMVECTOR s_previousLightDir = currentDir;
     static bool s_lightDirInitialized = false;
+
+    // The sun/moon hand-over and savegame loads jump the direction: snap rather than sweep the shadows across
+    if ( s_lightDirInitialized && XMVectorGetX( XMVector3Dot( s_previousLightDir, currentDir ) ) < 0.9995f ) {
+        s_previousLightDir = currentDir;
+        lastCascadeData.PreviousLightDir = currentDir;
+    }
 
     XMVECTOR dir;
 
@@ -960,7 +967,7 @@ void D3D11ShadowMap::SelectPointShadowTechnique( EPointShadowTechnique want ) {
         // Every light's shadow state belongs to the technique that made it. Destroying the light objects
         // is what makes "nothing of the old technique survives a switch" provable rather than a checklist;
         // they are re-created lazily under the new one.
-        for ( auto& it : Engine::GAPI->VobLightMap ) {
+        for ( auto& it : Engine::GAPI->GetVobLightMap() ) {
             VobLightInfo* light = it.second;
             if ( !light ) continue;
             light->LightShadowBuffers.reset();
@@ -1096,12 +1103,12 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
         float atlasClearValue = 1.0f;
         if ( m_useAtlas && m_shadowAtlas ) {
             const bool shouldRenderShadows =
-                Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y > 0 &&
+                Engine::GAPI->GetSky()->IsMainLightUp() &&
                 settings.DrawShadowGeometry &&
                 settings.EnableShadows;
             if ( !shouldRenderShadows ) {
                 // No caster is drawn at all this frame; the whole atlas becomes one constant.
-                atlasClearValue = Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ? 0.0f : 1.0f;
+                atlasClearValue = !Engine::GAPI->GetSky()->IsMainLightUp() ? 0.0f : 1.0f;
                 if ( auto dsv = m_shadowAtlas->GetDepthStencilView() ) {
                     m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, atlasClearValue, 0 );
                 }
@@ -1298,8 +1305,7 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
     // Dont render shadows from the sun when it isn't on the sky
     if ( isNotWorldShadowMap ||
-        (Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y >
-            0 &&  // Only stop rendering if the sun is down on main-shadowmap
+        (Engine::GAPI->GetSky()->IsMainLightUp() &&  // Only stop rendering if neither sun nor moon lights the world
             // TODO: Take this out of here!
             Engine::GAPI->GetRendererState().RendererSettings.DrawShadowGeometry &&
             Engine::GAPI->GetRendererState().RendererSettings.EnableShadows) ) {
@@ -1317,7 +1323,7 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
     } else {
         if ( !params.SkipClear ) {
-            if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ) {
+            if ( !Engine::GAPI->GetSky()->IsMainLightUp() ) {
                 m_context->ClearDepthStencilView( dsvOverwrite.Get(), D3D11_CLEAR_DEPTH, 0.0f,
                     0 );  // Always shadow in the night
             } else {
@@ -1335,6 +1341,18 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
     Engine::GAPI->SetFarPlane(
         Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
         WORLD_SECTION_SIZE );
+}
+
+namespace {
+    /** Moon direction (view space), moonlight and the night fill for the sun pass. */
+    void FillMoonConstants( DS_ScreenQuadConstantBuffer& scb, GSky* sky, FXMMATRIX view ) {
+        const MoonLightInfo moon = sky->GetMoonLight();
+        XMFLOAT3 moonVS;
+        XMStoreFloat3( &moonVS, XMVector3TransformNormal( XMLoadFloat3( &moon.Direction ), view ) );
+        scb.SQ_MoonDir = float4( moonVS.x, moonVS.y, moonVS.z, moon.AboveHorizonFade );
+        scb.SQ_MoonLight = float4( moon.LightColor.x, moon.LightColor.y, moon.LightColor.z, moon.IsMainLight ? 1.0f : 0.0f );
+        scb.SQ_NightFill = float4( moon.NightFill.x, moon.NightFill.y, moon.NightFill.z, 0.0f );
+    }
 }
 
 DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
@@ -1361,7 +1379,8 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
     scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
-    XMVECTOR lightDirWorld = XMLoadFloat3( &sky->GetAtmosphereCB().AC_LightPos );
+    const XMFLOAT3 mainLightDir = sky->GetMainLightDirection();
+    XMVECTOR lightDirWorld = XMLoadFloat3( &mainLightDir );
     XMStoreFloat3( &scb.SQ_LightDirectionWS, lightDirWorld );
     XMStoreFloat3( &scb.SQ_LightDirectionVS,
         XMVector3TransformNormal( lightDirWorld, view ) );
@@ -1435,6 +1454,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
+    FillMoonConstants( scb, sky, view );
     return scb;
 }
 
@@ -1500,7 +1520,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
     // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
     scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
-    XMVECTOR lightDirWorld = XMLoadFloat3( &sky->GetAtmosphereCB().AC_LightPos );
+    const XMFLOAT3 mainLightDir = sky->GetMainLightDirection();
+    XMVECTOR lightDirWorld = XMLoadFloat3( &mainLightDir );
     XMStoreFloat3( &scb.SQ_LightDirectionWS, lightDirWorld );
     XMStoreFloat3( &scb.SQ_LightDirectionVS,
         XMVector3TransformNormal( lightDirWorld, view ) );
@@ -1601,16 +1622,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
         XMStoreFloat3( &skyRgb, skyColor );
         scb.SQ_WetSky = float4( skyRgb.x, skyRgb.y, skyRgb.z, std::max( 0.0f, settings.RainWetLightReflections ) );
 
-        // Moon direction (view space) for the night glint on wet ground; w fades it out below the horizon.
-        zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
-            ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
-        if ( sc ) {
-            const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( sky->GetAtmoshpereSettings().SkyTimeScale );
-            const XMVECTOR moonDir = XMVector3Normalize( XMLoadFloat3( &moonWS ) );
-            XMFLOAT3 moonVS;
-            XMStoreFloat3( &moonVS, XMVector3TransformNormal( moonDir, view ) );
-            scb.SQ_MoonDir = float4( moonVS.x, moonVS.y, moonVS.z, std::clamp( XMVectorGetY( moonDir ) * 4.0f, 0.0f, 1.0f ) );
-        }
+        FillMoonConstants( scb, sky, view );
     }
 
     psAtmo->UpdateBuffer("DS_ScreenQuadConstantBuffer", &scb, sizeof(scb));

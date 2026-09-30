@@ -179,11 +179,12 @@ private:
     float               m_CascadeTexelWorld[kShadowCascades] = {};  // world units / shadow texel (sampling normal bias)
 
     DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };
-    // Temporal light-direction smoothing (P2.9c-3c): the origin-anchored texel-snap grid amplifies tiny
-    // per-frame sun drift into a large lateral texel shift for players far from the origin (lever arm) ->
-    // crawl. Lerp toward the live value so the grid orientation changes gradually, not per-frame.
+    // Light direction after SmoothShadowCameraUpdate's lerp + quantize
     DirectX::XMFLOAT3 m_SmoothedSunDir = { 0.0f, 1.0f, 0.0f };
     bool m_SunDirInitialized = false;
+    // Per-cascade texel-grid origin, kept on the grid near the slice so a turning sun pivots the grid close by
+    DirectX::XMFLOAT3 m_SnapAnchor[kShadowCascades] = {};
+    bool m_SnapAnchorValid[kShadowCascades] = {};
 
     // Per-cascade world-mesh ExecuteIndirect arg rings (engine command sig m_WorldIndirectCmdSig).
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_WorldDrawArgs[kShadowCascades][kBackBufferMax];

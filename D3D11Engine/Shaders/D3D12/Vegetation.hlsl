@@ -50,6 +50,7 @@ SamplerState smpAoClamp : register(s1);
 
 // DelightDiffuse, ComputeSunShadow, ComputeSunLightingPBR and AccumTiledPointLights are shared with
 // World.hlsl/Vob.hlsl/Skeletal.hlsl. PerturbNormal/CotangentFrame go unused since grass has no normal map.
+#define SKY_VISIBILITY_LITE 1   // grass overdraw: 9 sky-visibility taps instead of 25
 #include "include/PBRLighting.hlsl"
 
 // Same push-away-from-the-player falloff as D3D11's VS_GrassInstanced.hlsl.
@@ -155,7 +156,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // prepass range limit the blade is absent from the mask and simply reads the terrain's AO, which is a much
     // milder error at that distance than it would be up close.
     float ssao = SampleScreenSpaceAO( i.clip.xy );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao, 1.0, 1u );   // grass: leaf foliage
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, 0.9, 0.0 );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

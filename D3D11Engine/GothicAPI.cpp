@@ -4,6 +4,7 @@
 #include <sstream>
 #include "pch.h"
 #include "GothicAPI.h"
+#include "GothicAPIState.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
@@ -59,6 +60,10 @@
 #include "ThreadPool.h"
 #include "zFILE.h"
 #include "zFILE_VDFS.h"
+#include "WorldMeshSection.h"
+#include "D3D11ShaderManager.h"
+#include "RenderQueue.h"
+#include "zCResourceManager.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -147,7 +152,7 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     buffer.Color = float4( 1, 1, 1, 1 );
 }
 
-GothicAPI::GothicAPI() {
+GothicAPI::GothicAPI() : State( std::make_unique<GothicAPIState>() ) {
     OriginalGothicWndProc = 0;
 
     TextureTestBindMode = false;
@@ -166,6 +171,41 @@ GothicAPI::GothicAPI() {
     SkeletalMeshVobs.reserve(300);
     AnimatedSkeletalVobs.reserve(300);
     DynamicallyAddedVobs.reserve(100);
+}
+
+std::string GothicAPI::GetLoadedWorldSettingsPath( bool createPath ) const {
+    if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
+        return "";
+    }
+    auto gameName = GetGameName();
+    std::string zenFolder;
+    if ( gameName == "Original" ) {
+        zenFolder = "system\\GD3D11\\ZENResources\\";
+    } else {
+        zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
+    }
+    if ( !Toolbox::FolderExists( zenFolder ) ) {
+        if (createPath) {
+            if ( !Toolbox::CreateDirectoryRecursive( zenFolder ) ) {
+                Logging::Err( "Could not save custom ZEN-Resources. Could not create directory: {}", zenFolder );
+                return "";
+            }
+        }
+    }
+
+    auto const ini = zenFolder + LoadedWorldInfo->WorldName + ".INI";
+    return ini;
+}
+
+TransparencyQueue& GothicAPI::GetTransparencyQueue() { return State->TransparencyQueueData; }
+
+BspPortalCuller& GothicAPI::GetPortalCuller() { return State->PortalCuller; }
+const BspPortalCuller& GothicAPI::GetPortalCuller() const { return State->PortalCuller; }
+
+bool GothicAPI::AreSunShadowsFullyOccluded() const {
+    return RendererState.RendererSettings.EnablePortalShadowSkip
+        && State->PortalCuller.IsActive()
+        && !State->PortalCuller.IsOutdoorVisible();
 }
 
 GothicAPI::~GothicAPI() {
@@ -557,7 +597,7 @@ void GothicAPI::OnWorldUpdate() {
     ++FrameNumber;
 #if BUILD_SPACER
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
-    BspInfo* root = &BspLeafVobLists[rootBsp];
+    BspInfo* root = &State->BspLeafVobLists[rootBsp];
 
     if ( !root->OriginalNode )
         Engine::GAPI->OnWorldLoaded();
@@ -565,7 +605,7 @@ void GothicAPI::OnWorldUpdate() {
 #ifdef BUILD_SPACER_NET
     if ( RendererState.RendererSettings.RunInSpacerNet ) {
         zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
-        BspInfo* root = &BspLeafVobLists[rootBsp];
+        BspInfo* root = &State->BspLeafVobLists[rootBsp];
 
         if ( !root->OriginalNode )
             Engine::GAPI->OnWorldLoaded();
@@ -636,6 +676,10 @@ void GothicAPI::OnWorldUpdate() {
                 skyController->SetTimeStopRain( timeStopRain );
                 skyController->SetRenderLighting( renderLightning );
             }
+
+            // RenderSkyPre is skipped for the scattering dome; without this masterState (sky IBL colours) freezes.
+            if ( zCCamera::GetCamera() )
+                skyController->Interpolate();
 
             skyController->SetLastMasterTime( masterTime );
         }
@@ -861,19 +905,19 @@ GVegetationBox* GothicAPI::SpawnVegetationBoxAt( const XMFLOAT3& position, const
     XMStoreFloat3( &maxposition, XMLoadFloat3( &max ) + XMLoadFloat3( &position ) );
     v->InitVegetationBox( minposition, maxposition, "", density, 1.0f, restrictByTexture );
 
-    VegetationBoxes.push_back( v );
+    State->VegetationBoxes.push_back( v );
 
     return v;
 }
 
 /** Adds a vegetationbox to the world */
 void GothicAPI::AddVegetationBox( GVegetationBox* box ) {
-    VegetationBoxes.push_back( box );
+    State->VegetationBoxes.push_back( box );
 }
 
 /** Removes a vegetationbox from the world */
 void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
-    VegetationBoxes.remove( box );
+    State->VegetationBoxes.remove( box );
     delete box;
 }
 
@@ -881,7 +925,7 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 void GothicAPI::ResetWorld() {
     ResetVobs();
     ClearWorldSectionBVH();
-    WorldSections.clear();
+    State->WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
 
@@ -912,11 +956,11 @@ void GothicAPI::ResetVobs() {
     
     // Delete light vobs, those depend on world sections and load stuff in the background.
     // by deleting them first we block the thread until the destructor finished
-    for ( auto const& it : VobLightMap ) {
+    for ( auto const& it : State->VobLightMap ) {
         Engine::GraphicsEngine->OnVobRemovedFromWorld( it.first );
         delete it.second;
     }
-    VobLightMap.clear();
+    State->VobLightMap.clear();
     
     // Clear sections
     for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
@@ -934,34 +978,34 @@ void GothicAPI::ResetVobs() {
     }
 
     FrameThunderPolyStrips.clear();
-    FlashVisuals.clear();
+    State->FlashVisuals.clear();
     ParticleEffectVobs.clear();
-    RegisteredVobs.clear();
-    BspLeafVobLists.clear();
+    State->RegisteredVobs.clear();
+    State->BspLeafVobLists.clear();
     LeafLinearCache.Clear();
     // Holds indices into the (now gone) sector arrays and BspInfo::SectorIds - must not outlive them.
-    PortalCuller.Clear();
+    State->PortalCuller.Clear();
     DynamicallyAddedVobs.clear();
     DynamicMeshVobs.clear();   // non-owning, aliases VobMap's VobInfo* -- deleted below via VobMap, not here
     DecalVobs.clear();
-    VobsByVisual.clear();
-    SkeletalVobMap.clear();
+    State->VobsByVisual.clear();
+    State->SkeletalVobMap.clear();
 
     // Delete static mesh visuals
-    for ( auto const& it : StaticMeshVisuals ) {
+    for ( auto const& it : State->StaticMeshVisuals ) {
         delete it.second;
     }
-    StaticMeshVisuals.clear();
+    State->StaticMeshVisuals.clear();
 
     // Delete skeletal mesh visuals
-    for ( auto const& it : SkeletalMeshVisuals ) {
+    for ( auto const& it : State->SkeletalMeshVisuals ) {
         delete it.second;
     }
-    for ( auto const& it : SkeletalMeshNpcs ) {
+    for ( auto const& it : State->SkeletalMeshNpcs ) {
         delete it.second;
     }
-    SkeletalMeshVisuals.clear();
-    SkeletalMeshNpcs.clear();
+    State->SkeletalMeshVisuals.clear();
+    State->SkeletalMeshNpcs.clear();
 
     // Only the held references are left to hand back — clearAndFlush() above waited for every background
     // extraction and the infos they wrote into are gone. Safe inline rather than deferred: the maps are
@@ -969,10 +1013,10 @@ void GothicAPI::ResetVobs() {
     s_AsyncVisualExtractor->CancelAll();
 
     // Delete static mesh vobs
-    for ( auto const& it : VobMap ) {
+    for ( auto const& it : State->VobMap ) {
         delete it.second;
     }
-    VobMap.clear();
+    State->VobMap.clear();
 
     // Delete skeletal mesh vobs
     for ( auto it : SkeletalMeshVobs ) {
@@ -1003,13 +1047,13 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
     std::string worldStr = "system\\GD3D11\\meshes\\WLD_" + LoadedWorldInfo->WorldName + ".obj";
     // Convert world to our own format
 #ifdef BUILD_GOTHIC_2_6_fix
-    WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
+    WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &State->WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
 #else
     if ( Toolbox::FileExists( worldStr ) ) {
-        WorldConverter::LoadWorldMeshFromFile( worldStr, &WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh );
+        WorldConverter::LoadWorldMeshFromFile( worldStr, &State->WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh );
         LoadedWorldInfo->CustomWorldLoaded = true;
     } else {
-        WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
+        WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &State->WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
     }
 #endif
     BuildWorldSectionBVH();
@@ -1341,7 +1385,7 @@ const std::string& GothicAPI::GetStartDirectory() {
 
 /** Builds the static mesh instancing cache */
 void GothicAPI::BuildStaticMeshInstancingCache() {
-    for ( auto const& it : StaticMeshVisuals ) {
+    for ( auto const& it : State->StaticMeshVisuals ) {
         it.second->StartNewFrame();
     }
 }
@@ -1454,9 +1498,9 @@ void GothicAPI::DrawWorldMeshNaive() {
 #endif
 //#endif
 
-    FrameParticleInfo.clear();
-    FrameParticles.clear();
-    FrameMeshInstances.clear();
+    State->FrameParticleInfo.clear();
+    State->FrameParticles.clear();
+    State->FrameMeshInstances.clear();
 
     {
         ZoneScopedN( "World Mesh" );
@@ -1565,7 +1609,7 @@ void GothicAPI::DrawParticlesSimple() {
             }
         }
 
-        Engine::GraphicsEngine->DrawFrameParticleMeshes( ParticleEffectProgMeshes );
+        Engine::GraphicsEngine->DrawFrameParticleMeshes( State->ParticleEffectProgMeshes );
     }
 }
 
@@ -1573,9 +1617,9 @@ void GothicAPI::DrawParticlesSimple() {
 void GothicAPI::CalcPolyStripMeshes() {
     ZoneScopedN( "GothicAPI::CalcPolyStripMeshes" );
     ExVertexStruct polyFan[4];
-    PolyStripInfos.clear();
+    State->PolyStripInfos.clear();
 
-    for ( const auto& pStrip : PolyStripVisuals ) {
+    for ( const auto& pStrip : State->PolyStripVisuals ) {
         if ( !pStrip ) continue;
 
         //Pointer passed is a placeholder, it'll not be used inside the function.
@@ -1659,16 +1703,16 @@ void GothicAPI::CalcPolyStripMeshes() {
 #endif
 
             //Convert list of quads to list of triangles
-            PolyStripInfos[tx].vertices.reserve( 4 * 3 );
-            WorldConverter::TriangleFanToList( &polyFan[0], 4, &PolyStripInfos[tx].vertices );
-            PolyStripInfos[tx].material = mat;
+            State->PolyStripInfos[tx].vertices.reserve( 4 * 3 );
+            WorldConverter::TriangleFanToList( &polyFan[0], 4, &State->PolyStripInfos[tx].vertices );
+            State->PolyStripInfos[tx].material = mat;
         }
     }
 };
 
 void GothicAPI::CalcFlashMeshes() {
     ZoneScopedN( "GothicAPI::CalcFlashMeshes" );
-    if ( !RendererState.RendererSettings.DrawParticleEffects || (FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
+    if ( !RendererState.RendererSettings.DrawParticleEffects || (State->FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
         // Only consumer of the list, so drain it even when we draw nothing - otherwise it grows for as
         // long as the barrier keeps pushing bolts.
         FrameThunderPolyStrips.clear();
@@ -1679,7 +1723,7 @@ void GothicAPI::CalcFlashMeshes() {
 
     XMVECTOR camPos = GetCameraPositionXM();
     static std::vector<zCPolyStrip*> polyStrips; polyStrips.clear();
-    for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
+    for ( auto it = State->FlashVisuals.begin(); it != State->FlashVisuals.end();) {
         zCFlash* flash = it->first;
         if ( XMVector3Greater(XMVector3LengthSq( flash->GetStartPositionWorld() - camPos ), vVfxRangeSq) &&
             XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) ) {
@@ -1690,7 +1734,7 @@ void GothicAPI::CalcFlashMeshes() {
 
         if ( flash->RenderFlash( polyStrips ) ) {
             zCVob* connectedVob = it->second;
-            it = FlashVisuals.erase( it );
+            it = State->FlashVisuals.erase( it );
             if ( connectedVob ) {
                 connectedVob->GetHomeWorld()->RemoveVob( connectedVob );
             }
@@ -1786,9 +1830,9 @@ void GothicAPI::CalcFlashMeshes() {
 #endif
 
             //Convert list of quads to list of triangles
-            PolyStripInfos[tx].vertices.reserve( 4 * 3 );
-            WorldConverter::TriangleFanToList( &polyFan[0], 4, &PolyStripInfos[tx].vertices );
-            PolyStripInfos[tx].material = mat;
+            State->PolyStripInfos[tx].vertices.reserve( 4 * 3 );
+            WorldConverter::TriangleFanToList( &polyFan[0], 4, &State->PolyStripInfos[tx].vertices );
+            State->PolyStripInfos[tx].material = mat;
         }
     }
 }
@@ -1879,21 +1923,21 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
-    LoadedMaterials.erase( mat );
+    State->LoadedMaterials.erase( mat );
     {
-        std::unique_lock lock( MaterialInfosMutex );
-        MaterialInfos.erase( mat );
+        std::unique_lock lock( State->MaterialInfosMutex );
+        State->MaterialInfos.erase( mat );
     }
     if ( !mat )
         return;
-    for ( auto&& it : SkeletalMeshVisuals ) {
+    for ( auto&& it : State->SkeletalMeshVisuals ) {
         // Skip entries a background LoadzCModelData(...) job is still filling in - mutating
         // Meshes/SkeletalMeshes here would race with the worker thread writing to the same maps.
         if ( !it.second->GetIsReady() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
-    for ( auto&& it : SkeletalMeshNpcs ) {
+    for ( auto&& it : State->SkeletalMeshNpcs ) {
         if ( !it.second->GetIsReady() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
@@ -1902,12 +1946,12 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
 
 /** Called when a material got created */
 void GothicAPI::OnMaterialCreated( zCMaterial* mat ) {
-    LoadedMaterials.insert( mat );
+    State->LoadedMaterials.insert( mat );
 }
 
 /** Returns if the material is currently active */
 bool GothicAPI::IsMaterialActive( zCMaterial* mat ) const {
-    return LoadedMaterials.contains(mat);
+    return State->LoadedMaterials.contains(mat);
 }
 
 /** Called when a vob moved */
@@ -1924,8 +1968,8 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
         return (mask == 0xFFFF);
     };
 
-    auto it = VobMap.find( vob );
-    if ( it != VobMap.end() ) {
+    auto it = State->VobMap.find( vob );
+    if ( it != State->VobMap.end() ) {
         VobInfo* vi = it->second;
         if ( checkMatrix( vob->GetWorldMatrixXM(), XMLoadFloat4x4( &vi->WorldMatrix ) ) ) {
             // No actual change
@@ -1941,8 +1985,8 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
         Engine::GraphicsEngine->OnVobMoved( vob );
         Engine::GAPI->GetRendererState().RendererInfo.FrameVobUpdates++;
     } else {
-        auto sit = SkeletalVobMap.find( vob );
-        if ( sit != SkeletalVobMap.end() ) {
+        auto sit = State->SkeletalVobMap.find( vob );
+        if ( sit != State->SkeletalVobMap.end() ) {
             SkeletalVobInfo* vi = sit->second;
             if ( vi->ParentBSPNodes.empty() || checkMatrix( vob->GetWorldMatrixXM(), XMLoadFloat4x4( &vi->WorldMatrix ) ) ) {
                 // No actual change
@@ -1983,7 +2027,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
 
     // This is a poly strip vob
     if ( strcmp( className, "zCPolyStrip" ) == 0 ) {
-        PolyStripVisuals.erase( reinterpret_cast<zCPolyStrip*>(visual) );
+        State->PolyStripVisuals.erase( reinterpret_cast<zCPolyStrip*>(visual) );
     }
 
     // Check every extension
@@ -1991,10 +2035,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
         // Delete according to the type
         if ( ext == ".3DS" ) {
             // Clear the visual from all vobs (TODO: This may be slow!)
-            for ( auto it = VobMap.begin(); it != VobMap.end();) {
+            for ( auto it = State->VobMap.begin(); it != State->VobMap.end();) {
                 if ( !it->second->VisualInfo ) { // This happens sometimes, so get rid of it
                     delete it->second;
-                    it = VobMap.erase( it );
+                    it = State->VobMap.erase( it );
                     continue;
                 }
 
@@ -2004,19 +2048,19 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 ++it;
             }
 
-            delete StaticMeshVisuals[static_cast<zCProgMeshProto*>(visual)];
-            StaticMeshVisuals.erase( static_cast<zCProgMeshProto*>(visual) );
+            delete State->StaticMeshVisuals[static_cast<zCProgMeshProto*>(visual)];
+            State->StaticMeshVisuals.erase( static_cast<zCProgMeshProto*>(visual) );
             break;
         } else if ( ext == ".MDS" || ext == ".ASC" ) {
             // We can load some MDS/ASC models as inventory objects
             zCProgMeshProto* pm = static_cast<zCProgMeshProto*>(visual);
-            auto vit = StaticMeshVisuals.find( pm );
-            if ( vit != StaticMeshVisuals.end() ) {
+            auto vit = State->StaticMeshVisuals.find( pm );
+            if ( vit != State->StaticMeshVisuals.end() ) {
                 // Clear the visual from all vobs (TODO: This may be slow!)
-                for ( auto it = VobMap.begin(); it != VobMap.end();) {
+                for ( auto it = State->VobMap.begin(); it != State->VobMap.end();) {
                     if ( !it->second->VisualInfo ) { // This happens sometimes, so get rid of it
                         delete it->second;
-                        it = VobMap.erase( it );
+                        it = State->VobMap.erase( it );
                         continue;
                     }
 
@@ -2026,8 +2070,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                     ++it;
                 }
 
-                delete StaticMeshVisuals[pm];
-                StaticMeshVisuals.erase( pm );
+                delete State->StaticMeshVisuals[pm];
+                State->StaticMeshVisuals.erase( pm );
             }
 
             zCModel* zmodel = static_cast<zCModel*>(visual);
@@ -2038,11 +2082,11 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                     str.append( zmodel->GetModelName() );
                 }
 
-                auto it = SkeletalMeshVisuals.find( str );
+                auto it = State->SkeletalMeshVisuals.find( str );
                 // Only tear the entry down if it belongs to *this* model: an extraction reference can hold a
                 // model's destructor past a reload that re-bound this name to a newer one. A null Visual
                 // means the extraction never completed, so the entry is nobody else's.
-                if ( it != SkeletalMeshVisuals.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
+                if ( it != State->SkeletalMeshVisuals.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
                         if ( vobInfo->VisualInfo == it->second ) {
@@ -2053,19 +2097,19 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                     // Make sure no background extraction is still writing into the info we delete.
                     s_AsyncVisualExtractor->WaitForSkeletal( it->second );
 
-                    delete SkeletalMeshVisuals[str];
-                    SkeletalMeshVisuals.erase( str );
+                    delete State->SkeletalMeshVisuals[str];
+                    State->SkeletalMeshVisuals.erase( str );
                 }
             }
 
             zCVob* homeVob = zmodel->GetHomeVob();
             if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
                 oCNPC* npc = static_cast<oCNPC*>(homeVob);
-                auto it = SkeletalMeshNpcs.find( npc );
+                auto it = State->SkeletalMeshNpcs.find( npc );
                 // Same identity check as above; the armor change is exactly what it is for, since the
                 // NPC's entry may already have been rebuilt from its new zCModel by the time this
                 // (deferred) destructor gets to run.
-                if ( it != SkeletalMeshNpcs.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
+                if ( it != State->SkeletalMeshNpcs.end() && (!it->second->Visual || it->second->Visual == zmodel) ) {
                     // Find vobs using this visual
                     for ( SkeletalVobInfo* vobInfo : SkeletalMeshVobs ) {
                         if ( vobInfo->VisualInfo == it->second ) {
@@ -2076,8 +2120,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                     // Make sure no background extraction is still writing into the info we delete.
                     s_AsyncVisualExtractor->WaitForSkeletal( it->second );
 
-                    delete SkeletalMeshNpcs[npc];
-                    SkeletalMeshNpcs.erase( npc );
+                    delete State->SkeletalMeshNpcs[npc];
+                    State->SkeletalMeshNpcs.erase( npc );
                 }
             }
             break;
@@ -2085,7 +2129,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     }
 
     // Clear
-    auto& list = VobsByVisual[visual];
+    auto& list = State->VobsByVisual[visual];
     if ( _canClearVobsByVisual ) {
         for ( auto const& it : list ) {
             OnRemovedVob( it->Vob, LoadedWorldInfo->MainWorld );
@@ -2108,8 +2152,8 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
             Logging::Inf( "{} had {} vobs", className, list.size() );
 #endif
 
-        VobsByVisual[visual].clear();
-        VobsByVisual.erase( visual );
+        State->VobsByVisual[visual].clear();
+        State->VobsByVisual.erase( visual );
     }
 }
 /** Draws a MeshInfo */
@@ -2187,33 +2231,33 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
 
     // Before the RegisteredVobs early-out: a zCVobLight has no visual, so OnAddVob never registers it.
     if ( tearDownLight ) {
-        if ( auto lit = VobLightMap.find( static_cast<zCVobLight*>(vob) ); lit != VobLightMap.end() ) {
+        if ( auto lit = State->VobLightMap.find( static_cast<zCVobLight*>(vob) ); lit != State->VobLightMap.end() ) {
             VobLightInfo* li = lit->second;
-            VobLightMap.erase( lit );
+            State->VobLightMap.erase( lit );
             ++LightMirrorEpoch;   // BspInfo::Lights mirrors may still hold li
             delete li;
         }
     }
 
-    auto it = RegisteredVobs.find( vob );
-    if ( it == RegisteredVobs.end() ) {
+    auto it = State->RegisteredVobs.find( vob );
+    if ( it == State->RegisteredVobs.end() ) {
         // Not registered
         return;
     }
 
-    RegisteredVobs.erase( it );
+    State->RegisteredVobs.erase( it );
 
     zCVisual* visual = vob->GetVisual();
     if ( visual ) {
         zCClassDef* classDef = reinterpret_cast<zCObject*>(visual)->_GetClassDef();
         const char* className = classDef->className.ToChar();
         if ( strcmp( className, "zCPolyStrip" ) == 0 ) {
-            PolyStripVisuals.erase( reinterpret_cast<zCPolyStrip*>(visual) ); //remove it if it exists in polystrips array
+            State->PolyStripVisuals.erase( reinterpret_cast<zCPolyStrip*>(visual) ); //remove it if it exists in polystrips array
         }
     }
 
     // Erase the vob from visual-vob map
-    auto& vec = VobsByVisual[vob->GetVisual()];
+    auto& vec = State->VobsByVisual[vob->GetVisual()];
     for ( size_t i = 0; i < vec.size(); ++i ) {
         if ( vec[i]->Vob == vob ) {
             // Overwrite the deleted item with the last item, then shrink by 1
@@ -2233,13 +2277,13 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
             return; // *should* be already deleted from the inventory here. But watch out for dem leaks, dragons be here!
     }
 
-    VobInfo* vi = VobMap[vob];
-    SkeletalVobInfo* svi = SkeletalVobMap[vob];
+    VobInfo* vi = State->VobMap[vob];
+    SkeletalVobInfo* svi = State->SkeletalVobMap[vob];
 
     // Tell all dynamic lights that we removed a vob they could have cached. This is about other
     // lights' shadow-caster caches referencing vi/svi, not about `vob` itself being a light, so it
     // always applies regardless of tearDownLight.
-    for ( auto& vlit : VobLightMap ) {
+    for ( auto& vlit : State->VobLightMap ) {
         if ( vi && vlit.second->LightShadowBuffers )
             vlit.second->LightShadowBuffers->OnVobRemovedFromWorld( vi );
 
@@ -2326,15 +2370,15 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
     }
 
     // Erase it from vob-map
-    auto vit = VobMap.find( vob );
-    if ( vit != VobMap.end() ) {
+    auto vit = State->VobMap.find( vob );
+    if ( vit != State->VobMap.end() ) {
         delete (*vit).second;
-        VobMap.erase( vit );
+        State->VobMap.erase( vit );
     }
-    auto svit = SkeletalVobMap.find( vob );
-    if ( svit != SkeletalVobMap.end() ) {
+    auto svit = State->SkeletalVobMap.find( vob );
+    if ( svit != State->SkeletalVobMap.end() ) {
         delete (*svit).second;
-        SkeletalVobMap.erase( svit );
+        State->SkeletalVobMap.erase( svit );
     }
 }
 
@@ -2343,7 +2387,7 @@ MeshVisualInfo* GothicAPI::GetOrCreateProgMeshVisual( zCVisual* visual, bool mor
         ? reinterpret_cast<zCMorphMesh*>(visual)->GetMorphMesh()
         : static_cast<zCProgMeshProto*>(visual);
 
-    if ( auto it = StaticMeshVisuals.find( pm ); it != StaticMeshVisuals.end() )
+    if ( auto it = State->StaticMeshVisuals.find( pm ); it != State->StaticMeshVisuals.end() )
         return it->second;
     if ( pm->GetNumSubmeshes() == 0 )
         return nullptr;
@@ -2357,7 +2401,7 @@ MeshVisualInfo* GothicAPI::GetOrCreateProgMeshVisual( zCVisual* visual, bool mor
     // Vertex unpacking + buffer creation run on a worker (blocking here stutters world load); 'mi' stays
     // Ready==false until then, so draw sites must skip it.
     WorldConverter::Extract3DSMeshFromVisual2Async( visual, pm, mi );
-    StaticMeshVisuals[pm] = mi;
+    State->StaticMeshVisuals[pm] = mi;
     return mi;
 }
 
@@ -2365,12 +2409,12 @@ MeshVisualInfo* GothicAPI::GetOrCreateFlattenedModelVisual( zCVisual* model ) {
     // Cast to zCProgMeshProto only to make it work with StaticMeshVisuals
     zCProgMeshProto* pm = static_cast<zCProgMeshProto*>(model);
 
-    if ( auto it = StaticMeshVisuals.find( pm ); it != StaticMeshVisuals.end() )
+    if ( auto it = State->StaticMeshVisuals.find( pm ); it != State->StaticMeshVisuals.end() )
         return it->second;
 
     MeshVisualInfo* mi = new MeshVisualInfo;
     WorldConverter::ExtractProgMeshProtoFromModel( static_cast<zCModel*>(model), mi );
-    StaticMeshVisuals[pm] = mi;
+    State->StaticMeshVisuals[pm] = mi;
     return mi;
 }
 
@@ -2380,7 +2424,7 @@ void GothicAPI::OnSetVisual( zCVob* vob ) {
         return;
 
     // Add the vob to the set
-    if ( RegisteredVobs.find( vob ) != RegisteredVobs.end() ) {
+    if ( State->RegisteredVobs.find( vob ) != State->RegisteredVobs.end() ) {
         for ( auto const& it : SkeletalMeshVobs ) {
             if ( it->VisualInfo && it->Vob == vob && it->VisualInfo->Visual == static_cast<zCModel*>(vob->GetVisual()) ) {
                 return; // No change, skip this.
@@ -2402,11 +2446,11 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 #endif
 
     // Add the vob to the set
-    if ( RegisteredVobs.find( vob ) != RegisteredVobs.end() ) {
+    if ( State->RegisteredVobs.find( vob ) != State->RegisteredVobs.end() ) {
         // Already got that
         return;
     }
-    RegisteredVobs.insert( vob );
+    State->RegisteredVobs.insert( vob );
 
     zCClassDef* classDef = reinterpret_cast<zCObject*>(vob->GetVisual())->_GetClassDef();
     const char* className = classDef->className.ToChar();
@@ -2423,7 +2467,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
         world = oCGame::GetGame()->_zCSession_world;
 
     if ( strcmp( className, "zCPolyStrip" ) == 0 ) {
-        PolyStripVisuals.insert( reinterpret_cast<zCPolyStrip*>(vob->GetVisual()) );
+        State->PolyStripVisuals.insert( reinterpret_cast<zCPolyStrip*>(vob->GetVisual()) );
     }
 
     for (auto ext : extv) {
@@ -2441,22 +2485,22 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 
             VobInfo* vi = new VobInfo;
             vi->Vob = vob;
-            vi->VisualInfo = StaticMeshVisuals[pm];
+            vi->VisualInfo = State->StaticMeshVisuals[pm];
 
             // Check for mainworld
             if ( world == oCGame::GetGame()->_zCSession_world ) {
-                VobMap[vob] = vi;
+                State->VobMap[vob] = vi;
 
-                vi->VobSection = &WorldSections[section.x][section.y];
+                vi->VobSection = &State->WorldSections[section.x][section.y];
                 vi->VobSection->Vobs.push_back( vi );
                 vi->UpdateState(); 
 
-                if ( !BspLeafVobLists.empty() ) { // Check if this is the initial loading
+                if ( !State->BspLeafVobLists.empty() ) { // Check if this is the initial loading
                     // It's not, chose this as a dynamically added vob
                     DynamicallyAddedVobs.push_back( vi );
                 }
                 // Add to map
-                VobsByVisual[vob->GetVisual()].push_back( vi );
+                State->VobsByVisual[vob->GetVisual()].push_back( vi );
 
                 // Non-static (StaticVob==false) registry for the D3D12 point-shadow dynamic overlay; see GetDynamicMeshVobs().
                 if ( !vob->GetFlags().StaticVob ) DynamicMeshVobs.push_back( vi );
@@ -2471,7 +2515,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 Inventory->OnAddVob( vi, world );
 
                 // Add to map
-                VobsByVisual[vob->GetVisual()].push_back( vi );
+                State->VobsByVisual[vob->GetVisual()].push_back( vi );
             }
 
             break;
@@ -2488,7 +2532,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 vi->VisualInfo = GetOrCreateFlattenedModelVisual( vob->GetVisual() );
 
                 // Add to map
-                VobsByVisual[vob->GetVisual()].push_back( vi );
+                State->VobsByVisual[vob->GetVisual()].push_back( vi );
 
                 // Must be inventory
                 Inventory->OnAddVob( vi, world );
@@ -2499,7 +2543,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             // already built for it instead of dropping its (asynchronously extracted) attachments.
             if ( isInventory ) {
                 if ( SkeletalVobInfo* known = Inventory->FindSkeletal( vob, world ) ) {
-                    VobsByVisual[vob->GetVisual()].push_back( known );
+                    State->VobsByVisual[vob->GetVisual()].push_back( known );
                     XMStoreFloat4x4( &known->WorldMatrix, vob->GetWorldMatrixXM() );
                     break;
                 }
@@ -2513,7 +2557,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 LoadzCModelData( static_cast<zCModel*>(vob->GetVisual()) );
 
             // Add to map
-            VobsByVisual[vob->GetVisual()].push_back( vi );
+            State->VobsByVisual[vob->GetVisual()].push_back( vi );
 
             // Save worldmatrix to see if this vob changed positions later
             XMStoreFloat4x4( &vi->WorldMatrix, vob->GetWorldMatrixXM() );
@@ -2521,10 +2565,10 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             // Check for mainworld
             if ( world == oCGame::GetGame()->_zCSession_world ) {
                 SkeletalMeshVobs.push_back( vi );
-                SkeletalVobMap[vob] = vi;
+                State->SkeletalVobMap[vob] = vi;
 
                 // If this can be animated, put it into another map as well
-                if ( !BspLeafVobLists.empty() ) // Check if this is the initial loading
+                if ( !State->BspLeafVobLists.empty() ) // Check if this is the initial loading
                 {
                     AnimatedSkeletalVobs.push_back( vi );
                 }
@@ -2551,10 +2595,10 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
         str.append( model->GetModelName() );
     }
 
-    SkeletalMeshVisualInfo* mi = SkeletalMeshVisuals[str];
+    SkeletalMeshVisualInfo* mi = State->SkeletalMeshVisuals[str];
     if ( !mi ) {
         mi = new SkeletalMeshVisualInfo;
-        SkeletalMeshVisuals[str] = mi;
+        State->SkeletalMeshVisuals[str] = mi;
     }
 
     // Retire whatever job was still attached to this info before reading Meshes below: it may be
@@ -2571,10 +2615,10 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
     zCModel* model = static_cast<zCModel*>(npc->GetVisual());
 
-    SkeletalMeshVisualInfo* mi = SkeletalMeshNpcs[npc];
+    SkeletalMeshVisualInfo* mi = State->SkeletalMeshNpcs[npc];
     if ( !mi ) {
         mi = new SkeletalMeshVisualInfo;
-        SkeletalMeshNpcs[npc] = mi;
+        State->SkeletalMeshNpcs[npc] = mi;
     }
 
     // can't cache the meshes and VisualName as it otherwise
@@ -2591,8 +2635,8 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
     zCVob* homeVob = model->GetHomeVob();
     if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
         oCNPC* npc = static_cast<oCNPC*>(homeVob);
-        auto it = SkeletalMeshNpcs.find( npc );
-        if ( it != SkeletalMeshNpcs.end() ) {
+        auto it = State->SkeletalMeshNpcs.find( npc );
+        if ( it != State->SkeletalMeshNpcs.end() ) {
             skeletalMesh = it->second;
         }
     } else {
@@ -2602,8 +2646,8 @@ SkeletalMeshVisualInfo* GothicAPI::ResolveSkeletalVisualInfo( zCModel* model ) {
             str.append( model->GetModelName() );
         }
 
-        auto it = SkeletalMeshVisuals.find( str );
-        if ( it != SkeletalMeshVisuals.end() ) {
+        auto it = State->SkeletalMeshVisuals.find( str );
+        if ( it != State->SkeletalMeshVisuals.end() ) {
             skeletalMesh = it->second;
         }
     }
@@ -3309,7 +3353,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
         // Get texture
         zCTexture* texture = nullptr;
         if ( zCParticleEmitter* emitter = fx->GetEmitter() ) {
-            if ( emitter->GetVisShpType() == 5 && !ParticleEffectProgMeshes.contains(source) ) {
+            if ( emitter->GetVisShpType() == 5 && !State->ParticleEffectProgMeshes.contains(source) ) {
                 AddParticleEffect( source );
             }
             if ( (texture = emitter->GetVisTexture( pfx )) != nullptr ) {
@@ -3323,7 +3367,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
         }
 
         // Set render states for this type
-        ParticleRenderInfo& inf = FrameParticleInfo[texture];
+        ParticleRenderInfo& inf = State->FrameParticleInfo[texture];
 
         switch ( fx->GetEmitter()->GetVisAlphaFunc() ) {
         case zRND_ALPHA_FUNC_ADD:
@@ -3342,7 +3386,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             break;
         }
 
-        std::vector<ParticleInstanceInfo>& part = FrameParticles[texture];
+        std::vector<ParticleInstanceInfo>& part = State->FrameParticles[texture];
 
         // Check for kill
         zTParticle* kill = nullptr;
@@ -3380,7 +3424,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             }
 
             if ( p->PolyStrip ) {
-                PolyStripVisuals.insert( p->PolyStrip );
+                State->PolyStripVisuals.insert( p->PolyStrip );
             };
 
             // Generate instance info
@@ -3536,7 +3580,7 @@ MeshInfo* GothicAPI::GetWrappedWorldMesh() {
 
 /** Returns the loaded sections */
 std::map<int, std::map<int, WorldMeshSectionInfo>>& GothicAPI::GetWorldSections() {
-    return WorldSections;
+    return State->WorldSections;
 }
 
 static bool TraceWorldMeshBoxCmp( const std::pair<WorldMeshSectionInfo*, float>& a, const std::pair<WorldMeshSectionInfo*, float>& b ) {
@@ -3552,7 +3596,7 @@ VobInfo* GothicAPI::TraceStaticMeshVobsBB( const XMFLOAT3& origin, const XMFLOAT
     XMFLOAT3 min;
     XMFLOAT3 max;
 
-    for ( auto& [vob, vobInfo] : VobMap ) {
+    for ( auto& [vob, vobInfo] : State->VobMap ) {
         // Still being filled in on a worker thread (GothicAPI::OnAddVob's async
         // Extract3DSMeshFromVisual2Async) - skip until BBox/Meshes are safe to read (this is the editor's
         // mouse-picking ray, which later walks vobInfo->VisualInfo->Meshes via TraceVisualInfo).
@@ -3664,7 +3708,7 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
     std::list<std::pair<WorldMeshSectionInfo*, float>> hitSections;
 
     // Trace bounding-boxes first
-    for ( auto&& itx : WorldSections ) {
+    for ( auto&& itx : State->WorldSections ) {
         for ( auto&& ity : itx.second ) {
             WorldMeshSectionInfo& section = ity.second;
 
@@ -4323,10 +4367,10 @@ void GothicAPI::CollectVisibleVobs(
 
     // This overload is the main camera pass of both backends, and the only place portal culling
     // applies: shadow passes need casters from rooms the player cannot see into.
-    if ( haveCameraMatrices && PortalCuller.IsActive() ) {
+    if ( haveCameraMatrices && State->PortalCuller.IsActive() ) {
         oCGame* game = oCGame::GetGame();
-        PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
-        ctx.portalCuller = &PortalCuller;
+        State->PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
+        ctx.portalCuller = &State->PortalCuller;
     }
 
     CollectVisibleVobs( ctx );
@@ -4464,7 +4508,7 @@ void GothicAPI::BuildWorldSectionBVH() {
     std::vector<WorldSectionBVHBuildPrimitive> primitives;
     primitives.reserve( 4096 );
 
-    for ( auto& [_, byY] : WorldSections ) {
+    for ( auto& [_, byY] : State->WorldSections ) {
         for ( auto& [__, section] : byY ) {
             if ( !IsValidSectionBounds( section.BoundingBox ) ) {
                 continue;
@@ -4562,7 +4606,7 @@ void GothicAPI::ClearWorldSectionBVH() {
     WorldSectionBVHValid = false;
     WorldSectionBVHNodes.clear();
     WorldSectionBVHSections.clear();
-    WorldMeshClusterTree = {};
+    State->WorldMeshClusterTree = {};
 }
 
 /** Companion to BuildWorldSectionBVH: same idea (flatten primitives, hand them to the shared
@@ -4572,7 +4616,7 @@ void GothicAPI::BuildWorldMeshClusterBVH() {
     std::vector<WorldMeshClusterRef> primitives;
     primitives.reserve( 8192 );
 
-    for ( auto& [_, byY] : WorldSections ) {
+    for ( auto& [_, byY] : State->WorldSections ) {
         for ( auto& [__, section] : byY ) {
             if ( !IsValidSectionBounds( section.BoundingBox ) ) {
                 continue;
@@ -4614,7 +4658,7 @@ void GothicAPI::BuildWorldMeshClusterBVH() {
         return;
     }
 
-    WorldMeshClusterTree = SpatialBVH::Build( std::move( primitives ), WORLD_SECTION_BVH_LEAF_SIZE );
+    State->WorldMeshClusterTree = SpatialBVH::Build( std::move( primitives ), WORLD_SECTION_BVH_LEAF_SIZE );
 }
 
 bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const {
@@ -4754,7 +4798,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
     ZoneScopedN( "GothicAPI::CollectVisibleSections" );
     if ( drawSectionIntersections ) {
         if ( !useSectionRadiusFilter ) {
-            for ( auto& [_, byY] : WorldSections ) {
+            for ( auto& [_, byY] : State->WorldSections ) {
                 for ( auto& [__, section] : byY ) {
                     if ( sectionInFrustum( section ) ) {
                         sections.push_back( &section );
@@ -4766,7 +4810,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
         const float sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
         const float sectionViewDistSq = sectionViewDist * sectionViewDist;
-        for ( auto& itx : WorldSections ) {
+        for ( auto& itx : State->WorldSections ) {
             for ( auto& ity : itx.second ) {
                 WorldMeshSectionInfo& section = ity.second;
 
@@ -4781,7 +4825,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
         }
     } else {
         if ( !useSectionRadiusFilter ) {
-            for ( auto& [_, byY] : WorldSections ) {
+            for ( auto& [_, byY] : State->WorldSections ) {
                 for ( auto& [__, section] : byY ) {
                     if ( sectionInFrustum( section ) ) {
                         sections.push_back( &section );
@@ -4793,7 +4837,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
         // run through every section and check for range and frustum
         const int sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
-        for ( auto& itx : WorldSections ) {
+        for ( auto& itx : State->WorldSections ) {
             if ( abs( itx.first - camSection.x ) >= sectionViewDist ) {
                 continue;
             }
@@ -4817,7 +4861,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
     bool useSectionRadiusFilter,
     std::vector<MeshDrawRange>& outRanges ) {
-    if ( !WorldMeshClusterTree.IsValid() ) {
+    if ( !State->WorldMeshClusterTree.IsValid() ) {
         return;
     }
 
@@ -4837,7 +4881,7 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
         ranges.clear();
     }
 
-    SpatialBVH::Query( WorldMeshClusterTree, frustum,
+    SpatialBVH::Query( State->WorldMeshClusterTree, frustum,
         [&]( const WorldMeshClusterRef& ref ) {
             if ( !ref.Mesh ) {
                 return;
@@ -5075,7 +5119,7 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
         return;
 
     // Put it into the cache
-    BspInfo& bvi = BspLeafVobLists[base];
+    BspInfo& bvi = State->BspLeafVobLists[base];
     bvi.OriginalNode = base;
 
     bool outdoorLocation = (LoadedWorldInfo->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR);
@@ -5089,8 +5133,8 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
             zCVob* vob = leaf->LeafVobList.Array[i];
 
             // Get the vob info for this one
-            auto vit = VobMap.find( vob );
-            if ( vit != VobMap.end() ) {
+            auto vit = State->VobMap.find( vob );
+            if ( vit != State->VobMap.end() ) {
                 VobInfo* v = vit->second;
                 if ( v ) {
                     float vobSmallSize = Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
@@ -5126,8 +5170,8 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
             }
 
             // Get mobs
-            auto sit = SkeletalVobMap.find( vob );
-            if ( sit != SkeletalVobMap.end() ) {
+            auto sit = State->SkeletalVobMap.find( vob );
+            if ( sit != State->SkeletalVobMap.end() ) {
                 SkeletalVobInfo* v = sit->second;
                 if ( v ) {
                     // Only add once
@@ -5149,11 +5193,11 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
             zCVobLight* vob = leaf->LightVobList.Array[i];
 
             // Add the light to the map if not already done
-            auto vit = VobLightMap.find( vob );
-            if ( vit == VobLightMap.end() ) {
+            auto vit = State->VobLightMap.find( vob );
+            if ( vit == State->VobLightMap.end() ) {
                 VobLightInfo* vi = new VobLightInfo;
                 vi->Vob = vob;
-                VobLightMap[vob] = vi;
+                State->VobLightMap[vob] = vi;
                 if ( vob->IsIndoorVob() ) {
                     vi->IsIndoorVob = true;
                 }
@@ -5198,8 +5242,8 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
         BuildBspVobMapCacheHelper( node->Back );
 
         // Save front and back to this
-        bvi.Front = &BspLeafVobLists[node->Front];
-        bvi.Back = &BspLeafVobLists[node->Back];
+        bvi.Front = &State->BspLeafVobLists[node->Front];
+        bvi.Back = &State->BspLeafVobLists[node->Back];
     }
 }
 
@@ -5256,23 +5300,23 @@ void GothicAPI::BuildBspVobMapCache() {
     BuildBspLeafLinearCache();
 
     // Needs the BspInfo mirror tree above to exist - it tags the leafs with their sector ids.
-    PortalCuller.SetEnabled( RendererState.RendererSettings.EnablePortalCulling );
-    PortalCuller.SetNearSectorRadius( RendererState.RendererSettings.PortalCullingNearRadius );
-    PortalCuller.BuildFromWorld( LoadedWorldInfo->BspTree );
+    State->PortalCuller.SetEnabled( RendererState.RendererSettings.EnablePortalCulling );
+    State->PortalCuller.SetNearSectorRadius( RendererState.RendererSettings.PortalCullingNearRadius );
+    State->PortalCuller.BuildFromWorld( LoadedWorldInfo->BspTree );
 }
 
 void GothicAPI::BuildBspLeafLinearCache() {
     LeafLinearCache.Clear();
-    BspInfo* root = &BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()];
+    BspInfo* root = &State->BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()];
     LeafLinearCache.Build( root );
     Logging::Inf( "BspLeafLinearCache: {} leaves indexed for SIMD culling", LeafLinearCache.Count );
 }
 
 /** Cleans empty BSPNodes */
 void GothicAPI::CleanBSPNodes() {
-    for ( auto&& it = BspLeafVobLists.begin(); it != BspLeafVobLists.end();) {
+    for ( auto&& it = State->BspLeafVobLists.begin(); it != State->BspLeafVobLists.end();) {
         if ( it->second.IsEmpty() ) {
-            it = BspLeafVobLists.erase( it );
+            it = State->BspLeafVobLists.erase( it );
         } else {
             ++it;
         }
@@ -5281,7 +5325,7 @@ void GothicAPI::CleanBSPNodes() {
 
 /** Returns the new node from tha base node */
 BspInfo* GothicAPI::GetNewBspNode( zCBspBase* base ) {
-    return &BspLeafVobLists[base];
+    return &State->BspLeafVobLists[base];
 }
 
 /** Sets/Gets the far-plane */
@@ -5307,7 +5351,7 @@ float GothicAPI::GetNearPlane() {
 /** Get material by texture name */
 zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
     const std::string_view nameView = name;
-    for ( auto const& it : LoadedMaterials ) {
+    for ( auto const& it : State->LoadedMaterials ) {
         if ( it->GetTextureSingle() ) {
             const std::string_view tn = it->GetTextureSingle()->GetNameWithoutExtView();
             if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
@@ -5320,7 +5364,7 @@ zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
 
 void GothicAPI::GetMaterialListByTextureName( const std::string& name, std::list<zCMaterial*>& list ) {
     const std::string_view nameView = name;
-    for ( auto const& it : LoadedMaterials ) {
+    for ( auto const& it : State->LoadedMaterials ) {
         if ( it->GetTextureSingle() ) {
             const std::string_view tn = it->GetTextureSingle()->GetNameWithoutExtView();
             if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
@@ -5360,8 +5404,8 @@ void GothicAPI::DrawSkyGothicOriginal() {
 
 /** Reset's the material info that were previously gathered */
 void GothicAPI::ResetMaterialInfo() {
-    std::unique_lock lock( MaterialInfosMutex );
-    MaterialInfos.clear();
+    std::unique_lock lock( State->MaterialInfosMutex );
+    State->MaterialInfos.clear();
 }
 
 static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
@@ -5375,9 +5419,9 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materia
     // Hot path: shared lock, no allocation. Worker threads (mesh extraction) hit this concurrently with
     // the main thread's per-draw lookups, and a miss on either side rehashes the map.
     {
-        std::shared_lock lock( MaterialInfosMutex );
-        auto it = MaterialInfos.find( any );
-        if ( it != MaterialInfos.end() ) {
+        std::shared_lock lock( State->MaterialInfosMutex );
+        auto it = State->MaterialInfos.find( any );
+        if ( it != State->MaterialInfos.end() ) {
             return it->second.get();
         }
     }
@@ -5394,8 +5438,8 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materia
     }
     FixUpMaterial( info->buffer );
 
-    std::unique_lock lock( MaterialInfosMutex );
-    return MaterialInfos.try_emplace( any, std::move( info ) ).first->second.get();
+    std::unique_lock lock( State->MaterialInfosMutex );
+    return State->MaterialInfos.try_emplace( any, std::move( info ) ).first->second.get();
 }
     
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {
@@ -5444,7 +5488,7 @@ std::vector<VobInfo*>& GothicAPI::GetDynamicMeshVobs() {
     
 /** Returns a texture from the given surface */
 zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
-    for ( auto const& it : LoadedMaterials ) {
+    for ( auto const& it : State->LoadedMaterials ) {
         auto const texture = it->GetTextureSingle();
         if ( texture && texture->GetSurface() == surface )
             return texture;
@@ -5455,7 +5499,7 @@ zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
 
 /** Resets all vob-stats drawn this frame */
 void GothicAPI::ResetVobFrameStats( ) {
-    for ( auto&& it : VobLightMap ) {
+    for ( auto&& it : State->VobLightMap ) {
         it.second->VisibleInFrame = false;
     }
 }
@@ -5549,7 +5593,7 @@ void GothicAPI::SaveCustomZENResources() {
 
 /** Applys the suppressed textures */
 void GothicAPI::ApplySuppressedSectionTextures() {
-    for ( auto const& it : SuppressedTexturesBySection ) {
+    for ( auto const& it : State->SuppressedTexturesBySection ) {
         WorldMeshSectionInfo* section = it.first;
 
         // Look into each mesh of this section and find the texture
@@ -5580,7 +5624,7 @@ void GothicAPI::ApplySuppressedSectionTextures() {
 
 /** Resets the suppressed textures */
 void GothicAPI::ResetSupressedTextures() {
-    for ( auto const& it : SuppressedTexturesBySection ) {
+    for ( auto const& it : State->SuppressedTexturesBySection ) {
         WorldMeshSectionInfo* section = it.first;
 
         // Look into each mesh of this section and find the texture
@@ -5589,21 +5633,21 @@ void GothicAPI::ResetSupressedTextures() {
         }
     }
 
-    SuppressedTexturesBySection.clear();
+    State->SuppressedTexturesBySection.clear();
 }
 
 /** Resets the vegetation */
 void GothicAPI::ResetVegetation() {
-    for ( auto&& it : VegetationBoxes ) {
+    for ( auto&& it : State->VegetationBoxes ) {
         delete it;
     }
-    VegetationBoxes.clear();
+    State->VegetationBoxes.clear();
 }
 
 
 /** Removes the given texture from the given section and stores the supression, so we can load it next time */
 void GothicAPI::SupressTexture( WorldMeshSectionInfo* section, const std::string& texture ) {
-    SuppressedTexturesBySection[section].push_back( texture );
+    State->SuppressedTexturesBySection[section].push_back( texture );
 
     ApplySuppressedSectionTextures(); // This is an editor only feature, so it's okay to "not be blazing fast"
 }
@@ -5620,10 +5664,10 @@ XRESULT GothicAPI::SaveSuppressedTextures( const std::string& file ) {
     int version = 1;
     fwrite( &version, sizeof( version ), 1, f );
 
-    size_t count = SuppressedTexturesBySection.size();
+    size_t count = State->SuppressedTexturesBySection.size();
     fwrite( &count, sizeof( count ), 1, f );
 
-    for ( auto const& it : SuppressedTexturesBySection ) {
+    for ( auto const& it : State->SuppressedTexturesBySection ) {
         // Write section xy-coords
         fwrite( &it.first->WorldCoordinates, sizeof( INT2 ), 1, f );
 
@@ -5690,7 +5734,7 @@ XRESULT GothicAPI::LoadSuppressedTextures( const std::string& file ) {
             }
 
             // Add to map
-            SuppressedTexturesBySection[&WorldSections[coords.x][coords.y]].push_back( std::string( name ) );
+            State->SuppressedTexturesBySection[&State->WorldSections[coords.x][coords.y]].push_back( std::string( name ) );
         }
     }
 
@@ -5714,10 +5758,10 @@ XRESULT GothicAPI::SaveVegetation( const std::string& file ) {
     int version = 1;
     fwrite( &version, sizeof( version ), 1, f );
 
-    size_t num = VegetationBoxes.size();
+    size_t num = State->VegetationBoxes.size();
     fwrite( &num, sizeof( num ), 1, f );
 
-    for ( auto const& it : VegetationBoxes ) {
+    for ( auto const& it : State->VegetationBoxes ) {
         it->SaveToFILE( f, version );
     }
 
@@ -5749,7 +5793,7 @@ XRESULT GothicAPI::LoadVegetation( const std::string& file ) {
     int version;
     vdfsFile->Read( &version, sizeof( version ) );
 
-    size_t num = VegetationBoxes.size();
+    size_t num = State->VegetationBoxes.size();
     vdfsFile->Read( &num, sizeof( num ) );
 
     for ( size_t i = 0; i < num; i++ ) {
@@ -5779,6 +5823,13 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "AtmosphericScattering", to_string_locale_independent( s.AtmosphericScattering ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableFog", to_string_locale_independent( s.DrawFog ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FogRange", float_to_string( s.FogRange , 2).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableLowClouds", to_string_locale_independent( s.EnableLowClouds ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudDensity", float_to_string( s.LowCloudDensity, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudScale", float_to_string( s.LowCloudScale, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudHeight", float_to_string( s.LowCloudHeight, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudDistance", float_to_string( s.LowCloudDistance, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudSpeed", float_to_string( s.LowCloudSpeed, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "LowCloudSunLight", float_to_string( s.LowCloudSunLight, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5865,6 +5916,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "BacklitVegetation", to_string_locale_independent( s.BacklitVegetation ? TRUE : FALSE ).c_str(), ini.c_str() );
     
 
     WritePrivateProfileStringA( "Shadows", "EnableShadows", to_string_locale_independent( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5973,6 +6025,13 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ChangeWindowPreset = GetPrivateProfileIntA( "General", "ChangeToMode", 0, ini.c_str() );
         s.DrawFog = GetPrivateProfileBoolA( "General", "EnableFog", ds.DrawFog, ini );
         s.FogRange = GetPrivateProfileFloatA( "General", "FogRange", ds.FogRange, ini.c_str() );
+        s.EnableLowClouds = GetPrivateProfileBoolA( "General", "EnableLowClouds", ds.EnableLowClouds, ini );
+        s.LowCloudDensity = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudDensity", ds.LowCloudDensity, ini.c_str() ), 0.0f, 4.0f );
+        s.LowCloudScale = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudScale", ds.LowCloudScale, ini.c_str() ), 0.35f, 4.0f );
+        s.LowCloudHeight = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudHeight", ds.LowCloudHeight, ini.c_str() ), 0.35f, 4.0f );
+        s.LowCloudDistance = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudDistance", ds.LowCloudDistance, ini.c_str() ), 0.45f, 4.0f );
+        s.LowCloudSpeed = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSpeed", ds.LowCloudSpeed, ini.c_str() ), 0.0f, 10.0f );
+        s.LowCloudSunLight = std::clamp( GetPrivateProfileFloatA( "General", "LowCloudSunLight", ds.LowCloudSunLight, ini.c_str() ), 0.0f, 4.0f );
         s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", ds.AtmosphericScattering, ini );
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
@@ -6124,6 +6183,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
         s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
+        s.BacklitVegetation = GetPrivateProfileBoolA( "Display", "BacklitVegetation", ds.BacklitVegetation, ini );
 
         if ( GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini ) ) {
             s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
@@ -6324,14 +6384,14 @@ POINT GothicAPI::GetCursorPosition() {
 void GothicAPI::AddStagingTexture( GfxTexture* gfx, UINT mip, const Microsoft::WRL::ComPtr<ID3D11Texture2D>& stagingTexture,
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
-    FrameStagingTextures.push_back( DeferredMipUpload{ gfx, mip, stagingTexture, texture } );
+    State->FrameStagingTextures.push_back( DeferredMipUpload{ gfx, mip, stagingTexture, texture } );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 
 /** Adds a mip map generation deferred command */
 void GothicAPI::AddMipMapGeneration( GfxTexture* texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
-    FrameMipMapGenerations.push_back( texture );
+    State->FrameMipMapGenerations.push_back( texture );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 
@@ -6339,8 +6399,8 @@ void GothicAPI::AddMipMapGeneration( GfxTexture* texture ) {
 void GothicAPI::RemovePendingTextureCommands( GfxTexture* texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
     // Usually empty, and never long: this only holds what one frame's worth of loading queued up.
-    std::erase( FrameMipMapGenerations, texture );
-    std::erase_if( FrameStagingTextures, [texture]( const DeferredMipUpload& u ) {
+    std::erase( State->FrameMipMapGenerations, texture );
+    std::erase_if( State->FrameStagingTextures, [texture]( const DeferredMipUpload& u ) {
         return u.Texture == texture;
     } );
     Engine::GAPI->LeaveResourceCriticalSection();
@@ -6351,18 +6411,18 @@ void GothicAPI::AddFrameLoadedTexture( MyDirectDrawSurface7* srf ) {
     srf->AddRef();
 
     Engine::GAPI->EnterResourceCriticalSection();
-    FrameLoadedTextures.push_back( srf );
+    State->FrameLoadedTextures.push_back( srf );
     Engine::GAPI->LeaveResourceCriticalSection();
 }
 
 /** Sets loaded textures of this frame ready */
 void GothicAPI::SetFrameProcessedTexturesReady() {
-    for ( MyDirectDrawSurface7* srf : FrameLoadedTextures ) {
+    for ( MyDirectDrawSurface7* srf : State->FrameLoadedTextures ) {
         srf->SetReady( true );
         srf->Release();
     }
 
-    FrameLoadedTextures.clear();
+    State->FrameLoadedTextures.clear();
 }
 
 /** Draws a morphmesh */
@@ -6416,17 +6476,17 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
         if ( zCParticleEmitter* emitter = particle->GetEmitter() ) {
             if ( emitter->GetVisShpType() == 5 ) {
                 if ( zCModel* model = emitter->GetVisShpModel() ) {
-                    MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
+                    MeshVisualInfo* mi = State->ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     // Same rationale as the prog-mesh branch below: don't hitch the frame a model-shaped
                     // PFX burst spawns on.
                     WorldConverter::ExtractProgMeshProtoFromModelAsync( model, mi );
                 } else if ( zCProgMeshProto* progMesh = emitter->GetVisShpProgMesh() ) {
-                    MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
+                    MeshVisualInfo* mi = State->ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     // Same rationale as GothicAPI::OnAddVob: spawning many PFX with a prog-mesh particle
                     // shape at once (e.g. a fire/smoke burst) shouldn't hitch the frame it happens on.
                     WorldConverter::Extract3DSMeshFromVisual2Async( progMesh, progMesh, mi );
                 } else if ( zCMesh* mesh = emitter->GetVisShpMesh() ) {
-                    MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
+                    MeshVisualInfo* mi = State->ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     WorldConverter::ExtractProgMeshProtoFromMesh( mesh, mi );
                 }
             }
@@ -6436,35 +6496,35 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
 
 /** Destroy particle effect */
 void GothicAPI::DestroyParticleEffect( zCVob* vob ) {
-    auto it = ParticleEffectProgMeshes.find(vob);
-    if ( it != ParticleEffectProgMeshes.end() ) {
-        ParticleEffectProgMeshes.erase( it );
+    auto it = State->ParticleEffectProgMeshes.find(vob);
+    if ( it != State->ParticleEffectProgMeshes.end() ) {
+        State->ParticleEffectProgMeshes.erase( it );
     }
 }
 
 /** Removes the given quadmark */
 void GothicAPI::RemoveQuadMark( zCQuadMark* mark ) {
-    QuadMarks.erase( mark );
+    State->QuadMarks.erase( mark );
 }
 
 /** Returns the quadmark info for the given mark */
 QuadMarkInfo* GothicAPI::GetQuadMarkInfo( zCQuadMark* mark ) {
-    return &QuadMarks[mark];
+    return &State->QuadMarks[mark];
 }
 
 /** Returns all quad marks */
 const std::unordered_map<zCQuadMark*, QuadMarkInfo>& GothicAPI::GetQuadMarks() {
-    return QuadMarks;
+    return State->QuadMarks;
 }
 
 /** Add new zCFlash object */
 void GothicAPI::AddFlash( zCFlash* flash, zCVob* vob ) {
-    FlashVisuals[flash] = vob;
+    State->FlashVisuals[flash] = vob;
 }
 
 /** Remove zCFlash object */
 void GothicAPI::RemoveFlash( zCFlash* flash ) {
-    FlashVisuals.erase( flash );
+    State->FlashVisuals.erase( flash );
 }
 
 /** Add this frame thunder poly strip */
@@ -6487,16 +6547,16 @@ bool GothicAPI::IsUnderWater() {
 
 /** Returns if the given vob is registered in the world */
 SkeletalVobInfo* GothicAPI::GetSkeletalVobByVob( zCVob* vob ) {
-    auto sit = SkeletalVobMap.find( vob );
-    if ( sit != SkeletalVobMap.end() ) {
+    auto sit = State->SkeletalVobMap.find( vob );
+    if ( sit != State->SkeletalVobMap.end() ) {
         return sit->second;
     }
     return nullptr;
 }
 
 VobInfo* GothicAPI::GetVobByVob( zCVob* vob ) {
-    auto it = VobMap.find( vob );
-    return it != VobMap.end() ? it->second : nullptr;
+    auto it = State->VobMap.find( vob );
+    return it != State->VobMap.end() ? it->second : nullptr;
 }
 
 /** Returns true if the given string can be found in the commandline */
@@ -6517,18 +6577,26 @@ void GothicAPI::ReloadTextures() {
 
 /** Gets the int-param from the ini. String must be UPPERCASE. */
 int GothicAPI::GetIntParamFromConfig( const std::string& param ) {
-    return ConfigIntValues[param];
+    return State->ConfigIntValues[param];
 }
 
 /** Sets the given int param into the internal ini-cache. That does not set the actual value for the game! */
 void GothicAPI::SetIntParamFromConfig( const std::string& param, int value ) {
-    ConfigIntValues[param] = value;
+    State->ConfigIntValues[param] = value;
 }
 
 /** Returns the frame particle info collected from all DrawParticleFX-Calls */
 std::map<zCTexture*, ParticleRenderInfo>& GothicAPI::GetFrameParticleInfo() {
-    return FrameParticleInfo;
+    return State->FrameParticleInfo;
 }
+
+std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& GothicAPI::GetFrameParticles() { return State->FrameParticles; }
+const std::list<GVegetationBox*>& GothicAPI::GetVegetationBoxes() { return State->VegetationBoxes; }
+const gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GothicAPI::GetStaticMeshVisuals() { return State->StaticMeshVisuals; }
+gtl::flat_hash_map<zCVobLight*, VobLightInfo*>& GothicAPI::GetVobLightMap() { return State->VobLightMap; }
+const std::map<zCTexture*, PolyStripInfo>& GothicAPI::GetPolyStripInfos() { return State->PolyStripInfos; }
+std::deque<DeferredMipUpload>& GothicAPI::GetStagingTextures() { return State->FrameStagingTextures; }
+std::deque<GfxTexture*>& GothicAPI::GetMipMapGeneration() { return State->FrameMipMapGenerations; }
 
 /** Checks if the normalmaps are right */
 bool GothicAPI::CheckNormalmapFilesOld() {
@@ -6581,7 +6649,7 @@ float GothicAPI::GetBrightnessValue() {
 
 /** Puts the custom-polygons into the bsp-tree */
 void GothicAPI::PutCustomPolygonsIntoBspTree() {
-    PutCustomPolygonsIntoBspTreeRec( &BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()] );
+    PutCustomPolygonsIntoBspTreeRec( &State->BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()] );
 }
 
 void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
@@ -6663,7 +6731,7 @@ void GothicAPI::CollectPolygonsInAABB( const zTBBox3D& bbox, zCPolygon**& polyLi
                                          // This is ugly, but that's how they do it.
     list.clear();
 
-    CollectPolygonsInAABBRec( &BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()], bbox, list );
+    CollectPolygonsInAABBRec( &State->BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()], bbox, list );
 
     // Give out data to calling function
     polyList = &list[0];
@@ -6717,7 +6785,7 @@ void GothicAPI::CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, s
 
 /** Returns our bsp-root-node */
 BspInfo* GothicAPI::GetNewRootNode() {
-    return &BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()];
+    return &State->BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()];
 }
 
 /** Prints a message to the screen for the given amount of time */
@@ -6865,7 +6933,7 @@ static void CollectLeafVobs(
     const bool collectMobs = ctx.drawFlags.CollectMobs;
     const bool collectLights = ctx.drawFlags.CollectLights;
     const auto& rendererSettings = Engine::GAPI->GetRendererState().RendererSettings;
-    auto& VobLightMap = Engine::GAPI->VobLightMap;
+    auto& VobLightMap = Engine::GAPI->GetVobLightMap();
 
     zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
     std::vector<LeafVobEntry>& listA = base->IndoorVobs;
@@ -7267,7 +7335,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
-    BspInfo* root = &BspLeafVobLists[rootBsp];
+    BspInfo* root = &State->BspLeafVobLists[rootBsp];
 
     thread_local BspTreeVobVisitor bspVobVisitor{};
 

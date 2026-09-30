@@ -3,6 +3,7 @@
 #include "GothicAPI.h"
 
 #include <algorithm>
+#include "Engine.h"
 
 namespace {
     /** Pre-queue pass order, for the categoryMajor fallback. Approximate: quad marks used to be

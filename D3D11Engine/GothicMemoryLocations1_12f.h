@@ -145,6 +145,7 @@ struct GothicMemoryLocations {
 
         static const unsigned int Offset_InitDone = 0x68;
         static const unsigned int Init = 0x005DA640;
+        static const unsigned int Interpolate = 0; // not determined for 1.12f
 
         static const unsigned int GetUnderwaterFX = 0x5D8600;
 		static const unsigned int Offset_FarZ = 0x56C;

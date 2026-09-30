@@ -2,6 +2,8 @@
 #include "zSTRING.h"
 #include "zCClassDef.h"
 
+class zCClassDef;
+
 class zCObject {
 public:
     // Recreate V-Table

@@ -11,6 +11,7 @@
 #include "GothicAPI.h"
 #include "UIRenderer2D.h"
 #include "WorldObjects.h"
+#include "RenderToTextureBuffer.h"
 
 namespace {
     constexpr DXGI_FORMAT VERTEX_INDEX_DXGI_FORMAT = sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;

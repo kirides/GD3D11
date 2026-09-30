@@ -19,6 +19,7 @@
 #include "WindAnimation.h"
 #include "GMesh.h"
 #include "GSky.h"
+#include "WaterProfile.h"
 #include "GVegetationBox.h"
 #include "RenderToTextureBuffer.h"
 #include "zCParticleFX.h"
@@ -63,6 +64,11 @@
 #include "oCMobInter.h"
 #include "zCParser.h"
 #include "ConstantBufferPool.h"
+#include "GothicStateCache.h"
+#include "WorldMeshSection.h"
+#include "TransparencyQueue.h"
+#include "D3D11ForwardPlusRenderer.h"
+#include "D3D11SkeletalPoseCache.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -268,7 +274,14 @@ namespace
     }
 }
 
+UINT D3D11GraphicsEngine::GetActiveMSAASampleCount() const { return MSAAColorBuffer ? MSAAColorBuffer->GetSampleCount() : 1; }
+
+RenderToTextureBuffer* D3D11GraphicsEngine::GetDummyCubeRT() const { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
+
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
+    DeferredRenderer( std::make_unique<D3D11DeferredRenderer>() ),
+    ForwardPlusRenderer( std::make_unique<D3D11ForwardPlusRenderer>( *DeferredRenderer ) ),
+    m_SkeletalPoses( std::make_unique<D3D11SkeletalPoseCache>() ),
     DebugPointlight(nullptr),
     m_LastFrameLimit(0),
     RenderingStage(DES_MAIN),
@@ -925,10 +938,10 @@ void D3D11GraphicsEngine::SelectActiveRenderer() {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     auto mode = settings.RendererMode;
     if ( mode == GothicRendererSettings::RM_ForwardPlus ) {
-        ActiveSceneRenderer = &ForwardPlusRenderer;
+        ActiveSceneRenderer = ForwardPlusRenderer.get();
         settings.EnableTiledLighting = true;
     } else {
-        ActiveSceneRenderer = &DeferredRenderer;
+        ActiveSceneRenderer = DeferredRenderer.get();
     }
 }
 
@@ -2613,12 +2626,12 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
-        const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses.Acquire( vi, static_cast<zCModel*>( vi->Vob->GetVisual() ) );
-        if ( pose.Count == 0 || !m_SkeletalPoses.Flush() ) {
+        const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses->Acquire( vi, static_cast<zCModel*>( vi->Vob->GetVisual() ) );
+        if ( pose.Count == 0 || !m_SkeletalPoses->Flush() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses.GetBonesSRV() );
-            ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses.GetPrevBonesSRV() );
+            ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses->GetBonesSRV() );
+            ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses->GetPrevBonesSRV() );
 
             const VS_ExConstantBuffer_SkeletalBoneRange range = { pose.Offset, pose.Offset, pose.Count, 1u };
             ActiveVS->UpdateBuffer( "BoneTransformRange", &range, sizeof( range ) );
@@ -2815,9 +2828,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 continue;
             }
             vi->UpdateState();
-            m_SkeletalPoses.Acquire( vi, model );
+            m_SkeletalPoses->Acquire( vi, model );
         }
-        useStructuredBones = m_SkeletalPoses.Flush();
+        useStructuredBones = m_SkeletalPoses->Flush();
     }
 
     
@@ -2842,8 +2855,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     ConstantBufferSlot prevBoneTransformsCb = INVALID_SHADER_CB_SLOT;
 
     if ( useStructuredBones ) {
-        ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses.GetBonesSRV() );
-        ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses.GetPrevBonesSRV() );
+        ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses->GetBonesSRV() );
+        ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses->GetPrevBonesSRV() );
     }
 
     if ( !useStructuredBones ) {
@@ -3014,7 +3027,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
             float fatness = model->GetModelFatness();
 
-            const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses.Acquire( vi, model );
+            const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses->Acquire( vi, model );
             if ( pose.Count == 0 ) {
                 continue; // no nodes to skin with
             }
@@ -3026,7 +3039,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #else
                 if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                    const auto transforms = m_SkeletalPoses.Bones( pose );
+                    const auto transforms = m_SkeletalPoses->Bones( pose );
                     const auto color = modelColor;
 
                     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
@@ -3214,7 +3227,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             auto vi = data.VobInfo;
             auto model = data.Model;
             auto modelColor = data.ModelColor;
-            auto transforms = m_SkeletalPoses.Bones( data.Pose );
+            auto transforms = m_SkeletalPoses->Bones( data.Pose );
             auto fatness = data.Fatness;
             auto& world = data.World;
             auto& prevWorld = data.PrevWorld;
@@ -3885,7 +3898,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
     m_FrameGeometryCache.Reset();
-    m_SkeletalPoses.BeginFrame();
+    m_SkeletalPoses->BeginFrame();
 
     // Producers push all through the frame; the transparency pass drains it.
     Engine::GAPI->GetTransparencyQueue().BeginFrame();
@@ -4056,13 +4069,46 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // never write depth, so if they drew first the water blend pass would have no depth info about
     // them and would always composite over them, even when a particle (e.g. a held fireball) is
     // actually closer to the camera than the water surface and should occlude it instead.
+    // Low clouds: the half-resolution layer is marched before water, which reflects it, and blended in after the fog
+    const bool lowClouds = !FeatureLevel10Compatibility && Engine::GAPI->GetSky()->AreLowCloudsVisible();
+    RGResourceHandle lowCloudLayerHandle = RG_INVALID_HANDLE;
+    RGResourceHandle lowCloudDepthHandle = RG_INVALID_HANDLE;
+    RGResourceHandle skyLowCloudHandle = RG_INVALID_HANDLE;
+    if ( lowClouds ) {
+        const INT2 layerSize( std::max( 1, ( GetResolution().x + 1 ) / 2 ), std::max( 1, ( GetResolution().y + 1 ) / 2 ) );
+        graph.AddPass( RG_PASS_NAME("Generate Low Clouds"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            const uint32_t w = static_cast<uint32_t>( layerSize.x );
+            const uint32_t h = static_cast<uint32_t>( layerSize.y );
+            lowCloudLayerHandle = builder.CreateTexture( { w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"LowCloudLayer" } );
+            lowCloudDepthHandle = builder.CreateTexture( { w, h, DXGI_FORMAT_R32_FLOAT, L"LowCloudDepth" } );
+            skyLowCloudHandle = builder.CreateTexture( { w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, L"SkyLowCloudLayer" } );
+            builder.Write( lowCloudLayerHandle );
+            builder.Write( lowCloudDepthHandle );
+            builder.Write( skyLowCloudHandle );
+
+            pass.m_executeCallback = [this, layerSize, lowCloudLayerHandle, lowCloudDepthHandle, skyLowCloudHandle]( const RenderGraph& graph ) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Generate Low Clouds" );
+                auto* layer = graph.GetPhysicalTexture( lowCloudLayerHandle );
+                auto* depth = graph.GetPhysicalTexture( lowCloudDepthHandle );
+                auto* sky = graph.GetPhysicalTexture( skyLowCloudHandle );
+                if ( !layer || !depth || !sky ) return;
+                PfxRenderer->RenderLowCloudLayer( layer->GetRenderTargetView().Get(), depth->GetRenderTargetView().Get(),
+                    sky->GetRenderTargetView().Get(), layerSize, GetDepthBuffer()->GetShaderResView().Get() );
+            };
+        } );
+    }
+
     graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
+        if ( lowClouds ) builder.Read( lowCloudLayerHandle );
 
-        pass.m_executeCallback = [this](const RenderGraph&) {
+        pass.m_executeCallback = [this, lowClouds, lowCloudLayerHandle](const RenderGraph& graph) {
+            auto* cloudLayer = lowClouds ? graph.GetPhysicalTexture( lowCloudLayerHandle ) : nullptr;
+            WaterLowCloudSRV = cloudLayer ? cloudLayer->GetShaderResView().Get() : nullptr;
             SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
             DrawWaterSurfaces();
+            WaterLowCloudSRV = nullptr;
         };
     });
 
@@ -4156,6 +4202,27 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
+    if ( lowClouds ) {
+        graph.AddPass( RG_PASS_NAME("Composite Low Clouds"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( lowCloudLayerHandle );
+            builder.Read( lowCloudDepthHandle );
+            builder.Read( skyLowCloudHandle );
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle, lowCloudLayerHandle, lowCloudDepthHandle, skyLowCloudHandle]( const RenderGraph& graph ) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Composite Low Clouds" );
+                auto* backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+                auto* layer = graph.GetPhysicalTexture( lowCloudLayerHandle );
+                auto* depth = graph.GetPhysicalTexture( lowCloudDepthHandle );
+                auto* sky = graph.GetPhysicalTexture( skyLowCloudHandle );
+                if ( !backBuffer || !layer || !depth || !sky ) return;
+                PfxRenderer->CompositeLowClouds( backBuffer->GetRenderTargetView().Get(), layer->GetShaderResView().Get(),
+                    depth->GetShaderResView().Get(), sky->GetShaderResView().Get(), GetDepthBuffer()->GetShaderResView().Get() );
+            };
+        } );
+    }
+
     graph.AddPass( RG_PASS_NAME("Reset RenderTargets (Fog)"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
         pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
@@ -5606,6 +5673,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         // Kill SSR while the camera is underwater: the trace assumes the eye is above the
         // surface, so from below it reflects the shoreline over the underwater view.
         ricb.RI_SSREnabled = Engine::GAPI->IsUnderWater() ? 0.0f : 1.0f;
+        ricb.RI_CameraUnderwater = Engine::GAPI->IsUnderWater() ? 1.0f : 0.0f;
         ricb.RI_View = Engine::GAPI->GetRendererState().TransformState.TransformView; // not transposed, PS takes care of proper mul-order
 
         ActivePS->UpdateBuffer("RefractionInfo", &ricb, sizeof(ricb));
@@ -5613,11 +5681,35 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         // Bind reflection cube
         GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
 
+        // Low cloud layer for the reflected sky (unbound = no clouds)
+        GetContext()->PSSetShaderResources( 7, 1, &WaterLowCloudSRV );
+
+        // Depth with the water surfaces in it, for the shore probes' coverage test; needs the read-only DSV.
+        if ( ID3D11DepthStencilView* readOnlyDsv = DepthStencilBuffer->GetDepthStencilViewReadOnly().Get() ) {
+            GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), readOnlyDsv );
+            GetContext()->PSSetShaderResources( 6, 1, DepthStencilBuffer->GetShaderResView().GetAddressOf() );
+        }
+
+        WaterParamsConstantBuffer waterParams = {};
+        const MoonLightInfo moon = Engine::GAPI->GetSky()->GetMoonLight();
+        waterParams.WP_MoonDir = moon.Direction;
+        waterParams.WP_MoonGlint = moon.GlintVisibility;
+        waterParams.WP_MoonDisc = moon.DiscVisibility;
+        const OceanProfile ocean = GetOceanProfile();
+        waterParams.WP_OceanTint = ocean.Tint;
+        waterParams.WP_OceanTintStrength = ocean.TintStrength;
+        waterParams.WP_OceanClimate = ocean.Climate;
+        auto bindWaterParams = [&]( zCTexture* texture ) {
+            waterParams.WP_IsOcean = IsOceanWaterTexture( texture ) ? 1.0f : 0.0f;
+            BindDynamicCBToPixelShader( 3, AllocateDynamicCB( &waterParams ) );
+        };
+
         if ( !FeatureLevel10Compatibility ) {
             // MDI path: one MDI call per texture batch
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
+                bindWaterParams( batch.texture );
 
                 DrawMultiIndexedInstancedIndirect( Context.Get(),
                     batch.drawCount,
@@ -5629,6 +5721,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
+                bindWaterParams( batch.texture );
 
                 for ( unsigned int i = 0; i < batch.drawCount; i++ ) {
                     const auto& args = waterDrawArgs[batch.argsOffset + i];
@@ -5639,7 +5732,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    GetContext()->PSSetShaderResources( 0, 6, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 0, 8, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );

@@ -119,6 +119,8 @@ enum class PShaderID : size_t {
     PS_PFX_FSR1_EASU,
     PS_PFX_FSR1_RCAS,
     PS_PFX_Composition,
+    PS_PFX_LowClouds,
+    PS_PFX_LowCloudComposite,
     PS_PFX_BloomComposite,
     PS_FP_Diffuse,
     PS_FP_DiffuseNormalmapped,

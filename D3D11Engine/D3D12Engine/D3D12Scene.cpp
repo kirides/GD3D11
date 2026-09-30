@@ -49,6 +49,10 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
+#include "../GSky.h"
+#include "D3D12VobArena.h"
+#include "../TransparencyQueue.h"
 
 
 // ---- The two per-frame record sets the shadow modules share with this TU (declared in D3D12EngineCommon.h) ----
@@ -337,7 +341,7 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // Register this visual's sub-meshes with the VOB mega-buffers. Fires per vob during world load, so the
     // whole world's static geometry is queued before the first frame; vobs added later land in the arena's
     // headroom. Queueing is cheap and idempotent, the upload happens at the next frame's flush.
-    m_VobArena.QueueVisual( static_cast<MeshVisualInfo*>( vi->VisualInfo ) );
+    m_VobArena->QueueVisual( static_cast<MeshVisualInfo*>( vi->VisualInfo ) );
 
     // A cached static cube is only re-rendered when its light is fresh / moved / resized, never when the
     // geometry around it changes, so a new VOB in range has to say so.
@@ -382,9 +386,10 @@ void D3D12GraphicsEngine::OnLoadWorld()
         v.Reset();
     }
     m_RainShadowVobs.Reset();
+    m_RainShadowViewProjValid = false;   // the occlusion map shows the old world until redrawn
     // Every MeshInfo the arena indexes is about to be freed, so the ranges have to go before the new world's
     // OnAddVob calls refill them. The buffers themselves are kept — see D3D12VobArena::Reset.
-    m_VobArena.Reset();
+    m_VobArena->Reset();
     // AO needs no reset here — it runs entirely off THIS frame's depth prepass, so the first frame of the new
     // world already produces a correct mask.
     // TAA does: the accumulated history and its depth snapshot belong to the world being left.
@@ -2648,6 +2653,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// SSR march before water/transparents draw over it. See D3D12Ssr.cpp.
 	CaptureSsrOpaqueHistory();
 
+	// Low clouds are marched before water, which reflects them, and blended in after the fog.
+	GenerateLowClouds();
+
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
 
@@ -2656,6 +2664,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	{
 		D3D12RenderGraph fogGraph( &m_AliasArena );
 		RenderFogAndGodRays( fogGraph );
+		AddLowCloudCompositePass( fogGraph );
 		fogGraph.Compile();
 		fogGraph.Execute( m_CmdList );
 	}
@@ -3005,7 +3014,28 @@ namespace {
     // the single bound texture are meaningful, instead of always assuming a full _ORM.DDS (R=AO,G=Rough,B=Metal).
     // Mirrored by SampleOrm() in Shaders/D3D12/include/PBRLighting.hlsl — keep the two in sync.
     constexpr uint32_t kOrmFormatShift = 30;
-    constexpr uint32_t kOrmIndexMask   = 0x3FFFFFFFu;   // 1 billion+ slots — nowhere near the real heap size
+    constexpr uint32_t kOrmIndexMask   = 0x0FFFFFFFu;   // 268 million slots — nowhere near the real heap size
+
+    // Bits 28-29: backlit vegetation class for PBRLighting.hlsl (1 = leaf foliage, 2 = thin two-sided plant).
+    constexpr uint32_t kOrmBacklitShift = 28;
+    constexpr uint32_t kBacklitFoliage  = 1u << kOrmBacklitShift;
+    constexpr uint32_t kBacklitThin     = 2u << kOrmBacklitShift;
+
+    /** Grass groups, bushes and crops whose cards are lit alike from both sides (MarcoMarwin's list). */
+    bool IsThinTwoSidedPlant( const std::string& visualName ) {
+        static constexpr std::string_view kPrefixes[] = {
+            "NW_NATURE_GRASSGROUP", "OW_NATURE_BUSH_02", "OW_NATURE_BUSH_03", "NW_NATURE_PLANT_03",
+            "NW_KORN", "OW_GRASS_WINTER", "NW_NATURE_WATERGRASS_56P",
+        };
+        const size_t slash = visualName.find_last_of( "\\/" );
+        const std::string_view stem = slash == std::string::npos
+            ? std::string_view( visualName ) : std::string_view( visualName ).substr( slash + 1 );
+        for ( std::string_view prefix : kPrefixes ) {
+            if ( stem.size() >= prefix.size() && _strnicmp( stem.data(), prefix.data(), prefix.size() ) == 0 )
+                return true;
+        }
+        return false;
+    }
 
     // Packs an SRV heap slot with the FxMap's channel layout for the D3D12 PS to unpack (see kOrmFormatShift).
     // EAdditionalMaterial::None/Specular (no _FX loaded, or the legacy D3D11-only _FX.dds) fall through to format
@@ -3207,7 +3237,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
             WorldDrawCommand c{};
             c.MatNormalIndex     = normalIdx;
-            c.MatOrmIndex        = ormIdx;
+            c.MatOrmIndex        = ormIdx | ( alphaTested ? kBacklitFoliage : 0u );
             c.MatDiffuseIndex    = diffuseIdx;
             c.MatNormalStrength  = normalStrength;
             c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
@@ -3347,8 +3377,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     // rewritten every frame, by ZENGIN's CPU deform into the MeshInfo's DYNAMIC upload buffer
     // (UpdateMorphMeshVisual) or by the GPU morph fold into its DEFAULT UAV (DispatchMorphFold). The arena
     // copy uploaded at registration is only the conversion pose, so mirror the live buffer into it here.
-    const std::vector<MeshInfo*>& dynamic = m_VobArena.DynamicMeshes();
-    if ( dynamic.empty() || !m_FrameOpen || !m_VobArena.Ready() ) return;
+    const std::vector<MeshInfo*>& dynamic = m_VobArena->DynamicMeshes();
+    if ( dynamic.empty() || !m_FrameOpen || !m_VobArena->Ready() ) return;
 
     DX_ZONE( m_CmdList.Get(), "Morph arena refresh" );
 
@@ -3358,7 +3388,7 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     copies.clear();
 
     for ( MeshInfo* mi : dynamic ) {
-        const D3D12VobArena::Range* range = m_VobArena.Find( mi );
+        const D3D12VobArena::Range* range = m_VobArena->Find( mi );
         if ( !range || !mi->GetMeshVertexBuffer() ) continue;
         D3D12VertexBuffer* src = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
         if ( !src->GetResource() ) continue;
@@ -3376,12 +3406,12 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 
     for ( auto const& [mi, src] : copies ) {
-        const D3D12VobArena::Range* range = m_VobArena.Find( mi );
+        const D3D12VobArena::Range* range = m_VobArena->Find( mi );
         // Same wedge order the arena copy was uploaded in (a morph sub-mesh deliberately skips
         // OptimizeVertices), so this is a straight range overwrite. min() guards a shorter buffer.
         const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(),
             static_cast<UINT64>( mi->Vertices.size() ) * D3D12VobArena::VertexStride() );
-        m_CmdList->CopyBufferRegion( m_VobArena.GetVertexBuffer(),
+        m_CmdList->CopyBufferRegion( m_VobArena->GetVertexBuffer(),
             static_cast<UINT64>( range->BaseVertex ) * D3D12VobArena::VertexStride(),
             src->GetResource(), 0, bytes );
     }
@@ -3395,25 +3425,25 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
         src->SetUavState( D3D12VertexBuffer::EUavState::Vertex );
     }
-    barriers.push_back( { m_VobArena.GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+    barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 }
 
 
 bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes ) {
-    if ( !m_VobArena.Ready() || !instances || instanceBytes == 0 ) return false;
+    if ( !m_VobArena->Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
     // BaseVertexLocation/StartIndexLocation and its instances through StartInstanceLocation, so nothing
     // per-draw is left in the IA state. That is what replaces ~560 binds with this one.
     const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        { m_VobArena.GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetVertexBytes(),
+        { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
           D3D12VobArena::VertexStride() },
         { instances->GetGPUVirtualAddress(), instanceBytes, VobInstanceStride() },
     };
     const D3D12_INDEX_BUFFER_VIEW ibv = {
-        m_VobArena.GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetIndexBytes(), DXGI_FORMAT_R16_UINT };
+        m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
     cmdList->IASetVertexBuffers( 0, 2, views );
     cmdList->IASetIndexBuffer( &ibv );
     return true;
@@ -3557,6 +3587,8 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // cutout that means chunks of the silhouette disappearing rather than getting coarser.
             const bool alphaTested = ( tex && tex->HasAlphaChannel() )
                 || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+            if ( alphaTested )
+                ormIdx |= IsThinTwoSidedPlant( visual->VisualName ) ? kBacklitThin : kBacklitFoliage;
 
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() ) continue;
@@ -3602,7 +3634,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 // Where this sub-mesh lives in the VOB mega-buffers. Missing (not yet flushed, or a failed
                 // upload) simply means it isn't drawn this frame. The shadow and LOD index levels are
                 // alternative index lists over the SAME vertices, so one BaseVertexLocation serves all three.
-                const D3D12VobArena::Range* range = m_VobArena.Find( mi );
+                const D3D12VobArena::Range* range = m_VobArena->Find( mi );
                 if ( !range || range->IndexCount == 0 ) continue;
 
                 // Whether this sub-mesh can offer a reduced far level to the main view. The visual's split
@@ -4410,7 +4442,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
     // touches the arena's GPU resources, and it must stay here — main thread, open frame, before
     // BuildVobDrawCommands reads any range and before m_ShadowMap.Prepare() fans the cascade builds out to the
     // pool. That is what makes D3D12VobArena::Find() lock-free. A failed flush just leaves ranges missing.
-    m_VobArena.Flush( this );
+    m_VobArena->Flush( this );
 
     const UINT frame = m_FrameIndex;
 

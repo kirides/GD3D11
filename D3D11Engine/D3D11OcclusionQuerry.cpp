@@ -7,6 +7,7 @@
 #include "zCBspTree.h"
 #include "Toolbox.h"
 #include "zCCamera.h"
+#include "D3D11_Helpers.h"
 
 // Delay to recheck visible objects for occlusion
 const int VISIBLE_RECHECK_FRAME_DELAY = 1;

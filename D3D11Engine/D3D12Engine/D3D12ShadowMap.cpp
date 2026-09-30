@@ -27,6 +27,8 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
+#include "D3D12VobArena.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12ShadowMap's per-frame ring array bound must match the engine's" );
@@ -216,7 +218,7 @@ bool D3D12ShadowMap::Init() {
 	pso.SampleMask = UINT_MAX;
 	pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
 	pso.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;   // cast back faces
-	pso.RasterizerState.DepthClipEnable = TRUE;
+	pso.RasterizerState.DepthClipEnable = FALSE;            // pancake casters in front of the near plane (see cullNear)
 	pso.RasterizerState.DepthBias = 0;                   // normal-Z: positive bias pushes casters away from the light
 	pso.RasterizerState.SlopeScaledDepthBias = 0.0f;
 	pso.RasterizerState.DepthBiasClamp = 0.0f;
@@ -405,7 +407,7 @@ bool D3D12ShadowMap::CreateGrassCaster() {
 	// CULL_NONE (not FRONT like the opaque/VOB/skeletal casters above): grass cards are thin double-sided
 	// planes — matches Grass.PSO's own culling (see CreateGrass), so both faces still cast into the map.
 	pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-	pso.RasterizerState.DepthClipEnable = TRUE;
+	pso.RasterizerState.DepthClipEnable = FALSE;   // pancaked like the other casters
 	pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
 	pso.DepthStencilState.DepthEnable = TRUE;
 	pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -483,18 +485,15 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	// ortho Z bounds from the slice + the scene BBox. Replaces the old camera-centred concentric boxes.
 	Engine::GAPI->GetSky()->RenderSky(); // <-- does not render, but calculates atmosphere data like AC_LightPos
 
-	float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
-	XMVECTOR rawToSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
-	// Temporal smoothing (P2.9c-3c), now driven by the same user-facing knobs D3D11 exposes
-	// (settings.SmoothShadowCameraUpdate / SmoothShadowFrequency — see D3D11ShadowMap::CalculateTemporalInterpolatedPosition,
-	// which this mirrors): ON lerps toward the live sun dir by a frequency-derived blend factor and then quantizes
-	// the direction to discrete 1/frequency steps, so the origin-anchored snap grid rotates in locked steps instead
-	// of jittering every frame (the lever arm from origin to a distant player turns tiny sun drift into visible
-	// texel crawl — this is what fixes it, not just cosmetic smoothing). OFF tracks the live direction exactly
-	// (real-time), trading that texel crawl for a shadow that never lags the sun.
+	// The sun by day, the moon at night
+	const XMFLOAT3 lp = Engine::GAPI->GetSky()->GetMainLightDirection();
+	XMVECTOR rawToSun = XMVector3Normalize( XMLoadFloat3( &lp ) );
+	// SmoothShadowCameraUpdate (mirrors D3D11 CalculateTemporalInterpolatedPosition): ON steps the direction in
+	// 1/frequency increments so the shadows hold still between steps; OFF tracks the sun live with a slow crawl.
 	XMVECTOR toSun;
 	const auto& shadowDirSettings = Engine::GAPI->GetRendererState().RendererSettings;
-	if ( !m_SunDirInitialized ) {
+	// The sun/moon hand-over and savegame loads jump the direction: snap rather than sweep the shadows across
+	if ( !m_SunDirInitialized || XMVectorGetX( XMVector3Dot( XMLoadFloat3( &m_SmoothedSunDir ), rawToSun ) ) < 0.9995f ) {
 		toSun = rawToSun;
 		m_SunDirInitialized = true;
 	} else if ( shadowDirSettings.SmoothShadowCameraUpdate ) {
@@ -611,14 +610,21 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 		const float texelSize = cascadeSize / static_cast<float>( m_MapSize );
 		m_CascadeTexelWorld[c] = texelSize;   // world units/texel → the lit-pass normal bias
 
-		// Texel-snap the centre on a GLOBAL light-space grid anchored at the world origin (unmoving as the player
-		// translates), then transform back to world.
-		XMMATRIX gridView = XMMatrixLookToLH( XMVectorZero(), lightDir, up );
+		// Texel-snap the centre on a light-space grid anchored at a world point that stays put as the player
+		// translates. An origin anchor turns per-frame sun rotation into a texel-sized grid slide far from the origin.
+		if ( !m_SnapAnchorValid[c] ) {
+			XMStoreFloat3( &m_SnapAnchor[c], frustumCenter );
+			m_SnapAnchorValid[c] = true;
+		}
+		XMMATRIX gridView = XMMatrixLookToLH( XMLoadFloat3( &m_SnapAnchor[c] ), lightDir, up );
 		XMVECTOR cLS = XMVector3TransformCoord( frustumCenter, gridView );
 		float snapX = std::floor( XMVectorGetX( cLS ) / texelSize ) * texelSize;
 		float snapY = std::floor( XMVectorGetY( cLS ) / texelSize ) * texelSize;
 		XMVECTOR snappedLS = XMVectorSet( snapX, snapY, XMVectorGetZ( cLS ), 1.0f );
 		XMVECTOR snappedWS = XMVector3TransformCoord( snappedLS, XMMatrixInverse( nullptr, gridView ) );
+		// Re-base onto a grid point once the slice wanders off: the grid itself is unchanged, only its pivot moves
+		if ( snapX * snapX + snapY * snapY > 0.0625f * radius * radius )
+			XMStoreFloat3( &m_SnapAnchor[c], snappedWS );
 
 		const float pullBack = std::max( 10000.0f, radius * 2.0f );
 		XMVECTOR lightPos = XMVectorSubtract( snappedWS, XMVectorScale( lightDir, pullBack ) );
@@ -633,6 +639,7 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 		}
 		float orthoNear = std::max( 1.0f, minZ - dynamicPullback );
 		float orthoFar = maxZ + 5000.0f;
+		float cullNear = orthoNear;
 		if ( haveScene ) {
 			const XMFLOAT3 sc[8] = {
 				{ sceneBox.Min.x, sceneBox.Min.y, sceneBox.Min.z }, { sceneBox.Max.x, sceneBox.Min.y, sceneBox.Min.z },
@@ -646,8 +653,16 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 			}
 			orthoNear = std::min( orthoNear, sMinZ - 100.0f );
 			orthoFar = std::min( orthoFar, sMaxZ + 500.0f );
+
+			// Casters up to the world's top along the light ray are culled in; depth clip is off, so the ones in
+			// front of the near plane pancake onto it (tall cave ceilings sit far upstream of the slice).
+			float sliceMinY = FLT_MAX;
+			for ( const XMFLOAT3& p : corners ) sliceMinY = std::min( sliceMinY, p.y );
+			const float casterReach = std::max( 0.0f, sceneBox.Max.y - sliceMinY ) / lightDotUp;
+			cullNear = std::max( minZ - casterReach, sMinZ - 100.0f );
 		}
 		orthoNear = std::max( 1.0f, orthoNear );
+		cullNear = std::min( cullNear, orthoNear );
 		if ( orthoFar <= orthoNear + 1.0f ) orthoFar = orthoNear + 1.0f;
 
 		XMMATRIX proj = XMMatrixOrthographicLH( cascadeSize, cascadeSize, orthoNear, orthoFar );
@@ -658,7 +673,7 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 		m_CascadeFrustum[c].BuildOrthographic( lightView,
 			cascadeSize,
 			cascadeSize,
-			orthoNear,
+			cullNear,
 			orthoFar,
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
 			Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
@@ -716,6 +731,11 @@ void D3D12ShadowMap::UploadSamplingConstants( bool sunUp ) {
 	} else {
 		cb.SunColor = XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z );
 		cb.SunIntensity = sunUp ? sunStrength : 0.0f;   // no direct sun when it's below the horizon
+		const MoonLightInfo moon = Engine::GAPI->GetSky()->GetMoonLight();
+		if ( !sunUp && moon.IsMainLight ) {             // the moon is the directional light at night
+			cb.SunColor = moon.Tint;
+			cb.SunIntensity = moon.Intensity;
+		}
 		cb.AmbientStrength = ambient;
 		cb.WorldAOStrength = set.WorldAOStrength;
 	}
@@ -777,19 +797,22 @@ void D3D12ShadowMap::Prepare() {
 	ComputeCascadeMatrices();
 
 	// Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip ALL casting.
-	const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
+	GSky* sky = Engine::GAPI->GetSky();
+	const float3 lp = sky->GetAtmosphereCB().AC_LightPos;
 	// Indoor levels (mines, dungeons) have no sun at all — ZenGin runs them off a zCSkyControler_Indoor.
 	// Treating the sun as down is the cheapest way to reach D3D11's indoor behaviour (which skips
 	// DrawWorldShadow outright for !isOutdoor and zeroes SQ_ShadowStrength): every cascade clears to
 	// unshadowed and phases A/B/C are skipped entirely, so a mine pays no shadow cost and nothing
 	// double-darkens the baked interior lighting.
 	const bool sunUp = !Engine::GAPI->IsIndoorWorld() && (lp.y > 0.0f);
+	// At night the moon casts instead; sunUp stays the real sun for the ambient level
+	const bool mainLightUp = !Engine::GAPI->IsIndoorWorld() && sky->IsMainLightUp();
 
 	// Fully enclosed view (portal culling): sun is up, but nothing it lights is on screen. Clear each slice
 	// to SHADOWED instead of far and cull/build/draw no casters. Safe to read here - CollectVisibleVobs (and
 	// BspPortalCuller::Solve) ran before Prepare().
-	const bool sunFullyOccluded = sunUp && Engine::GAPI->AreSunShadowsFullyOccluded();
-	const bool castersNeeded = sunUp && !sunFullyOccluded;
+	const bool sunFullyOccluded = mainLightUp && Engine::GAPI->AreSunShadowsFullyOccluded();
+	const bool castersNeeded = mainLightUp && !sunFullyOccluded;
 
 	m_SunUp = castersNeeded;            // RecordCascade runs on a pool thread; it can re-read neither
 	m_SunOccluded = sunFullyOccluded;   // the sky nor the portal culler
@@ -1253,7 +1276,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 	// --- Instanced VOBs: one ExecuteIndirect over the command set Phase C built for this cascade ---
 	if ( m_VobDrawCount[c] > 0 && m_CasterVobIndirectPSO && m_E->m_VobIndirectCmdSig
-		&& m_VobDrawArgs[c][frame] && m_E->m_VobArena.Ready() ) {
+		&& m_VobDrawArgs[c][frame] && m_E->m_VobArena->Ready() ) {
 		DX_ZONE( cmdList.Get(), "Vobs" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 		// Same alpha-test split as the world casters above — BuildVobDrawCommands partitioned this cascade's

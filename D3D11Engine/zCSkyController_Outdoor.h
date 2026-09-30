@@ -445,6 +445,16 @@ public:
         }
     }
 
+    /** zCSkyControler_Outdoor::Interpolate() - lerps masterState (sky colours, fog, poly-light CLUT) to the
+        current time. Only RenderSkyPre calls it, so the scattering dome, which skips RenderSkyPre, must. */
+    void Interpolate() {
+        if constexpr ( GothicMemoryLocations::zCSkyController_Outdoor::Interpolate != 0 ) {
+            EnsureInit();
+            reinterpret_cast<void( __fastcall* )( zCSkyController_Outdoor* )>
+                ( GothicMemoryLocations::zCSkyController_Outdoor::Interpolate )( this );
+        }
+    }
+
     /** planets[i] — [0] sun, [1] moon. Live engine data, so Gothic.ini's zMoonSize/zMoonName and any
         script/mod tweak to the tint or size are picked up automatically. */
     zCSkyPlanet* GetPlanet( int index ) {

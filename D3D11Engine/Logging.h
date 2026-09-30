@@ -36,10 +36,32 @@ namespace Logging {
 
         /** Write, then show the message in a blocking MessageBox. */
         void WriteBox( Level level, const std::source_location& where, std::string_view fmt, std::format_args args );
+
+        /** char[N] arguments (string literals, LE's #x) format as string_view, so each literal length doesn't
+            instantiate its own formatter checks. Output is identical: both are null-terminated strings. */
+        template<class T> struct FmtArg { using type = T; };
+        template<std::size_t N> struct FmtArg<const char (&)[N]> { using type = std::string_view; };
+        template<std::size_t N> struct FmtArg<char (&)[N]> { using type = std::string_view; };
+
+        template<class T>
+        decltype(auto) AsFmtArg( T& v ) {
+            if constexpr ( std::is_array_v<T> ) return std::string_view( v );
+            else return ( v );
+        }
+
+        template<class... T>
+        void WriteArgs( Level level, const std::source_location& where, std::string_view fmt, T&&... args ) {
+            Write( level, where, fmt, std::make_format_args( args... ) );
+        }
+
+        template<class... T>
+        void WriteBoxArgs( Level level, const std::source_location& where, std::string_view fmt, T&&... args ) {
+            WriteBox( level, where, fmt, std::make_format_args( args... ) );
+        }
     }
 
     template<class... Args>
-    using Site = Detail::FormatSite<std::type_identity_t<Args>...>;
+    using Site = Detail::FormatSite<typename Detail::FmtArg<Args>::type...>;
 
     [[nodiscard]] inline bool IsEnabled( Level level ) noexcept {
         return level >= Detail::MinLevel.load( std::memory_order_relaxed );
@@ -60,48 +82,48 @@ namespace Logging {
     template<class... Args>
     void Dbg( Site<Args...> site, Args&&... args ) {
         if ( !IsEnabled( Level::Debug ) ) return;
-        Detail::Write( Level::Debug, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteArgs( Level::Debug, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     template<class... Args>
     void Inf( Site<Args...> site, Args&&... args ) {
         if ( !IsEnabled( Level::Info ) ) return;
-        Detail::Write( Level::Info, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteArgs( Level::Info, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     template<class... Args>
     void Wrn( Site<Args...> site, Args&&... args ) {
         if ( !IsEnabled( Level::Warn ) ) return;
-        Detail::Write( Level::Warn, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteArgs( Level::Warn, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     /** Warn attributed to an explicit call site, for helpers that forward their caller's location. */
     template<class... Args>
-    void WrnAt( const std::source_location& where, std::format_string<Args...> fmt, Args&&... args ) {
+    void WrnAt( const std::source_location& where, std::format_string<typename Detail::FmtArg<Args>::type...> fmt, Args&&... args ) {
         if ( !IsEnabled( Level::Warn ) ) return;
-        Detail::Write( Level::Warn, where, fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteArgs( Level::Warn, where, fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     template<class... Args>
     void Err( Site<Args...> site, Args&&... args ) {
         if ( !IsEnabled( Level::Error ) ) return;
-        Detail::Write( Level::Error, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteArgs( Level::Error, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     /** Like Inf/Wrn/Err, plus a blocking MessageBox. Never filtered by the min level. */
     template<class... Args>
     void InfBox( Site<Args...> site, Args&&... args ) {
-        Detail::WriteBox( Level::Info, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteBoxArgs( Level::Info, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     template<class... Args>
     void WrnBox( Site<Args...> site, Args&&... args ) {
-        Detail::WriteBox( Level::Warn, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteBoxArgs( Level::Warn, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
     template<class... Args>
     void ErrBox( Site<Args...> site, Args&&... args ) {
-        Detail::WriteBox( Level::Error, site.Where, site.Fmt.get(), std::make_format_args( args... ) );
+        Detail::WriteBoxArgs( Level::Error, site.Where, site.Fmt.get(), Detail::AsFmtArg( args )... );
     }
 
 } // namespace Logging

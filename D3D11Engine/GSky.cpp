@@ -12,6 +12,7 @@
 #include "zCTexture.h"
 #include "zCSkyController_Outdoor.h"
 #include "zCWorld.h"
+#include "zCBspTree.h"
 #include "corecrt_io.h"
 
 GSky::GSky() {
@@ -455,6 +456,142 @@ float3 GSky::GetSunColor() {
 
     Deliberately moon-only: the scattering dome already renders the sun as the Mie forward-scattering lobe, so
     also stamping the fixed-function sun sprite on top would double it. */
+MoonLightInfo GSky::GetMoonLight() {
+    // Direct moonlight stays small next to the night base; the fill keeps unlit faces off pure black.
+    constexpr float kMoonLightStrength = 0.14f;
+    constexpr XMFLOAT3 kNightFillColor = { 0.34f * 0.035f, 0.40f * 0.035f, 0.52f * 0.035f };
+
+    MoonLightInfo out;
+    zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
+        ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+    if ( !sc ) return out;
+
+    const XMFLOAT3 moonWS = sc->GetMoonWorldPosition( Atmosphere.SkyTimeScale );
+    XMStoreFloat3( &out.Direction, XMVector3Normalize( XMLoadFloat3( &moonWS ) ) );
+    out.AboveHorizonFade = std::clamp( out.Direction.y * 4.0f, 0.0f, 1.0f );
+
+    auto* worldInfo = Engine::GAPI->GetLoadedWorldInfo();
+    if ( worldInfo && worldInfo->BspTree && worldInfo->BspTree->GetBspTreeMode() == zBSP_MODE_INDOOR )
+        return out;
+
+    const float sunHeight = AtmosphereCB.AC_LightPos.y;
+    const float night = std::clamp( -sunHeight * 4.0f, 0.0f, 1.0f );
+    const float fog = std::clamp( 1.0f - ( 1.0f - out.Direction.y ) * sc->GetResultFogScale(), 0.0f, 1.0f );
+    const float rain = std::clamp( sc->GetRainFXWeight(), 0.0f, 1.0f );
+    auto smoothFade = []( float v ) { v = std::clamp( v, 0.0f, 1.0f ); return v * v * ( 3.0f - 2.0f * v ); };
+
+    // The moon takes over from 19:30 and hands back at 04:30 (15-minute fades), after the sun has set.
+    const float hour = fmodf( sc->GetMasterTime() * 24.0f + 12.0f, 24.0f );
+    constexpr float kFadeHours = 0.25f;
+    float moonTime = 0.0f;
+    if ( hour >= 19.5f ) moonTime = smoothFade( ( hour - 19.5f ) / kFadeHours );
+    else if ( hour < 4.5f ) moonTime = 1.0f - smoothFade( ( hour - 4.25f ) / kFadeHours );
+    const float moonVisibility = moonTime * smoothFade( out.Direction.y / 0.12f ) * smoothFade( -sunHeight / 0.05f )
+        * ( 1.0f - std::clamp( rain * 2.0f, 0.0f, 1.0f ) );
+
+    out.IsMainLight = moonVisibility > 0.001f;
+    out.Intensity = kMoonLightStrength * moonVisibility;
+    out.LightColor = XMFLOAT3( out.Tint.x * out.Intensity, out.Tint.y * out.Intensity, out.Tint.z * out.Intensity );
+    out.NightFill = XMFLOAT3( kNightFillColor.x * night, kNightFillColor.y * night, kNightFillColor.z * night );
+    out.GlintVisibility = out.AboveHorizonFade * night * fog * ( 1.0f - rain );
+    out.DiscVisibility = out.AboveHorizonFade * fog * ( 1.0f - rain );
+    return out;
+}
+
+XMFLOAT3 GSky::GetMainLightDirection() {
+    const MoonLightInfo moon = GetMoonLight();
+    if ( moon.IsMainLight ) return moon.Direction;
+    const auto& sun = AtmosphereCB.AC_LightPos;
+    return XMFLOAT3( sun.x, sun.y, sun.z );
+}
+
+bool GSky::IsMainLightUp() {
+    return AtmosphereCB.AC_LightPos.y > 0.0f || GetMoonLight().IsMainLight;
+}
+
+bool GSky::AreLowCloudsVisible() {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( !settings.EnableLowClouds || !settings.DrawFog ) return false;
+    auto* worldInfo = Engine::GAPI->GetLoadedWorldInfo();
+    if ( !worldInfo || !worldInfo->BspTree || worldInfo->BspTree->GetBspTreeMode() != zBSP_MODE_OUTDOOR ) return false;
+    if ( worldInfo->WorldName == "DRAGONISLAND" ) return false;   // Irdorath's sky has no room for valley clouds
+    // The shader has faded them out completely by here
+    return Engine::GAPI->GetRainFXWeight() < 0.90f && Engine::GAPI->GetFogOverride() < 0.55f;
+}
+
+void GSky::FillLowCloudConstants( LowCloudConstantBuffer& cb ) {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    cb = {};
+
+    const XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    XMStoreFloat4x4( &cb.LC_InvView, XMMatrixInverse( nullptr, view ) );
+    const XMFLOAT4X4& proj = Engine::GAPI->GetProjectionMatrix();
+    cb.LC_InvProj = XMFLOAT2( 1.0f / proj._11, 1.0f / proj._22 );
+    cb.LC_Time = Engine::GAPI->GetTimeSeconds();
+    // A temporal resolve averages the changing jitter away; without one it stays fixed so it doesn't crawl
+    cb.LC_Frame = settings.GetIsTAAEnabled() ? static_cast<float>( Engine::GAPI->GetFrameNumber() % 64 ) : 0.0f;
+    cb.LC_CameraPos = Engine::GAPI->GetCameraPosition();
+
+    // Clouds rest on the fog height and take the fog's color, a fog zone's own color while one is active
+    const float fogOverride = std::clamp( Engine::GAPI->GetFogOverride(), 0.0f, 1.0f );
+    cb.LC_FogHeight = settings.FogHeight;
+    cb.LC_FogOverride = fogOverride;
+    XMStoreFloat3( &cb.LC_FogColor, fogOverride > 0.0f ? Engine::GAPI->GetFogColor() : XMLoadFloat3( &settings.FogColorMod ) );
+
+    cb.LC_DayColor = settings.LowCloudDayColor;
+    cb.LC_RainColor = XMFLOAT3( 0.70f, 0.70f, 0.70f );
+    cb.LC_NightColor = XMFLOAT3( 0.50f, 0.55f, 0.55f );
+    cb.LC_Density = settings.LowCloudDensity;
+    cb.LC_Scale = settings.LowCloudScale;
+    cb.LC_HeightScale = settings.LowCloudHeight;
+    cb.LC_DistanceScale = settings.LowCloudDistance;
+    cb.LC_Speed = settings.LowCloudSpeed;
+    cb.LC_SunLight = settings.LowCloudSunLight;
+
+    // Our height fog doesn't darken its night color per world (MarcoMarwin's does), so the veil matches it as is
+    cb.LC_NightFogBrightness = 1.0f;
+
+    // Sun and moon take turns by game hour (sun 04:30-19:30), each fading over 15 minutes
+    zCSkyController_Outdoor* sc = ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
+        ? oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor() : nullptr;
+    float sunTime = AtmosphereCB.AC_LightPos.y > 0.0f ? 1.0f : 0.0f;
+    float moonTime = 1.0f - sunTime;
+    if ( sc ) {
+        auto fade = []( float v ) { v = std::clamp( v, 0.0f, 1.0f ); return v * v * ( 3.0f - 2.0f * v ); };
+        const float hour = fmodf( sc->GetMasterTime() * 24.0f + 12.0f, 24.0f );
+        sunTime = 0.0f;
+        moonTime = 0.0f;
+        if ( hour >= 4.5f && hour < 19.5f ) {
+            sunTime = hour < 4.75f ? fade( ( hour - 4.5f ) / 0.25f ) : ( hour >= 19.25f ? 1.0f - fade( ( hour - 19.25f ) / 0.25f ) : 1.0f );
+        } else if ( hour >= 19.5f ) {
+            moonTime = fade( ( hour - 19.5f ) / 0.25f );
+        } else {
+            moonTime = hour >= 4.25f ? 1.0f - fade( ( hour - 4.25f ) / 0.25f ) : 1.0f;
+        }
+    }
+    const float rainFade = 1.0f - std::clamp( Engine::GAPI->GetRainFXWeight() * 2.0f, 0.0f, 1.0f );
+    cb.LC_SunVisibility = sunTime * rainFade;
+    cb.LC_MoonVisibility = moonTime * rainFade;
+    const MoonLightInfo moon = GetMoonLight();
+    cb.LC_MoonDir = moon.Direction;
+
+    // Screen positions keep the discs visible through thin cloud
+    const XMMATRIX viewT = XMMatrixTranspose( view );
+    const XMMATRIX projT = XMMatrixTranspose( XMLoadFloat4x4( &proj ) );
+    const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+    auto project = [&]( const XMFLOAT3& dir, float visibility ) {
+        const XMVECTOR world = camPos + XMVector3Normalize( XMLoadFloat3( &dir ) ) * AtmosphereCB.AC_OuterRadius;
+        XMFLOAT3 viewPos, clip;
+        XMStoreFloat3( &viewPos, XMVector3TransformCoord( world, viewT ) );
+        XMStoreFloat3( &clip, XMVector3TransformCoord( XMVector3TransformCoord( world, viewT ), projT ) );
+        if ( viewPos.z <= 0.0f ) return XMFLOAT4( -10.0f, -10.0f, 0.0f, 0.0f );
+        return XMFLOAT4( clip.x * 0.5f + 0.5f, clip.y * -0.5f + 0.5f, visibility, 0.0f );
+    };
+    const auto& sunDir = AtmosphereCB.AC_LightPos;
+    cb.LC_SunScreen = project( XMFLOAT3( sunDir.x, sunDir.y, sunDir.z ), cb.LC_SunVisibility );
+    cb.LC_MoonScreen = project( moon.Direction, cb.LC_MoonVisibility );
+}
+
 MoonSpriteInfo GSky::ResolveMoonSprite( const INT2& resolution ) {
     MoonSpriteInfo out;
 

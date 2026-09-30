@@ -5,7 +5,11 @@
 #include "VulkanEngine/VulkanDevice.h"
 #include "VulkanEngine/VulkanRhi.h"
 #define IMGUI_IMPL_VULKAN_USE_VOLK
+#include <imgui_impl_win32.h>
+#include <imgui_impl_dx11.h>
+#include <imgui_impl_dx12.h>
 #include <imgui_impl_vulkan.h>
+#include <ImGuizmo/src/ImGuizmo.h>
 #include <VersionHelpers.h>
 #include <ShellScalingApi.h>
 
@@ -25,6 +29,10 @@
 #include <chrono>
 #include <numeric>
 #include <codecvt>
+#include "BspPortalCuller.h"
+#include "D3D11ShadowMap.h"
+#include "D3D11GraphicsEngine.h"
+#include "D3D11_Helpers.h"
 
 namespace ImGui {
     void TextUnformatted( const wchar_t* text ) {
@@ -323,6 +331,12 @@ void ImGuiShim::CollectVulkanTextures()
     }
 }
 
+
+ImGuiShim::ImGuiShim() = default;
+
+void ImGuiShim::ToggleEditor() { m_EditorView->SetIsEnabled( !m_EditorView->GetIsEnabled() ); }
+bool ImGuiShim::GetIsEditorVisible() { return m_EditorView->GetIsEnabled(); }
+void ImGuiShim::OnVobRemovedFromWorld( zCVob* vob ) { m_EditorView->OnVobRemovedFromWorld( vob ); }
 
 ImGuiShim::~ImGuiShim()
 {
@@ -630,7 +644,7 @@ void ImGuiShim::RenderPointLightShadowDebugWindow() {
     VobLightInfo* nearestInfo = nullptr;
     float nearestDistSq = std::numeric_limits<float>::max();
 
-    for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {
+    for ( auto& vobLightPair : Engine::GAPI->GetVobLightMap() ) {
         VobLightInfo* info = vobLightPair.second;
         if ( !info || !info->Vob || !info->LightShadowBuffers ) {
             continue;
@@ -1497,6 +1511,26 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::PopID();
         }
 
+        ImGui::SeparatorText( "Low Clouds" );
+        {
+            ImGui::PushID( "LowCloudSettings" );
+            ImGui::Checkbox( "Low Clouds", &settings.EnableLowClouds );
+            ImGui::BeginDisabled( !settings.EnableLowClouds );
+            ImGui::SliderFloat( "Density", &settings.LowCloudDensity, 0.0f, 4.0f );
+            ImGui::SliderFloat( "Scale", &settings.LowCloudScale, 0.35f, 4.0f );
+            ImGui::SetItemTooltip( "Horizontal size of the cloud islands." );
+            ImGui::SliderFloat( "Height", &settings.LowCloudHeight, 0.35f, 4.0f );
+            ImGui::SetItemTooltip( "Vertical extent of the cloud band above the fog height." );
+            ImGui::SliderFloat( "Distance", &settings.LowCloudDistance, 0.45f, 4.0f );
+            ImGui::SetItemTooltip( "How far from the camera the clouds start and end." );
+            ImGui::SliderFloat( "Speed", &settings.LowCloudSpeed, 0.0f, 10.0f );
+            ImGui::SliderFloat( "Sun Light", &settings.LowCloudSunLight, 0.0f, 4.0f );
+            ImGui::ColorEdit3( "Day Color", &settings.LowCloudDayColor.x );
+            ImGui::SetItemTooltip( "Set per world on load; not saved." );
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+
         ImGui::SeparatorText( "Depth of Field" );
         {
             ImGui::PushID( "DoFSettings" );
@@ -1587,7 +1621,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         if ( ImGui::Button( "Reset Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             settings.SetDefault();
-            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
+            if ( Engine::IsModernBackend() ) {
                 settings.ApplyDx12Defaults();
             }
             settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );
@@ -1964,13 +1998,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "ShadowStrength; 1.0 is neutral. 0 disables the IBL and falls back to the flat\n"
             "ambient, which has no indirect specular at all (metals go black off-sun)." );
         ImGui::DragFloat( "SkyOcclusionStrength", &settings.SkyOcclusionStrength, 0.01f, 0.0f, 1.0f, "%.2f" );
-        ImGui::SetItemTooltip( "D3D12 only. How strongly Gothic's baked vertex light gates the sky-IBL indirect\n"
-            "term. The IBL is the OPEN SKY's radiance; without this it reaches caves and portal\n"
-            "rooms unoccluded, so interiors read as sunlit at noon and only go dark at night.\n"
-            "ShadowAOStrength can't do this - it floors at 1-ShadowAOStrength (0.5), so a\n"
-            "pitch-black cave still caught half the daytime sky. 0 = off (old behaviour);\n"
-            "1 = interiors get no sky ambient at all. The default leaves a small floor so cave\n"
-            "ceilings keep a trace of bounce light instead of crushing to black." );
+        ImGui::SetItemTooltip( "D3D12 only. Where the sky is blocked the IBL hands over to the flat ambient.\n"
+            "Roofs and cave ceilings are found through the rain occlusion map; this knob\n"
+            "additionally lets Gothic's baked vertex light mark a surface as enclosed.\n"
+            "0 = occlusion map only; 1 = dark baked light fully removes the sky light." );
         ImGui::DragFloat( "SkyIblNightFloor", &settings.SkyIblNightFloor, 0.005f, 0.0f, 0.5f, "%.3f" );
         ImGui::SetItemTooltip( "D3D12 only. Minimum night sky radiance for the IBL, in linear units.\n"
             "Gothic's night is not physically lit - zCSkyState's night fogColor is (5,5,20),\n"
@@ -2098,7 +2129,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                         "resource. Re-bake after toggling." );
 
                     if ( ImGui::Button( "Force re-bake all point light shadows" ) ) {
-                        for ( auto& vobLightPair : Engine::GAPI->VobLightMap ) {
+                        for ( auto& vobLightPair : Engine::GAPI->GetVobLightMap() ) {
                             VobLightInfo* info = vobLightPair.second;
                             if ( !info || !info->LightShadowBuffers ) {
                                 continue;

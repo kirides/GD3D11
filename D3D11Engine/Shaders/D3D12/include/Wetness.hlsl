@@ -93,7 +93,8 @@ float3 ApplyWetCoat( float3 rgb, WetSurface wet, float3 wpos, float shadow, floa
     float skyOcclusion = lerp( 1.0, vertLighting, WorldAOStrength ) * ao * ssao;
 
     // SunIntensity is 0 below the horizon and indoors; the 0.8 is D3D11's wet dimming of the sun colour.
-    float3 sun = SrgbToLinear( SunColor ) * ( SunIntensity * lerp( 1.0, 0.8, wet.wetness )
+    // While the moon is the directional light it gets the diffused glint below instead.
+    float3 sun = SrgbToLinear( SunColor ) * ( SunIntensity * ( 1.0 - MoonMainLight ) * lerp( 1.0, 0.8, wet.wetness )
                * WetCoatSpecular( wet.coatN, V, SunDirWS, WET_SUN_DISTANCE, wet.roughness ) * shadow );
     float3 moon = SrgbToLinear( WET_MOON_COLOR ) * ( WetCoatSpecular( wet.coatN, V, WetMoonDir, WET_MOON_DISTANCE, wet.roughness )
                 * WetMoonFade * nightBlend * skyOcclusion );

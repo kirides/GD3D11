@@ -38,7 +38,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 #if SHD_ENABLE
 	// AC_LightPos is a cbuffer scalar (frame-uniform), not per-pixel data.
 	[branch]
-	if (AC_LightPos.y > 0)
+	if (AC_LightPos.y > 0 || SQ_MoonLight.w > 0.5f) // the sun by day, the moon at night
 	{
 		float shadowNoL = saturate(dot(wsNormal, SQ_LightDirectionWS));
 		float slopeScale = sqrt(saturate(1.0f - shadowNoL * shadowNoL));

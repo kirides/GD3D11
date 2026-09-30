@@ -8,6 +8,7 @@
 #include "PointShadow/TiledCubeArrayTechnique.h"
 #include "WorldConverter.h"
 #include "zCVobLight.h"
+#include "D3D11ShadowMap.h"
 
 namespace {
     IPointShadowTechnique* ActiveTechnique() {
@@ -24,7 +25,7 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 
     // Ensure this light is actually in the VobLightMap
     // some lights don't seem to be in here!
-    Engine::GAPI->VobLightMap[info->Vob] = info;
+    Engine::GAPI->GetVobLightMap()[info->Vob] = info;
 
     LastUpdatePosition = LightInfo->Vob->GetPositionWorld();
 

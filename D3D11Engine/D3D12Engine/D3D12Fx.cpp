@@ -27,6 +27,7 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../TransparencyQueue.h"
 
 namespace {
     // Per-frame poly-strip vertex ring. 2 MB / frame-in-flight is ~34k ExVertexStruct verts — well above what

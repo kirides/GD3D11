@@ -16,6 +16,7 @@
 #include "WidgetContainer.h"
 #include "WorldConverter.h"
 #include "D3D12Engine/D3D12Texture.h"
+#include "WorldMeshSection.h"
 
 static XMFLOAT3 GetCameraPosition() {
     if (oCGame::GetGame() && oCGame::GetGame()->_zCSession_camVob) {

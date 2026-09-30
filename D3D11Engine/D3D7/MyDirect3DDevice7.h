@@ -8,6 +8,8 @@
 #include "../GothicAPI.h"
 #include "../HookExceptionFilter.h"
 #include "../ShaderIDs.h"
+#include "../UIRenderer2D.h"
+#include "../WorldConverter.h"
 
 #define GOTHIC_FVF_XYZ_DIF_T1 (D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 #define GOTHIC_FVF_XYZ_DIF_T1_SIZE ((3 + 1 + 2) * 4)

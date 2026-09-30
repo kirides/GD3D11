@@ -5,21 +5,21 @@
 // flat greyscale ambient floor that ComputeSunLightingPBR used to apply
 // (`albedo * AmbientStrength * sunLum`, see include/PBRLighting.hlsl):
 //
-//   CSSkyRadiance  -> env cube mip 0: the sky's radiance, evaluated ANALYTICALLY per texel.
-//   CSPrefilter    -> env cube mips 1..N: GGX-importance-sampled, mip m == roughness m/(N-1).
+//   CSSkyRadiance  -> env cube mip 0: the sky's radiance, evaluated analytically per texel.
+//   CSPrefilter    -> env cube mips 1..N: GGX-importance-sampled, mip m == roughness (m/(N-1))^2.
 //   CSIrradiance   -> a small cosine-convolved cube: the diffuse irradiance.
 //
-// Why analytic and not a scene capture: D3D12 draws Gothic's FIXED-FUNCTION skydome
-// (D3D12GraphicsEngine::DrawSky — the atmospheric-scattering path is D3D11-only and not
-// ported), so an atmospheric-scattering IBL would not match what is actually on screen.
-// Evaluating a gradient built from Gothic's OWN sky state (zCSkyState master colours, fed
-// in through SkyRadianceCB by D3D12SkyIbl.cpp) tracks time of day and weather exactly and
-// costs one small dispatch instead of six scene re-renders. It also means there is nothing
-// to place and nothing to author, which matters for a mod over 2002 game data.
+// Upper hemisphere: when the atmospheric-scattering dome is on screen (Sky.hlsl), its own scattering
+// function gives the shape and colour, rescaled to the calibrated zCSkyState gradient's brightness; otherwise
+// the gradient alone. Below the horizon: a ground bounce. No sun disc — the direct GGX term already reflects
+// the sun, and a disc here would reflect it again in shadow.
 //
 // All colours arrive LINEAR (D3D12SkyIbl.cpp linearizes on the CPU — once per frame beats
 // once per texel) and the cubes are RGBA16F, so no encode/decode happens here.
 //--------------------------------------------------------------------------------------
+
+#define ATMOSPHERE_BINDLESS 1
+#include "include/AtmosphericScattering.hlsl"
 
 SamplerState SS_LinearClamp : register( s0 );
 
@@ -35,22 +35,28 @@ RWTexture2DArray<float4> OutputCube : register( u0 );
 
 cbuffer SkyRadianceCB : register( b0 )
 {
-    float3 ZenithColor;    float SunSharpness;      // sky colour straight up; sun-lobe exponent
+    float3 ZenithColor;    float SunSharpness;      // sky colour straight up; aureole exponent
     float3 HorizonColor;   float SkyIntensity;      // colour at the horizon ring; overall scale
     float3 GroundColor;    float GroundBlend;       // below-horizon bounce colour; its falloff exponent
-    float3 SunDirWS;       float SunLobeIntensity;  // direction TOWARD the sun; brightness of the disc
+    float3 SunDirWS;       float SunLobeIntensity;  // direction TOWARD the sun; aureole brightness
     float3 SunColor;       float FaceSize;          // linear sun colour; mip-0 face resolution
+    float  AtmoBlend;      float Overcast;          // 1 = take the dome's scattering; rain desaturation
+    float  AtmoMieG;       float _radPad;           // softened Mie asymmetry (the dome's own peak is the sun)
 };
+
+// The dome's AtmosphereConstantBuffer (m_SkyCB). Only read when AtmoBlend > 0.
+ConstantBuffer<AtmosphereData> AtmoCB : register( b2 );
 
 cbuffer PrefilterCB : register( b1 )
 {
     float  P_FaceSize;     // resolution of the face being WRITTEN
-    float  P_Roughness;    // GGX roughness this mip represents (0 at mip 0, 1 at the last mip)
+    float  P_Roughness;    // GGX roughness this mip represents; EvaluateSkyIBL reads mip = sqrt(r) * (N-1)
     float  P_SourceSize;   // resolution of mip 0 (for the sample-mip heuristic below)
     uint   P_NumSamples;   // importance-sample count for this mip
 };
 
 static const float SKY_PI = 3.14159265;
+static const float3 SKY_LUMA = float3( 0.2126, 0.7152, 0.0722 );
 
 // Cube-face texel -> world direction. Face order is the D3D convention (+X -X +Y -Y +Z -Z),
 // which is what a TextureCube SRV over this array will read back.
@@ -70,46 +76,108 @@ float3 DirectionFromFaceUV( uint face, float2 uv )
     return normalize( d );
 }
 
-// The analytic sky. Gothic is Y-up (see include/Wetness.hlsl, which uses dot(N, (0,1,0)) for
-// rain exposure), so d.y is the horizon parameter.
-float3 SkyRadiance( float3 d )
+// Gothic is Y-up. The 0.45 exponent keeps the bright horizon band wide.
+float3 GradientSky( float3 d )
+{
+    return lerp( HorizonColor, ZenithColor, pow( saturate( d.y ), 0.45 ) );
+}
+
+float3 AtmosphereSky( float3 d )
+{
+    return AC_ScatterSkyDirection( normalize( float3( d.x, max( d.y, 0.0 ), d.z ) ), AtmoMieG );
+}
+
+// Upper-hemisphere sky; `atmoScale` maps the dome's units onto the gradient's, `atmoWeight` blends it in.
+float3 UpperSky( float3 d, float atmoScale, float atmoWeight )
+{
+    float3 col = GradientSky( d );
+    [branch]
+    if ( atmoWeight > 0.0 )
+    {
+        // Dome hue and shape, its luminance held near the gradient's in the same direction (the dome's
+        // horizon glow is many times its mean at dusk and blew up side-facing surfaces).
+        float3 atmo = AtmosphereSky( d ) * atmoScale;
+        float gradLum = dot( col, SKY_LUMA );
+        float atmoLum = dot( atmo, SKY_LUMA );
+        atmo *= clamp( atmoLum, 0.7 * gradLum, 1.4 * gradLum ) / max( atmoLum, 1e-6 );
+        col = lerp( col, atmo, atmoWeight );
+    }
+    return lerp( col, dot( col, SKY_LUMA ), Overcast );
+}
+
+float3 SkyRadiance( float3 d, float atmoScale, float atmoWeight )
 {
     float t = d.y;
     float3 col;
     if ( t >= 0.0 )
     {
-        // Above the horizon: horizon -> zenith. The 0.45 exponent keeps the bright horizon band
-        // wide, which is what the sky actually looks like and what makes the reflection in a
-        // polished surface read as "outdoors" rather than as a flat blue.
-        col = lerp( HorizonColor, ZenithColor, pow( saturate( t ), 0.45 ) );
+        col = UpperSky( d, atmoScale, atmoWeight );
     }
     else
     {
-        // Below the horizon: bounce off the ground. This hemisphere is the entire reason the
-        // earlier hemispheric ambient experiment had to be reverted (see the note in
-        // PBRLighting.hlsl's ComputeSunLightingPBR) — a saturate(N.y*0.5+0.5) factor drove
-        // downward-facing normals to literal black because there was no ground term to catch
-        // them. Cave ceilings and canopy undersides get their indirect light from here.
-        col = lerp( HorizonColor, GroundColor, pow( saturate( -t ), GroundBlend ) );
+        // Below the horizon: bounce off the ground. Cave ceilings and canopy undersides get their indirect
+        // light from here; without it downward normals would go black.
+        float2 h = d.xz;
+        float3 horizonDir = dot( h, h ) > 1e-6 ? float3( normalize( h ).x, 0.0, normalize( h ).y ) : float3( 1.0, 0.0, 0.0 );
+        col = lerp( UpperSky( horizonDir, atmoScale, atmoWeight ), GroundColor, pow( saturate( -t ), GroundBlend ) );
     }
 
-    // Soft sun disc, so a low-roughness surface catches an actual sun reflection in the
-    // prefiltered chain instead of only the sky gradient.
+    // Circumsolar brightening, broad and dim: tints the sun side of the irradiance without a mirror sun.
     float sunCos = saturate( dot( d, SunDirWS ) );
     col += SunColor * SunLobeIntensity * pow( sunCos, SunSharpness );
 
     return col * SkyIntensity;
 }
 
-[numthreads( 8, 8, 1 )]
-void CSSkyRadiance( uint3 tid : SV_DispatchThreadID )
+// Fibonacci directions over the upper hemisphere, one per thread of the 8x8 group.
+float3 HemisphereDirection( uint i )
 {
+    float y = ( float( i ) + 0.5 ) / 64.0;
+    float r = sqrt( saturate( 1.0 - y * y ) );
+    float phi = float( i ) * 2.39996323;
+    return float3( r * cos( phi ), y, r * sin( phi ) );
+}
+
+groupshared float gs_GradLum[64];
+groupshared float gs_AtmoLum[64];
+
+[numthreads( 8, 8, 1 )]
+void CSSkyRadiance( uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex )
+{
+    float atmoScale = 0.0;
+    float atmoWeight = 0.0;
+    [branch]
+    if ( AtmoBlend > 0.0 )
+    {
+        g_Atmosphere = AtmoCB;
+
+        // Cosine-weighted mean luminance of both skies over the upper hemisphere, reduced per group.
+        float3 hd = HemisphereDirection( gi );
+        gs_GradLum[gi] = dot( GradientSky( hd ), SKY_LUMA ) * hd.y;
+        gs_AtmoLum[gi] = dot( AtmosphereSky( hd ), SKY_LUMA ) * hd.y;
+        GroupMemoryBarrierWithGroupSync();
+        [unroll]
+        for ( uint s = 32; s > 0; s >>= 1 )
+        {
+            if ( gi < s )
+            {
+                gs_GradLum[gi] += gs_GradLum[gi + s];
+                gs_AtmoLum[gi] += gs_AtmoLum[gi + s];
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+        float atmoLum = gs_AtmoLum[0];
+        atmoScale = gs_GradLum[0] / max( atmoLum, 1e-8 );
+        // Hand dusk over to Gothic's own sky palette by sun height; the luminance guard only catches an empty dome.
+        atmoWeight = AtmoBlend * smoothstep( 0.05, 0.3, AC_LightPos.y ) * smoothstep( 1e-7, 1e-5, atmoLum / 64.0 );
+    }
+
     uint size = (uint)FaceSize;
     if ( tid.x >= size || tid.y >= size ) return;
 
     float2 uv = ( float2( tid.xy ) + 0.5 ) / FaceSize;
     float3 dir = DirectionFromFaceUV( tid.z, uv );
-    OutputCube[tid] = float4( SkyRadiance( dir ), 1.0 );
+    OutputCube[tid] = float4( SkyRadiance( dir, atmoScale, atmoWeight ), 1.0 );
 }
 
 // --- GGX prefilter (split-sum, Karis) ---------------------------------------------------

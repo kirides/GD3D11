@@ -2,7 +2,7 @@
 #include "GraphicsShader.h"
 #include <d3d11.h>
 #include <d3d11shader.h>
-#include <gtl/phmap.hpp>
+#include <memory>
 
 #include "ConstantBufferPool.h"
 #include "Types.h"
@@ -17,8 +17,8 @@ class D3D11GraphicsShader
     : public GraphicsShader
 {
 public:
-    D3D11GraphicsShader() = default;
-    ~D3D11GraphicsShader() override = default;
+    D3D11GraphicsShader();
+    ~D3D11GraphicsShader() override;
     /** Returns the input index for the given semantic name */
     int32_t GetInputIndex( StringID name ) override;
     
@@ -34,8 +34,9 @@ public:
     
     virtual XRESULT Apply() = 0;
 protected:
-    gtl::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
-    gtl::flat_hash_map<StringID, std::pair<ConstantBufferSize, int32_t>> ConstantBuffersByName;
+    // Reflection lookups, defined in the .cpp so includers don't instantiate the maps.
+    struct Reflection;
+    std::unique_ptr<Reflection> m_Reflection;
     std::array<ConstantBufferSize, MAX_SHADER_CB> ConstantBuffers;
     std::array<byte, MAX_SHADER_CB> ConstantBufferIndexBySlot;
 

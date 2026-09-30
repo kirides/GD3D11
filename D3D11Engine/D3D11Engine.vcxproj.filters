@@ -271,6 +271,9 @@
     <ClInclude Include="GSky.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
+    <ClInclude Include="WaterProfile.h">
+      <Filter>Engine\GAPI\Objects</Filter>
+    </ClInclude>
     <ClInclude Include="GMesh.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
@@ -831,6 +834,18 @@
     <ClInclude Include="VulkanEngine\VulkanSpirvPatch.h">
       <Filter>Engine\Vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="GothicAPIState.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
+    <ClInclude Include="UIRenderer2DTypes.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="GothicStateCache.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="WorldMeshSection.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1136,6 +1151,18 @@
     </ClCompile>
     <ClCompile Include="VulkanEngine\VulkanRhiSwapchain.cpp">
       <Filter>Engine\Vulkan</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12LowClouds.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="HookExceptionFilter.cpp">
+      <Filter>ZenGin\Classes</Filter>
+    </ClCompile>
+    <ClCompile Include="ThreadPool.cpp">
+      <Filter>Tools</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderToTextureBuffer.cpp">
+      <Filter>Tools\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>
