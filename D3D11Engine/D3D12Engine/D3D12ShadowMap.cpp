@@ -486,13 +486,8 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 	// The sun by day, the moon at night
 	const XMFLOAT3 lp = Engine::GAPI->GetSky()->GetMainLightDirection();
 	XMVECTOR rawToSun = XMVector3Normalize( XMLoadFloat3( &lp ) );
-	// Temporal smoothing (P2.9c-3c), now driven by the same user-facing knobs D3D11 exposes
-	// (settings.SmoothShadowCameraUpdate / SmoothShadowFrequency — see D3D11ShadowMap::CalculateTemporalInterpolatedPosition,
-	// which this mirrors): ON lerps toward the live sun dir by a frequency-derived blend factor and then quantizes
-	// the direction to discrete 1/frequency steps, so the origin-anchored snap grid rotates in locked steps instead
-	// of jittering every frame (the lever arm from origin to a distant player turns tiny sun drift into visible
-	// texel crawl — this is what fixes it, not just cosmetic smoothing). OFF tracks the live direction exactly
-	// (real-time), trading that texel crawl for a shadow that never lags the sun.
+	// SmoothShadowCameraUpdate (mirrors D3D11 CalculateTemporalInterpolatedPosition): ON steps the direction in
+	// 1/frequency increments so the shadows hold still between steps; OFF tracks the sun live with a slow crawl.
 	XMVECTOR toSun;
 	const auto& shadowDirSettings = Engine::GAPI->GetRendererState().RendererSettings;
 	// The sun/moon hand-over and savegame loads jump the direction: snap rather than sweep the shadows across
@@ -613,14 +608,21 @@ void D3D12ShadowMap::ComputeCascadeMatrices() {
 		const float texelSize = cascadeSize / static_cast<float>( m_MapSize );
 		m_CascadeTexelWorld[c] = texelSize;   // world units/texel → the lit-pass normal bias
 
-		// Texel-snap the centre on a GLOBAL light-space grid anchored at the world origin (unmoving as the player
-		// translates), then transform back to world.
-		XMMATRIX gridView = XMMatrixLookToLH( XMVectorZero(), lightDir, up );
+		// Texel-snap the centre on a light-space grid anchored at a world point that stays put as the player
+		// translates. An origin anchor turns per-frame sun rotation into a texel-sized grid slide far from the origin.
+		if ( !m_SnapAnchorValid[c] ) {
+			XMStoreFloat3( &m_SnapAnchor[c], frustumCenter );
+			m_SnapAnchorValid[c] = true;
+		}
+		XMMATRIX gridView = XMMatrixLookToLH( XMLoadFloat3( &m_SnapAnchor[c] ), lightDir, up );
 		XMVECTOR cLS = XMVector3TransformCoord( frustumCenter, gridView );
 		float snapX = std::floor( XMVectorGetX( cLS ) / texelSize ) * texelSize;
 		float snapY = std::floor( XMVectorGetY( cLS ) / texelSize ) * texelSize;
 		XMVECTOR snappedLS = XMVectorSet( snapX, snapY, XMVectorGetZ( cLS ), 1.0f );
 		XMVECTOR snappedWS = XMVector3TransformCoord( snappedLS, XMMatrixInverse( nullptr, gridView ) );
+		// Re-base onto a grid point once the slice wanders off: the grid itself is unchanged, only its pivot moves
+		if ( snapX * snapX + snapY * snapY > 0.0625f * radius * radius )
+			XMStoreFloat3( &m_SnapAnchor[c], snappedWS );
 
 		const float pullBack = std::max( 10000.0f, radius * 2.0f );
 		XMVECTOR lightPos = XMVectorSubtract( snappedWS, XMVectorScale( lightDir, pullBack ) );
