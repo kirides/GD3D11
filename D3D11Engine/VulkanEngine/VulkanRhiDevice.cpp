@@ -242,7 +242,9 @@ namespace VulkanRhi {
     }
 
     void DeviceImpl::LoadPipelineCache() {
-        if ( Engine::GAPI ) m_PipelineCachePath = Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\vulkan_pipelines.bin)";
+        // RenderDoc reports its own pipelineCacheUUID; saving under it would evict the real cache.
+        if ( m_Vk.GetCaps().RenderDoc ) Logging::Inf( "Vulkan: RenderDoc is attached; the pipeline cache is neither loaded nor saved." );
+        else if ( Engine::GAPI ) m_PipelineCachePath = Engine::GAPI->GetStartDirectory() + R"(\system\GD3D11\cache\vulkan_pipelines.bin)";
         std::vector<char> data;
         if ( !m_PipelineCachePath.empty() ) {
             std::ifstream in( m_PipelineCachePath, std::ios::binary | std::ios::ate );
