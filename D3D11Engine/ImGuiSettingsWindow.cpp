@@ -233,7 +233,7 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
     if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
         settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
         // Display "levels" as typical for FSR
-        constexpr ListItem<int> fsrLevels[] = {
+        static constexpr ListItem<int> fsrLevels[] = {
             { "Native AA", 100 },
             { "High Quality", 83 },
             { "Quality", 75 },
@@ -252,12 +252,12 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         shim.CurrentResolution.x * settings.ResolutionScalePercent / 100,
         shim.CurrentResolution.y * settings.ResolutionScalePercent / 100 );
 
-    constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
+    static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalers[] = {
         { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
         { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
         { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
     };
-    constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
+    static constexpr ListItem<GothicRendererSettings::E_Upscaler> upscalersNoFsr1[] = {
         { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
         { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
     };
@@ -270,9 +270,20 @@ void RenderDisplayTab( ImGuiShim& shim, GothicRendererSettings& settings ) {
         ComboRow( "Upscaler", "##Upscaler", upscalers, &settings.Upscaler );
     }
 
-    ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 || !settings.Upscaler );
-    SliderFloatRow( "Upscaler Sharpening", "##SharpenFactor", &settings.SharpenFactor, 0.0f, 1.0f, "%.2f" );
-    ImGui::EndDisabled();
+    static constexpr ListItem<GothicRendererSettings::E_SharpeningMode> sharpeners[] = {
+        { "Disabled", GothicRendererSettings::E_SharpeningMode::SHARPEN_NONE },
+        { "Simple", GothicRendererSettings::E_SharpeningMode::SHARPEN_SIMPLE },
+        { "CAS", GothicRendererSettings::E_SharpeningMode::SHARPEN_CAS },
+    };
+    if (!settings.Upscaler)
+    {
+        ComboRow( "Sharpener", "##Sharpener", sharpeners, &settings.SharpeningMode, nullptr,
+            [] {} );
+    }
+    
+    if (settings.SharpeningMode || settings.Upscaler) {
+        SliderFloatRow( "Sharpening factor", "##SharpenFactor", &settings.SharpenFactor, 0.0f, 1.0f, "%.2f" );
+    }
 
     ImGui::SeparatorText( "Image" );
 
@@ -429,6 +440,12 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         CheckRow( "Limit Light Intensity", &settings.LimitLightIntesity, nullptr, "LimitLightIntensity" );
     }
     ImGui::EndDisabled();
+
+    if ( IsD3D12() ) {
+        SliderFloatRow( "Sky Light", "##SkyIblIntensity", &settings.SkyIblIntensity, 0.0f, 2.0f, "%.2f",
+            "How strongly the sky's colour lights surfaces out of direct sunlight.\n"
+            "0 = plain flat ambient light, as in D3D11." );
+    }
 
     ImText( "Specular Highlights", ImVec2( LabelWidth, 0 ) );
     ImGui::SetItemTooltip( "Some players find specular highlights (bright glints on lit surfaces) visually\n"

@@ -1607,7 +1607,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         if ( ImGui::Button( "Reset Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             settings.SetDefault();
-            if ( Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12 ) {
+            if ( Engine::IsModernBackend() ) {
                 settings.ApplyDx12Defaults();
             }
             settings.ApplyDeviceCapabilities( Engine::GraphicsEngine->GetDeviceCapabilities() );

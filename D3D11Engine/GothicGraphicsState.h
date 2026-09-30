@@ -940,7 +940,7 @@ struct GothicRendererSettings {
         //DisableEverything();
 
         LimitLightIntesity = true;
-        AllowNormalmaps = 0;
+        AllowNormalmaps = 1;
         CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
@@ -972,8 +972,8 @@ struct GothicRendererSettings {
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
 
-        GraphicsPreset = E_GraphicsPreset::GRAPHICS_MEDIUM;
-        ShadowQuality = E_GraphicsPreset::GRAPHICS_MEDIUM;
+        GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
+        ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
         AllowSelfShadowingPointlights = false;
         PointlightShadowCasterFlags = PLSC_DYNAMIC_LIGHTS;
         DisableStaticPointlights = false;
@@ -981,6 +981,7 @@ struct GothicRendererSettings {
 
         ApplyGraphicsPreset();
         ApplyAssaoPreset(1);
+        ApplyShadowPreset();
 
         ResetDebugSettings();
     }
@@ -994,6 +995,7 @@ struct GothicRendererSettings {
         ShadowStrength = 0.20f;
         
         EnableBloom = true;
+        Upscaler = UPSCALER_DEFAULT; // no FSR1 available yet.
     }
 
     /** Resolves the capability-driven FeatureSet entries: FEATURE_AUTO takes the device's answer, a
