@@ -385,6 +385,8 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     }
     float2 skyEdge = saturate( abs( skyUV - 0.5f ) * 2.0f );
     float skyWeight = skyValid * ( 1.0f - smoothstep( 0.78f, 1.0f, max( skyEdge.x, skyEdge.y ) ) ) * hemi;
+    // Geometry-only mode: the weather-aware cube stands in for the marched sky instead of the water-limited cube
+    skyWeight = lerp( skyWeight, hemi, ssrOn * step( fr.skyReflection, 0.5f ) );
     float skyConfidence = saturate( skyWeight * lerp( 0.90f, 0.80f, rain ) );
 
     float3 processedReflection = float3( 0.0f, 0.0f, 0.0f );
