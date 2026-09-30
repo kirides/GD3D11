@@ -60,6 +60,10 @@
 #include "ThreadPool.h"
 #include "zFILE.h"
 #include "zFILE_VDFS.h"
+#include "WorldMeshSection.h"
+#include "D3D11ShaderManager.h"
+#include "RenderQueue.h"
+#include "zCResourceManager.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -167,6 +171,41 @@ GothicAPI::GothicAPI() : State( std::make_unique<GothicAPIState>() ) {
     SkeletalMeshVobs.reserve(300);
     AnimatedSkeletalVobs.reserve(300);
     DynamicallyAddedVobs.reserve(100);
+}
+
+std::string GothicAPI::GetLoadedWorldSettingsPath( bool createPath ) const {
+    if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
+        return "";
+    }
+    auto gameName = GetGameName();
+    std::string zenFolder;
+    if ( gameName == "Original" ) {
+        zenFolder = "system\\GD3D11\\ZENResources\\";
+    } else {
+        zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
+    }
+    if ( !Toolbox::FolderExists( zenFolder ) ) {
+        if (createPath) {
+            if ( !Toolbox::CreateDirectoryRecursive( zenFolder ) ) {
+                Logging::Err( "Could not save custom ZEN-Resources. Could not create directory: {}", zenFolder );
+                return "";
+            }
+        }
+    }
+
+    auto const ini = zenFolder + LoadedWorldInfo->WorldName + ".INI";
+    return ini;
+}
+
+TransparencyQueue& GothicAPI::GetTransparencyQueue() { return State->TransparencyQueueData; }
+
+BspPortalCuller& GothicAPI::GetPortalCuller() { return State->PortalCuller; }
+const BspPortalCuller& GothicAPI::GetPortalCuller() const { return State->PortalCuller; }
+
+bool GothicAPI::AreSunShadowsFullyOccluded() const {
+    return RendererState.RendererSettings.EnablePortalShadowSkip
+        && State->PortalCuller.IsActive()
+        && !State->PortalCuller.IsOutdoorVisible();
 }
 
 GothicAPI::~GothicAPI() {
@@ -945,7 +984,7 @@ void GothicAPI::ResetVobs() {
     State->BspLeafVobLists.clear();
     LeafLinearCache.Clear();
     // Holds indices into the (now gone) sector arrays and BspInfo::SectorIds - must not outlive them.
-    PortalCuller.Clear();
+    State->PortalCuller.Clear();
     DynamicallyAddedVobs.clear();
     DynamicMeshVobs.clear();   // non-owning, aliases VobMap's VobInfo* -- deleted below via VobMap, not here
     DecalVobs.clear();
@@ -4328,10 +4367,10 @@ void GothicAPI::CollectVisibleVobs(
 
     // This overload is the main camera pass of both backends, and the only place portal culling
     // applies: shadow passes need casters from rooms the player cannot see into.
-    if ( haveCameraMatrices && PortalCuller.IsActive() ) {
+    if ( haveCameraMatrices && State->PortalCuller.IsActive() ) {
         oCGame* game = oCGame::GetGame();
-        PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
-        ctx.portalCuller = &PortalCuller;
+        State->PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
+        ctx.portalCuller = &State->PortalCuller;
     }
 
     CollectVisibleVobs( ctx );
@@ -4567,7 +4606,7 @@ void GothicAPI::ClearWorldSectionBVH() {
     WorldSectionBVHValid = false;
     WorldSectionBVHNodes.clear();
     WorldSectionBVHSections.clear();
-    WorldMeshClusterTree = {};
+    State->WorldMeshClusterTree = {};
 }
 
 /** Companion to BuildWorldSectionBVH: same idea (flatten primitives, hand them to the shared
@@ -4619,7 +4658,7 @@ void GothicAPI::BuildWorldMeshClusterBVH() {
         return;
     }
 
-    WorldMeshClusterTree = SpatialBVH::Build( std::move( primitives ), WORLD_SECTION_BVH_LEAF_SIZE );
+    State->WorldMeshClusterTree = SpatialBVH::Build( std::move( primitives ), WORLD_SECTION_BVH_LEAF_SIZE );
 }
 
 bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const {
@@ -4822,7 +4861,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
     bool useSectionRadiusFilter,
     std::vector<MeshDrawRange>& outRanges ) {
-    if ( !WorldMeshClusterTree.IsValid() ) {
+    if ( !State->WorldMeshClusterTree.IsValid() ) {
         return;
     }
 
@@ -4842,7 +4881,7 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
         ranges.clear();
     }
 
-    SpatialBVH::Query( WorldMeshClusterTree, frustum,
+    SpatialBVH::Query( State->WorldMeshClusterTree, frustum,
         [&]( const WorldMeshClusterRef& ref ) {
             if ( !ref.Mesh ) {
                 return;
@@ -5261,9 +5300,9 @@ void GothicAPI::BuildBspVobMapCache() {
     BuildBspLeafLinearCache();
 
     // Needs the BspInfo mirror tree above to exist - it tags the leafs with their sector ids.
-    PortalCuller.SetEnabled( RendererState.RendererSettings.EnablePortalCulling );
-    PortalCuller.SetNearSectorRadius( RendererState.RendererSettings.PortalCullingNearRadius );
-    PortalCuller.BuildFromWorld( LoadedWorldInfo->BspTree );
+    State->PortalCuller.SetEnabled( RendererState.RendererSettings.EnablePortalCulling );
+    State->PortalCuller.SetNearSectorRadius( RendererState.RendererSettings.PortalCullingNearRadius );
+    State->PortalCuller.BuildFromWorld( LoadedWorldInfo->BspTree );
 }
 
 void GothicAPI::BuildBspLeafLinearCache() {

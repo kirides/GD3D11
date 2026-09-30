@@ -5,7 +5,11 @@
 #include "VulkanEngine/VulkanDevice.h"
 #include "VulkanEngine/VulkanRhi.h"
 #define IMGUI_IMPL_VULKAN_USE_VOLK
+#include <imgui_impl_win32.h>
+#include <imgui_impl_dx11.h>
+#include <imgui_impl_dx12.h>
 #include <imgui_impl_vulkan.h>
+#include <ImGuizmo/src/ImGuizmo.h>
 #include <VersionHelpers.h>
 #include <ShellScalingApi.h>
 
@@ -25,6 +29,10 @@
 #include <chrono>
 #include <numeric>
 #include <codecvt>
+#include "BspPortalCuller.h"
+#include "D3D11ShadowMap.h"
+#include "D3D11GraphicsEngine.h"
+#include "D3D11_Helpers.h"
 
 namespace ImGui {
     void TextUnformatted( const wchar_t* text ) {
@@ -323,6 +331,12 @@ void ImGuiShim::CollectVulkanTextures()
     }
 }
 
+
+ImGuiShim::ImGuiShim() = default;
+
+void ImGuiShim::ToggleEditor() { m_EditorView->SetIsEnabled( !m_EditorView->GetIsEnabled() ); }
+bool ImGuiShim::GetIsEditorVisible() { return m_EditorView->GetIsEnabled(); }
+void ImGuiShim::OnVobRemovedFromWorld( zCVob* vob ) { m_EditorView->OnVobRemovedFromWorld( vob ); }
 
 ImGuiShim::~ImGuiShim()
 {

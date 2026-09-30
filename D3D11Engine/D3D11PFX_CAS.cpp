@@ -10,6 +10,7 @@
 #define FFX_HLSL
 #include "Shaders/FidelityFX/ffx_core.h"
 #include "Shaders/FidelityFX/cas/ffx_cas.h"
+#include "D3D11ShaderManager.h"
 
 D3D11PFX_CAS::D3D11PFX_CAS( D3D11PfxRenderer* renderer )
     : Renderer( renderer ), Sharpness( 0.1f ) {

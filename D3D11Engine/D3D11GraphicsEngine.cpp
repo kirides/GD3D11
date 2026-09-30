@@ -64,6 +64,11 @@
 #include "oCMobInter.h"
 #include "zCParser.h"
 #include "ConstantBufferPool.h"
+#include "GothicStateCache.h"
+#include "WorldMeshSection.h"
+#include "TransparencyQueue.h"
+#include "D3D11ForwardPlusRenderer.h"
+#include "D3D11SkeletalPoseCache.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -269,7 +274,14 @@ namespace
     }
 }
 
+UINT D3D11GraphicsEngine::GetActiveMSAASampleCount() const { return MSAAColorBuffer ? MSAAColorBuffer->GetSampleCount() : 1; }
+
+RenderToTextureBuffer* D3D11GraphicsEngine::GetDummyCubeRT() const { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
+
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
+    DeferredRenderer( std::make_unique<D3D11DeferredRenderer>() ),
+    ForwardPlusRenderer( std::make_unique<D3D11ForwardPlusRenderer>( *DeferredRenderer ) ),
+    m_SkeletalPoses( std::make_unique<D3D11SkeletalPoseCache>() ),
     DebugPointlight(nullptr),
     m_LastFrameLimit(0),
     RenderingStage(DES_MAIN),
@@ -926,10 +938,10 @@ void D3D11GraphicsEngine::SelectActiveRenderer() {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     auto mode = settings.RendererMode;
     if ( mode == GothicRendererSettings::RM_ForwardPlus ) {
-        ActiveSceneRenderer = &ForwardPlusRenderer;
+        ActiveSceneRenderer = ForwardPlusRenderer.get();
         settings.EnableTiledLighting = true;
     } else {
-        ActiveSceneRenderer = &DeferredRenderer;
+        ActiveSceneRenderer = DeferredRenderer.get();
     }
 }
 
@@ -2614,12 +2626,12 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
-        const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses.Acquire( vi, static_cast<zCModel*>( vi->Vob->GetVisual() ) );
-        if ( pose.Count == 0 || !m_SkeletalPoses.Flush() ) {
+        const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses->Acquire( vi, static_cast<zCModel*>( vi->Vob->GetVisual() ) );
+        if ( pose.Count == 0 || !m_SkeletalPoses->Flush() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses.GetBonesSRV() );
-            ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses.GetPrevBonesSRV() );
+            ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses->GetBonesSRV() );
+            ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses->GetPrevBonesSRV() );
 
             const VS_ExConstantBuffer_SkeletalBoneRange range = { pose.Offset, pose.Offset, pose.Count, 1u };
             ActiveVS->UpdateBuffer( "BoneTransformRange", &range, sizeof( range ) );
@@ -2816,9 +2828,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 continue;
             }
             vi->UpdateState();
-            m_SkeletalPoses.Acquire( vi, model );
+            m_SkeletalPoses->Acquire( vi, model );
         }
-        useStructuredBones = m_SkeletalPoses.Flush();
+        useStructuredBones = m_SkeletalPoses->Flush();
     }
 
     
@@ -2843,8 +2855,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     ConstantBufferSlot prevBoneTransformsCb = INVALID_SHADER_CB_SLOT;
 
     if ( useStructuredBones ) {
-        ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses.GetBonesSRV() );
-        ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses.GetPrevBonesSRV() );
+        ActiveVS->BindResource( "BoneTransforms", m_SkeletalPoses->GetBonesSRV() );
+        ActiveVS->BindResource( "PrevBoneTransforms", m_SkeletalPoses->GetPrevBonesSRV() );
     }
 
     if ( !useStructuredBones ) {
@@ -3015,7 +3027,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
             float fatness = model->GetModelFatness();
 
-            const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses.Acquire( vi, model );
+            const D3D11SkeletalPoseCache::Pose pose = m_SkeletalPoses->Acquire( vi, model );
             if ( pose.Count == 0 ) {
                 continue; // no nodes to skin with
             }
@@ -3027,7 +3039,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #else
                 if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                    const auto transforms = m_SkeletalPoses.Bones( pose );
+                    const auto transforms = m_SkeletalPoses->Bones( pose );
                     const auto color = modelColor;
 
                     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
@@ -3215,7 +3227,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             auto vi = data.VobInfo;
             auto model = data.Model;
             auto modelColor = data.ModelColor;
-            auto transforms = m_SkeletalPoses.Bones( data.Pose );
+            auto transforms = m_SkeletalPoses->Bones( data.Pose );
             auto fatness = data.Fatness;
             auto& world = data.World;
             auto& prevWorld = data.PrevWorld;
@@ -3886,7 +3898,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
     m_FrameGeometryCache.Reset();
-    m_SkeletalPoses.BeginFrame();
+    m_SkeletalPoses->BeginFrame();
 
     // Producers push all through the frame; the transparency pass drains it.
     Engine::GAPI->GetTransparencyQueue().BeginFrame();

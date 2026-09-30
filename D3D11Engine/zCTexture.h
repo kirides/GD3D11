@@ -3,9 +3,14 @@
 #include "HookedFunctions.h"
 #include "Engine.h"
 #include "GothicAPI.h"
-#include "zCResourceManager.h"
+#include "zCResource.h"
 #include "zSTRING.h"
 #include "D3D7\MyDirectDrawSurface7.h"
+
+class zCTexture;
+
+/** zCResourceManager::CacheIn on the global manager; out of line so this header needn't include zCResourceManager.h. */
+zTResourceCacheState ResourceManagerCacheIn( zCTexture* texture, float priority );
 
 namespace zCTextureCacheHack {
     inline __declspec(selectany) unsigned int NumNotCachedTexturesInFrame;
@@ -166,13 +171,13 @@ public:
             GothicAPI::ScopedLoadingTexture loading( this );
 
             // Cache the texture, overwrite priority if wanted.
-            zCResourceManager::GetResourceManager()->CacheIn( this, zCTextureCacheHack::ForceCacheIn ? -1 : priority );
+            ResourceManagerCacheIn( this, zCTextureCacheHack::ForceCacheIn ? -1 : priority );
         }
 
         MyDirectDrawSurface7* surface = GetSurface();
         if ( !surface || !surface->IsSurfaceReady() ) {
             if ( zCTextureCacheHack::ForceCacheIn )
-                zCResourceManager::GetResourceManager()->CacheIn( this, -1 );
+                ResourceManagerCacheIn( this, -1 );
             else
                 return zRES_CACHED_OUT;
         }

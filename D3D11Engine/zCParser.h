@@ -1,5 +1,6 @@
 #pragma once
 #include "HookedFunctions.h"
+#include "zSTRING.h"
 
 #if (defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_08k))
 #if !defined(BUILD_SPACER) && !defined(BUILD_1_12F)

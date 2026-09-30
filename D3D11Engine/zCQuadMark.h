@@ -5,6 +5,7 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "zSTRING.h"
+#include "WorldConverter.h"
 
 class zCQuadMark {
 public:

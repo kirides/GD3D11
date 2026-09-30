@@ -22,6 +22,10 @@
 #include "../zCVobLight.h"
 #include "PointShadowCasters.h"
 #include "SkeletalCubeCasters.h"
+#include "../WorldMeshSection.h"
+#include "../D3D11ShaderManager.h"
+#include "../WorldConverter.h"
+#include "../D3D11Texture.h"
 
 extern bool RequiresNvidiaTiledShadowFaceFallback;
 

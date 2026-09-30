@@ -49,6 +49,10 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
+#include "../GSky.h"
+#include "D3D12VobArena.h"
+#include "../TransparencyQueue.h"
 
 
 // ---- The two per-frame record sets the shadow modules share with this TU (declared in D3D12EngineCommon.h) ----
@@ -337,7 +341,7 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     // Register this visual's sub-meshes with the VOB mega-buffers. Fires per vob during world load, so the
     // whole world's static geometry is queued before the first frame; vobs added later land in the arena's
     // headroom. Queueing is cheap and idempotent, the upload happens at the next frame's flush.
-    m_VobArena.QueueVisual( static_cast<MeshVisualInfo*>( vi->VisualInfo ) );
+    m_VobArena->QueueVisual( static_cast<MeshVisualInfo*>( vi->VisualInfo ) );
 
     // A cached static cube is only re-rendered when its light is fresh / moved / resized, never when the
     // geometry around it changes, so a new VOB in range has to say so.
@@ -385,7 +389,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
     m_RainShadowViewProjValid = false;   // the occlusion map shows the old world until redrawn
     // Every MeshInfo the arena indexes is about to be freed, so the ranges have to go before the new world's
     // OnAddVob calls refill them. The buffers themselves are kept — see D3D12VobArena::Reset.
-    m_VobArena.Reset();
+    m_VobArena->Reset();
     // AO needs no reset here — it runs entirely off THIS frame's depth prepass, so the first frame of the new
     // world already produces a correct mask.
     // TAA does: the accumulated history and its depth snapshot belong to the world being left.
@@ -3373,8 +3377,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     // rewritten every frame, by ZENGIN's CPU deform into the MeshInfo's DYNAMIC upload buffer
     // (UpdateMorphMeshVisual) or by the GPU morph fold into its DEFAULT UAV (DispatchMorphFold). The arena
     // copy uploaded at registration is only the conversion pose, so mirror the live buffer into it here.
-    const std::vector<MeshInfo*>& dynamic = m_VobArena.DynamicMeshes();
-    if ( dynamic.empty() || !m_FrameOpen || !m_VobArena.Ready() ) return;
+    const std::vector<MeshInfo*>& dynamic = m_VobArena->DynamicMeshes();
+    if ( dynamic.empty() || !m_FrameOpen || !m_VobArena->Ready() ) return;
 
     DX_ZONE( m_CmdList.Get(), "Morph arena refresh" );
 
@@ -3384,7 +3388,7 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     copies.clear();
 
     for ( MeshInfo* mi : dynamic ) {
-        const D3D12VobArena::Range* range = m_VobArena.Find( mi );
+        const D3D12VobArena::Range* range = m_VobArena->Find( mi );
         if ( !range || !mi->GetMeshVertexBuffer() ) continue;
         D3D12VertexBuffer* src = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
         if ( !src->GetResource() ) continue;
@@ -3402,12 +3406,12 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 
     for ( auto const& [mi, src] : copies ) {
-        const D3D12VobArena::Range* range = m_VobArena.Find( mi );
+        const D3D12VobArena::Range* range = m_VobArena->Find( mi );
         // Same wedge order the arena copy was uploaded in (a morph sub-mesh deliberately skips
         // OptimizeVertices), so this is a straight range overwrite. min() guards a shorter buffer.
         const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(),
             static_cast<UINT64>( mi->Vertices.size() ) * D3D12VobArena::VertexStride() );
-        m_CmdList->CopyBufferRegion( m_VobArena.GetVertexBuffer(),
+        m_CmdList->CopyBufferRegion( m_VobArena->GetVertexBuffer(),
             static_cast<UINT64>( range->BaseVertex ) * D3D12VobArena::VertexStride(),
             src->GetResource(), 0, bytes );
     }
@@ -3421,25 +3425,25 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
         src->SetUavState( D3D12VertexBuffer::EUavState::Vertex );
     }
-    barriers.push_back( { m_VobArena.GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+    barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 }
 
 
 bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes ) {
-    if ( !m_VobArena.Ready() || !instances || instanceBytes == 0 ) return false;
+    if ( !m_VobArena->Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
     // BaseVertexLocation/StartIndexLocation and its instances through StartInstanceLocation, so nothing
     // per-draw is left in the IA state. That is what replaces ~560 binds with this one.
     const D3D12_VERTEX_BUFFER_VIEW views[2] = {
-        { m_VobArena.GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetVertexBytes(),
+        { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
           D3D12VobArena::VertexStride() },
         { instances->GetGPUVirtualAddress(), instanceBytes, VobInstanceStride() },
     };
     const D3D12_INDEX_BUFFER_VIEW ibv = {
-        m_VobArena.GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetIndexBytes(), DXGI_FORMAT_R16_UINT };
+        m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
     cmdList->IASetVertexBuffers( 0, 2, views );
     cmdList->IASetIndexBuffer( &ibv );
     return true;
@@ -3630,7 +3634,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                 // Where this sub-mesh lives in the VOB mega-buffers. Missing (not yet flushed, or a failed
                 // upload) simply means it isn't drawn this frame. The shadow and LOD index levels are
                 // alternative index lists over the SAME vertices, so one BaseVertexLocation serves all three.
-                const D3D12VobArena::Range* range = m_VobArena.Find( mi );
+                const D3D12VobArena::Range* range = m_VobArena->Find( mi );
                 if ( !range || range->IndexCount == 0 ) continue;
 
                 // Whether this sub-mesh can offer a reduced far level to the main view. The visual's split
@@ -4438,7 +4442,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
     // touches the arena's GPU resources, and it must stay here — main thread, open frame, before
     // BuildVobDrawCommands reads any range and before m_ShadowMap.Prepare() fans the cascade builds out to the
     // pool. That is what makes D3D12VobArena::Find() lock-free. A failed flush just leaves ranges missing.
-    m_VobArena.Flush( this );
+    m_VobArena->Flush( this );
 
     const UINT frame = m_FrameIndex;
 

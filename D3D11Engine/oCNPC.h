@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "zCVob.h"
 #include "zViewTypes.h"
+#include "WorldConverter.h"
 
 enum oCNPCFlags : int
 {

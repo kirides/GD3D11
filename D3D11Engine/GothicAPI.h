@@ -3,22 +3,22 @@
 #include "pch.h"
 #include "AlignedAllocator.h"
 #include "Frustum.h"
-#include "BspPortalCuller.h"
-#include "SpatialBVH.h"
 #include "GothicGraphicsState.h"
-#include "WorldConverter.h"
-#include "zCTree.h"
-#include "zCPolyStrip.h"
 #include "zTypes.h"
-#include "RenderQueue.h"
 #include "ShaderIDs.h"
-#include "TransparencyQueue.h"
-#include "ThreadPool.h"
+#include "GfxTexture.h"
+#include "WorldObjects.h"
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
 
 class zCFlash;
+class zCPolyStrip;
+class oCNPC;
+template <class T> class zCTree;
+class RenderQueue;
+class TransparencyQueue;
+class BspPortalCuller;
 class zCBspBase;
 class zCModelPrototype;
 struct ScreenSpaceLine;
@@ -348,6 +348,7 @@ class zCDecal;
 struct GothicAPIState;
 
 class GothicAPI {
+    friend struct GothicAPIState;
 public:
     GothicAPI();
     ~GothicAPI();
@@ -463,7 +464,7 @@ public:
     /** The transparency queue stores indices into this. */
     std::vector<TransparencyVobInfo>& GetTransparencyVobs() { return TransparencyVobs; }
 
-    TransparencyQueue& GetTransparencyQueue() { return TransparencyQueueData; }
+    TransparencyQueue& GetTransparencyQueue();
 
     /** Draws the inventory */
     void DrawInventory( zCWorld* world, zCCamera& camera );
@@ -628,29 +629,7 @@ public:
     /** Returns the midpoint of the current world */
     WorldInfo* GetLoadedWorldInfo() { return LoadedWorldInfo.get(); }
 
-    [[nodiscard]] std::string GetLoadedWorldSettingsPath(bool createPath = false) const {
-        if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
-            return "";
-        }
-        auto gameName = GetGameName();
-        std::string zenFolder;
-        if ( gameName == "Original" ) {
-            zenFolder = "system\\GD3D11\\ZENResources\\";
-        } else {
-            zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
-        }
-        if ( !Toolbox::FolderExists( zenFolder ) ) {
-            if (createPath) {
-                if ( !Toolbox::CreateDirectoryRecursive( zenFolder ) ) {
-                    Logging::Err( "Could not save custom ZEN-Resources. Could not create directory: {}", zenFolder );
-                    return "";
-                }
-            }
-        }
-
-        auto const ini = zenFolder + LoadedWorldInfo->WorldName + ".INI";
-        return ini;
-    }
+    [[nodiscard]] std::string GetLoadedWorldSettingsPath(bool createPath = false) const;
 
     /** Returns wether the camera is indoor or not */
     bool IsCameraIndoor();
@@ -798,17 +777,13 @@ public:
     void BuildBspVobMapCache();
 
     /** Sector/portal visibility, rebuilt on every world load. Inactive on worlds without portals. */
-    BspPortalCuller& GetPortalCuller() { return PortalCuller; }
-    const BspPortalCuller& GetPortalCuller() const { return PortalCuller; }
+    BspPortalCuller& GetPortalCuller();
+    const BspPortalCuller& GetPortalCuller() const;
 
     /** True when the view is fully enclosed by sectors, so the sun cascades need not be rendered and
         are cleared to "shadowed" instead. Reads the solve the main camera pass ran this frame, so call
         it only after CollectVisibleVobs. */
-    bool AreSunShadowsFullyOccluded() const {
-        return RendererState.RendererSettings.EnablePortalShadowSkip
-            && PortalCuller.IsActive()
-            && !PortalCuller.IsOutdoorVisible();
-    }
+    bool AreSunShadowsFullyOccluded() const;
 
     /** Returns the new node from tha base node */
     BspInfo* GetNewBspNode( zCBspBase* base );
@@ -1133,7 +1108,6 @@ private:
     std::vector<WorldSectionBVHNode> WorldSectionBVHNodes;
     std::vector<WorldMeshSectionInfo*> WorldSectionBVHSections;
     bool WorldSectionBVHValid = false;
-    SpatialBVH::BuildResult<WorldMeshClusterRef> WorldMeshClusterTree;
     MeshInfo* WrappedWorldMesh;
 
     /** List of vobs with skeletal meshes (Having a zCModel-Visual) */
@@ -1143,8 +1117,6 @@ private:
     std::vector<VobInfo*> DynamicMeshVobs;
     std::vector<TransparencyVobInfo> TransparencyVobs;
     std::vector<SkeletalVobInfo*> VNSkeletalVobs;
-
-    TransparencyQueue TransparencyQueueData;
 
     /** List of Vobs having a zCParticleFX-Visual */
     std::vector<zCVob*> ParticleEffectVobs;
@@ -1194,8 +1166,6 @@ public:
     // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
     BspLeafLinearCache LeafLinearCache;
 private:
-    BspPortalCuller PortalCuller;
-
     /** Directory we started in */
     std::string StartDirectory;
 

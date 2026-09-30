@@ -8,6 +8,7 @@
 #include "PointShadow/TiledCubeArrayTechnique.h"
 #include "WorldConverter.h"
 #include "zCVobLight.h"
+#include "D3D11ShadowMap.h"
 
 namespace {
     IPointShadowTechnique* ActiveTechnique() {

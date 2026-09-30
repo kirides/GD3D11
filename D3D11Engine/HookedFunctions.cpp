@@ -38,6 +38,10 @@
 #include "StackWalker.h"
 #include "zSndMss.h"
 
+zTResourceCacheState ResourceManagerCacheIn( zCTexture* texture, float priority ) {
+    return zCResourceManager::GetResourceManager()->CacheIn( texture, priority );
+}
+
 bool IsRunningUnderUnion = false;
 bool CreatingThumbnail = false;
 

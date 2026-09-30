@@ -1172,6 +1172,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="VulkanEngine\VulkanRhiInternal.h" />
     <ClInclude Include="VulkanEngine\VulkanSpirvPatch.h" />
     <ClInclude Include="GothicAPIState.h" />
+    <ClInclude Include="UIRenderer2DTypes.h" />
+    <ClInclude Include="GothicStateCache.h" />
+    <ClInclude Include="WorldMeshSection.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1262,135 +1265,48 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="VertexPacking.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="BaseGraphicsEngine.cpp" />
-    <ClCompile Include="BaseLineRenderer.cpp" />
-    <ClCompile Include="BaseWidget.cpp" />
-    <ClCompile Include="ConstantBufferPool.cpp" />
-    <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
-    <ClCompile Include="D3D11FileRelativeInclude.cpp" />
-    <ClCompile Include="D3D11GraphicsShader.cpp" />
-    <ClCompile Include="D3D11PFX_ASSAO.cpp" />
-    <ClCompile Include="D3D11ShadowAtlas.cpp" />
-    <ClCompile Include="D3D11AGS.cpp" />
-    <ClCompile Include="D3D11CShader.cpp" />
-    <ClCompile Include="D3D11Effect.cpp" />
-    <ClCompile Include="D3D11GodRayEffect.cpp" />
-    <ClCompile Include="D3D11GraphicsEngine.cpp" />
-    <ClCompile Include="D3D11GraphicsEngineBase.cpp" />
-    <ClCompile Include="D3D11GShader.cpp" />
-    <ClCompile Include="D3D11HDShader.cpp" />
-    <ClCompile Include="D3D11IGDEXT.cpp" />
-    <ClCompile Include="D3D11IndirectBuffer.cpp" />
-    <ClCompile Include="D3D11LineRenderer.cpp" />
-    <ClCompile Include="D3D11NVAPI.cpp" />
-    <ClCompile Include="D3D11NVHBAO.cpp" />
-    <ClCompile Include="D3D11OcclusionQuerry.cpp" />
-    <ClCompile Include="D3D11PfxRenderer.cpp" />
-    <ClCompile Include="D3D11PFX_Blur.cpp" />
-    <ClCompile Include="D3D11PFX_CAS.cpp" />
-    <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
-    <ClCompile Include="D3D11PFX_FSR1.cpp" />
-    <ClCompile Include="D3D11PFX_FSR3.cpp" />
-    <ClCompile Include="D3D11PFX_GodRays.cpp" />
-    <ClCompile Include="D3D11PFX_DepthOfField.cpp" />
-    <ClCompile Include="D3D11PFX_Bloom.cpp" />
-    <ClCompile Include="D3D11PFX_SAO.cpp" />
-    <ClCompile Include="D3D11PFX_HDR.cpp" />
-    <ClCompile Include="D3D11PFX_HeightFog.cpp" />
-    <ClCompile Include="D3D11PFX_SimpleSharpen.cpp" />
-    <ClCompile Include="D3D11PFX_SMAA.cpp">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">false</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">false</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">false</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">false</ExcludedFromBuild>
+    <None Include="Shaders\PS_Grass.hlsl" />
+    <None Include="Shaders\PS_GrassShadow.hlsl" />
+    <None Include="Shaders\VS_GrassInstanced.hlsl" />
+    <None Include="Shaders\VS_GrassInstancedShadow.hlsl" />
+    <None Include="Shaders\VS_DecalInstanced.hlsl" />
+    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
+    <ClCompile Include="include\imgui\imgui.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="D3D11PFX_TAA.cpp" />
-    <ClCompile Include="D3D11PointLight.cpp" />
-    <ClCompile Include="D3D11SkeletalPoseCache.cpp" />
-    <ClCompile Include="PointLightSlotSelector.cpp" />
-    <ClCompile Include="D3D11PShader.cpp" />
-    <ClCompile Include="D3D11RenderQueue.cpp" />
-    <ClCompile Include="D3D11ShaderManager.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
-    <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
-    <ClCompile Include="BspPortalCuller.cpp" />
-    <ClCompile Include="ShaderRegistry.cpp" />
-    <ClCompile Include="UIRenderer2D.cpp" />
-    <ClCompile Include="D3D11UI2D.cpp" />
-    <ClCompile Include="D3D11InventoryItems.cpp" />
-    <ClCompile Include="InventoryRenderer.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12InventoryItems.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12UI2D.cpp" />
-    <ClCompile Include="TransparencyQueue.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanLoader.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanDevice.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanSwapchain.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanImGui.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Rhi.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiFormats.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanMemAlloc.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiDevice.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiQueue.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiState.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiPipeline.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiCommandList.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiSwapchain.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12LowClouds.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Barrier.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp" />
+    <ClCompile Include="include\imgui\imgui_widgets.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D11GraphicsEngine.cpp" />
+    <ClCompile Include="include\imgui\imgui_draw.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="GothicAPI.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Scene.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12ShadowMap.cpp" />
-    <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />
-    <ClCompile Include="PointShadow\PointShadowCasters.cpp" />
-    <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
-    <ClCompile Include="PointShadow\SkeletalCubeCasters.cpp" />
-    <ClCompile Include="PointShadow\PointShadowPolicy.cpp" />
-    <ClCompile Include="PointShadow\TiledCubeArrayTechnique.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12PointShadows.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Engine2D.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12PostFX.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Texture.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12PooledDescriptorHeap.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12RenderTarget.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12TexturePool.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12RenderGraph.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12AliasedTextureArena.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12AO.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Motion.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Ssr.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Underwater.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Taa.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12GTAO.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Cull.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12MorphFold.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Fog.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Water.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Transparency.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Fx.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12LineRenderer.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Rain.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12VertexBuffer.cpp" />
-    <ClCompile Include="D3D11ShadowMap.cpp" />
-    <ClCompile Include="D3D11TiledDeferredShading.cpp" />
-    <ClCompile Include="D3D11DeferredRenderer.cpp" />
-    <ClCompile Include="D3D11ForwardPlusRenderer.cpp" />
-    <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
-    <ClCompile Include="D3D11Texture.cpp" />
-    <ClCompile Include="D3D11Upscaling.cpp" />
-    <ClCompile Include="D3D11VertexBuffer.cpp" />
-    <ClCompile Include="D3D11VShader.cpp" />
-    <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp" />
-    <ClCompile Include="D3D7\MyDirectDrawSurface7.cpp" />
-    <ClCompile Include="Detours\creatwth.cpp">
+    <ClCompile Include="include\imgui\imgui_tables.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
+    <ClCompile Include="Detours\disasm.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp" />
+    <ClCompile Include="ImGuiShim.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="WorldConverter.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\simplifier.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
@@ -1398,19 +1314,260 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="Detours\disasm.cpp">
+    <ClCompile Include="D3D12Engine\D3D12ShadowMap.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiCommandList.cpp" />
+    <ClCompile Include="D3D11ShadowMap.cpp" />
+    <ClCompile Include="Detours\image.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="Detours\disolarm.cpp">
+    <ClCompile Include="VulkanEngine\VulkanRhiDevice.cpp" />
+    <ClCompile Include="Detours\creatwth.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PointShadows.cpp" />
+    <ClCompile Include="vendor\mikktspace.c">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="StackWalker.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanDevice.cpp" />
+    <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="include\imgui\backends\imgui_impl_dx12.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="ImGuiEditorView.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Rain.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\GraphEditor.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Rhi.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12PostFX.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiPipeline.cpp" />
+    <ClCompile Include="ImGuiSettingsWindow.cpp" />
+    <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
+    <ClCompile Include="PointLightSlotSelector.cpp" />
+    <ClCompile Include="D3D11TiledDeferredShading.cpp" />
+    <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D7\MyDirectDrawSurface7.cpp" />
+    <ClCompile Include="ShaderRegistry.cpp" />
+    <ClCompile Include="Detours\modules.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="zBinkPlayer.cpp" />
+    <ClCompile Include="GSky.cpp" />
+    <ClCompile Include="BspPortalCuller.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Transparency.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
+    <ClCompile Include="D3D11Effect.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Water.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fog.cpp" />
+    <ClCompile Include="GVegetationBox.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp" />
+    <ClCompile Include="EditorLinePrimitive.cpp" />
+    <ClCompile Include="DLLMain.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12GTAO.cpp" />
+    <ClCompile Include="D3D11VShader.cpp" />
+    <ClCompile Include="GothicExternals.cpp" />
+    <ClCompile Include="D3D11PfxRenderer.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Fx.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Motion.cpp" />
+    <ClCompile Include="D3D11ForwardPlusRenderer.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiQueue.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Cull.cpp" />
+    <ClCompile Include="D3D11ShaderManager.cpp" />
+    <ClCompile Include="HookedFunctions.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="UIRenderer2D.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Taa.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Barrier.cpp" />
+    <ClCompile Include="D3D11Texture.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12VertexBuffer.cpp" />
+    <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />
+    <ClCompile Include="D3D11PFX_GodRays.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Engine2D.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
+    <ClCompile Include="D3D11PFX_TAA.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12InventoryItems.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12AO.cpp" />
+    <ClCompile Include="D3D11VertexBuffer.cpp" />
+    <ClCompile Include="MorphGpu.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImCurveEdit.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="Toolbox.cpp" />
+    <ClCompile Include="MeshModifier.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiSwapchain.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Texture.cpp" />
+    <ClCompile Include="InventoryRenderer.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12MorphFold.cpp" />
+    <ClCompile Include="BaseGraphicsEngine.cpp" />
+    <ClCompile Include="D3D11PFX_DepthOfField.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanSwapchain.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Sky.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Underwater.cpp" />
+    <ClCompile Include="D3D11PFX_SAO.cpp" />
+    <ClCompile Include="Logging.cpp" />
+    <ClCompile Include="PointShadow\TiledCubeArrayTechnique.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\overdrawoptimizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12RenderGraph.cpp" />
+    <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
+    <ClCompile Include="PointShadow\SkeletalCubeCasters.cpp" />
+    <ClCompile Include="D3D11GraphicsEngineBase.cpp" />
+    <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp" />
+    <ClCompile Include="BaseLineRenderer.cpp" />
+    <ClCompile Include="D3D11PFX_FSR3.cpp" />
+    <ClCompile Include="BaseWidget.cpp" />
+    <ClCompile Include="SMAA\D3D11SMAA.cpp" />
+    <ClCompile Include="GothicGraphicsState.cpp" />
+    <ClCompile Include="RenderToTextureBuffer.cpp" />
+    <ClCompile Include="ConstantBufferPool.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12UI2D.cpp" />
+    <ClCompile Include="D3D11DeferredRenderer.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiFormats.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12LowClouds.cpp" />
+    <ClCompile Include="D3D11PFX_Bloom.cpp" />
+    <ClCompile Include="MorphBlend.cpp" />
+    <ClCompile Include="D3D11OcclusionQuerry.cpp" />
+    <ClCompile Include="IkarusBindings.cpp" />
+    <ClCompile Include="D3D11PFX_HDR.cpp" />
+    <ClCompile Include="D3D11ShadowAtlas.cpp" />
+    <ClCompile Include="D3D11InventoryItems.cpp" />
+    <ClCompile Include="PointShadow\PointShadowCasters.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12LineRenderer.cpp" />
+    <ClCompile Include="D3D11PFX_FSR1.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Ssr.cpp" />
+    <ClCompile Include="D3D11UI2D.cpp" />
+    <ClCompile Include="D3D11PointLight.cpp" />
+    <ClCompile Include="GMesh.cpp" />
+    <ClCompile Include="Engine.cpp" />
+    <ClCompile Include="ImGuiPreviewImages.cpp" />
+    <ClCompile Include="Widget_TransRot.cpp" />
+    <ClCompile Include="WorldObjects.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12AliasedTextureArena.cpp" />
+    <ClCompile Include="D3D11Upscaling.cpp" />
+    <ClCompile Include="AsyncVisualExtractor.cpp" />
+    <ClCompile Include="SqliteBlobStore.cpp" />
+    <ClCompile Include="D3D11PFX_HeightFog.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiState.cpp" />
+    <ClCompile Include="D3D11SkeletalPoseCache.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RenderTarget.cpp" />
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="RenderGraph.cpp" />
+    <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImGradient.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D11IGDEXT.cpp" />
+    <ClCompile Include="TransparencyQueue.cpp" />
+    <ClCompile Include="GMeshSimple.cpp" />
+    <ClCompile Include="GInventory.cpp" />
+    <ClCompile Include="D3D11LineRenderer.cpp" />
+    <ClCompile Include="D3D11IndirectBuffer.cpp" />
+    <ClCompile Include="D3D11GShader.cpp" />
+    <ClCompile Include="D3D11NVHBAO.cpp" />
+    <ClCompile Include="VersionCheck.cpp" />
+    <ClCompile Include="SharedVisualRegistry.cpp" />
+    <ClCompile Include="D3D11HDShader.cpp" />
+    <ClCompile Include="D3D11GraphicsShader.cpp" />
+    <ClCompile Include="D3D11AGS.cpp" />
+    <ClCompile Include="WindAnimation.cpp" />
+    <ClCompile Include="D3D11PShader.cpp" />
+    <ClCompile Include="pch.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_CAS.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanLoader.cpp" />
+    <ClCompile Include="D3D11PFX_Blur.cpp" />
+    <ClCompile Include="PointShadow\PointShadowPolicy.cpp" />
+    <ClCompile Include="ThreadPool.cpp" />
+    <ClCompile Include="D3D11CShader.cpp" />
+    <ClCompile Include="D3D11FileRelativeInclude.cpp" />
+    <ClCompile Include="D3D11PFX_SMAA.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">false</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_SimpleSharpen.cpp" />
+    <ClCompile Include="D3D11PFX_ASSAO.cpp" />
+    <ClCompile Include="D3D11NVAPI.cpp" />
+    <ClCompile Include="win32ClipboardWrapper.cpp" />
+    <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12TexturePool.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\quantization.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12PooledDescriptorHeap.cpp" />
+    <ClCompile Include="SteamOverlay.cpp" />
+    <ClCompile Include="WidgetContainer.cpp" />
+    <ClCompile Include="GSpriteCloud.cpp" />
+    <ClCompile Include="include\tracy\public\TracyClient.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
+    <ClCompile Include="D3D11RenderQueue.cpp" />
+    <ClCompile Include="zSndMss.cpp" />
+    <ClCompile Include="HookExceptionFilter.cpp" />
+    <ClCompile Include="GraphicsEventRecord.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\allocator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="D3D11GodRayEffect.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanMemAlloc.cpp" />
+    <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanImGui.cpp" />
+    <ClCompile Include="BaseShadowedPointLight.cpp" />
+    <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="Detours\disolarm64.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Detours\disolia64.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ForcedIncludeFiles></ForcedIncludeFiles>
+    </ClCompile>
+    <ClCompile Include="Detours\disolarm.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
@@ -1422,159 +1579,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles></ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="Detours\image.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="Detours\modules.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="DLLMain.cpp" />
-    <ClCompile Include="EditorLinePrimitive.cpp" />
-    <ClCompile Include="Engine.cpp" />
-    <ClCompile Include="GInventory.cpp" />
-    <ClCompile Include="GMesh.cpp" />
-    <ClCompile Include="GMeshSimple.cpp" />
-    <ClCompile Include="GothicAPI.cpp" />
-    <ClCompile Include="GraphicsEventRecord.cpp" />
-    <ClCompile Include="GothicExternals.cpp" />
-    <ClCompile Include="GothicGraphicsState.cpp" />
     <ClCompile Include="GraphicsShader.cpp" />
-    <ClCompile Include="GSky.cpp" />
-    <ClCompile Include="GSpriteCloud.cpp" />
-    <ClCompile Include="GVegetationBox.cpp" />
-    <ClCompile Include="HookedFunctions.cpp" />
-    <ClCompile Include="IkarusBindings.cpp" />
-    <ClCompile Include="ImGuiEditorView.cpp" />
-    <ClCompile Include="ImGuiPreviewImages.cpp" />
-    <ClCompile Include="ImGuiSettingsWindow.cpp" />
-    <ClCompile Include="ImGuiShim.cpp" />
-    <ClCompile Include="include\ImGuizmo\src\GraphEditor.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\src\ImCurveEdit.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\src\ImGradient.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\backends\imgui_impl_dx12.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\imgui.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\imgui_draw.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\imgui_tables.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\imgui\imgui_widgets.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\allocator.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\overdrawoptimizer.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\quantization.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\simplifier.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="vendor\mikktspace.c">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="include\tracy\public\TracyClient.cpp">
-      <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
-    </ClCompile>
-    <ClCompile Include="MeshManager.cpp" />
-    <ClCompile Include="MorphBlend.cpp" />
-    <ClCompile Include="MorphGpu.cpp" />
-    <ClCompile Include="AsyncVisualExtractor.cpp" />
-    <ClCompile Include="SharedVisualRegistry.cpp" />
-    <ClCompile Include="SqliteBlobStore.cpp" />
-    <ClCompile Include="MeshModifier.cpp" />
-    <ClCompile Include="pch.cpp">
-      <PrecompiledHeader>Create</PrecompiledHeader>
-    </ClCompile>
-    <ClCompile Include="BaseShadowedPointLight.cpp" />
-    <ClCompile Include="zSndMss.cpp" />
-    <None Include="Shaders\PS_Grass.hlsl" />
-    <None Include="Shaders\PS_GrassShadow.hlsl" />
-    <None Include="Shaders\VS_GrassInstanced.hlsl" />
-    <None Include="Shaders\VS_GrassInstancedShadow.hlsl" />
-    <None Include="Shaders\VS_DecalInstanced.hlsl" />
-    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
-    <ClCompile Include="RenderGraph.cpp" />
     <ClCompile Include="RenderPass.cpp" />
-    <ClCompile Include="SMAA\D3D11SMAA.cpp" />
-    <ClCompile Include="SteamOverlay.cpp" />
-    <ClCompile Include="StackWalker.cpp" />
-    <ClCompile Include="Logging.cpp" />
-    <ClCompile Include="Toolbox.cpp" />
-    <ClCompile Include="VersionCheck.cpp" />
-    <ClCompile Include="WidgetContainer.cpp" />
-    <ClCompile Include="Widget_TransRot.cpp" />
-    <ClCompile Include="win32ClipboardWrapper.cpp" />
-    <ClCompile Include="WindAnimation.cpp" />
-    <ClCompile Include="WorldConverter.cpp" />
-    <ClCompile Include="WorldObjects.cpp" />
-    <ClCompile Include="zBinkPlayer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def" />

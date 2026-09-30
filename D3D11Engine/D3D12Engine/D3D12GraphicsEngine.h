@@ -6,8 +6,6 @@
 
 #include "../BaseGraphicsEngine.h"
 #include "../Frustum.h"
-#include "../MorphGpu.h"         // MorphGpu::Job / ChannelRecord (the morph-fold queue members below)
-#include "../TransparencyQueue.h" // the frame's sorted alpha-blended draw list
 #include "../WorldConverter.h"   // SHADOW_LOD_FIRST_CASCADE
 #include <span>
 #include <dxgi1_6.h>
@@ -21,7 +19,6 @@
 #include "D3D12StateCache.h"
 #include "D3D12PipelineState.h"
 #include "D3D12ShadowMap.h"
-#include "D3D12VobArena.h"
 #include "D3D12PointShadows.h"
 #include "D3D12TexturePool.h"
 #include "D3D12AliasedTextureArena.h"
@@ -45,6 +42,11 @@ class zCVobLight;
 
     D3D11 remains the default backend and the fallback: if device or swapchain creation fails,
     Engine::CreateGraphicsEngine keeps D3D11. */
+class D3D12VobArena;
+struct TransparentItem;
+enum class EWorldTransparencyVariant : uint8_t;
+namespace MorphGpu { struct Job; struct ChannelRecord; }
+
 class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // The two shadow subsystems are self-contained passes that still need the engine's frame plumbing (device,
     // allocator, SRV heap, the frame index + the shared upload rings, the indirect command signatures and the
@@ -214,7 +216,7 @@ public:
     void DrawUI2D( std::span<const UIVertex2D> vertices, std::span<const UIBatch2D> batches, const UIItemFrame& items ) override;
     /** One item-preview batch (D3D12InventoryItems.cpp); leaves root sig, PSO, IA and viewport changed. */
     void DrawUIItems( const UIItemFrame& items, const UIBatch2D& batch );
-    void OnInventoryVisualUsed( MeshVisualInfo* visual ) override { m_VobArena.QueueVisual( visual ); }
+    void OnInventoryVisualUsed( MeshVisualInfo* visual ) override;
     UINT GetUITextureIndex( GfxTexture* texture ) override;
     bool SupportsUI2D() const override;
 
@@ -248,7 +250,7 @@ public:
     void OnVobBecameDynamic( zCVob* vob ) override;
     void OnVobMoved( zCVob* vob ) override;
     // Purges the VOB arena's cache of this MeshInfo* before it's freed - see BaseGraphicsEngine's doc comment.
-    void OnMeshInfoDestroyed( MeshInfo* mesh ) override { m_VobArena.Forget( mesh ); }
+    void OnMeshInfoDestroyed( MeshInfo* mesh ) override;
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual
@@ -893,7 +895,7 @@ private:
     // Every static VOB sub-mesh in one DEFAULT-heap VB/IB pair — see D3D12VobArena.h. Filled from OnAddVob
     // (which fires per vob during world load, so the world is resident before the first frame) and flushed
     // once per frame at the top of UploadFrameVobInstances.
-    D3D12VobArena m_VobArena;
+    std::unique_ptr<D3D12VobArena> m_VobArena;
     // Re-uploads the arena ranges of animated static VOBs (.MMS morph meshes) from their own vertex buffers.
     // Runs right after DispatchMorphFold, which is what produces this frame's deformed vertices.
     void RefreshDynamicVobArena();

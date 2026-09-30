@@ -11,6 +11,7 @@
 #include "../GothicAPI.h"
 #include "../UIRenderer2D.h"
 #include "../WorldObjects.h"
+#include "D3D12VobArena.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -182,7 +183,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
     skinned.clear();
     clears.clear();
 
-    const bool arenaReady = m_VobArena.Ready();
+    const bool arenaReady = m_VobArena->Ready();
     for ( uint32_t i = batch.FirstItem; i < batch.FirstItem + batch.ItemCount; ++i ) {
         const UIItemPreview& item = items.Items[i];
         clears.push_back( {
@@ -197,7 +198,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
                 skinned.push_back( &draw );
                 continue;
             }
-            const D3D12VobArena::Range* range = arenaReady ? m_VobArena.Find( draw.Mesh ) : nullptr;
+            const D3D12VobArena::Range* range = arenaReady ? m_VobArena->Find( draw.Mesh ) : nullptr;
             if ( !range || range->IndexCount == 0 ) {
                 unbound.push_back( &draw );
                 continue;
@@ -300,9 +301,9 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
     if ( staticPso && !commands.empty() ) {
         m_CmdList->SetPipelineState( staticPso );
         const D3D12_VERTEX_BUFFER_VIEW vbv = {
-            m_VobArena.GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetVertexBytes(), D3D12VobArena::VertexStride() };
+            m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(), D3D12VobArena::VertexStride() };
         const D3D12_INDEX_BUFFER_VIEW ibv = {
-            m_VobArena.GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena.GetIndexBytes(), DXGI_FORMAT_R16_UINT };
+            m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
         m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
         m_CmdList->IASetIndexBuffer( &ibv );
 

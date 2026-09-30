@@ -24,6 +24,8 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
+#include "D3D12VobArena.h"
 
 namespace {
     const float2 snowScale( 3.0f, 3.0f );
@@ -860,7 +862,7 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     // Same viewport/scissor/topology the world block set (both are unconditional there... except when the
     // world had no casters), so re-establish them here rather than depending on that branch having run.
     if ( m_RainVobDrawCount > 0 && m_ShadowMap.GetVobIndirectCasterPSO() && m_VobIndirectCmdSig
-        && m_RainVobDrawArgs[m_FrameIndex] && m_VobArena.Ready() ) {
+        && m_RainVobDrawArgs[m_FrameIndex] && m_VobArena->Ready() ) {
         DX_ZONE( cmdList.Get(), "Vobs" );
         TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 

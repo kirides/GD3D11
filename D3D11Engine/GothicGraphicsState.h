@@ -163,13 +163,6 @@ struct GothicPipelineKeyHasher {
     }
 };
 
-namespace GothicStateCache {
-    /** Hashmap for caching the state-objects */
-    __declspec(selectany) std::unordered_map<GothicDepthBufferStateInfo, BaseDepthBufferState*, GothicPipelineKeyHasher> s_DepthBufferMap;
-    __declspec(selectany) std::unordered_map<GothicBlendStateInfo, BaseBlendStateInfo*, GothicPipelineKeyHasher> s_BlendStateMap;
-    __declspec(selectany) std::unordered_map<GothicRasterizerStateInfo, BaseRasterizerStateInfo*, GothicPipelineKeyHasher> s_RasterizerStateMap;
-};
-
 /** Depth buffer state information */
 class BaseDepthBufferState;
 
@@ -210,12 +203,7 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
     ECompareFunc DepthBufferCompareFunc;
 
     /** Deletes all cached states */
-    static void DeleteCachedObjects() {
-        for ( const auto& [k, depthBufferState] : GothicStateCache::s_DepthBufferMap ) {
-            delete depthBufferState;
-        }
-        GothicStateCache::s_DepthBufferMap.clear();
-    }
+    static void DeleteCachedObjects();
 
     GothicDepthBufferStateInfo Clone() {
         GothicDepthBufferStateInfo c;
@@ -355,12 +343,7 @@ struct GothicBlendStateInfo : public GothicPipelineState {
     bool Padding;
 
     /** Deletes all cached states */
-    static void DeleteCachedObjects() {
-        for ( const auto& [k, blendState] : GothicStateCache::s_BlendStateMap ) {
-            delete blendState;
-        }
-        GothicStateCache::s_BlendStateMap.clear();
-    }
+    static void DeleteCachedObjects();
 
     GothicBlendStateInfo Clone() {
         GothicBlendStateInfo c;
@@ -431,12 +414,12 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
     float SlopeScaledDepthBias;
 
     /** Deletes all cached states */
-    static void DeleteCachedObjects() {
-        for ( const auto& [k, rasterizerState] : GothicStateCache::s_RasterizerStateMap ) {
-            delete rasterizerState;
-        }
-        GothicStateCache::s_RasterizerStateMap.clear();
-    }
+    static void DeleteCachedObjects();
+};
+
+struct ParticleRenderInfo {
+    GothicBlendStateInfo BlendState;
+    int BlendMode;
 };
 
 /** Sampler state information */

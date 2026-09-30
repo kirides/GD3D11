@@ -12,6 +12,33 @@
 #include "zCModel.h"
 #include "BspPortalCuller.h"
 
+struct PointLightSlotSelector::Lookup {
+    std::unordered_map<uint64_t, int32_t> EncodedByKey;
+    // key -> occupied slot, rebuilt from the tables each Select and then maintained by hand wherever a slot
+    // changes hands. Without it the incumbency lookups are a per-frame O(slots*lights) scan.
+    std::unordered_map<uint64_t, uint32_t> StaticByKey;
+    std::unordered_map<uint64_t, uint32_t> DynByKey;
+    gtl::flat_hash_set<uint64_t> FrameKeys;
+
+    // The stabilized cube range, keyed by vob and swept rarely. It used to live in each backend separately
+    // (D3D11PointLight::UpdateShadowRange / D3D12Scene's s_stationary) and had to agree for the two to match.
+    struct RangeState {
+        uint32_t lastSeen = 0;
+        float    shadowRange = 0.0f;
+    };
+    gtl::flat_hash_map<const zCVob*, RangeState> Stationary;
+
+    // Where each vob was when it last actually invalidated something - not last frame, so a slow drift keeps
+    // accumulating until it crosses the threshold instead of being filtered out one sub-eps step at a time.
+    gtl::flat_hash_map<const zCVob*, DirectX::XMFLOAT3> LastInvalidationPos;
+};
+
+PointLightSlotSelector::PointLightSlotSelector() : m_Lookup( std::make_unique<Lookup>() ) {}
+PointLightSlotSelector::~PointLightSlotSelector() = default;
+
+std::span<PointLightSlotSelector::Assignment> PointLightSlotSelector::GetAssignments() { return m_Assignments; }
+std::span<const PointLightSlotSelector::Assignment> PointLightSlotSelector::GetAssignments() const { return m_Assignments; }
+
 using namespace DirectX;
 
 namespace {
@@ -45,8 +72,8 @@ void PointLightSlotSelector::Configure( const Config& cfg ) {
         m_Static.resize( cfg.MaxStaticSlots );
         m_Dyn.clear();
         m_Dyn.resize( cfg.MaxDynamicSlots );
-        m_StaticByKey.clear();
-        m_DynByKey.clear();
+        m_Lookup->StaticByKey.clear();
+        m_Lookup->DynByKey.clear();
     }
 }
 
@@ -62,25 +89,25 @@ bool PointLightSlotSelector::AllowsDynamicCasters( const VobLightInfo* info ) {
 
 int PointLightSlotSelector::FindStaticSlotOf( uint64_t key ) const {
     if ( !key ) return -1;
-    const auto it = m_StaticByKey.find( key );
-    return it == m_StaticByKey.end() ? -1 : static_cast<int>( it->second );
+    const auto it = m_Lookup->StaticByKey.find( key );
+    return it == m_Lookup->StaticByKey.end() ? -1 : static_cast<int>( it->second );
 }
 
 
 int PointLightSlotSelector::FindDynSlotOf( uint64_t key ) const {
     if ( !key ) return -1;
-    const auto it = m_DynByKey.find( key );
-    return it == m_DynByKey.end() ? -1 : static_cast<int>( it->second );
+    const auto it = m_Lookup->DynByKey.find( key );
+    return it == m_Lookup->DynByKey.end() ? -1 : static_cast<int>( it->second );
 }
 
 
 void PointLightSlotSelector::ReleaseStaticSlot( uint32_t slot ) {
     if ( slot >= m_Static.size() ) return;
     if ( const uint64_t key = m_Static[slot].ownerKey ) {
-        m_StaticByKey.erase( key );
+        m_Lookup->StaticByKey.erase( key );
         // The slot is back in the pool, so whatever this frame published for it is no longer sampleable -
         // shading against the next owner's depth reads as black rather than merely unshadowed.
-        m_EncodedByKey.erase( key );
+        m_Lookup->EncodedByKey.erase( key );
     }
     m_Static[slot] = StaticSlot{};
 }
@@ -89,10 +116,10 @@ void PointLightSlotSelector::ReleaseStaticSlot( uint32_t slot ) {
 void PointLightSlotSelector::ReleaseDynSlot( uint32_t slot ) {
     if ( slot >= m_Dyn.size() ) return;
     if ( const uint64_t key = m_Dyn[slot].ownerKey ) {
-        m_DynByKey.erase( key );
+        m_Lookup->DynByKey.erase( key );
         // Whatever this frame published for the owner named this slot in its HI half; the slot is back in the
         // pool now, so drop the index rather than let the light sample the next occupant's depth.
-        m_EncodedByKey.erase( key );
+        m_Lookup->EncodedByKey.erase( key );
     }
     m_Dyn[slot] = DynSlot{};
 }
@@ -123,17 +150,17 @@ void PointLightSlotSelector::ReleaseAllSlots() {
             Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( PLR_MODE_CHANGED );
     for ( StaticSlot& ss : m_Static ) ss = StaticSlot{};
     for ( DynSlot& ds : m_Dyn ) ds = DynSlot{};
-    m_StaticByKey.clear();
-    m_DynByKey.clear();
+    m_Lookup->StaticByKey.clear();
+    m_Lookup->DynByKey.clear();
     m_Assignments.clear();
-    m_EncodedByKey.clear();
+    m_Lookup->EncodedByKey.clear();
 }
 
 
 int32_t PointLightSlotSelector::GetEncodedIndex( uint64_t key ) const {
     if ( !key ) return 0;
-    const auto it = m_EncodedByKey.find( key );
-    return it == m_EncodedByKey.end() ? 0 : it->second;
+    const auto it = m_Lookup->EncodedByKey.find( key );
+    return it == m_Lookup->EncodedByKey.end() ? 0 : it->second;
 }
 
 
@@ -216,7 +243,7 @@ void PointLightSlotSelector::DrainPendingVobChanges() {
         // Below the threshold this is jitter. The reference only advances on an actual invalidation, so
         // repeated sub-eps steps still add up to one.
         const XMFLOAT3 pos = vi->Vob->GetPositionWorld();
-        if ( auto posIt = m_LastInvalidationPos.find( vi->Vob ); posIt != m_LastInvalidationPos.end() ) {
+        if ( auto posIt = m_Lookup->LastInvalidationPos.find( vi->Vob ); posIt != m_Lookup->LastInvalidationPos.end() ) {
             const float dx = pos.x - posIt->second.x, dy = pos.y - posIt->second.y, dz = pos.z - posIt->second.z;
             if ( dx * dx + dy * dy + dz * dz < m_Cfg.VobMoveEpsSq ) continue;
         }
@@ -225,7 +252,7 @@ void PointLightSlotSelector::DrainPendingVobChanges() {
         InvalidateStaticForVobRemoved( vi->Vob );
         InvalidateStaticForVobAdded( pos, vi->VisualInfo->MeshSize * 0.5f );
         // After the removal half, which drops this vob's entry.
-        m_LastInvalidationPos.insert_or_assign( vi->Vob, pos );
+        m_Lookup->LastInvalidationPos.insert_or_assign( vi->Vob, pos );
     }
     m_DrainScratch.clear();
 }
@@ -255,8 +282,8 @@ void PointLightSlotSelector::InvalidateStaticForVobRemoved( const zCVob* vob ) {
     if ( !vob ) return;
     // It may still be parked for a deferred resolve - the drain must never look it up.
     std::erase( m_PendingVobChanges, const_cast<zCVob*>( vob ) );
-    m_LastInvalidationPos.erase( vob );   // the address may be reused by a different vob later
-    m_Stationary.erase( vob );
+    m_Lookup->LastInvalidationPos.erase( vob );   // the address may be reused by a different vob later
+    m_Lookup->Stationary.erase( vob );
     for ( StaticSlot& ss : m_Static ) {
         if ( !ss.ownerKey || !ss.valid || ss.bakedVobs.empty() ) continue;
         if ( std::ranges::contains( ss.bakedVobs, vob ) ) {
@@ -306,7 +333,7 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
         const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &pos ), camPos ) ) );
         if ( distSq > releaseSq ) continue;
 
-        RangeState& st = m_Stationary[info->Vob];
+        Lookup::RangeState& st = m_Lookup->Stationary[info->Vob];
         st.lastSeen = m_SweepFrame;
         const float snapped = std::ceil( info->Vob->GetLightRange() / kShadowRangeQuantum ) * kShadowRangeQuantum;
         if ( snapped > st.shadowRange ) st.shadowRange = snapped;
@@ -348,7 +375,7 @@ void PointLightSlotSelector::BuildCandidates( std::vector<Candidate>& out ) {
     // Drop tracking entries for lights long out of the dome. Swept rarely; walks the whole map.
     if ( ( m_SweepFrame % kRangeCacheSweepFrames ) == 0 ) {
         const uint32_t now = m_SweepFrame;
-        gtl::erase_if( m_Stationary, [now]( const auto& e ) { return now - e.second.lastSeen > kRangeCacheMaxUnseen; } );
+        gtl::erase_if( m_Lookup->Stationary, [now]( const auto& e ) { return now - e.second.lastSeen > kRangeCacheMaxUnseen; } );
     }
 }
 
@@ -397,7 +424,7 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
     DrainPendingVobChanges();
 
     m_Assignments.clear();
-    m_EncodedByKey.clear();
+    m_Lookup->EncodedByKey.clear();
     m_StarvedThisFrame = 0;
     if ( shadowMode == GothicRendererSettings::PLS_DISABLED ) {
         // Re-enabling mid-session must re-render from scratch, not sample however stale depth is left.
@@ -419,11 +446,11 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
     // One candidate per ownership KEY, not per light: a cluster shares a key and wins one cube between all
     // its members, the nearest of which stands for it.
     m_Cands.clear();
-    m_FrameKeys.clear();
+    m_Lookup->FrameKeys.clear();
     for ( uint32_t i = 0; i < static_cast<uint32_t>( cands.size() ); ++i ) {
         const Candidate& c = cands[i];
         if ( c.key == 0 || c.shadowRange <= 0.0f ) continue;
-        if ( !m_FrameKeys.insert( c.key ).second ) continue;   // another cluster member already stands for it
+        if ( !m_Lookup->FrameKeys.insert( c.key ).second ) continue;   // another cluster member already stands for it
         m_Cands.push_back( { i, c.key, c.light, c.distSq, c.active, c.wantsDynamic, c.restrictToWorld,
             c.forced } );
     }
@@ -433,24 +460,24 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
         } );
 
     // Rebuilt here, then maintained by hand wherever a slot changes hands.
-    m_StaticByKey.clear();
-    m_DynByKey.clear();
+    m_Lookup->StaticByKey.clear();
+    m_Lookup->DynByKey.clear();
     for ( uint32_t s = 0; s < static_cast<uint32_t>( m_Static.size() ); ++s )
-        if ( m_Static[s].ownerKey ) m_StaticByKey.emplace( m_Static[s].ownerKey, s );
+        if ( m_Static[s].ownerKey ) m_Lookup->StaticByKey.emplace( m_Static[s].ownerKey, s );
     for ( uint32_t d = 0; d < static_cast<uint32_t>( m_Dyn.size() ); ++d )
-        if ( m_Dyn[d].ownerKey ) m_DynByKey.emplace( m_Dyn[d].ownerKey, d );
+        if ( m_Dyn[d].ownerKey ) m_Lookup->DynByKey.emplace( m_Dyn[d].ownerKey, d );
 
     // ---- Dome release ---------------------------------------------------------------------------------------
     // The candidate set is a pure distance sweep, so a key missing from it is out past the DEACTIVATION dome
     // or gone from the world - never merely off-screen. That is what makes an unconditional release safe.
     for ( uint32_t s = 0; s < static_cast<uint32_t>( m_Static.size() ); ++s ) {
         StaticSlot& ss = m_Static[s];
-        if ( !ss.ownerKey || m_FrameKeys.contains( ss.ownerKey ) ) continue;
+        if ( !ss.ownerKey || m_Lookup->FrameKeys.contains( ss.ownerKey ) ) continue;
         if ( ss.valid ) Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( PLR_SLOT_AGED );
         ReleaseStaticSlot( s );
     }
     for ( uint32_t d = 0; d < static_cast<uint32_t>( m_Dyn.size() ); ++d ) {
-        if ( !m_Dyn[d].ownerKey || m_FrameKeys.contains( m_Dyn[d].ownerKey ) ) continue;
+        if ( !m_Dyn[d].ownerKey || m_Lookup->FrameKeys.contains( m_Dyn[d].ownerKey ) ) continue;
         ReleaseDynSlot( d );   // an overlay is re-rendered from scratch, so losing one costs no cached work
     }
     // staleFrames is the fairness key the budget serves on, so it ticks for lights waiting their turn too.
@@ -478,7 +505,7 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
             StaticSlot& ns = m_Static[sslot];
             if ( ns.ownerKey ) {
                 if ( ns.valid ) Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( PLR_SLOT_TAKEN );
-                m_StaticByKey.erase( ns.ownerKey );
+                m_Lookup->StaticByKey.erase( ns.ownerKey );
                 // An overlay with no static cube under it has nothing to overlay ONTO, and the slot is one of
                 // only MaxDynamicSlots - the evicted light gives it up with the cube it was drawn against.
                 if ( const int od = FindDynSlotOf( ns.ownerKey ); od >= 0 ) ReleaseDynSlot( static_cast<uint32_t>( od ) );
@@ -491,7 +518,7 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
             // {0,0,0}, read as infinitely far to the eviction scan, and be taken straight back off the light.
             ns.pos = src.shadowOrigin;
             ns.range = src.shadowRange;
-            m_StaticByKey[c.key] = static_cast<uint32_t>( sslot );
+            m_Lookup->StaticByKey[c.key] = static_cast<uint32_t>( sslot );
         }
         StaticSlot& ss = m_Static[sslot];
         ss.owner = c.light;
@@ -507,13 +534,13 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
             dslot = PickDynSlot( c.distSq, camPos, c.forced );
             if ( dslot >= 0 ) {
                 DynSlot& nd = m_Dyn[dslot];
-                if ( nd.ownerKey ) m_DynByKey.erase( nd.ownerKey );
+                if ( nd.ownerKey ) m_Lookup->DynByKey.erase( nd.ownerKey );
                 nd = DynSlot{};
                 nd.ownerKey = c.key;
                 nd.owner = c.light;
                 // Overdue on arrival, so a fresh slot draws on its acquisition frame instead of idling one.
                 nd.staleFrames = m_Cfg.DynamicMaxBackoff;
-                m_DynByKey[c.key] = static_cast<uint32_t>( dslot );
+                m_Lookup->DynByKey[c.key] = static_cast<uint32_t>( dslot );
             }
         }
 
@@ -654,7 +681,7 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
             const DynSlot& ds = m_Dyn[a.dynSlot];
             if ( ds.valid ) dyn = a.dynSlot;
         }
-        m_EncodedByKey[a.key] = EncodeIndex( static_cast<int>( a.staticSlot ), dyn );
+        m_Lookup->EncodedByKey[a.key] = EncodeIndex( static_cast<int>( a.staticSlot ), dyn );
     }
 
     // Occupancy + starvation for the ImGui point-light window; m_StarvedThisFrame is only knowable here.

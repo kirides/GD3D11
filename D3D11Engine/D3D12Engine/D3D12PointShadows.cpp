@@ -20,6 +20,7 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
 
 static_assert( D3D12PointShadows::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12PointShadows' per-frame ring array bound must match the engine's" );

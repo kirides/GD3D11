@@ -1,19 +1,13 @@
 ﻿#pragma once
 #include "pch.h"
 #include "Engine.h"
-#include "D3D11GraphicsEngineBase.h"
-#include "D3D11GraphicsEngine.h"
-#include "D3D11_Helpers.h"
-#include <algorithm>
+#include "BaseGraphicsEngine.h"
+#include "GothicGraphicsState.h"
 #include <imgui.h>
-#include <imgui_impl_win32.h>
-#include <imgui_impl_dx11.h>
-#include <imgui_impl_dx12.h>
-#include <ImGuizmo/src/ImGuizmo.h>
-
-#include "ImGuiEditorView.h"
 
 class D3D12GraphicsEngine;
+class ImGuiEditorView;
+class GothicAPI;
 struct VkCommandBuffer_T;
 namespace Rhi { class Device; class Resource; }
 
@@ -22,7 +16,7 @@ public:
     /** Which renderer backend the ImGui context was initialized for. */
     enum class Backend { None, D3D11, D3D12, Vulkan };
 
-    ImGuiShim() {};
+    ImGuiShim();
     virtual ~ImGuiShim();
 
     virtual void Init(HWND Window,const Microsoft::WRL::ComPtr<ID3D11Device1>& device,const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context);
@@ -74,13 +68,9 @@ public:
         m_lastFrameBlockGameInput = GetBlockGameInput();
     }
     
-    void ToggleEditor() {
-        m_EditorView->SetIsEnabled(!m_EditorView->GetIsEnabled());
-    }
-    
-    bool GetIsEditorVisible() { return m_EditorView->GetIsEnabled(); }
-    
-    void OnVobRemovedFromWorld(zCVob* vob) { m_EditorView->OnVobRemovedFromWorld(vob); } 
+    void ToggleEditor();
+    bool GetIsEditorVisible();
+    void OnVobRemovedFromWorld( zCVob* vob );
 
     static WindowModes InterpretWindowMode( const GothicRendererSettings& s ) {
 

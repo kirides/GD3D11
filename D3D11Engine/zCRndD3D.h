@@ -4,6 +4,7 @@
 #include "HookedFunctions.h"
 #include "Engine.h"
 #include "GothicAPI.h"
+#include "UIRenderer2D.h"
 
 class zCRndD3D {
 public:

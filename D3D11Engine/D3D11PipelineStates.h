@@ -3,6 +3,7 @@
 #include "BasePipelineStates.h"
 #include "Engine.h"
 #include "D3D11GraphicsEngineBase.h"
+#include "GothicGraphicsState.h"
 
 class D3D11DepthBufferState : public BaseDepthBufferState {
 public:

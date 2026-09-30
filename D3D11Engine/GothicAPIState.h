@@ -1,10 +1,18 @@
 #pragma once
 #include "GothicAPI.h"
+#include "BspPortalCuller.h"
+#include "SpatialBVH.h"
+#include "TransparencyQueue.h"
 #include <shared_mutex>
+#include "WorldMeshSection.h"
 
 /** GothicAPI's container members. Kept out of GothicAPI.h so only the TUs that touch them pay for
     instantiating these maps; include this only where the containers themselves are needed. */
 struct GothicAPIState {
+    TransparencyQueue TransparencyQueueData;
+    BspPortalCuller PortalCuller;
+    SpatialBVH::BuildResult<GothicAPI::WorldMeshClusterRef> WorldMeshClusterTree;
+
     std::map<zCTexture*, std::vector<ParticleInstanceInfo>> FrameParticles;
     std::map<zCTexture*, ParticleRenderInfo> FrameParticleInfo;
 

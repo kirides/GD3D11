@@ -4,10 +4,19 @@
 
 #include "D3D11_Helpers.h"
 
+struct D3D11GraphicsShader::Reflection {
+    gtl::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
+    gtl::flat_hash_map<StringID, std::pair<ConstantBufferSize, int32_t>> ConstantBuffersByName;
+};
+
+D3D11GraphicsShader::D3D11GraphicsShader() : m_Reflection( std::make_unique<Reflection>() ) {}
+
+D3D11GraphicsShader::~D3D11GraphicsShader() = default;
+
 int32_t D3D11GraphicsShader::GetInputIndex( StringID name )
 {
-    auto kvp = InputSemanticToIndex.find( name );
-    if (kvp != InputSemanticToIndex.end()) {
+    auto kvp = m_Reflection->InputSemanticToIndex.find( name );
+    if (kvp != m_Reflection->InputSemanticToIndex.end()) {
         return kvp->second;
     }
 #ifdef DEBUG_D3D11
@@ -39,8 +48,8 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
         ConstantBuffers[i] = 0;
     }
     ConstantBufferIndexBySlot.fill(255);
-    ConstantBuffersByName.clear();
-    ConstantBuffersByName.reserve(shaderDesc.ConstantBuffers);
+    m_Reflection->ConstantBuffersByName.clear();
+    m_Reflection->ConstantBuffersByName.reserve(shaderDesc.ConstantBuffers);
 
     // Loop through every resource bound to this shader
     size_t cbIndex = 0;
@@ -60,7 +69,7 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
 
                 // Ignore the bind-point here, due to global-per-frame CBs
                 ConstantBuffers[cbIndex] = paddedSize;
-                ConstantBuffersByName[StringID::make(resourceDesc.Name)] = {ConstantBuffers[cbIndex], resourceDesc.BindPoint};
+                m_Reflection->ConstantBuffersByName[StringID::make(resourceDesc.Name)] = {ConstantBuffers[cbIndex], resourceDesc.BindPoint};
                 ConstantBufferIndexBySlot[resourceDesc.BindPoint] = static_cast<byte>(cbIndex);
                 ++cbIndex;
             }
@@ -73,5 +82,5 @@ void D3D11GraphicsShader::OnReflectShaderResource(
     const D3D11_SHADER_DESC& shaderDesc, 
     const D3D11_SHADER_INPUT_BIND_DESC& resourceDesc)
 {
-    InputSemanticToIndex[StringID::make(resourceDesc.Name)] = resourceDesc.BindPoint;
+    m_Reflection->InputSemanticToIndex[StringID::make(resourceDesc.Name)] = resourceDesc.BindPoint;
 }

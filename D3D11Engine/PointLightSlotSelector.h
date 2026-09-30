@@ -10,9 +10,8 @@
 #include <cstdint>
 #include <span>
 #include <vector>
-#include <unordered_map>
+#include <memory>
 #include <DirectXMath.h>
-#include <gtl/phmap.hpp>
 
 #include "GothicGraphicsState.h"
 
@@ -119,6 +118,9 @@ public:
                                             // goes back so a light that HAS movers can have it
     };
 
+    PointLightSlotSelector();
+    ~PointLightSlotSelector();
+
     /** Sizes the slot tables. Safe to call again with the same config; a changed pool size wipes them. */
     void Configure( const Config& cfg );
     const Config& GetConfig() const { return m_Cfg; }
@@ -136,8 +138,8 @@ public:
     void Select( std::span<const Candidate> cands, GothicRendererSettings::EPointLightShadowMode mode,
         bool resourcesReady = true );
 
-    std::span<Assignment> GetAssignments() { return m_Assignments; }
-    std::span<const Assignment> GetAssignments() const { return m_Assignments; }
+    std::span<Assignment> GetAssignments();
+    std::span<const Assignment> GetAssignments() const;
 
     /** The HI-LO ShadowCubeIndex this key may advertise, or 0 for unshadowed. Includes keys that did no work
         this frame but still own a cube holding their own depth. */
@@ -217,29 +219,15 @@ private:
     // Indices into m_Assignments for the lights that want work, bucketed by importance. m_Forced is served
     // ahead of all three and is not capped.
     std::vector<uint32_t> m_Near, m_Mid, m_Far, m_Forced;
-    std::unordered_map<uint64_t, int32_t> m_EncodedByKey;
-    // key -> occupied slot, rebuilt from the tables each Select and then maintained by hand wherever a slot
-    // changes hands. Without it the incumbency lookups are a per-frame O(slots*lights) scan.
-    std::unordered_map<uint64_t, uint32_t> m_StaticByKey;
-    std::unordered_map<uint64_t, uint32_t> m_DynByKey;
-    gtl::flat_hash_set<uint64_t> m_FrameKeys;
-
-    // The stabilized cube range, keyed by vob and swept rarely. It used to live in each backend separately
-    // (D3D11PointLight::UpdateShadowRange / D3D12Scene's s_stationary) and had to agree for the two to match.
-    struct RangeState {
-        uint32_t lastSeen = 0;
-        float    shadowRange = 0.0f;
-    };
-    gtl::flat_hash_map<const zCVob*, RangeState> m_Stationary;
+    // Hash maps keyed by light/vob, defined in the .cpp so includers don't instantiate them.
+    struct Lookup;
+    std::unique_ptr<Lookup> m_Lookup;
     uint32_t m_SweepFrame = 0;
 
     std::vector<zCVob*> m_PendingVobChanges;
     // Swapped with the above during a drain, so the invalidation helpers can scrub the pending list without
     // the loop iterating a vector that is being erased from. Capacity is retained.
     std::vector<zCVob*> m_DrainScratch;
-    // Where each vob was when it last actually invalidated something - not last frame, so a slow drift keeps
-    // accumulating until it crosses the threshold instead of being filtered out one sub-eps step at a time.
-    gtl::flat_hash_map<const zCVob*, DirectX::XMFLOAT3> m_LastInvalidationPos;
     // Until some slot has finished a bake there is no cache to invalidate; this keeps world load (tens of
     // thousands of AddVob calls before the first frame) from parking any of them.
     bool m_HaveCachedStatic = false;

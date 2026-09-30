@@ -3,6 +3,7 @@
 #include "zTypes.h"
 #include "HookedFunctions.h"
 #include "zViewTypes.h"
+#include "UIRenderer2D.h"
 
 
 class zCViewDraw {

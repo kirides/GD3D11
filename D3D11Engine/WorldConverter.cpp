@@ -33,6 +33,7 @@
 #include "ThreadPool.h"
 #include "vendor/mikktspace.h"
 #include "VertexPacking.h"
+#include "WorldMeshSection.h"
 
 extern MeshManager* s_MeshManager;
 

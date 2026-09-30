@@ -1,4 +1,5 @@
 #include "GothicGraphicsState.h"
+#include "GothicStateCache.h"
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
@@ -226,4 +227,31 @@ void GothicRendererSettings::ApplyShadowPreset()
 void GothicRendererSettings::ApplyFeatureLevel10Downgrades()
 {
     ::ApplyFeatureLevel10Downgrades( *this );
+}
+
+namespace GothicStateCache {
+    std::unordered_map<GothicDepthBufferStateInfo, BaseDepthBufferState*, GothicPipelineKeyHasher> s_DepthBufferMap;
+    std::unordered_map<GothicBlendStateInfo, BaseBlendStateInfo*, GothicPipelineKeyHasher> s_BlendStateMap;
+    std::unordered_map<GothicRasterizerStateInfo, BaseRasterizerStateInfo*, GothicPipelineKeyHasher> s_RasterizerStateMap;
+}
+
+void GothicDepthBufferStateInfo::DeleteCachedObjects() {
+    for ( const auto& [k, state] : GothicStateCache::s_DepthBufferMap ) {
+        delete state;
+    }
+    GothicStateCache::s_DepthBufferMap.clear();
+}
+
+void GothicBlendStateInfo::DeleteCachedObjects() {
+    for ( const auto& [k, state] : GothicStateCache::s_BlendStateMap ) {
+        delete state;
+    }
+    GothicStateCache::s_BlendStateMap.clear();
+}
+
+void GothicRasterizerStateInfo::DeleteCachedObjects() {
+    for ( const auto& [k, state] : GothicStateCache::s_RasterizerStateMap ) {
+        delete state;
+    }
+    GothicStateCache::s_RasterizerStateMap.clear();
 }

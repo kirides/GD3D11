@@ -27,6 +27,8 @@
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+#include "../WorldMeshSection.h"
+#include "D3D12VobArena.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12ShadowMap's per-frame ring array bound must match the engine's" );
@@ -1274,7 +1276,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 	// --- Instanced VOBs: one ExecuteIndirect over the command set Phase C built for this cascade ---
 	if ( m_VobDrawCount[c] > 0 && m_CasterVobIndirectPSO && m_E->m_VobIndirectCmdSig
-		&& m_VobDrawArgs[c][frame] && m_E->m_VobArena.Ready() ) {
+		&& m_VobDrawArgs[c][frame] && m_E->m_VobArena->Ready() ) {
 		DX_ZONE( cmdList.Get(), "Vobs" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Vobs" );
 		// Same alpha-test split as the world casters above — BuildVobDrawCommands partitioned this cascade's

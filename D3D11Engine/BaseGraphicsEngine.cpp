@@ -2,9 +2,22 @@
 #include "ImGuiShim.h"
 #include "GothicAPI.h"
 #include "zCView.h"
+#include "UIRenderer2D.h"
 #include <algorithm>
 #include <iostream>
 #include <string>
+#include "fpslimiter.h"
+
+BaseGraphicsEngine::BaseGraphicsEngine() :
+    m_UIRenderer2D( std::make_unique<UIRenderer2D>( *this ) ),
+    m_FrameLimiter( std::make_unique<FpsLimiter>() ),
+    m_PausedFrameLimiter( std::make_unique<FpsLimiter>() ) {}
+
+BaseGraphicsEngine::~BaseGraphicsEngine() = default;
+
+void BaseGraphicsEngine::FlushUI2D() { m_UIRenderer2D->Flush(); }
+
+void BaseGraphicsEngine::DrawUI2D( std::span<const UIVertex2D>, std::span<const UIBatch2D>, const UIItemFrame& ) {}
 
 bool BaseGraphicsEngine::UseUIRenderer2D() const {
     return SupportsUI2D() && (Engine::GAPI->GetRendererState().RendererSettings.NativeUIRenderer || m_UI2DScopeDepth > 0);
