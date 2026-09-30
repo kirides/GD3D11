@@ -59,10 +59,12 @@ find_package(directxtk CONFIG REQUIRED)
 # supplies the D3D12 IIDs this project needs, and D3D12 stays dynamically loaded
 # (LoadLibrary + GetProcAddress in D3D12Device.cpp) with no hard d3d12.lib link.
 find_package(directx-headers CONFIG REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 target_link_libraries(D3D11Engine PRIVATE
   Microsoft::DirectXMath
   Microsoft::DirectXTK
+  unofficial::sqlite3::sqlite3
 )
 
 # The Windows SDK ships its own (older) DirectXMath/DirectXCollision/XAudio2/D3D12
