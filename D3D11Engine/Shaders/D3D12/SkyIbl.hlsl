@@ -93,7 +93,15 @@ float3 UpperSky( float3 d, float atmoScale, float atmoWeight )
     float3 col = GradientSky( d );
     [branch]
     if ( atmoWeight > 0.0 )
-        col = lerp( col, AtmosphereSky( d ) * atmoScale, atmoWeight );
+    {
+        // Dome hue and shape, its luminance held near the gradient's in the same direction (the dome's
+        // horizon glow is many times its mean at dusk and blew up side-facing surfaces).
+        float3 atmo = AtmosphereSky( d ) * atmoScale;
+        float gradLum = dot( col, SKY_LUMA );
+        float atmoLum = dot( atmo, SKY_LUMA );
+        atmo *= clamp( atmoLum, 0.7 * gradLum, 1.4 * gradLum ) / max( atmoLum, 1e-6 );
+        col = lerp( col, atmo, atmoWeight );
+    }
     return lerp( col, dot( col, SKY_LUMA ), Overcast );
 }
 
@@ -160,8 +168,8 @@ void CSSkyRadiance( uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex )
         }
         float atmoLum = gs_AtmoLum[0];
         atmoScale = gs_GradLum[0] / max( atmoLum, 1e-8 );
-        // A dome with no light left in it (deep night) has no colour worth keeping.
-        atmoWeight = AtmoBlend * smoothstep( 1e-5, 1e-3, atmoLum / 64.0 );
+        // Hand dusk over to Gothic's own sky palette by sun height; the luminance guard only catches an empty dome.
+        atmoWeight = AtmoBlend * smoothstep( 0.05, 0.3, AC_LightPos.y ) * smoothstep( 1e-7, 1e-5, atmoLum / 64.0 );
     }
 
     uint size = (uint)FaceSize;
