@@ -1183,6 +1183,25 @@ void ImGuiShim::RenderSettingsWindow()
                     shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
                 }
             }
+            {
+                bool skyReflection = settings.WaterReflectionMode == GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY;
+                if ( ImGui::Checkbox( "Water Sky Reflections", &skyReflection ) ) {
+                    settings.WaterReflectionMode = skyReflection ? GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY
+                                                                 : GothicRendererSettings::WATER_REFLECTION_GEOMETRY;
+                }
+                ImGui::SetItemTooltip( "Screen-space sky march on water. Off = geometry hits + reflection cube. Needs water SSR." );
+
+                const char* oceanColors[] = { "Natural", "Per World", "Tropical", "Custom" };
+                int oceanColor = settings.OceanColor;
+                if ( ImGui::Combo( "Ocean Color", &oceanColor, oceanColors, IM_ARRAYSIZE( oceanColors ) ) ) {
+                    settings.OceanColor = (GothicRendererSettings::E_OceanColor)oceanColor;
+                }
+                ImGui::BeginDisabled( settings.OceanColor != GothicRendererSettings::OCEAN_COLOR_CUSTOM );
+                ImGui::ColorEdit3( "Ocean Tint", &settings.OceanCustomColor.x );
+                ImGui::SliderFloat( "Ocean Tint Strength", &settings.OceanCustomColorStrength, 0.0f, 1.0f );
+                ImGui::SliderFloat( "Ocean Clarity", &settings.OceanCustomClarity, 0.0f, 1.0f );
+                ImGui::EndDisabled();
+            }
             // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
             // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime
             // loop-bound uniform, same as WaterSSRQuality's own D3D12 path (see D3D12Water.cpp).

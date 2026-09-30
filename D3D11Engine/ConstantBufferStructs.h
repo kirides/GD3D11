@@ -497,7 +497,7 @@ struct LowCloudConstantBuffer {
 };
 static_assert( sizeof( LowCloudConstantBuffer ) == 240 );
 
-/** PS_Water b3: moon glint plus the ocean look; WP_IsOcean changes per texture batch. */
+/** PS_Water b3: moon glint, ocean look and sky-march gate; WP_IsOcean changes per texture batch. */
 struct WaterParamsConstantBuffer {
     XMFLOAT3 WP_MoonDir;
     float WP_MoonGlint;
@@ -506,7 +506,7 @@ struct WaterParamsConstantBuffer {
     float WP_OceanClimate;
     float WP_IsOcean;
     float WP_MoonDisc;
-    float WP_Pad;
+    float WP_SkyReflection;
 };
 static_assert( sizeof( WaterParamsConstantBuffer ) == 48 );
 

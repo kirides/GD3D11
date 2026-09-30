@@ -74,16 +74,61 @@ namespace {
         }
     }
 
+    bool CommandLineHas( const char* upper, const char* lower ) {
+        const char* cmd = GetCommandLineA();
+        return strstr( cmd, upper ) || strstr( cmd, lower );
+    }
+
+    /** Dev builds validate by default; -VKVALIDATION / -VKNOVALIDATION or GD3D11_VULKAN_VALIDATION=1|0 override that. */
+    bool ValidationRequested() {
+        if ( CommandLineHas( "-VKNOVALIDATION", "-vknovalidation" ) ) return false;
+        if ( CommandLineHas( "-VKVALIDATION", "-vkvalidation" ) ) return true;
+        char env[8] = {};
+        if ( GetEnvironmentVariableA( "GD3D11_VULKAN_VALIDATION", env, sizeof( env ) ) ) return env[0] != '0';
+#ifdef DEBUG_D3D11
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    /** RenderDoc injects renderdoc.dll at launch; its implicit Vulkan layer then sits above any validation layer. */
+    bool RenderDocPresent() { return GetModuleHandleA( "renderdoc.dll" ) != nullptr; }
+
     VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback( VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT* data, void* ) {
         const char* id = data && data->pMessageIdName ? data->pMessageIdName : "";
         const char* msg = data && data->pMessage ? data->pMessage : "";
+
+        // Per-frame errors would flood Log.txt; keep the first few of each message ID.
+        constexpr uint32_t kMaxRepeats = 10;
+        static std::mutex s_Mutex;
+        static std::unordered_map<uint32_t, uint32_t> s_Counts;
+        const uint32_t key = data && data->messageIdNumber ? static_cast<uint32_t>( data->messageIdNumber )
+            : static_cast<uint32_t>( std::hash<std::string_view>{}( id ) );
+        uint32_t seen;
+        {
+            std::lock_guard<std::mutex> lock( s_Mutex );
+            seen = ++s_Counts[key];
+        }
+        if ( seen > kMaxRepeats ) return VK_FALSE;
+        const char* suffix = seen == kMaxRepeats ? " (further repeats suppressed)" : "";
+
         if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ) {
-            Logging::Err( "Vulkan validation [{}]: {}", id, msg );
+            Logging::Err( "Vulkan validation [{}]: {}{}", id, msg, suffix );
         } else if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ) {
-            Logging::Wrn( "Vulkan validation [{}]: {}", id, msg );
+            Logging::Wrn( "Vulkan validation [{}]: {}{}", id, msg, suffix );
         }
         return VK_FALSE;
+    }
+
+    VkDebugUtilsMessengerCreateInfoEXT MessengerCreateInfo() {
+        VkDebugUtilsMessengerCreateInfoEXT mci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        mci.pfnUserCallback = &DebugMessengerCallback;
+        return mci;
     }
 
     struct InstanceSetup {
@@ -92,6 +137,7 @@ namespace {
         bool SwapchainColorSpace = false;
         bool SurfaceCapabilities2 = false;
         bool Validation = false;
+        bool RenderDoc = false;
     };
 
     bool CreateInstance( bool allowValidation, InstanceSetup& out, std::string* reason ) {
@@ -123,17 +169,18 @@ namespace {
         // Validation needs the SDK's 32-bit layer, which usually isn't installed; skip quietly without it.
         std::vector<const char*> layers;
         bool validationFeatures = false;
-#ifdef DEBUG_D3D11
-        if ( allowValidation && HasValidationLayer() ) {
-            layers.push_back( "VK_LAYER_KHRONOS_validation" );
-            out.Validation = true;
-            validationFeatures = HasExtension( InstanceExtensions( "VK_LAYER_KHRONOS_validation" ),
-                VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
-            if ( validationFeatures ) extensions.push_back( VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
+        if ( allowValidation && ValidationRequested() ) {
+            if ( HasValidationLayer() ) {
+                layers.push_back( "VK_LAYER_KHRONOS_validation" );
+                out.Validation = true;
+                validationFeatures = HasExtension( InstanceExtensions( "VK_LAYER_KHRONOS_validation" ),
+                    VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
+                if ( validationFeatures ) extensions.push_back( VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME );
+            } else {
+                Logging::Inf( "Vulkan: validation requested but no 32-bit VK_LAYER_KHRONOS_validation is registered "
+                    "(point VK_ADD_LAYER_PATH at the SDK's 32-bit layer folder)." );
+            }
         }
-#else
-        (void)allowValidation;
-#endif
 
         VkApplicationInfo app = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
         app.pApplicationName = "Gothic";
@@ -146,9 +193,13 @@ namespace {
         VkValidationFeaturesEXT validation = { VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT };
         validation.enabledValidationFeatureCount = 1;
         validation.pEnabledValidationFeatures = enables;
+        // Chained messenger covers vkCreateInstance/vkDestroyInstance themselves.
+        VkDebugUtilsMessengerCreateInfoEXT messenger = MessengerCreateInfo();
+        messenger.pNext = validationFeatures ? &validation : nullptr;
 
         VkInstanceCreateInfo ci = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
-        ci.pNext = validationFeatures ? &validation : nullptr;
+        ci.pNext = out.Validation && out.DebugUtils ? static_cast<const void*>( &messenger )
+            : validationFeatures ? &validation : nullptr;
         ci.pApplicationInfo = &app;
         ci.enabledExtensionCount = static_cast<uint32_t>( extensions.size() );
         ci.ppEnabledExtensionNames = extensions.data();
@@ -161,9 +212,10 @@ namespace {
             return false;
         }
         volkLoadInstance( out.Instance );
-        Logging::Inf( "Vulkan: instance created (loader {}{}{}{}).", VkUtil::VersionToString( loaderVersion ),
+        out.RenderDoc = RenderDocPresent();
+        Logging::Inf( "Vulkan: instance created (loader {}{}{}{}{}).", VkUtil::VersionToString( loaderVersion ),
             out.DebugUtils ? ", debug utils" : "", out.SwapchainColorSpace ? ", swapchain colour spaces" : "",
-            out.Validation ? ", VALIDATION LAYER" : "" );
+            out.Validation ? ", VALIDATION LAYER" : "", out.RenderDoc ? ", RenderDoc" : "" );
         return true;
     }
 
@@ -573,15 +625,15 @@ bool VulkanDevice::Init() {
     m_Caps.SwapchainColorSpace = setup.SwapchainColorSpace;
     m_Caps.SurfaceCapabilities2 = setup.SurfaceCapabilities2;
     m_Caps.Validation = setup.Validation;
+    m_Caps.RenderDoc = setup.RenderDoc;
 
-    if ( setup.Validation && setup.DebugUtils ) {
-        VkDebugUtilsMessengerCreateInfoEXT mci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
-        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-            | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        mci.pfnUserCallback = &DebugMessengerCallback;
+    // Also without our own layer: RenderDoc's "Enable API Validation" or vkconfig may inject validation.
+    if ( setup.DebugUtils ) {
+        const VkDebugUtilsMessengerCreateInfoEXT mci = MessengerCreateInfo();
         VkUtil::Failed( vkCreateDebugUtilsMessengerEXT( m_Instance, &mci, nullptr, &m_Messenger ), "vkCreateDebugUtilsMessengerEXT" );
     }
+    if ( setup.RenderDoc )
+        Logging::Inf( "Vulkan: RenderDoc detected; extensions it can't capture (device-generated commands, present wait) are filtered." );
 
     std::unique_ptr<DeviceInfo> info = SelectDevice( m_Instance, &reason );
     if ( !info ) {
@@ -628,7 +680,7 @@ bool VulkanDevice::Init() {
         VK_EXT_HDR_METADATA_EXTENSION_NAME );
     // Frame pacing waits on GPU completion. Present wait is opt-in (-VKPRESENTWAIT / GD3D11_VULKAN_PRESENT_WAIT=1):
     // under FIFO on AMD it paced frames in back-to-back pairs, which puts ZENGIN into slow motion.
-    const bool presentWaitEnabled = strstr( GetCommandLineA(), "-VKPRESENTWAIT" ) || strstr( GetCommandLineA(), "-vkpresentwait" )
+    const bool presentWaitEnabled = CommandLineHas( "-VKPRESENTWAIT", "-vkpresentwait" )
         || GetEnvironmentVariableA( "GD3D11_VULKAN_PRESENT_WAIT", nullptr, 0 ) > 0;
     if ( presentWaitEnabled ) Logging::Inf( "Vulkan: present wait enabled from the command line." );
     if ( presentWaitEnabled && info->PresentWait2Supported() && m_Caps.SurfaceCapabilities2 ) {
@@ -646,7 +698,7 @@ bool VulkanDevice::Init() {
     // Device-generated commands draw the D3D12 command signatures without CPU replay; optional.
     constexpr VkShaderStageFlags kDgcStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     // -VKNODGC / GD3D11_VULKAN_NO_DGC=1 fall back to CPU replay, for A/B tests and driver trouble.
-    const bool dgcDisabled = strstr( GetCommandLineA(), "-VKNODGC" ) || strstr( GetCommandLineA(), "-vknodgc" )
+    const bool dgcDisabled = CommandLineHas( "-VKNODGC", "-vknodgc" )
         || GetEnvironmentVariableA( "GD3D11_VULKAN_NO_DGC", nullptr, 0 ) > 0;
     m_Caps.DeviceGeneratedCommands = !dgcDisabled && info->Has( VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME ) && info->Dgc.deviceGeneratedCommands
         && m_Caps.Maintenance5 && info->Features12.bufferDeviceAddress

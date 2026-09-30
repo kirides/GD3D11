@@ -4392,7 +4392,8 @@ bool D3D12GraphicsEngine::UploadVobs(
         hasInstances = true;
 
         const UINT instOffset = sliceBase + sliceCursor;
-        memcpy( m_ShadowVobInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
+        // Stride-aware: without the motion G-buffer the ring holds 64-byte records, not sizeof(VobInstanceInfo)
+        CopyVobInstances( m_ShadowVobInstanceBufferPtr[frame] + instOffset, instances.data(), numInstances, kInstStride );
         sliceCursor += instBytes;
 
         FrameVobUpload up;

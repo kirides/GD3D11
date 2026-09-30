@@ -17,6 +17,7 @@ struct VulkanDeviceCaps {
     // Optional instance/device extensions that were found and enabled.
     bool DebugUtils = false;
     bool Validation = false;
+    bool RenderDoc = false;             // renderdoc.dll is in the process (its capture layer wraps the instance)
     bool SwapchainColorSpace = false;   // HDR10 swapchain colour spaces
     bool SurfaceCapabilities2 = false;  // VK_KHR_get_surface_capabilities2 (instance)
     bool PresentWait = false;           // VK_KHR_present_id + present_wait

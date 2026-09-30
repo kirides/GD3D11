@@ -300,6 +300,7 @@ struct WaterFrame
     float3 moonDir;           // world space, toward the moon
     float  moonGlint;         // moon reflection strength (night, fog, rain)
     float  moonDisc;          // how visible the moon disc is in the sky
+    float  skyReflection;     // 1 = screen-space sky march, 0 = geometry hits + cube only
 };
 
 float3 ShadeWater( WaterPixel px, WaterFrame fr )
@@ -372,7 +373,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float3 skyDir = reflect( viewDirection, normalize( lerp( wavesFres, WATER_UP, 0.46f ) ) );
     float2 skyUV = px.screenUV;
     float skyValid = 0.0f;
-    [branch] if ( ssrOn > 0.5f && topSide > 0.5f && skyDir.y > 0.0001f )
+    [branch] if ( ssrOn > 0.5f && fr.skyReflection > 0.5f && topSide > 0.5f && skyDir.y > 0.0001f )
         skyValid = WaterSkyMarch( px.worldPos, skyDir, skyUV );
     float3 skyReflection = fallback;
     [branch] if ( skyValid > 0.5f )
@@ -384,6 +385,8 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     }
     float2 skyEdge = saturate( abs( skyUV - 0.5f ) * 2.0f );
     float skyWeight = skyValid * ( 1.0f - smoothstep( 0.78f, 1.0f, max( skyEdge.x, skyEdge.y ) ) ) * hemi;
+    // Geometry-only mode: the weather-aware cube stands in for the marched sky instead of the water-limited cube
+    skyWeight = lerp( skyWeight, hemi, ssrOn * step( fr.skyReflection, 0.5f ) );
     float skyConfidence = saturate( skyWeight * lerp( 0.90f, 0.80f, rain ) );
 
     float3 processedReflection = float3( 0.0f, 0.0f, 0.0f );

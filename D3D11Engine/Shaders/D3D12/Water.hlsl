@@ -59,7 +59,8 @@ cbuffer WaterCB : register(b2)
     float  MoonDisc;             // visibility of the moon disc in the sky
 
     uint   LowCloudIndex;        // premultiplied low cloud layer (0xFFFFFFFF = none)
-    uint3  WaterCBPad;
+    float  SkyReflection;        // 1 = march the reflected sky in screen space
+    uint2  WaterCBPad;
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -348,6 +349,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     fr.moonDir = MoonDir;
     fr.moonGlint = MoonGlint;
     fr.moonDisc = MoonDisc;
+    fr.skyReflection = SkyReflection;
 
     // Opaque write: the see-through look is composited from the scene copy, exactly like D3D11
     return float4( WaterToLinear( ShadeWater( px, fr ) ), 1.0f );

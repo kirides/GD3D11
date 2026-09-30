@@ -496,6 +496,17 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
     ComboRow( "Water Reflections", "##WaterSSR", waterSsr, &settings.WaterSSRQuality, nullptr,
         [&shadersToReload] { shadersToReload |= ShaderCategory::Water; } );
 
+    constexpr ListItem<GothicRendererSettings::E_WaterReflectionMode> waterReflectionModes[] = {
+        { "Geometry", GothicRendererSettings::WATER_REFLECTION_GEOMETRY,
+            "Terrain and objects in screen space; the sky comes from the static reflection cube." },
+        { "Geometry + Sky", GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY,
+            "Also reflects the on-screen sky and clouds. Makes open water noticeably bluer by day." },
+    };
+    ImGui::BeginDisabled( settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED );
+    ComboRow( "Water Reflection Sources", "##WaterReflectionMode", waterReflectionModes, &settings.WaterReflectionMode,
+        "What the water mirrors in screen space. Needs Water Reflections." );
+    ImGui::EndDisabled();
+
     // D3D12 treats the quality as a runtime loop bound, so there is no shader recompile here.
     if ( IsD3D12() ) {
         constexpr ListItem<GothicRendererSettings::E_WaterSSRQuality> opaqueSsr[] = {
@@ -574,6 +585,22 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
 
     if ( CheckRow( "Water Waves", &settings.EnableWaterAnimation, nullptr, "WaterWaves" ) ) {
         shadersToReload |= ShaderCategory::Water;
+    }
+
+    constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {
+        { "Natural", GothicRendererSettings::OCEAN_COLOR_NATURAL, "Dark coastal sea water in every world." },
+        { "Per World", GothicRendererSettings::OCEAN_COLOR_PER_WORLD, "Clear turquoise sea in Jharkendar, natural elsewhere." },
+        { "Tropical", GothicRendererSettings::OCEAN_COLOR_TROPICAL, "Clear turquoise sea in every world." },
+        { "Custom", GothicRendererSettings::OCEAN_COLOR_CUSTOM, "Pick the tint and clarity yourself." },
+    };
+    ComboRow( "Ocean Color", "##OceanColor", oceanColors, &settings.OceanColor,
+        "Look of the open sea. Lakes and rivers keep their texture color." );
+    if ( settings.OceanColor == GothicRendererSettings::OCEAN_COLOR_CUSTOM ) {
+        Label( "Ocean Tint", "Hue only; the water keeps its brightness." );
+        ImGui::ColorEdit3( "##OceanCustomColor", &settings.OceanCustomColor.x );
+        SliderFloatRow( "Ocean Tint Strength", "##OceanCustomColorStrength", &settings.OceanCustomColorStrength, 0.0f, 1.0f );
+        SliderFloatRow( "Ocean Clarity", "##OceanCustomClarity", &settings.OceanCustomClarity, 0.0f, 1.0f, "%.2f",
+            "0 = dense coastal water, 1 = clear tropical water you can see the floor through." );
     }
 
 #if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)

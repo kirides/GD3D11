@@ -5699,6 +5699,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         waterParams.WP_OceanTint = ocean.Tint;
         waterParams.WP_OceanTintStrength = ocean.TintStrength;
         waterParams.WP_OceanClimate = ocean.Climate;
+        waterParams.WP_SkyReflection = WaterSkyReflectionEnabled();
         auto bindWaterParams = [&]( zCTexture* texture ) {
             waterParams.WP_IsOcean = IsOceanWaterTexture( texture ) ? 1.0f : 0.0f;
             BindDynamicCBToPixelShader( 3, AllocateDynamicCB( &waterParams ) );

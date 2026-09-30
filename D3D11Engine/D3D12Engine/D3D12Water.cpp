@@ -79,7 +79,8 @@ namespace {
         float MoonDisc;
 
         UINT LowCloudIndex;           // premultiplied low cloud layer; 0xFFFFFFFF => none
-        UINT Pad2[3];
+        float SkyReflection;          // 1 => march the reflected sky in screen space
+        UINT Pad2[2];
     };
     static_assert( sizeof( WaterCBData ) == 256, "WaterCBData must match Water.hlsl's b2 layout" );
 
@@ -401,6 +402,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.OceanClimate = ocean.Climate;
         cb.OceanTintStrength = ocean.TintStrength;
         cb.OceanTint = ocean.Tint;
+        cb.SkyReflection = WaterSkyReflectionEnabled();
 
         // GSky::RenderSky() refreshes the AC_* constants every frame (DrawSky runs before this), even though
         // D3D12 renders Gothic's fixed-function sky — same reasoning as RenderFogAndGodRays. Without them the
