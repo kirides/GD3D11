@@ -974,7 +974,7 @@ struct GothicRendererSettings {
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
-        AllowSelfShadowingPointlights = false;
+        AllowSelfShadowingPointlights = true;
         PointlightShadowCasterFlags = PLSC_DYNAMIC_LIGHTS;
         DisableStaticPointlights = false;
         SpecularHighlightsFlags = SH_SUN | SH_POINTLIGHTS;
