@@ -1676,6 +1676,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             "deforming them on the CPU and re-uploading the vertex stream every animation frame.\n"
             "Takes effect after a restart: it also decides how the morph vertex buffers are created.\n"
             "Ignored on a backend with no fold pipeline (D3D11 today)." );
+        ImGui::Checkbox( "GPU upload rings (ReBAR)", &settings.UseGpuUploadRings );
+        ImGui::SetItemTooltip( "D3D12/Vulkan: keep the light, skeletal and VOB/shadow instance rings in CPU-writable\n"
+            "VRAM (GPU_UPLOAD / ReBAR) so the GPU stops reading them over PCIe. Needs Resizable BAR on D3D12.\n"
+            "Takes effect after a restart. See Log.txt for which heap the rings got." );
         // Both of these only describe the CPU deform, which the fold replaces outright.
         ImGui::BeginDisabled( MorphGpu::IsActive() );
         ImGui::Checkbox( "Reimplemented morph blend", &settings.UseReimplementedMorphBlend );

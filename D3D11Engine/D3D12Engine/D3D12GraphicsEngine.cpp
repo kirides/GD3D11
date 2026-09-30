@@ -2645,6 +2645,24 @@ void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen( Rhi::CommandList* con
 }
 
 
+HRESULT D3D12GraphicsEngine::CreateGpuReadRing( const D3D12_RESOURCE_DESC& desc, ComPtr<Rhi::Resource>& out ) {
+    static bool s_logged = false;
+    const bool wanted = Engine::GAPI->GetRendererState().RendererSettings.UseGpuUploadRings;
+    if ( wanted && m_Rhi->GetCaps().GpuUploadHeap ) {
+        const HRESULT hr = m_Rhi->CreateResource( D3D12_HEAP_TYPE_GPU_UPLOAD, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            out.ReleaseAndGetAddressOf(), 0 );
+        if ( SUCCEEDED( hr ) ) {
+            if ( !std::exchange( s_logged, true ) ) Logging::Inf( "D3D12: GPU-read rings use GPU_UPLOAD (VRAM) memory." );
+            return hr;
+        }
+        Logging::Wrn( "D3D12: a GPU_UPLOAD ring failed to allocate (0x{:08X}); falling back to UPLOAD.", static_cast<uint32_t>( hr ) );
+    } else if ( wanted && !std::exchange( s_logged, true ) ) {
+        Logging::Inf( "D3D12: GPU upload rings requested, but the device has no GPU_UPLOAD heap (Resizable BAR off?)." );
+    }
+    return m_Rhi->CreateResource( DefaultUploadHeapType, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, out.ReleaseAndGetAddressOf(), 0 );
+}
+
+
 bool D3D12GraphicsEngine::GpuCaughtUp() const {
     return m_Fence && m_Fence->GetCompletedValue() >= m_LastDirectSignal.load();
 }

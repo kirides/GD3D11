@@ -999,7 +999,7 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) )
+		if ( FAILED( CreateGpuReadRing( bufDesc, m_VobInstanceBuffer[i] ) ) )
 			return false;
 		m_VobInstanceBuffer[i]->SetName( i == 0 ? L"VobInstanceRing0" : L"VobInstanceRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -1013,7 +1013,7 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 	// That is what makes a cascade's instance upload safe on its own worker thread.
 	bufDesc.Width = static_cast<UINT64>( kShadowInstanceSliceBytes ) * kShadowInstanceRingSlots;
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowVobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) )
+		if ( FAILED( CreateGpuReadRing( bufDesc, m_ShadowVobInstanceBuffer[i] ) ) )
 			return false;
 		m_ShadowVobInstanceBuffer[i]->SetName( i == 0 ? L"ShadowVobInstanceRing0" : L"ShadowVobInstanceRing1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -1154,7 +1154,7 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Rhi->CreateResource( uploadHeap.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LightBuffer[i].ReleaseAndGetAddressOf() ) ) )
+		if ( FAILED( CreateGpuReadRing( bufDesc, m_LightBuffer[i] ) ) )
 			return false;
 		m_LightBuffer[i]->SetName( i == 0 ? L"PointLightBuffer0" : L"PointLightBuffer1" );
 		D3D12_RANGE noRead = { 0, 0 };
@@ -1175,7 +1175,10 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	const UINT frame = m_FrameIndex;
 	if ( !m_LightBuffer[frame] || !m_LightBufferPtr[frame] ) return;
 
-	GPULight* dst = reinterpret_cast<GPULight*>(m_LightBufferPtr[frame]);
+	// Built in CPU memory: selection and the range clamp below read it back, which the mapped ring must never see.
+	static std::vector<GPULight> s_lightStage;
+	if ( s_lightStage.size() < m_LightBufferCapacity ) s_lightStage.resize( m_LightBufferCapacity );
+	GPULight* dst = s_lightStage.data();
 	UINT count = 0;
 	constexpr float lightFactor = 1.2f;   // matches D3D11 CullLights RGB scale
 
@@ -1358,6 +1361,8 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// Without this the map keeps every light the session has ever seen. Swept rarely; walks the whole map.
 	if ( ( s_clampFrame % 1024 ) == 0 )
 		std::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
+
+	if ( count ) memcpy( m_LightBufferPtr[frame], dst, static_cast<size_t>( count ) * sizeof( GPULight ) );
 }
 
 
@@ -2388,7 +2393,7 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
 	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-		if ( FAILED( m_Rhi->CreateResource( uploadAlloc.HeapType, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) )
+		if ( FAILED( CreateGpuReadRing( bufDesc, m_SkeletalCBBuffer[i] ) ) )
 			return false;
 		m_SkeletalCBBuffer[i]->SetName( i == 0 ? L"SkeletalCBRing0" : L"SkeletalCBRing1" );
 		D3D12_RANGE noRead = { 0, 0 };

@@ -1134,6 +1134,9 @@ private:
     // already recorded instead of idling until Present.
     // `after` lists execute in the same call, right behind m_CmdList.
     void SubmitRecordedCommandsAndReopen( Rhi::CommandList* const* after = nullptr, UINT afterCount = 0 );
+    // Persistently-mapped ring the GPU reads several times per frame: GPU_UPLOAD when UseGpuUploadRings is on and
+    // supported, else UPLOAD. The CPU may only write it, in whole sequential memcpys; never read it back.
+    HRESULT CreateGpuReadRing( const D3D12_RESOURCE_DESC& desc, Microsoft::WRL::ComPtr<Rhi::Resource>& out );
     // True once the GPU finished every earlier frame, i.e. what this frame submitted is all it has left.
     bool GpuCaughtUp() const;
     // Submits the scene so far when the GPU would otherwise run dry, then restores the scene RT/viewport.

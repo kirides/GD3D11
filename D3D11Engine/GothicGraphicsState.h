@@ -865,6 +865,7 @@ struct GothicRendererSettings {
         SynchronousMeshExtraction = false;
         GpuVobCulling = false;
         GpuVobOcclusionCulling = false;
+        UseGpuUploadRings = false;
         EnableVSync = true;
         DoZPrepass = false;
         SortRenderQueue = false;
@@ -1163,6 +1164,9 @@ struct GothicRendererSettings {
     // out as its own toggle because it is the part that can wrongly hide geometry.
     bool GpuVobCulling;
     bool GpuVobOcclusionCulling;
+    // D3D12/Vulkan: the light, skeletal and VOB/shadow instance rings live in CPU-writable VRAM (GPU_UPLOAD /
+    // ReBAR) instead of system memory. Read when the rings are created, so it takes effect after a restart.
+    bool UseGpuUploadRings;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
