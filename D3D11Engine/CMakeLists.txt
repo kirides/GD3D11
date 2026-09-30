@@ -6,6 +6,12 @@ set_target_properties(D3D11Engine PROPERTIES
   OUTPUT_NAME ddraw
 )
 
+# Mirrors the vcxproj: pch.h is precompiled and force-included; third-party sources stay PCH-free.
+target_precompile_headers(D3D11Engine PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/pch.h>")
+set(_gd3d11_third_party_sources ${GD3D11_ENGINE_SOURCES})
+list(FILTER _gd3d11_third_party_sources INCLUDE REGEX "^(include|vendor|Detours)/")
+set_source_files_properties(${_gd3d11_third_party_sources} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
 target_include_directories(D3D11Engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/include
