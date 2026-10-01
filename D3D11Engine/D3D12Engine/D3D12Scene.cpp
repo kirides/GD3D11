@@ -64,12 +64,10 @@ std::vector<FrameVobUpload> g_FrameVobUploads;
 std::vector<VobInfo*> g_FrameVobs;
 // Per-vob snapshot of the diffuse SRV heap slot for each entry of visual->SkeletalMeshes. Taken by
 // PrepareFrameSkeletals right after that vob's UpdateMeshLibTexAniState(), the only moment the shared
-// per-MODEL texture slots describe this instance. Grown monotonically and reused: only [0, g_SkelMatSrvCount)
-// is live each frame. Indexed, never pointed into, by FrameSkelDraw::matSrvIndex, so neither a rehash of
-// g_SkelUploadCache nor a growth here can dangle a record. Deque so growth cannot invalidate the element
-// pointers the concurrent CSM cascade recorders hold.
-std::deque<std::vector<SkelMatSlot>> g_SkelMatSrvs;
-size_t g_SkelMatSrvCount = 0;
+// per-MODEL texture slots describe this instance. Appended on the main thread only; see the declaration.
+std::array<SkelMatSlot, kMaxSkelMatSlots> g_SkelMatSlots;
+static uint32_t g_SkelMatSlotCount = 0;
+static bool g_SkelMatSlotsOverflowLogged = false;
 
 namespace {
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
@@ -128,7 +126,8 @@ namespace {
         uint32_t instRow = 0;   // SkeletalInstanceGPU row in the skeletal ring
         uint32_t skinFirst = kNoSkinnedOutput;   // -> g_SkinDst
         bool hasBaseMesh = false;
-        uint32_t matSrvIndex = 0xFFFFFFFFu;   // -> g_SkelMatSrvs, see FrameSkelDraw::matSrvIndex
+        uint32_t matFirst = 0;   // -> g_SkelMatSlots, see FrameSkelDraw::matFirst
+        uint32_t matCount = 0;
         std::vector<FrameAttachDraw> attachments;
     };
     gtl::flat_hash_map<SkeletalVobInfo*, SkelUploadCache> g_SkelUploadCache;
@@ -2449,7 +2448,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear(); g_FrameMorphAttachMeshes.clear();
 	BeginSkinningFrame();        // posed-vertex reservations start from zero; grows the streams if last frame ran out
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
-	g_SkelMatSrvCount = 0;       // ...and its parallel per-material diffuse-handle snapshots (capacity retained)
+	g_SkelMatSlotCount = 0;      // ...and its parallel per-material diffuse-slot snapshots
 	// collectGhosts=true ONLY here: this is the list D3D11's GothicAPI::DrawWorldMeshNaive walks, and the
 	// reroute of ghost NPCs into TransparencyVobs is that function's job. Static MOBs (g_FrameMobs) keep the
 	// plain drop — D3D11 does not reroute them either.
@@ -4878,7 +4877,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         // of a model share the slots). The MAIN-VIEW draw paths (DrawSkeletalDepthPrepass / DrawSkeletalColor)
         // call it per-record right before reading the materials — which is why FrameSkelDraw carries vobInfo.
         // The shadow-cascade recorder can't: it may run on a pool thread, where mutating Gothic's shared texani
-        // state is unsafe. It reads the g_SkelMatSrvs snapshot the cache-miss branch below takes instead.
+        // state is unsafe. It reads the g_SkelMatSlots snapshot the cache-miss branch below takes instead.
 
         // Upload cache: skip straight to the cached GPU addresses / attachment records if this vob was already
         // prepared by an earlier cull pass this frame (e.g. the main view already prepared an NPC that a shadow
@@ -4904,20 +4903,21 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             // slots still describe it (see [[skeletal-texani-shared-slots]]) — the shadow-cascade recorder can't
             // re-run UpdateMeshLibTexAniState from a pool thread, so it indexes this instead. Same order as
             // visual->SkeletalMeshes iterates, which is stable for the rest of the frame (the map isn't mutated
-            // after ExtractSkeletalMeshFromVob above). The outer vector grows monotonically and its inner vectors
-            // keep their capacity across frames, so this settles into zero per-frame allocations.
+            // after ExtractSkeletalMeshFromVob above). On overflow the vob keeps matCount 0 and casts with the
+            // conservative fallback (black diffuse, clipping PSO).
             SkelUploadCache entry;
-            if ( g_SkelMatSrvCount >= g_SkelMatSrvs.size() )
-                g_SkelMatSrvs.emplace_back();
-            {
-                std::vector<SkelMatSlot>& matSrvs = g_SkelMatSrvs[g_SkelMatSrvCount];
-                matSrvs.clear();
+            if ( const size_t numMats = visual->SkeletalMeshes.size(); g_SkelMatSlotCount + numMats <= kMaxSkelMatSlots ) {
+                entry.matFirst = g_SkelMatSlotCount;
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
                     zCTexture* matTex = mat ? mat->GetAniTexture() : nullptr;
-                    matSrvs.push_back( { ResolveShadowDiffuseSlot( matTex ),
-                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) } );
+                    g_SkelMatSlots[g_SkelMatSlotCount++] = { ResolveShadowDiffuseSlot( matTex ),
+                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) };
                 }
-                entry.matSrvIndex = static_cast<uint32_t>( g_SkelMatSrvCount++ );
+                entry.matCount = static_cast<uint32_t>( numMats );
+            } else if ( !g_SkelMatSlotsOverflowLogged ) {
+                Logging::Wrn( "D3D12: skeletal material snapshot pool full ({} slots/frame); some NPC shadows lose their alpha cutout.",
+                    kMaxSkelMatSlots );
+                g_SkelMatSlotsOverflowLogged = true;
             }
 
             // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the
@@ -5172,13 +5172,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             for ( UINT fi = 0; fi < numCascades; ++fi ) {
                 if ( (cascadeMask & (1u << fi)) == 0 ) continue;
                 if ( cached.hasBaseMesh )
-                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matSrvIndex, cached.skinFirst } );
+                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
                 for ( const FrameAttachDraw& a : cached.attachments )
                     m_ShadowMap.AttachDraws[fi].push_back( a );
             }
         } else {
             if ( cached.hasBaseMesh )
-                outSkel.push_back( { vi, visual, cached.instRow, cached.matSrvIndex, cached.skinFirst } );
+                outSkel.push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
             for ( const FrameAttachDraw& a : cached.attachments )
                 outAttach.push_back( a );
         }

@@ -1080,7 +1080,7 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 
 
 void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
-	// Pool-thread safe: reads the main-thread snapshots (g_SkelMatSrvs, g_SkinDst, FrameAttachDraw) and the
+	// Pool-thread safe: reads the main-thread snapshots (g_SkelMatSlots, g_SkinDst, FrameAttachDraw) and the
 	// arenas' lock-free Find. Both sets are partitioned opaque-first, like the main view's.
 	const UINT c = cascade;
 	const UINT frame = m_E->m_FrameIndex;
@@ -1104,15 +1104,14 @@ void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
 		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
 			if ( !d.visual ) continue;
 			// Per-instance diffuse slots snapshotted on the main thread (see [[skeletal-texani-shared-slots]]).
-			const std::vector<SkelMatSlot>* matSrvs =
-				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
-			size_t matIdx = 0;
+			uint32_t matIdx = 0;
 			uint32_t sub = 0;   // index into this vob's g_SkinDst entries
 			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-				const bool haveSlot = matSrvs && matIdx < matSrvs->size();
-				const UINT diffuseSlot = haveSlot ? (*matSrvs)[matIdx].slot : blackSlot;
+				const bool haveSlot = matIdx < d.matCount;
+				const SkelMatSlot* snap = haveSlot ? &g_SkelMatSlots[d.matFirst + matIdx] : nullptr;
+				const UINT diffuseSlot = snap ? snap->slot : blackSlot;
 				// No snapshot -> assume it clips: a missed cutout is a solid shadow, a needless clip only slower.
-				const bool alphaTested = !haveSlot || (*matSrvs)[matIdx].alphaTested;
+				const bool alphaTested = !snap || snap->alphaTested;
 				++matIdx;
 				for ( auto const& mesh : meshList ) {
 					const uint32_t posed = SkinnedBase( d, sub++ );
