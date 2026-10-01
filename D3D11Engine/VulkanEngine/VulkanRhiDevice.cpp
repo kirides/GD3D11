@@ -234,7 +234,14 @@ namespace VulkanRhi {
         vkGetPhysicalDeviceFormatProperties( m_Vk.GetPhysicalDevice(), VK_FORMAT_B10G11R11_UFLOAT_PACK32, &r11g11b10 );
         m_Caps.TypedUAVLoadAdditionalFormats = ( r11g11b10.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ) != 0;
         m_Caps.RootSignature11 = true;
+        // GPU_UPLOAD = device-local + host-visible + coherent: the 256 MB BAR, or all of VRAM with ReBAR.
+        VkPhysicalDeviceMemoryProperties memory = {};
+        vkGetPhysicalDeviceMemoryProperties( m_Vk.GetPhysicalDevice(), &memory );
+        constexpr VkMemoryPropertyFlags kGpuUpload = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         m_Caps.GpuUploadHeap = false;
+        for ( uint32_t i = 0; i < memory.memoryTypeCount; ++i )
+            if ( ( memory.memoryTypes[i].propertyFlags & kGpuUpload ) == kGpuUpload ) m_Caps.GpuUploadHeap = true;
         m_Caps.TearingSupported = true;   // the swapchain picks its present mode from the sync interval
         m_Caps.VendorId = vk.VendorId;
         if ( vk.HasLuid ) m_Caps.AdapterLuid = vk.Luid;
@@ -688,6 +695,8 @@ namespace VulkanRhi {
         case D3D12_HEAP_TYPE_GPU_UPLOAD:
             ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
             ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+            ai.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;   // persistently mapped rings are never flushed
+            ai.preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
             break;
         default:                       ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE; break;
         }
@@ -699,6 +708,13 @@ namespace VulkanRhi {
             bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             if ( CheckResult( vmaCreateBuffer( m_Allocator, &bi, &ai, &r->m_Buffer, &r->m_Allocation, nullptr ), "vmaCreateBuffer" ) )
                 return E_OUTOFMEMORY;
+            if ( heapType == D3D12_HEAP_TYPE_GPU_UPLOAD ) {
+                VkMemoryPropertyFlags props = 0;
+                vmaGetAllocationMemoryProperties( m_Allocator, r->m_Allocation, &props );
+                static std::atomic<bool> s_logged{ false };
+                if ( !( props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ) && !s_logged.exchange( true ) )
+                    Logging::Wrn( "Vulkan: a GPU_UPLOAD buffer ({} KiB) landed in system memory; the BAR is full.", desc->Width / 1024 );
+            }
             if ( VkCaps().DeviceGeneratedCommands ) {
                 VkBufferDeviceAddressInfo ai2 = { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
                 ai2.buffer = r->m_Buffer;

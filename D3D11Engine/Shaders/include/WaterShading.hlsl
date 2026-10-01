@@ -4,7 +4,7 @@
 // MarcoMarwin's GD3D11 fork. Everything here works in D3D11's gamma space; D3D12 converts at its hooks.
 // The includer defines: WaterSceneRawDepth, WaterSurfaceRawDepth, WaterLinearDepth, WaterWorldToView,
 // WaterViewToUV, WaterSceneColor, WaterDistortion, WaterDiffuse, WaterCube, WaterSSREnabled,
-// WaterTraceSSR, WaterScatterGround and WaterLowClouds, plus the Atmosphere constants (AC_LightPos, AC_RainFXWeight).
+// WaterTraceSSR, WaterScatterGround, WaterLowClouds and WaterSkyAverage, plus the Atmosphere constants (AC_LightPos, AC_RainFXWeight).
 
 static const float3 WATER_LUMA = float3( 0.2126f, 0.7152f, 0.0722f );
 static const float3 WATER_UP = float3( 0.0f, 1.0f, 0.0f );
@@ -297,6 +297,7 @@ struct WaterFrame
     float  oceanClimate;
     float3 oceanTint;
     float  oceanTintStrength;
+    float  oceanTexture;      // 0 = pure water body, 1 = legacy-strength texture blend
     float3 moonDir;           // world space, toward the moon
     float  moonGlint;         // moon reflection strength (night, fog, rain)
     float  moonDisc;          // how visible the moon disc is in the sky
@@ -348,7 +349,9 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float legacyFresnel = min( 0.5f, saturate( pow( 1.0f - NdotV, 10.0f ) ) );
     float schlickFresnel = 0.02f + 0.98f * pow( 1.0f - NdotV, 5.0f );
     float reflectFresnel = kPow3( 1.0f - NdotV );
-    float hemi = smoothstep( 0.0f, 0.06f, reflect( viewDirection, wavesFres ).y ) * topSide;
+    // Reflections fade only once the (wave-smoothed) reflected ray dips below the horizon, so distant water keeps them
+    float3 skyDir = reflect( viewDirection, normalize( lerp( wavesFres, WATER_UP, 0.46f ) ) );
+    float hemi = smoothstep( -0.04f, 0.02f, skyDir.y ) * topSide;
 
     // Waterfalls: near-vertical sheets get neither reflections nor a shoreline
     float flatness = WaterFlatness( px.geometricNormal );
@@ -370,23 +373,25 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
         hitColor = WaterTraceSSR( px.worldPos, hitDir, hitConfidence, hitDistance );
     hitConfidence = saturate( hitConfidence );
 
-    float3 skyDir = reflect( viewDirection, normalize( lerp( wavesFres, WATER_UP, 0.46f ) ) );
     float2 skyUV = px.screenUV;
     float skyValid = 0.0f;
     [branch] if ( ssrOn > 0.5f && fr.skyReflection > 0.5f && topSide > 0.5f && skyDir.y > 0.0001f )
         skyValid = WaterSkyMarch( px.worldPos, skyDir, skyUV );
-    float3 skyReflection = fallback;
+    // Where the march misses (looking down, rays leaving the screen): the averaged on-screen sky, else the cube
+    float4 skyAverage = WaterSkyAverage();
+    float3 skyFill = lerp( fallback, max( skyAverage.rgb, 0.0f ), saturate( skyAverage.a ) * step( 0.5f, fr.skyReflection ) );
+    float3 skyReflection = skyFill;
     [branch] if ( skyValid > 0.5f )
     {
-        skyReflection = WaterSkyWithoutCelestialBodies( skyUV, skyDir, fallback, fr.viewportSize, sunVisibility, fr.moonDir, fr.moonDisc );
+        skyReflection = WaterSkyWithoutCelestialBodies( skyUV, skyDir, skyFill, fr.viewportSize, sunVisibility, fr.moonDir, fr.moonDisc );
         float4 clouds = ResolveWaterLowClouds( WaterLowClouds( skyUV ), skyReflection );
         skyReflection = max( skyReflection + ( skyReflection * ( 1.0f - clouds.a ) + clouds.rgb - skyReflection )
                                            * lerp( 1.12f, 1.30f, saturate( clouds.a ) ), 0.0f );
     }
     float2 skyEdge = saturate( abs( skyUV - 0.5f ) * 2.0f );
-    float skyWeight = skyValid * ( 1.0f - smoothstep( 0.78f, 1.0f, max( skyEdge.x, skyEdge.y ) ) ) * hemi;
-    // Geometry-only mode: the weather-aware cube stands in for the marched sky instead of the water-limited cube
-    skyWeight = lerp( skyWeight, hemi, ssrOn * step( fr.skyReflection, 0.5f ) );
+    float skyMarchWeight = skyValid * ( 1.0f - smoothstep( 0.78f, 1.0f, max( skyEdge.x, skyEdge.y ) ) );
+    skyReflection = lerp( skyFill, skyReflection, skyMarchWeight );
+    float skyWeight = ssrOn * hemi;
     float skyConfidence = saturate( skyWeight * lerp( 0.90f, 0.80f, rain ) );
 
     float3 processedReflection = float3( 0.0f, 0.0f, 0.0f );
@@ -455,7 +460,8 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
         sceneReflection = max( lerp( WaterLuma( sceneReflection ).xxx, sceneReflection, 1.0f + definition ), 0.0f );
 
         float ssrFresnel = lerp( 0.55f, 0.80f, saturate( kPow2( 1.0f - NdotV ) ) );
-        float coverage = max( saturate( skyWeight * ssrOn ), stableGeometry );
+        // Marched sky at full strength; the fill only by Fresnel, so steep views keep showing the lake bed
+        float coverage = max( saturate( lerp( schlickFresnel, 1.0f, skyMarchWeight ) * skyWeight ), stableGeometry );
         float ssrBlend = saturate( coverage * ssrFresnel * ssrStrength * 0.86f * lerp( 0.93f, 1.08f, night ) * rainVisibility * reflectionSuppress );
         float3 ssrResult = lerp( color, sceneReflection, ssrBlend * shore.x );
 
@@ -478,6 +484,9 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
         float3 volume = scene * transmittance + scatter * ( 1.0f - transmittance );
         volume = lerp( scatter, volume, saturate( refractedValid + cameraBelow ) );
         volume = lerp( sceneClean, volume, shore.y );
+        // The material texture over the body, as legacy water does; dimmed toward the scene at night like there
+        float3 oceanTexture = WaterScatterGround( px.worldPos, diffuse ) * lerp( 1.0f, saturate( sceneClean * 1.10f + 0.34f ), night );
+        volume = lerp( volume, oceanTexture, saturate( fr.oceanTexture ) * 0.365f * shore.y * topSide );
         // From below: sky through the surface stays clear, geometry above water only partly tinted
         volume = lerp( volume, scene, cameraBelow * ( 1.0f - refractedValid ) );
         volume = lerp( volume, lerp( scene, volume, 0.32f ), cameraBelow * refractedValid );

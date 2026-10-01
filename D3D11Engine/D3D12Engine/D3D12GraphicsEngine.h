@@ -437,7 +437,7 @@ private:
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
-    void MoveToNextFrame();           // signal current frame's fence, advance, wait for next allocator
+    void MoveToNextFrame( UINT64 currentFenceValue, uint64_t submittedOrdinal );   // advance, wait for next allocator
 
     /** CPU-blocks on m_Fence reaching `value`, but bounded + diagnosed instead of WaitForSingleObject(INFINITE).
         A direct-queue Signal that never *executes* (the queue is stuck on the copy-fence cross-queue Wait, or
@@ -1132,7 +1132,17 @@ private:
     // frame allocator (no allocator Reset, no GPU wait) so a batch of independently-recorded lists can be
     // slotted into the queue at this exact point in the frame — or simply so the GPU can start on what is
     // already recorded instead of idling until Present.
-    void SubmitRecordedCommandsAndReopen();
+    // `after` lists execute in the same call, right behind m_CmdList.
+    void SubmitRecordedCommandsAndReopen( Rhi::CommandList* const* after = nullptr, UINT afterCount = 0 );
+    // Persistently-mapped ring the GPU reads several times per frame: GPU_UPLOAD when UseGpuUploadRings is on and
+    // supported, else UPLOAD. The CPU may only write it, in whole sequential memcpys; never read it back.
+    HRESULT CreateGpuReadRing( const D3D12_RESOURCE_DESC& desc, Microsoft::WRL::ComPtr<Rhi::Resource>& out );
+    // True once the GPU finished every earlier frame, i.e. what this frame submitted is all it has left.
+    bool GpuCaughtUp() const;
+    // Submits the scene so far when the GPU would otherwise run dry, then restores the scene RT/viewport.
+    bool FlushSceneIfGpuCaughtUp();
+    // Set before FinishShadowPasses: m_CmdList's pending work goes out in the same call as the shadow lists.
+    bool m_SubmitMainWithShadows = false;
 
     // ---- The deferred shadow driver, called from OnStartWorldRendering (see D3D12Scene.cpp for the rationale).
     // The three shadow passes write resources nothing else touches until the LIT passes, so their command
@@ -1762,6 +1772,15 @@ private:
 
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
+
+    // 4x1 R32_FLOAT average on-screen sky (rgb, valid) for water pixels whose sky march misses
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_WaterSkyAverage;
+    UINT m_WaterSkyAverageSrvSlot = UINT_MAX;
+    UINT m_WaterSkyAverageUavSlot = UINT_MAX;
+    D3D12_RESOURCE_STATES m_WaterSkyAverageState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    bool m_WaterSkyAverageHistoryValid = false;   // false until a dispatch has reset the undefined contents
+    bool CreateWaterSkyAverage();             // one-time, non-fatal
+    bool UpdateWaterSkyAverage( UINT sceneSrvSlot, UINT depthSrvSlot );
 
     // ---- Opaque-surface SSR temporal history (D3D12Ssr.cpp) ----
     // Reflecting on-screen OPAQUE geometry from inside the Forward+ lit pass has a chicken-and-egg problem:

@@ -60,7 +60,8 @@ cbuffer WaterCB : register(b2)
 
     uint   LowCloudIndex;        // premultiplied low cloud layer (0xFFFFFFFF = none)
     float  SkyReflection;        // 1 = march the reflected sky in screen space
-    uint2  WaterCBPad;
+    uint   SkyAverageIndex;      // 4x1 average on-screen sky, linear (0xFFFFFFFF = none)
+    float  OceanTexture;         // 0 = pure water body, 1 = legacy-strength texture blend
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -317,6 +318,14 @@ float4 WaterLowClouds( float2 uv )   // stored in gamma space like the shading h
     return clouds.SampleLevel( smpClamp, uv, 0 );
 }
 
+float4 WaterSkyAverage()
+{
+    if ( SkyAverageIndex == 0xFFFFFFFFu ) return float4( 0.0f, 0.0f, 0.0f, 0.0f );
+    Texture2D<float> avg = ResourceDescriptorHeap[SkyAverageIndex];
+    float3 c = float3( avg.Load( int3( 0, 0, 0 ) ), avg.Load( int3( 1, 0, 0 ) ), avg.Load( int3( 2, 0, 0 ) ) );
+    return float4( WaterToGamma( c ), avg.Load( int3( 3, 0, 0 ) ) );
+}
+
 float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out float hitDistance )
 {
     return WaterToGamma( TraceWaterSSR( worldPos, dir, confidence, hitDistance ) );
@@ -346,6 +355,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     fr.oceanClimate = OceanClimate;
     fr.oceanTint = OceanTint;
     fr.oceanTintStrength = OceanTintStrength;
+    fr.oceanTexture = OceanTexture;
     fr.moonDir = MoonDir;
     fr.moonGlint = MoonGlint;
     fr.moonDisc = MoonDisc;

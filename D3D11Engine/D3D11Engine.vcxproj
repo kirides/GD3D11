@@ -1273,79 +1273,94 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
     <ClCompile Include="include\imgui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="include\imgui\imgui_widgets.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D11GraphicsEngine.cpp" />
     <ClCompile Include="include\imgui\imgui_draw.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="GothicAPI.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Scene.cpp" />
     <ClCompile Include="include\imgui\imgui_tables.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
     <ClCompile Include="Detours\disasm.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp" />
     <ClCompile Include="ImGuiShim.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="WorldConverter.cpp" />
     <ClCompile Include="include\meshoptimizer\src\simplifier.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Detours\detours.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12ShadowMap.cpp" />
     <ClCompile Include="VulkanEngine\VulkanRhiCommandList.cpp" />
     <ClCompile Include="D3D11ShadowMap.cpp" />
     <ClCompile Include="Detours\image.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="VulkanEngine\VulkanRhiDevice.cpp" />
     <ClCompile Include="Detours\creatwth.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12PointShadows.cpp" />
     <ClCompile Include="vendor\mikktspace.c">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="StackWalker.cpp" />
     <ClCompile Include="VulkanEngine\VulkanDevice.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="include\imgui\backends\imgui_impl_dx12.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="ImGuiEditorView.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Rain.cpp" />
     <ClCompile Include="include\ImGuizmo\src\GraphEditor.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Rhi.cpp" />
     <ClCompile Include="D3D12Engine\D3D12PostFX.cpp" />
@@ -1357,13 +1372,15 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D7\MyDirectDrawSurface7.cpp" />
     <ClCompile Include="ShaderRegistry.cpp" />
     <ClCompile Include="Detours\modules.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="zBinkPlayer.cpp" />
     <ClCompile Include="GSky.cpp" />
@@ -1371,7 +1388,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12Transparency.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
     <ClCompile Include="D3D11Effect.cpp" />
@@ -1396,7 +1414,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="UIRenderer2D.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Taa.cpp" />
@@ -1414,7 +1433,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="MorphGpu.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImCurveEdit.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Toolbox.cpp" />
     <ClCompile Include="MeshModifier.cpp" />
@@ -1423,7 +1443,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="InventoryRenderer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12MorphFold.cpp" />
     <ClCompile Include="BaseGraphicsEngine.cpp" />
@@ -1437,7 +1458,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12VobArena.cpp" />
     <ClCompile Include="include\meshoptimizer\src\overdrawoptimizer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12RenderGraph.cpp" />
     <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
@@ -1483,13 +1505,15 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12RenderTarget.cpp" />
     <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="RenderGraph.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImGradient.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D11IGDEXT.cpp" />
     <ClCompile Include="TransparencyQueue.cpp" />
@@ -1529,12 +1553,14 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12TexturePool.cpp" />
     <ClCompile Include="include\meshoptimizer\src\quantization.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12PooledDescriptorHeap.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
@@ -1542,7 +1568,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GSpriteCloud.cpp" />
     <ClCompile Include="include\tracy\public\TracyClient.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
     <ClCompile Include="D3D11RenderQueue.cpp" />
@@ -1551,7 +1578,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GraphicsEventRecord.cpp" />
     <ClCompile Include="include\meshoptimizer\src\allocator.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D11GodRayEffect.cpp" />
     <ClCompile Include="VulkanEngine\VulkanMemAlloc.cpp" />
@@ -1561,23 +1589,28 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="Detours\disolarm64.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Detours\disolia64.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Detours\disolarm.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Detours\disolx64.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Detours\disolx86.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <ForcedIncludeFiles></ForcedIncludeFiles>
+      <ForcedIncludeFiles>
+      </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="GraphicsShader.cpp" />
     <ClCompile Include="RenderPass.cpp" />

@@ -192,6 +192,11 @@ namespace Rhi {
         virtual void ExecuteCommandLists( UINT count, CommandList* const* lists ) = 0;
         virtual HRESULT Signal( Fence* fence, UINT64 value ) = 0;
         virtual HRESULT Wait( Fence* fence, UINT64 value ) = 0;
+        /** ExecuteCommandLists followed by Signal; Vulkan folds both into one submit. */
+        virtual HRESULT ExecuteCommandListsAndSignal( UINT count, CommandList* const* lists, Fence* fence, UINT64 value ) {
+            ExecuteCommandLists( count, lists );
+            return Signal( fence, value );
+        }
     };
 
     struct SwapchainDesc {

@@ -2305,6 +2305,30 @@ bool D3D12PipelineState::CreateLumAdapt() {
     return true;
 }
 
+bool D3D12PipelineState::CreateWaterSkyAverage() {
+    Rhi::Device* device = m_Device;
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "WaterSkyAverage" );
+    rs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 WaterSkyAverageCB
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    WaterSkyAverage.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "WaterSkyAverage.hlsl", "CSMain", Shadermodel_CS, WaterSkyAverage.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { WaterSkyAverage.CsBlob.Get(), "WaterSkyAverage.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    Rhi::ComputePipelineStateDesc pso = {};
+    pso.pRootSignature = WaterSkyAverage.RootSig.Get();
+    pso.CS = { WaterSkyAverage.CsBlob->GetBufferPointer(), WaterSkyAverage.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, WaterSkyAverage.PSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (water sky average)." );
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateWater() {
     Rhi::Device* device = m_Device;
 

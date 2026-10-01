@@ -1041,6 +1041,15 @@
     <ClInclude Include="MeshOptimizeCache.h" />
     <ClInclude Include="SqliteBlobStore.h" />
     <ClInclude Include="widenarrow.h" />
+    <ClInclude Include="PointShadow\IPointShadowTechnique.h" />
+    <ClInclude Include="PointShadow\LegacyCubeTechnique.h" />
+    <ClInclude Include="PointShadow\PointShadowCasters.h" />
+    <ClInclude Include="PointShadow\PointShadowPolicy.h" />
+    <ClInclude Include="PointShadow\SkeletalCubeCasters.h" />
+    <ClInclude Include="PointShadow\PointShadowBatch.h" />
+    <ClInclude Include="PointShadow\TiledCubeArrayTechnique.h" />
+    <ClInclude Include="LightingResourceLog.h" />
+    <ClInclude Include="PointLightSlotSelector.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1562,6 +1571,13 @@
     <ClCompile Include="include\meshoptimizer\src\simplifier.cpp" />
     <ClCompile Include="MorphGpu.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
+    <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
+    <ClCompile Include="PointLightSlotSelector.cpp" />
+    <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />
+    <ClCompile Include="PointShadow\TiledCubeArrayTechnique.cpp" />
+    <ClCompile Include="PointShadow\SkeletalCubeCasters.cpp" />
+    <ClCompile Include="PointShadow\PointShadowCasters.cpp" />
+    <ClCompile Include="PointShadow\PointShadowPolicy.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

@@ -34,6 +34,8 @@ cbuffer WaterParams : register( b3 )
 	float WP_IsOcean;           // per texture batch: NW_WATER_LAKE*
 	float WP_MoonDisc;          // visibility of the moon disc in the sky
 	float WP_SkyReflection;     // 1 = march the reflected sky in screen space
+	float WP_OceanTexture;      // 0 = pure water body, 1 = legacy-strength texture blend
+	float3 WP_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -49,6 +51,7 @@ Texture2D	TX_Distortion : register( t4 );
 Texture2D	TX_Scene : register( t5 );
 Texture2D	TX_WaterSurfaceDepth : register( t6 ); // live depth after the water prepass, for shore probes
 Texture2D	TX_LowClouds : register( t7 );         // premultiplied low cloud layer; unbound = no clouds
+Texture2D<float> TX_SkyAverage : register( t8 );   // 4x1 average on-screen sky (rgb, valid); unbound = none
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -241,6 +244,11 @@ float3 WaterDiffuse( float2 uv ) { return TX_Diffuse.Sample( SS_Linear, uv ).rgb
 float3 WaterCube( float3 dir ) { return TX_ReflectionCube.Sample( SS_Linear, dir ).xyz; }
 float3 WaterScatterGround( float3 worldPos, float3 color ) { return ApplyAtmosphericScatteringGround( worldPos, color ); }
 float4 WaterLowClouds( float2 uv ) { return TX_LowClouds.SampleLevel( SS_Linear, uv, 0 ); }
+float4 WaterSkyAverage()
+{
+	return float4( TX_SkyAverage.Load( int3( 0, 0, 0 ) ), TX_SkyAverage.Load( int3( 1, 0, 0 ) ),
+	               TX_SkyAverage.Load( int3( 2, 0, 0 ) ), TX_SkyAverage.Load( int3( 3, 0, 0 ) ) );
+}
 
 bool WaterSSREnabled()
 {
@@ -286,6 +294,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	fr.oceanClimate = WP_OceanClimate;
 	fr.oceanTint = WP_OceanTint;
 	fr.oceanTintStrength = WP_OceanTintStrength;
+	fr.oceanTexture = WP_OceanTexture;
 	fr.moonDir = WP_MoonDir;
 	fr.moonGlint = WP_MoonGlint;
 	fr.moonDisc = WP_MoonDisc;

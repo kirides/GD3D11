@@ -618,7 +618,12 @@ public:
     /** Reflection */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
     ID3D11ShaderResourceView* WaterLowCloudSRV = nullptr;   // this frame's low cloud layer while water draws
+    // 4x1 R32_FLOAT average on-screen sky (rgb, valid), PS_Water t8
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> WaterSkyAverageTex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> WaterSkyAverageSRV;
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> WaterSkyAverageUAV;
 private:
+    bool UpdateWaterSkyAverage( ID3D11ShaderResourceView* sceneCopy );
     bool PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals );
     void UnbindWindMetadata();
 

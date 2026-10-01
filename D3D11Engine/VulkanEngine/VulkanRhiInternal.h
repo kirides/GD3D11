@@ -23,6 +23,7 @@ namespace VulkanRhi {
 
     class DeviceImpl;
     class ResourceImpl;
+    class QueueImpl;
 
     // ---- Formats (VulkanRhiFormats.cpp) ---------------------------------------------------------
 
@@ -312,7 +313,9 @@ namespace VulkanRhi {
         void SetName( LPCWSTR name ) override;
 
         /** Next internal point for a queue signal of `value`. Caller holds the queue lock. */
-        uint64_t PrepareSignal( UINT64 value );
+        uint64_t PrepareSignal( UINT64 value, const QueueImpl* queue );
+        /** True while every signal so far came from `queue`, whose own submits are already ordered after them. */
+        bool OnlySignalledBy( const QueueImpl* queue ) const;
         /** Internal point a GPU wait for `value` must reach; 0 = never signalled. A retired value still returns
             its point, so the wait keeps its memory dependency. */
         uint64_t InternalPointFor( UINT64 value ) const;
@@ -324,6 +327,8 @@ namespace VulkanRhi {
         mutable UINT64 m_Completed = 0;
         mutable uint64_t m_CompletedPoint = 0;   // internal point of the last retired signal
         uint64_t m_NextInternal = 0;
+        const QueueImpl* m_SignalQueue = nullptr;   // guarded by m_Mutex
+        bool m_MultiQueue = false;
 
     private:
         void Poll() const;   // caller holds m_Mutex
@@ -383,6 +388,7 @@ namespace VulkanRhi {
         ~QueueImpl() override;
         bool Init();
         void ExecuteCommandLists( UINT count, Rhi::CommandList* const* lists ) override;
+        HRESULT ExecuteCommandListsAndSignal( UINT count, Rhi::CommandList* const* lists, Rhi::Fence* fence, UINT64 value ) override;
         HRESULT Signal( Rhi::Fence* fence, UINT64 value ) override;
         HRESULT Wait( Rhi::Fence* fence, UINT64 value ) override;
         void SetName( LPCWSTR name ) override;
@@ -431,16 +437,22 @@ namespace VulkanRhi {
         void Add( const FenceImpl* fence, UINT64 value, HANDLE event );
         /** Drops a dying fence's entries and waits out an in-flight wait on it. */
         void Remove( const FenceImpl* fence );
+        /** A fence got a new signal; wakes the thread if an entry was still waiting for one to exist. */
+        void NoteSignalQueued();
 
     private:
         struct Entry { const FenceImpl* Fence; UINT64 Value; HANDLE Event; int64_t Registered; };
         void Run();
+        void WakeLocked();   // interrupts the thread's vkWaitSemaphores; caller holds m_Mutex
         VkDevice m_Device = VK_NULL_HANDLE;
         std::mutex m_Mutex;
         std::condition_variable m_Cv;
         std::vector<Entry> m_Entries;
         std::thread m_Thread;
-        const FenceImpl* m_WaitingOn = nullptr;
+        VkSemaphore m_Wake = VK_NULL_HANDLE;   // host-signalled timeline, part of every wait
+        uint64_t m_WakeValue = 0;
+        std::atomic<bool> m_AwaitingSignal{ false };   // an entry's value has no queued signal yet
+        bool m_Waiting = false;
         bool m_Quit = false;
     };
 
