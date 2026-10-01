@@ -164,6 +164,8 @@ float3 AC_ScatterSkyShell( float3 vPos, float mieG )
 
     float fFar = length( vRay );
     vRay /= fFar;
+	
+	if ( vRay.y < -0.26f ) return 0.0f; // out of visible range, likely.
 
     // Calculate the ray's starting position, then calculate its scattering offset
     float3 vStart = camPos;
@@ -207,6 +209,13 @@ float3 AC_ScatterSkyShell( float3 vPos, float mieG )
     float fCos2 = fCos * fCos;
 
     return AC_getRayleighPhase( fCos2 ) * c0 + AC_getMiePhase( fCos, fCos2, mieG, mieG * mieG ) * c1 * 2.0f;
+}
+
+// 1 above the horizon, 0 below about -15 deg; the dome's lower half only shows through holes in the world.
+float AC_SkyHorizonFade( float3 worldPosition )
+{
+    float3 dir = normalize( worldPosition - AC_SpherePosition - AC_CameraPos );
+    return smoothstep( -0.26f, -0.035f, dir.y );
 }
 
 float3 ApplyAtmosphericScatteringSky( float3 worldPosition )

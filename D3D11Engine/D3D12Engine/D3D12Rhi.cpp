@@ -82,8 +82,9 @@ namespace {
 
     class CommandListImpl final : public Rhi::CommandList {
     public:
-        CommandListImpl( ComPtr<ID3D12GraphicsCommandList> list, bool enhancedBarriers ) : m_List( std::move( list ) ) {
+        CommandListImpl( ComPtr<ID3D12GraphicsCommandList> list, bool enhancedBarriers, bool rayQuery ) : m_List( std::move( list ) ) {
             if ( enhancedBarriers ) m_List.As( &m_List7 );   // stays null on a runtime without the interface
+            if ( rayQuery ) m_List.As( &m_List4 );
         }
 
         HRESULT Close() override { return m_List->Close(); }
@@ -201,8 +202,39 @@ namespace {
         }
         void EndEvent() override { EndDXMarker( m_List.Get() ); }
 
+        void BuildRaytracingAccelerationStructure( const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& desc,
+            UINT numPostbuildInfo, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* postbuildInfo ) override {
+            if ( m_List4 ) m_List4->BuildRaytracingAccelerationStructure( &desc, numPostbuildInfo, postbuildInfo );
+        }
+        void CopyRaytracingAccelerationStructure( D3D12_GPU_VIRTUAL_ADDRESS dst, D3D12_GPU_VIRTUAL_ADDRESS src,
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE mode ) override {
+            if ( m_List4 ) m_List4->CopyRaytracingAccelerationStructure( dst, src, mode );
+        }
+        void AccelerationStructureBarrier() override {
+            if ( m_List7 ) {
+                // Builds and copies write through AS_WRITE; the next build or ray query reads through AS_READ.
+                D3D12_GLOBAL_BARRIER barrier = {};
+                barrier.SyncBefore = D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE
+                    | D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE;
+                barrier.SyncAfter = D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE
+                    | D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+                barrier.AccessBefore = D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_WRITE;
+                barrier.AccessAfter = D3D12_BARRIER_ACCESS_RAYTRACING_ACCELERATION_STRUCTURE_READ;
+                D3D12_BARRIER_GROUP group = {};
+                group.Type = D3D12_BARRIER_TYPE_GLOBAL;
+                group.NumBarriers = 1;
+                group.pGlobalBarriers = &barrier;
+                m_List7->Barrier( 1, &group );
+                return;
+            }
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            m_List->ResourceBarrier( 1, &barrier );
+        }
+
         ComPtr<ID3D12GraphicsCommandList> m_List;
         ComPtr<ID3D12GraphicsCommandList7> m_List7;   // non-null only with enhanced barriers
+        ComPtr<ID3D12GraphicsCommandList4> m_List4;   // non-null only with ray queries
     };
 
     // ---- Queue ----------------------------------------------------------------------------------
@@ -476,6 +508,14 @@ namespace {
                 factory5->CheckFeatureSupport( DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof( tearing ) );
             m_Caps.TearingSupported = tearing == TRUE;
             if ( m_Caps.EnhancedBarriers ) d->QueryInterface( IID_PPV_ARGS( m_Device10.GetAddressOf() ) );
+            D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+            if ( SUCCEEDED( d->CheckFeatureSupport( D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof( options5 ) ) )
+                && options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1
+                && SUCCEEDED( d->QueryInterface( IID_PPV_ARGS( m_Device5.GetAddressOf() ) ) ) ) {
+                m_Caps.RayQuery = true;
+            }
+            Logging::Inf( "D3D12: inline ray queries {} (raytracing tier 0x{:x}).", m_Caps.RayQuery ? "available" : "unavailable",
+                static_cast<uint32_t>( options5.RaytracingTier ) );
             return true;
         }
 
@@ -551,6 +591,11 @@ namespace {
         void GetCopyableFootprints( const D3D12_RESOURCE_DESC* desc, UINT first, UINT num, UINT64 baseOffset,
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT* layouts, UINT* numRows, UINT64* rowSizes, UINT64* totalBytes ) const override {
             Native()->GetCopyableFootprints( desc, first, num, baseOffset, layouts, numRows, rowSizes, totalBytes );
+        }
+        void GetRaytracingAccelerationStructurePrebuildInfo( const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& inputs,
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO& info ) const override {
+            info = {};
+            if ( m_Device5 ) m_Device5->GetRaytracingAccelerationStructurePrebuildInfo( &inputs, &info );
         }
 
         HRESULT CreateDescriptorHeap( const D3D12_DESCRIPTOR_HEAP_DESC* desc, Rhi::DescriptorHeap** outHeap ) override {
@@ -662,7 +707,7 @@ namespace {
             ComPtr<ID3D12GraphicsCommandList> list;
             const HRESULT hr = Native()->CreateCommandList( 0, type, D3D12Rhi::Native( allocator ), D3D12Rhi::Native( initialState ),
                 IID_PPV_ARGS( list.GetAddressOf() ) );
-            if ( SUCCEEDED( hr ) ) *outList = new CommandListImpl( std::move( list ), m_Caps.EnhancedBarriers );
+            if ( SUCCEEDED( hr ) ) *outList = new CommandListImpl( std::move( list ), m_Caps.EnhancedBarriers, m_Caps.RayQuery );
             return hr;
         }
         HRESULT CreateFence( UINT64 initialValue, Rhi::Fence** outFence ) override {
@@ -700,6 +745,7 @@ namespace {
         D3D12Device m_D3D;
         ComPtr<D3D12MA::Allocator> m_Allocator;
         ComPtr<ID3D12Device10> m_Device10;   // CreatePlacedResource2; null without enhanced barriers
+        ComPtr<ID3D12Device5> m_Device5;     // acceleration-structure prebuild info; null without ray queries
         ComPtr<Rhi::CommandQueue> m_DirectQueue;
         ComPtr<Rhi::CommandQueue> m_CopyQueue;
         Rhi::Caps m_Caps;

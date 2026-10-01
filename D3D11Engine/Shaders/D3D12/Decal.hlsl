@@ -86,20 +86,20 @@ VS_OUT VSMain( VS_IN i )
 
 // Shared by both entry points: the Forward+ evaluation at the decal's surface. `svpos` is SV_Position.xyz,
 // which AccumTiledPointLights needs to find the light cluster (xy = screen tile, z = hardware depth -> Z slice).
-float3 ShadeDecal( float3 albedo, float3 wpos, float3 nrm, float3 svpos )
+float3 ShadeDecal( float3 albedo, float3 wpos, float3 nrm, float3 svpos, uint2 rtMask )
 {
     float3 N = normalize( nrm );
     // Double-sided: shade the face actually turned toward the camera, else a wall decal seen from its "back"
     // side (or any camera-aligned quad whose +Z ended up pointing away) shades as if it faced into the wall.
     if ( dot( N, normalize( CamPosWS - wpos ) ) < 0.0 ) N = -N;
 
-    float shadow = ComputeSunShadow( wpos, N, 1.0 );
+    float shadow = ComputeSunShadow( rtMask, wpos, N, 1.0 );
     float ssao   = SampleScreenSpaceAO( svpos.xy );
     // vertLighting = 1: decals carry no Gothic vertex/ground light, and 1.0 is the neutral value for the two
     // AO terms it feeds inside ComputeSunLightingPBR (lerp(1, vertLighting, strength) == 1).
     float3 rgb = ComputeSunLightingPBR( wpos, N, albedo, 1.0, shadow,
                                         kDecalRoughness, kDecalMetallic, kDecalAO, ssao );
-    rgb += AccumTiledPointLights( svpos, wpos, N, albedo, kDecalRoughness, kDecalMetallic );
+    rgb += AccumTiledPointLights( svpos, wpos, N, albedo, kDecalRoughness, kDecalMetallic, rtMask );
     return rgb;
 }
 
@@ -107,7 +107,8 @@ float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully 
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    float3 rgb = ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xyz );
+    // Opaque decals lie on the prepass surface, so its ray-traced mask applies
+    float3 rgb = ShadeDecal( SrgbToLinear( t.rgb ), i.wpos, i.wnrm, i.clip.xyz, LoadRtShadowMask( i.clip.xy ) );
     // Distance fog, like every other opaque surface (D3D11 draws this pass with PS_World_NoMV, which fogs).
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -127,6 +128,6 @@ float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend stat
     // Same split Fx.hlsl makes for the quad marks, which carry the identical blend modes.
     // Deliberately NOT fogged: this one PS is shared by all the blend modes, where lerping toward the fog
     // colour would brighten (ADD) or darken (MUL) the surface instead of fading it into the distance.
-    float3 rgb = ( i.lit != 0.0 ) ? ShadeDecal( albedo, i.wpos, i.wnrm, i.clip.xyz ) : albedo;
+    float3 rgb = ( i.lit != 0.0 ) ? ShadeDecal( albedo, i.wpos, i.wnrm, i.clip.xyz, uint2( 0, 0 ) ) : albedo;
     return float4( rgb, t.a * i.alpha );
 }

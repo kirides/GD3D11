@@ -141,7 +141,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
-    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
+    uint2 rtMask = LoadRtShadowMask( i.clip.xy );
+    float shadow = ComputeSunShadow( rtMask, i.wpos, geomN, vertLighting );
     // Scene wetness (rain), after the cascade lookup like D3D11. Perturbs N/albedo/roughness in place.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
@@ -150,7 +151,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
                                         BacklitClassOf( MatOrmIndex ) );
     rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);   // D3D11 dims the SUN light color 20% where the surface is wet
     rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask );
     // Opaque-surface SSR (temporal, D3D12 only) — additive, physically-weighted reflection sheen; 0
     // confidence on any miss reproduces today's output exactly. The weight MUST be PBR_FresnelSchlick, not
     // an ad hoc curve — see PBRLighting.hlsl's EvaluateOpaqueSSR header comment for why (a stronger weight

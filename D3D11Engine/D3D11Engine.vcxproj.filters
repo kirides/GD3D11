@@ -849,6 +849,9 @@
     <ClInclude Include="D3D12Engine\D3D12MeshArena.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12RayTracing.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1180,6 +1183,9 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Skinning.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12RayTracing.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">

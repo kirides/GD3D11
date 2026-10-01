@@ -31,6 +31,16 @@
 
 // Rain wet surface and water-film lobes (WetSurface, WetCoatSpecular), shared with the D3D11 deferred passes.
 #include "../../include/RainWetnessSample.h"
+#include "RtShadowMask.hlsl"
+
+// This pixel's ray-traced shadow mask; 0 (nothing traced) when the pass doesn't read one. Only passes whose surface
+// is the depth prepass' surface may call this: the mask belongs to that surface.
+uint2 LoadRtShadowMask( float2 svposXY )
+{
+    [branch] if ( RtShadowMaskIndex == 0u ) return uint2( 0, 0 );
+    Texture2D<uint2> mask = ResourceDescriptorHeap[RtShadowMaskIndex - 1u];
+    return mask.Load( int3( svposXY, 0 ) );
+}
 
 // De-lights diffuse textures by lifting baked shadows and softening baked highlights
 float3 DelightDiffuse( float3 linearAlbedo )
@@ -229,6 +239,15 @@ float ComputeSunShadow( float3 wpos, float3 N, float vertLighting )
         }
     }
     return vertLighting;   // outside all cascades → fall back to baked light (see the header note)
+}
+
+// ComputeSunShadow with the ray-traced sun where the mask has it, cross-faded into the CSM at its edge
+float ComputeSunShadow( uint2 rtMask, float3 wpos, float3 N, float vertLighting )
+{
+    float weight = ( rtMask.x & kRtMaskTraced ) != 0u ? RtMaskSunWeight( rtMask ) : 0.0;
+    [branch] if ( weight >= 1.0 ) return RtMaskSunVisibility( rtMask );
+    float csm = ComputeSunShadow( wpos, N, vertLighting );
+    return weight > 0.0 ? lerp( csm, RtMaskSunVisibility( rtMask ), weight ) : csm;
 }
 
 // The bindless ORM SRV index (MatOrmIndex, b6) packs the FxMap's channel layout into its top 2 bits — see
@@ -657,15 +676,18 @@ float WetBaseSpecularScale( WetSurface wet )
 }
 
 // Applies one light's contribution (direct BRDF + its shadow, if any) and folds it into `total`/`maxLit`.
+// rtVisibility >= 0 is the light's ray-traced visibility and replaces the cube lookup; rangeScale shrinks a
+// ray-traced light that has none, as the CPU clamps an unshadowed one.
 void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 albedo, float roughness,
-                       float metallic, WetSurface wet, inout float3 total, inout float3 maxLit )
+                       float metallic, WetSurface wet, float rtVisibility, float rangeScale, inout float3 total, inout float3 maxLit )
 {
     GPULight L = Lights[lightIndex];
     float3 dir = L.PositionWorld - wpos;
     float dist = length( dir );
-    if ( dist >= L.Range ) return;
+    float range = L.Range * rangeScale;
+    if ( dist >= range ) return;
     dir /= dist;
-    float nd  = saturate( 1.0 - dist / L.Range );
+    float nd  = saturate( 1.0 - dist / range );
     float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
     // Color.w = PointLightSpecularScale: static "atmospheric" fill lights get no material highlight (phantom lamps).
     float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff, L.Color.w * WetBaseSpecularScale( wet ) );
@@ -674,8 +696,14 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
     if ( wet.wetness > 0.0 && WetLightReflections > 0.0 && L.WetCoatScale > 0.0 )
         lit += L.Color.rgb * WetCoatRolloff( WetCoatSpecular( wet.coatN, V, dir, dist, wet.roughness )
             * falloff * wet.wetness * L.WetCoatScale * WetLightReflections );
-    // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
     [branch]
+    if ( rtVisibility >= 0.0 )
+    {
+        float fade = saturate( ( length( L.PositionView ) - L.Range * 6.0 ) / ( L.Range * 3.0 ) );   // as the cube's
+        lit *= lerp( rtVisibility, 1.0, fade );
+    }
+    // [branch]: guards a real cube-shadow sample, so force a branch instead of flattening.
+    else [branch]
     if ( L.ShadowCubeIndex != 0 )
     {
         // ShadowOrigin/ShadowRange, not PositionWorld/Range: a clustered static light samples a cube
@@ -698,7 +726,8 @@ void ApplyTiledLight( uint lightIndex, float3 wpos, float3 N, float3 V, float3 a
 // Cook-Torrance BRDF per light, additive. Bit-scanning a fixed-width mask (rather than looping an
 // {Offset,Count} index slice) can never spin away on a garbage grid entry — the loop bound is the popcount of
 // the mask, not an unclamped Count. Most words are 0 for a typical cluster, so the per-word while() is cheap.
-float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, WetSurface wet )
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, WetSurface wet,
+                              uint2 rtMask )
 {
     uint2 tile = uint2( svpos.xy ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
@@ -709,6 +738,10 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     float3 maxLit = 0;
+    // Ray-traced lights find their slot by this walk's order (RtShadowMask.hlsl); another slice is another walk
+    const bool rtPoints = ( rtMask.x & kRtMaskTraced ) != 0u && RtMaskSlice( rtMask ) == slice;
+    int rtGroup = -1;
+    int rtGroupId = -1;
     // Walk only the mask words WordOccupancy flags as non-empty (see ForwardPlusTypes.hlsl). An empty cluster —
     // the common case — is now one load instead of 32, and since the light list is sorted nearest-first the set
     // bits bunch into the low words, so even a lit cluster usually touches 1-2. The loop bound is still a
@@ -723,7 +756,22 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
         {
             uint bit = firstbitlow( m );
             m &= m - 1;   // clear the lowest set bit
-            ApplyTiledLight( w * 32u + bit, wpos, N, V, albedo, roughness, metallic, wet, total, maxLit );
+            const uint lightIndex = w * 32u + bit;
+            float rtVisibility = -1.0;
+            float rangeScale = 1.0;
+            const uint rtLightMask = (uint)Lights[lightIndex].RtShadowMask;
+            [branch] if ( rtLightMask != 0u )
+            {
+                const int id = Lights[lightIndex].RtGroup;
+                if ( id != rtGroupId )
+                {
+                    ++rtGroup;
+                    rtGroupId = id;
+                }
+                if ( rtPoints && rtGroup < (int)kRtMaxPointLights ) rtVisibility = RtMaskPointVisibility( rtMask, (uint)rtGroup );
+                else rangeScale = Lights[lightIndex].RtFallbackRange;   // no mask or past the cap: keep it out of the next room
+            }
+            ApplyTiledLight( lightIndex, wpos, N, V, albedo, roughness, metallic, wet, rtVisibility, rangeScale, total, maxLit );
         }
     }
     // LimitLightIntensity: swap "sum of every light" for "brightest single light" (mirrors D3D11's
@@ -732,11 +780,21 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     return LimitLightIntensity != 0 ? maxLit : total;
 }
 
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, WetSurface wet )
+{
+    return AccumTiledPointLights( svpos, wpos, N, albedo, roughness, metallic, wet, uint2( 0, 0 ) );
+}
+
 // Dry surfaces (vegetation, decals, alpha-blended VOBs).
-float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic, uint2 rtMask )
 {
     WetSurface dry = (WetSurface)0;
-    return AccumTiledPointLights( svpos, wpos, N, albedo, roughness, metallic, dry );
+    return AccumTiledPointLights( svpos, wpos, N, albedo, roughness, metallic, dry, rtMask );
+}
+
+float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
+{
+    return AccumTiledPointLights( svpos, wpos, N, albedo, roughness, metallic, uint2( 0, 0 ) );
 }
 
 // --- Opaque-surface screen-space reflections (TEMPORAL) ------------------------------------------------

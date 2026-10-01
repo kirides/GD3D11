@@ -78,8 +78,9 @@ public:
     void BuildCandidates();
 
     /** Decides this frame's cubes and writes each light's ShadowCubeIndex back into the GPU light buffer.
-        `keys[i]` is the ownership identity of light i - its own vob, or the cluster it was redirected onto. */
-    void SelectShadowedLights( GPULight* lights, UINT count, const std::vector<uint64_t>& keys );
+        `keys[i]` is the ownership identity of light i - its own vob, or the cluster it was redirected onto.
+        `noCubes` releases every slot, as point shadows off does (ray-traced point shadows replace the cubes). */
+    void SelectShadowedLights( GPULight* lights, UINT count, const std::vector<uint64_t>& keys, bool noCubes );
 
     void Prepare();
     void Record( D3D12CmdList& cmdList );
@@ -121,15 +122,15 @@ public:
     std::vector<FrameSkelDraw>   SkelScratch;
     std::vector<FrameAttachDraw> AttachScratch;
 
-private:
     // Self-shadow exclusion for point lights attached to a carried item/NPC — without this, e.g. a torch light
     // held in an NPC's hand casts a huge shadow blob from that NPC's own body onto itself. Mirrors D3D11's
     // GetHasOriginVob + SetupVobsToExclude/CollectVobTreeToExclude (D3D11PointLight.cpp). Populates excludeOut
     // with the light vob's ancestor chain (+ any oCVisualFX origin) and returns true when non-empty; returns
     // false (excludeOut left empty) when self-shadowing is allowed, the light isn't attached to a carried item,
     // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
-    bool BuildExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
+    static bool BuildExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
 
+private:
     D3D12GraphicsEngine* m_E = nullptr;
 
     // --- STATIC (core) cube array. Baked once per light and cached; nothing is ever composited into it, so

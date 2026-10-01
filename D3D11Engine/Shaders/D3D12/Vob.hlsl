@@ -122,7 +122,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
+    uint2 rtMask = LoadRtShadowMask( i.clip.xy );
+    float shadow = ComputeSunShadow( rtMask, i.wpos, geomN, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
@@ -131,7 +132,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
                                         BacklitClassOf( MatOrmIndex ) );
     rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);
     rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask );
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {
@@ -233,7 +234,8 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
+    uint2 rtMask = LoadRtShadowMask( i.clip.xy );
+    float shadow = ComputeSunShadow( rtMask, i.wpos, geomN, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
@@ -242,7 +244,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
                                         BacklitClassOf( MatOrmIndex ) );
     rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);
     rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask );
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {

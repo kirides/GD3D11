@@ -95,7 +95,7 @@ bool D3D12PipelineState::CreateWorld() {
     // OnStartWorldRendering, before any pass binds this root signature, and neither is touched again this
     // frame. Lets the driver hoist the per-pixel buffer load out of the light loop.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
-    // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, PointShadowReserved,
+    // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, RtShadowMaskIndex,
     //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
     rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 per-cluster LightGrid (64-bit mask)
@@ -2290,6 +2290,95 @@ bool D3D12PipelineState::CreateWaterSkyAverage() {
     return true;
 }
 
+namespace {
+    /** b0 pass CB, b1 ShadowCB, then the ray-traced scene (include/RtScene.hlsl) at t0-t12; see D3D12RayTracing::Impl::BindScene. */
+    void AddRtSceneParams( D3D12RootLayout& rs ) {
+        rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL );
+        rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_ALL );
+        rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );    // 2: t0 TLAS
+        rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL );    // 3: t1 geometry records
+        rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL );    // 4: t2 instance data
+        rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_ALL );    // 5: t3 world geometry table
+        rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_ALL );    // 6: t4 world materials
+        rs.AddSRV( 5, D3D12_SHADER_VISIBILITY_ALL );    // 7: t5 world VB
+        rs.AddSRV( 6, D3D12_SHADER_VISIBILITY_ALL );    // 8: t6 world IB
+        rs.AddSRV( 7, D3D12_SHADER_VISIBILITY_ALL );    // 9: t7 VOB arena VB
+        rs.AddSRV( 8, D3D12_SHADER_VISIBILITY_ALL );    // 10: t8 VOB arena IB
+        rs.AddSRV( 9, D3D12_SHADER_VISIBILITY_ALL );    // 11: t9 attachment arena VB
+        rs.AddSRV( 10, D3D12_SHADER_VISIBILITY_ALL );   // 12: t10 attachment arena IB
+        rs.AddSRV( 11, D3D12_SHADER_VISIBILITY_ALL );   // 13: t11 posed skinning stream
+        rs.AddSRV( 12, D3D12_SHADER_VISIBILITY_ALL );   // 14: t12 skeletal arena IB
+        rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
+    }
+}
+
+bool D3D12PipelineState::CreateRtShadows() {
+    Rhi::Device* device = m_Device;
+    if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; RtShadows.PSO stays null
+
+    // The scene, the frame's lights and light grid, the counters; the depth input and the mask UAV are bindless
+    D3D12RootLayout& rs = Layout( "RtShadows" );
+    AddRtSceneParams( rs );
+    rs.AddSRV( 13, D3D12_SHADER_VISIBILITY_ALL );   // 15: t13 lights
+    rs.AddSRV( 14, D3D12_SHADER_VISIBILITY_ALL );   // 16: t14 light grid
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );    // 17: u0 overflow counters
+    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );    // 18: u1 per-cluster slot table (filtered point lights)
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    RtShadows.RootSig = rs.RootSig();
+    RtShadowFilter.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "RtShadows.hlsl", "CSMain", Shadermodel_CS, RtShadows.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { RtShadows.CsBlob.Get(), "RtShadows.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    Rhi::ComputePipelineStateDesc pso = {};
+    pso.pRootSignature = RtShadows.RootSig.Get();
+    pso.CS = { RtShadows.CsBlob->GetBufferPointer(), RtShadows.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, RtShadows.PSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (ray-traced shadows)." );
+        return false;
+    }
+
+    // Optional: without it the "Smooth" modes trace like "Hard"
+    RtShadowFilter.PSO.Reset();
+    if ( m_Shaders->CompileFromFile( "RtShadows.hlsl", "CSFilter", Shadermodel_CS, RtShadowFilter.CsBlob.ReleaseAndGetAddressOf() ) ) {
+        rs.ValidateShaders( { { RtShadowFilter.CsBlob.Get(), "RtShadows.hlsl:CSFilter", D3D12_SHADER_VISIBILITY_ALL } } );
+        pso.CS = { RtShadowFilter.CsBlob->GetBufferPointer(), RtShadowFilter.CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, RtShadowFilter.PSO.ReleaseAndGetAddressOf() ) ) )
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (ray-traced shadow filter); smooth shadows trace hard." );
+    } else {
+        Logging::Wrn( "D3D12: RtShadows.hlsl:CSFilter failed to compile; smooth shadows trace hard." );
+    }
+    return true;
+}
+
+bool D3D12PipelineState::CreateWaterRT() {
+    Rhi::Device* device = m_Device;
+    if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; WaterRT.PSO stays null
+
+    // Root descriptors only; textures and the two output UAVs are bindless
+    D3D12RootLayout& rs = Layout( "WaterRT" );
+    AddRtSceneParams( rs );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_ALL ) );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    WaterRT.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "WaterRT.hlsl", "CSMain", Shadermodel_CS, WaterRT.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { WaterRT.CsBlob.Get(), "WaterRT.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    Rhi::ComputePipelineStateDesc pso = {};
+    pso.pRootSignature = WaterRT.RootSig.Get();
+    pso.CS = { WaterRT.CsBlob->GetBufferPointer(), WaterRT.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, WaterRT.PSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (water ray tracing)." );
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateWater() {
     Rhi::Device* device = m_Device;
 
@@ -4075,6 +4164,8 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runFatal( "Skinning", &D3D12PipelineState::CreateSkinning );
     runFatal( "PointShadow", &D3D12PipelineState::CreatePointShadow );
     runFatal( "Water", &D3D12PipelineState::CreateWater );
+    runOptional( "WaterRT", &D3D12PipelineState::CreateWaterRT );
+    runOptional( "RtShadows", &D3D12PipelineState::CreateRtShadows );
     runFatal( "Particle", &D3D12PipelineState::CreateParticle );
     Particle.Pipelines.clear();
     runFatal( "Decal", &D3D12PipelineState::CreateDecal );

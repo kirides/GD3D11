@@ -6,20 +6,9 @@
 // WaterViewToUV, WaterSceneColor, WaterDistortion, WaterDiffuse, WaterCube, WaterSSREnabled,
 // WaterTraceSSR, WaterScatterGround, WaterLowClouds and WaterSkyAverage, plus the Atmosphere constants (AC_LightPos, AC_RainFXWeight).
 
+#include "WaterWaves.hlsl"
+
 static const float3 WATER_LUMA = float3( 0.2126f, 0.7152f, 0.0722f );
-static const float3 WATER_UP = float3( 0.0f, 1.0f, 0.0f );
-
-static const float DIST_SMALL_SPEED  = -0.01f;
-static const float DIST_SMALL_AMOUNT = 0.01f;
-static const float DIST_SMALL_SCALE  = 0.3f;
-static const float DIST_BIG_SCALE    = 0.1f;
-static const float DIST_BIG_SPEED    = -0.005f;
-
-float WaterSmootherStep01( float t )
-{
-    t = saturate( t );
-    return t * t * t * ( t * ( t * 6.0f - 15.0f ) + 10.0f );
-}
 
 float WaterLuma( float3 c ) { return dot( c, WATER_LUMA ); }
 
@@ -325,9 +314,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float3 distortionSmall = WaterDistortion( worldTexCoord * DIST_SMALL_SCALE + fr.time * DIST_SMALL_SPEED ) * 2 - 1;
     distortionSmall += WaterDistortion( worldTexCoord * float2( -1, 0.7 ) * DIST_SMALL_SCALE + fr.time * DIST_SMALL_SPEED * 2 ) * 2 - 1;
     distortionSmall *= 0.5f;
-    float3 distortionBig = WaterDistortion( worldTexCoord * DIST_BIG_SCALE + fr.time * DIST_BIG_SPEED ) * 2 - 1;
-    distortionBig += WaterDistortion( worldTexCoord * float2( -1, 0.7 ) * DIST_BIG_SCALE + fr.time * DIST_BIG_SPEED * 1.2 ) * 2 - 1;
-    distortionBig *= 0.5f;
+    float3 distortionBig = WaterBigDistortion( worldTexCoord, fr.time );
 
     float2 distUV = px.screenUV + distortionSmall.xy * DIST_SMALL_AMOUNT + distortionBig.xy * DIST_SMALL_AMOUNT;
     float3 diffuse = WaterDiffuse( px.texcoord + distortionSmall.xy * DIST_SMALL_AMOUNT * 0.5f );
@@ -339,7 +326,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     depthRefracted = WaterLinearDepth( rawDepthRefracted );
     float refractedValid = step( 0.000001f, rawDepthRefracted );
 
-    float3 wavesFres = normalize( distortionBig.xzy * float3( 1, 10, 1 ) );
+    float3 wavesFres = WaterWaveNormal( distortionBig );
     float3 wavesSmall = normalize( distortionSmall.xzy * float3( 1, 10, 1 ) );
 
     float3 scene = WaterSceneColor( distUV );
@@ -367,8 +354,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     float hitConfidence = 0.0f;
     float hitDistance = 0.0f;
     float3 hitColor = float3( 0.0f, 0.0f, 0.0f );
-    float normalSmooth = 0.34f + 0.18f * WaterSmootherStep01( ( px.surfaceViewDistance - 1500.0f ) / 12000.0f );
-    float3 hitDir = reflect( viewDirection, normalize( lerp( wavesFres, WATER_UP, normalSmooth ) ) );
+    float3 hitDir = WaterGeometryReflectionDir( viewDirection, wavesFres, px.surfaceViewDistance );
     [branch] if ( ssrOn > 0.5f )
         hitColor = WaterTraceSSR( px.worldPos, hitDir, hitConfidence, hitDistance );
     hitConfidence = saturate( hitConfidence );

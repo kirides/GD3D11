@@ -329,11 +329,11 @@ void D3D12PointShadows::BuildCandidates() {
 }
 
 
-void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const std::vector<uint64_t>& keys ) {
+void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const std::vector<uint64_t>& keys, bool noCubes ) {
 	// Thin adapter onto the shared PointLightSlotSelector, which owns every decision. D3D11 runs the exact
 	// same code - see PointLightSlotSelector.h.
-	const GothicRendererSettings::EPointLightShadowMode shadowMode =
-		Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows;
+	const GothicRendererSettings::EPointLightShadowMode shadowMode = noCubes ? GothicRendererSettings::PLS_DISABLED
+		: Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows;
 
 	// `m_StaticCube` is the resources gate: with no cube array there is nothing to own, so the selector only
 	// ticks its PLS_DISABLED wipe and leaves every slot alone.

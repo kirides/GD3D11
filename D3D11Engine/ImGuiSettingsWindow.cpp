@@ -417,6 +417,23 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
 
         SliderFloatRow( "Shadow Strength", "##ShadowStrength", &settings.ShadowStrength, 0.0f, 1.0f, "%.2f",
             "How dark a shadowed surface gets." );
+
+        if ( Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery ) {
+            constexpr ListItem<GothicRendererSettings::E_RayTracedShadows> rtSun[] = {
+                { "Off", GothicRendererSettings::RT_SHADOWS_OFF, "Shadow maps only." },
+                { "Hard", GothicRendererSettings::RT_SHADOWS_HARD, "One ray per pixel. Sharp shadow edges." },
+                { "Smooth", GothicRendererSettings::RT_SHADOWS_SMOOTH, "One ray per pixel, edges blurred by the distance to the caster: sharp where it touches, softer further out. No grain." },
+                { "Soft", GothicRendererSettings::RT_SHADOWS_SOFT, "Two rays per pixel with soft edges. Grainy without TAA or FSR." },
+                { "Ultra", GothicRendererSettings::RT_SHADOWS_ULTRA, "Four rays per pixel with soft edges. Expensive." },
+            };
+            ComboRow( "Ray-Traced Sun Shadows", "##RayTracedSunShadows", rtSun, &settings.RayTracedSunShadows,
+                "Traces the sun and moon shadows of nearby surfaces against the world, objects and characters,\n"
+                "pixel-exact and without shadow-map flicker. Shadow maps still cover the distance. D3D12 only." );
+            ImGui::BeginDisabled( settings.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_OFF );
+            DistanceRow( "Ray-Traced Shadow Distance", "##RayTracedSunShadowDistance", &settings.RayTracedSunShadowDistance, 10.0f, 400.0f,
+                "How far from the camera sun shadows are ray traced before they fade into the shadow maps." );
+            ImGui::EndDisabled();
+        }
     }
     ImGui::EndDisabled();
 
@@ -436,6 +453,29 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         };
         ComboRow( "Point Light Shadows", "##PointLightShadows", pointLightShadows,
             &settings.EnablePointlightShadows );
+
+        if ( Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery ) {
+            constexpr ListItem<GothicRendererSettings::E_RayTracedShadows> rtPoint[] = {
+                { "Off", GothicRendererSettings::RT_SHADOWS_OFF, "Shadow cubes." },
+                { "Hard", GothicRendererSettings::RT_SHADOWS_HARD, "One ray per light and pixel. Sharp shadow edges." },
+                { "Smooth", GothicRendererSettings::RT_SHADOWS_SMOOTH, "One ray per light and pixel, edges blurred by the distance to the caster: sharp where it touches, softer further out. No grain." },
+                { "Soft", GothicRendererSettings::RT_SHADOWS_SOFT, "Two rays per light and pixel with soft edges. Grainy without TAA or FSR." },
+                { "Ultra", GothicRendererSettings::RT_SHADOWS_ULTRA, "Four rays per light and pixel with soft edges. Expensive." },
+            };
+            ImGui::BeginDisabled( settings.EnablePointlightShadows == GothicRendererSettings::PLS_DISABLED );
+            ComboRow( "Ray-Traced Point Light Shadows", "##RayTracedPointShadows", rtPoint, &settings.RayTracedPointShadows,
+                "Every shadowed light traces its own shadows instead of rendering a shadow cube: no budget,\n"
+                "no pop-in, characters shadow every light. A pixel keeps shadows for up to 15 nearby lights\n"
+                "(lights stacked at one spot count once); further lights, and transparent surfaces, shade\n"
+                "unshadowed with a shortened range. \"Static\" above leaves characters out. D3D12 only." );
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled( settings.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_OFF
+                && settings.RayTracedPointShadows == GothicRendererSettings::RT_SHADOWS_OFF );
+            CheckRow( "Ray-Traced Contact Shadows", &settings.RayTracedContactShadows,
+                "Adds short shadows from what is on screen next to the ray-traced ones: grass, and anything\n"
+                "swaying in the wind. Only covers the first metre or two from the caster." );
+            ImGui::EndDisabled();
+        }
 
         CheckRow( "Limit Light Intensity", &settings.LimitLightIntesity, nullptr, "LimitLightIntensity" );
     }
@@ -493,8 +533,33 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Medium", GothicRendererSettings::WATER_SSR_MEDIUM },
         { "High", GothicRendererSettings::WATER_SSR_HIGH },
     };
-    ComboRow( "Water Reflections", "##WaterSSR", waterSsr, &settings.WaterSSRQuality, nullptr,
+    // Ray tracing replaces the screen-space geometry march; the stored SSR choice survives untouched.
+    const bool rayTracingAvailable = Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery;
+    const bool rayTracingActive = rayTracingAvailable && settings.WaterRayTracing != GothicRendererSettings::WATER_RT_OFF;
+    if ( rayTracingAvailable ) {
+        constexpr ListItem<GothicRendererSettings::E_WaterRayTracing> waterRt[] = {
+            { "Off", GothicRendererSettings::WATER_RT_OFF, "Screen-space reflections only." },
+            { "Low", GothicRendererSettings::WATER_RT_LOW, "Half resolution. Reflected objects are dark, untextured silhouettes." },
+            { "Medium", GothicRendererSettings::WATER_RT_MEDIUM, "Half resolution, textured and lit; foliage is alpha-tested." },
+            { "High", GothicRendererSettings::WATER_RT_HIGH, "Half resolution with one ray per screen pixel, so thin detail survives." },
+            { "Ultra", GothicRendererSettings::WATER_RT_ULTRA, "Full resolution, four rays per pixel. Expensive." },
+        };
+        ComboRow( "Ray-Traced Water Reflections", "##WaterRayTracing", waterRt, &settings.WaterRayTracing,
+            "Traces reflection rays against the world, objects and characters, so off-screen and occluded\n"
+            "geometry reflects too. Replaces the screen-space Water Reflections. D3D12 only." );
+        ImGui::BeginDisabled( settings.WaterRayTracing < GothicRendererSettings::WATER_RT_MEDIUM );
+        CheckRow( "Combine With Screen Space", &settings.WaterRayTracingScreenSpace,
+            "Reflected objects the camera also sees take their color from the finished image, torch light\n"
+            "included. Off shades every hit by ray tracing alone: no seams where hits leave the screen,\n"
+            "but point lights don't show in reflections. Has no effect on Low." );
+        ImGui::EndDisabled();
+    }
+
+    ImGui::BeginDisabled( rayTracingActive );
+    ComboRow( "Water Reflections", "##WaterSSR", waterSsr, &settings.WaterSSRQuality,
+        rayTracingActive ? "Replaced by Ray-Traced Water Reflections." : nullptr,
         [&shadersToReload] { shadersToReload |= ShaderCategory::Water; } );
+    ImGui::EndDisabled();
 
     constexpr ListItem<GothicRendererSettings::E_WaterReflectionMode> waterReflectionModes[] = {
         { "Geometry", GothicRendererSettings::WATER_REFLECTION_GEOMETRY,
@@ -502,7 +567,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Geometry + Sky", GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY,
             "Also reflects the on-screen sky and clouds. Makes open water noticeably bluer by day." },
     };
-    ImGui::BeginDisabled( settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED );
+    ImGui::BeginDisabled( settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED && !rayTracingActive );
     ComboRow( "Water Reflection Sources", "##WaterReflectionMode", waterReflectionModes, &settings.WaterReflectionMode,
         "What the water mirrors in screen space. Needs Water Reflections." );
     ImGui::EndDisabled();

@@ -44,6 +44,9 @@ class zCVobLight;
     Engine::CreateGraphicsEngine keeps D3D11. */
 class D3D12VobArena;
 class D3D12MeshArena;
+class D3D12RayTracing;
+struct FrameSkelDraw;
+struct FrameAttachDraw;
 struct TransparentItem;
 enum class EWorldTransparencyVariant : uint8_t;
 namespace MorphGpu { struct Job; struct ChannelRecord; }
@@ -59,6 +62,8 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // buffers out from under frames that may still be reading them.
     friend class D3D12VobArena;
     friend class D3D12MeshArena;
+    // The ray-traced scene builds over the arenas, the posed skinning streams and the frame's draw lists.
+    friend class D3D12RayTracing;
 
 public:
     /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
@@ -884,6 +889,21 @@ private:
     // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
     std::unique_ptr<D3D12MeshArena> m_SkelArena;
     std::unique_ptr<D3D12MeshArena> m_AttachArena;
+    // Inline ray tracing (water reflections, shadow mask); null without ray queries or when neither shader built.
+    std::unique_ptr<D3D12RayTracing> m_RayTracing;
+    // This frame's ray-traced point shadows, decided before the light buffer is built
+    bool m_RtPointShadowsActive = false;
+    // Shadow-mask SRV the lit opaque passes read (UINT_MAX outside them); see BindFrameLights
+    UINT m_RtShadowMaskSlot = UINT_MAX;
+    /** Builds the frame's ray-traced scene and the shadow mask; after the depth prepass, before the lit passes. */
+    void TraceRtShadows();
+    /** TLAS reach for every ray-traced consumer this frame. */
+    float RtSceneVobRadius() const;
+    // Read-only views for D3D12RayTracing; the lists live in D3D12Scene.cpp.
+    size_t VobVisualBucketCount() const;
+    MeshVisualInfo* VobVisualForBucket( size_t bucket ) const;
+    std::span<const FrameSkelDraw> FrameSkelDraws() const;
+    std::span<const FrameAttachDraw> FrameAttachDraws() const;
     // Re-uploads the arena ranges of animated static VOBs (.MMS morph meshes) from their own vertex buffers.
     // Runs right after DispatchMorphFold, which is what produces this frame's deformed vertices.
     void RefreshDynamicVobArena();
@@ -1784,7 +1804,7 @@ private:
     // shader declares at b2, [256,512) the AtmosphereConstantBuffer at b1. Water runs long BEFORE
     // RenderFogAndGodRays, so it cannot share m_FogCB's atmosphere block (that one is only filled when the
     // height-fog composition actually runs, later in the frame).
-    static constexpr UINT kWaterAtmosphereCbOffset = 256;
+    static constexpr UINT kWaterAtmosphereCbOffset = 512;
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_WaterCB[kBackBufferMax];
     uint8_t* m_WaterCBMapped[kBackBufferMax] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WaterCBGpu[kBackBufferMax] = {};

@@ -12,7 +12,8 @@
 #endif
 
 cbuffer LightCB : register(LIGHTCB_REGISTER) {
-    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowDynIndex; uint PointShadowReserved;
+    uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint PointShadowDynIndex;
+    uint RtShadowMaskIndex;   // bindless SRV of the ray-traced shadow mask + 1; 0 = this pass doesn't read it
     float ProjA; float ProjB; float NearZ; float FarZ;
 };
 

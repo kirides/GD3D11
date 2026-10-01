@@ -148,7 +148,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // sqrt(1 - dot(N,SunDir)^2), and feeding it the up-bent normal under a high sun drove that to ~0 — the
     // blades then self-shadowed into a uniform black mask (no shadow shape, just "fully occluded"), stepping
     // hard at every cascade split. Ngeo is near-edge-on to the sun, so the bias gets its full magnitude here.
-    float shadow = ComputeSunShadow( i.wpos, Ngeo, 1.0 );
+    // Beyond the vegetation prepass the mask describes the ground behind the blade, not the blade
+    uint2 rtMask = i.fogDist < 7000.0 ? LoadRtShadowMask( i.clip.xy ) : uint2( 0, 0 );   // kVegetationPrepassRange, less a margin
+    float shadow = ComputeSunShadow( rtMask, i.wpos, Ngeo, 1.0 );
     // orm: AO=1 (g_full), roughness=0.9 (matte), metallic=0 — grass has no ORM map, so a diffuse-leaning default.
     // Screen-space AO applies here: grass now joins the depth prepass the mask is built from (VSDepthGBuf below,
     // range-limited by DrawVegetationDepthPrepass), so this pixel's mask entry describes the blade itself and
@@ -157,7 +159,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // milder error at that distance than it would be up close.
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao, 1.0, 1u );   // grass: leaf foliage
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, 0.9, 0.0 );
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, 0.9, 0.0, rtMask );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
