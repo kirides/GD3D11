@@ -467,6 +467,41 @@ bool D3D12ShadowMap::CreateVobArgRings( UINT commandStride ) {
 }
 
 
+bool D3D12ShadowMap::CreateSkeletalArgRings() {
+	// Same UPLOAD/GENERIC_READ ring shape as CreateVobArgRings, rewritten by BuildCascadeSkeletals each frame.
+	if ( !m_E ) return false;
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+	bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	auto makeRing = [&]( UINT64 bytes, Microsoft::WRL::ComPtr<Rhi::Resource>& res, uint8_t*& ptr, const wchar_t* name ) -> bool {
+		bd.Width = bytes;
+		if ( FAILED( m_E->m_Rhi->CreateResource( DefaultUploadHeapType, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, res.ReleaseAndGetAddressOf() ) ) )
+			return false;
+		res->SetName( name );
+		D3D12_RANGE noRead = { 0, 0 };
+		void* mapped = nullptr;
+		if ( FAILED( res->Map( 0, &noRead, &mapped ) ) ) return false;
+		ptr = static_cast<uint8_t*>( mapped );
+		return true;
+		};
+
+	for ( UINT c = 0; c < kSkeletalShadowCascades; ++c ) {
+		for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+			if ( !makeRing( static_cast<UINT64>( kMaxSkelCasterCommands ) * sizeof( D3D12GraphicsEngine::SkeletalDrawCommand ),
+				m_SkelDrawArgs[c][i], m_SkelDrawArgsPtr[c][i], L"ShadowSkelDrawArgsRing" ) )
+				return false;
+			if ( !makeRing( static_cast<UINT64>( kMaxAttachCasterCommands ) * sizeof( D3D12GraphicsEngine::VobDrawCommand ),
+				m_AttachDrawArgs[c][i], m_AttachDrawArgsPtr[c][i], L"ShadowAttachDrawArgsRing" ) )
+				return false;
+		}
+	}
+	return true;
+}
+
+
 void D3D12ShadowMap::ComputeCascadeMatrices() {
 	// P2.9c-3a: stable, frustum-fit + texel-snapped cascades — mirrors D3D11 CalculateCascadeMatrices
 	// (D3D11ShadowMap.cpp). Per cascade: fit a bounding SPHERE to the camera's frustum SLICE [splitNear,splitFar]
@@ -887,6 +922,8 @@ void D3D12ShadowMap::Prepare() {
 			m_WorldDrawCount[c] = 0;
 			m_WorldDepthMergedCount[c] = 0;
 			m_VobDrawCount[c] = 0;
+			m_SkelDrawCount[c] = 0;
+			m_AttachDrawCount[c] = 0;
 			g_GrassBoxes[c].clear();
 			SkelDraws[c].clear();
 			AttachDraws[c].clear();
@@ -1005,7 +1042,10 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	const UINT frame = m_E->m_FrameIndex;
 	m_VobDrawCount[c] = 0;
 	m_CascadeHasAnimatedCaster[c] = false;
+	m_SkelDrawCount[c] = 0;
+	m_AttachDrawCount[c] = 0;
 	if ( !m_SunUp ) return;
+	BuildCascadeSkeletals( c );
 
 	// thread_local, not static: one of these exists per worker now that cascades build concurrently. Cleared
 	// rather than reconstructed so it keeps its capacity across frames.
@@ -1036,6 +1076,112 @@ void D3D12ShadowMap::BuildCascade( UINT cascade ) {
 	m_VobDrawCount[c] = m_E->BuildVobDrawCommands( cascadeUploads, m_VobDrawArgsPtr[c][frame], false,
 		D3D12GraphicsEngine::kMaxShadowVobDrawCommands, false, false, static_cast<int>( c ),
 		&m_VobOpaqueDrawCount[c] );
+}
+
+
+void D3D12ShadowMap::BuildCascadeSkeletals( UINT cascade ) {
+	// Pool-thread safe: reads the main-thread snapshots (g_SkelMatSrvs, g_SkinDst, FrameAttachDraw) and the
+	// arenas' lock-free Find. Both sets are partitioned opaque-first, like the main view's.
+	const UINT c = cascade;
+	const UINT frame = m_E->m_FrameIndex;
+	if ( c >= kSkeletalShadowCascades ) return;
+	using SkelCmd = D3D12GraphicsEngine::SkeletalDrawCommand;
+	using AttachCmd = D3D12GraphicsEngine::VobDrawCommand;
+	const UINT blackSlot = m_E->m_BlackTexture->GetSrvSlot();
+	const UINT defaultOrm = m_E->GetDefaultOrmSrvSlot();
+	auto logOverflow = [this]( const char* what, UINT cap ) {
+		if ( m_SkelArgsOverflowLogged ) return;
+		m_SkelArgsOverflowLogged = true;
+		Logging::Wrn( "D3D12: shadow cascade {} caster ring overflow ({} commands/frame); some NPC shadows dropped.", what, cap );
+		};
+
+	thread_local std::vector<SkelCmd> alphaSkel;
+	if ( !SkelDraws[c].empty() && m_SkelDrawArgsPtr[c][frame] && m_E->m_SkelArena->Ready() && m_E->m_SkinnedPosUv ) {
+		SkelCmd* cmds = reinterpret_cast<SkelCmd*>( m_SkelDrawArgsPtr[c][frame] );
+		UINT count = 0;
+		alphaSkel.clear();
+		bool full = false;
+		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
+			if ( !d.visual ) continue;
+			// Per-instance diffuse slots snapshotted on the main thread (see [[skeletal-texani-shared-slots]]).
+			const std::vector<SkelMatSlot>* matSrvs =
+				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
+			size_t matIdx = 0;
+			uint32_t sub = 0;   // index into this vob's g_SkinDst entries
+			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
+				const bool haveSlot = matSrvs && matIdx < matSrvs->size();
+				const UINT diffuseSlot = haveSlot ? (*matSrvs)[matIdx].slot : blackSlot;
+				// No snapshot -> assume it clips: a missed cutout is a solid shadow, a needless clip only slower.
+				const bool alphaTested = !haveSlot || (*matSrvs)[matIdx].alphaTested;
+				++matIdx;
+				for ( auto const& mesh : meshList ) {
+					const uint32_t posed = SkinnedBase( d, sub++ );
+					if ( !mesh || posed == kNoSkinnedOutput ) continue;
+					const D3D12MeshArena::Range* range = m_E->m_SkelArena->Find( mesh->ArenaSlot );
+					if ( !range ) continue;
+					if ( count + alphaSkel.size() >= kMaxSkelCasterCommands ) { full = true; break; }
+					SkelCmd cmd{};
+					cmd.InstanceRow = d.instRow;
+					cmd.MatNormalIndex = 0xFFFFFFFFu;
+					cmd.MatOrmIndex = defaultOrm;
+					cmd.MatDiffuseIndex = diffuseSlot;
+					cmd.Draw.IndexCountPerInstance = range->IndexCount;
+					cmd.Draw.InstanceCount = 1;
+					cmd.Draw.StartIndexLocation = range->StartIndex;
+					cmd.Draw.BaseVertexLocation = static_cast<INT>( posed );   // arena indices over the posed vertices
+					cmd.Draw.StartInstanceLocation = 0;
+					if ( alphaTested ) alphaSkel.push_back( cmd );
+					else               cmds[count++] = cmd;
+				}
+				if ( full ) break;
+			}
+			if ( full ) break;
+		}
+		if ( full ) logOverflow( "skeletal", kMaxSkelCasterCommands );
+		m_SkelOpaqueDrawCount[c] = count;
+		if ( !alphaSkel.empty() ) {
+			std::memcpy( cmds + count, alphaSkel.data(), alphaSkel.size() * sizeof( SkelCmd ) );
+			count += static_cast<UINT>( alphaSkel.size() );
+		}
+		m_SkelDrawCount[c] = count;
+	}
+
+	// Attachments: one-instance VobDrawCommands over the attachment arena, StartInstanceLocation = the record's
+	// slot in the main VOB ring. VSDepthAttach never reads b4, so the wind pair goes out as 0.
+	thread_local std::vector<AttachCmd> alphaAttach;
+	if ( !AttachDraws[c].empty() && m_AttachDrawArgsPtr[c][frame] && m_E->m_AttachArena->Ready() ) {
+		AttachCmd* cmds = reinterpret_cast<AttachCmd*>( m_AttachDrawArgsPtr[c][frame] );
+		UINT count = 0;
+		alphaAttach.clear();
+		for ( const FrameAttachDraw& a : AttachDraws[c] ) {
+			if ( !a.mesh ) continue;
+			const D3D12MeshArena::Range* range = m_E->m_AttachArena->Find( a.mesh->ArenaSlot );
+			if ( !range ) continue;
+			if ( count + alphaAttach.size() >= kMaxAttachCasterCommands ) {
+				logOverflow( "attachment", kMaxAttachCasterCommands );
+				break;
+			}
+			AttachCmd cmd{};
+			cmd.MatNormalIndex = 0xFFFFFFFFu;
+			cmd.MatOrmIndex = defaultOrm;
+			cmd.MatDiffuseIndex = a.srvSlot;
+			cmd.Draw.IndexCountPerInstance = range->IndexCount;
+			cmd.Draw.InstanceCount = 1;
+			cmd.Draw.StartIndexLocation = range->StartIndex;
+			cmd.Draw.BaseVertexLocation = static_cast<INT>( range->BaseVertex );
+			cmd.Draw.StartInstanceLocation = a.instIndex;
+			cmd.VisualIndex = 0xFFFFFFFFu;   // not GPU-culled
+			cmd.LodBucket = D3D12GraphicsEngine::kLodBucketNear;
+			if ( a.alphaTested ) alphaAttach.push_back( cmd );
+			else                 cmds[count++] = cmd;
+		}
+		m_AttachOpaqueDrawCount[c] = count;
+		if ( !alphaAttach.empty() ) {
+			std::memcpy( cmds + count, alphaAttach.data(), alphaAttach.size() * sizeof( AttachCmd ) );
+			count += static_cast<UINT>( alphaAttach.size() );
+		}
+		m_AttachDrawCount[c] = count;
+	}
 }
 
 
@@ -1183,9 +1329,8 @@ void D3D12ShadowMap::CullCascade( UINT cascade ) {
 void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool sunUp ) {
 	// Issues one cascade's caster draws into the command list it is handed (m_CmdList on the serial path, that
 	// cascade's own list on the MT path). Pool-thread safe for the same reason CullCascade is: it reads ONLY
-	// per-cascade state and values already resolved on the main thread — the arg buffers + counts, the
-	// pre-culled grass box list, the skeletal records with their MAIN-THREAD-resolved diffuse handles
-	// (g_SkelMatSrvs / FrameAttachDraw::srv). No Gothic mutation, no UpdateMeshLibTexAniState, no ring writes.
+	// per-cascade state and values already resolved on the main thread — the arg buffers + counts and the
+	// pre-culled grass box list. No Gothic mutation, no UpdateMeshLibTexAniState, no ring writes.
 	if ( !cmdList || !m_DsvHeap ) return;
 	const UINT c = cascade;
 	// Lazily frozen this frame (see kLazyLastCascadeInterval): its slice keeps the depth it holds and must NOT
@@ -1216,7 +1361,6 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	// Resolved once: GetSrvGpuHandle takes m_SrvHeapMutex and linear-scans the free-slot list, and all three
 	// cascade recorders would otherwise hit it per material.
 	const D3D12_GPU_DESCRIPTOR_HANDLE blackSrv = m_E->GetSrvGpuHandle( m_E->m_BlackTexture->GetSrvSlot() );
-	const UINT blackSlot = m_E->m_BlackTexture->GetSrvSlot();   // bindless fallback for the skeletal casters
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_MapSize), static_cast<float>(m_MapSize), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(m_MapSize), static_cast<LONG>(m_MapSize) };
@@ -1307,91 +1451,34 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		}
 	}
 
-	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj; posed vertices) ---
-	if ( m_CasterSkeletalPSO && m_E->m_Pipelines.Skeletal.RootSig && !SkelDraws[c].empty() && m_E->m_SkelArena->Ready()
-		&& m_E->m_SkinnedPosUv ) {
+	// --- Skinned skeletals: one ExecuteIndirect over BuildCascadeSkeletals' set (b10 row + b6 + draw) ---
+	if ( c < kSkeletalShadowCascades && m_SkelDrawCount[c] > 0 && m_CasterSkeletalPSO && m_E->m_SkeletalIndirectCmdSig
+		&& m_SkelDrawArgs[c][frame] ) {
 		DX_ZONE( cmdList.Get(), "Skeletals" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
-
-		// Per-material PSO choice rather than a partitioned command set: this is a CPU draw loop, not an
-		// ExecuteIndirect, so switching when the flag flips is cheaper than reordering the records.
-		Rhi::PipelineState* const skelClipPso = m_CasterSkeletalPSO.Get();
-		Rhi::PipelineState* const skelNoAlphaPso = m_CasterSkeletalNoAlphaPSO ? m_CasterSkeletalNoAlphaPSO.Get()
-		                                                                      : skelClipPso;
-		Rhi::PipelineState* boundPso = nullptr;
-
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-		m_E->BindSkinnedGeometry( cmdList, 1 );
-		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
-			if ( !d.visual ) continue;
-			// Shared per-MODEL texture slots: the alpha-clip diffuse for each of this instance's materials was
-			// snapshotted on the main thread right after ITS UpdateMeshLibTexAniState (see
-			// [[skeletal-texani-shared-slots]] and g_SkelMatSrvs) — calling it here would both be wrong for a
-			// second instance of the same model and unsafe from a pool thread.
-			const std::vector<SkelMatSlot>* matSrvs =
-				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
-
-			size_t matIdx = 0;
-			uint32_t sub = 0;   // index into this vob's g_SkinDst entries
-			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-				const bool haveSlot = matSrvs && matIdx < matSrvs->size();
-				const UINT diffuseSlot = haveSlot ? (*matSrvs)[matIdx].slot : blackSlot;
-				// No snapshot for this material -> assume it clips (the conservative side: a missed cutout is a
-				// visible solid shadow, a needless clip is only slower).
-				const bool alphaTested = !haveSlot || (*matSrvs)[matIdx].alphaTested;
-				++matIdx;
-				Rhi::PipelineState* wantPso = alphaTested ? skelClipPso : skelNoAlphaPso;
-				if ( wantPso != boundPso ) {
-					cmdList->SetPipelineState( wantPso );
-					boundPso = wantPso;
-				}
-				// PSShadowClip reads only MatDiffuseIndex, the THIRD constant of the b6 MaterialCB (param 11) —
-				// push just that one at offset 2 rather than resolving normal/ORM maps the caster never samples.
-				cmdList->SetGraphicsRoot32BitConstant( 11, diffuseSlot, 2 );
-				for ( auto const& mesh : meshList ) {
-					const uint32_t posed = SkinnedBase( d, sub++ );
-					if ( !mesh || posed == kNoSkinnedOutput ) continue;
-					const D3D12MeshArena::Range* range = m_E->m_SkelArena->Find( mesh->ArenaSlot );
-					if ( !range ) continue;
-					// Arena indices over the posed vertices (SkinVertices.hlsl).
-					cmdList->DrawIndexedInstanced( range->IndexCount, 1, range->StartIndex, static_cast<INT>( posed ), 0 );
-				}
-			}
+		if ( m_E->BindSkinnedGeometry( cmdList, 1 ) ) {
+			ExecuteIndirectAlphaSplit( cmdList, m_E->m_SkeletalIndirectCmdSig.Get(), m_SkelDrawArgs[c][frame].Get(), 0,
+				sizeof( D3D12GraphicsEngine::SkeletalDrawCommand ), m_SkelDrawCount[c], m_SkelOpaqueDrawCount[c],
+				m_CasterSkeletalPSO.Get(), m_CasterSkeletalNoAlphaPSO.Get() );
 		}
 	}
 
-	// --- Node attachments (weapons/heads) through the VOB caster PSO (packed vertex + single instance) ---
-	if ( m_CasterVobAttachPSO && m_E->m_Pipelines.World.RootSig && !AttachDraws[c].empty() && m_E->m_AttachArena->Ready() ) {
+	// --- Node attachments (weapons/heads): the attachment arena + main VOB ring through the VOB signature ---
+	if ( c < kSkeletalShadowCascades && m_AttachDrawCount[c] > 0 && m_CasterVobAttachPSO && m_E->m_VobIndirectCmdSig
+		&& m_AttachDrawArgs[c][frame] ) {
 		DX_ZONE( cmdList.Get(), "Skeletal Nodes" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletal Nodes" );
-
-		// Attachment variant (Fatness/Scaling instead of wind, needs NORMAL) — must match the depth prepass/
-		// color pass PSO choice for the same reason the wind fix required it (bit-identical transform).
-		// Per-attachment PSO choice, same scheme as the skeletal loop above (CPU draw loop, so switch on flip).
-		Rhi::PipelineState* const attClipPso = m_CasterVobAttachPSO.Get();
-		Rhi::PipelineState* const attNoAlphaPso = m_CasterVobAttachNoAlphaPSO ? m_CasterVobAttachNoAlphaPSO.Get()
-		                                                                      : attClipPso;
-		Rhi::PipelineState* boundAttachPso = nullptr;
-
+		// VSDepthAttach (Fatness/Scaling, not wind) — must match the depth prepass/color pass attachment PSO.
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-		// One IA bind: the attachment arena + the main VOB ring each record's instIndex points into.
-		m_E->BindAttachArenaIA( cmdList );
-		for ( const FrameAttachDraw& a : AttachDraws[c] ) {
-			if ( !a.mesh ) continue;
-			const D3D12MeshArena::Range* range = m_E->m_AttachArena->Find( a.mesh->ArenaSlot );
-			if ( !range ) continue;
-			Rhi::PipelineState* wantPso = a.alphaTested ? attClipPso : attNoAlphaPso;
-			if ( wantPso != boundAttachPso ) {
-				cmdList->SetPipelineState( wantPso );
-				boundAttachPso = wantPso;
-			}
-			// Bindless diffuse: push ONLY b6 constant index 2 (MatDiffuseIndex) — PSShadowClipBindless reads
-			// nothing else out of the MaterialCB. The slot was resolved on the main thread (see FrameAttachDraw),
-			// so this recorder never touches Gothic texture state.
-			cmdList->SetGraphicsRoot32BitConstant( 10, a.srvSlot, 2 );
-			cmdList->DrawIndexedInstanced( range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), a.instIndex );
+		// The signature also writes b4[4..5]; bind the frame wind baseline so the rest of b4 is defined.
+		cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_E->m_WindBuffer, 0 );
+		if ( m_E->BindAttachArenaIA( cmdList ) ) {
+			ExecuteIndirectAlphaSplit( cmdList, m_E->m_VobIndirectCmdSig.Get(), m_AttachDrawArgs[c][frame].Get(), 0,
+				sizeof( D3D12GraphicsEngine::VobDrawCommand ), m_AttachDrawCount[c], m_AttachOpaqueDrawCount[c],
+				m_CasterVobAttachPSO.Get(), m_CasterVobAttachNoAlphaPSO.Get() );
 		}
 	}
 

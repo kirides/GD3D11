@@ -169,6 +169,15 @@ private:
     UINT m_VobInstOffset = 0;     // reset each frame at the top of Prepare()
     bool m_VobInstOverflowLogged = false;
 
+    // Skinned and attachment casters as { b1 diffuse slot, DrawIndexed } commands: one ExecuteIndirect per light
+    // and alpha partition, device-generated on Vulkan. Per-frame UPLOAD ring, drop+log on overflow.
+    static constexpr UINT kMaxCasterCommands = 8192;
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_CasterCmdSig;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_CasterArgs[kBackBufferMax];
+    uint8_t* m_CasterArgsPtr[kBackBufferMax] = {};
+    UINT m_CasterArgCount = 0;    // reset each frame at the top of Prepare()
+    bool m_CasterArgsOverflowLogged = false;
+
     // Every slot decision - the dome, ownership, eviction, the importance buckets, the frame budget, the
     // static-bake cache - lives in PointLightSlotSelector, shared verbatim with D3D11. This class owns only
     // the resources and the draws.

@@ -1947,17 +1947,19 @@ bool D3D12PipelineState::CreatePointShadow() {
     Rhi::Device* device = m_Device;
     if ( !device ) return false;
 
-    // --- Root signature: b0 = the 6 face view-projs as a root CBV (VS); t0 = diffuse SRV table (PS alpha-clip);
-    // static linear sampler s0. (b0 is a CBV not root consts — 6 matrices = 384B exceed the root-const budget.)
+    // --- Root signature: b0 = the 6 face view-projs as a root CBV (VS); b1 = the bindless diffuse slot (PS
+    // alpha-clip); static linear sampler s0. (b0 is a CBV not root consts — 6 matrices = 384B exceed the budget.)
     D3D12RootLayout& rs = Layout( "PointShadow" );
     // PrepareShadowPasses resolves every face CB into the per-frame ring BEFORE BeginShadowRecording
     // launches the recorders that bind them; the recorders only ever replay already-final addresses.
     rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 PCR_ViewProj[6]
-    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 1: t0 diffuse
+    // Per draw, so the skinned/attachment casters' command signature stays DGC-able on Vulkan.
+    rs.AddPerDrawConstants( 1, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 1: b1 CasterCB { DiffuseIndex }
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0
 
-    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     PointShadow.RootSig = rs.RootSig();
 

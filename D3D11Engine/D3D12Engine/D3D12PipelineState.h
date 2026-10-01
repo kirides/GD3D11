@@ -218,7 +218,7 @@ public:
     // ARRAY textures, per-slot DSV heaps, array SRV, and per-frame face-CB / VOB-instance rings are GPU resources
     // and stay in the engine.
     struct PointShadowPipeline {
-        Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;          // all casters (b0 face CBV, t0, s0)
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;          // all casters (b0 face CBV, b1 diffuse slot, s0)
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;            // VSCube (world)
         Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlob;         // VSCubeVob (step-rate-6 instance stream)
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;            // PSCubeClip (void, alpha-clip) — shared

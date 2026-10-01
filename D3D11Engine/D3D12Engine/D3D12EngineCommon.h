@@ -91,14 +91,12 @@ inline uint32_t SkinnedBase( const FrameSkelDraw& d, uint32_t sub ) {
 // alphaTested = can the depth/caster PS' `clip(diffuse.a - 0.5)` ever discard for this attachment? Resolved on
 // the main thread with srvSlot (a pool-thread recorder must not read Gothic texture state), and used by every
 // depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
-// inst = the per-instance data this attachment uploaded at collection time (the bytes instView points at),
+// inst = the per-instance data this attachment uploaded at collection time (element instIndex of the VOB ring),
 // by value so the main-view batcher can re-emit runs of instances CONTIGUOUSLY without reading back the
-// write-combined UPLOAD ring. The point shadows bind instView; the CSM cascades draw from the attachment arena
-// with the whole VOB ring bound, so they address the same bytes as element instIndex.
+// write-combined UPLOAD ring. The shadow passes bind the whole ring and draw it with StartInstanceLocation.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
-    D3D12_VERTEX_BUFFER_VIEW    instView;
     UINT                        instIndex;
     const zCVob*                owner;
     UINT                        srvSlot;

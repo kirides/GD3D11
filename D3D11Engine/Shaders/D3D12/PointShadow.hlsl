@@ -1,5 +1,5 @@
 cbuffer CubeCB : register(b0) { float4x4 PCR_ViewProj[6]; };   // per-light face view-projs (90-deg perspective, near 15, far range*2)
-Texture2D    tx  : register(t0);
+cbuffer CasterCB : register(b1) { uint DiffuseIndex; };     // per draw: bindless diffuse SRV-heap slot
 SamplerState smp : register(s0);
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; uint rt : SV_RenderTargetArrayIndex; };
 
@@ -33,4 +33,8 @@ VS_OUT VSCubeVob( VSVOB_IN i )
 // Depth-only (void PS, no SV_Depth) so the caster keeps early-Z / Hi-Z rejection and the PSO's hardware slope-
 // scaled depth bias — the stored depth is the NATURAL hyperbolic z of the 90-deg perspective, which the sampler
 // reconstructs from the dominant-axis distance (more efficient than writing linear SV_Depth). Alpha-clip cutouts.
-void PSCubeClip( VS_OUT i ) { clip( tx.Sample( smp, i.uv ).a - 0.5 ); }
+void PSCubeClip( VS_OUT i )
+{
+    Texture2D tx = ResourceDescriptorHeap[DiffuseIndex];
+    clip( tx.Sample( smp, i.uv ).a - 0.5 );
+}

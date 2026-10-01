@@ -45,9 +45,8 @@ namespace {
 	// Record() may run on a POOL THREAD, so everything the old inline pass did while recording that touched
 	// Gothic — zCTexture::CacheIn, zCModel::UpdateMeshLibTexAniState, PrepareFrameSkeletals, the world-section
 	// walk, the shared VOB-instance ring writes — is hoisted into Prepare() and flattened into these records,
-	// which reference nothing but D3D12 handles. One shape serves all four caster kinds (static world mesh,
-	// static VOBs, dynamic skeletals, dynamic node attachments); the recorder filters redundant binds exactly
-	// like the inline loops used to.
+	// which reference nothing but D3D12 handles. One shape serves the direct draws (static world mesh, static
+	// VOBs, dynamic items); skinned and arena-attachment casters are PointShadowCasterCommands instead.
 	struct PointShadowDraw {
 		D3D12_VERTEX_BUFFER_VIEW    vbv = {};            // mesh stream: own buffer, attachment arena or posed skinned
 		D3D12_INDEX_BUFFER_VIEW     ibv = {};
@@ -55,7 +54,7 @@ namespace {
 		UINT                        indexCount = 0;
 		UINT                        startIndex = 0;
 		UINT                        instanceCount = 0;   // always a multiple of 6 — one instance per cube face
-		D3D12_GPU_DESCRIPTOR_HANDLE srv = {};
+		UINT                        diffuseSlot = 0;      // bindless SRV-heap slot (b1)
 		D3D12_VERTEX_BUFFER_VIEW    instView = {};       // 2nd stream (VOBs/attachments); SizeInBytes 0 => single stream
 		// Can PSCubeClip's `clip(diffuse.a - 0.5)` ever discard here? If not, the record is drawn by the
 		// caster PSO's no-pixel-shader twin — a PS that merely might discard costs the whole draw the
@@ -70,18 +69,27 @@ namespace {
 		return { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), format };
 	}
 
-	// Per shadowed light: its cube slot, its 6-face view-proj CB, and the [begin,end) spans it owns in each
-	// of the four draw lists below.
+	// Skinned and arena-attachment casters: { b1 diffuse slot, DrawIndexed } through m_CasterCmdSig, so a light's
+	// run is one ExecuteIndirect per alpha partition (device-generated on Vulkan).
+	struct PointShadowCasterCommand {
+		uint32_t                     DiffuseIndex;   // @0 b1
+		D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @4, InstanceCount 6 = the cube faces
+	};
+	static_assert( sizeof( PointShadowCasterCommand ) == 24, "must match m_CasterCmdSig's stride" );
+	// A run in the caster ring: [first, first + opaque) needs no cutout, the rest clips.
+	struct CasterRun { UINT first = 0, opaque = 0, count = 0; };
+
+	// Per shadowed light: its cube slot, its 6-face view-proj CB, the [begin,end) spans it owns in the direct
+	// draw lists below, and its runs in the caster ring.
 	struct PointShadowLightRecord {
 		UINT staticSlot = 0;
 		int  dynSlot = -1;          // -1 = this light holds no overlay slot
 		D3D12_GPU_VIRTUAL_ADDRESS faceCb = 0;
 		UINT staticWorldBegin = 0, staticWorldEnd = 0;
 		UINT staticVobBegin = 0,   staticVobEnd = 0;
-		UINT staticSkelBegin = 0,  staticSkelEnd = 0;
-		UINT staticAttachBegin = 0, staticAttachEnd = 0;
-		UINT dynSkelBegin = 0,     dynSkelEnd = 0;
-		UINT dynAttachBegin = 0,   dynAttachEnd = 0;
+		UINT dynItemBegin = 0,     dynItemEnd = 0;
+		CasterRun staticSkel, staticAttach;   // MOB bodies + node attachments baked into the static cube
+		CasterRun dynSkel, dynAttach;         // NPCs + their attachments in the overlay
 		bool renderStatic = false;   // (re)render this slot's static casters this frame
 		bool dynScheduled = false;   // this slot's overlay was SCHEDULED this frame, so its dynamicValid is decided
 		                             // now (set if it produced draws, cleared if it didn't). An unscheduled slot is
@@ -89,10 +97,10 @@ namespace {
 	};
 	std::vector<PointShadowDraw>        g_PsStaticWorldDraws;
 	std::vector<PointShadowDraw>        g_PsStaticVobDraws;
-	std::vector<PointShadowDraw>        g_PsStaticSkelDraws;   // MOB bodies baked into the static cube
-	std::vector<PointShadowDraw>        g_PsStaticAttachDraws; // MOB node attachments baked into the static cube
-	std::vector<PointShadowDraw>        g_PsDynSkelDraws;
-	std::vector<PointShadowDraw>        g_PsDynAttachDraws;
+	std::vector<PointShadowDraw>        g_PsDynItemDraws;      // dynamic mesh vobs (own buffers, not in an arena)
+	// Skinned casters' IA bind, captured on the main thread with the arena state the commands were built from.
+	D3D12_VERTEX_BUFFER_VIEW            g_PsPosedVbv = {};
+	D3D12_INDEX_BUFFER_VIEW             g_PsSkelIbv = {};
 	std::vector<PointShadowLightRecord> g_PsLights;   // only slots TOUCHED this frame (static and/or dynamic)
 	bool g_PsAnyStatic = false;   // >=1 slot re-renders its static casters this frame
 	// Barrier scratch for Record()'s per-slot (6-subresource) transitions. Reused across frames — the
@@ -265,6 +273,34 @@ bool D3D12PointShadows::Init() {
 		m_VobInstPtr[i] = static_cast<uint8_t*>( mapped );
 		m_VobInstGpu[i] = m_VobInst[i]->GetGPUVirtualAddress();
 	}
+
+	// Skinned/attachment caster commands: b1 (param 1) + DrawIndexed, nothing else, so Vulkan can run them as DGC.
+	D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
+	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+	args[0].Constant.RootParameterIndex = 1;   // b1 CasterCB { DiffuseIndex }
+	args[0].Constant.DestOffsetIn32BitValues = 0;
+	args[0].Constant.Num32BitValuesToSet = 1;
+	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+	D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+	sigDesc.ByteStride = sizeof( PointShadowCasterCommand );
+	sigDesc.NumArgumentDescs = _countof( args );
+	sigDesc.pArgumentDescs = args;
+	if ( FAILED( m_E->m_Rhi->CreateCommandSignature( &sigDesc, m_E->m_Pipelines.PointShadow.RootSig.Get(),
+		m_CasterCmdSig.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Wrn( "D3D12: failed to create the point-shadow caster command signature." );
+		return false;
+	}
+	D3D12_RESOURCE_DESC argDesc = viDesc;
+	argDesc.Width = static_cast<UINT64>( kMaxCasterCommands ) * sizeof( PointShadowCasterCommand );
+	for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+		if ( FAILED( m_E->m_Rhi->CreateResource( uploadAlloc.HeapType, &argDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_CasterArgs[i].ReleaseAndGetAddressOf() ) ) )
+			return false;
+		m_CasterArgs[i]->SetName( L"PointShadowCasterArgsRing" );
+		D3D12_RANGE noRead = { 0, 0 };
+		void* mapped = nullptr;
+		if ( FAILED( m_CasterArgs[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+		m_CasterArgsPtr[i] = static_cast<uint8_t*>( mapped );
+	}
 	return true;
 }
 
@@ -370,10 +406,8 @@ void D3D12PointShadows::Prepare() {
 	g_PsLights.clear();
 	g_PsStaticWorldDraws.clear();
 	g_PsStaticVobDraws.clear();
-	g_PsStaticSkelDraws.clear();
-	g_PsStaticAttachDraws.clear();
-	g_PsDynSkelDraws.clear();
-	g_PsDynAttachDraws.clear();
+	g_PsDynItemDraws.clear();
+	m_CasterArgCount = 0;
 	g_PsAnyStatic = false;
 
 
@@ -404,19 +438,51 @@ void D3D12PointShadows::Prepare() {
 		&& m_E->m_SkinnedPosUv && m_E->m_SkelArena->Ready();
 	const D3D12MeshArena* const skelArena = m_E->m_SkelArena.get();
 	const D3D12MeshArena* const attachArena = m_E->m_AttachArena.get();
-	const D3D12_VERTEX_BUFFER_VIEW posedVbv = haveSkel ? m_E->SkinnedPosUvView() : D3D12_VERTEX_BUFFER_VIEW{};
+	g_PsPosedVbv = haveSkel ? m_E->SkinnedPosUvView() : D3D12_VERTEX_BUFFER_VIEW{};
+	g_PsSkelIbv = haveSkel ? skelArena->IndexBufferView() : D3D12_INDEX_BUFFER_VIEW{};
 
-	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = m_E->GetSrvGpuHandle( m_E->m_BlackTexture->GetSrvSlot() );
+	const UINT blackSlot = m_E->m_BlackTexture->GetSrvSlot();
 	// The one Gothic mutation the recorder can't do for itself: CacheIn kicks off the texture load. Resolved
-	// here, stored as a plain descriptor handle in the record.
-	auto resolveDiffuse = [&]( zCTexture* tex ) -> D3D12_GPU_DESCRIPTOR_HANDLE {
+	// here, stored as a bindless slot in the record.
+	auto resolveDiffuse = [&]( zCTexture* tex ) -> UINT {
 		if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
 			if ( MyDirectDrawSurface7* surface = tex->GetSurface() )
 				if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
 					D3D12Texture* d12 = D3D12Texture::From( gfx );
-					if ( d12->HasSRV() ) return d12->GetSrvGpuHandle();
+					if ( d12->HasSRV() ) return d12->GetSrvSlot();
 				}
-		return whiteSrv;
+		return blackSlot;
+		};
+
+	// Caster commands are staged per run, then appended to the ring opaque-first (see CasterRun).
+	PointShadowCasterCommand* const casterCmds = reinterpret_cast<PointShadowCasterCommand*>( m_CasterArgsPtr[frame] );
+	static std::vector<PointShadowCasterCommand> s_opaqueCmds, s_alphaCmds;
+	auto stageCaster = [&]( UINT diffuseSlot, bool alphaTested, const D3D12MeshArena::Range& range, INT baseVertex,
+		UINT startInstance ) {
+		PointShadowCasterCommand cmd;
+		cmd.DiffuseIndex = diffuseSlot;
+		cmd.Draw = { range.IndexCount, 6, range.StartIndex, baseVertex, startInstance };
+		( alphaTested ? s_alphaCmds : s_opaqueCmds ).push_back( cmd );
+		};
+	auto flushCasters = [&]() -> CasterRun {
+		CasterRun run;
+		run.first = m_CasterArgCount;
+		const UINT room = casterCmds ? kMaxCasterCommands - m_CasterArgCount : 0;
+		const UINT opaque = std::min( room, static_cast<UINT>( s_opaqueCmds.size() ) );
+		const UINT alpha = std::min( room - opaque, static_cast<UINT>( s_alphaCmds.size() ) );
+		if ( opaque + alpha < s_opaqueCmds.size() + s_alphaCmds.size() && !m_CasterArgsOverflowLogged ) {
+			Logging::Wrn( "D3D12: point-shadow caster command ring overflow ({} commands/frame); some skeletal cube casters dropped.",
+				kMaxCasterCommands );
+			m_CasterArgsOverflowLogged = true;
+		}
+		if ( opaque ) memcpy( casterCmds + run.first, s_opaqueCmds.data(), opaque * sizeof( PointShadowCasterCommand ) );
+		if ( alpha ) memcpy( casterCmds + run.first + opaque, s_alphaCmds.data(), alpha * sizeof( PointShadowCasterCommand ) );
+		run.opaque = opaque;
+		run.count = opaque + alpha;
+		m_CasterArgCount += run.count;
+		s_opaqueCmds.clear();
+		s_alphaCmds.clear();
+		return run;
 		};
 
 	// Standard D3D cube face order: +X, -X, +Y, -Y, +Z, -Z, with the canonical per-face up vectors.
@@ -474,7 +540,7 @@ void D3D12PointShadows::Prepare() {
 	static std::vector<VobBakeScratch> s_vobBake;
 	static std::vector<int>            s_vobBakeOf;    // assignment index -> s_vobBake index, -1 = none
 	static std::vector<uint32_t>       s_vobBakeLights; // s_vobBake index -> assignment index
-	static std::vector<std::pair<D3D12_GPU_DESCRIPTOR_HANDLE, bool>> s_visualMats;   // srv, alphaTested
+	static std::vector<std::pair<UINT, bool>> s_visualMats;   // diffuse slot, alphaTested
 	s_vobBakeOf.assign( lights.size(), -1 );
 	s_vobBakeLights.clear();
 	if ( haveVobs && staticResolvable ) {
@@ -559,7 +625,7 @@ void D3D12PointShadows::Prepare() {
 						d.ibv = IndexView( mib );
 						d.indexCount = static_cast<UINT>( mi->Indices.size() );
 						d.instanceCount = count * 6;
-						d.srv = srv;
+						d.diffuseSlot = srv;
 						d.instView = instView;
 						d.alphaTested = matAlphaTested;
 						out.draws.push_back( d );
@@ -596,8 +662,6 @@ void D3D12PointShadows::Prepare() {
 		// ==================== Phase A resolve — STATIC casters (world mesh + instanced VOBs) ====================
 		rec.staticWorldBegin = rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 		rec.staticVobBegin   = rec.staticVobEnd   = static_cast<UINT>( g_PsStaticVobDraws.size() );
-		rec.staticSkelBegin  = rec.staticSkelEnd  = static_cast<UINT>( g_PsStaticSkelDraws.size() );
-		rec.staticAttachBegin = rec.staticAttachEnd = static_cast<UINT>( g_PsStaticAttachDraws.size() );
 		if ( rec.renderStatic ) {
 			g_PsAnyStatic = true;
 			// Rebuilt below alongside the draws it describes - see InvalidateStaticForVobRemoved.
@@ -611,7 +675,7 @@ void D3D12PointShadows::Prepare() {
 			// --- World mesh: range-cull sections (AABB nearest-point), all 6 faces in one draw. ---
 			if ( haveWorld ) {
 				zCTexture* boundTex = nullptr;
-				D3D12_GPU_DESCRIPTOR_HANDLE boundSrv = whiteSrv;
+				UINT boundSrv = blackSlot;
 				for ( auto& [sx, col] : worldSections ) {
 					for ( auto& [sy, section] : col ) {
 						const zTBBox3D& bb = section.BoundingBox;
@@ -632,7 +696,7 @@ void D3D12PointShadows::Prepare() {
 							d.indexCount = static_cast<UINT>( mesh->Indices.size() );
 							d.startIndex = mesh->BaseIndexLocation;
 							d.instanceCount = 6;
-							d.srv = boundSrv;
+							d.diffuseSlot = boundSrv;
 							d.alphaTested = ( tex && tex->HasAlphaChannel() ) || meshKey.Material->HasAlphaTest();
 							g_PsStaticWorldDraws.push_back( d );
 						}
@@ -675,7 +739,7 @@ void D3D12PointShadows::Prepare() {
 					uint32_t sub = 0;   // index into this vob's g_SkinDst entries
 					for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
 						zCTexture* const matTex = mat ? mat->GetAniTexture() : nullptr;
-						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+						const UINT srv = resolveDiffuse( matTex );
 						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 							|| ( mat && mat->HasAlphaTest() );
 						for ( auto const& mesh : meshList ) {
@@ -683,22 +747,13 @@ void D3D12PointShadows::Prepare() {
 							const D3D12MeshArena::Range* range = ( mesh && posed != kNoSkinnedOutput )
 								? skelArena->Find( mesh->ArenaSlot ) : nullptr;
 							if ( !range ) continue;
-
-							PointShadowDraw d;
-							d.vbv = posedVbv;
-							d.ibv = skelArena->IndexBufferView();
-							d.baseVertex = static_cast<INT>( posed );
-							d.startIndex = range->StartIndex;
-							d.indexCount = range->IndexCount;
-							d.instanceCount = 6;
-							d.srv = srv;
-							d.alphaTested = matAlphaTested;
-							g_PsStaticSkelDraws.push_back( d );
+							stageCaster( srv, matAlphaTested, *range, static_cast<INT>( posed ), 0 );
 							baked = true;
 						}
 					}
 					if ( baked ) bakedVobs.push_back( sd.vobInfo->Vob );
 				}
+				rec.staticSkel = flushCasters();
 
 				// Most MOBs carry no soft-skin geometry: a chest or door is a zCModel whose renderable content
 				// hangs off its nodes, so the body loop above finds nothing. Bake those attachments too.
@@ -709,31 +764,20 @@ void D3D12PointShadows::Prepare() {
 						if ( a.owner->GetVobType() == zVOB_TYPE_NSC || IsNpcAttached( a.owner ) ) continue;
 						const D3D12MeshArena::Range* range = attachArena->Find( a.mesh->ArenaSlot );
 						if ( !range ) continue;
-
-						PointShadowDraw d;
-						d.vbv = attachArena->VertexBufferView();
-						d.ibv = attachArena->IndexBufferView();
-						d.baseVertex = static_cast<INT>( range->BaseVertex );
-						d.startIndex = range->StartIndex;
-						d.indexCount = range->IndexCount;
-						d.instanceCount = 6;
-						d.srv = resolveDiffuse( a.tex );
-						d.instView = a.instView;
-						d.alphaTested = a.alphaTested;
-						g_PsStaticAttachDraws.push_back( d );
+						// The whole VOB ring is bound at record time; instIndex is this attachment's element in it.
+						stageCaster( resolveDiffuse( a.tex ), a.alphaTested, *range, static_cast<INT>( range->BaseVertex ),
+							a.instIndex );
 						// AttachScratch is grouped by owner, so this dedupes the whole run in one compare.
 						if ( a.owner != lastOwner ) { bakedVobs.push_back( a.owner ); lastOwner = a.owner; }
 					}
+					rec.staticAttach = flushCasters();
 				}
 			}
-			rec.staticSkelEnd = static_cast<UINT>( g_PsStaticSkelDraws.size() );
-			rec.staticAttachEnd = static_cast<UINT>( g_PsStaticAttachDraws.size() );
 			PointLightSlotSelector::FinalizeBakedVobs( bakedVobs );
 		}
 
 		// ==================== Phase C resolve — DYNAMIC casters (skeletal NPCs + their attachments) ============
-		rec.dynSkelBegin   = rec.dynSkelEnd   = static_cast<UINT>( g_PsDynSkelDraws.size() );
-		rec.dynAttachBegin = rec.dynAttachEnd = static_cast<UINT>( g_PsDynAttachDraws.size() );
+		rec.dynItemBegin = rec.dynItemEnd = static_cast<UINT>( g_PsDynItemDraws.size() );
 		// A light with no overlay slot (dynSlot < 0) samples its static cube alone: either its category is not
 		// opted into VOB/NPC casters, or the global setting is below PLS_UPDATE_DYNAMIC, or the scarce overlay
 		// pool had nothing to give it. ps.renderDynamic is the frame budget's answer for the ones that do.
@@ -775,7 +819,7 @@ void D3D12PointShadows::Prepare() {
 				uint32_t sub = 0;   // index into this vob's g_SkinDst entries
 				for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
 					zCTexture* const matTex = mat ? mat->GetAniTexture() : nullptr;
-					const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+					const UINT srv = resolveDiffuse( matTex );
 					const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 						|| ( mat && mat->HasAlphaTest() );
 					for ( auto const& mesh : meshList ) {
@@ -783,20 +827,11 @@ void D3D12PointShadows::Prepare() {
 						const D3D12MeshArena::Range* range = ( mesh && posed != kNoSkinnedOutput )
 							? skelArena->Find( mesh->ArenaSlot ) : nullptr;
 						if ( !range ) continue;
-
-						PointShadowDraw d;
-						d.vbv = posedVbv;
-						d.ibv = skelArena->IndexBufferView();
-						d.baseVertex = static_cast<INT>( posed );
-						d.startIndex = range->StartIndex;
-						d.indexCount = range->IndexCount;
-						d.instanceCount = 6;
-						d.srv = srv;
-						d.alphaTested = matAlphaTested;
-						g_PsDynSkelDraws.push_back( d );
+						stageCaster( srv, matAlphaTested, *range, static_cast<INT>( posed ), 0 );
 					}
 				}
 			}
+			rec.dynSkel = flushCasters();
 
 			// --- Node attachments (weapons/torches/held items): mirrors the CSM cascade's "Skeletal Nodes" pass
 			// but through the point-shadow VOB caster PSO (CBV per-face view-projs, not root constants) and 6
@@ -810,19 +845,10 @@ void D3D12PointShadows::Prepare() {
 						continue;
 					const D3D12MeshArena::Range* range = attachArena->Find( a.mesh->ArenaSlot );
 					if ( !range ) continue;
-
-					PointShadowDraw d;
-					d.vbv = attachArena->VertexBufferView();
-					d.ibv = attachArena->IndexBufferView();
-					d.baseVertex = static_cast<INT>( range->BaseVertex );
-					d.startIndex = range->StartIndex;
-					d.indexCount = range->IndexCount;
-					d.instanceCount = 6;
-					d.srv = resolveDiffuse( a.tex );
-					d.instView = a.instView;
-					d.alphaTested = a.alphaTested;   // resolved with a.srvSlot on the main thread
-					g_PsDynAttachDraws.push_back( d );
+					stageCaster( resolveDiffuse( a.tex ), a.alphaTested, *range, static_cast<INT>( range->BaseVertex ),
+						a.instIndex );
 				}
+				rec.dynAttach = flushCasters();
 			}
 		}   // haveSkel
 
@@ -862,7 +888,7 @@ void D3D12PointShadows::Prepare() {
 
 					for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
 						zCTexture* const matTex = meshKey.Material->GetAniTexture();
-						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
+						const UINT srv = resolveDiffuse( matTex );
 						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 							|| meshKey.Material->HasAlphaTest();
 						for ( MeshInfo* mi : meshList ) {
@@ -876,24 +902,23 @@ void D3D12PointShadows::Prepare() {
 							d.ibv = IndexView( mib );
 							d.indexCount = static_cast<UINT>( mi->Indices.size() );
 							d.instanceCount = 6;
-							d.srv = srv;
+							d.diffuseSlot = srv;
 							d.instView = instView;
 							d.alphaTested = matAlphaTested;
-							g_PsDynAttachDraws.push_back( d );
+							g_PsDynItemDraws.push_back( d );
 						}
 					}
 				}
 			}
 
-			rec.dynSkelEnd   = static_cast<UINT>( g_PsDynSkelDraws.size() );
-			rec.dynAttachEnd = static_cast<UINT>( g_PsDynAttachDraws.size() );
+			rec.dynItemEnd = static_cast<UINT>( g_PsDynItemDraws.size() );
 		}
 
 		// Queue this slot's dynamicValid for CommitStaticCache, on exactly the same "not true until recorded AND
 		// submitted" rule the static stamp follows: publishing the bit now would tell the lit pass to sample an
 		// overlay from a list that a bailed frame never issued.
 		if ( rec.dynScheduled ) {
-			const bool hasDraws = rec.dynSkelEnd > rec.dynSkelBegin || rec.dynAttachEnd > rec.dynAttachBegin;
+			const bool hasDraws = rec.dynSkel.count || rec.dynAttach.count || rec.dynItemEnd > rec.dynItemBegin;
 			m_PendingDynamic.push_back( { static_cast<UINT>( rec.dynSlot ), hasDraws } );
 		}
 
@@ -975,12 +1000,15 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// changes (descriptor tables and root CBVs don't survive that).
 	D3D12_GPU_VIRTUAL_ADDRESS lastVb = 0;
 	D3D12_GPU_VIRTUAL_ADDRESS lastIb = 0;
-	SIZE_T lastSrv = 0;
+	UINT lastSrv = UINT_MAX;   // slot 0 is a valid heap slot
 	D3D12_GPU_VIRTUAL_ADDRESS lastInstVbAddr = 0;
 	UINT lastInstVbSize = 0;
 	auto resetBindCache = [&]() {
-		lastVb = 0; lastIb = 0; lastSrv = 0;
+		lastVb = 0; lastIb = 0; lastSrv = UINT_MAX;
 		lastInstVbAddr = 0; lastInstVbSize = 0;
+		};
+	auto bindDiffuse = [&]( UINT slot ) {
+		if ( slot != lastSrv ) { cmdList->SetGraphicsRoot32BitConstant( 1, slot, 0 ); lastSrv = slot; }
 		};
 	// Alpha-clip PSO selection, per draw. Deliberately NOT part of resetBindCache: unlike descriptor tables and
 	// root CBVs, the bound PSO survives a root-signature change, so one filter spanning all four phases is both
@@ -1012,6 +1040,35 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			lastVb = d.vbv.BufferLocation; lastIb = d.ibv.BufferLocation;
 		}
 		cmdList->DrawIndexedInstanced( d.indexCount, d.instanceCount, d.startIndex, d.baseVertex, 0 );
+		};
+
+	// A light's skinned/attachment run: one ExecuteIndirect per alpha partition. The commands only write b1, so
+	// the face CBV and the IA binds set here hold for the whole run.
+	Rhi::Resource* const casterArgs = m_CasterArgs[m_E->m_FrameIndex].Get();
+	auto submitRun = [&]( const CasterRun& run, Rhi::PipelineState* clip, Rhi::PipelineState* noAlpha ) {
+		ExecuteIndirectAlphaSplit( cmdList, m_CasterCmdSig.Get(), casterArgs,
+			static_cast<UINT64>( run.first ) * sizeof( PointShadowCasterCommand ), sizeof( PointShadowCasterCommand ),
+			run.count, run.opaque, clip, noAlpha );
+		boundPso = nullptr;   // the split set the PSO behind bindCasterPso's back
+		resetBindCache();     // ...and left b1 and the IA views to the command stream
+		};
+	auto beginRun = [&]( const PointShadowLightRecord& L ) {
+		cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
+		cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+		};
+	auto drawSkinned = [&]( const PointShadowLightRecord& L, const CasterRun& run ) {
+		if ( !casterArgs || !g_PsPosedVbv.BufferLocation ) return;
+		beginRun( L );
+		cmdList->IASetVertexBuffers( 0, 1, &g_PsPosedVbv );
+		cmdList->IASetIndexBuffer( &g_PsSkelIbv );
+		submitRun( run, psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get() );
+		};
+	auto drawAttachments = [&]( const PointShadowLightRecord& L, const CasterRun& run ) {
+		if ( !casterArgs ) return;
+		beginRun( L );
+		// Attachment arena + the whole VOB ring; StartInstanceLocation picks the attachment's world matrix.
+		if ( !m_E->BindAttachArenaIA( cmdList ) ) return;
+		submitRun( run, psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get() );
 		};
 
 	// One-time: both arrays are born with UNDEFINED depth, and a comparison sample against 0 reads as fully
@@ -1071,7 +1128,7 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				for ( UINT i = L.staticWorldBegin; i < L.staticWorldEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticWorldDraws[i];
 					bindCasterPso( psPipe.CasterWorldPSO.Get(), psPipe.CasterWorldNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					bindDiffuse( d.diffuseSlot );
 					emitGeometry( d );
 				}
 			}
@@ -1085,39 +1142,20 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				for ( UINT i = L.staticVobBegin; i < L.staticVobEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticVobDraws[i];
 					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					bindDiffuse( d.diffuseSlot );
 					emitGeometry( d );
 				}
 			}
 
-			if ( L.staticSkelEnd > L.staticSkelBegin ) {
+			if ( L.staticSkel.count ) {
 				DX_ZONE( cmdList.Get(), "MOBs" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "MOBs" );
-				// Posed vertices on the world/VOB root signature; re-bound per light for the same reason Phase C does it.
-				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
-				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
-				resetBindCache();
-				for ( UINT i = L.staticSkelBegin; i < L.staticSkelEnd; ++i ) {
-					const PointShadowDraw& d = g_PsStaticSkelDraws[i];
-					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
-					emitGeometry( d );
-				}
+				drawSkinned( L, L.staticSkel );
 			}
-
-			if ( L.staticAttachEnd > L.staticAttachBegin ) {
+			if ( L.staticAttach.count ) {
 				DX_ZONE( cmdList.Get(), "MOB Nodes" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "MOB Nodes" );
-				// Back to the VOB signature the block above switched away from - see Phase C's identical note.
-				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
-				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
-				resetBindCache();
-				for ( UINT i = L.staticAttachBegin; i < L.staticAttachEnd; ++i ) {
-					const PointShadowDraw& d = g_PsStaticAttachDraws[i];
-					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
-					emitGeometry( d );
-				}
+				drawAttachments( L, L.staticAttach );
 			}
 		}
 	}
@@ -1138,14 +1176,13 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		// scheduled light whose overlay resolved to nothing touches neither the cube nor a barrier; it just drops
 		// its dynamicValid below and the shader stops reading the array for it.
 		for ( const PointShadowLightRecord& L : g_PsLights )
-			if ( L.dynSlot >= 0 && ( L.dynSkelEnd > L.dynSkelBegin || L.dynAttachEnd > L.dynAttachBegin ) )
+			if ( L.dynSlot >= 0 && ( L.dynSkel.count || L.dynAttach.count || L.dynItemEnd > L.dynItemBegin ) )
 				pushSlot( m_DynCube.Get(), m_DynSlotState, static_cast<UINT>( L.dynSlot ), D3D12_RESOURCE_STATE_DEPTH_WRITE );
 		flushBarriers();
 
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
-			const bool haveSkelDraws   = L.dynSkelEnd > L.dynSkelBegin;
-			const bool haveAttachDraws = L.dynAttachEnd > L.dynAttachBegin;
-			if ( L.dynSlot < 0 || ( !haveSkelDraws && !haveAttachDraws ) ) continue;
+			const bool haveItemDraws = L.dynItemEnd > L.dynItemBegin;
+			if ( L.dynSlot < 0 || ( !L.dynSkel.count && !L.dynAttach.count && !haveItemDraws ) ) continue;
 
 			D3D12_CPU_DESCRIPTOR_HANDLE dsv = dynDsvBase;
 			dsv.ptr += static_cast<SIZE_T>( L.dynSlot ) * m_DsvSize;
@@ -1155,32 +1192,22 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			// view), which is why this is cheap where the old 6-subresource copy was not.
 			cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
 
-			if ( haveSkelDraws ) {
-				// Re-bind per light: the attachment block below switches to PointShadow.RootSig (a DIFFERENT,
-				// smaller root signature), so the skeletal root sig/PSO can't be assumed still bound once we're
-				// past the first light (bug: 2nd+ shadowed light's instance/bone/diffuse binds landed on the
-				// wrong root signature's parameter slots — GPU device hang, caught via D3D12 validation).
-				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
-				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
-				resetBindCache();
-				for ( UINT i = L.dynSkelBegin; i < L.dynSkelEnd; ++i ) {
-					const PointShadowDraw& d = g_PsDynSkelDraws[i];
-					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
-					emitGeometry( d );
-				}
-			}
-
-			if ( haveAttachDraws ) {
+			if ( L.dynSkel.count ) drawSkinned( L, L.dynSkel );
+			if ( L.dynAttach.count ) {
 				DX_ZONE( cmdList.Get(), "Skeletal Nodes" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "Skeletal Nodes" );
+				drawAttachments( L, L.dynAttach );
+			}
+			if ( haveItemDraws ) {
+				DX_ZONE( cmdList.Get(), "Items" );
+				TracyD3D12ZoneCGX( cmdList.Get(), "Items" );
 				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
 				resetBindCache();
-				for ( UINT i = L.dynAttachBegin; i < L.dynAttachEnd; ++i ) {
-					const PointShadowDraw& d = g_PsDynAttachDraws[i];
+				for ( UINT i = L.dynItemBegin; i < L.dynItemEnd; ++i ) {
+					const PointShadowDraw& d = g_PsDynItemDraws[i];
 					bindCasterPso( psPipe.CasterVobPSO.Get(), psPipe.CasterVobNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					bindDiffuse( d.diffuseSlot );
 					emitGeometry( d );
 				}
 			}

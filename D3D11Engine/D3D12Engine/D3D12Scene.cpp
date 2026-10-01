@@ -3889,7 +3889,7 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
             m_AttachDrawArgs[i], m_AttachDrawArgsPtr[i], L"AttachDrawArgsRing" ) )
             return false;
     }
-    return true;
+    return m_ShadowMap.CreateSkeletalArgRings();
 }
 
 
@@ -5151,13 +5151,11 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             const UINT instOffset = m_VobInstanceBufferOffset;
                             memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
                             m_VobInstanceBufferOffset += instBytes;
-                            const D3D12_VERTEX_BUFFER_VIEW attInstView = {
-                                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, instBytes };
                             // Diffuse SRV heap slot resolved HERE (main thread) so the MT shadow-cascade recorder
                             // never has to read Gothic texture state; the main-view prepass/color paths still use
                             // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately
                             // must not do.
-                            entry.attachments.push_back( { attMesh.get(), attTex, attInstView, instOffset / instBytes, vi->Vob,
+                            entry.attachments.push_back( { attMesh.get(), attTex, instOffset / instBytes, vi->Vob,
                                 ResolveShadowDiffuseSlot( attTex ),
                                 attTex && attTex->HasAlphaChannel(), vii, attBatchable } );
                         }
