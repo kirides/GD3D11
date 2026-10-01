@@ -5,6 +5,7 @@
 static const float kWindTrunkStiffness = 0.12f;   // bottom 12% of height stays put, tree-trunk-like
 static const float kWindPhaseVariation = 0.40f;
 static const float kWindStrengthMult   = 16.0f;   // internal scale-up of the CPU windStrength value
+// D3D12RayTracing.cpp's SwayReach mirrors kWindStrengthMult, the wave peak and kHeroAffectStrength
 static const float kWindPI2            = 6.283185f;
 
 float WindInstancePhaseOffset( float4x4 instMatrix, float maxHeightValue )

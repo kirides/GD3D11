@@ -1457,6 +1457,7 @@ void D3D12GraphicsEngine::TraceRtShadows() {
 	in.PointRays = m_RtPointShadowsActive ? GothicRendererSettings::RayTracedShadowRays( rs.RayTracedPointShadows ) : 0;
 	in.SunFiltered = rs.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_SMOOTH;
 	in.PointFiltered = rs.RayTracedPointShadows == GothicRendererSettings::RT_SHADOWS_SMOOTH;
+	in.ContactShadows = rs.RayTracedContactShadows;
 	// A temporal resolve averages the jitter away; without one the pattern holds still
 	in.NoiseFrame = rs.GetIsTAAEnabled() ? static_cast<UINT>( Engine::GAPI->GetFrameNumber() & 0xFFFF ) : 0u;
 	in.NearZ = Engine::GAPI->GetNearPlane();

@@ -469,6 +469,12 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
                 "(lights stacked at one spot count once); further lights, and transparent surfaces, shade\n"
                 "unshadowed with a shortened range. \"Static\" above leaves characters out. D3D12 only." );
             ImGui::EndDisabled();
+            ImGui::BeginDisabled( settings.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_OFF
+                && settings.RayTracedPointShadows == GothicRendererSettings::RT_SHADOWS_OFF );
+            CheckRow( "Ray-Traced Contact Shadows", &settings.RayTracedContactShadows,
+                "Adds short shadows from what is on screen next to the ray-traced ones: grass, and anything\n"
+                "swaying in the wind. Only covers the first metre or two from the caster." );
+            ImGui::EndDisabled();
         }
 
         CheckRow( "Limit Light Intensity", &settings.LimitLightIntesity, nullptr, "LimitLightIntensity" );

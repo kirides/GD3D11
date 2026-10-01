@@ -53,7 +53,7 @@ namespace {
 
     // Mirror include/RtScene.hlsl and WaterRT.hlsl
     struct RtGeomGPU { uint32_t BaseVertex, StartIndex, Material, Kind; };
-    struct RtInstanceGPU { uint32_t Color, Pad[3]; };
+    struct RtInstanceGPU { uint32_t Color; float SwayReach; uint32_t Pad[2]; };
     struct RtCBData {
         XMFLOAT4X4 InvViewProjRel;
         XMFLOAT4X4 ViewProjRel;
@@ -75,9 +75,11 @@ namespace {
         float SunDistance; float SunFadeBand; UINT SunRays; float SunConeTan;
         UINT PointRays; float PointSourceRadius; UINT NumTilesX; float PixelAngle;
         float ProjA, ProjB, NearZ, FarZ;
-        UINT RawIndex; UINT Filter; float MaxPenumbraPx; UINT Pad0;
+        UINT RawIndex; UINT Filter; float MaxPenumbraPx; UINT ContactShadows;
+        XMFLOAT4X4 ViewProjRel;
+        UINT ContactIndex; UINT Pad1[3];
     };
-    static_assert( sizeof( RtShadowCBData ) == 160, "RtShadowCBData must match RtShadows.hlsl's RtShadowCB" );
+    static_assert( sizeof( RtShadowCBData ) == 240, "RtShadowCBData must match RtShadows.hlsl's RtShadowCB" );
     static_assert( sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) == 64, "instance descs are packed at 64 bytes" );
     static_assert( sizeof( Affine3x4 ) == sizeof( float ) * 12, "Affine3x4 is the instance transform verbatim" );
 
@@ -89,9 +91,9 @@ namespace {
     constexpr UINT64 kOffWorldMats = kOffGeoms + sizeof( RtGeomGPU ) * kMaxGeoms;
     constexpr UINT64 kOffCb = AlignUp( kOffWorldMats + sizeof( uint32_t ) * kMaxWorldMaterials, 256 );
     constexpr UINT64 kOffShadowCb = kOffCb + 256;
-    constexpr UINT64 kOffStatsZero = kOffShadowCb + 192;   // zeros the stats counters are reset from
+    constexpr UINT64 kOffStatsZero = kOffShadowCb + 256;   // zeros the stats counters are reset from
     constexpr UINT64 kStatsBytes = 16;
-    constexpr UINT64 kRingBytes = kOffShadowCb + 256;
+    constexpr UINT64 kRingBytes = kOffStatsZero + 256;
 
     /** Per-tier knobs; index = E_WaterRayTracing. */
     struct Tier {
@@ -340,6 +342,8 @@ struct D3D12RayTracing::Impl {
     // Filtered modes only: the unfiltered trace (always UAV) and the per-cluster slot table
     ComPtr<Rhi::Resource> RawMask, ClusterGroups;
     UINT RawMaskSrv = UINT_MAX, RawMaskUav = UINT_MAX;
+    ComPtr<Rhi::Resource> ContactMask;   // contact-shadow flags while CSFilter blurs them
+    UINT ContactMaskSrv = UINT_MAX, ContactMaskUav = UINT_MAX;
     UINT64 ClusterGroupsBytes = 0;
 
     // This frame's scene
@@ -606,7 +610,8 @@ struct D3D12RayTracing::Impl {
     }
 
     // ---------------------------------------------------------------------------------------------------
-    bool AddInstance( D3D12_GPU_VIRTUAL_ADDRESS blas, const float* transform3x4, uint32_t instanceId, uint32_t color, uint32_t mask ) {
+    bool AddInstance( D3D12_GPU_VIRTUAL_ADDRESS blas, const float* transform3x4, uint32_t instanceId, uint32_t color, uint32_t mask,
+        float swayReach = 0.0f ) {
         if ( InstanceCount >= kMaxInstances ) {
             if ( !std::exchange( InstanceOverflowLogged, true ) )
                 Logging::Wrn( "D3D12: more than {} ray tracing instances; the rest are not ray traced.", kMaxInstances );
@@ -616,9 +621,11 @@ struct D3D12RayTracing::Impl {
         memcpy( d.Transform, transform3x4, sizeof( d.Transform ) );
         d.InstanceID = instanceId;
         d.InstanceMask = mask;
+        // Every hit of a swaying instance goes through the shader, which skips the ones within its sway reach
+        if ( swayReach > 0.0f ) d.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE;
         d.AccelerationStructure = blas;
         memcpy( InstanceDescs + InstanceCount, &d, sizeof( d ) );   // write-combined: one sequential store
-        InstanceData[InstanceCount] = { color, { 0, 0, 0 } };
+        InstanceData[InstanceCount] = { color, swayReach, { 0, 0 } };
         ++InstanceCount;
         return true;
     }
@@ -638,6 +645,19 @@ struct D3D12RayTracing::Impl {
         const uint32_t first = GeomCount;
         GeomCount += count;
         return first;
+    }
+
+    /** How far a swaying instance's drawn vertices can stray from its rest-pose BLAS: twice the peak of Wind.hlsl's
+        tree wind (kWindStrengthMult 16, waves up to 1.4) plus the hero push (kHeroAffectStrength 38), scaled. */
+    static float SwayReach( const VobInstanceInfo& inst ) {
+        if ( inst.windStrenth <= 0.0f && inst.canBeAffectedByPlayer <= 0.0f ) return 0.0f;
+        const float local = std::max( inst.windStrenth, 0.0f ) * 16.0f * 1.4f + ( inst.canBeAffectedByPlayer > 0.0f ? 38.0f : 0.0f );
+        float scaleSq = 0.0f;
+        for ( int c = 0; c < 3; ++c ) {
+            const float x = inst.world.m[0][c], y = inst.world.m[1][c], z = inst.world.m[2][c];
+            scaleSq = std::max( scaleSq, x * x + y * y + z * z );
+        }
+        return local * std::sqrt( scaleSq ) * 2.0f + 5.0f;
     }
 
     void AddVisual( FrameSlot& s, MeshVisualInfo* visual, const std::vector<VobInstanceInfo>& instances ) {
@@ -689,7 +709,7 @@ struct D3D12RayTracing::Impl {
             vb.FrameRecordBase = first;
         }
         for ( const VobInstanceInfo& inst : instances )
-            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, kMaskVob ) ) return;
+            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, kMaskVob, SwayReach( inst ) ) ) return;
     }
 
     void AddAttachments( FrameSlot& s, std::span<const FrameAttachDraw> draws ) {
@@ -937,9 +957,15 @@ struct D3D12RayTracing::Impl {
         return true;
     }
 
-    bool EnsureFilterTargets( UINT width, UINT height, UINT tilesX, bool points ) {
+    bool EnsureFilterTargets( UINT width, UINT height, UINT tilesX, bool points, bool contact ) {
         if ( !RawMask && !MakeTarget( width, height, kShadowMaskFormat, L"RtShadowMaskRaw", RawMask, RawMaskSrv, RawMaskUav ) ) {
             DropTarget( RawMask, RawMaskSrv, RawMaskUav );
+            return false;
+        }
+        if ( !contact && ContactMask ) DropTarget( ContactMask, ContactMaskSrv, ContactMaskUav );
+        if ( contact && !ContactMask
+            && !MakeTarget( width, height, DXGI_FORMAT_R32_UINT, L"RtContactShadows", ContactMask, ContactMaskSrv, ContactMaskUav ) ) {
+            DropTarget( ContactMask, ContactMaskSrv, ContactMaskUav );
             return false;
         }
         if ( !points ) return true;
@@ -954,6 +980,7 @@ struct D3D12RayTracing::Impl {
 
     void ReleaseFilterTargets() {
         DropTarget( RawMask, RawMaskSrv, RawMaskUav );
+        DropTarget( ContactMask, ContactMaskSrv, ContactMaskUav );
         if ( ClusterGroups ) E.QueueResourceForRelease( std::move( ClusterGroups ) );
         ClusterGroupsBytes = 0;
     }
@@ -1234,8 +1261,10 @@ struct D3D12RayTracing::Impl {
         const UINT w = static_cast<UINT>( E.m_Resolution.x ), h = static_cast<UINT>( E.m_Resolution.y );
         if ( !EnsureShadowMask( w, h ) ) return false;
         const bool filterSun = in.SunFiltered && in.SunRays > 0, filterPoints = in.PointFiltered && in.PointRays > 0;
-        bool filter = ( filterSun || filterPoints ) && E.m_Pipelines.RtShadowFilter.PSO;
-        if ( filter && !EnsureFilterTargets( w, h, in.NumTilesX, filterPoints ) ) {
+        // Contact hits get their own blur whenever CSFilter exists; without it they merge into the visibilities unblurred
+        const bool contact = in.ContactShadows && E.m_Pipelines.RtShadowFilter.PSO;
+        bool filter = ( filterSun || filterPoints || contact ) && E.m_Pipelines.RtShadowFilter.PSO;
+        if ( filter && !EnsureFilterTargets( w, h, in.NumTilesX, ( filterPoints || contact ) && in.PointRays > 0, contact ) ) {
             ReleaseFilterTargets();
             filter = false;
         }
@@ -1243,8 +1272,7 @@ struct D3D12RayTracing::Impl {
 
         DX_ZONE( Cmd().Get(), "Ray-traced shadows" );
         RtShadowCBData cb = {};
-        XMFLOAT4X4 viewProjRel;
-        ViewProjRel( in.View, in.Projection, viewProjRel, cb.InvViewProjRel );
+        ViewProjRel( in.View, in.Projection, cb.ViewProjRel, cb.InvViewProjRel );
         cb.CamPos = in.CameraPosition;
         cb.DepthIndex = in.DepthSlot;
         cb.Size[0] = w; cb.Size[1] = h;
@@ -1264,8 +1292,10 @@ struct D3D12RayTracing::Impl {
         cb.NearZ = in.NearZ;
         cb.FarZ = in.FarZ;
         cb.RawIndex = filter ? RawMaskUav : 0;
-        cb.Filter = filter ? ( filterSun ? 1u : 0u ) | ( filterPoints ? 2u : 0u ) : 0u;
+        cb.Filter = filter ? ( filterSun ? 1u : 0u ) | ( filterPoints ? 2u : 0u ) | ( contact ? 4u : 0u ) : 0u;
+        cb.ContactIndex = filter && contact ? ContactMaskUav : 0;
         cb.MaxPenumbraPx = std::max( 6.0f * h / 1080.0f, 3.0f );   // widest blur radius, from 1080p
+        cb.ContactShadows = in.ContactShadows ? 1u : 0u;
         memcpy( s.RingPtr + kOffShadowCb, &cb, sizeof( cb ) );
 
         if ( ShadowMaskState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
@@ -1299,8 +1329,11 @@ struct D3D12RayTracing::Impl {
         Cmd()->SetComputeRootUnorderedAccessView( 18, ( ClusterGroups ? ClusterGroups : StatsGpu )->GetGPUVirtualAddress() );
         Cmd()->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
         if ( filter ) {
-            if ( ClusterGroups ) Cmd()->UAVBarriers( { RawMask.Get(), ClusterGroups.Get() } );
-            else Cmd()->UAVBarrier( RawMask.Get() );
+            Rhi::Resource* written[3] = { RawMask.Get() };
+            UINT count = 1;
+            if ( ClusterGroups ) written[count++] = ClusterGroups.Get();
+            if ( ContactMask ) written[count++] = ContactMask.Get();
+            Cmd()->UAVBarriers( written, count );
             Cmd()->SetPipelineState( E.m_Pipelines.RtShadowFilter.PSO.Get() );
             Cmd()->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
         }

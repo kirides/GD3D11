@@ -5939,6 +5939,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "RayTracedSunShadows", to_string_locale_independent( (int)s.RayTracedSunShadows ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "RayTracedSunShadowDistance", float_to_string( s.RayTracedSunShadowDistance, 0 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "RayTracedPointShadows", to_string_locale_independent( (int)s.RayTracedPointShadows ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "RayTracedContactShadows", to_string_locale_independent( s.RayTracedContactShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "EnableDynamicLighting", to_string_locale_independent( s.EnableDynamicLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SmoothCameraUpdate", to_string_locale_independent( s.SmoothShadowCameraUpdate ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SmoothShadowFrequency", to_string_locale_independent( s.SmoothShadowFrequency ).c_str(), ini.c_str() );
@@ -6127,6 +6128,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.RayTracedSunShadowDistance = std::clamp( GetPrivateProfileFloatA( "Shadows", "RayTracedSunShadowDistance", ds.RayTracedSunShadowDistance, ini ),
             1000.0f, 40000.0f );
         s.RayTracedPointShadows = rtShadows( GetPrivateProfileIntA( "Shadows", "RayTracedPointShadows", ds.RayTracedPointShadows, ini.c_str() ) );
+        s.RayTracedContactShadows = GetPrivateProfileBoolA( "Shadows", "RayTracedContactShadows", ds.RayTracedContactShadows, ini );
         s.NumShadowCascades = GetPrivateProfileIntA( "Shadows", "NumShadowCascades", ds.NumShadowCascades, ini.c_str() );
         s.ShadowCascadePCFLimit = GetPrivateProfileIntA( "Shadows", "ShadowCascadePCFLimit", ds.ShadowCascadePCFLimit, ini.c_str() );
         s.ShadowFrustumCullingMode = static_cast<GothicRendererSettings::E_ShadowFrustumCulling>(GetPrivateProfileIntA( "Shadows", "ShadowFrustumCullingMode", ds.ShadowFrustumCullingMode, ini.c_str() ));

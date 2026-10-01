@@ -15,7 +15,8 @@ struct RtGeom
 struct RtInstance
 {
     uint Color;      // R8G8B8A8 instance light; .g is the baked vertex light
-    uint Pad0, Pad1, Pad2;
+    float SwayReach; // > 0: sways in the wind; how far its drawn surface strays from this rest-pose BLAS
+    uint Pad1, Pad2;
 };
 
 static const uint kKindVob = 1u;
@@ -127,7 +128,14 @@ bool PassesAlpha( Tri t, float2 bary, float coneWidth, float lodBias )
     return tex.SampleLevel( smpWrap, InterpUV( t, bary ), lod ).a >= 0.5;
 }
 
+uint CandidateMaterial( uint instanceId, uint geometry )
+{
+    return instanceId == kWorldInstanceId ? WorldMats[WorldGeoms[geometry].y] : Geoms[instanceId + geometry].Material;
+}
+
 // Distance to a blocker, -1 when nothing is in the way. The first accepted hit, not necessarily the nearest.
+// Swaying instances are non-opaque: their rest pose next to the drawn surface would shadow it, so hits closer
+// than SwayReach are skipped (RtShadows.hlsl's contact march covers that range from the real depth).
 float TraceBlocker( RayDesc ray, uint mask, float coneWidth )
 {
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
@@ -135,9 +143,15 @@ float TraceBlocker( RayDesc ray, uint mask, float coneWidth )
     while ( q.Proceed() )
     {
         if ( q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE ) continue;
-        Tri t = FetchTri( q.CandidateInstanceID(), q.CandidateInstanceIndex(), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex() );
-        if ( PassesAlpha( t, q.CandidateTriangleBarycentrics(), coneWidth, 0.0 ) )
-            q.CommitNonOpaqueTriangleHit();
+        if ( q.CandidateTriangleRayT() < Instances[q.CandidateInstanceIndex()].SwayReach ) continue;
+        uint material = CandidateMaterial( q.CandidateInstanceID(), q.CandidateGeometryIndex() );
+        bool hit = true;
+        if ( ( material & kMatAlphaTest ) != 0u && ( material & kMatNoTexture ) == 0u )
+        {
+            Tri t = FetchTri( q.CandidateInstanceID(), q.CandidateInstanceIndex(), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex() );
+            hit = PassesAlpha( t, q.CandidateTriangleBarycentrics(), coneWidth, 0.0 );
+        }
+        if ( hit ) q.CommitNonOpaqueTriangleHit();
     }
     return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? q.CommittedRayT() : -1.0;
 }

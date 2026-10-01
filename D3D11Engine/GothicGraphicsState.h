@@ -899,6 +899,7 @@ struct GothicRendererSettings {
         RayTracedSunShadows = RT_SHADOWS_OFF;
         RayTracedSunShadowDistance = 8000.0f;
         RayTracedPointShadows = RT_SHADOWS_OFF;
+        RayTracedContactShadows = true;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
@@ -1240,6 +1241,7 @@ struct GothicRendererSettings {
     E_RayTracedShadows RayTracedSunShadows;     // D3D12 with ray queries only; the CSM takes over past the distance
     float RayTracedSunShadowDistance;           // world units
     E_RayTracedShadows RayTracedPointShadows;   // D3D12 with ray queries only; replaces the shadow cubes
+    bool RayTracedContactShadows;               // screen-space march next to the rays: grass and other casters the TLAS lacks
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
