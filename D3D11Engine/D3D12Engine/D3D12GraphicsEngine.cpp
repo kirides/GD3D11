@@ -26,6 +26,8 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "D3D12VobArena.h"
+#include "D3D12MeshArena.h"
+#include "../WorldObjects.h"
 #include "../MorphGpu.h"
 
 namespace {
@@ -38,7 +40,11 @@ namespace {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 }
 
-D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ) {
+D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ),
+    m_SkelArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExSkelVertexStruct ) ),
+        L"SkeletalVertexArena", L"SkeletalIndexArena", "Skeletal mesh" ) ),
+    m_AttachArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExVertexStruct ) ),
+        L"AttachmentVertexArena", L"AttachmentIndexArena", "Attachment mesh" ) ) {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
@@ -64,7 +70,12 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
 
 void D3D12GraphicsEngine::OnInventoryVisualUsed( MeshVisualInfo* visual ) { m_VobArena->QueueVisual( visual ); }
 
-void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) { m_VobArena->Forget( mesh ); }
+void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) {
+    m_VobArena->Forget( mesh );
+    m_AttachArena->Forget( mesh->ArenaSlot );
+}
+
+void D3D12GraphicsEngine::OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) { m_SkelArena->Forget( mesh->ArenaSlot ); }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     if ( m_SwapChainReady ) {
@@ -248,6 +259,11 @@ bool D3D12GraphicsEngine::InitScene() {
     }
     if ( !m_Pipelines.CreateSkeletal() || !CreateSkeletalConstantBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline." );
+        return false;
+    }
+    // Every skeletal pass draws the vertices this poses, so it is as fatal as the pipeline above.
+    if ( !m_Pipelines.CreateSkinning() || !CreateSkinningResources() ) {
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the compute skinning resources." );
         return false;
     }
     if ( !CreateSkeletalIndirect() ) {
@@ -2081,6 +2097,11 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     m_OpaqueSceneCapturedThisFrame = false;
     m_FrameOpen = true;
+
+    // Meshes last frame's late passes (ghosts, item previews, point cubes) met for the first time. No recorder
+    // thread runs at this point, which is what the arenas' lock-free Find needs.
+    m_SkelArena->Flush( this );
+    m_AttachArena->Flush( this );
     return XR_SUCCESS;
 }
 
@@ -2399,6 +2420,7 @@ XRESULT D3D12GraphicsEngine::Present() {
     }
     // Signalled with the execute (one submit on Vulkan) rather than after Present, which queues no GPU work of ours.
     Rhi::CommandList* lists[] = { m_CmdList.Get() };
+    NoteGpuHeadroom();   // before the signal below, so it still asks about the PREVIOUS frame
     m_Rhi->GetDirectQueue()->ExecuteCommandListsAndSignal( 1, lists, m_Fence.Get(), frameFenceValue );
     m_LastDirectSignal.store( frameFenceValue );
 
@@ -2671,9 +2693,17 @@ bool D3D12GraphicsEngine::GpuCaughtUp() const {
 }
 
 
+void D3D12GraphicsEngine::NoteGpuHeadroom() {
+    // Sampled before the frame's final submit: if the previous frame has already drained, the GPU waits on the CPU.
+    // Leaky so an occasional GPU spike doesn't flip it, while a GPU-bound stretch re-enables flushes within frames.
+    m_GpuHeadroomScore = GpuCaughtUp() ? std::min( m_GpuHeadroomScore + 1, kGpuHeadroomMaxScore )
+        : std::max( m_GpuHeadroomScore - kGpuHeadroomMissCost, 0 );
+}
+
+
 bool D3D12GraphicsEngine::FlushSceneIfGpuCaughtUp() {
     // A submit boundary drains the GPU, so only split the frame once it has run out of earlier frames to chew on.
-    if ( !m_FrameOpen || !GpuCaughtUp() ) return false;
+    if ( !m_FrameOpen || !MidFrameFlushesWanted() || !GpuCaughtUp() ) return false;
     SubmitRecordedCommandsAndReopen();
     BindSceneColorTarget();
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };

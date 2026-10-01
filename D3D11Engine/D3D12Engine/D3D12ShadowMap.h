@@ -17,7 +17,8 @@
 //   B) CullCascade(c)        concurrent: frustum tests + CollectVisibleVobs + grass box cull. Touches only
 //                            cascade c's own state and read-only engine data.
 //   C) BuildCascade(c)       concurrent: cascade c's VOB instance upload (into its OWN sub-range of the shadow
-//                            instance ring, so there is no shared cursor) + its indirect-arg build.
+//                            instance ring, so there is no shared cursor) + its indirect-arg builds (VOBs,
+//                            skinned meshes, node attachments).
 //   D) RecordCascade(c,list) concurrent: the actual draws, into one command list per cascade.
 // B, C and D run back-to-back as a SINGLE job per cascade, so recording starts the moment that cascade's cull
 // finishes instead of waiting for the main thread to reach the join. The join itself stays where it always
@@ -77,6 +78,8 @@ public:
     // so the command-signature layout and the ring layout stay defined in one place each.
     bool CreateWorldArgRings( const D3D12_RESOURCE_DESC& bufferDesc );
     bool CreateVobArgRings( UINT commandStride );
+    // Skinned (SkeletalDrawCommand) and attachment (VobDrawCommand) caster rings for the skeletal cascades.
+    bool CreateSkeletalArgRings();
 
     // Live resolution change (settings): snap the request to the shared step set, then recreate the texture in
     // place (the DSV heap + SRV slot are resolution-independent and reused).
@@ -135,6 +138,7 @@ private:
     bool CreateTextureAndViews( UINT size );
     void ComputeCascadeMatrices();   // fills m_CascadeViewProj/m_CascadeFrustum/m_CascadeTexelWorld/m_SunDirWS
     void UploadSamplingConstants( bool sunUp );   // the head of the engine's shared shadow CB (b3 in the lit passes)
+    void BuildCascadeSkeletals( UINT cascade );   // SkelDraws/AttachDraws -> this cascade's two command sets
 
     D3D12GraphicsEngine* m_E = nullptr;
 
@@ -206,6 +210,19 @@ private:
     uint8_t* m_VobDrawArgsPtr[kShadowCascades][kBackBufferMax] = {};
     UINT     m_VobDrawCount[kShadowCascades] = {};   // built by FinishPrepare, consumed by RecordCascade
     UINT     m_VobOpaqueDrawCount[kShadowCascades] = {};   // alpha-test partition — see m_WorldOpaqueDrawCount
+    // Skeletal caster rings, built by BuildCascadeSkeletals: skinned meshes through the engine's skeletal
+    // signature, attachments through its VOB signature. Only the kSkeletalShadowCascades get records.
+    static constexpr UINT kMaxSkelCasterCommands = 4096;
+    static constexpr UINT kMaxAttachCasterCommands = 4096;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_SkelDrawArgs[kSkeletalShadowCascades][kBackBufferMax];
+    uint8_t* m_SkelDrawArgsPtr[kSkeletalShadowCascades][kBackBufferMax] = {};
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_AttachDrawArgs[kSkeletalShadowCascades][kBackBufferMax];
+    uint8_t* m_AttachDrawArgsPtr[kSkeletalShadowCascades][kBackBufferMax] = {};
+    UINT m_SkelDrawCount[kShadowCascades] = {};
+    UINT m_SkelOpaqueDrawCount[kShadowCascades] = {};
+    UINT m_AttachDrawCount[kShadowCascades] = {};
+    UINT m_AttachOpaqueDrawCount[kShadowCascades] = {};
+    bool m_SkelArgsOverflowLogged = false;   // log-once; a racing second log line is harmless
 
     // Lazy cascade update (parity with D3D11ShadowMap's RendererSettings.DebugSettings.ShadowCascades.
     // LazyCascadeUpdate): the LAST cascade covers the whole world and is by far the most expensive to cull and

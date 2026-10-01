@@ -253,12 +253,27 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( indexCount ) / 3;
     };
 
+    // A mesh bound by BindSkinnedMesh/BindAttachmentMesh.
+    auto drawArena = [&]( const UIItemDraw& draw, const D3D12_DRAW_INDEXED_ARGUMENTS& args ) {
+        const UINT constants[2] = { draw.Instance, GetUITextureIndex( draw.Texture ) };
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 2, constants, 0 );
+        m_CmdList->DrawIndexedInstanced( args.IndexCountPerInstance, 1, args.StartIndexLocation, args.BaseVertexLocation, 0 );
+        rs.RendererInfo.FrameDrawnTriangles += args.IndexCountPerInstance / 3;
+    };
+
     // Bound draws go before the indirect submit: ExecuteIndirect leaves b0 behind the state cache's back.
     Rhi::PipelineState* staticPso = m_Pipelines.GetOrCreateInventoryItemPipeline( false );
     if ( staticPso && !unbound.empty() ) {
         m_CmdList->SetPipelineState( staticPso );
         for ( const UIItemDraw* draw : unbound ) {
-            drawBound( *draw, draw->Mesh->GetMeshVertexBuffer(), draw->Mesh->GetMeshIndexBuffer(), sizeof( ExVertexStruct ), draw->Mesh->Indices.size() );
+            const MeshInfo* mesh = draw->Mesh;
+            if ( mesh->GetMeshVertexBuffer() && mesh->GetMeshIndexBuffer() ) {
+                drawBound( *draw, mesh->GetMeshVertexBuffer(), mesh->GetMeshIndexBuffer(), sizeof( ExVertexStruct ), mesh->Indices.size() );
+                continue;
+            }
+            // Node attachments have no buffers of their own here, only their attachment-arena range.
+            D3D12_DRAW_INDEXED_ARGUMENTS args;
+            if ( BindAttachmentMesh( mesh, args ) ) drawArena( *draw, args );
         }
     }
 
@@ -293,8 +308,8 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
             }
             if ( !bonesBound ) continue;
 
-            const SkeletalMeshInfo* mesh = draw->SkinnedMesh;
-            drawBound( *draw, mesh->MeshVertexBuffer.get(), mesh->MeshIndexBuffer.get(), sizeof( ExSkelVertexStruct ), mesh->Indices.size() );
+            D3D12_DRAW_INDEXED_ARGUMENTS args;
+            if ( BindSkinnedMesh( draw->SkinnedMesh, args ) ) drawArena( *draw, args );
         }
     }
 

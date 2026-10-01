@@ -101,7 +101,7 @@ public:
         // it for the nearest light); nothing in the selection logic reads it.
         EPointLightRebakeCause lastCause = PLR_NUM_CAUSES;   // PLR_NUM_CAUSES = never invalidated
         // Casters this bake covered, compared by POINTER only - InvalidateStaticForVobRemoved fires when the
-        // vob may already be half torn down.
+        // vob may already be half torn down. Sorted and unique (FinalizeBakedVobs) for the binary search there.
         std::vector<const zCVob*> bakedVobs;
     };
 
@@ -187,6 +187,9 @@ public:
         Select(). Deferred because neither its position nor its NPC parent link is settled when Gothic reports
         the change - a dropped item is inserted, re-parented, and then falls for several frames. */
     void QueueVobChangedInvalidation( zCVob* vob );
+
+    /** Every writer of StaticSlot::bakedVobs calls this once the list is complete. */
+    static void FinalizeBakedVobs( std::vector<const zCVob*>& baked );
 
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
     /** Matched by POINTER against StaticSlot::bakedVobs: by the time this fires the object may be half torn

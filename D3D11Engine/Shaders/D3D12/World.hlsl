@@ -141,7 +141,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
-    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
+    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
     // Scene wetness (rain), after the cascade lookup like D3D11. Perturbs N/albedo/roughness in place.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );

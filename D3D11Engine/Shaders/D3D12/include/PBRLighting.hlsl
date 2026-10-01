@@ -308,15 +308,10 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
                            float roughness, float metallic, float attenuation, float specularScale )
 {
     float NdotL = saturate( dot( N, L ) );
-    // NdotV deliberately does NOT gate the whole function (D3D11's FP_ComputeSunLighting has no view-
-    // dependent cutoff on its diffuse/ambient response either — only its specular term reads V at all).
-    // saturate(dot(N,V)) legitimately touches exactly 0 at ordinary shading-normal/silhouette grazing —
-    // e.g. standing in the street looking up along a shallow roof pitch — and early-returning 0.0 there
-    // used to black out the ENTIRE direct contribution (diffuse included) on exactly those grazing-viewed
-    // slopes, which is a much harder failure than mere dimming. Only the specular denominator below needs
-    // NdotV guarded against zero, and it already is (max(...,1e-4)).
+    // NdotV must not gate anything: normal-mapped N faces away from V on grazing-viewed slopes.
     if ( NdotL <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float NdotV = saturate( dot( N, V ) );
+    // abs (Frostbite): a back-facing facet mirrors; saturate cut spec to 0 next to its 1/k peak (crescent holes).
+    float NdotV = abs( dot( N, V ) ) + 1e-5;
     float3 H = normalize( V + L );
     float NdotH = saturate( dot( N, H ) );
     float VdotH = saturate( dot( V, H ) );

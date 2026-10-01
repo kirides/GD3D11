@@ -511,7 +511,7 @@ bool D3D12PipelineState::CreatePreviewSkeletal() {
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
     rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World
     // 2: b2 bone palette. Points into the per-frame skeletal ring, whose cursor only ADVANCES within a
-    // frame, so the handed-out address stays valid until Present — same promise as Skeletal.RootSig's b2.
+    // frame, so the handed-out address stays valid until Present.
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 3: t0 diffuse
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -655,20 +655,18 @@ bool D3D12PipelineState::CreateGhost() {
 }
 
 bool D3D12PipelineState::CreateGhostSkeletal() {
-    // Skeletal ghost VOBs (GothicAPI::TransparencyVobs.skeletalVob — invisible/fading NPCs): reuses Skeletal.hlsl's
-    // VSDepth (identical matrix-palette skinning pose to the color/prepass/shadow draws — same b0/b1/b2 cbuffers
-    // declared once at the top of that file) plus a new PSGhost entry point there. Own root sig, same shape as
-    // the non-skeletal Ghost pipeline but with the skinned b1 (per-instance)/b2 (bone-palette) root CBVs instead
-    // of a single World root-constant, since the bone palette (up to 96 matrices) far exceeds the root-constant
-    // budget — same reasoning as Skeletal.RootSig itself. No same-mesh Z-prepass (matches the non-skeletal
+    // Skeletal ghost VOBs (GothicAPI::TransparencyVobs.skeletalVob — invisible/fading NPCs): Skeletal.hlsl's VSGhost,
+    // the one skeletal VS that still skins (ghosts are not compute-skinned), plus PSGhost. Own root sig, same shape as
+    // the non-skeletal Ghost pipeline but with Skeletal.RootSig's t3 skeletal ring + b10 instance row instead of a
+    // single World root-constant. No same-mesh Z-prepass (matches the non-skeletal
     // Ghost's simplification — rare/minor artifact on chunky ghost meshes, acceptable for a niche effect).
     Rhi::Device* device = m_Device;
 
     D3D12RootLayout& rs = Layout( "GhostSkeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // Same advance-only per-frame skeletal ring as Skeletal.RootSig's b1/b2 — see there.
-    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 per-instance (World/ModelColor/Fatness)
-    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bone palette
+    // Same skeletal ring + instance row as Skeletal.RootSig's t3/b10 — see there.
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );                // 1: t3 SkelData
+    rs.AddConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );     // 2: b10 SkelDrawCB
     // 3: b7 GhostAlpha (Skeletal.hlsl's b0..b6 are all spoken for)
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );
     // 4: b6 MaterialCB { normal, ORM, DIFFUSE } — the same bindless material block Skeletal.RootSig uses, so
@@ -682,7 +680,7 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
         return false;
     GhostSkeletal.RootSig = rs.RootSig();
 
-    if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepth", Shadermodel_VS, GhostSkeletal.VsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSGhost", Shadermodel_VS, GhostSkeletal.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "PSGhost", Shadermodel_PS, GhostSkeletal.PsBlob.ReleaseAndGetAddressOf() ) ) {
@@ -690,7 +688,7 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
     }
 
     rs.ValidateShaders( {
-        { GhostSkeletal.VsBlob.Get(), "Skeletal.hlsl:VSDepth", D3D12_SHADER_VISIBILITY_VERTEX },
+        { GhostSkeletal.VsBlob.Get(), "Skeletal.hlsl:VSGhost", D3D12_SHADER_VISIBILITY_VERTEX },
         { GhostSkeletal.PsBlob.Get(), "Skeletal.hlsl:PSGhost", D3D12_SHADER_VISIBILITY_PIXEL  },
     } );
 
@@ -1772,13 +1770,22 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateDecalBlendPipeline( const Got
     return raw;
 }
 
+D3D12_INPUT_LAYOUT_DESC D3D12PipelineState::PosedSkinLayout( bool withNormalStream ) {
+    // The two streams SkinVertices.hlsl writes: {pos, uv} (20 B) and {octahedral normal, previous pos} (16 B).
+    static const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    1,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32G32B32_FLOAT, 1,  4, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+    return { layout, withNormalStream ? 4u : 2u };
+}
+
 bool D3D12PipelineState::CreateSkeletal() {
     Rhi::Device* device = m_Device;
 
-    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); b1 = per-instance CBV (VS);
-    // b2 = bone-palette CBV (VS); static linear-wrap sampler s0 (PS).
-    // b1/b2 are root CBVs (raw GPU VAs into the per-frame skeletal ring) rather than root constants —
-    // the bone palette (up to 96 matrices = 6 KB) far exceeds the 64-DWORD root-constant budget.
+    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t3 = the per-frame skeletal ring as a float4
+    // row buffer (instance records + bone palettes, VS); b10 = the draw's instance row; static sampler s0 (PS).
     // NOTE: there is deliberately NO diffuse SRV table here any more. Skeletal.hlsl fetches diffuse, normal
     // and ORM bindlessly out of the b6 MaterialCB indices (param 11), the same way the world/VOB
     // ExecuteIndirect paths do, so a per-material bind is three root constants instead of a descriptor-table
@@ -1786,10 +1793,10 @@ bool D3D12PipelineState::CreateSkeletal() {
     // CreateGhostSkeletal.
     D3D12RootLayout& rs = Layout( "Skeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // RootDataStatic on b1/b2: both point into the per-frame skeletal ring, whose cursor only ADVANCES within
-    // a frame — PrepareFrameSkeletals writes each entry once and never rewrites a handed-out address.
-    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 per-instance
-    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bone palette
+    // Volatile: the ring keeps receiving records (ghosts, inventory) after a pass binds it.
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );                    // 1: t3 SkelData
+    // Per-draw, like b6: the skeletal ExecuteIndirect writes both, which keeps it DGC-able on Vulkan.
+    rs.AddPerDrawConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );  // 2: b10 SkelDrawCB { SkelInstanceRow }
     // 3: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
     rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
     // Forward+ point lights (mirrors World.RootSig params 3/4/5, here at 4..6 — see BindFrameLights). All
@@ -1809,7 +1816,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     rs.AddTable( D3D12RootLayout::SRVRange( 5, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 point-shadow cube array
     // 11: b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex } — bindless indices. The diffuse index
     // is the third constant, matching World.RootSig's b6 layout so BindMaterialMaps serves both.
-    rs.AddConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddPerDrawConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
     // 12 = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
@@ -1836,30 +1843,13 @@ bool D3D12PipelineState::CreateSkeletal() {
         return false;
     }
 
-    // Input layout = D3D11's layout3, explicit offsets into the 76-byte ExSkelVertexStruct:
-    //   Position[4]   4x half4  (R16G16B16A16_FLOAT) @0/8/16/24  — vertex baked into each bone's space
-    //   Normal        float3    @32
-    //   BindPoseNormal float3   @44 (TEXCOORD0)
-    //   TexCoord      float2    @56 (TEXCOORD1)
-    //   boneIndices   uint8x4   @64 (BONEIDS)
-    //   weights       half4     @68 (WEIGHTS)
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
+    // Every pass draws the vertices SkinVertices.hlsl posed (see PosedSkinLayout); the depth-only ones fetch
+    // just the {pos, uv} stream.
     Rhi::GraphicsPipelineStateDesc pso = {};
     pso.pRootSignature = Skeletal.RootSig.Get();
     pso.VS = { Skeletal.VsBlob->GetBufferPointer(), Skeletal.VsBlob->GetBufferSize() };
     pso.PS = { Skeletal.PsBlob->GetBufferPointer(), Skeletal.PsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
+    pso.InputLayout = PosedSkinLayout( true );
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = kSceneColorFormat;
@@ -1883,9 +1873,9 @@ bool D3D12PipelineState::CreateSkeletal() {
         return false;
     }
 
-    // Skeletal depth-prepass PSO (P2.9b-4b): same root sig + skinned input layout + depth state, but VSDepth/
-    // PSDepthClip and color writes masked off. Lays down NPC/monster depth so the light cull bounds tiles to
-    // them (fixing the near-skeletal cutoff). Same layout as the color PSO (VSDepth reads the same VS_IN).
+    // Skeletal depth-prepass PSO (P2.9b-4b): same root sig + depth state, but VSDepth/PSDepthClip, the {pos, uv}
+    // stream only, and color writes masked off. Lays down NPC/monster depth so the light cull bounds tiles to
+    // them (fixing the near-skeletal cutoff).
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepth", Shadermodel_VS, Skeletal.DepthPrepassVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
@@ -1902,6 +1892,7 @@ bool D3D12PipelineState::CreateSkeletal() {
 
     pso.VS = { Skeletal.DepthPrepassVsBlob->GetBufferPointer(), Skeletal.DepthPrepassVsBlob->GetBufferSize() };
     pso.PS = { Skeletal.DepthPrepassPsBlob->GetBufferPointer(), Skeletal.DepthPrepassPsBlob->GetBufferSize() };
+    pso.InputLayout = PosedSkinLayout( false );
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
     // ...and depth write back ON: the color PSO above leaves it OFF, and inheriting that would make the
     // prepass write nothing. Every PSO built from `pso` from here down is a prepass/G-buffer variant.
@@ -1919,8 +1910,8 @@ bool D3D12PipelineState::CreateSkeletal() {
         }
     }
 
-    // G-buffer prepass variant: motion vectors + normals for skinned meshes (VSDepthGBuf skins the vertex TWICE,
-    // once through the current pose and once through the previous one out of the same b2 palette). Optional —
+    // G-buffer prepass variant: motion vectors + normals for skinned meshes (the previous-frame position comes
+    // posed from SkinVertices.hlsl, in the second stream). Optional —
     // on failure DrawSkeletalDepthPrepass falls back to the depth-only PSO above and NPCs simply contribute no
     // per-vertex motion (they still get camera velocity from FillCameraVelocity). Never fails the whole pipeline.
     if ( m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepthGBuf", Shadermodel_VS, Skeletal.DepthPrepassGBufVsBlob.ReleaseAndGetAddressOf() )
@@ -1931,6 +1922,7 @@ bool D3D12PipelineState::CreateSkeletal() {
         } );
         pso.VS = { Skeletal.DepthPrepassGBufVsBlob->GetBufferPointer(), Skeletal.DepthPrepassGBufVsBlob->GetBufferSize() };
         pso.PS = { Skeletal.DepthPrepassGBufPsBlob->GetBufferPointer(), Skeletal.DepthPrepassGBufPsBlob->GetBufferSize() };
+        pso.InputLayout = PosedSkinLayout( true );
         pso.NumRenderTargets = 2;
         pso.RTVFormats[0] = kVelocityFormat;
         pso.RTVFormats[1] = kGBufferNormalFormat;
@@ -1955,17 +1947,19 @@ bool D3D12PipelineState::CreatePointShadow() {
     Rhi::Device* device = m_Device;
     if ( !device ) return false;
 
-    // --- Root signature: b0 = the 6 face view-projs as a root CBV (VS); t0 = diffuse SRV table (PS alpha-clip);
-    // static linear sampler s0. (b0 is a CBV not root consts — 6 matrices = 384B exceed the root-const budget.)
+    // --- Root signature: b0 = the 6 face view-projs as a root CBV (VS); b1 = the bindless diffuse slot (PS
+    // alpha-clip); static linear sampler s0. (b0 is a CBV not root consts — 6 matrices = 384B exceed the budget.)
     D3D12RootLayout& rs = Layout( "PointShadow" );
     // PrepareShadowPasses resolves every face CB into the per-frame ring BEFORE BeginShadowRecording
     // launches the recorders that bind them; the recorders only ever replay already-final addresses.
     rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 PCR_ViewProj[6]
-    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 1: t0 diffuse
+    // Per draw, so the skinned/attachment casters' command signature stays DGC-able on Vulkan.
+    rs.AddPerDrawConstants( 1, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 1: b1 CasterCB { DiffuseIndex }
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0
 
-    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     PointShadow.RootSig = rs.RootSig();
 
@@ -1975,8 +1969,6 @@ bool D3D12PipelineState::CreatePointShadow() {
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCube", Shadermodel_VS, PointShadow.VsBlob.ReleaseAndGetAddressOf() ) )
         return false;
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeVob", Shadermodel_VS, PointShadow.VobVsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
-    if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "VSCubeSkel", Shadermodel_VS, PointShadow.SkelVsBlob.ReleaseAndGetAddressOf() ) )
         return false;
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "PSCubeClip", Shadermodel_PS, PointShadow.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
@@ -2062,44 +2054,13 @@ bool D3D12PipelineState::CreatePointShadow() {
         }
     }
 
-    // --- Skeletal caster: needs a dedicated root sig (b0 = 6 face view-projs CBV, b1 = instance, b2 = bones, all
-    // VS; t0 diffuse table + s0 for the alpha cutout). Mirrors the sun path's skeletal binds but with the 6-matrix
-    // face CBV at b0 instead of the single-matrix root const. Reuses the per-frame d.instCb/d.boneCb.
+    // --- Skeletal caster: the world caster's VSCube and root sig over the {pos, uv} stream SkinVertices.hlsl
+    // posed in world space.
     {
-        D3D12RootLayout& skelRs = Layout( "PointShadowSkeletal" );
-        // All three are pre-resolved per-frame ring addresses — see PointShadow.RootSig's b0 and
-        // Skeletal.RootSig's b1/b2 for why they are final by the time a recorder binds them.
-        skelRs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 PCR_ViewProj[6]
-        skelRs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 instance (M_World/Fatness)
-        skelRs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bones
-        skelRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 3: t0 diffuse
-        skelRs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
-            D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0 — same as the world/VOB caster sig above
-
-        if ( !skelRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
-            return false;
-        PointShadow.SkeletalRootSig = skelRs.RootSig();
-
-        skelRs.ValidateShaders( {
-            { PointShadow.SkelVsBlob.Get(), "PointShadow.hlsl:VSCubeSkel", D3D12_SHADER_VISIBILITY_VERTEX },
-            { PointShadow.PsBlob.Get(),     "PointShadow.hlsl:PSCubeClip", D3D12_SHADER_VISIBILITY_PIXEL  },
-        } );
-
-        const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        };
-        pso.pRootSignature = PointShadow.SkeletalRootSig.Get();
-        pso.VS = { PointShadow.SkelVsBlob->GetBufferPointer(), PointShadow.SkelVsBlob->GetBufferSize() };
+        pso.pRootSignature = PointShadow.RootSig.Get();
+        pso.VS = { PointShadow.VsBlob->GetBufferPointer(), PointShadow.VsBlob->GetBufferSize() };
         pso.PS = { PointShadow.PsBlob->GetBufferPointer(), PointShadow.PsBlob->GetBufferSize() };
-        pso.InputLayout = { skelLayout, _countof( skelLayout ) };
+        pso.InputLayout = PosedSkinLayout( false );
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, PointShadow.CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster)." );
             return false;
@@ -3951,6 +3912,39 @@ bool D3D12PipelineState::CreateMorphFold() {
 }
 
 
+bool D3D12PipelineState::CreateSkinning() {
+    // Compute skinning (Shaders/D3D12/SkinVertices.hlsl + D3D12Skinning.cpp): root descriptors only, one dispatch
+    // per frame.
+    Rhi::Device* device = m_Device;
+    if ( !device ) return false;
+
+    D3D12RootLayout& rs = Layout( "Skinning" );
+    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SkinCB
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 1: t0 jobs (this frame's ring slice)
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL );             // 2: t1 group -> job table
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL );             // 3: t2 skeletal arena vertices (raw)
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_ALL );             // 4: t3 SkelData (instance records + bones)
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 5: u0 posed {pos, uv}
+    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );             // 6: u1 posed {normal, previous pos}
+    if ( !rs.Build( device ) )
+        return false;
+    Skinning.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "SkinVertices.hlsl", "CSSkin", Shadermodel_CS, Skinning.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { Skinning.CsBlob.Get(), "SkinVertices.hlsl:CSSkin", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    Rhi::ComputePipelineStateDesc desc = {};
+    desc.pRootSignature = Skinning.RootSig.Get();
+    desc.CS = { Skinning.CsBlob->GetBufferPointer(), Skinning.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &desc, Skinning.PSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (CSSkin)." );
+        return false;
+    }
+    return true;
+}
+
+
 bool D3D12PipelineState::CreateLines() {
     // Debug/editor line lists (D3D12LineRenderer) — port of D3D11's PS_Lines + VS_Lines / VS_Lines_XYZRHW.
     // Drawn INTO the HDR scene colour, before the TAA resolve (see DrawLines), so the PS sRGB-decodes the
@@ -4078,6 +4072,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     // vertex buffers already exist in one usage or the other), so this only refreshes the shader.
     runOptional( "MorphFold", &D3D12PipelineState::CreateMorphFold );
     runFatal( "Skeletal", &D3D12PipelineState::CreateSkeletal );
+    runFatal( "Skinning", &D3D12PipelineState::CreateSkinning );
     runFatal( "PointShadow", &D3D12PipelineState::CreatePointShadow );
     runFatal( "Water", &D3D12PipelineState::CreateWater );
     runFatal( "Particle", &D3D12PipelineState::CreateParticle );

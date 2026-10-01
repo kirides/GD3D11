@@ -52,6 +52,7 @@ using Microsoft::WRL::ComPtr;
 #include "../WorldMeshSection.h"
 #include "../GSky.h"
 #include "D3D12VobArena.h"
+#include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 
 
@@ -63,12 +64,10 @@ std::vector<FrameVobUpload> g_FrameVobUploads;
 std::vector<VobInfo*> g_FrameVobs;
 // Per-vob snapshot of the diffuse SRV heap slot for each entry of visual->SkeletalMeshes. Taken by
 // PrepareFrameSkeletals right after that vob's UpdateMeshLibTexAniState(), the only moment the shared
-// per-MODEL texture slots describe this instance. Grown monotonically and reused: only [0, g_SkelMatSrvCount)
-// is live each frame. Indexed, never pointed into, by FrameSkelDraw::matSrvIndex, so neither a rehash of
-// g_SkelUploadCache nor a growth here can dangle a record. Deque so growth cannot invalidate the element
-// pointers the concurrent CSM cascade recorders hold.
-std::deque<std::vector<SkelMatSlot>> g_SkelMatSrvs;
-size_t g_SkelMatSrvCount = 0;
+// per-MODEL texture slots describe this instance. Appended on the main thread only; see the declaration.
+std::array<SkelMatSlot, kMaxSkelMatSlots> g_SkelMatSlots;
+static uint32_t g_SkelMatSlotCount = 0;
+static bool g_SkelMatSlotsOverflowLogged = false;
 
 namespace {
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
@@ -115,16 +114,20 @@ namespace {
     // D3D12PointShadows::SkelScratch / AttachScratch, which PrepareFrameSkeletals routes into).
     std::vector<FrameSkelDraw>   g_FrameSkelDraws;
     std::vector<FrameAttachDraw> g_FrameAttachDraws;
+    // Attachment meshes deformed this frame (actively morphing .MMS), whose attachment-arena copy
+    // RefreshDynamicVobArena overwrites from their own vertex buffer.
+    std::vector<MeshInfo*> g_FrameMorphAttachMeshes;
 
     // Per-vob-per-frame upload cache: the pose/instance CB data and node-attachment ring uploads are
     // view-independent (same pose regardless of who's culling), so PrepareFrameSkeletals uploads them ONCE per
     // vob per frame here and every cull pass (main view + each shadow cascade) just appends the cached GPU
     // addresses / attachment records into its own destination list. Cleared each frame alongside g_FrameSkelDraws.
     struct SkelUploadCache {
-        D3D12_GPU_VIRTUAL_ADDRESS instCb = 0;
-        D3D12_GPU_VIRTUAL_ADDRESS boneCb = 0;
+        uint32_t instRow = 0;   // SkeletalInstanceGPU row in the skeletal ring
+        uint32_t skinFirst = kNoSkinnedOutput;   // -> g_SkinDst
         bool hasBaseMesh = false;
-        uint32_t matSrvIndex = 0xFFFFFFFFu;   // -> g_SkelMatSrvs, see FrameSkelDraw::matSrvIndex
+        uint32_t matFirst = 0;   // -> g_SkelMatSlots, see FrameSkelDraw::matFirst
+        uint32_t matCount = 0;
         std::vector<FrameAttachDraw> attachments;
     };
     gtl::flat_hash_map<SkeletalVobInfo*, SkelUploadCache> g_SkelUploadCache;
@@ -154,25 +157,21 @@ namespace {
     constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
     constexpr UINT kSkeletalMaxBones = 96;                         // NUM_MAX_BONES — matches every skeletal HLSL
 
-    // Per-instance skeletal constant buffer (register b1). A subset of the D3D11
-    // VS_ExConstantBuffer_PerInstanceSkeletal: world matrix + model color + fatness, plus the motion-vector
-    // tail (previous world matrix + where the previous bone pose starts in the b2 palette).
-    //
-    // The motion fields are APPENDED, never inserted: PointShadow.hlsl declares a byte-compatible PREFIX of
-    // this same buffer (the point-shadow skeletal caster shares the upload), so shifting ModelColor/Fatness
-    // would silently corrupt it. Keep in sync with Skeletal.hlsl's InstanceCB.
-    struct SkeletalInstanceCB {
-        DirectX::XMFLOAT4X4 World;
-        DirectX::XMFLOAT4   ModelColor;
-        float               Fatness;
-        float               Pad[3];
-        DirectX::XMFLOAT4X4 PrevWorld;
-        uint32_t            PrevBoneOffset;   // index of the first previous-pose matrix in the b2 palette
-        float               Pad2[3];
+    // Per-instance skeletal record in the skeletal ring, read as float4 rows by include/SkeletalInstance.hlsl
+    // (t3; a draw finds it through its SkelInstanceRow root constant). A subset of D3D11's
+    // VS_ExConstantBuffer_PerInstanceSkeletal plus the motion-vector history; bone rows are absolute ring rows.
+    struct SkeletalInstanceGPU {
+        DirectX::XMFLOAT4X4 World;         // rows 0-3
+        DirectX::XMFLOAT4X4 PrevWorld;     // rows 4-7
+        DirectX::XMFLOAT4   ModelColor;    // row 8
+        float               Fatness;       // row 9
+        uint32_t            BoneRow;       // first row of the current pose
+        uint32_t            PrevBoneRow;   // first row of the previous pose
+        uint32_t            Pad;
     };
-    static_assert( sizeof( SkeletalInstanceCB ) == 176, "SkeletalInstanceCB must stay 16-byte-aligned" );
-    static_assert( offsetof( SkeletalInstanceCB, ModelColor ) == 64 && offsetof( SkeletalInstanceCB, Fatness ) == 80,
-        "PointShadow.hlsl's SkelInstanceCB is a byte-compatible prefix of this struct — the motion tail must stay APPENDED" );
+    static_assert( sizeof( SkeletalInstanceGPU ) == 160 && offsetof( SkeletalInstanceGPU, ModelColor ) == 128,
+        "SkeletalInstanceGPU must match the row layout in include/SkeletalInstance.hlsl" );
+    constexpr UINT kSkeletalRowBytes = 16;   // one float4 of SkelData
 
     // Per-decal instance data (per-instance vertex stream, slot 1). World = world*offset*scale; unlike D3D11
     // the D3D12 decal VS applies the standard ViewProj, so the CPU only needs the model matrix. Color.a is
@@ -605,18 +604,10 @@ void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
                 if ( !bindDiffuse( material, 3 ) ) continue;
 
                 for ( auto const& mesh : meshes ) {
-                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                    m_CmdList->IASetIndexBuffer( &ibv );
-
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                    rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                    D3D12_DRAW_INDEXED_ARGUMENTS draw;
+                    if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
+                    m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+                    rs.RendererInfo.FrameDrawnTriangles += draw.IndexCountPerInstance / 3;
                 }
             }
         } else if ( !m_SkeletalCBOverflowLogged ) {
@@ -667,18 +658,10 @@ void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
                     if ( !bindDiffuse( material, 2 ) ) continue;
 
                     for ( auto const& mesh : meshes ) {
-                        if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
-                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() );
-                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
-                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-                        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                        m_CmdList->IASetIndexBuffer( &ibv );
-
-                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                        rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                        D3D12_DRAW_INDEXED_ARGUMENTS draw;
+                        if ( !BindAttachmentMesh( mesh.get(), draw ) ) continue;
+                        m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+                        rs.RendererInfo.FrameDrawnTriangles += draw.IndexCountPerInstance / 3;
                     }
                 }
             }
@@ -1062,7 +1045,7 @@ namespace {
 		float    range = 0.0f;     // grow-only: covers every member ever seen, quantized up
 		UINT     seenCount = 0;    // grow-only: most static lights ever seen at once in this cell
 	};
-	std::unordered_map<uint64_t, StaticCluster> g_StaticClusters;
+	gtl::flat_hash_map<uint64_t, StaticCluster> g_StaticClusters;
 
 	XMINT3 ClusterCellOf( const XMFLOAT3& p ) {
 		return XMINT3( static_cast<int>( std::floor( p.x / kStaticClusterCell ) ),
@@ -1097,7 +1080,7 @@ namespace {
 
 		// Pass 1 - fold this frame's candidates into the per-cell state (all grow-only). The DOME sweep, not
 		// the visible set, so a cell's extents no longer depend on where the camera looks.
-		static std::unordered_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
+		static gtl::flat_hash_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
 		s_cellCount.clear();
 		for ( const PointLightSlotSelector::Candidate& c : cands ) {
 			if ( !IsClusterEligible( c ) ) continue;
@@ -1327,7 +1310,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// seen for the first time starts at its target, so world load does not fade every light in.
 	constexpr float kClampEaseSeconds = 0.3f;
 	struct ClampState { float scale; UINT32 lastFrame; };
-	static std::unordered_map<uint64_t, ClampState> s_clampScale;
+	static gtl::flat_hash_map<uint64_t, ClampState> s_clampScale;
 	static UINT32 s_clampFrame = 0;
 	++s_clampFrame;
 	const float dt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
@@ -1360,7 +1343,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	}
 	// Without this the map keeps every light the session has ever seen. Swept rarely; walks the whole map.
 	if ( ( s_clampFrame % 1024 ) == 0 )
-		std::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
+		gtl::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
 
 	if ( count ) memcpy( m_LightBufferPtr[frame], dst, static_cast<size_t>( count ) * sizeof( GPULight ) );
 }
@@ -1931,12 +1914,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 			// attachment pass uses, so both guards live here rather than at the top of the branch.
 			if ( !visual->SkeletalMeshes.empty() && m_Pipelines.GhostSkeletal.PSO && m_Pipelines.GhostSkeletal.RootSig
 				&& m_SkeletalCBBuffer[frame] && m_SkeletalCBBufferPtr[frame] ) {
-			SkeletalInstanceCB inst = {};
-			XMStoreFloat4x4( &inst.World, xmWorld );
-			inst.ModelColor = XMFLOAT4( 1, 1, 1, 1 );   // unused by VSDepth/PSGhost (unlit) — kept for struct-layout parity
-			inst.Fatness = model->GetModelFatness();
-
-			const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
+			const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceGPU ) );
 			const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
 			const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
 			const UINT boneOff = AlignCB( instOff + instSize );
@@ -1948,17 +1926,25 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				}
 				continue;
 			}
+			SkeletalInstanceGPU inst = {};
+			XMStoreFloat4x4( &inst.World, xmWorld );
+			inst.PrevWorld = inst.World;                  // VSDepth reads neither the history nor ModelColor
+			inst.ModelColor = XMFLOAT4( 1, 1, 1, 1 );
+			inst.Fatness = model->GetModelFatness();
+			inst.BoneRow = boneOff / kSkeletalRowBytes;
+			inst.PrevBoneRow = inst.BoneRow;
+			const UINT instRow = instOff / kSkeletalRowBytes;
+
 			uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
 			memcpy( ringBase + instOff, &inst, instSize );
 			memcpy( ringBase + boneOff, ghostBoneCache.data(), boneSize );
 			m_SkeletalCBBufferOffset = boneOff + boneSize;
-			const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
 
 			m_CmdList->SetPipelineState( m_Pipelines.GhostSkeletal.PSO.Get() );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.GhostSkeletal.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-			m_CmdList->SetGraphicsRootConstantBufferView( 1, ringGpu + instOff );
-			m_CmdList->SetGraphicsRootConstantBufferView( 2, ringGpu + boneOff );
+			m_CmdList->SetGraphicsRootShaderResourceView( 1, m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress() );   // t3
+			m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &instRow, 0 );                                       // b10
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 1, &info.alpha, 0 );
 
 			for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
@@ -1968,16 +1954,10 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				// SampleSkelDiffuse and off descriptor tables entirely.
 				BindMaterialMaps( tex, 4, ResolveDiffuseSlotCacheIn( tex ) );
 				for ( auto const& mesh : meshList ) {
-					if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-					m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-					m_CmdList->IASetIndexBuffer( &ibv );
-					m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-					drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+					D3D12_DRAW_INDEXED_ARGUMENTS draw;
+					if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
+					m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+					drawnTris += draw.IndexCountPerInstance / 3;
 				}
 			}
 			}   // end base skinned mesh
@@ -2053,19 +2033,10 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 							m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
 
 							for ( auto const& attMesh : attMeshes ) {
-								if ( !attMesh || attMesh->Indices.empty() ) continue;
-								if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
-								D3D12VertexBuffer* avb = D3D12VertexBuffer::From( attMesh->GetMeshVertexBuffer() );
-								D3D12VertexBuffer* aib = D3D12VertexBuffer::From( attMesh->GetMeshIndexBuffer() );
-								if ( !avb->GetResource() || !aib->GetResource() ) continue;
-								const D3D12_VERTEX_BUFFER_VIEW vbv = {
-									avb->GetGpuVirtualAddress(), avb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-								m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-								const D3D12_INDEX_BUFFER_VIEW ibv = {
-									aib->GetGpuVirtualAddress(), aib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-								m_CmdList->IASetIndexBuffer( &ibv );
-								m_CmdList->DrawIndexedInstanced( static_cast<UINT>( attMesh->Indices.size() ), 1, 0, 0, 0 );
-								drawnTris += static_cast<unsigned int>( attMesh->Indices.size() ) / 3;
+								D3D12_DRAW_INDEXED_ARGUMENTS draw;
+								if ( !BindAttachmentMesh( attMesh.get(), draw ) ) continue;
+								m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+								drawnTris += draw.IndexCountPerInstance / 3;
 							}
 						}
 					}
@@ -2474,15 +2445,20 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// (g_FrameSkelDraws/g_FrameAttachDraws — PrepareFrameSkeletals also runs the once/frame animation update, so
 	// it MUST run exactly once). Both skeletal lists (animated + static mobs) are prepared here up front.
 	UploadFrameVobInstances();
-	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear();
+	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear(); g_FrameMorphAttachMeshes.clear();
+	BeginSkinningFrame();        // posed-vertex reservations start from zero; grows the streams if last frame ran out
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
-	g_SkelMatSrvCount = 0;       // ...and its parallel per-material diffuse-handle snapshots (capacity retained)
+	g_SkelMatSlotCount = 0;      // ...and its parallel per-material diffuse-slot snapshots
 	// collectGhosts=true ONLY here: this is the list D3D11's GothicAPI::DrawWorldMeshNaive walks, and the
 	// reroute of ghost NPCs into TransparencyVobs is that function's job. Static MOBs (g_FrameMobs) keep the
 	// plain drop — D3D11 does not reroute them either.
 	const zCVob* skeletalFocusVob = ComputeSkeletalFocusVob();
 	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), nullptr, -1, nullptr, 0.0f, 1, true, skeletalFocusVob );
 	PrepareFrameSkeletals( g_FrameMobs, nullptr, -1, nullptr, 0.0f, 1, false, skeletalFocusVob );
+	// Upload what those two just met for the first time (and what last frame's shadow passes met), so new
+	// NPCs draw this frame. Before the cascade jobs launch, which read the arenas lock-free.
+	m_SkelArena->Flush( this );
+	m_AttachArena->Flush( this );
 
 	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
 	// globalTime were already advanced once in OnBeginFrame; minHeight/maxHeight are refreshed per-visual right
@@ -2571,6 +2547,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// which is safe only because no recorder touches Gothic — they replay handles snapshotted on this thread.
 	// Moving a Gothic read INTO a recorder would break that.
 	BuildSkeletalDrawCommands();
+	// Pose every skinned sub-mesh this frame's PrepareFrameSkeletals calls reserved, once, for all passes. After the
+	// last of them (the point-light prepare above) and before the depth prepass, the first pass that draws them.
+	DispatchSkinning();
 	// Morph attachments (NPC heads, bow/crossbow draw meshes): fold this frame's blend shapes on the GPU into
 	// each submesh's vertex buffer. Must precede the depth prepass, the first pass in SUBMISSION order that
 	// draws one. No-op when the fold is inactive; UpdateMorphMeshVisual then deformed them on the CPU.
@@ -2631,8 +2610,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// otherwise it goes out now so the GPU runs it during the join.
 	if ( m_FrameOpen ) {
 		const bool ownLists = m_ShadowRecordingPending || ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() );
-		m_SubmitMainWithShadows = ownLists
-			&& ( ( m_ShadowMap.CascadeJobsDone() && ShadowRecordJobsDone() ) || !GpuCaughtUp() );
+		m_SubmitMainWithShadows = ownLists && ( !MidFrameFlushesWanted()
+			|| ( m_ShadowMap.CascadeJobsDone() && ShadowRecordJobsDone() ) || !GpuCaughtUp() );
 		if ( !m_SubmitMainWithShadows ) FlushSceneIfGpuCaughtUp();
 	}
 
@@ -2840,7 +2819,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	postFxGraph.Execute( m_CmdList );
 
 	// The 3D frame is final; Gothic's UI and game code run before Present, so let the GPU start on it now.
-	if ( m_FrameOpen && GpuCaughtUp() ) {
+	if ( m_FrameOpen && MidFrameFlushesWanted() && GpuCaughtUp() ) {
 		SubmitRecordedCommandsAndReopen();
 		const D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 		m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
@@ -3301,15 +3280,13 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
 
 bool D3D12GraphicsEngine::CreateVobIndirect() {
-    // Command signatures + per-frame UPLOAD arg rings for the GPU-driven instanced VOBs (P2.12).
+    // Command signature + per-frame UPLOAD arg rings for the GPU-driven instanced VOBs (P2.12).
     //
-    // Two signatures. The instanced-VOB one carries NO buffer views: every static VOB sub-mesh lives in the
-    // shared mega-buffers (D3D12VobArena) and every instance in the one instance buffer the pass binds, so a
-    // command is just material consts + wind consts + DrawIndexed. That is the point of the arena — VBV/IBV
-    // arguments are what make a command an IA state change, and 560 of those per pass dominated the VOB cost.
-    //
-    // The second ("bound") signature is the old six-argument shape, kept for node attachments, whose geometry
-    // comes and goes with NPCs. Arg order MUST match each struct's member layout. Both rings stay
+    // The signature carries NO buffer views: every static VOB sub-mesh lives in the shared mega-buffers
+    // (D3D12VobArena) and every instance in the one instance buffer the pass binds, so a command is just
+    // material consts + wind consts + DrawIndexed. That is the point of the arena — VBV/IBV arguments are what
+    // make a command an IA state change, and 560 of those per pass dominated the VOB cost. Node attachments
+    // use it too, over the attachment arena. Arg order MUST match VobDrawCommand's member layout. The rings stay
     // UPLOAD/GENERIC_READ (which includes INDIRECT_ARGUMENT) and are rebuilt each frame.
     Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Pipelines.World.RootSig ) return false;
@@ -3340,33 +3317,6 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
         m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the VOB indirect command signature." );
-        return false;
-    }
-
-    // ---- Bound variant (node attachments) -------------------------------------------------------------
-    // The two VBVs + IBV lead so their UINT64 GPUVAs stay 8-aligned; 96 is a multiple of 8, so the next
-    // command's VBV is aligned too.
-    static_assert( sizeof( VobBoundDrawCommand ) == 96, "VobBoundDrawCommand must match its arg layout (96 B stride)" );
-    static_assert( offsetof( VobBoundDrawCommand, MatNormalIndex ) == 48, "b6 consts must follow the 3 buffer views" );
-    static_assert( offsetof( VobBoundDrawCommand, Draw ) == 68, "draw args must be last of the indirect arguments" );
-
-    D3D12_INDIRECT_ARGUMENT_DESC boundArgs[6] = {};
-    boundArgs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
-    boundArgs[0].VertexBuffer.Slot = 0;                       // packed ExVertexStruct
-    boundArgs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
-    boundArgs[1].VertexBuffer.Slot = 1;                       // per-instance VobInstanceInfo
-    boundArgs[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
-    boundArgs[3] = args[0];
-    boundArgs[4] = args[1];
-    boundArgs[5].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-
-    D3D12_COMMAND_SIGNATURE_DESC boundDesc = {};
-    boundDesc.ByteStride = sizeof( VobBoundDrawCommand );
-    boundDesc.NumArgumentDescs = _countof( boundArgs );
-    boundDesc.pArgumentDescs = boundArgs;
-    if ( FAILED( m_Rhi->CreateCommandSignature( &boundDesc, m_Pipelines.World.RootSig.Get(),
-        m_VobBoundIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
-        Logging::Wrn( "D3D12: failed to create the bound VOB indirect command signature." );
         return false;
     }
 
@@ -3402,60 +3352,87 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
 
 
 void D3D12GraphicsEngine::RefreshDynamicVobArena() {
-    // Animated static VOBs (.MMS) are the one kind of VOB geometry that is not immutable: their vertices are
+    // Animated static VOBs (.MMS) and actively morphing node attachments are the geometry whose vertices are
     // rewritten every frame, by ZENGIN's CPU deform into the MeshInfo's DYNAMIC upload buffer
     // (UpdateMorphMeshVisual) or by the GPU morph fold into its DEFAULT UAV (DispatchMorphFold). The arena
     // copy uploaded at registration is only the conversion pose, so mirror the live buffer into it here.
-    const std::vector<MeshInfo*>& dynamic = m_VobArena->DynamicMeshes();
-    if ( dynamic.empty() || !m_FrameOpen || !m_VobArena->Ready() ) return;
-
-    DX_ZONE( m_CmdList.Get(), "Morph arena refresh" );
-
+    if ( !m_FrameOpen ) return;
+    struct Copy {
+        D3D12VertexBuffer* Src;
+        Rhi::Resource* Dst;
+        UINT64 DstOffset;
+        UINT64 Bytes;
+    };
     static std::vector<D3D12ResourceTransition> barriers;
-    static std::vector<std::pair<MeshInfo*, D3D12VertexBuffer*>> copies;
+    static std::vector<Copy> copies;
     barriers.clear();
     copies.clear();
 
-    for ( MeshInfo* mi : dynamic ) {
-        const D3D12VobArena::Range* range = m_VobArena->Find( mi );
-        if ( !range || !mi->GetMeshVertexBuffer() ) continue;
+    auto collect = [&]( MeshInfo* mi, Rhi::Resource* dst, UINT baseVertex, UINT stride ) {
+        if ( !mi->GetMeshVertexBuffer() ) return;
         D3D12VertexBuffer* src = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-        if ( !src->GetResource() ) continue;
+        if ( !src->GetResource() ) return;
         // The fold's DEFAULT UAV output needs a transition to COPY_SOURCE. The CPU-deform buffer is UPLOAD,
         // permanently in GENERIC_READ, which already includes COPY_SOURCE.
         if ( src->IsUavCapable() ) {
             const D3D12_RESOURCE_STATES from = ( src->GetUavState() == D3D12VertexBuffer::EUavState::Vertex )
                 ? D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER : D3D12_RESOURCE_STATE_COMMON;
             barriers.push_back( { src->GetResource(), from, D3D12_RESOURCE_STATE_COPY_SOURCE } );
+            src->SetUavState( D3D12VertexBuffer::EUavState::Vertex );   // where the barriers below leave it
         }
-        copies.emplace_back( mi, src );
+        // Same wedge order the arena copy was uploaded in (a morph sub-mesh deliberately skips
+        // OptimizeVertices), so this is a straight range overwrite. min() guards a shorter buffer.
+        const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(), static_cast<UINT64>( mi->Vertices.size() ) * stride );
+        copies.push_back( { src, dst, static_cast<UINT64>( baseVertex ) * stride, bytes } );
+    };
+
+    bool vobArena = false;
+    if ( m_VobArena->Ready() ) {
+        for ( MeshInfo* mi : m_VobArena->DynamicMeshes() ) {
+            const D3D12VobArena::Range* range = m_VobArena->Find( mi );
+            if ( !range ) continue;
+            const size_t before = copies.size();
+            collect( mi, m_VobArena->GetVertexBuffer(), range->BaseVertex, D3D12VobArena::VertexStride() );
+            vobArena |= copies.size() != before;
+        }
+    }
+    bool attachArena = false;
+    if ( m_AttachArena->Ready() ) {
+        // One barrier per source buffer, so no mesh may appear twice.
+        std::sort( g_FrameMorphAttachMeshes.begin(), g_FrameMorphAttachMeshes.end() );
+        g_FrameMorphAttachMeshes.erase( std::unique( g_FrameMorphAttachMeshes.begin(), g_FrameMorphAttachMeshes.end() ),
+            g_FrameMorphAttachMeshes.end() );
+        for ( MeshInfo* mi : g_FrameMorphAttachMeshes ) {
+            const D3D12MeshArena::Range* range = m_AttachArena->Find( mi->ArenaSlot );
+            if ( !range ) continue;
+            const size_t before = copies.size();
+            collect( mi, m_AttachArena->GetVertexBuffer(), range->BaseVertex, m_AttachArena->VertexStride() );
+            attachArena |= copies.size() != before;
+        }
     }
     if ( copies.empty() ) return;
 
+    DX_ZONE( m_CmdList.Get(), "Morph arena refresh" );
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
+    for ( const Copy& c : copies )
+        m_CmdList->CopyBufferRegion( c.Dst, c.DstOffset, c.Src->GetResource(), 0, c.Bytes );
 
-    for ( auto const& [mi, src] : copies ) {
-        const D3D12VobArena::Range* range = m_VobArena->Find( mi );
-        // Same wedge order the arena copy was uploaded in (a morph sub-mesh deliberately skips
-        // OptimizeVertices), so this is a straight range overwrite. min() guards a shorter buffer.
-        const UINT64 bytes = std::min<UINT64>( src->GetSizeInBytes(),
-            static_cast<UINT64>( mi->Vertices.size() ) * D3D12VobArena::VertexStride() );
-        m_CmdList->CopyBufferRegion( m_VobArena->GetVertexBuffer(),
-            static_cast<UINT64>( range->BaseVertex ) * D3D12VobArena::VertexStride(),
-            src->GetResource(), 0, bytes );
-    }
-
-    // Hand the fold buffers back to the state DispatchMorphFold expects next frame, and the arena back to the
-    // IA — it promoted into COPY_DEST implicitly and needs an explicit barrier out before the prepass reads it.
+    // Hand the fold buffers back to the state DispatchMorphFold expects next frame, and the arenas back to the
+    // IA — they promoted into COPY_DEST implicitly and need an explicit barrier out before the prepass reads them.
     barriers.clear();
-    for ( auto const& [mi, src] : copies ) {
-        if ( !src->IsUavCapable() ) continue;
-        barriers.push_back( { src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+    for ( const Copy& c : copies ) {
+        if ( !c.Src->IsUavCapable() ) continue;
+        barriers.push_back( { c.Src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
-        src->SetUavState( D3D12VertexBuffer::EUavState::Vertex );
     }
-    barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
+    if ( vobArena ) {
+        barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
+    }
+    if ( attachArena ) {
+        barriers.push_back( { m_AttachArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
+    }
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 }
 
@@ -3475,6 +3452,56 @@ bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* 
         m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
     cmdList->IASetVertexBuffers( 0, 2, views );
     cmdList->IASetIndexBuffer( &ibv );
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList ) {
+    if ( !m_AttachArena->Ready() || !m_VobInstanceBuffer[m_FrameIndex] ) return false;
+    // StartInstanceLocation is an element index into the whole ring (see BuildSkeletalDrawCommands).
+    const D3D12_VERTEX_BUFFER_VIEW views[2] = {
+        m_AttachArena->VertexBufferView(),
+        { m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress(), m_VobInstanceBufferCapacity, VobInstanceStride() },
+    };
+    const D3D12_INDEX_BUFFER_VIEW ibv = m_AttachArena->IndexBufferView();
+    cmdList->IASetVertexBuffers( 0, 2, views );
+    cmdList->IASetIndexBuffer( &ibv );
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw ) {
+    if ( !mesh || mesh->Indices.empty() ) return false;
+    m_SkelArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
+        mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
+    const D3D12MeshArena::Range* range = m_SkelArena->Find( mesh->ArenaSlot );
+    if ( !range || !m_SkelArena->Ready() ) return false;
+    const D3D12_VERTEX_BUFFER_VIEW vbv = m_SkelArena->VertexBufferView();
+    const D3D12_INDEX_BUFFER_VIEW ibv = m_SkelArena->IndexBufferView();
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    draw = { range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), 0 };
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::BindAttachmentMesh( const MeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw ) {
+    if ( !mesh || mesh->Indices.empty() ) return false;
+    m_AttachArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
+        mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
+    const D3D12MeshArena::Range* range = m_AttachArena->Find( mesh->ArenaSlot );
+    if ( !range || !m_AttachArena->Ready() ) return false;
+    // A morph mesh keeps its own vertex buffer, deformed for this very draw; its indices are mesh-relative,
+    // so they address it with base vertex 0.
+    D3D12VertexBuffer* own = mesh->GetMeshVertexBuffer() ? D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() ) : nullptr;
+    const bool ownVertices = own && own->GetResource();
+    const D3D12_VERTEX_BUFFER_VIEW vbv = ownVertices
+        ? D3D12_VERTEX_BUFFER_VIEW{ own->GetGpuVirtualAddress(), own->GetSizeInBytes(), sizeof( ExVertexStruct ) }
+        : m_AttachArena->VertexBufferView();
+    const D3D12_INDEX_BUFFER_VIEW ibv = m_AttachArena->IndexBufferView();
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    draw = { range->IndexCount, 1, range->StartIndex, ownVertices ? 0 : static_cast<INT>( range->BaseVertex ), 0 };
     return true;
 }
 
@@ -3798,42 +3825,34 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
 
 
 bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
-    // T9: command signature + per-frame UPLOAD arg rings for the GPU-driven skeletal base meshes, plus the
-    // (signature-less) arg rings for the node attachments, which submit through the existing VOB signature.
-    // Must run AFTER CreateVobIndirect — the attachment rings are sized on VobBoundDrawCommand and the
-    // attachment passes reuse m_VobBoundIndirectCmdSig itself.
+    // T9: command signature + per-frame UPLOAD arg rings for the GPU-driven skeletal base meshes, plus the arg
+    // rings for the node attachments, which submit through m_VobIndirectCmdSig (so this runs after CreateVobIndirect).
     Rhi::Device* device = m_Rhi.Get();
     if ( !device || !m_Pipelines.Skeletal.RootSig || !m_Pipelines.World.RootSig ) return false;
 
-    // The GPU reads each command as tightly-packed native argument structs in pArgumentDescs order. The two root
-    // CBVs are bare 8-byte GPU VAs and lead, so everything after them (both buffer views) stays 8-aligned; 80 is a
-    // multiple of 8 so the next command's InstCB is aligned too. Unlike VobBoundDrawCommand there is no trailing
-    // payload here — nothing GPU-side patches skeletal commands (no GPU cull for NPCs yet).
-    static_assert( sizeof( SkeletalDrawCommand ) == 80, "SkeletalDrawCommand must match the command signature arg layout (80 B stride)" );
-    static_assert( offsetof( SkeletalDrawCommand, MeshVBV ) == 16, "SkeletalDrawCommand VBV must follow the two root CBVs" );
-    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 48, "SkeletalDrawCommand b6 consts must follow the buffer views" );
-    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 60, "SkeletalDrawCommand draw args must be last" );
+    // Root constants and a draw, nothing else: the mesh comes from the arena (Base/StartIndex), the instance
+    // and bones from the skeletal ring row. On Vulkan both constants are push constants, so DGC can run it.
+    static_assert( sizeof( SkeletalDrawCommand ) == 36, "SkeletalDrawCommand must match the command signature arg layout (36 B stride)" );
+    // D3D12 requires the arguments in increasing root-parameter order: b10 (param 2) before b6 (param 11).
+    static_assert( offsetof( SkeletalDrawCommand, InstanceRow ) == 0, "SkeletalDrawCommand b10 must lead" );
+    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 4, "SkeletalDrawCommand b6 consts must follow b10" );
+    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 16, "SkeletalDrawCommand draw args must be last" );
 
-    D3D12_INDIRECT_ARGUMENT_DESC args[6] = {};
-    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
-    args[0].ConstantBufferView.RootParameterIndex = 1;         // b1 per-instance CB (root CBV, VS)
-    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
-    args[1].ConstantBufferView.RootParameterIndex = 2;         // b2 bone palette CB (root CBV, VS)
-    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
-    args[2].VertexBuffer.Slot = 0;                             // ExSkelVertexStruct (skinned, no instance stream)
-    args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
-    args[4].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
-    args[4].Constant.RootParameterIndex = 11;                  // b6 MaterialCB { normal, orm, diffuse }
-    args[4].Constant.DestOffsetIn32BitValues = 0;
-    args[4].Constant.Num32BitValuesToSet = 3;
-    args[5].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    D3D12_INDIRECT_ARGUMENT_DESC args[3] = {};
+    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[0].Constant.RootParameterIndex = 2;                   // b10 SkelDrawCB { SkelInstanceRow }
+    args[0].Constant.DestOffsetIn32BitValues = 0;
+    args[0].Constant.Num32BitValuesToSet = 1;
+    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[1].Constant.RootParameterIndex = 11;                  // b6 MaterialCB { normal, orm, diffuse }
+    args[1].Constant.DestOffsetIn32BitValues = 0;
+    args[1].Constant.Num32BitValuesToSet = 3;
+    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 
     D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-    sigDesc.ByteStride = sizeof( SkeletalDrawCommand );        // 80 B; MUST match the struct + arg layout
+    sigDesc.ByteStride = sizeof( SkeletalDrawCommand );
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
-    // Commands set root descriptors (b1/b2) and root constants (b6), so the signature must carry the root
-    // signature those parameter indices refer to.
     if ( FAILED( m_Rhi->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
         m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: failed to create the skeletal indirect command signature." );
@@ -3865,11 +3884,11 @@ bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
         if ( !makeRing( static_cast<UINT64>( kMaxSkeletalDrawCommands ) * sizeof( SkeletalDrawCommand ),
             m_SkeletalDrawArgs[i], m_SkeletalDrawArgsPtr[i], L"SkeletalDrawArgsRing" ) )
             return false;
-        if ( !makeRing( static_cast<UINT64>( kMaxAttachDrawCommands ) * sizeof( VobBoundDrawCommand ),
+        if ( !makeRing( static_cast<UINT64>( kMaxAttachDrawCommands ) * sizeof( VobDrawCommand ),
             m_AttachDrawArgs[i], m_AttachDrawArgsPtr[i], L"AttachDrawArgsRing" ) )
             return false;
     }
-    return true;
+    return m_ShadowMap.CreateSkeletalArgRings();
 }
 
 
@@ -3877,7 +3896,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     // Folds the per-mesh CPU draw path of BOTH skeletal passes into one build. Per base-mesh record: run the
     // instance's texani update ONCE (it mutates the model's SHARED texture slots, so it must happen while we
     // read that instance's materials), resolve the bindless normal/ORM/diffuse indices, and emit one command
-    // per sub-mesh. Node attachments do the same into a VobBoundDrawCommand buffer.
+    // per sub-mesh. Node attachments do the same into VobDrawCommands over the attachment arena.
     //
     // Main thread, before BeginShadowRecording: every Gothic-touching call here must finish before the
     // cascade recorders start reading Gothic state on pool threads.
@@ -3892,7 +3911,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     // Alpha-test partition staging for both command sets below — see BuildWorldDrawCommands for the rationale.
     // Main thread only (this runs before BeginShadowRecording fans anything out), so plain statics.
     static std::vector<SkeletalDrawCommand> alphaSkelCmds;
-    static std::vector<VobBoundDrawCommand> alphaAttachCmds;
+    static std::vector<VobDrawCommand> alphaAttachCmds;
 
     auto logOverflow = [this]( const char* what, UINT cap ) {
         if ( !m_SkeletalDrawArgsOverflowLogged ) {
@@ -3903,7 +3922,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         };
 
     // --- Base skinned meshes ---------------------------------------------------------------------------
-    if ( !g_FrameSkelDraws.empty() && m_SkeletalDrawArgsPtr[frame] ) {
+    if ( !g_FrameSkelDraws.empty() && m_SkeletalDrawArgsPtr[frame] && m_SkelArena->Ready() && m_SkinnedPosUv ) {
         SkeletalDrawCommand* cmds = reinterpret_cast<SkeletalDrawCommand*>( m_SkeletalDrawArgsPtr[frame] );
         UINT count = 0;
         alphaSkelCmds.clear();
@@ -3915,6 +3934,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             // incorrect textures if not done correctly.
             model->UpdateMeshLibTexAniState();
 
+            uint32_t sub = 0;   // index into this vob's g_SkinDst entries
             for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
                 zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
                 // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
@@ -3927,25 +3947,21 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 const bool alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
 
                 for ( auto const& mesh : meshList ) {
-                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
-                        continue;
-                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                    const uint32_t posed = SkinnedBase( d, sub++ );
+                    if ( !mesh || posed == kNoSkinnedOutput ) continue;
+                    const D3D12MeshArena::Range* range = m_SkelArena->Find( mesh->ArenaSlot );
+                    if ( !range ) continue;   // requested this frame, not uploaded yet (and not posed)
                     if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
 
                     SkeletalDrawCommand c{};
-                    c.InstCB  = d.instCb;
-                    c.BoneCB  = d.boneCb;
-                    c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-                    c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
                     c.MatNormalIndex  = mats[0];
                     c.MatOrmIndex     = mats[1];
                     c.MatDiffuseIndex = mats[2];
-                    c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
+                    c.InstanceRow     = d.instRow;
+                    c.Draw.IndexCountPerInstance = range->IndexCount;
                     c.Draw.InstanceCount         = 1;
-                    c.Draw.StartIndexLocation    = 0;
-                    c.Draw.BaseVertexLocation    = 0;
+                    c.Draw.StartIndexLocation    = range->StartIndex;
+                    c.Draw.BaseVertexLocation    = static_cast<INT>( posed );   // arena indices, posed vertices
                     c.Draw.StartInstanceLocation = 0;
                     if ( alphaTested ) alphaSkelCmds.push_back( c );
                     else               cmds[count++] = c;
@@ -3965,20 +3981,19 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
     }
 
     // --- Node attachments (weapons/heads/held items) ----------------------------------------------------
-    // The BOUND command shape (VobBoundDrawCommand/m_VobBoundIndirectCmdSig): unlike the instanced VOBs,
-    // attachment geometry is not in the world arena — it comes and goes with NPCs — so each command still
-    // carries its own VBVs + IBV. An attachment is otherwise a one-instance VOB draw, down to the packed
+    // VobDrawCommands over the attachment arena (BindAttachArenaIA), instances addressed in the VOB ring by
+    // StartInstanceLocation. An attachment is otherwise a one-instance VOB draw, down to the packed
     // ExVertexStruct + VobInstanceInfo stream. WindMinHeight/MaxHeight go out as 0:
     // VSMainAttach/VSDepthAttach never read b4 (the instance stream's wind fields carry Fatness/Scaling here).
-    if ( !g_FrameAttachDraws.empty() && m_AttachDrawArgsPtr[frame] ) {
-        VobBoundDrawCommand* cmds = reinterpret_cast<VobBoundDrawCommand*>( m_AttachDrawArgsPtr[frame] );
+    if ( !g_FrameAttachDraws.empty() && m_AttachDrawArgsPtr[frame] && m_AttachArena->Ready() ) {
+        VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( m_AttachDrawArgsPtr[frame] );
         UINT count = 0;
         alphaAttachCmds.clear();
 
         // --- Instanced batching (main view only) -------------------------------------------------------
-        // A crowd's worth of identical swords otherwise arrives as one one-instance command each, rebinding
-        // two VBVs + an IBV for ~200 vertices. The batch head supplies the VB/IB for every member, so the key
-        // must mean "same buffers": the MeshInfo POINTER, which works as a key because SharedVisualRegistry
+        // A crowd's worth of identical swords otherwise arrives as one one-instance command each, ~200
+        // vertices per draw. The batch head supplies the arena range for every member, so the key must mean
+        // "same vertices": the MeshInfo POINTER, which works as a key because SharedVisualRegistry
         // dedupes conversions. Not meshId — that identifies the source zCSubMesh and aliases distinct
         // geometry (see MeshInfo::meshId). Grouped through a hash map, not a sort: nothing downstream depends
         // on attachment draw order (all opaque, depth-tested).
@@ -3999,7 +4014,8 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             }
         };
         struct AttachBatch {
-            const FrameAttachDraw* head;   // supplies the VB/IB + index count for the whole batch
+            const FrameAttachDraw* head;   // the batch's first member
+            const D3D12MeshArena::Range* range;   // its arena range, shared by every member
             UINT mats[3];
             bool alphaTested;
             std::vector<const FrameAttachDraw*> members;
@@ -4013,11 +4029,9 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         size_t unbatchable = 0;   // actively morphing .MMS only — forced singletons, see the plots below
 
         for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
-            if ( !a.mesh || a.mesh->Indices.empty() || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() )
-                continue;
-            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
-            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
-            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+            if ( !a.mesh ) continue;
+            const D3D12MeshArena::Range* range = m_AttachArena->Find( a.mesh->ArenaSlot );
+            if ( !range ) continue;   // requested this frame, not uploaded yet
 
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
@@ -4040,6 +4054,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 if ( bi >= batches.size() ) batches.emplace_back();
                 AttachBatch& nb = batches[bi];
                 nb.head = &a;
+                nb.range = range;
                 nb.mats[0] = mats[0]; nb.mats[1] = mats[1]; nb.mats[2] = mats[2];
                 nb.alphaTested = alphaTested;
                 if ( batchable ) batchIndex.emplace( key, bi );
@@ -4055,8 +4070,8 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         TracyPlot( "Attach batches out", static_cast<int64_t>( usedBatches ) );
         TracyPlot( "Attach unbatchable", static_cast<int64_t>( unbatchable ) );
 
-        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so a single InstVBV
-        // spans them. A second copy of the instance data (the collection-time write the cascade/point-shadow
+        // Emit one command per batch, re-uploading each batch's instances CONTIGUOUSLY so one
+        // StartInstanceLocation run spans them. A second copy of the instance data (the collection-time write the cascade/point-shadow
         // consumers read through instView stays put), a few KB per frame out of the VOB instance ring.
         for ( size_t bi = 0; bi < usedBatches; ++bi ) {
             const AttachBatch& b = batches[bi];
@@ -4065,6 +4080,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 
             const UINT instBytes = VobInstanceStride();
             const UINT need = instBytes * static_cast<UINT>( b.members.size() );
+            m_VobInstanceBufferOffset += ( instBytes - m_VobInstanceBufferOffset % instBytes ) % instBytes;
             if ( m_VobInstanceBufferOffset + need > m_VobInstanceBufferCapacity ) {
                 if ( !m_VobInstanceOverflowLogged ) {
                     Logging::Wrn( "D3D12: VOB instance ring overflow (attachment batches dropped this frame)." );
@@ -4080,23 +4096,17 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             }
             m_VobInstanceBufferOffset += need;
 
-            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( b.head->mesh->GetMeshVertexBuffer() );
-            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( b.head->mesh->GetMeshIndexBuffer() );
-
-            VobBoundDrawCommand c{};
-            c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-            c.InstVBV = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, need, instBytes };
-            c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+            VobDrawCommand c{};
             c.MatNormalIndex  = b.mats[0];
             c.MatOrmIndex     = b.mats[1];
             c.MatDiffuseIndex = b.mats[2];
             c.WindMinHeight   = 0.0f;
             c.WindMaxHeight   = 0.0f;
-            c.Draw.IndexCountPerInstance = static_cast<UINT>( b.head->mesh->Indices.size() );
+            c.Draw.IndexCountPerInstance = b.range->IndexCount;
             c.Draw.InstanceCount         = static_cast<UINT>( b.members.size() );
-            c.Draw.StartIndexLocation    = 0;
-            c.Draw.BaseVertexLocation    = 0;
-            c.Draw.StartInstanceLocation = 0;
+            c.Draw.StartIndexLocation    = b.range->StartIndex;
+            c.Draw.BaseVertexLocation    = static_cast<INT>( b.range->BaseVertex );
+            c.Draw.StartInstanceLocation = instOffset / instBytes;
             c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
             c.LodBucket   = kLodBucketNear;   // attachments never split; VisualIndex already skips them
             if ( b.alphaTested ) alphaAttachCmds.push_back( c );
@@ -4104,7 +4114,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         }
         m_AttachOpaqueDrawCount = count;
         if ( !alphaAttachCmds.empty() ) {
-            std::memcpy( cmds + count, alphaAttachCmds.data(), alphaAttachCmds.size() * sizeof( VobBoundDrawCommand ) );
+            std::memcpy( cmds + count, alphaAttachCmds.data(), alphaAttachCmds.size() * sizeof( VobDrawCommand ) );
             count += static_cast<UINT>( alphaAttachCmds.size() );
         }
         m_AttachDrawCount = count;
@@ -4867,7 +4877,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         // of a model share the slots). The MAIN-VIEW draw paths (DrawSkeletalDepthPrepass / DrawSkeletalColor)
         // call it per-record right before reading the materials — which is why FrameSkelDraw carries vobInfo.
         // The shadow-cascade recorder can't: it may run on a pool thread, where mutating Gothic's shared texani
-        // state is unsafe. It reads the g_SkelMatSrvs snapshot the cache-miss branch below takes instead.
+        // state is unsafe. It reads the g_SkelMatSlots snapshot the cache-miss branch below takes instead.
 
         // Upload cache: skip straight to the cached GPU addresses / attachment records if this vob was already
         // prepared by an earlier cull pass this frame (e.g. the main view already prepared an NPC that a shadow
@@ -4893,20 +4903,21 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             // slots still describe it (see [[skeletal-texani-shared-slots]]) — the shadow-cascade recorder can't
             // re-run UpdateMeshLibTexAniState from a pool thread, so it indexes this instead. Same order as
             // visual->SkeletalMeshes iterates, which is stable for the rest of the frame (the map isn't mutated
-            // after ExtractSkeletalMeshFromVob above). The outer vector grows monotonically and its inner vectors
-            // keep their capacity across frames, so this settles into zero per-frame allocations.
+            // after ExtractSkeletalMeshFromVob above). On overflow the vob keeps matCount 0 and casts with the
+            // conservative fallback (black diffuse, clipping PSO).
             SkelUploadCache entry;
-            if ( g_SkelMatSrvCount >= g_SkelMatSrvs.size() )
-                g_SkelMatSrvs.emplace_back();
-            {
-                std::vector<SkelMatSlot>& matSrvs = g_SkelMatSrvs[g_SkelMatSrvCount];
-                matSrvs.clear();
+            if ( const size_t numMats = visual->SkeletalMeshes.size(); g_SkelMatSlotCount + numMats <= kMaxSkelMatSlots ) {
+                entry.matFirst = g_SkelMatSlotCount;
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
                     zCTexture* matTex = mat ? mat->GetAniTexture() : nullptr;
-                    matSrvs.push_back( { ResolveShadowDiffuseSlot( matTex ),
-                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) } );
+                    g_SkelMatSlots[g_SkelMatSlotCount++] = { ResolveShadowDiffuseSlot( matTex ),
+                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) };
                 }
-                entry.matSrvIndex = static_cast<uint32_t>( g_SkelMatSrvCount++ );
+                entry.matCount = static_cast<uint32_t>( numMats );
+            } else if ( !g_SkelMatSlotsOverflowLogged ) {
+                Logging::Wrn( "D3D12: skeletal material snapshot pool full ({} slots/frame); some NPC shadows lose their alpha cutout.",
+                    kMaxSkelMatSlots );
+                g_SkelMatSlotsOverflowLogged = true;
             }
 
             // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the
@@ -4952,24 +4963,19 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             // hands-only first-person models. Mirrors D3D11 DrawSkeletalMeshVobs, which guards its base pass
             // on !SkeletalMeshes.empty() && !GetDrawHandVisualsOnly() but always runs attachments.
             if ( !visual->SkeletalMeshes.empty() && !skipBaseMesh ) {
-                // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can
-                // be bound as a root CBV). Uploaded ONCE here; every consumer (prepass/color/shadow cascades)
-                // reuses these two GPU addresses via the cache.
-                const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
-                // Motion vectors: the PREVIOUS frame's pose is appended to the SAME b2 allocation, current at
-                // [0, numBones), previous at [numBones, 2*numBones). One allocation instead of two is what keeps
-                // this off both Skeletal.RootSig (no third root CBV) and the 80-byte SkeletalDrawCommand indirect
-                // signature. Costs up to 6 KB more ring per visible NPC; the ring is 8 MB/frame.
+                // Instance record + both poses from the per-frame skeletal ring, uploaded ONCE here; every
+                // consumer (prepass/color/shadow cascades/point cubes) addresses them through instRow. 256-byte
+                // offsets keep the ring usable for the root-CBV bone binds of the inventory/preview pipelines.
                 // A vob with no history yet (just spawned / first frame of a world) reuses the CURRENT pose as
                 // its previous one, so its velocity computes as pure camera motion rather than as garbage.
                 const std::vector<XMFLOAT4X4>& prevBones =
                     ( vi->HasValidPrevTransforms && vi->PrevBoneTransforms.size() >= numBones )
                         ? vi->PrevBoneTransforms : boneCache;
+                const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceGPU ) );
                 const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
-                const UINT boneSizeTotal = boneSize * 2;
                 const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
                 const UINT boneOff = AlignCB( instOff + instSize );
-                if ( boneOff + boneSizeTotal > m_SkeletalCBBufferCapacity ) {
+                if ( boneOff + boneSize * 2 > m_SkeletalCBBufferCapacity ) {
                     if ( !m_SkeletalCBOverflowLogged ) {
                         Logging::Wrn( "D3D12: skeletal CB ring overflow ({} bytes/frame). Some skeletal meshes dropped this frame.",
                                   m_SkeletalCBBufferCapacity );
@@ -4978,28 +4984,37 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     break;
                 }
 
-                SkeletalInstanceCB inst = {};
+                SkeletalInstanceGPU inst = {};
                 XMStoreFloat4x4( &inst.World, xmWorld );
-                // ModelColor.w doubles as the focus-highlight sentinel — Skeletal.hlsl's PSMain reads it as i.col.a.
-                const float focusSentinel = ( playerFocusVob && playerFocusVob == vi->Vob ) ? 2.0f : groundLight.w;
-                inst.ModelColor = XMFLOAT4( groundLight.x, groundLight.y, groundLight.z, focusSentinel );
-                inst.Fatness = model->GetModelFatness();
                 // StoreVobPreviousTransforms (end of the previous frame) is what fills PrevWorldMatrix; before
                 // its first run HasValidPrevTransforms is false and the current world doubles as the previous.
                 XMStoreFloat4x4( &inst.PrevWorld, vi->HasValidPrevTransforms
                     ? XMLoadFloat4x4( &vi->PrevWorldMatrix ) : xmWorld );
-                inst.PrevBoneOffset = numBones;
+                // ModelColor.w doubles as the focus-highlight sentinel — Skeletal.hlsl's PSMain reads it as i.col.a.
+                const float focusSentinel = ( playerFocusVob && playerFocusVob == vi->Vob ) ? 2.0f : groundLight.w;
+                inst.ModelColor = XMFLOAT4( groundLight.x, groundLight.y, groundLight.z, focusSentinel );
+                inst.Fatness = model->GetModelFatness();
+                inst.BoneRow = boneOff / kSkeletalRowBytes;
+                inst.PrevBoneRow = ( boneOff + boneSize ) / kSkeletalRowBytes;
 
                 uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
                 memcpy( ringBase + instOff, &inst, instSize );
                 memcpy( ringBase + boneOff, boneCache.data(), boneSize );
                 memcpy( ringBase + boneOff + boneSize, prevBones.data(), boneSize );
-                m_SkeletalCBBufferOffset = boneOff + boneSizeTotal;
+                m_SkeletalCBBufferOffset = boneOff + boneSize * 2;
 
-                const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
-                entry.instCb = ringGpu + instOff;
-                entry.boneCb = ringGpu + boneOff;
+                entry.instRow = instOff / kSkeletalRowBytes;
+                entry.skinFirst = ReserveSkinned( visual, entry.instRow );
                 entry.hasBaseMesh = true;
+
+                // Into the skinned-mesh arena on first sight; drawn from there once the next flush landed it.
+                for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
+                    for ( auto const& mesh : meshList ) {
+                        if ( !mesh ) continue;
+                        m_SkelArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
+                            mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
+                    }
+                }
             }
 
             // Node attachments (weapons/heads/lamps/held items): world = modelWorld * boneMatrix[node]. Upload
@@ -5109,9 +5124,15 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
                         for ( auto const& attMesh : attMeshes ) {
                             if ( !attMesh || attMesh->Indices.empty() ) continue;
-                            if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
+
+                            m_AttachArena->Request( attMesh->ArenaSlot, attMesh->Vertices.data(),
+                                static_cast<UINT>( attMesh->Vertices.size() ), attMesh->Indices.data(),
+                                static_cast<UINT>( attMesh->Indices.size() ) );
+                            // Its arena copy is the conversion pose; RefreshDynamicVobArena mirrors this frame's deform.
+                            if ( morphActive ) g_FrameMorphAttachMeshes.push_back( attMesh.get() );
 
                             const UINT instBytes = VobInstanceStride();
+                            m_VobInstanceBufferOffset += ( instBytes - m_VobInstanceBufferOffset % instBytes ) % instBytes;
                             if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
                                 if ( !m_VobInstanceOverflowLogged ) {
                                     Logging::Wrn( "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame)." );
@@ -5130,13 +5151,11 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             const UINT instOffset = m_VobInstanceBufferOffset;
                             memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
                             m_VobInstanceBufferOffset += instBytes;
-                            const D3D12_VERTEX_BUFFER_VIEW attInstView = {
-                                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, instBytes };
                             // Diffuse SRV heap slot resolved HERE (main thread) so the MT shadow-cascade recorder
                             // never has to read Gothic texture state; the main-view prepass/color paths still use
                             // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately
                             // must not do.
-                            entry.attachments.push_back( { attMesh.get(), attTex, attInstView, vi->Vob,
+                            entry.attachments.push_back( { attMesh.get(), attTex, instOffset / instBytes, vi->Vob,
                                 ResolveShadowDiffuseSlot( attTex ),
                                 attTex && attTex->HasAlphaChannel(), vii, attBatchable } );
                         }
@@ -5153,13 +5172,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             for ( UINT fi = 0; fi < numCascades; ++fi ) {
                 if ( (cascadeMask & (1u << fi)) == 0 ) continue;
                 if ( cached.hasBaseMesh )
-                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instCb, cached.boneCb, cached.matSrvIndex } );
+                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
                 for ( const FrameAttachDraw& a : cached.attachments )
                     m_ShadowMap.AttachDraws[fi].push_back( a );
             }
         } else {
             if ( cached.hasBaseMesh )
-                outSkel.push_back( { vi, visual, cached.instCb, cached.boneCb, cached.matSrvIndex } );
+                outSkel.push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
             for ( const FrameAttachDraw& a : cached.attachments )
                 outAttach.push_back( a );
         }
@@ -5194,11 +5213,11 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // filled (the same set the color pass draws; PSDepthClip only reads b6's diffuse index for the alpha
     // cutout and ignores the normal/ORM constants each command also carries).
     if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex]
-        && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
+        && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig && m_SkelArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass (skeletal)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (skeletal)" );
-        // Motion vectors + normals — see DrawDepthPrepass. VSDepthGBuf skins each vertex twice (current pose and
-        // the previous pose out of the same b2 palette), so NPCs get true per-vertex velocity on limbs.
+        // Motion vectors + normals — see DrawDepthPrepass. The posed previous-frame position (SkinVertices.hlsl)
+        // gives NPCs true per-vertex velocity on limbs.
         const bool skelGbuf = motionCb && MotionGBufferActive();
         // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
         const bool splitAlpha = !skelGbuf && m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO != nullptr;
@@ -5211,8 +5230,8 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        // Each command sets its own b1 instance CBV + b2 bone CBV + skinned VBV + IBV + b6 material consts,
-        // then DrawIndexed — replacing the per-vob root-CBV sets and per-mesh IA binds the CPU path issued.
+        BindSkinnedGeometry( m_CmdList, 1 );
+        // Each command sets only its b6 material consts + b10 instance row, then DrawIndexed into the arena.
         if ( !splitAlpha ) {
             m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
                 m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
@@ -5233,8 +5252,8 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // Node attachments (depth only) through the VOB attachment depth PSO (Fatness/Scaling variant — see
     // Vob.hlsl's VSDepthAttach; must match DrawSkeletalColor's attachment PSO choice or the prepass depth
     // won't reflect the same inflate/scale as the color pass, the same class of bug the wind fix addressed).
-    if ( m_AttachDrawCount > 0 && m_VobBoundIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
-        && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
+    if ( m_AttachDrawCount > 0 && m_VobIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
+        && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig && m_AttachArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass (attachments)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (attachments)" );
         const bool attachGbuf = motionCb && MotionGBufferActive();
@@ -5252,19 +5271,20 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        BindAttachArenaIA( m_CmdList );
         if ( !attachSplit ) {
-            m_CmdList->ExecuteIndirect( m_VobBoundIndirectCmdSig.Get(), m_AttachDrawCount,
+            m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
                 m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
         } else {
             if ( m_AttachOpaqueDrawCount > 0 ) {
-                m_CmdList->ExecuteIndirect( m_VobBoundIndirectCmdSig.Get(), m_AttachOpaqueDrawCount,
+                m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachOpaqueDrawCount,
                     m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
             }
             if ( m_AttachDrawCount > m_AttachOpaqueDrawCount ) {
                 m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
-                m_CmdList->ExecuteIndirect( m_VobBoundIndirectCmdSig.Get(),
+                m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(),
                     m_AttachDrawCount - m_AttachOpaqueDrawCount, m_AttachDrawArgs[m_FrameIndex].Get(),
-                    static_cast<UINT64>( m_AttachOpaqueDrawCount ) * sizeof( VobBoundDrawCommand ), nullptr, 0 );
+                    static_cast<UINT64>( m_AttachOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
             }
         }
     }
@@ -5294,7 +5314,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
 
     // Base skinned meshes (lit) — one ExecuteIndirect over the shared command set (see the prepass).
-    if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex] ) {
+    if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex] && m_SkelArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Draw skeletal" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal" );
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
@@ -5309,6 +5329,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        BindSkinnedGeometry( m_CmdList, 1 );
         m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
             m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
@@ -5317,8 +5338,8 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     // VSMainAttach; non-morph attachments get Fatness=0/Scaling=1, a no-op, so this is a drop-in replacement
     // for the plain VobPSO). BindFrameLights() is REQUIRED — the VOB PS reads the light count/grid, so an
     // unbound count would run the loop on garbage → GPU TDR hang.
-    if ( m_AttachDrawCount > 0 && m_VobBoundIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
-        && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig ) {
+    if ( m_AttachDrawCount > 0 && m_VobIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
+        && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig && m_AttachArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Draw attachments" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw attachments" );
         m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
@@ -5335,9 +5356,10 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        // Each command sets its own mesh/instance VBVs + IBV + b6 { normal, ORM, diffuse } bindless material
-        // constants, then DrawIndexed — PSMainBindless reads the identical MaterialCB layout the base meshes use.
-        m_CmdList->ExecuteIndirect( m_VobBoundIndirectCmdSig.Get(), m_AttachDrawCount,
+        // Each command sets its b6 { normal, ORM, diffuse } bindless material constants, then DrawIndexed into
+        // the arena — PSMainBindless reads the identical MaterialCB layout the base meshes use.
+        BindAttachArenaIA( m_CmdList );
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
             m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
 

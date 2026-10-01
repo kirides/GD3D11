@@ -29,6 +29,7 @@ MeshVisualInfo* SharedVisualRegistry::Acquire( const void* key, bool& outNeedsFi
     MeshVisualInfo* mvi = new MeshVisualInfo;
     mvi->SharedKey = key;
     mvi->SharedRefs = 1;
+    mvi->NodeAttachment = true;
     // Not ready until filled, or a second acquirer could draw it mid-write.
     mvi->Ready.store( false, std::memory_order_release );
     m_Visuals[key] = mvi;

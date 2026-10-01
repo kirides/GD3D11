@@ -174,7 +174,9 @@ namespace {
             if ( !texture ) continue;
 
             for ( auto const& mesh : meshes ) {
-                if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
+                if ( !mesh || mesh->Indices.empty() ) continue;
+                // The modern renderer draws node attachments from its arena; they have no buffers of their own.
+                if ( !Engine::IsModernBackend() && ( !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) ) continue;
                 if ( instance == UINT32_MAX ) instance = ui.AddItemInstance( StoreMatrix( clipFromObject ) );
 
                 UIItemDraw draw;
@@ -208,7 +210,9 @@ namespace {
                 if ( !texture ) continue;
 
                 for ( auto const& mesh : meshes ) {
-                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
+                    if ( !mesh || mesh->Indices.empty() ) continue;
+                    // Skinned meshes have no buffers of their own on the modern renderer (skeletal arena).
+                    if ( !Engine::IsModernBackend() && ( !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) ) continue;
                     if ( instance == UINT32_MAX ) {
                         instance = ui.AddItemInstance( StoreMatrix( clipFromObject ) );
                         boneOffset = ui.AddItemBones( bones );

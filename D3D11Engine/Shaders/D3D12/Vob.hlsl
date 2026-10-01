@@ -122,7 +122,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
+    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
@@ -233,7 +233,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
+    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
@@ -278,6 +278,7 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
     float4 t = difTex.Sample( smp, i.uv );
     float3 N = normalize( i.wnrm );
+    float3 geomN = N;
     if ( MatNormalIndex != 0xffffffff )
     {
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
@@ -286,7 +287,7 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
     float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
-    float shadow = ComputeSunShadow( i.wpos, N, i.col.g );
+    float shadow = ComputeSunShadow( i.wpos, geomN, i.col.g );
     float ssao = SampleScreenSpaceAO( i.clip.xy );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, i.col.g, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b );

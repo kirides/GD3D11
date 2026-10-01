@@ -55,35 +55,50 @@ struct FrameVobUpload {
     uint32_t cullVisualIndex;
 };
 
-// matSrvIndex indexes g_SkelMatSrvs (below): the per-material diffuse SRV heap slots for this vob's
-// visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
+// instRow = the vob's instance record in the skeletal ring (the SkelInstanceRow root constant every skeletal
+// draw sets, see include/SkeletalInstance.hlsl).
+// [matFirst, matFirst + matCount) in g_SkelMatSlots (below): the per-material diffuse SRV heap slots for this
+// vob's visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
 // set for THIS instance. A pool-thread recorder (the MT cascades) must use it instead of calling
 // UpdateMeshLibTexAniState + GetAniTexture itself (Gothic's texani state is per-MODEL shared, not thread-safe).
+// skinFirst indexes g_SkinDst (below): where this vob's sub-meshes were posed this frame.
 struct FrameSkelDraw {
     SkeletalVobInfo*          vobInfo;
     SkeletalMeshVisualInfo*   visual;
-    D3D12_GPU_VIRTUAL_ADDRESS instCb;
-    D3D12_GPU_VIRTUAL_ADDRESS boneCb;
-    uint32_t                  matSrvIndex;
+    uint32_t                  instRow;
+    uint32_t                  matFirst;
+    uint32_t                  matCount;   // 0 when the snapshot pool ran out
+    uint32_t                  skinFirst;
 };
+
+// Compute skinning (D3D12Skinning.cpp). g_SkinDst[skinFirst + k] is the first posed vertex of the k-th entry of
+// visual->SkeletalMeshes (iteration order, null entries counted), or kNoSkinnedOutput. A draw also needs the
+// mesh resident in the skeletal arena, the same test the dispatch makes. Fixed capacity and appended only on the
+// main thread, so the cascade recorders may read it while the point-light prepare is still appending.
+inline constexpr uint32_t kNoSkinnedOutput = 0xFFFFFFFFu;
+inline constexpr uint32_t kMaxSkinnedSubmeshes = 8192;
+extern std::array<uint32_t, kMaxSkinnedSubmeshes> g_SkinDst;
+inline uint32_t SkinnedBase( const FrameSkelDraw& d, uint32_t sub ) {
+    return d.skinFirst == kNoSkinnedOutput ? kNoSkinnedOutput : g_SkinDst[d.skinFirst + sub];
+}
 
 // owner = the skeletal vob this attachment hangs off of (its NPC/MOB) — needed so point-shadow self-shadow
 // exclusion (D3D12PointShadows::BuildExcludeList) can skip a torch-holding NPC's own attachments too, not
 // just its base mesh; unused (nullptr-safe) by the main-view/CSM consumers, which don't exclude anything.
-// srvSlot = the same main-thread-resolved diffuse SRV HEAP SLOT as FrameSkelDraw::matSrvIndex, for the same
+// srvSlot = the same main-thread-resolved diffuse SRV HEAP SLOT as FrameSkelDraw::matFirst, for the same
 // reason — the attachment passes are fully bindless (b6 MaterialCB, no t0 table), so what the recorder needs
 // is the heap index, not a table handle. The main-view prepass/color paths still resolve `tex` themselves
 // (they CacheIn, which the shadow paths deliberately don't), so both fields stay live.
 // alphaTested = can the depth/caster PS' `clip(diffuse.a - 0.5)` ever discard for this attachment? Resolved on
 // the main thread with srvSlot (a pool-thread recorder must not read Gothic texture state), and used by every
 // depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
-// inst = the per-instance data this attachment uploaded at collection time (the bytes instView points at),
+// inst = the per-instance data this attachment uploaded at collection time (element instIndex of the VOB ring),
 // by value so the main-view batcher can re-emit runs of instances CONTIGUOUSLY without reading back the
-// write-combined UPLOAD ring. The per-draw consumers (CSM cascades, point shadows) keep using instView.
+// write-combined UPLOAD ring. The shadow passes bind the whole ring and draw it with StartInstanceLocation.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
-    D3D12_VERTEX_BUFFER_VIEW    instView;
+    UINT                        instIndex;
     const zCVob*                owner;
     UINT                        srvSlot;
     bool                        alphaTested;
@@ -109,15 +124,11 @@ struct VobInfo;
 extern std::vector<VobInfo*> g_FrameVobs;
 
 // Per-vob snapshot of the diffuse SRV heap SLOT for each entry of visual->SkeletalMeshes, in that map's
-// iteration order — see FrameSkelDraw::matSrvIndex. Slots, not descriptor handles: the skeletal root signature
-// has no diffuse table any more, the shaders index ResourceDescriptorHeap[] with these. Only the live prefix
-// [0, g_SkelMatSrvCount) is valid each frame. Defined in D3D12Scene.cpp (PrepareFrameSkeletals owns it);
-// read by the CSM cascade recorder.
-// DEQUE, not vector, and that matters: the CSM cascades now record on worker threads that hold a
-// `const std::vector<UINT>*` into this container (D3D12ShadowMap::RecordCascade), while the main thread is
-// still appending to it — the point-shadow prepare runs its own PrepareFrameSkeletals after the cascade jobs
-// have launched. A vector's push_back would reallocate and turn those pointers into use-after-free; deque
-// guarantees references to existing elements survive a push_back.
+// iteration order — see FrameSkelDraw::matFirst. Slots, not descriptor handles: the shaders index
+// ResourceDescriptorHeap[] with these. Defined in D3D12Scene.cpp (PrepareFrameSkeletals appends to it).
+// Fixed capacity, like g_SkinDst: the CSM cascade jobs read their records' ranges while the main thread is still
+// appending (the point-shadow prepare runs after they launch), so it must never reallocate, and readers never
+// look at the fill count.
 // alphaTested rides along for the same reason it does on FrameAttachDraw: the shadow/depth casters want to skip
 // the alpha-clip pixel shader entirely for a material whose diffuse has no alpha channel, and only the main
 // thread may ask Gothic that question.
@@ -125,8 +136,8 @@ struct SkelMatSlot {
     UINT slot;
     bool alphaTested;
 };
-extern std::deque<std::vector<SkelMatSlot>> g_SkelMatSrvs;
-extern size_t g_SkelMatSrvCount;
+inline constexpr uint32_t kMaxSkelMatSlots = 8192;
+extern std::array<SkelMatSlot, kMaxSkelMatSlots> g_SkelMatSlots;
 
 // Water surfaces peeled out of the opaque world pass (BuildWorldDrawCommands, D3D12Scene.cpp) and drawn
 // later by DrawWaterSurfaces (D3D12Water.cpp), grouped by texture to minimize SRV binds. Both run on the

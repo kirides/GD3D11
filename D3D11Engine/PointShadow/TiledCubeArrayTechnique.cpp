@@ -69,6 +69,7 @@ void TiledCubeLightState::CommitStaticBakeToSlot() {
     baked.clear();
     for ( const VobInfo* v : m_Light.VobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
     for ( const SkeletalVobInfo* v : m_Light.SkeletalVobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
+    PointLightSlotSelector::FinalizeBakedVobs( baked );
 }
 
 /** Everything about WHETHER to render was decided by PointLightSlotSelector, so this only asks whether it
