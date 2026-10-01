@@ -594,6 +594,13 @@ struct GothicRendererSettings {
         PLS_FULL = 3,
         _PLS_NUM_SETTINGS
     };
+    /** D3D12 inline ray-traced shadows; the value is the rays per light per pixel. */
+    enum E_RayTracedShadows {
+        RT_SHADOWS_OFF   = 0,
+        RT_SHADOWS_HARD  = 1,   // one ray: sharp edges
+        RT_SHADOWS_SOFT  = 2,   // two jittered rays; smooth with TAA/FSR
+        RT_SHADOWS_ULTRA = 4,   // four jittered rays
+    };
     enum E_HDRToneMap {
         ToneMap_jafEq4,
         Uncharted2Tonemap,
@@ -887,6 +894,9 @@ struct GothicRendererSettings {
         HeroAffectsObjects = true;
         BacklitVegetation = true;
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
+        RayTracedSunShadows = RT_SHADOWS_OFF;
+        RayTracedSunShadowDistance = 8000.0f;
+        RayTracedPointShadows = RT_SHADOWS_OFF;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
@@ -1225,6 +1235,9 @@ struct GothicRendererSettings {
     };
     int MeshOptimizeCacheFlags;
     EPointLightShadowMode EnablePointlightShadows;
+    E_RayTracedShadows RayTracedSunShadows;     // D3D12 with ray queries only; the CSM takes over past the distance
+    float RayTracedSunShadowDistance;           // world units
+    E_RayTracedShadows RayTracedPointShadows;   // D3D12 with ray queries only; replaces the shadow cubes
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
@@ -1753,6 +1766,12 @@ struct GothicRendererInfo {
     // Visible point lights that did not fit in the per-frame light buffer (kMaxFrameLights). Not shaded at
     // all rather than merely unshadowed, though it looks the same in game.
     unsigned int PointLightsDropped = 0;
+    // Ray-traced point shadows (D3D12): shadow slots per pixel, read back a few frames late.
+    bool RtPointShadowStatsValid = false;
+    unsigned int RtPointShadowSlotCap = 0;
+    unsigned int RtPointShadowMostSlots = 0;       // most slots any pixel's light cluster wanted
+    unsigned int RtPointShadowOverflowPixels = 0;  // pixels that wanted more than the cap
+    unsigned int RtPointShadowPixels = 0;          // pixels with at least one ray-traced light
 
     unsigned int VOBVerticesDataSize;
     // Skeletal meshes can be extracted (and their SkeletalMeshInfo destroyed) from background

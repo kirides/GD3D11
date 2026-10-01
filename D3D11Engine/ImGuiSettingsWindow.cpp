@@ -417,6 +417,22 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
 
         SliderFloatRow( "Shadow Strength", "##ShadowStrength", &settings.ShadowStrength, 0.0f, 1.0f, "%.2f",
             "How dark a shadowed surface gets." );
+
+        if ( Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery ) {
+            constexpr ListItem<GothicRendererSettings::E_RayTracedShadows> rtSun[] = {
+                { "Off", GothicRendererSettings::RT_SHADOWS_OFF, "Shadow maps only." },
+                { "Hard", GothicRendererSettings::RT_SHADOWS_HARD, "One ray per pixel. Sharp shadow edges." },
+                { "Soft", GothicRendererSettings::RT_SHADOWS_SOFT, "Two rays per pixel with soft edges. Grainy without TAA or FSR." },
+                { "Ultra", GothicRendererSettings::RT_SHADOWS_ULTRA, "Four rays per pixel with soft edges. Expensive." },
+            };
+            ComboRow( "Ray-Traced Sun Shadows", "##RayTracedSunShadows", rtSun, &settings.RayTracedSunShadows,
+                "Traces the sun and moon shadows of nearby surfaces against the world, objects and characters,\n"
+                "pixel-exact and without shadow-map flicker. Shadow maps still cover the distance. D3D12 only." );
+            ImGui::BeginDisabled( settings.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_OFF );
+            DistanceRow( "Ray-Traced Shadow Distance", "##RayTracedSunShadowDistance", &settings.RayTracedSunShadowDistance, 10.0f, 400.0f,
+                "How far from the camera sun shadows are ray traced before they fade into the shadow maps." );
+            ImGui::EndDisabled();
+        }
     }
     ImGui::EndDisabled();
 
@@ -436,6 +452,22 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         };
         ComboRow( "Point Light Shadows", "##PointLightShadows", pointLightShadows,
             &settings.EnablePointlightShadows );
+
+        if ( Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery ) {
+            constexpr ListItem<GothicRendererSettings::E_RayTracedShadows> rtPoint[] = {
+                { "Off", GothicRendererSettings::RT_SHADOWS_OFF, "Shadow cubes." },
+                { "Hard", GothicRendererSettings::RT_SHADOWS_HARD, "One ray per light and pixel. Sharp shadow edges." },
+                { "Soft", GothicRendererSettings::RT_SHADOWS_SOFT, "Two rays per light and pixel with soft edges. Grainy without TAA or FSR." },
+                { "Ultra", GothicRendererSettings::RT_SHADOWS_ULTRA, "Four rays per light and pixel with soft edges. Expensive." },
+            };
+            ImGui::BeginDisabled( settings.EnablePointlightShadows == GothicRendererSettings::PLS_DISABLED );
+            ComboRow( "Ray-Traced Point Light Shadows", "##RayTracedPointShadows", rtPoint, &settings.RayTracedPointShadows,
+                "Every shadowed light traces its own shadows instead of rendering a shadow cube: no budget,\n"
+                "no pop-in, characters shadow every light. A pixel keeps shadows for up to 15 nearby lights\n"
+                "(lights stacked at one spot count once); further lights, and transparent surfaces, shade\n"
+                "unshadowed with a shortened range. \"Static\" above leaves characters out. D3D12 only." );
+            ImGui::EndDisabled();
+        }
 
         CheckRow( "Limit Light Intensity", &settings.LimitLightIntesity, nullptr, "LimitLightIntensity" );
     }

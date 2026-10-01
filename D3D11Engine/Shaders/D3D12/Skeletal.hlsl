@@ -105,7 +105,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
-    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
+    uint2 rtMask = LoadRtShadowMask( i.clip.xy );
+    float shadow = ComputeSunShadow( rtMask, i.wpos, geomN, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
@@ -113,7 +114,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao, WetBaseSpecularScale( wet ) );
     rgb *= mad(wet.wetness, 0.8 - 1.0, 1.0);
     rgb = ApplyWetCoat( rgb, wet, i.wpos, shadow, vertLighting, orm.r, ssao );
-    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet );   // dynamic point lights on top (PBR)
+    rgb += AccumTiledPointLights( i.clip.xyz, i.wpos, N, albedo, orm.g, orm.b, wet, rtMask );   // dynamic point lights on top (PBR)
     // Opaque-surface SSR (temporal, D3D12 only) — see World.hlsl's PSMain for the full explanation. The
     // weight MUST be PBR_FresnelSchlick, not an ad hoc curve (see EvaluateOpaqueSSR's header comment).
     {

@@ -592,6 +592,19 @@ static void DrawPointLightInvalidationStat() {
 // the healthy state; a steady non-zero value means the tier is genuinely too small for the scene.
 static void DrawPointLightSlotStat() {
     const auto& info = Engine::GAPI->GetRendererState().RendererInfo;
+    if ( info.RtPointShadowStatsValid ) {
+        const float overPct = info.RtPointShadowPixels
+            ? 100.0f * static_cast<float>( info.RtPointShadowOverflowPixels ) / static_cast<float>( info.RtPointShadowPixels ) : 0.0f;
+        ImGui::Text( "Ray-traced shadow slots: most %u of %u per pixel", info.RtPointShadowMostSlots, info.RtPointShadowSlotCap );
+        const ImVec4 color = info.RtPointShadowOverflowPixels == 0 ? ImVec4( 0.6f, 0.6f, 0.6f, 1.0f )
+                                                                   : ImVec4( 1.0f, 0.3f, 0.3f, 1.0f );
+        ImGui::TextColored( color, "Pixels over the slot cap: %u (%.2f%%)", info.RtPointShadowOverflowPixels, overPct );
+        ImGui::SetItemTooltip(
+            "Each pixel can keep ray-traced shadows for this many lights (stacked lights at one spot share one).\n"
+            "Lights past it in a pixel's light cluster shade unshadowed with a shortened range, like a light\n"
+            "without a shadow cube. Zero is healthy; the percentage is of the pixels lit by any shadowed light." );
+        return;
+    }
     if ( info.PointLightSlotsMax == 0 ) return;   // legacy per-light cubemaps: no fixed pools to report on
     ImGui::Text( "Shadow cubes: %u/%u static (core), %u/%u dynamic (overlay)",
         info.PointLightStaticSlotsUsed, info.PointLightStaticSlotsMax,

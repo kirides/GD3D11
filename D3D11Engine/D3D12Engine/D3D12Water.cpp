@@ -35,7 +35,7 @@
 #include "../zCTexture.h"
 #include "../WaterProfile.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
-#include "D3D12RtReflections.h"
+#include "D3D12RayTracing.h"
 
 #include <fstream>
 #include <filesystem>
@@ -355,10 +355,8 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
 
 
 void D3D12GraphicsEngine::DrawWaterSurfaces() {
-    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() ) {
-        if ( m_RtReflections && m_FrameOpen ) m_RtReflections->Idle();
+    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
         return;
-    }
 
     DX_ZONE( m_CmdList.Get(), "DrawWaterSurfaces" );
 
@@ -618,10 +616,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
     // Ray-traced reflections replace the screen-space march; the pixel shader falls back to SSR without them.
     const int rtQuality = Engine::GAPI->GetRendererState().RendererSettings.WaterRayTracing;
-    bool traced = false;
-    if ( m_RtReflections && rtQuality != GothicRendererSettings::WATER_RT_OFF && surfaceDepthSrvSlot != UINT_MAX
-        && !Engine::GAPI->IsUnderWater() ) {
-        D3D12RtReflections::Inputs in = {};
+    if ( m_RayTracing && rtQuality != GothicRendererSettings::WATER_RT_OFF && surfaceDepthSrvSlot != UINT_MAX
+        && !Engine::GAPI->IsUnderWater() && m_RayTracing->EnsureScene( RtSceneVobRadius(), m_RtPointShadowsActive ) ) {
+        D3D12RayTracing::Inputs in = {};
         in.SurfaceDepthSlot = surfaceDepthSrvSlot;
         in.SceneDepthSlot = waterDepthSrvSlot;
         in.SceneColorSlot = waterSceneSrvSlot;
@@ -634,11 +631,10 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         in.Quality = rtQuality;
         in.ScreenSpace = Engine::GAPI->GetRendererState().RendererSettings.WaterRayTracingScreenSpace;
         UINT colorSlot = UINT_MAX, distanceSlot = UINT_MAX;
-        if ( m_RtReflections->Trace( in, colorSlot, distanceSlot ) ) {
+        if ( m_RayTracing->TraceWater( in, colorSlot, distanceSlot ) ) {
             WaterCBData* patch = reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] );
             patch->RtColorIndex = colorSlot;
             patch->RtDistanceIndex = distanceSlot;
-            traced = true;
         }
         // The trace left a compute root signature and PSO bound; the color pass below rebinds its graphics state.
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
@@ -646,7 +642,6 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         m_CmdList->SetGraphicsRootConstantBufferView( 2, m_WaterCBGpu[m_FrameIndex] );
         m_CmdList->SetGraphicsRootConstantBufferView( 3, m_WaterCBGpu[m_FrameIndex] + kWaterAtmosphereCbOffset );
     }
-    if ( m_RtReflections && !traced ) m_RtReflections->Idle();
 
     m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
     unsigned int drawnIndices = 0;

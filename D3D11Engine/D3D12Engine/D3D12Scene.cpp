@@ -35,7 +35,7 @@
 
 #include "D3D12RenderQueue.h"
 #include "D3D12RenderGraph.h"
-#include "D3D12RtReflections.h"
+#include "D3D12RayTracing.h"
 #include "InstancingUtils.h"
 #include "../ThreadPool.h"   // Engine::RenderingThreadPool — MT shadow-cascade cull/record fan-out
 
@@ -153,6 +153,9 @@ namespace {
     float GetClusterFarZ() {
         return std::max( kClusterMinFarZ, Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius );
     }
+    // The lit passes and the ray-traced shadow pass (compute) both read the grid
+    constexpr D3D12_RESOURCE_STATES kLightGridReadState =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
 
     constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
@@ -395,7 +398,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
     }
     m_RainShadowVobs.Reset();
     m_RainShadowViewProjValid = false;   // the occlusion map shows the old world until redrawn
-    if ( m_RtReflections ) m_RtReflections->OnLoadWorld();
+    if ( m_RayTracing ) m_RayTracing->OnLoadWorld();
     // Every MeshInfo the arena indexes is about to be freed, so the ranges have to go before the new world's
     // OnAddVob calls refill them. The buffers themselves are kept — see D3D12VobArena::Reset.
     m_VobArena->Reset();
@@ -1039,6 +1042,7 @@ namespace {
 		float       distSq;
 		bool        isStatic;         // Gothic's true IsStatic() — governs specular scale / DisableStaticPointlights
 		bool        isIndoor;
+		uint32_t    rtMask;           // GPULight::RtShadowMask before the carrier exclusion
 		XMFLOAT3    shadowOrigin;   // the CUBE's centre — the light's own, or its cluster's
 		float       shadowRange;    // the CUBE's far-plane basis — likewise
 		uint64_t    key;            // slot-ownership identity: the vob pointer, or a tagged cluster cell
@@ -1211,7 +1215,12 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// light must not cost it its cube. Clustering then redirects co-located static members onto one cube.
 	m_PointShadows.BuildCandidates();
 	std::vector<PointLightSlotSelector::Candidate>& shadowCands = m_PointShadows.GetCandidates();
-	AssignStaticLightClusters( shadowCands );
+	// Ray-traced point shadows trace to each light itself; clusters only exist to share cubes
+	const bool rtPoints = m_RtPointShadowsActive;
+	if ( !rtPoints ) AssignStaticLightClusters( shadowCands );
+	// Static mode and world-restricted lights keep characters out, like their cubes do
+	const uint32_t rtStaticMask = D3D12RayTracing::kMaskWorld | D3D12RayTracing::kMaskVob;
+	const bool rtStaticOnly = lightSettings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
 	// vob -> its candidate, so the fill loop can copy the shadow half off the answer the selector will use.
 	// A visible light with no candidate is outside the dome and simply gets no cube.
 	static gtl::flat_hash_map<const zCVob*, const PointLightSlotSelector::Candidate*> s_candByVob;
@@ -1238,7 +1247,9 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// a clustered light samples a cube centred on its cluster.
 		const auto candIt = s_candByVob.find( vob );
 		const PointLightSlotSelector::Candidate* sc = candIt == s_candByVob.end() ? nullptr : candIt->second;
-		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob,
+		const uint32_t rtMask = !rtPoints ? 0u
+			: ( rtStaticOnly || ( sc && sc->restrictToWorld ) ) ? rtStaticMask : D3D12RayTracing::kMaskAll;
+		s_cands.push_back( { vob, pw, range, distSq, isStatic, li->IsIndoorVob, rtMask,
 			sc ? sc->shadowOrigin : pw, sc ? sc->shadowRange : range,
 			( pointShadowsOn && sc ) ? sc->key : 0ull } );
 	}
@@ -1246,9 +1257,13 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// BUFFER order, so the buffer order has to be a pure function of the visible light SET. std::sort is
 	// unstable, so equal distances (co-located atmospheric lights are common) would otherwise permute between
 	// frames and make the cap flicker. The vob pointer breaks ties and is fixed for a light's lifetime.
+	// Position before the vob pointer keeps stacked lights adjacent: ray-traced shadows give such a run one slot.
 	std::sort( s_cands.begin(), s_cands.end(),
 		[]( const FrameLightCand& a, const FrameLightCand& b ) {
 			if ( a.distSq != b.distSq ) return a.distSq < b.distSq;
+			if ( a.pos.x != b.pos.x ) return a.pos.x < b.pos.x;
+			if ( a.pos.y != b.pos.y ) return a.pos.y < b.pos.y;
+			if ( a.pos.z != b.pos.z ) return a.pos.z < b.pos.z;
 			return a.vob < b.vob;
 		} );
 
@@ -1287,6 +1302,19 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		L.ShadowOrigin = cand.shadowOrigin;
 		L.ShadowRange = cand.shadowRange;
 		L.WetCoatScale = lightSettings.PointLightWetReflectionScale( cand.isStatic );
+		L.RtShadowMask = static_cast<int>( cand.rtMask );
+		L.RtFallbackRange = 1.0f;   // the clamp below shrinks it for static and indoor lights
+		L.WetPad1 = 0.0f;
+		// A carried light (torch in hand) must not be shadowed by its carrier; carriers get their own instance mask
+		if ( cand.rtMask && vob->GetVobParent() ) {
+			static std::vector<const zCVob*> s_exclude;
+			if ( D3D12PointShadows::BuildExcludeList( vob, s_exclude ) ) {
+				L.RtShadowMask &= ~static_cast<int>( D3D12RayTracing::kMaskCarrier );
+				std::vector<const zCVob*>& carriers = m_RayTracing->CarrierVobs();
+				for ( const zCVob* v : s_exclude )
+					if ( std::find( carriers.begin(), carriers.end(), v ) == carriers.end() ) carriers.push_back( v );
+			}
+		}
 		// key 0 = "never give this light a cube" — what point-shadows-off means for every light.
 		s_lightKeys.push_back( cand.key );
 		++count;
@@ -1300,7 +1328,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// Point-light shadow selection: hand the filled buffer to the point-shadow module, which picks this
 	// frame's shadowed lights (stable per-light cube slots, static-cache + round-robin scheduling) and writes
 	// each winner's ShadowCubeIndex back into the GPU light struct. See D3D12PointShadows.h.
-	m_PointShadows.SelectShadowedLights( dst, count, s_lightKeys );
+	m_PointShadows.SelectShadowedLights( dst, count, s_lightKeys, rtPoints );
 
 	// ---- Range clamp for lights that ended up WITHOUT a cube ----------------------------------------------
 	// Runs after selection because only now is "did this light get a cube" known. Shrinking Range shrinks the
@@ -1331,7 +1359,9 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		// An INDOOR light with no cube, seen from outdoors, looks worst: it washes over the outside of the
 		// building it is sealed inside, and nothing can occlude it. Cut it to almost nothing.
 		const bool leakingOutdoors = s_cands[i].isIndoor && !cameraIndoors;
-		const float target = dst[i].ShadowCubeIndex != 0 ? 1.0f
+		// A ray-traced light is shadowed wherever it has a slot; the shader applies this where it has none
+		dst[i].RtFallbackRange = leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale;
+		const float target = ( dst[i].ShadowCubeIndex != 0 || dst[i].RtShadowMask != 0 ) ? 1.0f
 			: ( leakingOutdoors ? kIndoorSeenFromOutsideScale : kUnshadowedStaticScale );
 		// key 0 is "this light can never be shadowed": no identity to ease under, and nothing to ease to.
 		const uint64_t key = s_lightKeys[i];
@@ -1377,8 +1407,8 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// dereferenced.
 	const UINT dynCubeSrv = m_PointShadows.GetDynSrvSlot();
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, dynCubeSrv == UINT_MAX ? 0u : dynCubeSrv, 3 );
-	// Spare, kept so the root signatures' 32-bit constant counts stay unchanged.
-	m_CmdList->SetGraphicsRoot32BitConstant( countParam, 0u, 4 );
+	// RtShadowMaskIndex @ 4: the ray-traced shadow mask + 1, only while the opaque prepass surfaces shade
+	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_RtShadowMaskSlot == UINT_MAX ? 0u : m_RtShadowMaskSlot + 1u, 4 );
 	// ProjA/ProjB/NearZ/FarZ (P2.14): let every lit pixel shader reconstruct ITS OWN cluster Z slice from its
 	// own SV_Position.z (PBRLighting.hlsl's ComputeZSlice) — must match DispatchLightCulling's CullCB exactly,
 	// or a pixel picks a different cluster than the one the compute pass culled lights into.
@@ -1388,6 +1418,60 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
 }
 
+
+
+float D3D12GraphicsEngine::RtSceneVobRadius() const {
+	const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+	float radius = 0.0f;
+	if ( rs.EnableShadows && rs.RayTracedSunShadows != GothicRendererSettings::RT_SHADOWS_OFF )
+		radius = std::max( radius, rs.RayTracedSunShadowDistance + 4000.0f );   // occluders up the sun ray
+	if ( m_RtPointShadowsActive ) radius = std::max( radius, 15000.0f );
+	if ( rs.WaterRayTracing != GothicRendererSettings::WATER_RT_OFF && !g_FrameWaterSurfaces.empty() )
+		radius = std::max( radius, D3D12RayTracing::WaterVobRadius( rs.WaterRayTracing ) );
+	return radius;
+}
+
+
+void D3D12GraphicsEngine::TraceRtShadows() {
+	m_RtShadowMaskSlot = UINT_MAX;
+	Engine::GAPI->GetRendererState().RendererInfo.RtPointShadowStatsValid = false;
+	if ( !m_RayTracing || !m_FrameOpen || !m_Pipelines.RtShadows.PSO || !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX
+		|| !m_LightBuffer[m_FrameIndex] || !m_LightGridBuffer ) return;
+	const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+	const bool sun = rs.EnableShadows && rs.RayTracedSunShadows != GothicRendererSettings::RT_SHADOWS_OFF;
+	if ( !sun && !m_RtPointShadowsActive ) return;
+	if ( !m_RayTracing->EnsureScene( RtSceneVobRadius(), m_RtPointShadowsActive ) ) return;
+
+	Engine::GAPI->SetViewTransformXM( Engine::GAPI->GetViewMatrixXM() );
+	D3D12RayTracing::ShadowInputs in = {};
+	in.DepthSlot = m_DepthSrvSlot;
+	in.View = Engine::GAPI->GetRendererState().TransformState.TransformView;
+	in.Projection = Engine::GAPI->GetProjectionMatrix();
+	in.CameraPosition = Engine::GAPI->GetCameraPosition();
+	in.SunRays = sun ? static_cast<int>( rs.RayTracedSunShadows ) : 0;
+	in.SunDistance = rs.RayTracedSunShadowDistance;
+	in.PointRays = m_RtPointShadowsActive ? static_cast<int>( rs.RayTracedPointShadows ) : 0;
+	// A temporal resolve averages the jitter away; without one the pattern holds still
+	in.NoiseFrame = rs.GetIsTAAEnabled() ? static_cast<UINT>( Engine::GAPI->GetFrameNumber() & 0xFFFF ) : 0u;
+	in.NearZ = Engine::GAPI->GetNearPlane();
+	in.FarZ = GetClusterFarZ();
+	in.NumTilesX = m_NumTilesX;
+	in.Lights = m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress();
+	in.LightGrid = m_LightGridBuffer->GetGPUVirtualAddress();
+
+	BeginAoDepthRead();
+	UINT maskSlot = UINT_MAX;
+	if ( m_RayTracing->TraceShadows( in, maskSlot ) ) m_RtShadowMaskSlot = maskSlot;
+	EndAoDepthRead();
+
+	auto& info = Engine::GAPI->GetRendererState().RendererInfo;
+	const D3D12RayTracing::ShadowStats& stats = m_RayTracing->LastShadowStats();
+	info.RtPointShadowStatsValid = m_RtPointShadowsActive && stats.Valid;
+	info.RtPointShadowSlotCap = D3D12RayTracing::kMaxPointShadowSlots;
+	info.RtPointShadowMostSlots = stats.MostSlots;
+	info.RtPointShadowOverflowPixels = stats.OverflowPixels;
+	info.RtPointShadowPixels = stats.ShadowedPixels;
+}
 
 
 bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
@@ -2446,6 +2530,16 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// frustum test and no BSP-node frustum rejection, so everything in range (including behind the camera) reaches
 	// the GPU cull below. Lights and skeletal MOBs keep their frustum tests either way (the light buffer is capped,
 	// and the per-draw skeletal path has no GPU cull yet).
+	// Ray-traced point shadows are decided before the light buffer is built; the scene is built after the prepass
+	m_RtShadowMaskSlot = UINT_MAX;
+	m_RtPointShadowsActive = false;
+	if ( m_RayTracing ) {
+		m_RayTracing->BeginFrame();
+		const GothicRendererSettings& rts = Engine::GAPI->GetRendererState().RendererSettings;
+		m_RtPointShadowsActive = rts.RayTracedPointShadows != GothicRendererSettings::RT_SHADOWS_OFF
+			&& rts.EnablePointlightShadows != GothicRendererSettings::PLS_DISABLED
+			&& m_Pipelines.RtShadows.PSO && m_RayTracing->CanTrace();
+	}
 	g_FrameVobs.clear(); g_FrameLights.clear(); g_FrameMobs.clear();
 	Engine::GAPI->CollectVisibleVobs( g_FrameVobs, g_FrameLights, g_FrameMobs,
 		EGothicCullFlags::CullAll, EBspTreeCollectFlags::COLLECT_ALL_MUTATE, m_GpuVobCullActive );
@@ -2613,6 +2707,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// run after D3D12ShadowMap::Prepare (it reads its sun direction) and before the lit passes below. No-op on an unchanged
 	// sky; the shaders fall back to the old flat ambient whenever the indices are the 0xFFFFFFFF sentinel.
 	RenderSkyIBL();
+	// Ray-traced sun / point-light shadow mask, from the prepass depth; builds the frame's ray-traced scene.
+	TraceRtShadows();
 
 	// Part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) must reach the queue ahead of
 	// the shadow lists: [A][B1][shadows][B2]. Nothing in B1 reads what a shadow pass writes. If the shadow lists are
@@ -2654,6 +2750,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (opaque)" );
 		DrawDecalList( decals, true );
 	}
+	// Only the opaque passes above shade the surface the shadow mask was traced for
+	m_RtShadowMaskSlot = UINT_MAX;
 	// Opaque scene done: hand it to the GPU while the CPU records water, fog and transparency.
 	FlushSceneIfGpuCaughtUp();
 
@@ -2666,6 +2764,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Water stays out of the queue: it samples the scene behind it, so it cannot be re-ordered freely.
 	DrawWaterSurfaces();
+	if ( m_RayTracing ) m_RayTracing->EndFrame();
 
 	// Height fog + god rays BEFORE anything that blends (D3D11's order): fogging afterwards used the depth
 	// behind a transparent surface. Its own graph because it runs mid-scene; arena ranges are name-keyed.
@@ -4236,7 +4335,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // UNORDERED_ACCESS so the cull CS can write it as a root UAV. Skipped on the first dispatch after
     // (re)creation, when it's already in UAV (see CreateLightCullBuffers / m_LightGridInPixelState).
     if ( m_LightGridInPixelState ) {
-        m_CmdList->TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        m_CmdList->TransitionBarrier( m_LightGridBuffer.Get(), kLightGridReadState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_LightGridInPixelState = false;
     }
 
@@ -4271,7 +4370,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // XY bounds. Do NOT re-add the Z dimension without changing LightCull.hlsl.
     m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
 
-    m_CmdList->TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+    m_CmdList->TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kLightGridReadState );
     m_LightGridInPixelState = true;
 }
 

@@ -1,5 +1,5 @@
 #include "../pch.h"
-#include "D3D12RtReflections.h"
+#include "D3D12RayTracing.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
@@ -49,8 +49,9 @@ namespace {
 
     constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr DXGI_FORMAT kDistanceFormat = DXGI_FORMAT_R16_FLOAT;
+    constexpr DXGI_FORMAT kShadowMaskFormat = DXGI_FORMAT_R32G32_UINT;
 
-    // Mirror WaterRT.hlsl
+    // Mirror include/RtScene.hlsl and WaterRT.hlsl
     struct RtGeomGPU { uint32_t BaseVertex, StartIndex, Material, Kind; };
     struct RtInstanceGPU { uint32_t Color, Pad[3]; };
     struct RtCBData {
@@ -66,6 +67,16 @@ namespace {
         float FogFar; UINT ShadowRays, AlphaShadows, ScreenReuse;
     };
     static_assert( sizeof( RtCBData ) == 256, "RtCBData must match WaterRT.hlsl's RtCB" );
+    // Mirror RtShadows.hlsl
+    struct RtShadowCBData {
+        XMFLOAT4X4 InvViewProjRel;
+        XMFLOAT3 CamPos; UINT DepthIndex;
+        UINT Size[2]; UINT OutIndex; UINT NoiseFrame;
+        float SunDistance; float SunFadeBand; UINT SunRays; float SunConeTan;
+        UINT PointRays; float PointSourceRadius; UINT NumTilesX; float PixelAngle;
+        float ProjA, ProjB, NearZ, FarZ;
+    };
+    static_assert( sizeof( RtShadowCBData ) == 144, "RtShadowCBData must match RtShadows.hlsl's RtShadowCB" );
     static_assert( sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) == 64, "instance descs are packed at 64 bytes" );
     static_assert( sizeof( Affine3x4 ) == sizeof( float ) * 12, "Affine3x4 is the instance transform verbatim" );
 
@@ -76,7 +87,10 @@ namespace {
     constexpr UINT64 kOffGeoms = kOffInstances + sizeof( RtInstanceGPU ) * kMaxInstances;
     constexpr UINT64 kOffWorldMats = kOffGeoms + sizeof( RtGeomGPU ) * kMaxGeoms;
     constexpr UINT64 kOffCb = AlignUp( kOffWorldMats + sizeof( uint32_t ) * kMaxWorldMaterials, 256 );
-    constexpr UINT64 kRingBytes = kOffCb + 256;
+    constexpr UINT64 kOffShadowCb = kOffCb + 256;
+    constexpr UINT64 kOffStatsZero = kOffShadowCb + 192;   // zeros the stats counters are reset from
+    constexpr UINT64 kStatsBytes = 16;
+    constexpr UINT64 kRingBytes = kOffShadowCb + 256;
 
     /** Per-tier knobs; index = E_WaterRayTracing. */
     struct Tier {
@@ -268,7 +282,7 @@ namespace {
     };
 }
 
-struct D3D12RtReflections::Impl {
+struct D3D12RayTracing::Impl {
     D3D12GraphicsEngine& E;
     explicit Impl( D3D12GraphicsEngine& engine ) : E( engine ) {}
 
@@ -303,6 +317,9 @@ struct D3D12RtReflections::Impl {
         ComPtr<Rhi::Resource> PostbuildReadback;
         const uint64_t* ReadbackPtr = nullptr;
         std::vector<PendingCompaction> Pending;
+        ComPtr<Rhi::Resource> StatsReadback;
+        const uint32_t* StatsPtr = nullptr;
+        bool StatsPending = false;
     };
     FrameSlot Slots[D3D12GraphicsEngine::kBackBufferMax];
     UINT64 ScratchWant = kMinScratchBytes;
@@ -313,6 +330,17 @@ struct D3D12RtReflections::Impl {
     UINT OutColorSrv = UINT_MAX, OutColorUav = UINT_MAX, OutDistSrv = UINT_MAX, OutDistUav = UINT_MAX;
     UINT OutWidth = 0, OutHeight = 0;
     D3D12_RESOURCE_STATES OutState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    ComPtr<Rhi::Resource> StatsGpu;   // RtShadows.hlsl's overflow counters
+    D3D12RayTracing::ShadowStats LastStats;
+    ComPtr<Rhi::Resource> ShadowMask;
+    UINT ShadowMaskSrv = UINT_MAX, ShadowMaskUav = UINT_MAX;
+    UINT ShadowMaskWidth = 0, ShadowMaskHeight = 0;
+    D3D12_RESOURCE_STATES ShadowMaskState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    // This frame's scene
+    bool SceneBuilt = false, SceneValid = false;
+    bool PosedInRead = false;
+    std::vector<const zCVob*> Carriers;
 
     // VOB collection, bucketed per instancing visual like the other passes
     RenderView Vobs;
@@ -447,7 +475,7 @@ struct D3D12RtReflections::Impl {
         AsAlloc mem;
         if ( !CachedPool.Allocate( Rhi(), info.ResultDataMaxSizeInBytes, mem ) ) {
             if ( !std::exchange( AllocFailLogged, true ) )
-                Logging::Wrn( "D3D12: ray tracing BLAS pool allocation failed ({} MB used); some objects won't reflect.",
+                Logging::Wrn( "D3D12: ray tracing BLAS pool allocation failed ({} MB used); some objects are not ray traced.",
                     CachedPool.Used() >> 20 );
             return false;
         }
@@ -547,7 +575,7 @@ struct D3D12RtReflections::Impl {
         // The one-off build gets its own scratch rather than growing every frame slot's
         ComPtr<Rhi::Resource> scratch = CreateUavBuffer( Rhi(), AlignUp( info.ScratchDataSizeInBytes, kAsAlign ), L"RtWorldScratch" );
         if ( !scratch || !CachedPool.Allocate( Rhi(), info.ResultDataMaxSizeInBytes, WorldBlas.Mem ) ) {
-            Logging::Wrn( "D3D12: could not allocate the ray tracing world BLAS ({} MB); ray-traced reflections disabled.",
+            Logging::Wrn( "D3D12: could not allocate the ray tracing world BLAS ({} MB); ray tracing disabled for this world.",
                 info.ResultDataMaxSizeInBytes >> 20 );
             return false;
         }
@@ -573,16 +601,16 @@ struct D3D12RtReflections::Impl {
     }
 
     // ---------------------------------------------------------------------------------------------------
-    bool AddInstance( D3D12_GPU_VIRTUAL_ADDRESS blas, const float* transform3x4, uint32_t instanceId, uint32_t color ) {
+    bool AddInstance( D3D12_GPU_VIRTUAL_ADDRESS blas, const float* transform3x4, uint32_t instanceId, uint32_t color, uint32_t mask ) {
         if ( InstanceCount >= kMaxInstances ) {
             if ( !std::exchange( InstanceOverflowLogged, true ) )
-                Logging::Wrn( "D3D12: more than {} ray tracing instances; the rest don't reflect.", kMaxInstances );
+                Logging::Wrn( "D3D12: more than {} ray tracing instances; the rest are not ray traced.", kMaxInstances );
             return false;
         }
         D3D12_RAYTRACING_INSTANCE_DESC d = {};
         memcpy( d.Transform, transform3x4, sizeof( d.Transform ) );
         d.InstanceID = instanceId;
-        d.InstanceMask = 0xFF;
+        d.InstanceMask = mask;
         d.AccelerationStructure = blas;
         memcpy( InstanceDescs + InstanceCount, &d, sizeof( d ) );   // write-combined: one sequential store
         InstanceData[InstanceCount] = { color, { 0, 0, 0 } };
@@ -590,11 +618,16 @@ struct D3D12RtReflections::Impl {
         return true;
     }
 
+    uint32_t DynamicMask( const zCVob* owner ) const {
+        if ( owner && std::find( Carriers.begin(), Carriers.end(), owner ) != Carriers.end() ) return D3D12RayTracing::kMaskCarrier;
+        return D3D12RayTracing::kMaskDynamic;
+    }
+
     /** Reserves `count` geometry records; UINT32_MAX when full. */
     uint32_t ReserveGeoms( UINT count ) {
         if ( GeomCount + count > kMaxGeoms ) {
             if ( !std::exchange( GeomOverflowLogged, true ) )
-                Logging::Wrn( "D3D12: more than {} ray tracing geometry records; the rest don't reflect.", kMaxGeoms );
+                Logging::Wrn( "D3D12: more than {} ray tracing geometry records; the rest are not ray traced.", kMaxGeoms );
             return UINT32_MAX;
         }
         const uint32_t first = GeomCount;
@@ -651,7 +684,7 @@ struct D3D12RtReflections::Impl {
             vb.FrameRecordBase = first;
         }
         for ( const VobInstanceInfo& inst : instances )
-            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color ) ) return;
+            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, kMaskVob ) ) return;
     }
 
     void AddAttachments( FrameSlot& s, std::span<const FrameAttachDraw> draws ) {
@@ -679,7 +712,7 @@ struct D3D12RtReflections::Impl {
             if ( rec == UINT32_MAX ) return;
             const uint32_t material = ( a.srvSlot & kMatSlotMask ) | ( a.alphaTested ? kMatAlphaTest : 0u );
             GeomData[rec] = { r->BaseVertex, r->StartIndex, material, kKindAttach };
-            if ( !AddInstance( b.Mem.Address, &a.inst.world._11, rec, a.inst.color ) ) return;
+            if ( !AddInstance( b.Mem.Address, &a.inst.world._11, rec, a.inst.color, DynamicMask( a.owner ) ) ) return;
         }
     }
 
@@ -749,13 +782,13 @@ struct D3D12RtReflections::Impl {
             Cmd()->BuildRaytracingAccelerationStructure( desc );
             memcpy( GeomData + first, records.data(), records.size() * sizeof( RtGeomGPU ) );
             // Model colour is white for NPCs, so the baked-light term is neutral
-            if ( !AddInstance( dest, kIdentity, first, 0xFFFFFFFFu ) ) break;
+            if ( !AddInstance( dest, kIdentity, first, 0xFFFFFFFFu, DynamicMask( d.vobInfo ? d.vobInfo->Vob : nullptr ) ) ) break;
             any = true;
         }
         return any;
     }
 
-    void CollectVobs( FrameSlot& s, float radius ) {
+    void CollectVobs( FrameSlot& s, float radius, bool indoor ) {
         const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
         if ( !rs.DrawVOBs || !E.m_VobArena->Ready() ) return;
         ZoneScopedN( "RT collect vobs" );
@@ -783,11 +816,12 @@ struct D3D12RtReflections::Impl {
         const float smallVobs = std::min( radius * 0.5f, rs.OutdoorSmallVobDrawRadius );
         ctx.drawDistances.OutdoorVobs = outdoor;
         ctx.drawDistances.OutdoorVobsSmall = smallVobs;
-        ctx.drawDistances.IndoorVobs = 0.0f;
+        const float indoorVobs = indoor ? std::min( radius, rs.IndoorVobDrawRadius ) : 0.0f;
+        ctx.drawDistances.IndoorVobs = indoorVobs;
         ctx.drawDistances.VisualFX = 0.0f;
         ctx.drawDistancesSq.OutdoorVobs = outdoor * outdoor;
         ctx.drawDistancesSq.OutdoorVobsSmall = smallVobs * smallVobs;
-        ctx.drawDistancesSq.IndoorVobs = 0.0f;
+        ctx.drawDistancesSq.IndoorVobs = indoorVobs * indoorVobs;
         ctx.drawDistancesSq.VisualFX = 0.0f;
         ctx.drawFlags.DrawVOBs = true;
         ctx.drawFlags.DrawMobs = false;
@@ -795,7 +829,7 @@ struct D3D12RtReflections::Impl {
         ctx.drawFlags.EnableOcclusionCulling = false;
         ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
         ctx.drawFlags.SkipVobFrustumCull = true;
-        ctx.drawFlags.CollectIndoorVobs = false;
+        ctx.drawFlags.CollectIndoorVobs = indoor;
         ctx.drawFlags.CollectMobs = false;
         ctx.drawFlags.CollectLights = false;
         Engine::GAPI->CollectVisibleVobs( ctx );
@@ -827,40 +861,49 @@ struct D3D12RtReflections::Impl {
     }
 
     // ---------------------------------------------------------------------------------------------------
+    bool MakeTarget( UINT width, UINT height, DXGI_FORMAT fmt, const wchar_t* name, ComPtr<Rhi::Resource>& out, UINT& srv, UINT& uav ) {
+        Rhi::Device* rhi = Rhi();
+        D3D12_RESOURCE_DESC d = {};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = width;
+        d.Height = height;
+        d.DepthOrArraySize = 1;
+        d.MipLevels = 1;
+        d.Format = fmt;
+        d.SampleDesc.Count = 1;
+        d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            out.GetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) return false;
+        out->SetName( name );
+        srv = E.AllocateSrvSlot();
+        uav = E.AllocateSrvSlot();
+        if ( srv == UINT_MAX || uav == UINT_MAX ) return false;
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+        sd.Format = fmt;
+        sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.Texture2D.MipLevels = 1;
+        rhi->CreateShaderResourceView( out.Get(), &sd, E.GetSrvCpuHandle( srv ) );
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.Format = fmt;
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        rhi->CreateUnorderedAccessView( out.Get(), nullptr, &ud, E.GetSrvCpuHandle( uav ) );
+        return true;
+    }
+
+    void DropTarget( ComPtr<Rhi::Resource>& r, UINT& srv, UINT& uav ) {
+        if ( srv != UINT_MAX ) E.QueueSrvResourceForRelease( srv, r );
+        if ( uav != UINT_MAX ) E.QueueSrvResourceForRelease( uav, r );
+        if ( srv == UINT_MAX && uav == UINT_MAX && r ) E.QueueResourceForRelease( r );
+        r.Reset();
+        srv = uav = UINT_MAX;
+    }
+
     bool EnsureOutputs( UINT width, UINT height ) {
         if ( OutColor && OutWidth == width && OutHeight == height ) return true;
         ReleaseOutputs();
-        Rhi::Device* rhi = Rhi();
-        auto make = [&]( DXGI_FORMAT fmt, const wchar_t* name, ComPtr<Rhi::Resource>& out, UINT& srv, UINT& uav ) {
-            D3D12_RESOURCE_DESC d = {};
-            d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            d.Width = width;
-            d.Height = height;
-            d.DepthOrArraySize = 1;
-            d.MipLevels = 1;
-            d.Format = fmt;
-            d.SampleDesc.Count = 1;
-            d.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &d, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                out.GetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) return false;
-            out->SetName( name );
-            srv = E.AllocateSrvSlot();
-            uav = E.AllocateSrvSlot();
-            if ( srv == UINT_MAX || uav == UINT_MAX ) return false;
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-            sd.Format = fmt;
-            sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            sd.Texture2D.MipLevels = 1;
-            rhi->CreateShaderResourceView( out.Get(), &sd, E.GetSrvCpuHandle( srv ) );
-            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-            ud.Format = fmt;
-            ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            rhi->CreateUnorderedAccessView( out.Get(), nullptr, &ud, E.GetSrvCpuHandle( uav ) );
-            return true;
-        };
-        if ( !make( kColorFormat, L"RtReflectionColor", OutColor, OutColorSrv, OutColorUav )
-            || !make( kDistanceFormat, L"RtReflectionDistance", OutDistance, OutDistSrv, OutDistUav ) ) {
+        if ( !MakeTarget( width, height, kColorFormat, L"RtReflectionColor", OutColor, OutColorSrv, OutColorUav )
+            || !MakeTarget( width, height, kDistanceFormat, L"RtReflectionDistance", OutDistance, OutDistSrv, OutDistUav ) ) {
             ReleaseOutputs();
             return false;
         }
@@ -871,16 +914,49 @@ struct D3D12RtReflections::Impl {
     }
 
     void ReleaseOutputs() {
-        auto drop = [&]( ComPtr<Rhi::Resource>& r, UINT& srv, UINT& uav ) {
-            if ( srv != UINT_MAX ) E.QueueSrvResourceForRelease( srv, r );
-            if ( uav != UINT_MAX ) E.QueueSrvResourceForRelease( uav, r );
-            if ( srv == UINT_MAX && uav == UINT_MAX && r ) E.QueueResourceForRelease( r );
-            r.Reset();
-            srv = uav = UINT_MAX;
-        };
-        drop( OutColor, OutColorSrv, OutColorUav );
-        drop( OutDistance, OutDistSrv, OutDistUav );
+        DropTarget( OutColor, OutColorSrv, OutColorUav );
+        DropTarget( OutDistance, OutDistSrv, OutDistUav );
         OutWidth = OutHeight = 0;
+    }
+
+    bool EnsureShadowMask( UINT width, UINT height ) {
+        if ( ShadowMask && ShadowMaskWidth == width && ShadowMaskHeight == height ) return true;
+        ReleaseShadowMask();
+        if ( !MakeTarget( width, height, kShadowMaskFormat, L"RtShadowMask", ShadowMask, ShadowMaskSrv, ShadowMaskUav ) ) {
+            ReleaseShadowMask();
+            return false;
+        }
+        ShadowMaskWidth = width;
+        ShadowMaskHeight = height;
+        ShadowMaskState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        return true;
+    }
+
+    void ReleaseShadowMask() {
+        DropTarget( ShadowMask, ShadowMaskSrv, ShadowMaskUav );
+        ShadowMaskWidth = ShadowMaskHeight = 0;
+        if ( StatsGpu ) E.QueueResourceForRelease( std::move( StatsGpu ) );
+        for ( FrameSlot& s : Slots ) {
+            if ( s.StatsReadback ) E.QueueResourceForRelease( std::move( s.StatsReadback ) );
+            s.StatsPtr = nullptr;
+            s.StatsPending = false;
+        }
+        LastStats = {};
+    }
+
+    bool EnsureStats( FrameSlot& s ) {
+        if ( !StatsGpu ) StatsGpu = CreateUavBuffer( Rhi(), kStatsBytes, L"RtShadowStats" );
+        if ( !s.StatsReadback ) {
+            const D3D12_RESOURCE_DESC d = BufferDesc( kStatsBytes );
+            if ( FAILED( Rhi()->CreateResource( D3D12_HEAP_TYPE_READBACK, &d, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                s.StatsReadback.GetAddressOf() ) ) ) return false;
+            s.StatsReadback->SetName( L"RtShadowStatsReadback" );
+            if ( FAILED( s.StatsReadback->Map( 0, nullptr, reinterpret_cast<void**>( const_cast<uint32_t**>( &s.StatsPtr ) ) ) ) ) {
+                s.StatsReadback.Reset();
+                return false;
+            }
+        }
+        return StatsGpu != nullptr;
     }
 
     void ReleaseCaches() {
@@ -931,10 +1007,23 @@ struct D3D12RtReflections::Impl {
     }
 
     // ---------------------------------------------------------------------------------------------------
-    bool Trace( const Inputs& in, UINT& outColorSlot, UINT& outDistanceSlot ) {
-        const D3D12PipelineState::ComputePipeline& pipe = E.m_Pipelines.WaterRT;
-        if ( !pipe.PSO || in.Quality <= 0 || in.Quality > 4 ) return false;
-        const Tier& tier = kTiers[in.Quality];
+    // The posed skinning stream is a vertex buffer everywhere else; the BLAS builds and the traces read it.
+    static constexpr D3D12_RESOURCE_STATES kPosedRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    void AcquirePosed() {
+        Rhi::Resource* posed = E.m_SkinnedPosUv.Get();
+        if ( PosedInRead || !posed || E.FrameSkelDraws().empty() ) return;
+        Cmd()->TransitionBarrier( posed, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, kPosedRead,
+            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, Rhi::kBarrierSyncUnspecified,
+            D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING );
+        PosedInRead = true;
+    }
+    void ReleasePosed() {
+        if ( !PosedInRead ) return;
+        Cmd()->TransitionBarrier( E.m_SkinnedPosUv.Get(), kPosedRead, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER );
+        PosedInRead = false;
+    }
+
+    bool BuildScene( float vobRadius, bool indoorVobs ) {
         DrainDestroyed();
         FrameSlot& s = Slot();
         if ( !EnsureFrameResources( s ) ) return false;
@@ -949,11 +1038,6 @@ struct D3D12RtReflections::Impl {
         InstanceDescs = reinterpret_cast<D3D12_RAYTRACING_INSTANCE_DESC*>( s.RingPtr + kOffInstanceDescs );
         InstanceData = reinterpret_cast<RtInstanceGPU*>( s.RingPtr + kOffInstances );
         GeomData = reinterpret_cast<RtGeomGPU*>( s.RingPtr + kOffGeoms );
-
-        const UINT fullW = static_cast<UINT>( E.m_Resolution.x ), fullH = static_cast<UINT>( E.m_Resolution.y );
-        const UINT scale = tier.Half ? 2u : 1u;
-        const UINT rtW = ( fullW + scale - 1 ) / scale, rtH = ( fullH + scale - 1 ) / scale;
-        if ( !EnsureOutputs( rtW, rtH ) ) return false;
 
         // TLAS sized for the cap so it never regrows; its scratch is taken first so BLAS builds can't starve it
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tin = {};
@@ -970,30 +1054,21 @@ struct D3D12RtReflections::Impl {
         const D3D12_GPU_VIRTUAL_ADDRESS tlasScratch = TakeScratch( s, tinfo.ScratchDataSizeInBytes );
         if ( !s.Tlas || !tlasScratch ) return false;
 
-        DX_ZONE( Cmd().Get(), "Water ray tracing" );
+        DX_ZONE( Cmd().Get(), "Ray tracing scene" );
         ProcessCompactions( s );
         if ( !EnsureWorld( s ) ) return false;
         EvictIfOverBudget();
 
         // Instance 0: the world
         static const float kIdentity[12] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 };
-        AddInstance( WorldBlas.Mem.Address, kIdentity, kWorldInstanceId, 0xFFFFFFFFu );
+        AddInstance( WorldBlas.Mem.Address, kIdentity, kWorldInstanceId, 0xFFFFFFFFu, D3D12RayTracing::kMaskWorld );
         uint32_t* worldMats = reinterpret_cast<uint32_t*>( s.RingPtr + kOffWorldMats );
         for ( size_t i = 0; i < WorldBlas.Materials.size(); ++i ) worldMats[i] = ResolveMaterial( WorldBlas.Materials[i] );
 
-        // The posed streams are read by the NPC builds and the trace
-        Rhi::Resource* posed = E.m_SkinnedPosUv.Get();
-        constexpr D3D12_RESOURCE_STATES kPosedRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        const bool skinned = posed && !E.FrameSkelDraws().empty();
-        if ( skinned ) {
-            Cmd()->TransitionBarrier( posed, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, kPosedRead,
-                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, Rhi::kBarrierSyncUnspecified,
-                D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COMPUTE_SHADING );
-        }
-
-        CollectVobs( s, tier.VobRadius );
+        AcquirePosed();
+        CollectVobs( s, vobRadius, indoorVobs );
         AddAttachments( s, E.FrameAttachDraws() );
-        if ( skinned ) AddSkinned( s, E.FrameSkelDraws() );
+        if ( PosedInRead ) AddSkinned( s, E.FrameSkelDraws() );
 
         Cmd()->AccelerationStructureBarrier();
         // Compacted sizes out to the readback copy
@@ -1014,17 +1089,61 @@ struct D3D12RtReflections::Impl {
         Cmd()->BuildRaytracingAccelerationStructure( tdesc );
         Cmd()->AccelerationStructureBarrier();
 
-        // Constants
-        const XMFLOAT4X4& V = in.View;
-        XMFLOAT4X4 viewRel = V;
-        viewRel._14 = viewRel._24 = viewRel._34 = 0.0f;   // column-vector matrix: translation in the 4th column
-        const XMMATRIX viewProjRel = XMMatrixMultiply( XMLoadFloat4x4( &in.Projection ), XMLoadFloat4x4( &viewRel ) );
-        XMVECTOR det;
-        const XMMATRIX invViewProjRel = XMMatrixInverse( &det, viewProjRel );
+        TracyPlot( "RT instances", static_cast<int64_t>( InstanceCount ) );
+        TracyPlot( "RT BLAS builds", static_cast<int64_t>( BuildsThisFrame ) );
+        TracyPlot( "RT BLAS pool MB", static_cast<int64_t>( CachedPool.Used() >> 20 ) );
+        return true;
+    }
 
+    /** Root parameters 2-14 of both trace root signatures: the TLAS, the records and the geometry. */
+    void BindScene( FrameSlot& s ) {
+        MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+        const D3D12_GPU_VIRTUAL_ADDRESS worldVb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() )->GetGpuVirtualAddress();
+        const D3D12_GPU_VIRTUAL_ADDRESS worldIb = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() )->GetGpuVirtualAddress();
+        auto vaOr = [worldVb]( Rhi::Resource* r ) { return r ? r->GetGPUVirtualAddress() : worldVb; };   // unreferenced when absent
+        D3D12VobArena* vobArena = E.m_VobArena.get();
+        D3D12MeshArena* attachArena = E.m_AttachArena.get();
+        D3D12MeshArena* skelArena = E.m_SkelArena.get();
+        const D3D12_GPU_VIRTUAL_ADDRESS ring = s.Ring->GetGPUVirtualAddress();
+        Cmd()->SetComputeRootShaderResourceView( 2, s.Tlas->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootShaderResourceView( 3, ring + kOffGeoms );
+        Cmd()->SetComputeRootShaderResourceView( 4, ring + kOffInstances );
+        Cmd()->SetComputeRootShaderResourceView( 5, WorldBlas.Geoms->GetGPUVirtualAddress() );
+        Cmd()->SetComputeRootShaderResourceView( 6, ring + kOffWorldMats );
+        Cmd()->SetComputeRootShaderResourceView( 7, worldVb );
+        Cmd()->SetComputeRootShaderResourceView( 8, worldIb );
+        Cmd()->SetComputeRootShaderResourceView( 9, vaOr( vobArena->Ready() ? vobArena->GetVertexBuffer() : nullptr ) );
+        Cmd()->SetComputeRootShaderResourceView( 10, vaOr( vobArena->Ready() ? vobArena->GetIndexBuffer() : nullptr ) );
+        Cmd()->SetComputeRootShaderResourceView( 11, vaOr( attachArena->Ready() ? attachArena->GetVertexBuffer() : nullptr ) );
+        Cmd()->SetComputeRootShaderResourceView( 12, vaOr( attachArena->Ready() ? attachArena->GetIndexBuffer() : nullptr ) );
+        Cmd()->SetComputeRootShaderResourceView( 13, vaOr( E.m_SkinnedPosUv.Get() ) );
+        Cmd()->SetComputeRootShaderResourceView( 14, vaOr( skelArena->Ready() ? skelArena->GetIndexBuffer() : nullptr ) );
+    }
+
+    /** Camera-relative clip <-> world for a column-vector view/projection pair. */
+    static void ViewProjRel( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, XMFLOAT4X4& viewProjRel, XMFLOAT4X4& invViewProjRel ) {
+        XMFLOAT4X4 viewRel = view;
+        viewRel._14 = viewRel._24 = viewRel._34 = 0.0f;   // translation sits in the 4th column
+        const XMMATRIX vp = XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &viewRel ) );
+        XMVECTOR det;
+        XMStoreFloat4x4( &viewProjRel, vp );
+        XMStoreFloat4x4( &invViewProjRel, XMMatrixInverse( &det, vp ) );
+    }
+
+    bool TraceWater( const Inputs& in, UINT& outColorSlot, UINT& outDistanceSlot ) {
+        const D3D12PipelineState::ComputePipeline& pipe = E.m_Pipelines.WaterRT;
+        if ( !pipe.PSO || !SceneValid || in.Quality <= 0 || in.Quality > 4 ) return false;
+        const Tier& tier = kTiers[in.Quality];
+        FrameSlot& s = Slot();
+
+        const UINT fullW = static_cast<UINT>( E.m_Resolution.x ), fullH = static_cast<UINT>( E.m_Resolution.y );
+        const UINT scale = tier.Half ? 2u : 1u;
+        const UINT rtW = ( fullW + scale - 1 ) / scale, rtH = ( fullH + scale - 1 ) / scale;
+        if ( !EnsureOutputs( rtW, rtH ) ) return false;
+
+        DX_ZONE( Cmd().Get(), "Water ray tracing" );
         RtCBData cb = {};
-        XMStoreFloat4x4( &cb.ViewProjRel, viewProjRel );
-        XMStoreFloat4x4( &cb.InvViewProjRel, invViewProjRel );
+        ViewProjRel( in.View, in.Projection, cb.ViewProjRel, cb.InvViewProjRel );
         cb.CamPos = in.CameraPosition;
         cb.Time = in.Time;
         cb.RtSize[0] = rtW; cb.RtSize[1] = rtH;
@@ -1054,7 +1173,6 @@ struct D3D12RtReflections::Impl {
         cb.ScreenReuse = tier.ScreenReuse && in.ScreenSpace ? 1u : 0u;
         memcpy( s.RingPtr + kOffCb, &cb, sizeof( cb ) );
 
-        // Dispatch
         if ( OutState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
             Cmd()->TransitionBarriers( {
                 { OutColor.Get(), OutState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
@@ -1062,33 +1180,13 @@ struct D3D12RtReflections::Impl {
                 } );
             OutState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         }
-
-        MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
-        const D3D12_GPU_VIRTUAL_ADDRESS worldVb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() )->GetGpuVirtualAddress();
-        const D3D12_GPU_VIRTUAL_ADDRESS worldIb = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() )->GetGpuVirtualAddress();
-        auto vaOr = [worldVb]( Rhi::Resource* r ) { return r ? r->GetGPUVirtualAddress() : worldVb; };   // unreferenced when absent
-        D3D12VobArena* vobArena = E.m_VobArena.get();
-        D3D12MeshArena* attachArena = E.m_AttachArena.get();
-        D3D12MeshArena* skelArena = E.m_SkelArena.get();
-        const D3D12_GPU_VIRTUAL_ADDRESS ring = s.Ring->GetGPUVirtualAddress();
+        AcquirePosed();
 
         Cmd()->SetPipelineState( pipe.PSO.Get() );
         Cmd()->SetComputeRootSignature( pipe.RootSig.Get() );
-        Cmd()->SetComputeRootConstantBufferView( 0, ring + kOffCb );
+        Cmd()->SetComputeRootConstantBufferView( 0, s.Ring->GetGPUVirtualAddress() + kOffCb );
         Cmd()->SetComputeRootConstantBufferView( 1, E.m_ShadowCBGpu[E.m_FrameIndex] );
-        Cmd()->SetComputeRootShaderResourceView( 2, s.Tlas->GetGPUVirtualAddress() );
-        Cmd()->SetComputeRootShaderResourceView( 3, ring + kOffGeoms );
-        Cmd()->SetComputeRootShaderResourceView( 4, ring + kOffInstances );
-        Cmd()->SetComputeRootShaderResourceView( 5, WorldBlas.Geoms->GetGPUVirtualAddress() );
-        Cmd()->SetComputeRootShaderResourceView( 6, ring + kOffWorldMats );
-        Cmd()->SetComputeRootShaderResourceView( 7, worldVb );
-        Cmd()->SetComputeRootShaderResourceView( 8, worldIb );
-        Cmd()->SetComputeRootShaderResourceView( 9, vaOr( vobArena->Ready() ? vobArena->GetVertexBuffer() : nullptr ) );
-        Cmd()->SetComputeRootShaderResourceView( 10, vaOr( vobArena->Ready() ? vobArena->GetIndexBuffer() : nullptr ) );
-        Cmd()->SetComputeRootShaderResourceView( 11, vaOr( attachArena->Ready() ? attachArena->GetVertexBuffer() : nullptr ) );
-        Cmd()->SetComputeRootShaderResourceView( 12, vaOr( attachArena->Ready() ? attachArena->GetIndexBuffer() : nullptr ) );
-        Cmd()->SetComputeRootShaderResourceView( 13, vaOr( posed ) );
-        Cmd()->SetComputeRootShaderResourceView( 14, vaOr( skelArena->Ready() ? skelArena->GetIndexBuffer() : nullptr ) );
+        BindScene( s );
         Cmd()->Dispatch( ( rtW + 7 ) / 8, ( rtH + 7 ) / 8, 1 );
 
         Cmd()->TransitionBarriers( {
@@ -1096,37 +1194,140 @@ struct D3D12RtReflections::Impl {
             { OutDistance.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
             } );
         OutState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        if ( skinned ) Cmd()->TransitionBarrier( posed, kPosedRead, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER );
-
-        TracyPlot( "RT instances", static_cast<int64_t>( InstanceCount ) );
-        TracyPlot( "RT BLAS builds", static_cast<int64_t>( BuildsThisFrame ) );
-        TracyPlot( "RT BLAS pool MB", static_cast<int64_t>( CachedPool.Used() >> 20 ) );
+        ReleasePosed();
         outColorSlot = OutColorSrv;
         outDistanceSlot = OutDistSrv;
         return true;
     }
+
+    bool TraceShadows( const ShadowInputs& in, UINT& outMaskSlot ) {
+        const D3D12PipelineState::ComputePipeline& pipe = E.m_Pipelines.RtShadows;
+        if ( !pipe.PSO || !SceneValid || ( in.SunRays <= 0 && in.PointRays <= 0 ) ) return false;
+        FrameSlot& s = Slot();
+        const UINT w = static_cast<UINT>( E.m_Resolution.x ), h = static_cast<UINT>( E.m_Resolution.y );
+        if ( !EnsureShadowMask( w, h ) ) return false;
+
+        DX_ZONE( Cmd().Get(), "Ray-traced shadows" );
+        RtShadowCBData cb = {};
+        XMFLOAT4X4 viewProjRel;
+        ViewProjRel( in.View, in.Projection, viewProjRel, cb.InvViewProjRel );
+        cb.CamPos = in.CameraPosition;
+        cb.DepthIndex = in.DepthSlot;
+        cb.Size[0] = w; cb.Size[1] = h;
+        cb.OutIndex = ShadowMaskUav;
+        cb.NoiseFrame = in.NoiseFrame;
+        cb.SunDistance = in.SunDistance;
+        cb.SunFadeBand = std::max( in.SunDistance * 0.15f, 1.0f );
+        cb.SunRays = static_cast<UINT>( std::max( in.SunRays, 0 ) );
+        cb.SunConeTan = 0.012f;          // ~0.7 degrees, a little wider than the real sun
+        cb.PointRays = static_cast<UINT>( std::max( in.PointRays, 0 ) );
+        cb.PointSourceRadius = 12.0f;    // world units, about a torch flame
+        cb.NumTilesX = in.NumTilesX;
+        cb.PixelAngle = 2.0f / ( std::max( std::abs( in.Projection._22 ), 1e-4f ) * h );
+        // The cluster Z basis BindFrameLights gives the lit passes, or the mask indexes other lights
+        cb.ProjA = in.Projection._33;
+        cb.ProjB = in.Projection._43;
+        cb.NearZ = in.NearZ;
+        cb.FarZ = in.FarZ;
+        memcpy( s.RingPtr + kOffShadowCb, &cb, sizeof( cb ) );
+
+        if ( ShadowMaskState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
+            Cmd()->TransitionBarrier( ShadowMask.Get(), ShadowMaskState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            ShadowMaskState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        }
+        // This slot's last counters have landed (its frame retired); they are a few frames old by now
+        if ( !EnsureStats( s ) ) return false;
+        if ( s.StatsPending ) {
+            LastStats.OverflowPixels = s.StatsPtr[0];
+            LastStats.MostSlots = s.StatsPtr[1];
+            LastStats.ShadowedPixels = s.StatsPtr[2];
+            LastStats.Valid = true;
+            s.StatsPending = false;
+        }
+        memset( s.RingPtr + kOffStatsZero, 0, kStatsBytes );
+        Cmd()->TransitionBarrier( StatsGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST );
+        Cmd()->CopyBufferRegion( StatsGpu.Get(), 0, s.Ring.Get(), kOffStatsZero, kStatsBytes );
+        Cmd()->TransitionBarrier( StatsGpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        AcquirePosed();
+
+        Cmd()->SetPipelineState( pipe.PSO.Get() );
+        Cmd()->SetComputeRootSignature( pipe.RootSig.Get() );
+        Cmd()->SetComputeRootConstantBufferView( 0, s.Ring->GetGPUVirtualAddress() + kOffShadowCb );
+        Cmd()->SetComputeRootConstantBufferView( 1, E.m_ShadowCBGpu[E.m_FrameIndex] );
+        BindScene( s );
+        Cmd()->SetComputeRootShaderResourceView( 15, in.Lights );
+        Cmd()->SetComputeRootShaderResourceView( 16, in.LightGrid );
+        Cmd()->SetComputeRootUnorderedAccessView( 17, StatsGpu->GetGPUVirtualAddress() );
+        Cmd()->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
+
+        Cmd()->TransitionBarrier( StatsGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE );
+        Cmd()->CopyBufferRegion( s.StatsReadback.Get(), 0, StatsGpu.Get(), 0, kStatsBytes );
+        Cmd()->TransitionBarrier( StatsGpu.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        s.StatsPending = true;
+
+        Cmd()->TransitionBarrier( ShadowMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+        ShadowMaskState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        ReleasePosed();
+        outMaskSlot = ShadowMaskSrv;
+        return true;
+    }
+
+    void ReleaseAll() {
+        ReleaseCaches();
+        ReleaseOutputs();
+        ReleaseShadowMask();
+        ReleaseSlots();
+        // Queued after the frees above, so it runs after them, once in-flight frames are done with the chunks
+        E.QueueCleanupJob( [this]() { if ( IdleFrames >= kIdleFramesBeforeRelease ) CachedPool.Clear(); } );
+    }
 };
 
-D3D12RtReflections::D3D12RtReflections( D3D12GraphicsEngine& engine ) : m( std::make_unique<Impl>( engine ) ) {}
-D3D12RtReflections::~D3D12RtReflections() = default;
+D3D12RayTracing::D3D12RayTracing( D3D12GraphicsEngine& engine ) : m( std::make_unique<Impl>( engine ) ) {}
+D3D12RayTracing::~D3D12RayTracing() = default;
 
-bool D3D12RtReflections::Trace( const Inputs& in, UINT& outColorSlot, UINT& outDistanceSlot ) {
-    ZoneScopedN( "D3D12RtReflections::Trace" );
-    return m->Trace( in, outColorSlot, outDistanceSlot );
+void D3D12RayTracing::BeginFrame() {
+    m->SceneBuilt = m->SceneValid = false;
+    m->Carriers.clear();
 }
 
-void D3D12RtReflections::Idle() {
+void D3D12RayTracing::EndFrame() {
+    m->ReleasePosed();
+    if ( m->SceneBuilt ) return;
     m->DrainDestroyed();
-    if ( ++m->IdleFrames != kIdleFramesBeforeRelease ) return;
-    m->ReleaseCaches();
-    m->ReleaseOutputs();
-    m->ReleaseSlots();
-    // Queued after the frees above, so it runs after them, once in-flight frames are done with the chunks
-    Impl* impl = m.get();
-    m->E.QueueCleanupJob( [impl]() { if ( impl->IdleFrames >= kIdleFramesBeforeRelease ) impl->CachedPool.Clear(); } );
+    if ( ++m->IdleFrames == kIdleFramesBeforeRelease ) m->ReleaseAll();
 }
 
-void D3D12RtReflections::OnLoadWorld() {
+bool D3D12RayTracing::EnsureScene( float vobRadius, bool indoorVobs ) {
+    if ( m->SceneBuilt ) return m->SceneValid;
+    ZoneScopedN( "D3D12RayTracing::BuildScene" );
+    m->SceneBuilt = true;
+    m->SceneValid = m->BuildScene( vobRadius, indoorVobs );
+    return m->SceneValid;
+}
+
+bool D3D12RayTracing::CanTrace() const {
+    return !( m->WorldBlas.Failed && m->WorldBlas.Wrapped == Engine::GAPI->GetWrappedWorldMesh() );
+}
+
+std::vector<const zCVob*>& D3D12RayTracing::CarrierVobs() { return m->Carriers; }
+
+const D3D12RayTracing::ShadowStats& D3D12RayTracing::LastShadowStats() const { return m->LastStats; }
+
+float D3D12RayTracing::WaterVobRadius( int quality ) {
+    return quality > 0 && quality <= 4 ? kTiers[quality].VobRadius : 0.0f;
+}
+
+bool D3D12RayTracing::TraceWater( const Inputs& in, UINT& outColorSlot, UINT& outDistanceSlot ) {
+    ZoneScopedN( "D3D12RayTracing::TraceWater" );
+    return m->TraceWater( in, outColorSlot, outDistanceSlot );
+}
+
+bool D3D12RayTracing::TraceShadows( const ShadowInputs& in, UINT& outMaskSlot ) {
+    ZoneScopedN( "D3D12RayTracing::TraceShadows" );
+    return m->TraceShadows( in, outMaskSlot );
+}
+
+void D3D12RayTracing::OnLoadWorld() {
     {
         std::lock_guard<std::mutex> lock( m->DestroyedMutex );
         m->DestroyedMeshes.clear();
@@ -1135,7 +1336,7 @@ void D3D12RtReflections::OnLoadWorld() {
     m->Vobs.Reset();
 }
 
-void D3D12RtReflections::OnMeshInfoDestroyed( const MeshInfo* mesh ) {
+void D3D12RayTracing::OnMeshInfoDestroyed( const MeshInfo* mesh ) {
     std::lock_guard<std::mutex> lock( m->DestroyedMutex );
     m->DestroyedMeshes.push_back( mesh );
 }

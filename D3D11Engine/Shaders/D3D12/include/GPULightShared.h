@@ -25,7 +25,9 @@ struct GPULight {
     float3 ShadowOrigin;    // 48  cube centre — == PositionWorld unless this light is clustered
     float  ShadowRange;     // 60  cube far-plane basis (far = ShadowRange*2) — == Range unless clustered
     float  WetCoatScale;    // 64  wet-ground reflection gate (PointLightWetReflectionScale); Color.w gates material highlights
-    float3 WetPad;          // 68
+    int    RtShadowMask;    // 68  TLAS instance mask the ray-traced shadow traces with; 0 = not ray traced
+    float  RtFallbackRange; // 72  Range scale while ray traced but without a visibility (no mask, past the cap)
+    float  WetPad1;         // 76
 };
 
 // ShadowCubeIndex encoding, HI-LO with 0 meaning invalid in each half:

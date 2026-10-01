@@ -601,6 +601,7 @@ public:
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateWaterSkyAverage();   // single-group sky average compute (b0 8 consts, bindless)
     bool CreateWaterRT();     // ray-traced water reflections (RayQuery compute); no-op without Caps::RayQuery
+    bool CreateRtShadows();   // ray-traced sun + point-light shadow mask (RayQuery compute); no-op without Caps::RayQuery
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreatePreviewSkeletal();   // same, for a skinned item visual (adds b2 bone palette)
@@ -679,6 +680,7 @@ public:
     WaterPipeline    Water;
     ComputePipeline  WaterSkyAverage;   // average on-screen sky for the water's sky fill (optional)
     ComputePipeline  WaterRT;           // Shaders/D3D12/WaterRT.hlsl (optional, ray-query devices only)
+    ComputePipeline  RtShadows;         // Shaders/D3D12/RtShadows.hlsl (optional, ray-query devices only)
     ComputePipeline  LightCull;
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure

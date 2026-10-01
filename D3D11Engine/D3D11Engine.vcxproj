@@ -1176,7 +1176,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GothicStateCache.h" />
     <ClInclude Include="WorldMeshSection.h" />
     <ClInclude Include="D3D12Engine\D3D12MeshArena.h" />
-    <ClInclude Include="D3D12Engine\D3D12RtReflections.h" />
+    <ClInclude Include="D3D12Engine\D3D12RayTracing.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1345,7 +1345,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <ForcedIncludeFiles>
       </ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="D3D12Engine\D3D12RtReflections.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RayTracing.cpp" />
     <ClCompile Include="StackWalker.cpp" />
     <ClCompile Include="VulkanEngine\VulkanDevice.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">

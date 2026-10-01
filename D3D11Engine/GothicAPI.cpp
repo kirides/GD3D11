@@ -5936,6 +5936,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowCascadePCFLimit", to_string_locale_independent( s.ShadowCascadePCFLimit ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowFrustumCullingMode", to_string_locale_independent( static_cast<int>(s.ShadowFrustumCullingMode) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "PointlightShadows", to_string_locale_independent( s.EnablePointlightShadows ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "RayTracedSunShadows", to_string_locale_independent( (int)s.RayTracedSunShadows ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "RayTracedSunShadowDistance", float_to_string( s.RayTracedSunShadowDistance, 0 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "RayTracedPointShadows", to_string_locale_independent( (int)s.RayTracedPointShadows ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "EnableDynamicLighting", to_string_locale_independent( s.EnableDynamicLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SmoothCameraUpdate", to_string_locale_independent( s.SmoothShadowCameraUpdate ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SmoothShadowFrequency", to_string_locale_independent( s.SmoothShadowFrequency ).c_str(), ini.c_str() );
@@ -6117,6 +6120,14 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowMapSize = GetPrivateProfileIntA( "Shadows", "ShadowMapSize", ds.ShadowMapSize, ini.c_str() );
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode( GetPrivateProfileIntA( "Shadows", "PointlightShadows", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, ini.c_str() ) );
         s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", ds.WorldShadowRangeScale, ini );
+        // Rays per pixel; anything the enum doesn't name snaps down to the next tier
+        auto rtShadows = []( int v ) {
+            return static_cast<GothicRendererSettings::E_RayTracedShadows>( v >= 4 ? 4 : std::clamp( v, 0, 2 ) );
+        };
+        s.RayTracedSunShadows = rtShadows( GetPrivateProfileIntA( "Shadows", "RayTracedSunShadows", ds.RayTracedSunShadows, ini.c_str() ) );
+        s.RayTracedSunShadowDistance = std::clamp( GetPrivateProfileFloatA( "Shadows", "RayTracedSunShadowDistance", ds.RayTracedSunShadowDistance, ini ),
+            1000.0f, 40000.0f );
+        s.RayTracedPointShadows = rtShadows( GetPrivateProfileIntA( "Shadows", "RayTracedPointShadows", ds.RayTracedPointShadows, ini.c_str() ) );
         s.NumShadowCascades = GetPrivateProfileIntA( "Shadows", "NumShadowCascades", ds.NumShadowCascades, ini.c_str() );
         s.ShadowCascadePCFLimit = GetPrivateProfileIntA( "Shadows", "ShadowCascadePCFLimit", ds.ShadowCascadePCFLimit, ini.c_str() );
         s.ShadowFrustumCullingMode = static_cast<GothicRendererSettings::E_ShadowFrustumCulling>(GetPrivateProfileIntA( "Shadows", "ShadowFrustumCullingMode", ds.ShadowFrustumCullingMode, ini.c_str() ));
