@@ -330,26 +330,15 @@ bool D3D12ShadowMap::Init() {
 		}
 	}
 
-	// Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth (matrix-palette skinning) +
-	// m_Pipelines.Skeletal.RootSig + the skinned input layout, same caster state.
+	// Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth + m_Pipelines.Skeletal.RootSig over the
+	// {pos, uv} stream SkinVertices.hlsl posed, same caster state.
 	if ( m_E->m_Pipelines.Skeletal.DepthPrepassVsBlob && m_E->m_Pipelines.Skeletal.RootSig ) {
 		if ( !m_E->m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSShadowClip", Shadermodel_PS, m_CasterSkeletalPsBlob.ReleaseAndGetAddressOf() ) )
 			return false;
-		const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
-			{ "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-		};
 		pso.pRootSignature = m_E->m_Pipelines.Skeletal.RootSig.Get();
 		pso.VS = { m_E->m_Pipelines.Skeletal.DepthPrepassVsBlob->GetBufferPointer(), m_E->m_Pipelines.Skeletal.DepthPrepassVsBlob->GetBufferSize() };
 		pso.PS = { m_CasterSkeletalPsBlob->GetBufferPointer(), m_CasterSkeletalPsBlob->GetBufferSize() };
-		pso.InputLayout = { skelLayout, _countof( skelLayout ) };
+		pso.InputLayout = D3D12PipelineState::PosedSkinLayout( false );
 		if ( FAILED( m_E->m_Rhi->CreateGraphicsPipelineState( &pso, m_CasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) {
 			Logging::Wrn( "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster)." );
 			return false;
@@ -1318,8 +1307,9 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		}
 	}
 
-	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, t3 skeletal ring, b10 row) ---
-	if ( m_CasterSkeletalPSO && m_E->m_Pipelines.Skeletal.RootSig && !SkelDraws[c].empty() && m_E->m_SkelArena->Ready() ) {
+	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj; posed vertices) ---
+	if ( m_CasterSkeletalPSO && m_E->m_Pipelines.Skeletal.RootSig && !SkelDraws[c].empty() && m_E->m_SkelArena->Ready()
+		&& m_E->m_SkinnedPosUv ) {
 		DX_ZONE( cmdList.Get(), "Skeletals" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 
@@ -1332,7 +1322,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-		m_E->BindSkeletalArena( cmdList, 1 );
+		m_E->BindSkinnedGeometry( cmdList, 1 );
 		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
 			if ( !d.visual ) continue;
 			// Shared per-MODEL texture slots: the alpha-clip diffuse for each of this instance's materials was
@@ -1342,8 +1332,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 			const std::vector<SkelMatSlot>* matSrvs =
 				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
 
-			cmdList->SetGraphicsRoot32BitConstants( 2, 1, &d.instRow, 0 );   // b10
 			size_t matIdx = 0;
+			uint32_t sub = 0;   // index into this vob's g_SkinDst entries
 			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
 				const bool haveSlot = matSrvs && matIdx < matSrvs->size();
 				const UINT diffuseSlot = haveSlot ? (*matSrvs)[matIdx].slot : blackSlot;
@@ -1360,10 +1350,12 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 				// push just that one at offset 2 rather than resolving normal/ORM maps the caster never samples.
 				cmdList->SetGraphicsRoot32BitConstant( 11, diffuseSlot, 2 );
 				for ( auto const& mesh : meshList ) {
-					if ( !mesh ) continue;
+					const uint32_t posed = SkinnedBase( d, sub++ );
+					if ( !mesh || posed == kNoSkinnedOutput ) continue;
 					const D3D12MeshArena::Range* range = m_E->m_SkelArena->Find( mesh->ArenaSlot );
 					if ( !range ) continue;
-					cmdList->DrawIndexedInstanced( range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), 0 );
+					// Arena indices over the posed vertices (SkinVertices.hlsl).
+					cmdList->DrawIndexedInstanced( range->IndexCount, 1, range->StartIndex, static_cast<INT>( posed ), 0 );
 				}
 			}
 		}

@@ -261,6 +261,11 @@ bool D3D12GraphicsEngine::InitScene() {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline." );
         return false;
     }
+    // Every skeletal pass draws the vertices this poses, so it is as fatal as the pipeline above.
+    if ( !m_Pipelines.CreateSkinning() || !CreateSkinningResources() ) {
+        Logging::Err( "D3D12GraphicsEngine::Init: failed to create the compute skinning resources." );
+        return false;
+    }
     if ( !CreateSkeletalIndirect() ) {
         // Fatal: both skeletal passes submit exclusively through these (T9), so a missing signature/ring would
         // silently drop every NPC/monster and every node attachment. Must run after CreateSkeletal (it needs

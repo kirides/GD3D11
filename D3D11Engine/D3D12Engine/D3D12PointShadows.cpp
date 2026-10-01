@@ -49,24 +49,27 @@ namespace {
 	// static VOBs, dynamic skeletals, dynamic node attachments); the recorder filters redundant binds exactly
 	// like the inline loops used to.
 	struct PointShadowDraw {
-		D3D12VertexBuffer*          vb = nullptr;
-		D3D12VertexBuffer*          ib = nullptr;
-		const D3D12MeshArena*       arena = nullptr;     // replaces vb/ib (skeletals, attachments)
-		INT                         baseVertex = 0;      // arena range
-		UINT                        stride = 0;
-		DXGI_FORMAT                 ibFormat = DXGI_FORMAT_R16_UINT;
+		D3D12_VERTEX_BUFFER_VIEW    vbv = {};            // mesh stream: own buffer, attachment arena or posed skinned
+		D3D12_INDEX_BUFFER_VIEW     ibv = {};
+		INT                         baseVertex = 0;
 		UINT                        indexCount = 0;
 		UINT                        startIndex = 0;
 		UINT                        instanceCount = 0;   // always a multiple of 6 — one instance per cube face
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = {};
 		D3D12_VERTEX_BUFFER_VIEW    instView = {};       // 2nd stream (VOBs/attachments); SizeInBytes 0 => single stream
-		uint32_t                    instRow = 0;         // skeletal b10 (row in the skeletal ring, t3)
 		// Can PSCubeClip's `clip(diffuse.a - 0.5)` ever discard here? If not, the record is drawn by the
 		// caster PSO's no-pixel-shader twin — a PS that merely might discard costs the whole draw the
 		// hardware's double-rate depth path, and this pass rasterizes six faces per caster. Resolved by the
 		// builders below (main thread, Gothic-side reads); the recorder just reads the flag.
 		bool                        alphaTested = true;
 	};
+	D3D12_VERTEX_BUFFER_VIEW VertexView( D3D12VertexBuffer* vb, UINT stride ) {
+		return { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), stride };
+	}
+	D3D12_INDEX_BUFFER_VIEW IndexView( D3D12VertexBuffer* ib, DXGI_FORMAT format = DXGI_FORMAT_R16_UINT ) {
+		return { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), format };
+	}
+
 	// Per shadowed light: its cube slot, its 6-face view-proj CB, and the [begin,end) spans it owns in each
 	// of the four draw lists below.
 	struct PointShadowLightRecord {
@@ -395,11 +398,13 @@ void D3D12PointShadows::Prepare() {
 	const bool haveVobs = psPipe.CasterVobPSO && !g_FrameVobUploads.empty() && m_VobInstPtr[frame];
 	// Skeletal casters are sphere-culled per light against the FULL registered vob list (see the Phase-C loop
 	// below), not the player-view-culled main-view list, so gate on the registry instead of that list.
-	const bool haveSkel = psPipe.CasterSkeletalPSO && psPipe.SkeletalRootSig
-		&& !Engine::GAPI->GetSkeletalMeshVobs().empty();
-	// Skinned bodies and node attachments draw out of the engine's mesh arenas (D3D12MeshArena).
+	// Skinned bodies draw the posed vertices (SkinVertices.hlsl) with the skeletal arena's indices; node attachments
+	// draw out of the attachment arena (D3D12MeshArena).
+	const bool haveSkel = psPipe.CasterSkeletalPSO && !Engine::GAPI->GetSkeletalMeshVobs().empty()
+		&& m_E->m_SkinnedPosUv && m_E->m_SkelArena->Ready();
 	const D3D12MeshArena* const skelArena = m_E->m_SkelArena.get();
 	const D3D12MeshArena* const attachArena = m_E->m_AttachArena.get();
+	const D3D12_VERTEX_BUFFER_VIEW posedVbv = haveSkel ? m_E->SkinnedPosUvView() : D3D12_VERTEX_BUFFER_VIEW{};
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = m_E->GetSrvGpuHandle( m_E->m_BlackTexture->GetSrvSlot() );
 	// The one Gothic mutation the recorder can't do for itself: CacheIn kicks off the texture load. Resolved
@@ -550,8 +555,8 @@ void D3D12PointShadows::Prepare() {
 						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
 						PointShadowDraw d;
-						d.vb = mvb; d.ib = mib;
-						d.stride = sizeof( ExVertexStruct );
+						d.vbv = VertexView( mvb, sizeof( ExVertexStruct ) );
+						d.ibv = IndexView( mib );
 						d.indexCount = static_cast<UINT>( mi->Indices.size() );
 						d.instanceCount = count * 6;
 						d.srv = srv;
@@ -622,9 +627,8 @@ void D3D12PointShadows::Prepare() {
 							if ( tex != boundTex ) { boundSrv = resolveDiffuse( tex ); boundTex = tex; }
 
 							PointShadowDraw d;
-							d.vb = vb; d.ib = ib;
-							d.stride = sizeof( ExVertexStructGPU );
-							d.ibFormat = DXGI_FORMAT_R32_UINT;
+							d.vbv = VertexView( vb, sizeof( ExVertexStructGPU ) );
+							d.ibv = IndexView( ib, DXGI_FORMAT_R32_UINT );
 							d.indexCount = static_cast<UINT>( mesh->Indices.size() );
 							d.startIndex = mesh->BaseIndexLocation;
 							d.instanceCount = 6;
@@ -668,24 +672,26 @@ void D3D12PointShadows::Prepare() {
 					model->UpdateMeshLibTexAniState();
 
 					bool baked = false;
+					uint32_t sub = 0;   // index into this vob's g_SkinDst entries
 					for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
 						zCTexture* const matTex = mat ? mat->GetAniTexture() : nullptr;
 						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
 						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 							|| ( mat && mat->HasAlphaTest() );
 						for ( auto const& mesh : meshList ) {
-							const D3D12MeshArena::Range* range = mesh ? skelArena->Find( mesh->ArenaSlot ) : nullptr;
+							const uint32_t posed = SkinnedBase( sd, sub++ );
+							const D3D12MeshArena::Range* range = ( mesh && posed != kNoSkinnedOutput )
+								? skelArena->Find( mesh->ArenaSlot ) : nullptr;
 							if ( !range ) continue;
 
 							PointShadowDraw d;
-							d.arena = skelArena;
-							d.baseVertex = static_cast<INT>( range->BaseVertex );
+							d.vbv = posedVbv;
+							d.ibv = skelArena->IndexBufferView();
+							d.baseVertex = static_cast<INT>( posed );
 							d.startIndex = range->StartIndex;
-							d.stride = sizeof( ExSkelVertexStruct );
 							d.indexCount = range->IndexCount;
 							d.instanceCount = 6;
 							d.srv = srv;
-							d.instRow = sd.instRow;
 							d.alphaTested = matAlphaTested;
 							g_PsStaticSkelDraws.push_back( d );
 							baked = true;
@@ -705,10 +711,10 @@ void D3D12PointShadows::Prepare() {
 						if ( !range ) continue;
 
 						PointShadowDraw d;
-						d.arena = attachArena;
+						d.vbv = attachArena->VertexBufferView();
+						d.ibv = attachArena->IndexBufferView();
 						d.baseVertex = static_cast<INT>( range->BaseVertex );
 						d.startIndex = range->StartIndex;
-						d.stride = sizeof( ExVertexStruct );
 						d.indexCount = range->IndexCount;
 						d.instanceCount = 6;
 						d.srv = resolveDiffuse( a.tex );
@@ -766,24 +772,26 @@ void D3D12PointShadows::Prepare() {
 				zCModel* model = static_cast<zCModel*>(sd.vobInfo->Vob->GetVisual());
 				model->UpdateMeshLibTexAniState();
 
+				uint32_t sub = 0;   // index into this vob's g_SkinDst entries
 				for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
 					zCTexture* const matTex = mat ? mat->GetAniTexture() : nullptr;
 					const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
 					const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 						|| ( mat && mat->HasAlphaTest() );
 					for ( auto const& mesh : meshList ) {
-						const D3D12MeshArena::Range* range = mesh ? skelArena->Find( mesh->ArenaSlot ) : nullptr;
+						const uint32_t posed = SkinnedBase( sd, sub++ );
+						const D3D12MeshArena::Range* range = ( mesh && posed != kNoSkinnedOutput )
+							? skelArena->Find( mesh->ArenaSlot ) : nullptr;
 						if ( !range ) continue;
 
 						PointShadowDraw d;
-						d.arena = skelArena;
-						d.baseVertex = static_cast<INT>( range->BaseVertex );
+						d.vbv = posedVbv;
+						d.ibv = skelArena->IndexBufferView();
+						d.baseVertex = static_cast<INT>( posed );
 						d.startIndex = range->StartIndex;
-						d.stride = sizeof( ExSkelVertexStruct );
 						d.indexCount = range->IndexCount;
 						d.instanceCount = 6;
 						d.srv = srv;
-						d.instRow = sd.instRow;
 						d.alphaTested = matAlphaTested;
 						g_PsDynSkelDraws.push_back( d );
 					}
@@ -804,10 +812,10 @@ void D3D12PointShadows::Prepare() {
 					if ( !range ) continue;
 
 					PointShadowDraw d;
-					d.arena = attachArena;
+					d.vbv = attachArena->VertexBufferView();
+					d.ibv = attachArena->IndexBufferView();
 					d.baseVertex = static_cast<INT>( range->BaseVertex );
 					d.startIndex = range->StartIndex;
-					d.stride = sizeof( ExVertexStruct );
 					d.indexCount = range->IndexCount;
 					d.instanceCount = 6;
 					d.srv = resolveDiffuse( a.tex );
@@ -864,8 +872,8 @@ void D3D12PointShadows::Prepare() {
 							if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
 							PointShadowDraw d;
-							d.vb = mvb; d.ib = mib;
-							d.stride = sizeof( ExVertexStruct );
+							d.vbv = VertexView( mvb, sizeof( ExVertexStruct ) );
+							d.ibv = IndexView( mib );
 							d.indexCount = static_cast<UINT>( mi->Indices.size() );
 							d.instanceCount = 6;
 							d.srv = srv;
@@ -965,19 +973,15 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// draws routinely share a vertex/index buffer, an SRV or a skeletal instance — exactly the dedupe the old
 	// inline loops did with their `boundTex` / hoisted IASetVertexBuffers. Reset whenever the root signature
 	// changes (descriptor tables and root CBVs don't survive that).
-	const void* lastVb = nullptr;   // a D3D12VertexBuffer or a D3D12MeshArena
-	const void* lastIb = nullptr;
+	D3D12_GPU_VIRTUAL_ADDRESS lastVb = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS lastIb = 0;
 	SIZE_T lastSrv = 0;
 	D3D12_GPU_VIRTUAL_ADDRESS lastInstVbAddr = 0;
 	UINT lastInstVbSize = 0;
-	uint32_t lastInstRow = UINT32_MAX;
 	auto resetBindCache = [&]() {
-		lastVb = nullptr; lastIb = nullptr; lastSrv = 0;
-		lastInstVbAddr = 0; lastInstVbSize = 0; lastInstRow = UINT32_MAX;
+		lastVb = 0; lastIb = 0; lastSrv = 0;
+		lastInstVbAddr = 0; lastInstVbSize = 0;
 		};
-	// The skeletal ring every skeletal caster reads its instance + bones from (t3, see Skeletal.RootSig).
-	const D3D12_GPU_VIRTUAL_ADDRESS skelRing = m_E->m_SkeletalCBBuffer[m_E->m_FrameIndex]
-		? m_E->m_SkeletalCBBuffer[m_E->m_FrameIndex]->GetGPUVirtualAddress() : 0;
 	// Alpha-clip PSO selection, per draw. Deliberately NOT part of resetBindCache: unlike descriptor tables and
 	// root CBVs, the bound PSO survives a root-signature change, so one filter spanning all four phases is both
 	// correct and the fewest switches. `noAlpha` falls back to the clipping PSO when the twin failed to build,
@@ -992,12 +996,9 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		};
 	auto emitGeometry = [&]( const PointShadowDraw& d ) {
 		const bool twoStreams = d.instView.SizeInBytes != 0;
-		const void* vbKey = d.arena ? static_cast<const void*>( d.arena ) : d.vb;
-		const void* ibKey = d.arena ? static_cast<const void*>( d.arena ) : d.ib;
-		if ( vbKey != lastVb || ibKey != lastIb
+		if ( d.vbv.BufferLocation != lastVb || d.ibv.BufferLocation != lastIb
 			|| (twoStreams && (d.instView.BufferLocation != lastInstVbAddr || d.instView.SizeInBytes != lastInstVbSize)) ) {
-			const D3D12_VERTEX_BUFFER_VIEW vbv = d.arena ? d.arena->VertexBufferView()
-				: D3D12_VERTEX_BUFFER_VIEW{ d.vb->GetGpuVirtualAddress(), d.vb->GetSizeInBytes(), d.stride };
+			const D3D12_VERTEX_BUFFER_VIEW& vbv = d.vbv;
 			if ( twoStreams ) {
 				const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, d.instView };
 				cmdList->IASetVertexBuffers( 0, 2, views );
@@ -1007,10 +1008,8 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				cmdList->IASetVertexBuffers( 0, 1, &vbv );
 				lastInstVbAddr = 0; lastInstVbSize = 0;
 			}
-			const D3D12_INDEX_BUFFER_VIEW ibv = d.arena ? d.arena->IndexBufferView()
-				: D3D12_INDEX_BUFFER_VIEW{ d.ib->GetGpuVirtualAddress(), d.ib->GetSizeInBytes(), d.ibFormat };
-			cmdList->IASetIndexBuffer( &ibv );
-			lastVb = vbKey; lastIb = ibKey;
+			cmdList->IASetIndexBuffer( &d.ibv );
+			lastVb = d.vbv.BufferLocation; lastIb = d.ibv.BufferLocation;
 		}
 		cmdList->DrawIndexedInstanced( d.indexCount, d.instanceCount, d.startIndex, d.baseVertex, 0 );
 		};
@@ -1094,16 +1093,14 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			if ( L.staticSkelEnd > L.staticSkelBegin ) {
 				DX_ZONE( cmdList.Get(), "MOBs" );
 				TracyD3D12ZoneCGX( cmdList.Get(), "MOBs" );
-				// Its own (smaller) root signature - re-bound per light for the same reason Phase C does it.
-				cmdList->SetGraphicsRootSignature( psPipe.SkeletalRootSig.Get() );
+				// Posed vertices on the world/VOB root signature; re-bound per light for the same reason Phase C does it.
+				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
-				cmdList->SetGraphicsRootShaderResourceView( 1, skelRing );
 				resetBindCache();
 				for ( UINT i = L.staticSkelBegin; i < L.staticSkelEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticSkelDraws[i];
 					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.instRow != lastInstRow ) { cmdList->SetGraphicsRoot32BitConstants( 2, 1, &d.instRow, 0 ); lastInstRow = d.instRow; }
-					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
+					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
 			}
@@ -1163,15 +1160,13 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				// smaller root signature), so the skeletal root sig/PSO can't be assumed still bound once we're
 				// past the first light (bug: 2nd+ shadowed light's instance/bone/diffuse binds landed on the
 				// wrong root signature's parameter slots — GPU device hang, caught via D3D12 validation).
-				cmdList->SetGraphicsRootSignature( psPipe.SkeletalRootSig.Get() );
+				cmdList->SetGraphicsRootSignature( psPipe.RootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
-				cmdList->SetGraphicsRootShaderResourceView( 1, skelRing );
 				resetBindCache();
 				for ( UINT i = L.dynSkelBegin; i < L.dynSkelEnd; ++i ) {
 					const PointShadowDraw& d = g_PsDynSkelDraws[i];
 					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.instRow != lastInstRow ) { cmdList->SetGraphicsRoot32BitConstants( 2, 1, &d.instRow, 0 ); lastInstRow = d.instRow; }
-					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
+					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
 			}

@@ -1,12 +1,10 @@
 cbuffer CubeCB : register(b0) { float4x4 PCR_ViewProj[6]; };   // per-light face view-projs (90-deg perspective, near 15, far range*2)
-// Skeletal-only t3/b10, the same instance records the sun/color passes read (include/SkeletalInstance.hlsl).
-// Unreferenced by VSCube/VSCubeVob, so the world/VOB caster PSOs' root sig only declares b0/t0/s0.
-#include "include/SkeletalInstance.hlsl"
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; uint rt : SV_RenderTargetArrayIndex; };
 
-// World caster: one draw = 6 instances, instanceID selects the face view-proj AND the target cube slice.
+// World caster: one draw = 6 instances, instanceID selects the face view-proj AND the target cube slice. Also
+// draws skinned meshes, which SkinVertices.hlsl has already posed in world space.
 struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; uint iid : SV_InstanceID; };
 VS_OUT VSCube( VS_IN i )
 {
@@ -29,22 +27,6 @@ VS_OUT VSCubeVob( VSVOB_IN i )
     o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[face] );
     o.uv   = i.uv;
     o.rt   = face;
-    return o;
-}
-
-// Skeletal caster: 6 instances → face = iid. Matrix-palette skin (matches the main/sun VSDepth incl. Fatness) so
-// the cast depth is bit-consistent with the color pass, then project through the face's 90-deg view-proj.
-struct VSSKEL_IN { float4 pos[4] : POSITION; float3 normal : NORMAL; float3 bindPoseNormal : TEXCOORD0; float2 uv : TEXCOORD1; uint4 boneIndices : BONEIDS; float4 weights : WEIGHTS; uint iid : SV_InstanceID; };
-VS_OUT VSCubeSkel( VSSKEL_IN i )
-{
-    const SkeletalInstance inst = LoadSkelInstance();
-    float3 sp, sn;
-    SkinVertex( i.pos, i.normal, i.boneIndices, i.weights, inst.BoneRow, sp, sn );
-    float3 wp = SkelToWorld( inst.World, sp, sn, inst.Fatness );
-    VS_OUT o;
-    o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[i.iid] );
-    o.uv   = i.uv;
-    o.rt   = i.iid;
     return o;
 }
 

@@ -979,9 +979,30 @@ private:
     UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
-    /** Binds the skinned-mesh arena + the skeletal ring at root parameter `skelDataParam`. False (and nothing
-        bound) when the arena holds nothing yet. */
-    bool BindSkeletalArena( D3D12CmdList& cmdList, UINT skelDataParam );
+    /** Binds the posed skinned streams (slots 0/1), the skeletal arena's indices and the skeletal ring at root
+        parameter `skelDataParam`. False (and nothing bound) when there is nothing to draw from yet. */
+    bool BindSkinnedGeometry( D3D12CmdList& cmdList, UINT skelDataParam );
+
+    // ---- Compute skinning (D3D12Skinning.cpp, Shaders/D3D12/SkinVertices.hlsl) ----------------------------------
+    // PrepareFrameSkeletals reserves each prepared sub-mesh a range of the two posed streams (ReserveSkinned,
+    // g_SkinDst); DispatchSkinning poses them all in one dispatch before the depth prepass. Every pass but the
+    // ghost one then draws them as world-space geometry with the skeletal arena's indices.
+    static constexpr UINT kSkinnedPosUvStride = 20;     // float3 pos, float2 uv
+    static constexpr UINT kSkinnedNrmPrevStride = 16;   // snorm16x2 octahedral normal, float3 previous pos
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_SkinnedPosUv;     // DEFAULT, UAV; one pair, re-posed every frame
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_SkinnedNrmPrev;
+    UINT m_SkinnedCapacity = 0;                        // vertices per stream
+    UINT m_SkinnedUsed = 0;                            // reserved this frame
+    UINT m_SkinnedDemand = 0;                          // asked for this frame, overflow included; sizes the next
+    bool m_SkinnedOverflowLogged = false;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_SkinJobRing[kBackBufferMax];   // UPLOAD: jobs + group -> job table
+    uint8_t* m_SkinJobRingPtr[kBackBufferMax] = {};
+    bool CreateSkinningResources();
+    void BeginSkinningFrame();   // before the frame's first PrepareFrameSkeletals
+    /** Reserves posed ranges for every sub-mesh of `visual`; returns the FrameSkelDraw::skinFirst to record. */
+    uint32_t ReserveSkinned( const SkeletalMeshVisualInfo* visual, uint32_t instanceRow );
+    void DispatchSkinning();     // after the frame's last PrepareFrameSkeletals, before the depth prepass
+    D3D12_VERTEX_BUFFER_VIEW SkinnedPosUvView() const;
     /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1. */
     bool BindAttachArenaIA( D3D12CmdList& cmdList );
     /** Direct draws on m_CmdList (ghosts, item previews): bind one mesh out of its arena, requesting it on

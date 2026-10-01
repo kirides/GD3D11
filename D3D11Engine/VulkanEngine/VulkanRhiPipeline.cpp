@@ -325,6 +325,13 @@ namespace VulkanRhi {
                 : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
             VkSampler sampler = VK_NULL_HANDLE;
             if ( CheckResult( vkCreateSampler( Vk(), &ci, nullptr, &sampler ), "vkCreateSampler" ) ) return E_FAIL;
+#ifdef DEBUG_D3D11
+            Logging::Inf( "Vulkan: '{}' static sampler s{} -> binding {}: filter 0x{:X} (min {} mag {} mip {} aniso {}), compare {} op {}, address {}/{}/{}, handle 0x{:X}",
+                name, s.ShaderRegister, kShiftS + s.ShaderRegister, f, static_cast<int>( ci.minFilter ), static_cast<int>( ci.magFilter ),
+                static_cast<int>( ci.mipmapMode ), ci.anisotropyEnable, ci.compareEnable, static_cast<int>( ci.compareOp ),
+                static_cast<int>( ci.addressModeU ), static_cast<int>( ci.addressModeV ), static_cast<int>( ci.addressModeW ),
+                VkUtil::HandleToU64( sampler ) );
+#endif
             rs->m_StaticSamplers.push_back( sampler );
         }
         // Immutable samplers point into m_StaticSamplers, which no longer reallocates.
@@ -345,6 +352,11 @@ namespace VulkanRhi {
             ok = false;
         }
         if ( !ok ) return E_INVALIDARG;
+
+        // Any order is legal, but RenderDoc pairs immutable samplers with unsorted bindings wrongly (Skeletal's
+        // s0, s2, s1 showed s2's sampler on binding 49 and none on 50). Each binding keeps its own sampler pointer.
+        std::sort( bindings.begin(), bindings.end(),
+            []( const VkDescriptorSetLayoutBinding& a, const VkDescriptorSetLayoutBinding& b ) { return a.binding < b.binding; } );
 
         VkDescriptorSetLayoutCreateInfo lci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
         lci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;

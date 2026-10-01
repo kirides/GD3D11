@@ -31,9 +31,8 @@ float3x4 SkelMatrix( uint row )
     return float3x4( SkelData[row], SkelData[row + 1], SkelData[row + 2] );
 }
 
-SkeletalInstance LoadSkelInstance()
+SkeletalInstance LoadSkelInstanceAt( uint r )
 {
-    const uint r = SkelInstanceRow;
     const float4 misc = SkelData[r + 9];
     SkeletalInstance s;
     s.World       = SkelMatrix( r );
@@ -44,6 +43,8 @@ SkeletalInstance LoadSkelInstance()
     s.PrevBoneRow = asuint( misc.z );
     return s;
 }
+
+SkeletalInstance LoadSkelInstance() { return LoadSkelInstanceAt( SkelInstanceRow ); }
 
 // Matrix-palette skin of one vertex in model space; pos[b] is the vertex baked into bone b's space.
 void SkinVertex( float4 pos[4], float3 normal, uint4 bones, float4 weights, uint boneRow,

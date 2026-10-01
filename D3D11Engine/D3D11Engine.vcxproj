@@ -1412,6 +1412,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="HookedFunctions.cpp" />
     <ClCompile Include="D3D12Engine\D3D12MeshArena.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Skinning.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
     <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">

@@ -126,6 +126,7 @@ namespace {
     // addresses / attachment records into its own destination list. Cleared each frame alongside g_FrameSkelDraws.
     struct SkelUploadCache {
         uint32_t instRow = 0;   // SkeletalInstanceGPU row in the skeletal ring
+        uint32_t skinFirst = kNoSkinnedOutput;   // -> g_SkinDst
         bool hasBaseMesh = false;
         uint32_t matSrvIndex = 0xFFFFFFFFu;   // -> g_SkelMatSrvs, see FrameSkelDraw::matSrvIndex
         std::vector<FrameAttachDraw> attachments;
@@ -2446,6 +2447,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// it MUST run exactly once). Both skeletal lists (animated + static mobs) are prepared here up front.
 	UploadFrameVobInstances();
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear(); g_FrameMorphAttachMeshes.clear();
+	BeginSkinningFrame();        // posed-vertex reservations start from zero; grows the streams if last frame ran out
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
 	g_SkelMatSrvCount = 0;       // ...and its parallel per-material diffuse-handle snapshots (capacity retained)
 	// collectGhosts=true ONLY here: this is the list D3D11's GothicAPI::DrawWorldMeshNaive walks, and the
@@ -2546,6 +2548,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// which is safe only because no recorder touches Gothic — they replay handles snapshotted on this thread.
 	// Moving a Gothic read INTO a recorder would break that.
 	BuildSkeletalDrawCommands();
+	// Pose every skinned sub-mesh this frame's PrepareFrameSkeletals calls reserved, once, for all passes. After the
+	// last of them (the point-light prepare above) and before the depth prepass, the first pass that draws them.
+	DispatchSkinning();
 	// Morph attachments (NPC heads, bow/crossbow draw meshes): fold this frame's blend shapes on the GPU into
 	// each submesh's vertex buffer. Must precede the depth prepass, the first pass in SUBMISSION order that
 	// draws one. No-op when the fold is inactive; UpdateMorphMeshVisual then deformed them on the CPU.
@@ -3452,17 +3457,6 @@ bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* 
 }
 
 
-bool D3D12GraphicsEngine::BindSkeletalArena( D3D12CmdList& cmdList, UINT skelDataParam ) {
-    if ( !m_SkelArena->Ready() || !m_SkeletalCBBuffer[m_FrameIndex] ) return false;
-    const D3D12_VERTEX_BUFFER_VIEW vbv = m_SkelArena->VertexBufferView();
-    const D3D12_INDEX_BUFFER_VIEW ibv = m_SkelArena->IndexBufferView();
-    cmdList->IASetVertexBuffers( 0, 1, &vbv );
-    cmdList->IASetIndexBuffer( &ibv );
-    cmdList->SetGraphicsRootShaderResourceView( skelDataParam, m_SkeletalCBBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
-    return true;
-}
-
-
 bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList ) {
     if ( !m_AttachArena->Ready() || !m_VobInstanceBuffer[m_FrameIndex] ) return false;
     // StartInstanceLocation is an element index into the whole ring (see BuildSkeletalDrawCommands).
@@ -3929,7 +3923,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
         };
 
     // --- Base skinned meshes ---------------------------------------------------------------------------
-    if ( !g_FrameSkelDraws.empty() && m_SkeletalDrawArgsPtr[frame] && m_SkelArena->Ready() ) {
+    if ( !g_FrameSkelDraws.empty() && m_SkeletalDrawArgsPtr[frame] && m_SkelArena->Ready() && m_SkinnedPosUv ) {
         SkeletalDrawCommand* cmds = reinterpret_cast<SkeletalDrawCommand*>( m_SkeletalDrawArgsPtr[frame] );
         UINT count = 0;
         alphaSkelCmds.clear();
@@ -3941,6 +3935,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
             // incorrect textures if not done correctly.
             model->UpdateMeshLibTexAniState();
 
+            uint32_t sub = 0;   // index into this vob's g_SkinDst entries
             for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
                 zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
                 // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
@@ -3953,9 +3948,10 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 const bool alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
 
                 for ( auto const& mesh : meshList ) {
-                    if ( !mesh ) continue;
+                    const uint32_t posed = SkinnedBase( d, sub++ );
+                    if ( !mesh || posed == kNoSkinnedOutput ) continue;
                     const D3D12MeshArena::Range* range = m_SkelArena->Find( mesh->ArenaSlot );
-                    if ( !range ) continue;   // requested this frame, not uploaded yet
+                    if ( !range ) continue;   // requested this frame, not uploaded yet (and not posed)
                     if ( count + alphaSkelCmds.size() >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
 
                     SkeletalDrawCommand c{};
@@ -3966,7 +3962,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                     c.Draw.IndexCountPerInstance = range->IndexCount;
                     c.Draw.InstanceCount         = 1;
                     c.Draw.StartIndexLocation    = range->StartIndex;
-                    c.Draw.BaseVertexLocation    = static_cast<INT>( range->BaseVertex );
+                    c.Draw.BaseVertexLocation    = static_cast<INT>( posed );   // arena indices, posed vertices
                     c.Draw.StartInstanceLocation = 0;
                     if ( alphaTested ) alphaSkelCmds.push_back( c );
                     else               cmds[count++] = c;
@@ -5008,6 +5004,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 m_SkeletalCBBufferOffset = boneOff + boneSize * 2;
 
                 entry.instRow = instOff / kSkeletalRowBytes;
+                entry.skinFirst = ReserveSkinned( visual, entry.instRow );
                 entry.hasBaseMesh = true;
 
                 // Into the skinned-mesh arena on first sight; drawn from there once the next flush landed it.
@@ -5177,13 +5174,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             for ( UINT fi = 0; fi < numCascades; ++fi ) {
                 if ( (cascadeMask & (1u << fi)) == 0 ) continue;
                 if ( cached.hasBaseMesh )
-                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matSrvIndex } );
+                    m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matSrvIndex, cached.skinFirst } );
                 for ( const FrameAttachDraw& a : cached.attachments )
                     m_ShadowMap.AttachDraws[fi].push_back( a );
             }
         } else {
             if ( cached.hasBaseMesh )
-                outSkel.push_back( { vi, visual, cached.instRow, cached.matSrvIndex } );
+                outSkel.push_back( { vi, visual, cached.instRow, cached.matSrvIndex, cached.skinFirst } );
             for ( const FrameAttachDraw& a : cached.attachments )
                 outAttach.push_back( a );
         }
@@ -5221,8 +5218,8 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig && m_SkelArena->Ready() ) {
         DX_ZONE( m_CmdList.Get(), "Depth Prepass (skeletal)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (skeletal)" );
-        // Motion vectors + normals — see DrawDepthPrepass. VSDepthGBuf skins each vertex twice (current pose and
-        // the previous pose, both in the skeletal ring), so NPCs get true per-vertex velocity on limbs.
+        // Motion vectors + normals — see DrawDepthPrepass. The posed previous-frame position (SkinVertices.hlsl)
+        // gives NPCs true per-vertex velocity on limbs.
         const bool skelGbuf = motionCb && MotionGBufferActive();
         // See DrawDepthPrepass: opaque prefix with no pixel shader, alpha-tested suffix with the clipping one.
         const bool splitAlpha = !skelGbuf && m_Pipelines.Skeletal.DepthPrepassNoAlphaPSO != nullptr;
@@ -5235,7 +5232,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindSkeletalArena( m_CmdList, 1 );
+        BindSkinnedGeometry( m_CmdList, 1 );
         // Each command sets only its b6 material consts + b10 instance row, then DrawIndexed into the arena.
         if ( !splitAlpha ) {
             m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
@@ -5334,7 +5331,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        BindSkeletalArena( m_CmdList, 1 );
+        BindSkinnedGeometry( m_CmdList, 1 );
         m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
             m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }

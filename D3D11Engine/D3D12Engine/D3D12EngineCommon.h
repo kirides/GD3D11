@@ -61,12 +61,25 @@ struct FrameVobUpload {
 // visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
 // set for THIS instance. A pool-thread recorder (the MT cascades) must use it instead of calling
 // UpdateMeshLibTexAniState + GetAniTexture itself (Gothic's texani state is per-MODEL shared, not thread-safe).
+// skinFirst indexes g_SkinDst (below): where this vob's sub-meshes were posed this frame.
 struct FrameSkelDraw {
     SkeletalVobInfo*          vobInfo;
     SkeletalMeshVisualInfo*   visual;
     uint32_t                  instRow;
     uint32_t                  matSrvIndex;
+    uint32_t                  skinFirst;
 };
+
+// Compute skinning (D3D12Skinning.cpp). g_SkinDst[skinFirst + k] is the first posed vertex of the k-th entry of
+// visual->SkeletalMeshes (iteration order, null entries counted), or kNoSkinnedOutput. A draw also needs the
+// mesh resident in the skeletal arena, the same test the dispatch makes. Fixed capacity and appended only on the
+// main thread, so the cascade recorders may read it while the point-light prepare is still appending.
+inline constexpr uint32_t kNoSkinnedOutput = 0xFFFFFFFFu;
+inline constexpr uint32_t kMaxSkinnedSubmeshes = 8192;
+extern std::array<uint32_t, kMaxSkinnedSubmeshes> g_SkinDst;
+inline uint32_t SkinnedBase( const FrameSkelDraw& d, uint32_t sub ) {
+    return d.skinFirst == kNoSkinnedOutput ? kNoSkinnedOutput : g_SkinDst[d.skinFirst + sub];
+}
 
 // owner = the skeletal vob this attachment hangs off of (its NPC/MOB) — needed so point-shadow self-shadow
 // exclusion (D3D12PointShadows::BuildExcludeList) can skip a torch-holding NPC's own attachments too, not

@@ -207,23 +207,20 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;
         // No-pixel-shader variant of the above — see World.DepthPrepassNoAlphaPSO for why and how it is selected.
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassNoAlphaPSO;
-        // G-buffer prepass variant (motion vectors + normals). Skinned twice — current pose and the previous
-        // pose out of the same b2 palette — so a swung limb gets true per-vertex velocity. Optional: null falls
-        // back to DepthPrepassPSO above.
+        // G-buffer prepass variant (motion vectors + normals) — the posed previous-frame position gives a swung
+        // limb true per-vertex velocity. Optional: null falls back to DepthPrepassPSO above.
         Microsoft::WRL::ComPtr<Rhi::PipelineState> DepthPrepassGBufPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufVsBlob;  // VSDepthGBuf
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassGBufPsBlob;  // PSDepthClipGBuf
     };
-    // Point-light shadow cubes: two root sigs (world + VOB casters share one; the skeletal caster has its own,
-    // with the 6-face view-proj CBV at b0), four VS/PS blobs, and three single-pass 6-face caster PSOs. The cube
+    // Point-light shadow cubes: one root sig (6-face view-proj CBV at b0), three VS/PS blobs, and three single-pass
+    // 6-face caster PSOs (world, VOB, and compute-skinned skeletals through the world VS). The cube
     // ARRAY textures, per-slot DSV heaps, array SRV, and per-frame face-CB / VOB-instance rings are GPU resources
     // and stay in the engine.
     struct PointShadowPipeline {
-        Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;          // world + VOB casters (b0 face CBV, t0, s0)
-        Microsoft::WRL::ComPtr<Rhi::RootSignature> SkeletalRootSig;  // skeletal caster (b0 faces, b1 inst, b2 bones)
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> RootSig;          // all casters (b0 face CBV, t0, s0)
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;            // VSCube (world)
         Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlob;         // VSCubeVob (step-rate-6 instance stream)
-        Microsoft::WRL::ComPtr<ID3DBlob>            SkelVsBlob;        // VSCubeSkel (matrix-palette skinning)
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;            // PSCubeClip (void, alpha-clip) — shared
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterWorldPSO;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> CasterVobPSO;
@@ -642,6 +639,7 @@ public:
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
     bool CreateMorphFold();   // GPU morph-mesh fold compute (b0 8 consts, t0-t2 root SRVs, u0 root UAV)
+    bool CreateSkinning();    // compute skinning (b0 4 consts, t0-t3 root SRVs, u0-u1 root UAVs)
     bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)
     bool CreateWorldTransparency(); // alpha-blended world-mesh surfaces (own root sig; warms the alpha + depth-fill PSOs)
 
@@ -712,6 +710,10 @@ public:
     // other optional pipelines it must be built before any world is converted, and a failure here has to
     // leave the CPU deform as the path rather than silently drop the morphing.
     ComputePipeline  MorphFold;
+    ComputePipeline  Skinning;      // Shaders/D3D12/SkinVertices.hlsl — poses every prepared skinned mesh once a frame
+    /** Input layout of the vertices SkinVertices.hlsl writes: {pos, uv} on slot 0, plus {octahedral normal,
+        previous pos} on slot 1 when `withNormalStream`. */
+    static D3D12_INPUT_LAYOUT_DESC PosedSkinLayout( bool withNormalStream );
     LinePipeline     Lines;         // debug/editor line lists (Shaders/D3D12/Lines.hlsl)
     WorldTransparencyPipeline WorldTransparency;  // alpha-blended world surfaces (Shaders/D3D12/World.hlsl VSTransparent/PSTransparent)
 
