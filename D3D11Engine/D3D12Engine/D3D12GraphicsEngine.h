@@ -43,6 +43,7 @@ class zCVobLight;
     D3D11 remains the default backend and the fallback: if device or swapchain creation fails,
     Engine::CreateGraphicsEngine keeps D3D11. */
 class D3D12VobArena;
+class D3D12MeshArena;
 struct TransparentItem;
 enum class EWorldTransparencyVariant : uint8_t;
 namespace MorphGpu { struct Job; struct ChannelRecord; }
@@ -57,6 +58,7 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // Same deal: the VOB mega-buffer arena needs the allocator + the fence-deferred cleanup to swap its
     // buffers out from under frames that may still be reading them.
     friend class D3D12VobArena;
+    friend class D3D12MeshArena;
 
 public:
     /** Compile-time array-sizing bound for every per-frame resource ring (1 current + up to 2 queued).
@@ -251,6 +253,7 @@ public:
     void OnVobMoved( zCVob* vob ) override;
     // Purges the VOB arena's cache of this MeshInfo* before it's freed - see BaseGraphicsEngine's doc comment.
     void OnMeshInfoDestroyed( MeshInfo* mesh ) override;
+    void OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) override;
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual
@@ -865,24 +868,6 @@ private:
         uint32_t LodBucket;                          // @44
     };
 
-    // The pre-arena command shape, kept for the one consumer that cannot use the arena: node attachments
-    // (weapons/heads/held items), whose geometry comes from the SharedVisualRegistry and arrives and leaves
-    // with NPCs. They keep their own signature (m_VobBoundIndirectCmdSig) with the two VBVs + IBV inline.
-    // VSMainAttach/VSDepthAttach never read the b4 wind min/max (the instance stream's wind fields carry
-    // Fatness/Scaling here), so those two floats go out as 0.
-    struct VobBoundDrawCommand {                     // 96 bytes; UINT64 members force 8-byte align, 96 % 8 == 0
-        D3D12_VERTEX_BUFFER_VIEW MeshVBV;            // @0  packed ExVertexStruct stream (slot 0)
-        D3D12_VERTEX_BUFFER_VIEW InstVBV;            // @16 per-instance VobInstanceInfo stream (slot 1)
-        D3D12_INDEX_BUFFER_VIEW  IBV;                // @32 R16_UINT sub-mesh indices
-        uint32_t MatNormalIndex;                     // @48 b6.x
-        uint32_t MatOrmIndex;                        // @52 b6.y
-        uint32_t MatDiffuseIndex;                    // @56 b6.z
-        float    WindMinHeight;                      // @60 b4[4]
-        float    WindMaxHeight;                      // @64 b4[5]
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @68 (20 bytes)
-        uint32_t VisualIndex;                        // @88 always 0xFFFFFFFF here — attachments are never GPU-culled
-        uint32_t LodBucket;                          // @92 pad / always kLodBucketNear
-    };
     static constexpr uint32_t kLodBucketNear = 0;
     static constexpr uint32_t kLodBucketFar  = 1;
     // Separate caps: the main view now collects distance-only (360 degrees, GPU-culled) so it needs headroom,
@@ -891,11 +876,14 @@ private:
     static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
     static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
     Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobIndirectCmdSig;        // b6(3) + b4[4..5](2) + DrawIndexed
-    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_VobBoundIndirectCmdSig;   // + VBVx2 + IBV (node attachments)
     // Every static VOB sub-mesh in one DEFAULT-heap VB/IB pair — see D3D12VobArena.h. Filled from OnAddVob
     // (which fires per vob during world load, so the world is resident before the first frame) and flushed
     // once per frame at the top of UploadFrameVobInstances.
     std::unique_ptr<D3D12VobArena> m_VobArena;
+    // Skinned bodies (ExSkelVertexStruct) and node attachments (ExVertexStruct), requested by
+    // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
+    std::unique_ptr<D3D12MeshArena> m_SkelArena;
+    std::unique_ptr<D3D12MeshArena> m_AttachArena;
     // Re-uploads the arena ranges of animated static VOBs (.MMS morph meshes) from their own vertex buffers.
     // Runs right after DispatchMorphFold, which is what produces this frame's deformed vertices.
     void RefreshDynamicVobArena();
@@ -960,41 +948,42 @@ private:
         int shadowCascade = kVobIndicesMainView, UINT* outOpaqueCount = nullptr );
 
     // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
-    // Possible because neither Skeletal.RootSig nor the attachment PSOs bind a t0 descriptor table any more,
-    // and ExecuteIndirect can set root constants and root DESCRIPTORS but never a table. The per-mesh CPU
-    // work happens ONCE per frame in BuildSkeletalDrawCommands, and the depth prepass and the lit pass each
-    // become one submit over the same argument buffer.
+    // The per-mesh CPU work happens ONCE per frame in BuildSkeletalDrawCommands, and the depth prepass and the
+    // lit pass each become one submit over the same argument buffers.
     //
-    // Base meshes need their own signature because each command also rebinds the per-vob root CBVs (b1
-    // instance, b2 bone palette) the shared skinning VS reads. Node attachments do not — they already draw
-    // through World.RootSig with exactly the shape m_VobIndirectCmdSig describes, so they reuse it and
-    // VobDrawCommand verbatim.
-    struct SkeletalDrawCommand {                     // 80 bytes; UINT64 members force 8-byte align, 80 % 8 == 0
-        D3D12_GPU_VIRTUAL_ADDRESS InstCB;            // @0  root param 1 -> b1 InstanceCB (world/color/fatness)
-        D3D12_GPU_VIRTUAL_ADDRESS BoneCB;            // @8  root param 2 -> b2 BonesCB (bone palette)
-        D3D12_VERTEX_BUFFER_VIEW  MeshVBV;           // @16 ExSkelVertexStruct stream (slot 0)
-        D3D12_INDEX_BUFFER_VIEW   IBV;               // @32 R16_UINT sub-mesh indices
-        uint32_t MatNormalIndex;                     // @48 b6.x  (0xFFFFFFFF = no normal map)
-        uint32_t MatOrmIndex;                        // @52 b6.y  (default ORM slot when no _FX)
-        uint32_t MatDiffuseIndex;                    // @56 b6.z  bindless diffuse (alpha clip + albedo)
-        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @60 (20 bytes)
+    // Neither command carries a buffer view or root descriptor: the meshes live in m_SkelArena/m_AttachArena
+    // (Base/StartIndex in the draw) and per-vob data in the skeletal ring (t3, located by SkelInstanceRow) or
+    // the VOB instance ring (StartInstanceLocation). That keeps both signatures DGC-able on Vulkan.
+    // Argument order follows the root parameter order (D3D12 requires it increasing): b10 is param 2, b6 param 11.
+    struct SkeletalDrawCommand {                     // 36 bytes
+        uint32_t InstanceRow;                        // @0  b10   SkeletalInstanceGPU row in the skeletal ring
+        uint32_t MatNormalIndex;                     // @4  b6.x  (0xFFFFFFFF = no normal map)
+        uint32_t MatOrmIndex;                        // @8  b6.y  (default ORM slot when no _FX)
+        uint32_t MatDiffuseIndex;                    // @12 b6.z  bindless diffuse (alpha clip + albedo)
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @16 (20 bytes)
     };
     // Both are per-frame-in-flight UPLOAD rings, so keep the caps tight — the 32-bit address space is the
     // binding constraint, not the command count. A crowd of NPCs is ~100 vobs x a handful of materials x
     // sub-meshes; overflow logs once and drops the tail (same contract as the VOB/world rings).
     static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
     static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
-    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // CBV(b1) + CBV(b2) + VBV + IBV + b6(3) + DrawIndexed
+    Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_SkeletalIndirectCmdSig;  // b10(1) + b6(3) + DrawIndexed
     Microsoft::WRL::ComPtr<Rhi::Resource> m_SkeletalDrawArgs[kBackBufferMax];
     uint8_t* m_SkeletalDrawArgsPtr[kBackBufferMax] = {};
     UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
     UINT m_SkeletalOpaqueDrawCount = 0;              // alpha-test partition — see m_WorldOpaqueDrawCount
+    // Attachments submit VobDrawCommands through m_VobIndirectCmdSig, with the attachment arena bound.
     Microsoft::WRL::ComPtr<Rhi::Resource> m_AttachDrawArgs[kBackBufferMax];
     uint8_t* m_AttachDrawArgsPtr[kBackBufferMax] = {};
     UINT m_AttachDrawCount = 0;                      // VobDrawCommands built this frame (prepass + color share them)
     UINT m_AttachOpaqueDrawCount = 0;                // alpha-test partition — see m_WorldOpaqueDrawCount
     unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
     bool m_SkeletalDrawArgsOverflowLogged = false;
+    /** Binds the skinned-mesh arena + the skeletal ring at root parameter `skelDataParam`. False (and nothing
+        bound) when the arena holds nothing yet. */
+    bool BindSkeletalArena( D3D12CmdList& cmdList, UINT skelDataParam );
+    /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1. */
+    bool BindAttachArenaIA( D3D12CmdList& cmdList );
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
 
     // ---- GPU-driven VOB culling (Hi-Z occlusion + frustum, replaces the CPU per-VOB frustum test) ----

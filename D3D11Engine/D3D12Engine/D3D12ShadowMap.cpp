@@ -29,6 +29,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "../WorldMeshSection.h"
 #include "D3D12VobArena.h"
+#include "D3D12MeshArena.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12ShadowMap's per-frame ring array bound must match the engine's" );
@@ -1317,8 +1318,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		}
 	}
 
-	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
-	if ( m_CasterSkeletalPSO && m_E->m_Pipelines.Skeletal.RootSig && !SkelDraws[c].empty() ) {
+	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, t3 skeletal ring, b10 row) ---
+	if ( m_CasterSkeletalPSO && m_E->m_Pipelines.Skeletal.RootSig && !SkelDraws[c].empty() && m_E->m_SkelArena->Ready() ) {
 		DX_ZONE( cmdList.Get(), "Skeletals" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletals" );
 
@@ -1331,6 +1332,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.Skeletal.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+		m_E->BindSkeletalArena( cmdList, 1 );
 		for ( const FrameSkelDraw& d : SkelDraws[c] ) {
 			if ( !d.visual ) continue;
 			// Shared per-MODEL texture slots: the alpha-clip diffuse for each of this instance's materials was
@@ -1340,8 +1342,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 			const std::vector<SkelMatSlot>* matSrvs =
 				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
 
-			cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
-			cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
+			cmdList->SetGraphicsRoot32BitConstants( 2, 1, &d.instRow, 0 );   // b10
 			size_t matIdx = 0;
 			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
 				const bool haveSlot = matSrvs && matIdx < matSrvs->size();
@@ -1359,22 +1360,17 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 				// push just that one at offset 2 rather than resolving normal/ORM maps the caster never samples.
 				cmdList->SetGraphicsRoot32BitConstant( 11, diffuseSlot, 2 );
 				for ( auto const& mesh : meshList ) {
-					if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-					cmdList->IASetVertexBuffers( 0, 1, &vbv );
-					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-					cmdList->IASetIndexBuffer( &ibv );
-					cmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1, 0, 0, 0 );
+					if ( !mesh ) continue;
+					const D3D12MeshArena::Range* range = m_E->m_SkelArena->Find( mesh->ArenaSlot );
+					if ( !range ) continue;
+					cmdList->DrawIndexedInstanced( range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), 0 );
 				}
 			}
 		}
 	}
 
 	// --- Node attachments (weapons/heads) through the VOB caster PSO (packed vertex + single instance) ---
-	if ( m_CasterVobAttachPSO && m_E->m_Pipelines.World.RootSig && !AttachDraws[c].empty() ) {
+	if ( m_CasterVobAttachPSO && m_E->m_Pipelines.World.RootSig && !AttachDraws[c].empty() && m_E->m_AttachArena->Ready() ) {
 		DX_ZONE( cmdList.Get(), "Skeletal Nodes" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "Skeletal Nodes" );
 
@@ -1388,26 +1384,22 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 
 		cmdList->SetGraphicsRootSignature( m_E->m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+		// One IA bind: the attachment arena + the main VOB ring each record's instIndex points into.
+		m_E->BindAttachArenaIA( cmdList );
 		for ( const FrameAttachDraw& a : AttachDraws[c] ) {
-			if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+			if ( !a.mesh ) continue;
+			const D3D12MeshArena::Range* range = m_E->m_AttachArena->Find( a.mesh->ArenaSlot );
+			if ( !range ) continue;
 			Rhi::PipelineState* wantPso = a.alphaTested ? attClipPso : attNoAlphaPso;
 			if ( wantPso != boundAttachPso ) {
 				cmdList->SetPipelineState( wantPso );
 				boundAttachPso = wantPso;
 			}
-			D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
-			D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
-			if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 			// Bindless diffuse: push ONLY b6 constant index 2 (MatDiffuseIndex) — PSShadowClipBindless reads
 			// nothing else out of the MaterialCB. The slot was resolved on the main thread (see FrameAttachDraw),
 			// so this recorder never touches Gothic texture state.
 			cmdList->SetGraphicsRoot32BitConstant( 10, a.srvSlot, 2 );
-			const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-			const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
-			cmdList->IASetVertexBuffers( 0, 2, views );
-			const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-			cmdList->IASetIndexBuffer( &ibv );
-			cmdList->DrawIndexedInstanced( static_cast<UINT>(a.mesh->Indices.size()), 1, 0, 0, 0 );
+			cmdList->DrawIndexedInstanced( range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), a.instIndex );
 		}
 	}
 

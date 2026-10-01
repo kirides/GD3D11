@@ -26,6 +26,8 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "D3D12VobArena.h"
+#include "D3D12MeshArena.h"
+#include "../WorldObjects.h"
 #include "../MorphGpu.h"
 
 namespace {
@@ -38,7 +40,11 @@ namespace {
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 }
 
-D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ) {
+D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ),
+    m_SkelArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExSkelVertexStruct ) ),
+        L"SkeletalVertexArena", L"SkeletalIndexArena", "Skeletal mesh" ) ),
+    m_AttachArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExVertexStruct ) ),
+        L"AttachmentVertexArena", L"AttachmentIndexArena", "Attachment mesh" ) ) {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
     m_BackbufferResolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     m_Resolution = ComputeRenderResolution( m_BackbufferResolution );
@@ -64,7 +70,12 @@ D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_V
 
 void D3D12GraphicsEngine::OnInventoryVisualUsed( MeshVisualInfo* visual ) { m_VobArena->QueueVisual( visual ); }
 
-void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) { m_VobArena->Forget( mesh ); }
+void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) {
+    m_VobArena->Forget( mesh );
+    m_AttachArena->Forget( mesh->ArenaSlot );
+}
+
+void D3D12GraphicsEngine::OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) { m_SkelArena->Forget( mesh->ArenaSlot ); }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
     if ( m_SwapChainReady ) {

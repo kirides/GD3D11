@@ -1,9 +1,7 @@
 cbuffer CubeCB : register(b0) { float4x4 PCR_ViewProj[6]; };   // per-light face view-projs (90-deg perspective, near 15, far range*2)
-// Skeletal-only CBs (b1/b2). Unreferenced by VSCube/VSCubeVob, so they're stripped from those shaders — the
-// world/VOB caster PSOs' root sig only declares b0/t0/s0. They match the main skeletal InstanceCB/BonesCB so
-// the cube caster can bind the SAME per-frame instance/bone CBs (d.instCb/d.boneCb) the sun/color passes use.
-cbuffer SkelInstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _spad; };
-cbuffer SkelBonesCB    : register(b2) { float4x4 Bones[96]; };
+// Skeletal-only t3/b10, the same instance records the sun/color passes read (include/SkeletalInstance.hlsl).
+// Unreferenced by VSCube/VSCubeVob, so the world/VOB caster PSOs' root sig only declares b0/t0/s0.
+#include "include/SkeletalInstance.hlsl"
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; uint rt : SV_RenderTargetArrayIndex; };
@@ -39,17 +37,10 @@ VS_OUT VSCubeVob( VSVOB_IN i )
 struct VSSKEL_IN { float4 pos[4] : POSITION; float3 normal : NORMAL; float3 bindPoseNormal : TEXCOORD0; float2 uv : TEXCOORD1; uint4 boneIndices : BONEIDS; float4 weights : WEIGHTS; uint iid : SV_InstanceID; };
 VS_OUT VSCubeSkel( VSSKEL_IN i )
 {
-    float3 sp = float3( 0, 0, 0 );
-    float3 sn = float3( 0, 0, 0 );
-    [unroll]
-    for ( int b = 0; b < 4; ++b )
-    {
-        float4x4 bone = Bones[i.boneIndices[b]];
-        float    w    = i.weights[b];
-        sp += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
-        sn += w * mul( i.normal, (float3x3)bone );
-    }
-    float3 wp = mul( float4( sp + Fatness * sn, 1.0 ), M_World ).xyz;
+    const SkeletalInstance inst = LoadSkelInstance();
+    float3 sp, sn;
+    SkinVertex( i.pos, i.normal, i.boneIndices, i.weights, inst.BoneRow, sp, sn );
+    float3 wp = SkelToWorld( inst.World, sp, sn, inst.Fatness );
     VS_OUT o;
     o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[i.iid] );
     o.uv   = i.uv;

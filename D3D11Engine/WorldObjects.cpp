@@ -129,6 +129,9 @@ void WorldMeshInfo::ShrinkCpuVertices() {
 }
 
 SkeletalMeshInfo::~SkeletalMeshInfo() {
+    // Before Vertices/Indices go: a backend arena may still re-upload from them.
+    if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->OnSkeletalMeshInfoDestroyed( this );
+
     Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Indices.size() * sizeof( VERTEX_INDEX );
     Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Vertices.size() * sizeof( ExSkelVertexStruct );
 

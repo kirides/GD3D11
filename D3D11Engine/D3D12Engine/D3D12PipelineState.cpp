@@ -511,7 +511,7 @@ bool D3D12PipelineState::CreatePreviewSkeletal() {
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
     rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World
     // 2: b2 bone palette. Points into the per-frame skeletal ring, whose cursor only ADVANCES within a
-    // frame, so the handed-out address stays valid until Present — same promise as Skeletal.RootSig's b2.
+    // frame, so the handed-out address stays valid until Present.
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 3: t0 diffuse
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -656,19 +656,18 @@ bool D3D12PipelineState::CreateGhost() {
 
 bool D3D12PipelineState::CreateGhostSkeletal() {
     // Skeletal ghost VOBs (GothicAPI::TransparencyVobs.skeletalVob — invisible/fading NPCs): reuses Skeletal.hlsl's
-    // VSDepth (identical matrix-palette skinning pose to the color/prepass/shadow draws — same b0/b1/b2 cbuffers
+    // VSDepth (identical matrix-palette skinning pose to the color/prepass/shadow draws — same b0/t3/b10 bindings
     // declared once at the top of that file) plus a new PSGhost entry point there. Own root sig, same shape as
-    // the non-skeletal Ghost pipeline but with the skinned b1 (per-instance)/b2 (bone-palette) root CBVs instead
-    // of a single World root-constant, since the bone palette (up to 96 matrices) far exceeds the root-constant
-    // budget — same reasoning as Skeletal.RootSig itself. No same-mesh Z-prepass (matches the non-skeletal
+    // the non-skeletal Ghost pipeline but with Skeletal.RootSig's t3 skeletal ring + b10 instance row instead of a
+    // single World root-constant. No same-mesh Z-prepass (matches the non-skeletal
     // Ghost's simplification — rare/minor artifact on chunky ghost meshes, acceptable for a niche effect).
     Rhi::Device* device = m_Device;
 
     D3D12RootLayout& rs = Layout( "GhostSkeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // Same advance-only per-frame skeletal ring as Skeletal.RootSig's b1/b2 — see there.
-    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 per-instance (World/ModelColor/Fatness)
-    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bone palette
+    // Same skeletal ring + instance row as Skeletal.RootSig's t3/b10 — see there.
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );                // 1: t3 SkelData
+    rs.AddConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );     // 2: b10 SkelDrawCB
     // 3: b7 GhostAlpha (Skeletal.hlsl's b0..b6 are all spoken for)
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );
     // 4: b6 MaterialCB { normal, ORM, DIFFUSE } — the same bindless material block Skeletal.RootSig uses, so
@@ -1775,10 +1774,8 @@ Rhi::PipelineState* D3D12PipelineState::GetOrCreateDecalBlendPipeline( const Got
 bool D3D12PipelineState::CreateSkeletal() {
     Rhi::Device* device = m_Device;
 
-    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); b1 = per-instance CBV (VS);
-    // b2 = bone-palette CBV (VS); static linear-wrap sampler s0 (PS).
-    // b1/b2 are root CBVs (raw GPU VAs into the per-frame skeletal ring) rather than root constants —
-    // the bone palette (up to 96 matrices = 6 KB) far exceeds the 64-DWORD root-constant budget.
+    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t3 = the per-frame skeletal ring as a float4
+    // row buffer (instance records + bone palettes, VS); b10 = the draw's instance row; static sampler s0 (PS).
     // NOTE: there is deliberately NO diffuse SRV table here any more. Skeletal.hlsl fetches diffuse, normal
     // and ORM bindlessly out of the b6 MaterialCB indices (param 11), the same way the world/VOB
     // ExecuteIndirect paths do, so a per-material bind is three root constants instead of a descriptor-table
@@ -1786,10 +1783,10 @@ bool D3D12PipelineState::CreateSkeletal() {
     // CreateGhostSkeletal.
     D3D12RootLayout& rs = Layout( "Skeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // RootDataStatic on b1/b2: both point into the per-frame skeletal ring, whose cursor only ADVANCES within
-    // a frame — PrepareFrameSkeletals writes each entry once and never rewrites a handed-out address.
-    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 per-instance
-    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bone palette
+    // Volatile: the ring keeps receiving records (ghosts, inventory) after a pass binds it.
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );                    // 1: t3 SkelData
+    // Per-draw, like b6: the skeletal ExecuteIndirect writes both, which keeps it DGC-able on Vulkan.
+    rs.AddPerDrawConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );  // 2: b10 SkelDrawCB { SkelInstanceRow }
     // 3: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
     rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
     // Forward+ point lights (mirrors World.RootSig params 3/4/5, here at 4..6 — see BindFrameLights). All
@@ -1809,7 +1806,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     rs.AddTable( D3D12RootLayout::SRVRange( 5, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 point-shadow cube array
     // 11: b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex } — bindless indices. The diffuse index
     // is the third constant, matching World.RootSig's b6 layout so BindMaterialMaps serves both.
-    rs.AddConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddPerDrawConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
     // 12 = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
@@ -2062,16 +2059,15 @@ bool D3D12PipelineState::CreatePointShadow() {
         }
     }
 
-    // --- Skeletal caster: needs a dedicated root sig (b0 = 6 face view-projs CBV, b1 = instance, b2 = bones, all
-    // VS; t0 diffuse table + s0 for the alpha cutout). Mirrors the sun path's skeletal binds but with the 6-matrix
-    // face CBV at b0 instead of the single-matrix root const. Reuses the per-frame d.instCb/d.boneCb.
+    // --- Skeletal caster: needs a dedicated root sig (b0 = 6 face view-projs CBV, t3 = skeletal ring, b10 =
+    // instance row, all VS; t0 diffuse table + s0 for the alpha cutout). Mirrors the sun path's skeletal binds but
+    // with the 6-matrix face CBV at b0 instead of the single-matrix root const. Reuses the per-frame d.instRow.
     {
         D3D12RootLayout& skelRs = Layout( "PointShadowSkeletal" );
-        // All three are pre-resolved per-frame ring addresses — see PointShadow.RootSig's b0 and
-        // Skeletal.RootSig's b1/b2 for why they are final by the time a recorder binds them.
+        // A pre-resolved per-frame ring address — see PointShadow.RootSig's b0.
         skelRs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 PCR_ViewProj[6]
-        skelRs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 instance (M_World/Fatness)
-        skelRs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: b2 bones
+        skelRs.AddSRV( 3, D3D12_SHADER_VISIBILITY_VERTEX );              // 1: t3 SkelData (see Skeletal.RootSig)
+        skelRs.AddConstants( 10, 1, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: b10 SkelDrawCB
         skelRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 3: t0 diffuse
         skelRs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
             D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0 — same as the world/VOB caster sig above

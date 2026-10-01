@@ -57,8 +57,7 @@ namespace {
 		UINT                        instanceCount = 0;   // always a multiple of 6 — one instance per cube face
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = {};
 		D3D12_VERTEX_BUFFER_VIEW    instView = {};       // 2nd stream (VOBs/attachments); SizeInBytes 0 => single stream
-		D3D12_GPU_VIRTUAL_ADDRESS   instCb = 0;          // skeletal b1
-		D3D12_GPU_VIRTUAL_ADDRESS   boneCb = 0;          // skeletal b2
+		uint32_t                    instRow = 0;         // skeletal b10 (row in the skeletal ring, t3)
 		// Can PSCubeClip's `clip(diffuse.a - 0.5)` ever discard here? If not, the record is drawn by the
 		// caster PSO's no-pixel-shader twin — a PS that merely might discard costs the whole draw the
 		// hardware's double-rate depth path, and this pass rasterizes six faces per caster. Resolved by the
@@ -680,8 +679,7 @@ void D3D12PointShadows::Prepare() {
 							d.indexCount = static_cast<UINT>( mesh->Indices.size() );
 							d.instanceCount = 6;
 							d.srv = srv;
-							d.instCb = sd.instCb;
-							d.boneCb = sd.boneCb;
+							d.instRow = sd.instRow;
 							d.alphaTested = matAlphaTested;
 							g_PsStaticSkelDraws.push_back( d );
 							baked = true;
@@ -779,8 +777,7 @@ void D3D12PointShadows::Prepare() {
 						d.indexCount = static_cast<UINT>( mesh->Indices.size() );
 						d.instanceCount = 6;
 						d.srv = srv;
-						d.instCb = sd.instCb;
-						d.boneCb = sd.boneCb;
+						d.instRow = sd.instRow;
 						d.alphaTested = matAlphaTested;
 						g_PsDynSkelDraws.push_back( d );
 					}
@@ -958,18 +955,22 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	g_PsBarriers.clear();
 
 	// Redundant-bind filter. The records come out of Prepare() in section/material/mesh order, so consecutive
-	// draws routinely share a vertex/index buffer, an SRV or a skeletal CB pair — exactly the dedupe the old
+	// draws routinely share a vertex/index buffer, an SRV or a skeletal instance — exactly the dedupe the old
 	// inline loops did with their `boundTex` / hoisted IASetVertexBuffers. Reset whenever the root signature
 	// changes (descriptor tables and root CBVs don't survive that).
 	D3D12VertexBuffer* lastVb = nullptr;
 	D3D12VertexBuffer* lastIb = nullptr;
 	SIZE_T lastSrv = 0;
-	D3D12_GPU_VIRTUAL_ADDRESS lastInstCb = 0, lastBoneCb = 0, lastInstVbAddr = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS lastInstVbAddr = 0;
 	UINT lastInstVbSize = 0;
+	uint32_t lastInstRow = UINT32_MAX;
 	auto resetBindCache = [&]() {
 		lastVb = nullptr; lastIb = nullptr; lastSrv = 0;
-		lastInstCb = 0; lastBoneCb = 0; lastInstVbAddr = 0; lastInstVbSize = 0;
+		lastInstVbAddr = 0; lastInstVbSize = 0; lastInstRow = UINT32_MAX;
 		};
+	// The skeletal ring every skeletal caster reads its instance + bones from (t3, see Skeletal.RootSig).
+	const D3D12_GPU_VIRTUAL_ADDRESS skelRing = m_E->m_SkeletalCBBuffer[m_E->m_FrameIndex]
+		? m_E->m_SkeletalCBBuffer[m_E->m_FrameIndex]->GetGPUVirtualAddress() : 0;
 	// Alpha-clip PSO selection, per draw. Deliberately NOT part of resetBindCache: unlike descriptor tables and
 	// root CBVs, the bound PSO survives a root-signature change, so one filter spanning all four phases is both
 	// correct and the fewest switches. `noAlpha` falls back to the clipping PSO when the twin failed to build,
@@ -1085,12 +1086,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				// Its own (smaller) root signature - re-bound per light for the same reason Phase C does it.
 				cmdList->SetGraphicsRootSignature( psPipe.SkeletalRootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				cmdList->SetGraphicsRootShaderResourceView( 1, skelRing );
 				resetBindCache();
 				for ( UINT i = L.staticSkelBegin; i < L.staticSkelEnd; ++i ) {
 					const PointShadowDraw& d = g_PsStaticSkelDraws[i];
 					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.instCb != lastInstCb ) { cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb ); lastInstCb = d.instCb; }
-					if ( d.boneCb != lastBoneCb ) { cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb ); lastBoneCb = d.boneCb; }
+					if ( d.instRow != lastInstRow ) { cmdList->SetGraphicsRoot32BitConstants( 2, 1, &d.instRow, 0 ); lastInstRow = d.instRow; }
 					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}
@@ -1149,16 +1150,16 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 			if ( haveSkelDraws ) {
 				// Re-bind per light: the attachment block below switches to PointShadow.RootSig (a DIFFERENT,
 				// smaller root signature), so the skeletal root sig/PSO can't be assumed still bound once we're
-				// past the first light (bug: 2nd+ shadowed light's instCb/boneCb/diffuse binds landed on the
+				// past the first light (bug: 2nd+ shadowed light's instance/bone/diffuse binds landed on the
 				// wrong root signature's parameter slots — GPU device hang, caught via D3D12 validation).
 				cmdList->SetGraphicsRootSignature( psPipe.SkeletalRootSig.Get() );
 				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				cmdList->SetGraphicsRootShaderResourceView( 1, skelRing );
 				resetBindCache();
 				for ( UINT i = L.dynSkelBegin; i < L.dynSkelEnd; ++i ) {
 					const PointShadowDraw& d = g_PsDynSkelDraws[i];
 					bindCasterPso( psPipe.CasterSkeletalPSO.Get(), psPipe.CasterSkeletalNoAlphaPSO.Get(), d.alphaTested );
-					if ( d.instCb != lastInstCb ) { cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb ); lastInstCb = d.instCb; }
-					if ( d.boneCb != lastBoneCb ) { cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb ); lastBoneCb = d.boneCb; }
+					if ( d.instRow != lastInstRow ) { cmdList->SetGraphicsRoot32BitConstants( 2, 1, &d.instRow, 0 ); lastInstRow = d.instRow; }
 					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
 					emitGeometry( d );
 				}

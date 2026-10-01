@@ -55,6 +55,8 @@ struct FrameVobUpload {
     uint32_t cullVisualIndex;
 };
 
+// instRow = the vob's instance record in the skeletal ring (the SkelInstanceRow root constant every skeletal
+// draw sets, see include/SkeletalInstance.hlsl).
 // matSrvIndex indexes g_SkelMatSrvs (below): the per-material diffuse SRV heap slots for this vob's
 // visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
 // set for THIS instance. A pool-thread recorder (the MT cascades) must use it instead of calling
@@ -62,8 +64,7 @@ struct FrameVobUpload {
 struct FrameSkelDraw {
     SkeletalVobInfo*          vobInfo;
     SkeletalMeshVisualInfo*   visual;
-    D3D12_GPU_VIRTUAL_ADDRESS instCb;
-    D3D12_GPU_VIRTUAL_ADDRESS boneCb;
+    uint32_t                  instRow;
     uint32_t                  matSrvIndex;
 };
 
@@ -79,11 +80,13 @@ struct FrameSkelDraw {
 // depth-only consumer to route the attachment through a no-pixel-shader PSO when it can't.
 // inst = the per-instance data this attachment uploaded at collection time (the bytes instView points at),
 // by value so the main-view batcher can re-emit runs of instances CONTIGUOUSLY without reading back the
-// write-combined UPLOAD ring. The per-draw consumers (CSM cascades, point shadows) keep using instView.
+// write-combined UPLOAD ring. The point shadows bind instView; the CSM cascades draw from the attachment arena
+// with the whole VOB ring bound, so they address the same bytes as element instIndex.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
     D3D12_VERTEX_BUFFER_VIEW    instView;
+    UINT                        instIndex;
     const zCVob*                owner;
     UINT                        srvSlot;
     bool                        alphaTested;

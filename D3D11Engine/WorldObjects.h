@@ -66,6 +66,23 @@ struct cmpMeshKey {
     }
 };
 
+/** A mesh's slot in a backend-owned shared buffer (D3D12MeshArena); kNone when it has none. Moving a mesh
+    moves the slot and clears the source, so only one destructor ever releases it. */
+struct GpuArenaSlot {
+    static constexpr uint32_t kNone = 0xFFFFFFFFu;
+
+    GpuArenaSlot() = default;
+    GpuArenaSlot( GpuArenaSlot&& o ) noexcept : Value( o.Value.exchange( kNone ) ) {}
+    GpuArenaSlot& operator=( GpuArenaSlot&& o ) noexcept {
+        Value.store( o.Value.exchange( kNone ) );
+        return *this;
+    }
+
+    uint32_t Get() const { return Value.load( std::memory_order_acquire ); }
+
+    std::atomic<uint32_t> Value{ kNone };
+};
+
 struct meshKeyHasher {
     size_t operator()( const MeshKey& a ) const {
         size_t seed = reinterpret_cast<size_t>(a.Material);
@@ -140,6 +157,9 @@ struct MeshInfo {
     /** True while MorphGpu's queue holds a job for this mesh. Written under MorphGpu's lock; ~MeshInfo reads
         it unlocked so only queued meshes pay for the purge. */
     bool MorphFoldQueued = false;
+
+    /** D3D12 node-attachment mesh arena; released through OnMeshInfoDestroyed. */
+    GpuArenaSlot ArenaSlot;
 };
 
 /** A spatially-coherent, contiguous triangle range within a WorldMeshInfo's index buffer - the leaf
@@ -227,6 +247,9 @@ struct SkeletalMeshInfo {
     /** Actual visual containing this */
     zCMeshSoftSkin* visual;
     uint16_t meshId;
+
+    /** D3D12 skinned-mesh arena; released through OnSkeletalMeshInfoDestroyed. */
+    GpuArenaSlot ArenaSlot;
 };
 
 class zCVisual;

@@ -15,6 +15,7 @@ class zCTexture;
 class zCMaterial;
 class zCVob;
 struct SkeletalMeshVisualInfo;
+struct SkeletalMeshInfo;
 struct VobInfo;
 struct VobLightInfo;
 class zFont;
@@ -364,6 +365,8 @@ public:
         outside the mesh's own owner (D3D12's VOB arena mega-buffer) MUST use this to drop them; otherwise a
         later pass walking that cache dereferences freed memory. No-op by default (D3D11 keeps no such cache). */
     virtual void OnMeshInfoDestroyed( MeshInfo* mesh ) {}
+    /** Same contract as OnMeshInfoDestroyed, for SkeletalMeshInfo::~SkeletalMeshInfo(). */
+    virtual void OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) {}
 
     /** Reloads shaders */
     virtual XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All ) { return XR_SUCCESS; }
