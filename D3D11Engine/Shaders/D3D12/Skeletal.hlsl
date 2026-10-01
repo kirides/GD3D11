@@ -125,7 +125,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
-    float shadow = ComputeSunShadow( i.wpos, N, vertLighting );
+    float shadow = ComputeSunShadow( i.wpos, geomN, vertLighting );
     // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
     float3 V = normalize( CamPosWS - i.wpos );
     WetSurface wet = ApplySceneWetness( i.wpos, geomN, N, albedo, orm.g );
