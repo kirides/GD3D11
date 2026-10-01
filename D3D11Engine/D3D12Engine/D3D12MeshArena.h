@@ -14,12 +14,13 @@ struct GpuArenaSlot;
     StartIndexLocation, so an ExecuteIndirect command needs no buffer views — which is what lets Vulkan run it
     as device-generated commands instead of a CPU replay.
 
-    Unlike D3D12VobArena, space is recycled: a released mesh's ranges go back to first-fit free lists a few
-    frames later. The mesh holds its slot index (GpuArenaSlot), so a recycled mesh address can't alias a slot.
+    Unlike D3D12VobArena, space is recycled: a released mesh's ranges go back to first-fit free lists once the
+    frame that released them has retired on the GPU. The mesh holds its slot index (GpuArenaSlot), so a
+    recycled mesh address can't alias a slot.
 
-    Threading: Request and Flush run on the main thread, Flush before any pass of the frame reads the arena.
-    Find is lock-free (only Flush changes what it reads). Forget may run on any thread and blocks while a
-    Flush is re-uploading, which is what keeps the source vectors alive for that re-upload. */
+    Threading: Request and Flush run on the main thread, Flush only while no recorder thread is running (frame
+    start, and before the cascade jobs launch). Find is lock-free (only Flush changes what it reads). Forget may
+    run on any thread and blocks while a Flush is re-uploading, which keeps the source vectors alive for it. */
 class D3D12MeshArena {
 public:
     struct Range {
@@ -83,7 +84,6 @@ private:
     };
     struct Retired {
         UINT BaseVertex, VertexCount, StartIndex, IndexCount;
-        uint64_t Frame;
     };
 
     /** Grows `list`/`capacity` until `count` fits, then allocates it. */
@@ -112,10 +112,12 @@ private:
     std::vector<uint32_t> m_FreeSlots;     // reusable slot indices (recycled by Flush only)
     std::vector<uint32_t> m_Pending;
     std::vector<uint32_t> m_Released;
-    std::vector<Retired> m_Retired;        // freed ranges the GPU may still read
     std::vector<uint32_t> m_Uploads;       // Flush scratch
-    uint64_t m_FlushCount = 0;
     FreeList m_FreeVertices;
     FreeList m_FreeIndices;
     bool m_AllocFailed = false;
+
+    // Freed ranges whose frame has retired, handed back by the engine's fence-deferred cleanup.
+    std::mutex m_ReclaimMutex;
+    std::vector<Retired> m_Reclaimable;
 };

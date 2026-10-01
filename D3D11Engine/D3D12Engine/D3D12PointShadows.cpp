@@ -21,6 +21,7 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "../WorldMeshSection.h"
+#include "D3D12MeshArena.h"
 
 static_assert( D3D12PointShadows::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12PointShadows' per-frame ring array bound must match the engine's" );
@@ -50,6 +51,8 @@ namespace {
 	struct PointShadowDraw {
 		D3D12VertexBuffer*          vb = nullptr;
 		D3D12VertexBuffer*          ib = nullptr;
+		const D3D12MeshArena*       arena = nullptr;     // replaces vb/ib (skeletals, attachments)
+		INT                         baseVertex = 0;      // arena range
 		UINT                        stride = 0;
 		DXGI_FORMAT                 ibFormat = DXGI_FORMAT_R16_UINT;
 		UINT                        indexCount = 0;
@@ -394,6 +397,9 @@ void D3D12PointShadows::Prepare() {
 	// below), not the player-view-culled main-view list, so gate on the registry instead of that list.
 	const bool haveSkel = psPipe.CasterSkeletalPSO && psPipe.SkeletalRootSig
 		&& !Engine::GAPI->GetSkeletalMeshVobs().empty();
+	// Skinned bodies and node attachments draw out of the engine's mesh arenas (D3D12MeshArena).
+	const D3D12MeshArena* const skelArena = m_E->m_SkelArena.get();
+	const D3D12MeshArena* const attachArena = m_E->m_AttachArena.get();
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = m_E->GetSrvGpuHandle( m_E->m_BlackTexture->GetSrvSlot() );
 	// The one Gothic mutation the recorder can't do for itself: CacheIn kicks off the texture load. Resolved
@@ -668,15 +674,15 @@ void D3D12PointShadows::Prepare() {
 						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 							|| ( mat && mat->HasAlphaTest() );
 						for ( auto const& mesh : meshList ) {
-							if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-							D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-							D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-							if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+							const D3D12MeshArena::Range* range = mesh ? skelArena->Find( mesh->ArenaSlot ) : nullptr;
+							if ( !range ) continue;
 
 							PointShadowDraw d;
-							d.vb = mvb; d.ib = mib;
+							d.arena = skelArena;
+							d.baseVertex = static_cast<INT>( range->BaseVertex );
+							d.startIndex = range->StartIndex;
 							d.stride = sizeof( ExSkelVertexStruct );
-							d.indexCount = static_cast<UINT>( mesh->Indices.size() );
+							d.indexCount = range->IndexCount;
 							d.instanceCount = 6;
 							d.srv = srv;
 							d.instRow = sd.instRow;
@@ -693,17 +699,17 @@ void D3D12PointShadows::Prepare() {
 				if ( psPipe.CasterVobPSO ) {
 					const zCVob* lastOwner = nullptr;
 					for ( const FrameAttachDraw& a : AttachScratch ) {
-						if ( !a.mesh || !a.owner || a.mesh->Indices.empty() ) continue;
-						if ( !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+						if ( !a.mesh || !a.owner ) continue;
 						if ( a.owner->GetVobType() == zVOB_TYPE_NSC || IsNpcAttached( a.owner ) ) continue;
-						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
-						D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
-						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+						const D3D12MeshArena::Range* range = attachArena->Find( a.mesh->ArenaSlot );
+						if ( !range ) continue;
 
 						PointShadowDraw d;
-						d.vb = mvb; d.ib = mib;
+						d.arena = attachArena;
+						d.baseVertex = static_cast<INT>( range->BaseVertex );
+						d.startIndex = range->StartIndex;
 						d.stride = sizeof( ExVertexStruct );
-						d.indexCount = static_cast<UINT>( a.mesh->Indices.size() );
+						d.indexCount = range->IndexCount;
 						d.instanceCount = 6;
 						d.srv = resolveDiffuse( a.tex );
 						d.instView = a.instView;
@@ -766,15 +772,15 @@ void D3D12PointShadows::Prepare() {
 					const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
 						|| ( mat && mat->HasAlphaTest() );
 					for ( auto const& mesh : meshList ) {
-						if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-						D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+						const D3D12MeshArena::Range* range = mesh ? skelArena->Find( mesh->ArenaSlot ) : nullptr;
+						if ( !range ) continue;
 
 						PointShadowDraw d;
-						d.vb = mvb; d.ib = mib;
+						d.arena = skelArena;
+						d.baseVertex = static_cast<INT>( range->BaseVertex );
+						d.startIndex = range->StartIndex;
 						d.stride = sizeof( ExSkelVertexStruct );
-						d.indexCount = static_cast<UINT>( mesh->Indices.size() );
+						d.indexCount = range->IndexCount;
 						d.instanceCount = 6;
 						d.srv = srv;
 						d.instRow = sd.instRow;
@@ -791,17 +797,18 @@ void D3D12PointShadows::Prepare() {
 			// NPC's own held item shouldn't blob-shadow the light it's carrying). ---
 			if ( psPipe.CasterVobPSO ) {
 				for ( const FrameAttachDraw& a : AttachScratch ) {
-					if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+					if ( !a.mesh ) continue;
 					if ( hasExclusions && a.owner && std::find( excludeVobs.begin(), excludeVobs.end(), a.owner ) != excludeVobs.end() )
 						continue;
-					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
-					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
-					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+					const D3D12MeshArena::Range* range = attachArena->Find( a.mesh->ArenaSlot );
+					if ( !range ) continue;
 
 					PointShadowDraw d;
-					d.vb = mvb; d.ib = mib;
+					d.arena = attachArena;
+					d.baseVertex = static_cast<INT>( range->BaseVertex );
+					d.startIndex = range->StartIndex;
 					d.stride = sizeof( ExVertexStruct );
-					d.indexCount = static_cast<UINT>( a.mesh->Indices.size() );
+					d.indexCount = range->IndexCount;
 					d.instanceCount = 6;
 					d.srv = resolveDiffuse( a.tex );
 					d.instView = a.instView;
@@ -958,8 +965,8 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 	// draws routinely share a vertex/index buffer, an SRV or a skeletal instance — exactly the dedupe the old
 	// inline loops did with their `boundTex` / hoisted IASetVertexBuffers. Reset whenever the root signature
 	// changes (descriptor tables and root CBVs don't survive that).
-	D3D12VertexBuffer* lastVb = nullptr;
-	D3D12VertexBuffer* lastIb = nullptr;
+	const void* lastVb = nullptr;   // a D3D12VertexBuffer or a D3D12MeshArena
+	const void* lastIb = nullptr;
 	SIZE_T lastSrv = 0;
 	D3D12_GPU_VIRTUAL_ADDRESS lastInstVbAddr = 0;
 	UINT lastInstVbSize = 0;
@@ -985,9 +992,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 		};
 	auto emitGeometry = [&]( const PointShadowDraw& d ) {
 		const bool twoStreams = d.instView.SizeInBytes != 0;
-		if ( d.vb != lastVb || d.ib != lastIb
+		const void* vbKey = d.arena ? static_cast<const void*>( d.arena ) : d.vb;
+		const void* ibKey = d.arena ? static_cast<const void*>( d.arena ) : d.ib;
+		if ( vbKey != lastVb || ibKey != lastIb
 			|| (twoStreams && (d.instView.BufferLocation != lastInstVbAddr || d.instView.SizeInBytes != lastInstVbSize)) ) {
-			const D3D12_VERTEX_BUFFER_VIEW vbv = { d.vb->GetGpuVirtualAddress(), d.vb->GetSizeInBytes(), d.stride };
+			const D3D12_VERTEX_BUFFER_VIEW vbv = d.arena ? d.arena->VertexBufferView()
+				: D3D12_VERTEX_BUFFER_VIEW{ d.vb->GetGpuVirtualAddress(), d.vb->GetSizeInBytes(), d.stride };
 			if ( twoStreams ) {
 				const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, d.instView };
 				cmdList->IASetVertexBuffers( 0, 2, views );
@@ -997,11 +1007,12 @@ void D3D12PointShadows::Record( D3D12CmdList& cmdList ) {
 				cmdList->IASetVertexBuffers( 0, 1, &vbv );
 				lastInstVbAddr = 0; lastInstVbSize = 0;
 			}
-			const D3D12_INDEX_BUFFER_VIEW ibv = { d.ib->GetGpuVirtualAddress(), d.ib->GetSizeInBytes(), d.ibFormat };
+			const D3D12_INDEX_BUFFER_VIEW ibv = d.arena ? d.arena->IndexBufferView()
+				: D3D12_INDEX_BUFFER_VIEW{ d.ib->GetGpuVirtualAddress(), d.ib->GetSizeInBytes(), d.ibFormat };
 			cmdList->IASetIndexBuffer( &ibv );
-			lastVb = d.vb; lastIb = d.ib;
+			lastVb = vbKey; lastIb = ibKey;
 		}
-		cmdList->DrawIndexedInstanced( d.indexCount, d.instanceCount, d.startIndex, 0, 0 );
+		cmdList->DrawIndexedInstanced( d.indexCount, d.instanceCount, d.startIndex, d.baseVertex, 0 );
 		};
 
 	// One-time: both arrays are born with UNDEFINED depth, and a comparison sample against 0 reads as fully

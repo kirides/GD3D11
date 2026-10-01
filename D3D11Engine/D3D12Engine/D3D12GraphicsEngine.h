@@ -984,6 +984,10 @@ private:
     bool BindSkeletalArena( D3D12CmdList& cmdList, UINT skelDataParam );
     /** Binds the attachment arena on slot 0/the index stream and the whole VOB instance ring on slot 1. */
     bool BindAttachArenaIA( D3D12CmdList& cmdList );
+    /** Direct draws on m_CmdList (ghosts, item previews): bind one mesh out of its arena, requesting it on
+        first sight. False until a flush has uploaded it; on true, `draw` holds the mesh's draw arguments. */
+    bool BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
+    bool BindAttachmentMesh( const MeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw );
     bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
 
     // ---- GPU-driven VOB culling (Hi-Z occlusion + frustum, replaces the CPU per-VOB frustum test) ----

@@ -604,18 +604,10 @@ void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
                 if ( !bindDiffuse( material, 3 ) ) continue;
 
                 for ( auto const& mesh : meshes ) {
-                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                    m_CmdList->IASetIndexBuffer( &ibv );
-
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                    rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                    D3D12_DRAW_INDEXED_ARGUMENTS draw;
+                    if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
+                    m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+                    rs.RendererInfo.FrameDrawnTriangles += draw.IndexCountPerInstance / 3;
                 }
             }
         } else if ( !m_SkeletalCBOverflowLogged ) {
@@ -666,18 +658,10 @@ void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
                     if ( !bindDiffuse( material, 2 ) ) continue;
 
                     for ( auto const& mesh : meshes ) {
-                        if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
-                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() );
-                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
-                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-                        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                        m_CmdList->IASetIndexBuffer( &ibv );
-
-                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                        rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                        D3D12_DRAW_INDEXED_ARGUMENTS draw;
+                        if ( !BindAttachmentMesh( mesh.get(), draw ) ) continue;
+                        m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+                        rs.RendererInfo.FrameDrawnTriangles += draw.IndexCountPerInstance / 3;
                     }
                 }
             }
@@ -1970,16 +1954,10 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				// SampleSkelDiffuse and off descriptor tables entirely.
 				BindMaterialMaps( tex, 4, ResolveDiffuseSlotCacheIn( tex ) );
 				for ( auto const& mesh : meshList ) {
-					if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
-					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-					m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-					m_CmdList->IASetIndexBuffer( &ibv );
-					m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-					drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+					D3D12_DRAW_INDEXED_ARGUMENTS draw;
+					if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
+					m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+					drawnTris += draw.IndexCountPerInstance / 3;
 				}
 			}
 			}   // end base skinned mesh
@@ -2055,19 +2033,10 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 							m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
 
 							for ( auto const& attMesh : attMeshes ) {
-								if ( !attMesh || attMesh->Indices.empty() ) continue;
-								if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
-								D3D12VertexBuffer* avb = D3D12VertexBuffer::From( attMesh->GetMeshVertexBuffer() );
-								D3D12VertexBuffer* aib = D3D12VertexBuffer::From( attMesh->GetMeshIndexBuffer() );
-								if ( !avb->GetResource() || !aib->GetResource() ) continue;
-								const D3D12_VERTEX_BUFFER_VIEW vbv = {
-									avb->GetGpuVirtualAddress(), avb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-								m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-								const D3D12_INDEX_BUFFER_VIEW ibv = {
-									aib->GetGpuVirtualAddress(), aib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-								m_CmdList->IASetIndexBuffer( &ibv );
-								m_CmdList->DrawIndexedInstanced( static_cast<UINT>( attMesh->Indices.size() ), 1, 0, 0, 0 );
-								drawnTris += static_cast<unsigned int>( attMesh->Indices.size() ) / 3;
+								D3D12_DRAW_INDEXED_ARGUMENTS draw;
+								if ( !BindAttachmentMesh( attMesh.get(), draw ) ) continue;
+								m_CmdList->DrawIndexedInstanced( draw.IndexCountPerInstance, 1, draw.StartIndexLocation, draw.BaseVertexLocation, 0 );
+								drawnTris += draw.IndexCountPerInstance / 3;
 							}
 						}
 					}
@@ -3504,6 +3473,42 @@ bool D3D12GraphicsEngine::BindAttachArenaIA( D3D12CmdList& cmdList ) {
     const D3D12_INDEX_BUFFER_VIEW ibv = m_AttachArena->IndexBufferView();
     cmdList->IASetVertexBuffers( 0, 2, views );
     cmdList->IASetIndexBuffer( &ibv );
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::BindSkinnedMesh( const SkeletalMeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw ) {
+    if ( !mesh || mesh->Indices.empty() ) return false;
+    m_SkelArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
+        mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
+    const D3D12MeshArena::Range* range = m_SkelArena->Find( mesh->ArenaSlot );
+    if ( !range || !m_SkelArena->Ready() ) return false;
+    const D3D12_VERTEX_BUFFER_VIEW vbv = m_SkelArena->VertexBufferView();
+    const D3D12_INDEX_BUFFER_VIEW ibv = m_SkelArena->IndexBufferView();
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    draw = { range->IndexCount, 1, range->StartIndex, static_cast<INT>( range->BaseVertex ), 0 };
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::BindAttachmentMesh( const MeshInfo* mesh, D3D12_DRAW_INDEXED_ARGUMENTS& draw ) {
+    if ( !mesh || mesh->Indices.empty() ) return false;
+    m_AttachArena->Request( mesh->ArenaSlot, mesh->Vertices.data(), static_cast<UINT>( mesh->Vertices.size() ),
+        mesh->Indices.data(), static_cast<UINT>( mesh->Indices.size() ) );
+    const D3D12MeshArena::Range* range = m_AttachArena->Find( mesh->ArenaSlot );
+    if ( !range || !m_AttachArena->Ready() ) return false;
+    // A morph mesh keeps its own vertex buffer, deformed for this very draw; its indices are mesh-relative,
+    // so they address it with base vertex 0.
+    D3D12VertexBuffer* own = mesh->GetMeshVertexBuffer() ? D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() ) : nullptr;
+    const bool ownVertices = own && own->GetResource();
+    const D3D12_VERTEX_BUFFER_VIEW vbv = ownVertices
+        ? D3D12_VERTEX_BUFFER_VIEW{ own->GetGpuVirtualAddress(), own->GetSizeInBytes(), sizeof( ExVertexStruct ) }
+        : m_AttachArena->VertexBufferView();
+    const D3D12_INDEX_BUFFER_VIEW ibv = m_AttachArena->IndexBufferView();
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    draw = { range->IndexCount, 1, range->StartIndex, ownVertices ? 0 : static_cast<INT>( range->BaseVertex ), 0 };
     return true;
 }
 
@@ -5122,7 +5127,6 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                         zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
                         for ( auto const& attMesh : attMeshes ) {
                             if ( !attMesh || attMesh->Indices.empty() ) continue;
-                            if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
 
                             m_AttachArena->Request( attMesh->ArenaSlot, attMesh->Vertices.data(),
                                 static_cast<UINT>( attMesh->Vertices.size() ), attMesh->Indices.data(),

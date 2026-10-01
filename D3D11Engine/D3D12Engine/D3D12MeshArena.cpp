@@ -9,9 +9,6 @@ namespace {
     // Growth re-uploads every resident mesh, so keep it rare: 1.5x plus a floor of spare room.
     constexpr UINT kMinSpareVertices = 64 * 1024;
     constexpr UINT kMinSpareIndices = 192 * 1024;
-    // Flushes a freed range waits before reuse. Flush runs once per rendered frame, so this outlasts every
-    // frame in flight.
-    constexpr uint64_t kRetireFlushes = 4;
 
     D3D12_RESOURCE_DESC MakeBufferDesc( UINT64 bytes ) {
         D3D12_RESOURCE_DESC bd = {};
@@ -190,13 +187,16 @@ bool D3D12MeshArena::Flush( D3D12GraphicsEngine* engine ) {
 
 
 bool D3D12MeshArena::FlushLocked( D3D12GraphicsEngine* engine ) {
-    ++m_FlushCount;
-
-    // Releases first: a slot freed here may be re-requested only after this Flush.
+    // Releases first: a slot freed here may be re-requested only after this Flush. Its ranges wait for the
+    // current frame to retire, since frames in flight may still draw them.
     for ( uint32_t index : m_Released ) {
         Record& r = m_Records[index];
         if ( r.Kind == State::Released ) {
-            m_Retired.push_back( { r.BaseVertex, r.VertexCount, r.StartIndex, r.IndexCount, m_FlushCount } );
+            const Retired freed = { r.BaseVertex, r.VertexCount, r.StartIndex, r.IndexCount };
+            engine->QueueCleanupJob( [this, freed]() {
+                std::lock_guard<std::mutex> reclaim( m_ReclaimMutex );
+                m_Reclaimable.push_back( freed );
+            } );
             --m_ResidentCount;
         }
         if ( index < m_Published.size() ) m_Published[index] = {};
@@ -205,12 +205,14 @@ bool D3D12MeshArena::FlushLocked( D3D12GraphicsEngine* engine ) {
     }
     m_Released.clear();
 
-    std::erase_if( m_Retired, [this]( const Retired& t ) {
-        if ( m_FlushCount - t.Frame < kRetireFlushes ) return false;
-        m_FreeVertices.Free( t.BaseVertex, t.VertexCount );
-        m_FreeIndices.Free( t.StartIndex, t.IndexCount );
-        return true;
-    } );
+    {
+        std::lock_guard<std::mutex> reclaim( m_ReclaimMutex );
+        for ( const Retired& t : m_Reclaimable ) {
+            m_FreeVertices.Free( t.BaseVertex, t.VertexCount );
+            m_FreeIndices.Free( t.StartIndex, t.IndexCount );
+        }
+        m_Reclaimable.clear();
+    }
 
     if ( m_Pending.empty() || m_AllocFailed ) {
         m_Pending.clear();

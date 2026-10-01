@@ -42,6 +42,12 @@ WorldConverter::WorldConverter() {}
 WorldConverter::~WorldConverter() {}
 
 namespace {
+    /** The modern renderer draws node attachments from its attachment arena (D3D12MeshArena), so their meshes
+        get no per-mesh GPU buffers there; a morph mesh keeps only its vertex buffer, the deform target. */
+    bool AttachmentDrawnFromArena( const MeshVisualInfo* visual ) {
+        return visual->NodeAttachment && Engine::IsModernBackend();
+    }
+
     void CreateShadowIndexBuffer( MeshInfo* meshInfo ) {
         if ( !meshInfo || meshInfo->ShadowIndices.empty() ) {
             return;
@@ -1549,23 +1555,23 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, std::span<zCMes
             mi->visual = s;
             mi->meshId = s_MeshManager->RecordMesh( m );
 
-            // Create the buffers
-            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
-            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
-
-            // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExSkelVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-            mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
             MeshInfo* bmi = new MeshInfo;
             bmi->Indices = mi->Indices; // copy them
             bmi->Vertices = std::move(bindPoseVertices);
 
-            Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshVertexBuffer );
-            Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshIndexBuffer );
+            // The modern renderer draws skinned meshes from its skeletal arena (D3D12MeshArena) and never
+            // draws the bind pose, so neither gets per-mesh GPU buffers there.
+            if ( !Engine::IsModernBackend() ) {
+                Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
+                Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExSkelVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+                mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
-            bmi->MeshVertexBuffer->Init( &bmi->Vertices[0], bmi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-            bmi->MeshIndexBuffer->Init( &bmi->Indices[0], bmi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+                Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshVertexBuffer );
+                Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshIndexBuffer );
+                bmi->MeshVertexBuffer->Init( &bmi->Vertices[0], bmi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+                bmi->MeshIndexBuffer->Init( &bmi->Indices[0], bmi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+            }
 
             Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
             Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
@@ -1663,16 +1669,22 @@ namespace {
             mi->meshId = s_MeshManager->RecordMesh( m );
 
             // Create the buffers
+            const bool arenaOnly = AttachmentDrawnFromArena( meshInfo );
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
-            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
             // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
-            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices, nullptr );
+            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices,
+                arenaOnly ? nullptr : &mi->ShadowIndices, nullptr );
 
             // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-            mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-            CreateShadowIndexBuffer( mi );
+            if ( arenaOnly ) {
+                mi->MeshVertexBuffer.reset();   // only the optimizer needed it
+            } else {
+                Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+                mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+                CreateShadowIndexBuffer( mi );
+            }
 
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
@@ -2425,8 +2437,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         mi->meshId = s_MeshManager->RecordMesh( s );
 
         // Create the buffers
+        const bool arenaOnly = AttachmentDrawnFromArena( meshInfo );
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
+        if ( !arenaOnly ) Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         if ( meshInfo->MorphMeshVisual ) {
             // A morph submesh deliberately skips OptimizeFaces/OptimizeVertices: both deform paths address
@@ -2449,15 +2462,23 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             // the backend closest to the 32-bit VA ceiling. Asking for no LOD skips the meshopt
             // simplification pass and leaves LodIndices empty, so nothing downstream allocates.
 
-            // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization)
-            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices, &mi->ShadowIndices,
-                Engine::IsModernBackend() ? &mi->LodIndices : nullptr );
+            // Optimize faces/vertices (optional - see RendererSettings.EnableMeshOptimization). The attachment
+            // arena draws full indices only, so an arena-only mesh skips the shadow and LOD levels.
+            OptimizeMeshBuffers( mi->MeshVertexBuffer.get(), mi->Indices, mi->Vertices,
+                arenaOnly ? nullptr : &mi->ShadowIndices,
+                ( Engine::IsModernBackend() && !arenaOnly ) ? &mi->LodIndices : nullptr );
 
             // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+            if ( arenaOnly ) {
+                mi->MeshVertexBuffer.reset();   // only the optimizer needed it
+            } else {
+                mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+            }
         }
-        mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        CreateShadowIndexBuffer( mi );
+        if ( !arenaOnly ) {
+            mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+            CreateShadowIndexBuffer( mi );
+        }
 
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );

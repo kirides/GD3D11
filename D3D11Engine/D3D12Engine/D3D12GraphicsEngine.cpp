@@ -2092,6 +2092,11 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     m_OpaqueSceneCapturedThisFrame = false;
     m_FrameOpen = true;
+
+    // Meshes last frame's late passes (ghosts, item previews, point cubes) met for the first time. No recorder
+    // thread runs at this point, which is what the arenas' lock-free Find needs.
+    m_SkelArena->Flush( this );
+    m_AttachArena->Flush( this );
     return XR_SUCCESS;
 }
 
