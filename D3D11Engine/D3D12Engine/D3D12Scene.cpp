@@ -1264,6 +1264,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 			if ( a.pos.x != b.pos.x ) return a.pos.x < b.pos.x;
 			if ( a.pos.y != b.pos.y ) return a.pos.y < b.pos.y;
 			if ( a.pos.z != b.pos.z ) return a.pos.z < b.pos.z;
+			if ( a.rtMask != b.rtMask ) return a.rtMask < b.rtMask;
 			return a.vob < b.vob;
 		} );
 
@@ -1304,7 +1305,6 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		L.WetCoatScale = lightSettings.PointLightWetReflectionScale( cand.isStatic );
 		L.RtShadowMask = static_cast<int>( cand.rtMask );
 		L.RtFallbackRange = 1.0f;   // the clamp below shrinks it for static and indoor lights
-		L.WetPad1 = 0.0f;
 		// A carried light (torch in hand) must not be shadowed by its carrier; carriers get their own instance mask
 		if ( cand.rtMask && vob->GetVobParent() ) {
 			static std::vector<const zCVob*> s_exclude;
@@ -1315,6 +1315,10 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 					if ( std::find( carriers.begin(), carriers.end(), v ) == carriers.end() ) carriers.push_back( v );
 			}
 		}
+		// Stacked lights share one ray-traced shadow slot, keyed by the run's first light
+		const GPULight* prev = count > 0 ? &dst[count - 1] : nullptr;
+		L.RtGroup = ( prev && L.RtShadowMask != 0 && prev->RtShadowMask == L.RtShadowMask && prev->PositionWorld.x == pw.x
+			&& prev->PositionWorld.y == pw.y && prev->PositionWorld.z == pw.z ) ? prev->RtGroup : static_cast<int>( count );
 		// key 0 = "never give this light a cube" — what point-shadows-off means for every light.
 		s_lightKeys.push_back( cand.key );
 		++count;
@@ -1448,9 +1452,11 @@ void D3D12GraphicsEngine::TraceRtShadows() {
 	in.View = Engine::GAPI->GetRendererState().TransformState.TransformView;
 	in.Projection = Engine::GAPI->GetProjectionMatrix();
 	in.CameraPosition = Engine::GAPI->GetCameraPosition();
-	in.SunRays = sun ? static_cast<int>( rs.RayTracedSunShadows ) : 0;
+	in.SunRays = sun ? GothicRendererSettings::RayTracedShadowRays( rs.RayTracedSunShadows ) : 0;
 	in.SunDistance = rs.RayTracedSunShadowDistance;
-	in.PointRays = m_RtPointShadowsActive ? static_cast<int>( rs.RayTracedPointShadows ) : 0;
+	in.PointRays = m_RtPointShadowsActive ? GothicRendererSettings::RayTracedShadowRays( rs.RayTracedPointShadows ) : 0;
+	in.SunFiltered = rs.RayTracedSunShadows == GothicRendererSettings::RT_SHADOWS_SMOOTH;
+	in.PointFiltered = rs.RayTracedPointShadows == GothicRendererSettings::RT_SHADOWS_SMOOTH;
 	// A temporal resolve averages the jitter away; without one the pattern holds still
 	in.NoiseFrame = rs.GetIsTAAEnabled() ? static_cast<UINT>( Engine::GAPI->GetFrameNumber() & 0xFFFF ) : 0u;
 	in.NearZ = Engine::GAPI->GetNearPlane();

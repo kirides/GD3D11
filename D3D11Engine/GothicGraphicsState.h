@@ -594,13 +594,15 @@ struct GothicRendererSettings {
         PLS_FULL = 3,
         _PLS_NUM_SETTINGS
     };
-    /** D3D12 inline ray-traced shadows; the value is the rays per light per pixel. */
+    /** D3D12 inline ray-traced shadows; the value is the rays per light per pixel, except SMOOTH. */
     enum E_RayTracedShadows {
-        RT_SHADOWS_OFF   = 0,
-        RT_SHADOWS_HARD  = 1,   // one ray: sharp edges
-        RT_SHADOWS_SOFT  = 2,   // two jittered rays; smooth with TAA/FSR
-        RT_SHADOWS_ULTRA = 4,   // four jittered rays
+        RT_SHADOWS_OFF    = 0,
+        RT_SHADOWS_HARD   = 1,   // one ray: sharp edges
+        RT_SHADOWS_SOFT   = 2,   // two jittered rays; smooth with TAA/FSR
+        RT_SHADOWS_SMOOTH = 3,   // one ray, blurred by the blocker distance (contact hardening)
+        RT_SHADOWS_ULTRA  = 4,   // four jittered rays
     };
+    static int RayTracedShadowRays( E_RayTracedShadows m ) { return m == RT_SHADOWS_SMOOTH ? 1 : static_cast<int>( m ); }
     enum E_HDRToneMap {
         ToneMap_jafEq4,
         Uncharted2Tonemap,

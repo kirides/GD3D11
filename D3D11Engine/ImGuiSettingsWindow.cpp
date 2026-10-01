@@ -422,6 +422,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             constexpr ListItem<GothicRendererSettings::E_RayTracedShadows> rtSun[] = {
                 { "Off", GothicRendererSettings::RT_SHADOWS_OFF, "Shadow maps only." },
                 { "Hard", GothicRendererSettings::RT_SHADOWS_HARD, "One ray per pixel. Sharp shadow edges." },
+                { "Smooth", GothicRendererSettings::RT_SHADOWS_SMOOTH, "One ray per pixel, edges blurred by the distance to the caster: sharp where it touches, softer further out. No grain." },
                 { "Soft", GothicRendererSettings::RT_SHADOWS_SOFT, "Two rays per pixel with soft edges. Grainy without TAA or FSR." },
                 { "Ultra", GothicRendererSettings::RT_SHADOWS_ULTRA, "Four rays per pixel with soft edges. Expensive." },
             };
@@ -457,6 +458,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             constexpr ListItem<GothicRendererSettings::E_RayTracedShadows> rtPoint[] = {
                 { "Off", GothicRendererSettings::RT_SHADOWS_OFF, "Shadow cubes." },
                 { "Hard", GothicRendererSettings::RT_SHADOWS_HARD, "One ray per light and pixel. Sharp shadow edges." },
+                { "Smooth", GothicRendererSettings::RT_SHADOWS_SMOOTH, "One ray per light and pixel, edges blurred by the distance to the caster: sharp where it touches, softer further out. No grain." },
                 { "Soft", GothicRendererSettings::RT_SHADOWS_SOFT, "Two rays per light and pixel with soft edges. Grainy without TAA or FSR." },
                 { "Ultra", GothicRendererSettings::RT_SHADOWS_ULTRA, "Four rays per light and pixel with soft edges. Expensive." },
             };

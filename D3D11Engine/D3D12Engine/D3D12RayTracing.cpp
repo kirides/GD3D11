@@ -75,8 +75,9 @@ namespace {
         float SunDistance; float SunFadeBand; UINT SunRays; float SunConeTan;
         UINT PointRays; float PointSourceRadius; UINT NumTilesX; float PixelAngle;
         float ProjA, ProjB, NearZ, FarZ;
+        UINT RawIndex; UINT Filter; float MaxPenumbraPx; UINT Pad0;
     };
-    static_assert( sizeof( RtShadowCBData ) == 144, "RtShadowCBData must match RtShadows.hlsl's RtShadowCB" );
+    static_assert( sizeof( RtShadowCBData ) == 160, "RtShadowCBData must match RtShadows.hlsl's RtShadowCB" );
     static_assert( sizeof( D3D12_RAYTRACING_INSTANCE_DESC ) == 64, "instance descs are packed at 64 bytes" );
     static_assert( sizeof( Affine3x4 ) == sizeof( float ) * 12, "Affine3x4 is the instance transform verbatim" );
 
@@ -336,6 +337,10 @@ struct D3D12RayTracing::Impl {
     UINT ShadowMaskSrv = UINT_MAX, ShadowMaskUav = UINT_MAX;
     UINT ShadowMaskWidth = 0, ShadowMaskHeight = 0;
     D3D12_RESOURCE_STATES ShadowMaskState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    // Filtered modes only: the unfiltered trace (always UAV) and the per-cluster slot table
+    ComPtr<Rhi::Resource> RawMask, ClusterGroups;
+    UINT RawMaskSrv = UINT_MAX, RawMaskUav = UINT_MAX;
+    UINT64 ClusterGroupsBytes = 0;
 
     // This frame's scene
     bool SceneBuilt = false, SceneValid = false;
@@ -932,7 +937,29 @@ struct D3D12RayTracing::Impl {
         return true;
     }
 
+    bool EnsureFilterTargets( UINT width, UINT height, UINT tilesX, bool points ) {
+        if ( !RawMask && !MakeTarget( width, height, kShadowMaskFormat, L"RtShadowMaskRaw", RawMask, RawMaskSrv, RawMaskUav ) ) {
+            DropTarget( RawMask, RawMaskSrv, RawMaskUav );
+            return false;
+        }
+        if ( !points ) return true;
+        // Two uint4 per light cluster, as RtShadows.hlsl's ClusterOf indexes them
+        const UINT64 bytes = UINT64( std::max( tilesX, ( width + 15 ) / 16 ) ) * ( ( height + 15 ) / 16 ) * 16 * 32;
+        if ( ClusterGroups && ClusterGroupsBytes >= bytes ) return true;
+        if ( ClusterGroups ) E.QueueResourceForRelease( std::move( ClusterGroups ) );
+        ClusterGroups = CreateUavBuffer( Rhi(), bytes, L"RtShadowClusterGroups" );
+        ClusterGroupsBytes = ClusterGroups ? bytes : 0;
+        return ClusterGroups != nullptr;
+    }
+
+    void ReleaseFilterTargets() {
+        DropTarget( RawMask, RawMaskSrv, RawMaskUav );
+        if ( ClusterGroups ) E.QueueResourceForRelease( std::move( ClusterGroups ) );
+        ClusterGroupsBytes = 0;
+    }
+
     void ReleaseShadowMask() {
+        ReleaseFilterTargets();
         DropTarget( ShadowMask, ShadowMaskSrv, ShadowMaskUav );
         ShadowMaskWidth = ShadowMaskHeight = 0;
         if ( StatsGpu ) E.QueueResourceForRelease( std::move( StatsGpu ) );
@@ -1206,6 +1233,13 @@ struct D3D12RayTracing::Impl {
         FrameSlot& s = Slot();
         const UINT w = static_cast<UINT>( E.m_Resolution.x ), h = static_cast<UINT>( E.m_Resolution.y );
         if ( !EnsureShadowMask( w, h ) ) return false;
+        const bool filterSun = in.SunFiltered && in.SunRays > 0, filterPoints = in.PointFiltered && in.PointRays > 0;
+        bool filter = ( filterSun || filterPoints ) && E.m_Pipelines.RtShadowFilter.PSO;
+        if ( filter && !EnsureFilterTargets( w, h, in.NumTilesX, filterPoints ) ) {
+            ReleaseFilterTargets();
+            filter = false;
+        }
+        if ( !filter && RawMask ) ReleaseFilterTargets();
 
         DX_ZONE( Cmd().Get(), "Ray-traced shadows" );
         RtShadowCBData cb = {};
@@ -1229,6 +1263,9 @@ struct D3D12RayTracing::Impl {
         cb.ProjB = in.Projection._43;
         cb.NearZ = in.NearZ;
         cb.FarZ = in.FarZ;
+        cb.RawIndex = filter ? RawMaskUav : 0;
+        cb.Filter = filter ? ( filterSun ? 1u : 0u ) | ( filterPoints ? 2u : 0u ) : 0u;
+        cb.MaxPenumbraPx = std::max( 6.0f * h / 1080.0f, 3.0f );   // widest blur radius, from 1080p
         memcpy( s.RingPtr + kOffShadowCb, &cb, sizeof( cb ) );
 
         if ( ShadowMaskState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
@@ -1258,7 +1295,15 @@ struct D3D12RayTracing::Impl {
         Cmd()->SetComputeRootShaderResourceView( 15, in.Lights );
         Cmd()->SetComputeRootShaderResourceView( 16, in.LightGrid );
         Cmd()->SetComputeRootUnorderedAccessView( 17, StatsGpu->GetGPUVirtualAddress() );
+        // Unread without filtered point lights, but the root parameter still needs an address
+        Cmd()->SetComputeRootUnorderedAccessView( 18, ( ClusterGroups ? ClusterGroups : StatsGpu )->GetGPUVirtualAddress() );
         Cmd()->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
+        if ( filter ) {
+            if ( ClusterGroups ) Cmd()->UAVBarriers( { RawMask.Get(), ClusterGroups.Get() } );
+            else Cmd()->UAVBarrier( RawMask.Get() );
+            Cmd()->SetPipelineState( E.m_Pipelines.RtShadowFilter.PSO.Get() );
+            Cmd()->Dispatch( ( w + 7 ) / 8, ( h + 7 ) / 8, 1 );
+        }
 
         Cmd()->TransitionBarrier( StatsGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE );
         Cmd()->CopyBufferRegion( s.StatsReadback.Get(), 0, StatsGpu.Get(), 0, kStatsBytes );

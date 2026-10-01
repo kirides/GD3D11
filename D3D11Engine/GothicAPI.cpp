@@ -6120,9 +6120,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowMapSize = GetPrivateProfileIntA( "Shadows", "ShadowMapSize", ds.ShadowMapSize, ini.c_str() );
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode( GetPrivateProfileIntA( "Shadows", "PointlightShadows", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, ini.c_str() ) );
         s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", ds.WorldShadowRangeScale, ini );
-        // Rays per pixel; anything the enum doesn't name snaps down to the next tier
         auto rtShadows = []( int v ) {
-            return static_cast<GothicRendererSettings::E_RayTracedShadows>( v >= 4 ? 4 : std::clamp( v, 0, 2 ) );
+            return static_cast<GothicRendererSettings::E_RayTracedShadows>( std::clamp( v, 0, 4 ) );
         };
         s.RayTracedSunShadows = rtShadows( GetPrivateProfileIntA( "Shadows", "RayTracedSunShadows", ds.RayTracedSunShadows, ini.c_str() ) );
         s.RayTracedSunShadowDistance = std::clamp( GetPrivateProfileFloatA( "Shadows", "RayTracedSunShadowDistance", ds.RayTracedSunShadowDistance, ini ),

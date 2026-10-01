@@ -127,6 +127,21 @@ bool PassesAlpha( Tri t, float2 bary, float coneWidth, float lodBias )
     return tex.SampleLevel( smpWrap, InterpUV( t, bary ), lod ).a >= 0.5;
 }
 
+// Distance to a blocker, -1 when nothing is in the way. The first accepted hit, not necessarily the nearest.
+float TraceBlocker( RayDesc ray, uint mask, float coneWidth )
+{
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline( Scene, RAY_FLAG_NONE, mask, ray );
+    while ( q.Proceed() )
+    {
+        if ( q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE ) continue;
+        Tri t = FetchTri( q.CandidateInstanceID(), q.CandidateInstanceIndex(), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex() );
+        if ( PassesAlpha( t, q.CandidateTriangleBarycentrics(), coneWidth, 0.0 ) )
+            q.CommitNonOpaqueTriangleHit();
+    }
+    return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? q.CommittedRayT() : -1.0;
+}
+
 // 1 = nothing in the way. Alpha-tested candidates are resolved against their diffuse alpha unless alphaTest is off;
 // coneWidth picks the alpha mip.
 float TraceVisibility( RayDesc ray, uint mask, bool alphaTest, float coneWidth )
@@ -138,17 +153,7 @@ float TraceVisibility( RayDesc ray, uint mask, bool alphaTest, float coneWidth )
         q.Proceed();
         return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
     }
-
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-    q.TraceRayInline( Scene, RAY_FLAG_NONE, mask, ray );
-    while ( q.Proceed() )
-    {
-        if ( q.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE ) continue;
-        Tri t = FetchTri( q.CandidateInstanceID(), q.CandidateInstanceIndex(), q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex() );
-        if ( PassesAlpha( t, q.CandidateTriangleBarycentrics(), coneWidth, 0.0 ) )
-            q.CommitNonOpaqueTriangleHit();
-    }
-    return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
+    return TraceBlocker( ray, mask, coneWidth ) < 0.0 ? 1.0 : 0.0;
 }
 
 #endif // D3D12_RTSCENE_HLSL

@@ -69,6 +69,7 @@ public:
         int SunRays;             // 0 = sun off
         float SunDistance;
         int PointRays;           // 0 = point lights off
+        bool SunFiltered, PointFiltered;   // one ray, blurred by the blocker distance
         UINT NoiseFrame;
         float NearZ, FarZ;       // cluster Z range, as BindFrameLights
         UINT NumTilesX;

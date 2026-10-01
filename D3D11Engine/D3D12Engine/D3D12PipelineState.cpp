@@ -2322,9 +2322,11 @@ bool D3D12PipelineState::CreateRtShadows() {
     rs.AddSRV( 13, D3D12_SHADER_VISIBILITY_ALL );   // 15: t13 lights
     rs.AddSRV( 14, D3D12_SHADER_VISIBILITY_ALL );   // 16: t14 light grid
     rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );    // 17: u0 overflow counters
+    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );    // 18: u1 per-cluster slot table (filtered point lights)
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     RtShadows.RootSig = rs.RootSig();
+    RtShadowFilter.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "RtShadows.hlsl", "CSMain", Shadermodel_CS, RtShadows.CsBlob.ReleaseAndGetAddressOf() ) )
         return false;
@@ -2336,6 +2338,17 @@ bool D3D12PipelineState::CreateRtShadows() {
     if ( FAILED( device->CreateComputePipelineState( &pso, RtShadows.PSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateComputePipelineState failed (ray-traced shadows)." );
         return false;
+    }
+
+    // Optional: without it the "Smooth" modes trace like "Hard"
+    RtShadowFilter.PSO.Reset();
+    if ( m_Shaders->CompileFromFile( "RtShadows.hlsl", "CSFilter", Shadermodel_CS, RtShadowFilter.CsBlob.ReleaseAndGetAddressOf() ) ) {
+        rs.ValidateShaders( { { RtShadowFilter.CsBlob.Get(), "RtShadows.hlsl:CSFilter", D3D12_SHADER_VISIBILITY_ALL } } );
+        pso.CS = { RtShadowFilter.CsBlob->GetBufferPointer(), RtShadowFilter.CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, RtShadowFilter.PSO.ReleaseAndGetAddressOf() ) ) )
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (ray-traced shadow filter); smooth shadows trace hard." );
+    } else {
+        Logging::Wrn( "D3D12: RtShadows.hlsl:CSFilter failed to compile; smooth shadows trace hard." );
     }
     return true;
 }

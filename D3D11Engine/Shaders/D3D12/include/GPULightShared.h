@@ -27,7 +27,7 @@ struct GPULight {
     float  WetCoatScale;    // 64  wet-ground reflection gate (PointLightWetReflectionScale); Color.w gates material highlights
     int    RtShadowMask;    // 68  TLAS instance mask the ray-traced shadow traces with; 0 = not ray traced
     float  RtFallbackRange; // 72  Range scale while ray traced but without a visibility (no mask, past the cap)
-    float  WetPad1;         // 76
+    int    RtGroup;         // 76  index of the first light of this light's run at one position with one RtShadowMask
 };
 
 // ShadowCubeIndex encoding, HI-LO with 0 meaning invalid in each half:

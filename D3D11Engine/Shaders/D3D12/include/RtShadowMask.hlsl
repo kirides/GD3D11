@@ -3,7 +3,7 @@
 //   x 12-15  cluster Z slice          x 16-30  point lights 0-4, 3 bits each (7 = lit)    x 31  traced
 //   y  0-29  point lights 5-14
 // Point slot k belongs to the k-th group of the pixel's cluster walk (bit order, lights with RtShadowMask != 0);
-// a group is a run of consecutive lights at one position with one mask. The lit pass finds a slot by walking the
+// a group is a run of consecutive lights with one GPULight::RtGroup. The lit pass finds a slot by walking the
 // same cluster; a different slice means a different list, and the mask is ignored.
 #ifndef D3D12_RTSHADOWMASK_HLSL
 #define D3D12_RTSHADOWMASK_HLSL
@@ -16,15 +16,11 @@ float RtMaskSunVisibility( uint2 m ) { return float( m.x & 0xFFu ) / 255.0; }
 float RtMaskSunWeight( uint2 m )     { return float( ( m.x >> 8 ) & 0xFu ) / 15.0; }
 uint  RtMaskSlice( uint2 m )         { return ( m.x >> 12 ) & 0xFu; }
 
-float RtMaskPointVisibility( uint2 m, uint k )
-{
-    uint v = k < 5u ? ( m.x >> ( 16u + 3u * k ) ) : ( m.y >> ( 3u * ( k - 5u ) ) );
-    return float( v & 7u ) / 7.0;
-}
+uint RtMaskPointBits( uint2 m, uint k ) { return ( k < 5u ? ( m.x >> ( 16u + 3u * k ) ) : ( m.y >> ( 3u * ( k - 5u ) ) ) ) & 7u; }
+float RtMaskPointVisibility( uint2 m, uint k ) { return float( RtMaskPointBits( m, k ) ) / 7.0; }
 
-uint2 RtMaskSetPoint( uint2 m, uint k, float visibility )
+uint2 RtMaskSetPointBits( uint2 m, uint k, uint v )
 {
-    uint v = (uint)round( saturate( visibility ) * 7.0 );
     if ( k < 5u )
     {
         uint s = 16u + 3u * k;
@@ -37,5 +33,7 @@ uint2 RtMaskSetPoint( uint2 m, uint k, float visibility )
     }
     return m;
 }
+
+uint2 RtMaskSetPoint( uint2 m, uint k, float visibility ) { return RtMaskSetPointBits( m, k, (uint)round( saturate( visibility ) * 7.0 ) ); }
 
 #endif // D3D12_RTSHADOWMASK_HLSL

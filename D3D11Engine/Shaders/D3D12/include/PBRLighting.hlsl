@@ -741,8 +741,7 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
     // Ray-traced lights find their slot by this walk's order (RtShadowMask.hlsl); another slice is another walk
     const bool rtPoints = ( rtMask.x & kRtMaskTraced ) != 0u && RtMaskSlice( rtMask ) == slice;
     int rtGroup = -1;
-    float3 rtGroupPos = float3( 1e30, 1e30, 1e30 );
-    uint rtGroupMask = 0u;
+    int rtGroupId = -1;
     // Walk only the mask words WordOccupancy flags as non-empty (see ForwardPlusTypes.hlsl). An empty cluster —
     // the common case — is now one load instead of 32, and since the light list is sorted nearest-first the set
     // bits bunch into the low words, so even a lit cluster usually touches 1-2. The loop bound is still a
@@ -763,12 +762,11 @@ float3 AccumTiledPointLights( float3 svpos, float3 wpos, float3 N, float3 albedo
             const uint rtLightMask = (uint)Lights[lightIndex].RtShadowMask;
             [branch] if ( rtLightMask != 0u )
             {
-                const float3 pos = Lights[lightIndex].PositionWorld;
-                if ( any( pos != rtGroupPos ) || rtLightMask != rtGroupMask )
+                const int id = Lights[lightIndex].RtGroup;
+                if ( id != rtGroupId )
                 {
                     ++rtGroup;
-                    rtGroupPos = pos;
-                    rtGroupMask = rtLightMask;
+                    rtGroupId = id;
                 }
                 if ( rtPoints && rtGroup < (int)kRtMaxPointLights ) rtVisibility = RtMaskPointVisibility( rtMask, (uint)rtGroup );
                 else rangeScale = Lights[lightIndex].RtFallbackRange;   // no mask or past the cap: keep it out of the next room

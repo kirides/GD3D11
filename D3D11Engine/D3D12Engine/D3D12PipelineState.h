@@ -681,6 +681,7 @@ public:
     ComputePipeline  WaterSkyAverage;   // average on-screen sky for the water's sky fill (optional)
     ComputePipeline  WaterRT;           // Shaders/D3D12/WaterRT.hlsl (optional, ray-query devices only)
     ComputePipeline  RtShadows;         // Shaders/D3D12/RtShadows.hlsl (optional, ray-query devices only)
+    ComputePipeline  RtShadowFilter;    // RtShadows.hlsl:CSFilter, same root signature; blurs the "Smooth" modes
     ComputePipeline  LightCull;
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure
