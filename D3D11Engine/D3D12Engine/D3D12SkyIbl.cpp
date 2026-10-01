@@ -340,7 +340,10 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     // Colours move continuously through Gothic's day cycle, so an exact compare would rebuild every frame. The
     // epsilon is deliberately loose: this is very low-frequency lighting and a visible step would need a much
     // larger delta than these thresholds allow through.
-    const bool dirty = !m_SkyIblValid
+    // Under RenderDoc/PIX rebuild every frame, so any captured frame contains the passes.
+    static const bool s_CaptureToolAttached = GetModuleHandleA( "renderdoc.dll" ) != nullptr
+        || GetModuleHandleA( "WinPixGpuCapturer.dll" ) != nullptr;
+    const bool dirty = s_CaptureToolAttached || !m_SkyIblValid
         || p.Indoor != m_SkyLastParams.Indoor
         || !NearlyEqual3( p.Zenith, m_SkyLastParams.Zenith, 0.004f )
         || !NearlyEqual3( p.Horizon, m_SkyLastParams.Horizon, 0.004f )
