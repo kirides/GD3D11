@@ -602,6 +602,7 @@ public:
     bool CreateHdrEncode();   // extended-sRGB display buffer -> ST.2084/Rec.2020 swapchain (real-HDR scanout only)
     bool CreateLumAdapt();    // two-pass GPU luminance reduction + temporal adaptation (feeds Tonemap's exposure)
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
+    bool CreateWaterSkyAverage();   // single-group sky average compute (b0 8 consts, bindless)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreatePreviewSkeletal();   // same, for a skinned item visual (adds b2 bone palette)
@@ -677,6 +678,7 @@ public:
     Microsoft::WRL::ComPtr<Rhi::PipelineState> TonemapCapturePSO;   // same shaders/root sig, always kBackBufferFormat
     GraphicsPipeline HdrEncode;   // ST.2084 scanout encode; only created when real HDR output is active
     WaterPipeline    Water;
+    ComputePipeline  WaterSkyAverage;   // average on-screen sky for the water's sky fill (optional)
     ComputePipeline  LightCull;
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure

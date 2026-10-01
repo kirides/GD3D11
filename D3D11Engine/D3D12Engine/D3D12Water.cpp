@@ -80,13 +80,27 @@ namespace {
 
         UINT LowCloudIndex;           // premultiplied low cloud layer; 0xFFFFFFFF => none
         float SkyReflection;          // 1 => march the reflected sky in screen space
-        UINT Pad2[2];
+        UINT SkyAverageIndex;         // 4x1 average on-screen sky; 0xFFFFFFFF => none
+        float OceanTexture;           // 0 = pure water body, 1 = legacy-strength texture blend
     };
     static_assert( sizeof( WaterCBData ) == 256, "WaterCBData must match Water.hlsl's b2 layout" );
 
-    // Resting state of both water copies. PIXEL_SHADER_RESOURCE (not the combined NON_PIXEL|PIXEL the fog
-    // pass uses) because only the water PS ever reads them.
-    constexpr D3D12_RESOURCE_STATES kWaterCopyReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    // Resting state of the water copies: the water PS and the sky-average compute pass both read them.
+    constexpr D3D12_RESOURCE_STATES kWaterCopyReadState =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    // b0 of Shaders/D3D12/WaterSkyAverage.hlsl
+    struct WaterSkyAverageConsts {
+        UINT Size[2];
+        float Blend;
+        UINT Reset;
+        UINT SceneIndex;
+        UINT DepthIndex;
+        UINT HistoryIndex;
+        UINT Pad;
+    };
+    static_assert( sizeof( WaterSkyAverageConsts ) == 8 * sizeof( UINT ), "WaterSkyAverage root constants must be 8 DWORDs" );
+    constexpr float kWaterSkyAverageSeconds = 1.0f;   // history time constant
 
     // D3D11's SSR_QUALITY permutation table (PS_Water.hlsl lines 72-81), as runtime loop bounds. Shared
     // with opaque-surface SSR (D3D12AO.cpp) via D3D12EngineCommon.h's SsrStepsForQuality.
@@ -131,6 +145,81 @@ bool D3D12GraphicsEngine::CreateWaterConstantBuffers() {
         m_WaterCBMapped[i] = static_cast<uint8_t*>( mapped );
         m_WaterCBGpu[i] = m_WaterCB[i]->GetGPUVirtualAddress();
     }
+    return true;
+}
+
+
+bool D3D12GraphicsEngine::CreateWaterSkyAverage() {
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = 4;
+    dd.Height = 1;
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = DXGI_FORMAT_R32_FLOAT;   // typed UAV loads of R32 need no optional format support
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &dd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+        m_WaterSkyAverage.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+        return false;
+    }
+    m_WaterSkyAverage->SetName( L"WaterSkyAverage" );
+    m_WaterSkyAverageState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    m_WaterSkyAverageHistoryValid = false;
+
+    if ( m_WaterSkyAverageSrvSlot == UINT_MAX ) m_WaterSkyAverageSrvSlot = AllocateSrvSlot();
+    if ( m_WaterSkyAverageUavSlot == UINT_MAX ) m_WaterSkyAverageUavSlot = AllocateSrvSlot();
+    if ( m_WaterSkyAverageSrvSlot == UINT_MAX || m_WaterSkyAverageUavSlot == UINT_MAX ) {
+        m_WaterSkyAverage.Reset();
+        return false;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = DXGI_FORMAT_R32_FLOAT;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    m_Rhi->CreateShaderResourceView( m_WaterSkyAverage.Get(), &srv, GetSrvCpuHandle( m_WaterSkyAverageSrvSlot ) );
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+    uav.Format = DXGI_FORMAT_R32_FLOAT;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    m_Rhi->CreateUnorderedAccessView( m_WaterSkyAverage.Get(), nullptr, &uav, GetSrvCpuHandle( m_WaterSkyAverageUavSlot ) );
+    return true;
+}
+
+
+/** Folds this frame's on-screen sky into the water's sky-fill history; false when Water.hlsl should not read it. */
+bool D3D12GraphicsEngine::UpdateWaterSkyAverage( UINT sceneSrvSlot, UINT depthSrvSlot ) {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( !m_WaterSkyAverage || !m_Pipelines.WaterSkyAverage.PSO
+        || settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED
+        || settings.WaterReflectionMode != GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY ) {
+        return false;
+    }
+
+    DX_ZONE( m_CmdList.Get(), "Water Sky Average" );
+    if ( m_WaterSkyAverageState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS ) {
+        m_CmdList->TransitionBarriers( { { m_WaterSkyAverage.Get(), m_WaterSkyAverageState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS } } );
+    }
+
+    WaterSkyAverageConsts c = {};
+    c.Size[0] = static_cast<UINT>( m_Resolution.x );
+    c.Size[1] = static_cast<UINT>( m_Resolution.y );
+    c.Blend = 1.0f - std::exp( -Engine::GAPI->GetDeltaTime() / kWaterSkyAverageSeconds );
+    c.Reset = m_WaterSkyAverageHistoryValid ? 0u : 1u;
+    c.SceneIndex = sceneSrvSlot;
+    c.DepthIndex = depthSrvSlot;
+    c.HistoryIndex = m_WaterSkyAverageUavSlot;
+    m_CmdList->SetPipelineState( m_Pipelines.WaterSkyAverage.PSO.Get() );
+    m_CmdList->SetComputeRootSignature( m_Pipelines.WaterSkyAverage.RootSig.Get() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 8, &c, 0 );
+    m_CmdList->Dispatch( 1, 1, 1 );
+
+    m_CmdList->TransitionBarriers( { { m_WaterSkyAverage.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE } } );
+    m_WaterSkyAverageState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    m_WaterSkyAverageHistoryValid = true;
     return true;
 }
 
@@ -294,6 +383,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     UINT waterSceneSrvSlot = UINT_MAX;
     UINT waterDepthSrvSlot = UINT_MAX;
     bool copiesReady = false;
+    bool skyAverageReady = false;
     if ( m_WaterCBMapped[m_FrameIndex] ) {
         D3D12RenderGraph waterGraph( &m_AliasArena );
         RGResourceHandle sceneHandle = RG_INVALID_HANDLE;
@@ -360,6 +450,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
         // Re-bind what the geometry passes had: HDR scene RTV + the main DSV.
         m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &mainDsv );
+        if ( copiesReady ) skyAverageReady = UpdateWaterSkyAverage( waterSceneSrvSlot, waterDepthSrvSlot );
     }
 
     // --- Water constant buffer (b2) + the atmosphere block (b1) -----------------------------------------
@@ -402,7 +493,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.OceanClimate = ocean.Climate;
         cb.OceanTintStrength = ocean.TintStrength;
         cb.OceanTint = ocean.Tint;
+        cb.OceanTexture = ocean.TextureStrength;
         cb.SkyReflection = WaterSkyReflectionEnabled();
+        cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
 
         // GSky::RenderSky() refreshes the AC_* constants every frame (DrawSky runs before this), even though
         // D3D12 renders Gothic's fixed-function sky — same reasoning as RenderFogAndGodRays. Without them the

@@ -972,6 +972,7 @@ struct GothicRendererSettings {
         OceanCustomColor = float3( 0.85f, 0.975f, 1.0f );
         OceanCustomColorStrength = 0.18f;
         OceanCustomClarity = 0.0f;
+        OceanCustomTexture = 1.0f;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
@@ -1407,6 +1408,7 @@ struct GothicRendererSettings {
     float3 OceanCustomColor;          // hue only; the shader keeps the water's brightness
     float OceanCustomColorStrength;
     float OceanCustomClarity;         // 0 = dense coastal water, 1 = clear tropical water
+    float OceanCustomTexture;         // water texture over the body; 1 = classic GD3D11 amount
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

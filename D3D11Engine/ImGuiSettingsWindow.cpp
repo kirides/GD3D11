@@ -588,9 +588,9 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     }
 
     constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {
-        { "Natural", GothicRendererSettings::OCEAN_COLOR_NATURAL, "Dark coastal sea water in every world." },
+        { "Natural", GothicRendererSettings::OCEAN_COLOR_NATURAL, "Coastal sea water with the classic water texture, in every world." },
         { "Per World", GothicRendererSettings::OCEAN_COLOR_PER_WORLD, "Clear turquoise sea in Jharkendar, natural elsewhere." },
-        { "Tropical", GothicRendererSettings::OCEAN_COLOR_TROPICAL, "Clear turquoise sea in every world." },
+        { "Tropical", GothicRendererSettings::OCEAN_COLOR_TROPICAL, "Clear turquoise sea without the water texture, in every world." },
         { "Custom", GothicRendererSettings::OCEAN_COLOR_CUSTOM, "Pick the tint and clarity yourself." },
     };
     ComboRow( "Ocean Color", "##OceanColor", oceanColors, &settings.OceanColor,
@@ -601,6 +601,8 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         SliderFloatRow( "Ocean Tint Strength", "##OceanCustomColorStrength", &settings.OceanCustomColorStrength, 0.0f, 1.0f );
         SliderFloatRow( "Ocean Clarity", "##OceanCustomClarity", &settings.OceanCustomClarity, 0.0f, 1.0f, "%.2f",
             "0 = dense coastal water, 1 = clear tropical water you can see the floor through." );
+        SliderFloatRow( "Ocean Texture", "##OceanCustomTexture", &settings.OceanCustomTexture, 0.0f, 1.0f, "%.2f",
+            "How much of the water texture shows on the sea. 1 = classic GD3D11 water." );
     }
 
 #if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)

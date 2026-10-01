@@ -5919,6 +5919,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileRGB( "Display", "OceanCustomColor", s.OceanCustomColor, ini );
     WritePrivateProfileStringA( "Display", "OceanCustomColorStrength", float_to_string( s.OceanCustomColorStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanCustomClarity", float_to_string( s.OceanCustomClarity, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "OceanCustomTexture", float_to_string( s.OceanCustomTexture, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "BacklitVegetation", to_string_locale_independent( s.BacklitVegetation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6195,6 +6196,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.OceanCustomColor = float3( std::clamp( s.OceanCustomColor.x, 0.0f, 1.0f ), std::clamp( s.OceanCustomColor.y, 0.0f, 1.0f ), std::clamp( s.OceanCustomColor.z, 0.0f, 1.0f ) );
         s.OceanCustomColorStrength = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomColorStrength", ds.OceanCustomColorStrength, ini ), 0.0f, 1.0f );
         s.OceanCustomClarity = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomClarity", ds.OceanCustomClarity, ini ), 0.0f, 1.0f );
+        s.OceanCustomTexture = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomTexture", ds.OceanCustomTexture, ini ), 0.0f, 1.0f );
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
         s.BacklitVegetation = GetPrivateProfileBoolA( "Display", "BacklitVegetation", ds.BacklitVegetation, ini );
 

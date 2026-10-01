@@ -19,6 +19,7 @@ struct OceanProfile {
     float Climate = 0.0f;
     float TintStrength = 0.18f;
     XMFLOAT3 Tint = { 0.894520f, 1.026067f, 1.052377f };
+    float TextureStrength = 1.0f;   // material texture over the water body; 1 = legacy water's amount
 };
 
 inline OceanProfile GetOceanProfile() {
@@ -36,6 +37,7 @@ inline OceanProfile GetOceanProfile() {
         profile.Climate = 1.0f;
         profile.TintStrength = 0.48f;
         profile.Tint = XMFLOAT3( 0.426781f, 1.138082f, 1.321880f );
+        profile.TextureStrength = 0.0f;
     } else if ( settings.OceanColor == S::OCEAN_COLOR_CUSTOM ) {
         // Normalize the picked color to luma 1 so it shifts hue only; cap saturated picks.
         const float3& c = settings.OceanCustomColor;
@@ -47,6 +49,7 @@ inline OceanProfile GetOceanProfile() {
         }
         profile.TintStrength = std::clamp( settings.OceanCustomColorStrength, 0.0f, 1.0f );
         profile.Climate = std::clamp( settings.OceanCustomClarity, 0.0f, 1.0f );
+        profile.TextureStrength = std::clamp( settings.OceanCustomTexture, 0.0f, 1.0f );
     }
     return profile;
 }

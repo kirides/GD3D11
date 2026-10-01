@@ -1773,6 +1773,15 @@ private:
     bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
     bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
 
+    // 4x1 R32_FLOAT average on-screen sky (rgb, valid) for water pixels whose sky march misses
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_WaterSkyAverage;
+    UINT m_WaterSkyAverageSrvSlot = UINT_MAX;
+    UINT m_WaterSkyAverageUavSlot = UINT_MAX;
+    D3D12_RESOURCE_STATES m_WaterSkyAverageState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    bool m_WaterSkyAverageHistoryValid = false;   // false until a dispatch has reset the undefined contents
+    bool CreateWaterSkyAverage();             // one-time, non-fatal
+    bool UpdateWaterSkyAverage( UINT sceneSrvSlot, UINT depthSrvSlot );
+
     // ---- Opaque-surface SSR temporal history (D3D12Ssr.cpp) ----
     // Reflecting on-screen OPAQUE geometry from inside the Forward+ lit pass has a chicken-and-egg problem:
     // the pass shading pixel P cannot see the finished color/depth of pixels the GPU hasn't rasterized yet

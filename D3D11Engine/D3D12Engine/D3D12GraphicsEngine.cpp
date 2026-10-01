@@ -281,6 +281,9 @@ bool D3D12GraphicsEngine::InitScene() {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the water constant buffers (water will not be shaded)." );
     }
     LoadReflectionCube();   // non-fatal: water then reflects only on-screen geometry via SSR
+    if ( !m_Pipelines.CreateWaterSkyAverage() || !CreateWaterSkyAverage() ) {
+        Logging::Wrn( "D3D12GraphicsEngine::Init: water sky average unavailable; missed sky reflections use the cube." );
+    }
     if ( !m_Pipelines.CreateParticle() || !CreateParticleInstanceBuffers() ) {
         Logging::Err( "D3D12GraphicsEngine::Init: failed to create the particle pipeline." );
         return false;

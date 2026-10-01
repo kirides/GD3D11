@@ -1200,6 +1200,7 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::ColorEdit3( "Ocean Tint", &settings.OceanCustomColor.x );
                 ImGui::SliderFloat( "Ocean Tint Strength", &settings.OceanCustomColorStrength, 0.0f, 1.0f );
                 ImGui::SliderFloat( "Ocean Clarity", &settings.OceanCustomClarity, 0.0f, 1.0f );
+                ImGui::SliderFloat( "Ocean Texture", &settings.OceanCustomTexture, 0.0f, 1.0f );
                 ImGui::EndDisabled();
             }
             // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)

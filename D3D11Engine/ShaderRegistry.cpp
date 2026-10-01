@@ -503,6 +503,10 @@ void ShaderRegistry::Build() {
         // Intel Graphics Optimized TAA resolve (port of the D3D12 backend's TAAResolve.hlsl to cs_5_0).
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_TAAResolve>( "CS_PFX_TAAResolve.hlsl" ));
 
+        // Average on-screen sky for water pixels whose sky march misses
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_WaterSkyAverage>( "CS_WaterSkyAverage.hlsl" )
+            .with_category( ShaderCategory::Water ) );
+
         // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));
 

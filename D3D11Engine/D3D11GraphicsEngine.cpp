@@ -5540,6 +5540,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     GetContext()->OMSetRenderTargets( 0, nullptr, nullptr );
     GetContext()->CopyResource( sceneCopy->GetTexture().Get(), HDRBackBuffer->GetTexture().Get() );
     CopyDepthStencil();
+    const bool skyAverageReady = UpdateWaterSkyAverage( sceneCopy->GetShaderResView().Get() );
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
@@ -5683,6 +5684,9 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
         // Low cloud layer for the reflected sky (unbound = no clouds)
         GetContext()->PSSetShaderResources( 7, 1, &WaterLowCloudSRV );
+        if ( skyAverageReady ) {
+            GetContext()->PSSetShaderResources( 8, 1, WaterSkyAverageSRV.GetAddressOf() );
+        }
 
         // Depth with the water surfaces in it, for the shore probes' coverage test; needs the read-only DSV.
         if ( ID3D11DepthStencilView* readOnlyDsv = DepthStencilBuffer->GetDepthStencilViewReadOnly().Get() ) {
@@ -5699,6 +5703,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         waterParams.WP_OceanTint = ocean.Tint;
         waterParams.WP_OceanTintStrength = ocean.TintStrength;
         waterParams.WP_OceanClimate = ocean.Climate;
+        waterParams.WP_OceanTexture = ocean.TextureStrength;
         waterParams.WP_SkyReflection = WaterSkyReflectionEnabled();
         auto bindWaterParams = [&]( zCTexture* texture ) {
             waterParams.WP_IsOcean = IsOceanWaterTexture( texture ) ? 1.0f : 0.0f;
@@ -5733,10 +5738,69 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    GetContext()->PSSetShaderResources( 0, 8, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 0, 9, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
+}
+
+/** Folds this frame's on-screen sky into the water's sky-fill history; false when PS_Water should not read it. */
+bool D3D11GraphicsEngine::UpdateWaterSkyAverage( ID3D11ShaderResourceView* sceneCopy ) {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( FeatureLevel10Compatibility || settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED
+        || settings.WaterReflectionMode != GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY ) {
+        return false;
+    }
+    auto& cs = GetShaderManager().GetCShader( CShaderID::CS_WaterSkyAverage );
+    if ( !cs ) return false;
+
+    if ( !WaterSkyAverageTex ) {
+        static bool failed = false;
+        if ( failed ) return false;
+
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = 4;
+        desc.Height = 1;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_R32_FLOAT;   // typed UAV loads of R32 work on every FL11 device
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        const float zeros[4] = {};
+        const D3D11_SUBRESOURCE_DATA init = { zeros, sizeof( zeros ), 0 };
+        if ( FAILED( GetDevice()->CreateTexture2D( &desc, &init, WaterSkyAverageTex.ReleaseAndGetAddressOf() ) )
+            || FAILED( GetDevice()->CreateShaderResourceView( WaterSkyAverageTex.Get(), nullptr, WaterSkyAverageSRV.ReleaseAndGetAddressOf() ) )
+            || FAILED( GetDevice()->CreateUnorderedAccessView( WaterSkyAverageTex.Get(), nullptr, WaterSkyAverageUAV.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D11: failed to create the water sky-average texture; water falls back to the reflection cube." );
+            WaterSkyAverageTex.Reset();
+            WaterSkyAverageSRV.Reset();
+            WaterSkyAverageUAV.Reset();
+            failed = true;
+            return false;
+        }
+        SetDebugName( WaterSkyAverageTex.Get(), "WaterSkyAverage" );
+    }
+
+    auto _scope = RecordGraphicsEvent( GE_NAME( "DrawWaterSurfaces::SkyAverage" ) );
+    constexpr float kHistorySeconds = 1.0f;
+    const INT2 res = GetResolution();
+    struct { UINT Size[2]; float Blend; UINT Reset; } cb = {
+        { static_cast<UINT>( res.x ), static_cast<UINT>( res.y ) },
+        1.0f - std::exp( -Engine::GAPI->GetDeltaTime() / kHistorySeconds ), 0u };
+
+    cs->Apply();
+    cs->UpdateBuffer( "WaterSkyAverageCB", &cb, sizeof( cb ) );
+    ID3D11ShaderResourceView* srvs[2] = { sceneCopy, DepthStencilBufferCopy->GetShaderResView().Get() };
+    GetContext()->CSSetShaderResources( 0, 2, srvs );
+    GetContext()->CSSetUnorderedAccessViews( 0, 1, WaterSkyAverageUAV.GetAddressOf(), nullptr );
+    GetContext()->Dispatch( 1, 1, 1 );
+
+    ID3D11UnorderedAccessView* nullUAV = nullptr;
+    GetContext()->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+    GetContext()->CSSetShaderResources( 0, 2, s_nullSRVs );
+    GetContext()->CSSetShader( nullptr, nullptr, 0 );
+    return true;
 }
 
 namespace {
