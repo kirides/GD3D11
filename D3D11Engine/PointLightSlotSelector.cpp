@@ -13,11 +13,12 @@
 #include "BspPortalCuller.h"
 
 struct PointLightSlotSelector::Lookup {
-    std::unordered_map<uint64_t, int32_t> EncodedByKey;
+    // Flat maps: clear() keeps capacity, so the per-frame rebuilds below never allocate.
+    gtl::flat_hash_map<uint64_t, int32_t> EncodedByKey;
     // key -> occupied slot, rebuilt from the tables each Select and then maintained by hand wherever a slot
     // changes hands. Without it the incumbency lookups are a per-frame O(slots*lights) scan.
-    std::unordered_map<uint64_t, uint32_t> StaticByKey;
-    std::unordered_map<uint64_t, uint32_t> DynByKey;
+    gtl::flat_hash_map<uint64_t, uint32_t> StaticByKey;
+    gtl::flat_hash_map<uint64_t, uint32_t> DynByKey;
     gtl::flat_hash_set<uint64_t> FrameKeys;
 
     // The stabilized cube range, keyed by vob and swept rarely. It used to live in each backend separately
@@ -275,6 +276,12 @@ void PointLightSlotSelector::InvalidateStaticForVobAdded( const XMFLOAT3& posWS,
 }
 
 
+void PointLightSlotSelector::FinalizeBakedVobs( std::vector<const zCVob*>& baked ) {
+    std::ranges::sort( baked );
+    baked.erase( std::ranges::unique( baked ).begin(), baked.end() );
+}
+
+
 void PointLightSlotSelector::InvalidateStaticForVobRemoved( const zCVob* vob ) {
     // Symmetric to the add case, but matched by POINTER against what each bake actually gathered: the vob is
     // being torn down, so its bbox and position can no longer be read. Never baked => nothing to invalidate,
@@ -286,7 +293,7 @@ void PointLightSlotSelector::InvalidateStaticForVobRemoved( const zCVob* vob ) {
     m_Lookup->Stationary.erase( vob );
     for ( StaticSlot& ss : m_Static ) {
         if ( !ss.ownerKey || !ss.valid || ss.bakedVobs.empty() ) continue;
-        if ( std::ranges::contains( ss.bakedVobs, vob ) ) {
+        if ( std::ranges::binary_search( ss.bakedVobs, vob ) ) {
             ss.valid = false;
             ss.lastCause = PLR_VOB_REMOVED;
             Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( PLR_VOB_REMOVED );
@@ -492,6 +499,9 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
     m_Forced.clear();
     const float midDistSq = m_Cfg.MidDist * m_Cfg.MidDist;
     const float overlayDropSq = midDistSq * kOverlayReleaseSlack * kOverlayReleaseSlack;
+    // Once a non-forced pick fails, every later one fails too: candidates only get farther and no slot frees
+    // up or moves away inside this loop. Skips the two O(slots) scans for each remaining newcomer.
+    bool staticPoolExhausted = false;
 
     for ( const Cand& c : m_Cands ) {
         const Candidate& src = cands[c.srcIdx];
@@ -500,8 +510,13 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
         int sslot = FindStaticSlotOf( c.key );
         if ( sslot < 0 ) {
             if ( !c.active ) continue;   // in the hysteresis band, or disabled: keeps nothing, asks for nothing
+            if ( staticPoolExhausted && !c.forced ) { ++m_StarvedThisFrame; continue; }
             sslot = PickStaticSlot( c.distSq, camPos, c.forced );
-            if ( sslot < 0 ) { ++m_StarvedThisFrame; continue; }
+            if ( sslot < 0 ) {
+                if ( !c.forced ) staticPoolExhausted = true;
+                ++m_StarvedThisFrame;
+                continue;
+            }
             StaticSlot& ns = m_Static[sslot];
             if ( ns.ownerKey ) {
                 if ( ns.valid ) Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( PLR_SLOT_TAKEN );

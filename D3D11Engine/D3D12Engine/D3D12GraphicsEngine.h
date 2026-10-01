@@ -1141,6 +1141,11 @@ private:
     bool GpuCaughtUp() const;
     // Submits the scene so far when the GPU would otherwise run dry, then restores the scene RT/viewport.
     bool FlushSceneIfGpuCaughtUp();
+    // Optional mid-frame submits only pay off while the GPU is the bottleneck; CPU-bound they just cost submit time.
+    bool MidFrameFlushesWanted() const { return m_GpuHeadroomScore < kGpuHeadroomSkipScore; }
+    void NoteGpuHeadroom();
+    static constexpr int kGpuHeadroomSkipScore = 30, kGpuHeadroomMaxScore = 60, kGpuHeadroomMissCost = 8;
+    int m_GpuHeadroomScore = 0;
     // Set before FinishShadowPasses: m_CmdList's pending work goes out in the same call as the shadow lists.
     bool m_SubmitMainWithShadows = false;
 

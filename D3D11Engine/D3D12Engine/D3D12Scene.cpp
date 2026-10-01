@@ -1062,7 +1062,7 @@ namespace {
 		float    range = 0.0f;     // grow-only: covers every member ever seen, quantized up
 		UINT     seenCount = 0;    // grow-only: most static lights ever seen at once in this cell
 	};
-	std::unordered_map<uint64_t, StaticCluster> g_StaticClusters;
+	gtl::flat_hash_map<uint64_t, StaticCluster> g_StaticClusters;
 
 	XMINT3 ClusterCellOf( const XMFLOAT3& p ) {
 		return XMINT3( static_cast<int>( std::floor( p.x / kStaticClusterCell ) ),
@@ -1097,7 +1097,7 @@ namespace {
 
 		// Pass 1 - fold this frame's candidates into the per-cell state (all grow-only). The DOME sweep, not
 		// the visible set, so a cell's extents no longer depend on where the camera looks.
-		static std::unordered_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
+		static gtl::flat_hash_map<uint64_t, UINT> s_cellCount;   // frame path: capacity reused, no realloc
 		s_cellCount.clear();
 		for ( const PointLightSlotSelector::Candidate& c : cands ) {
 			if ( !IsClusterEligible( c ) ) continue;
@@ -1327,7 +1327,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// seen for the first time starts at its target, so world load does not fade every light in.
 	constexpr float kClampEaseSeconds = 0.3f;
 	struct ClampState { float scale; UINT32 lastFrame; };
-	static std::unordered_map<uint64_t, ClampState> s_clampScale;
+	static gtl::flat_hash_map<uint64_t, ClampState> s_clampScale;
 	static UINT32 s_clampFrame = 0;
 	++s_clampFrame;
 	const float dt = std::clamp( Engine::GAPI->GetFrameTimeSec(), 0.0f, 0.1f );
@@ -1360,7 +1360,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	}
 	// Without this the map keeps every light the session has ever seen. Swept rarely; walks the whole map.
 	if ( ( s_clampFrame % 1024 ) == 0 )
-		std::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
+		gtl::erase_if( s_clampScale, [&]( const auto& e ) { return s_clampFrame - e.second.lastFrame > 600; } );
 
 	if ( count ) memcpy( m_LightBufferPtr[frame], dst, static_cast<size_t>( count ) * sizeof( GPULight ) );
 }
@@ -2631,8 +2631,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// otherwise it goes out now so the GPU runs it during the join.
 	if ( m_FrameOpen ) {
 		const bool ownLists = m_ShadowRecordingPending || ( m_ShadowMap.IsPassReady() && m_ShadowMap.RecordedInJob() );
-		m_SubmitMainWithShadows = ownLists
-			&& ( ( m_ShadowMap.CascadeJobsDone() && ShadowRecordJobsDone() ) || !GpuCaughtUp() );
+		m_SubmitMainWithShadows = ownLists && ( !MidFrameFlushesWanted()
+			|| ( m_ShadowMap.CascadeJobsDone() && ShadowRecordJobsDone() ) || !GpuCaughtUp() );
 		if ( !m_SubmitMainWithShadows ) FlushSceneIfGpuCaughtUp();
 	}
 
@@ -2840,7 +2840,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	postFxGraph.Execute( m_CmdList );
 
 	// The 3D frame is final; Gothic's UI and game code run before Present, so let the GPU start on it now.
-	if ( m_FrameOpen && GpuCaughtUp() ) {
+	if ( m_FrameOpen && MidFrameFlushesWanted() && GpuCaughtUp() ) {
 		SubmitRecordedCommandsAndReopen();
 		const D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetDisplayRtv();
 		m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );

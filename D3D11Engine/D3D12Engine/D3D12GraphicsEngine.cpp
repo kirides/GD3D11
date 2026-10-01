@@ -2399,6 +2399,7 @@ XRESULT D3D12GraphicsEngine::Present() {
     }
     // Signalled with the execute (one submit on Vulkan) rather than after Present, which queues no GPU work of ours.
     Rhi::CommandList* lists[] = { m_CmdList.Get() };
+    NoteGpuHeadroom();   // before the signal below, so it still asks about the PREVIOUS frame
     m_Rhi->GetDirectQueue()->ExecuteCommandListsAndSignal( 1, lists, m_Fence.Get(), frameFenceValue );
     m_LastDirectSignal.store( frameFenceValue );
 
@@ -2671,9 +2672,17 @@ bool D3D12GraphicsEngine::GpuCaughtUp() const {
 }
 
 
+void D3D12GraphicsEngine::NoteGpuHeadroom() {
+    // Sampled before the frame's final submit: if the previous frame has already drained, the GPU waits on the CPU.
+    // Leaky so an occasional GPU spike doesn't flip it, while a GPU-bound stretch re-enables flushes within frames.
+    m_GpuHeadroomScore = GpuCaughtUp() ? std::min( m_GpuHeadroomScore + 1, kGpuHeadroomMaxScore )
+        : std::max( m_GpuHeadroomScore - kGpuHeadroomMissCost, 0 );
+}
+
+
 bool D3D12GraphicsEngine::FlushSceneIfGpuCaughtUp() {
     // A submit boundary drains the GPU, so only split the frame once it has run out of earlier frames to chew on.
-    if ( !m_FrameOpen || !GpuCaughtUp() ) return false;
+    if ( !m_FrameOpen || !MidFrameFlushesWanted() || !GpuCaughtUp() ) return false;
     SubmitRecordedCommandsAndReopen();
     BindSceneColorTarget();
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };

@@ -419,10 +419,9 @@ void D3D12PointShadows::Prepare() {
 
 	auto& worldSections = Engine::GAPI->GetWorldSections();
 
-	// Precompute each winner's 6 face view-projs into its per-frame CB slot (transpose(view*proj) — same
-	// column-major convention the world/CSM shaders read back). Both the static and dynamic passes bind this.
-	for ( const FrameLight& ps : m_Sel.GetAssignments() ) {
-		if ( ps.staticSlot >= kMaxStaticCubes ) continue;
+	// A slot's 6 face view-projs into its per-frame CB slot (transpose(view*proj) — same column-major convention
+	// the world/CSM shaders read back). Only the lights drawn this frame bind it, so only they write it.
+	auto writeFaceCb = [&]( const FrameLight& ps ) {
 		const XMVECTOR eye = XMLoadFloat3( &ps.posWS );
 		const XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, 15.0f, ps.range * 2.0f );
 		XMFLOAT4X4* faceVP = reinterpret_cast<XMFLOAT4X4*>(m_FaceCBMapped[frame] + static_cast<size_t>(ps.staticSlot) * 512);
@@ -430,8 +429,8 @@ void D3D12PointShadows::Prepare() {
 			XMMATRIX vw = XMMatrixLookAtLH( eye, XMVectorAdd( eye, kFaceDir[f] ), kFaceUp[f] );
 			XMStoreFloat4x4( &faceVP[f], XMMatrixTranspose( XMMatrixMultiply( vw, proj ) ) );
 		}
-	}
-	auto faceCb = [&]( UINT slot ) { return m_FaceCBGpu[frame] + static_cast<UINT64>( slot ) * 512; };
+		return m_FaceCBGpu[frame] + static_cast<UINT64>( ps.staticSlot ) * 512;
+		};
 
 	// Reset the tight VOB-instance ring — shared by the static-VOB gather (Phase A) and the dynamic overlay's
 	// mesh-vob gather (Phase C).
@@ -454,7 +453,115 @@ void D3D12PointShadows::Prepare() {
 	// avoid. Loop-invariant, so it is decided once here rather than per light.
 	const bool staticResolvable = haveWorld && !worldSections.empty();
 
-	for ( const FrameLight& ps : m_Sel.GetAssignments() ) {
+	const std::span<FrameLight> lights = m_Sel.GetAssignments();
+
+	// ---- Static-VOB gather, VISUAL-major: each instance array is read once, in cache, for every baking light
+	// rather than streamed per light. Phase A appends each light's scratch; capacities are reused.
+	struct VobBakeScratch {
+		std::vector<PointShadowDraw> draws;
+		std::vector<const zCVob*>    baked;
+	};
+	static std::vector<VobBakeScratch> s_vobBake;
+	static std::vector<int>            s_vobBakeOf;    // assignment index -> s_vobBake index, -1 = none
+	static std::vector<uint32_t>       s_vobBakeLights; // s_vobBake index -> assignment index
+	static std::vector<std::pair<D3D12_GPU_DESCRIPTOR_HANDLE, bool>> s_visualMats;   // srv, alphaTested
+	s_vobBakeOf.assign( lights.size(), -1 );
+	s_vobBakeLights.clear();
+	if ( haveVobs && staticResolvable ) {
+		for ( uint32_t i = 0; i < static_cast<uint32_t>( lights.size() ); ++i ) {
+			const FrameLight& ps = lights[i];
+			if ( ps.staticSlot >= kMaxStaticCubes || !ps.renderStatic || ps.restrictToWorld ) continue;
+			s_vobBakeOf[i] = static_cast<int>( s_vobBakeLights.size() );
+			s_vobBakeLights.push_back( i );
+		}
+		if ( s_vobBake.size() < s_vobBakeLights.size() ) s_vobBake.resize( s_vobBakeLights.size() );
+		for ( size_t k = 0; k < s_vobBakeLights.size(); ++k ) { s_vobBake[k].draws.clear(); s_vobBake[k].baked.clear(); }
+	}
+	if ( !s_vobBakeLights.empty() ) {
+		bool overflow = false;
+		for ( const FrameVobUpload& up : g_FrameVobUploads ) {
+			MeshVisualInfo* visual = up.visual;
+			if ( !visual || visual->Instances.empty() ) continue;
+			// Still being filled in on a worker thread (GothicAPI::OnAddVob's async
+			// Extract3DSMeshFromVisual2Async) - skip until MeshesByTexture is safe to iterate.
+			if ( !visual->GetIsReady() ) continue;
+			const size_t numInst = visual->Instances.size();
+			// InstanceVobs is filled in lockstep with Instances, but only trust the pairing while the
+			// two are actually the same length.
+			const bool haveInstanceVobs = visual->InstanceVobs.size() == numInst;
+			bool matsResolved = false;
+
+			for ( size_t k = 0; k < s_vobBakeLights.size() && !overflow; ++k ) {
+				const FrameLight& ps = lights[s_vobBakeLights[k]];
+				VobBakeScratch& out = s_vobBake[k];
+				const float cullR = ps.range + visual->MeshSize * 0.5f;   // sphere test allows for VOB extent
+				const float cullRSq = cullR * cullR;
+
+				const UINT gatherStart = m_VobInstOffset;
+				UINT count = 0;
+				for ( size_t ii = 0; ii < numInst; ++ii ) {
+					const VobInstanceInfo& inst = visual->Instances[ii];
+					float dx = inst.world._14 - ps.posWS.x, dy = inst.world._24 - ps.posWS.y, dz = inst.world._34 - ps.posWS.z;
+					if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
+					// After the range test: the parent walk dereferences Gothic's scattered vobs.
+					const zCVob* srcVob = haveInstanceVobs ? visual->InstanceVobs[ii] : nullptr;
+					// Animated - the dynamic overlay (Phase C) draws those.
+					if ( srcVob && IsNpcAttached( srcVob ) ) continue;
+					if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
+						if ( !m_VobInstOverflowLogged ) {
+							Logging::Wrn( "D3D12: point-shadow VOB instance ring overflow ({} bytes/frame); some cube casters dropped.",
+								m_VobInstCapacity );
+							m_VobInstOverflowLogged = true;
+						}
+						overflow = true;
+						break;
+					}
+					memcpy( viBase + m_VobInstOffset, &inst.world, sizeof( XMFLOAT4X4 ) );
+					m_VobInstOffset += sizeof( XMFLOAT4X4 );
+					if ( srcVob ) out.baked.push_back( srcVob );
+					++count;
+				}
+				if ( count == 0 ) continue;
+
+				// Once per visual, and only for one some light actually reaches.
+				if ( !matsResolved ) {
+					s_visualMats.clear();
+					for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+						zCTexture* const matTex = meshKey.Material->GetAniTexture();
+						s_visualMats.emplace_back( resolveDiffuse( matTex ),
+							( matTex && matTex->HasAlphaChannel() ) || meshKey.Material->HasAlphaTest() );
+					}
+					matsResolved = true;
+				}
+
+				const D3D12_VERTEX_BUFFER_VIEW instView = { viGpu + gatherStart, count * static_cast<UINT>(sizeof( XMFLOAT4X4 )), static_cast<UINT>(sizeof( XMFLOAT4X4 )) };
+				size_t matIdx = 0;
+				for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+					const auto [srv, matAlphaTested] = s_visualMats[matIdx++];
+					for ( MeshInfo* mi : meshList ) {
+						if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
+						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+						D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+						PointShadowDraw d;
+						d.vb = mvb; d.ib = mib;
+						d.stride = sizeof( ExVertexStruct );
+						d.indexCount = static_cast<UINT>( mi->Indices.size() );
+						d.instanceCount = count * 6;
+						d.srv = srv;
+						d.instView = instView;
+						d.alphaTested = matAlphaTested;
+						out.draws.push_back( d );
+					}
+				}
+			}
+			if ( overflow ) break;
+		}
+	}
+
+	for ( uint32_t li = 0; li < static_cast<uint32_t>( lights.size() ); ++li ) {
+		const FrameLight& ps = lights[li];
 		if ( ps.staticSlot >= kMaxStaticCubes ) continue;
 		// Only the slots being (re)drawn THIS frame (static change and/or scheduled dynamic overlay, see the
 		// round-robin scheduling in SelectShadowedLights). A far light skipped this frame keeps EXACTLY what its
@@ -465,7 +572,7 @@ void D3D12PointShadows::Prepare() {
 		PointShadowLightRecord rec;
 		rec.staticSlot = ps.staticSlot;
 		rec.dynSlot = ps.dynSlot;
-		rec.faceCb = faceCb( ps.staticSlot );
+		rec.faceCb = writeFaceCb( ps );
 		rec.renderStatic = ps.renderStatic && staticResolvable;
 		// Is this slot's overlay being decided this frame? If so its dynamicValid is republished below from
 		// whether the resolve below actually found casters — including the "found none, drop the bit" case, which
@@ -473,6 +580,8 @@ void D3D12PointShadows::Prepare() {
 		rec.dynScheduled = ps.dynSlot >= 0 && ps.renderDynamic;
 
 		const float rangeSq = ps.range * ps.range;
+		// SkelScratch/AttachScratch already hold THIS light's sphere cull, so Phase C needn't redo it.
+		bool skelScratchReady = false;
 
 		// ==================== Phase A resolve — STATIC casters (world mesh + instanced VOBs) ====================
 		rec.staticWorldBegin = rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
@@ -523,75 +632,12 @@ void D3D12PointShadows::Prepare() {
 			}
 			rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 
-			// --- Instanced VOBs (static decoration AND loose items): range-cull instances, pack 64B world
-			// matrices into the tight ring, draw count*6. Loose items are baked too - excluding them by
-			// ZENGIN's StaticVob flag meant a torch-lit room cast no shadow from anything on its floor. Only
-			// what MOVES with an animation stays out; the dynamic overlay (Phase C) draws that. ---
-			// restrictToWorld: mirrors D3D11's world-mesh-only PFX gate — skip instanced-VOB casters too.
-			if ( haveVobs && !ps.restrictToWorld ) {
-				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
-					MeshVisualInfo* visual = up.visual;
-					if ( !visual || visual->Instances.empty() ) continue;
-					// Still being filled in on a worker thread (GothicAPI::OnAddVob's async
-					// Extract3DSMeshFromVisual2Async) - skip until MeshesByTexture is safe to iterate.
-					if ( !visual->GetIsReady() ) continue;
-					const float cullR = ps.range + visual->MeshSize * 0.5f;   // sphere test allows for VOB extent
-					const float cullRSq = cullR * cullR;
-
-					const UINT gatherStart = m_VobInstOffset;
-					UINT count = 0;
-					bool overflow = false;
-					const size_t numInst = visual->Instances.size();
-					// InstanceVobs is filled in lockstep with Instances, but only trust the pairing while the
-					// two are actually the same length.
-					const bool haveInstanceVobs = visual->InstanceVobs.size() == numInst;
-					for ( size_t ii = 0; ii < numInst; ++ii ) {
-						const VobInstanceInfo& inst = visual->Instances[ii];
-						const zCVob* srcVob = haveInstanceVobs ? visual->InstanceVobs[ii] : nullptr;
-						if ( srcVob && IsNpcAttached( srcVob ) ) continue;   // animated — see above
-						float dx = inst.world._14 - ps.posWS.x, dy = inst.world._24 - ps.posWS.y, dz = inst.world._34 - ps.posWS.z;
-						if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
-						if ( m_VobInstOffset + sizeof( XMFLOAT4X4 ) > m_VobInstCapacity ) {
-							if ( !m_VobInstOverflowLogged ) {
-								Logging::Wrn( "D3D12: point-shadow VOB instance ring overflow ({} bytes/frame); some cube casters dropped.",
-									m_VobInstCapacity );
-								m_VobInstOverflowLogged = true;
-							}
-							overflow = true;
-							break;
-						}
-						memcpy( viBase + m_VobInstOffset, &inst.world, sizeof( XMFLOAT4X4 ) );
-						m_VobInstOffset += sizeof( XMFLOAT4X4 );
-						if ( srcVob ) bakedVobs.push_back( srcVob );
-						++count;
-					}
-					if ( count == 0 ) { if ( overflow ) break; continue; }
-
-					const D3D12_VERTEX_BUFFER_VIEW instView = { viGpu + gatherStart, count * static_cast<UINT>(sizeof( XMFLOAT4X4 )), static_cast<UINT>(sizeof( XMFLOAT4X4 )) };
-					for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-						zCTexture* const matTex = meshKey.Material->GetAniTexture();
-						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( matTex );
-						const bool matAlphaTested = ( matTex && matTex->HasAlphaChannel() )
-							|| meshKey.Material->HasAlphaTest();
-						for ( MeshInfo* mi : meshList ) {
-							if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
-							D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-							D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
-							if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-							PointShadowDraw d;
-							d.vb = mvb; d.ib = mib;
-							d.stride = sizeof( ExVertexStruct );
-							d.indexCount = static_cast<UINT>( mi->Indices.size() );
-							d.instanceCount = count * 6;
-							d.srv = srv;
-							d.instView = instView;
-							d.alphaTested = matAlphaTested;
-							g_PsStaticVobDraws.push_back( d );
-						}
-					}
-					if ( overflow ) break;
-				}
+			// --- Instanced VOBs (static decoration AND loose items, never animated ones): this light's share of
+			// the visual-major gather above. ---
+			if ( const int k = s_vobBakeOf[li]; k >= 0 ) {
+				const VobBakeScratch& bake = s_vobBake[k];
+				g_PsStaticVobDraws.insert( g_PsStaticVobDraws.end(), bake.draws.begin(), bake.draws.end() );
+				bakedVobs.insert( bakedVobs.end(), bake.baked.begin(), bake.baked.end() );
 			}
 			rec.staticVobEnd = static_cast<UINT>( g_PsStaticVobDraws.size() );
 
@@ -602,6 +648,7 @@ void D3D12PointShadows::Prepare() {
 				SkelScratch.clear();
 				AttachScratch.clear();
 				m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
+				skelScratchReady = true;
 
 				for ( const FrameSkelDraw& sd : SkelScratch ) {
 					if ( !sd.visual || !sd.vobInfo || !sd.vobInfo->Vob ) continue;
@@ -671,6 +718,7 @@ void D3D12PointShadows::Prepare() {
 			}
 			rec.staticSkelEnd = static_cast<UINT>( g_PsStaticSkelDraws.size() );
 			rec.staticAttachEnd = static_cast<UINT>( g_PsStaticAttachDraws.size() );
+			PointLightSlotSelector::FinalizeBakedVobs( bakedVobs );
 		}
 
 		// ==================== Phase C resolve — DYNAMIC casters (skeletal NPCs + their attachments) ============
@@ -692,9 +740,11 @@ void D3D12PointShadows::Prepare() {
 			// costs nothing extra here beyond the sphere test + record append. Same O(lights * vobs) CPU cost
 			// D3D11's own per-light DrawWorldAround pays for its animated-shadow pass — cheap distance checks,
 			// not GPU work (the static-aside split already amortizes the expensive part).
-			SkelScratch.clear();
-			AttachScratch.clear();
-			m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
+			if ( !skelScratchReady ) {
+				SkelScratch.clear();
+				AttachScratch.clear();
+				m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
+			}
 
 			for ( const FrameSkelDraw& sd : SkelScratch ) {
 				if ( !sd.visual || !sd.vobInfo || !sd.vobInfo->Vob ) continue;
