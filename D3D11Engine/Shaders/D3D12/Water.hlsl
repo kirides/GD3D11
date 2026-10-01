@@ -62,6 +62,10 @@ cbuffer WaterCB : register(b2)
     float  SkyReflection;        // 1 = march the reflected sky in screen space
     uint   SkyAverageIndex;      // 4x1 average on-screen sky, linear (0xFFFFFFFF = none)
     float  OceanTexture;         // 0 = pure water body, 1 = legacy-strength texture blend
+
+    uint   RtColorIndex;         // WaterRT.hlsl result, premultiplied (0xFFFFFFFF = screen-space reflections)
+    uint   RtDistanceIndex;      // its hit distance, premultiplied
+    float2 RtPad;
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -309,7 +313,7 @@ float3 WaterScatterGround( float3 worldPos, float3 color )
     return UseAtmosphere != 0 ? ApplyAtmosphericScatteringGround( worldPos, color ) : color;
 }
 
-bool WaterSSREnabled() { return SsrMaxSteps > 0; }
+bool WaterSSREnabled() { return SsrMaxSteps > 0 || RtColorIndex != 0xFFFFFFFFu; }
 
 float4 WaterLowClouds( float2 uv )   // stored in gamma space like the shading here
 {
@@ -326,8 +330,21 @@ float4 WaterSkyAverage()
     return float4( WaterToGamma( c ), avg.Load( int3( 3, 0, 0 ) ) );
 }
 
+static float2 g_WaterScreenUV;   // set first thing in PSMain
+
 float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out float hitDistance )
 {
+    [branch] if ( RtColorIndex != 0xFFFFFFFFu )
+    {
+        // Premultiplied by coverage, so the bilinear upsample does not bleed misses into hits
+        Texture2D rtColor = ResourceDescriptorHeap[RtColorIndex];
+        Texture2D<float> rtDistance = ResourceDescriptorHeap[RtDistanceIndex];
+        float4 c = rtColor.SampleLevel( smpClamp, g_WaterScreenUV, 0 );
+        float inv = c.a > 1e-4 ? 1.0f / c.a : 0.0f;
+        confidence = saturate( c.a );
+        hitDistance = rtDistance.SampleLevel( smpClamp, g_WaterScreenUV, 0 ) * inv;
+        return WaterToGamma( c.rgb * inv );
+    }
     return WaterToGamma( TraceWaterSSR( worldPos, dir, confidence, hitDistance ) );
 }
 
@@ -338,8 +355,9 @@ float3 WaterTraceSSR( float3 worldPos, float3 dir, out float confidence, out flo
 //--------------------------------------------------------------------------------------
 float4 PSMain( VS_OUT Input ) : SV_TARGET
 {
+    g_WaterScreenUV = Input.clip.xy / RI_ViewportSize;
     WaterPixel px;
-    px.screenUV = Input.clip.xy / RI_ViewportSize;
+    px.screenUV = g_WaterScreenUV;
     px.texcoord = Input.uv;
     px.surfaceViewZ = Input.vz.x;
     px.surfaceViewDistance = Input.vz.y;

@@ -493,8 +493,27 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Medium", GothicRendererSettings::WATER_SSR_MEDIUM },
         { "High", GothicRendererSettings::WATER_SSR_HIGH },
     };
-    ComboRow( "Water Reflections", "##WaterSSR", waterSsr, &settings.WaterSSRQuality, nullptr,
+    // Ray tracing replaces the screen-space geometry march; the stored SSR choice survives untouched.
+    const bool rayTracingAvailable = IsD3D12() && Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery;
+    const bool rayTracingActive = rayTracingAvailable && settings.WaterRayTracing != GothicRendererSettings::WATER_RT_OFF;
+    if ( rayTracingAvailable ) {
+        constexpr ListItem<GothicRendererSettings::E_WaterRayTracing> waterRt[] = {
+            { "Off", GothicRendererSettings::WATER_RT_OFF, "Screen-space reflections only." },
+            { "Low", GothicRendererSettings::WATER_RT_LOW, "Half resolution. Reflected objects are dark, untextured silhouettes." },
+            { "Medium", GothicRendererSettings::WATER_RT_MEDIUM, "Half resolution, textured and lit; foliage is alpha-tested." },
+            { "High", GothicRendererSettings::WATER_RT_HIGH, "Half resolution with one ray per screen pixel, so thin detail survives." },
+            { "Ultra", GothicRendererSettings::WATER_RT_ULTRA, "Full resolution, four rays per pixel. Expensive." },
+        };
+        ComboRow( "Ray-Traced Water Reflections", "##WaterRayTracing", waterRt, &settings.WaterRayTracing,
+            "Traces reflection rays against the world, objects and characters, so off-screen and occluded\n"
+            "geometry reflects too. Replaces the screen-space Water Reflections. D3D12 only." );
+    }
+
+    ImGui::BeginDisabled( rayTracingActive );
+    ComboRow( "Water Reflections", "##WaterSSR", waterSsr, &settings.WaterSSRQuality,
+        rayTracingActive ? "Replaced by Ray-Traced Water Reflections." : nullptr,
         [&shadersToReload] { shadersToReload |= ShaderCategory::Water; } );
+    ImGui::EndDisabled();
 
     constexpr ListItem<GothicRendererSettings::E_WaterReflectionMode> waterReflectionModes[] = {
         { "Geometry", GothicRendererSettings::WATER_REFLECTION_GEOMETRY,
@@ -502,7 +521,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "Geometry + Sky", GothicRendererSettings::WATER_REFLECTION_GEOMETRY_SKY,
             "Also reflects the on-screen sky and clouds. Makes open water noticeably bluer by day." },
     };
-    ImGui::BeginDisabled( settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED );
+    ImGui::BeginDisabled( settings.WaterSSRQuality == GothicRendererSettings::WATER_SSR_DISABLED && !rayTracingActive );
     ComboRow( "Water Reflection Sources", "##WaterReflectionMode", waterReflectionModes, &settings.WaterReflectionMode,
         "What the water mirrors in screen space. Needs Water Reflections." );
     ImGui::EndDisabled();

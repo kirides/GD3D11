@@ -2290,6 +2290,36 @@ bool D3D12PipelineState::CreateWaterSkyAverage() {
     return true;
 }
 
+bool D3D12PipelineState::CreateWaterRT() {
+    Rhi::Device* device = m_Device;
+    if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; WaterRT.PSO stays null
+
+    // Root descriptors only (b0 frame CB, b1 ShadowCB, t0 TLAS, t1-t12 records and geometry); textures and
+    // the two output UAVs are bindless. See D3D12RtReflections::Impl::Trace for the bind order.
+    D3D12RootLayout& rs = Layout( "WaterRT" );
+    rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_ALL );
+    for ( UINT t = 0; t <= 12; ++t ) rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_ALL ) );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    WaterRT.RootSig = rs.RootSig();
+
+    if ( !m_Shaders->CompileFromFile( "WaterRT.hlsl", "CSMain", Shadermodel_CS, WaterRT.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    rs.ValidateShaders( { { WaterRT.CsBlob.Get(), "WaterRT.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+
+    Rhi::ComputePipelineStateDesc pso = {};
+    pso.pRootSignature = WaterRT.RootSig.Get();
+    pso.CS = { WaterRT.CsBlob->GetBufferPointer(), WaterRT.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, WaterRT.PSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (water ray tracing)." );
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateWater() {
     Rhi::Device* device = m_Device;
 
@@ -4075,6 +4105,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runFatal( "Skinning", &D3D12PipelineState::CreateSkinning );
     runFatal( "PointShadow", &D3D12PipelineState::CreatePointShadow );
     runFatal( "Water", &D3D12PipelineState::CreateWater );
+    runOptional( "WaterRT", &D3D12PipelineState::CreateWaterRT );
     runFatal( "Particle", &D3D12PipelineState::CreateParticle );
     Particle.Pipelines.clear();
     runFatal( "Decal", &D3D12PipelineState::CreateDecal );

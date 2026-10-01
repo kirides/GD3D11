@@ -343,6 +343,15 @@ public:
         const TextureCopyLocation* src, const D3D12_BOX* srcBox ) {
         m_List->CopyTextureRegion( dst, dstX, dstY, dstZ, src, srcBox );
     }
+    void BuildRaytracingAccelerationStructure( const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& desc,
+        UINT numPostbuildInfo = 0, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* postbuildInfo = nullptr ) {
+        m_List->BuildRaytracingAccelerationStructure( desc, numPostbuildInfo, postbuildInfo );
+    }
+    void CopyRaytracingAccelerationStructure( D3D12_GPU_VIRTUAL_ADDRESS dst, D3D12_GPU_VIRTUAL_ADDRESS src,
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE mode ) {
+        m_List->CopyRaytracingAccelerationStructure( dst, src, mode );
+    }
+    void AccelerationStructureBarrier() { m_List->AccelerationStructureBarrier(); }
 
 private:
     static constexpr UINT kMaxViewports = 4;

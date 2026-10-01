@@ -27,6 +27,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
+#include "D3D12RtReflections.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
 
@@ -73,6 +74,7 @@ void D3D12GraphicsEngine::OnInventoryVisualUsed( MeshVisualInfo* visual ) { m_Vo
 void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) {
     m_VobArena->Forget( mesh );
     m_AttachArena->Forget( mesh->ArenaSlot );
+    if ( m_RtReflections ) m_RtReflections->OnMeshInfoDestroyed( mesh );
 }
 
 void D3D12GraphicsEngine::OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) { m_SkelArena->Forget( mesh->ArenaSlot ); }
@@ -119,6 +121,7 @@ XRESULT D3D12GraphicsEngine::Init() {
     m_DeviceCapabilities.BindlessResources = true;
     m_DeviceCapabilities.EnhancedBarriers = caps.EnhancedBarriers;
     m_DeviceCapabilities.TypedUAVLoadAdditionalFormats = caps.TypedUAVLoadAdditionalFormats;
+    m_DeviceCapabilities.RayQuery = caps.RayQuery;
     Engine::GAPI->GetRendererState().RendererSettings.ApplyDeviceCapabilities( m_DeviceCapabilities );
 
     if ( !CreateUploadObjects() ) {
@@ -297,6 +300,10 @@ bool D3D12GraphicsEngine::InitScene() {
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the water constant buffers (water will not be shaded)." );
     }
     LoadReflectionCube();   // non-fatal: water then reflects only on-screen geometry via SSR
+    if ( m_Rhi->GetCaps().RayQuery ) {
+        if ( m_Pipelines.CreateWaterRT() && m_Pipelines.WaterRT.PSO ) m_RtReflections = std::make_unique<D3D12RtReflections>( *this );
+        else Logging::Wrn( "D3D12GraphicsEngine::Init: ray-traced water reflections unavailable (WaterRT.hlsl); using screen-space reflections." );
+    }
     if ( !m_Pipelines.CreateWaterSkyAverage() || !CreateWaterSkyAverage() ) {
         Logging::Wrn( "D3D12GraphicsEngine::Init: water sky average unavailable; missed sky reflections use the cube." );
     }

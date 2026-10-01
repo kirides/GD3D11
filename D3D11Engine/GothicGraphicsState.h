@@ -695,6 +695,15 @@ struct GothicRendererSettings {
         WATER_SSR_HIGH     = 3,
     };
 
+    /** D3D12 inline ray-traced water reflections; replaces the SSR geometry march when not OFF. */
+    enum E_WaterRayTracing {
+        WATER_RT_OFF    = 0,
+        WATER_RT_LOW    = 1,   // half res, one ray, untextured silhouettes
+        WATER_RT_MEDIUM = 2,   // half res, one ray, textured + alpha-tested
+        WATER_RT_HIGH   = 3,   // half res, a ray per covered full-res pixel
+        WATER_RT_ULTRA  = 4,   // full res, four rays per pixel
+    };
+
     enum E_WaterReflectionMode {
         WATER_REFLECTION_GEOMETRY     = 0,   // SSR geometry hits, the reflection cube elsewhere
         WATER_REFLECTION_GEOMETRY_SKY = 1,   // plus the screen-space sky march
@@ -968,6 +977,7 @@ struct GothicRendererSettings {
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
         WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
+        WaterRayTracing = WATER_RT_OFF;
         OceanColor = OCEAN_COLOR_NATURAL;
         OceanCustomColor = float3( 0.85f, 0.975f, 1.0f );
         OceanCustomColorStrength = 0.18f;
@@ -1403,7 +1413,8 @@ struct GothicRendererSettings {
     // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —
     // same quality/cost tradeoff, different geometry class. See D3D12_SSR_WET_SURFACES_PLAN.md.
     E_WaterSSRQuality OpaqueSSRQuality;
-    E_WaterReflectionMode WaterReflectionMode;   // sky march needs WaterSSRQuality != DISABLED
+    E_WaterReflectionMode WaterReflectionMode;   // sky march needs WaterSSRQuality != DISABLED (or ray tracing)
+    E_WaterRayTracing WaterRayTracing;           // D3D12 with ray queries only; otherwise ignored
     E_OceanColor OceanColor;
     float3 OceanCustomColor;          // hue only; the shader keeps the water's brightness
     float OceanCustomColorStrength;

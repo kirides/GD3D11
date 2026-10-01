@@ -185,6 +185,14 @@ namespace Rhi {
         /** Debug marker scopes (PIX / debug-utils labels). */
         virtual void BeginEvent( const wchar_t* wide, UINT wideLength, const char* narrow ) = 0;
         virtual void EndEvent() = 0;
+
+        // --- Inline ray tracing; only called when Caps::RayQuery is set ---
+        virtual void BuildRaytracingAccelerationStructure( const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& /*desc*/,
+            UINT /*numPostbuildInfo*/, const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* /*postbuildInfo*/ ) {}
+        virtual void CopyRaytracingAccelerationStructure( D3D12_GPU_VIRTUAL_ADDRESS /*dst*/, D3D12_GPU_VIRTUAL_ADDRESS /*src*/,
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE /*mode*/ ) {}
+        /** Makes finished acceleration-structure builds/copies visible to later builds and ray queries. */
+        virtual void AccelerationStructureBarrier() {}
     };
 
     class CommandQueue : public Object {
@@ -241,6 +249,8 @@ namespace Rhi {
         bool RootSignature11 = false;
         bool GpuUploadHeap = false;
         bool TearingSupported = false;
+        /** Inline ray queries from compute (DXR tier 1.1). */
+        bool RayQuery = false;
         UINT VendorId = 0;
         LUID AdapterLuid = {};
     };
@@ -275,6 +285,9 @@ namespace Rhi {
         virtual D3D12_RESOURCE_ALLOCATION_INFO GetResourceAllocationInfo( const D3D12_RESOURCE_DESC& desc ) const = 0;
         virtual void GetCopyableFootprints( const D3D12_RESOURCE_DESC* desc, UINT firstSubresource, UINT numSubresources,
             UINT64 baseOffset, D3D12_PLACED_SUBRESOURCE_FOOTPRINT* layouts, UINT* numRows, UINT64* rowSizes, UINT64* totalBytes ) const = 0;
+        /** Zero sizes when Caps::RayQuery is unset. */
+        virtual void GetRaytracingAccelerationStructurePrebuildInfo( const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& /*inputs*/,
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO& info ) const { info = {}; }
 
         // --- Descriptors ---
         virtual HRESULT CreateDescriptorHeap( const D3D12_DESCRIPTOR_HEAP_DESC* desc, DescriptorHeap** outHeap ) = 0;

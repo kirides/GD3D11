@@ -1176,6 +1176,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GothicStateCache.h" />
     <ClInclude Include="WorldMeshSection.h" />
     <ClInclude Include="D3D12Engine\D3D12MeshArena.h" />
+    <ClInclude Include="D3D12Engine\D3D12RtReflections.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1301,12 +1302,12 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp" />
     <ClCompile Include="Detours\disasm.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles>
       </ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp" />
     <ClCompile Include="ImGuiShim.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -1327,12 +1328,12 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D12Engine\D3D12ShadowMap.cpp" />
     <ClCompile Include="VulkanEngine\VulkanRhiCommandList.cpp" />
     <ClCompile Include="D3D11ShadowMap.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiDevice.cpp" />
     <ClCompile Include="Detours\image.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles>
       </ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="VulkanEngine\VulkanRhiDevice.cpp" />
     <ClCompile Include="Detours\creatwth.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles>
@@ -1344,6 +1345,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <ForcedIncludeFiles>
       </ForcedIncludeFiles>
     </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12RtReflections.cpp" />
     <ClCompile Include="StackWalker.cpp" />
     <ClCompile Include="VulkanEngine\VulkanDevice.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">
@@ -1358,18 +1360,19 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     </ClCompile>
     <ClCompile Include="ImGuiEditorView.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Rain.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Rhi.cpp" />
+    <ClCompile Include="ImGuiSettingsWindow.cpp" />
     <ClCompile Include="include\ImGuizmo\src\GraphEditor.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles>
       </ForcedIncludeFiles>
     </ClCompile>
-    <ClCompile Include="D3D12Engine\D3D12Rhi.cpp" />
     <ClCompile Include="D3D12Engine\D3D12PostFX.cpp" />
     <ClCompile Include="VulkanEngine\VulkanRhiPipeline.cpp" />
-    <ClCompile Include="ImGuiSettingsWindow.cpp" />
     <ClCompile Include="PointShadow\PointShadowBatch.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Fsr3.cpp" />
     <ClCompile Include="PointLightSlotSelector.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Water.cpp" />
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -1394,25 +1397,22 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
     <ClCompile Include="D3D11Effect.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Water.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Fog.cpp" />
     <ClCompile Include="GVegetationBox.cpp" />
     <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp" />
     <ClCompile Include="EditorLinePrimitive.cpp" />
     <ClCompile Include="DLLMain.cpp" />
     <ClCompile Include="D3D12Engine\D3D12GTAO.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiQueue.cpp" />
     <ClCompile Include="D3D11VShader.cpp" />
     <ClCompile Include="GothicExternals.cpp" />
     <ClCompile Include="D3D11PfxRenderer.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Fx.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Motion.cpp" />
     <ClCompile Include="D3D11ForwardPlusRenderer.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiQueue.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Cull.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="HookedFunctions.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12MeshArena.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Skinning.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
     <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">
@@ -1423,27 +1423,27 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="UIRenderer2D.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Taa.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Barrier.cpp" />
+    <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />
     <ClCompile Include="D3D11Texture.cpp" />
     <ClCompile Include="D3D12Engine\D3D12VertexBuffer.cpp" />
-    <ClCompile Include="PointShadow\LegacyCubeTechnique.cpp" />
     <ClCompile Include="D3D11PFX_GodRays.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Engine2D.cpp" />
     <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
-    <ClCompile Include="D3D11PFX_TAA.cpp" />
     <ClCompile Include="D3D12Engine\D3D12InventoryItems.cpp" />
+    <ClCompile Include="D3D11PFX_TAA.cpp" />
     <ClCompile Include="D3D12Engine\D3D12AO.cpp" />
     <ClCompile Include="D3D11VertexBuffer.cpp" />
     <ClCompile Include="MorphGpu.cpp" />
+    <ClCompile Include="VulkanEngine\VulkanRhiSwapchain.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImCurveEdit.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles>
       </ForcedIncludeFiles>
     </ClCompile>
     <ClCompile Include="Toolbox.cpp" />
-    <ClCompile Include="MeshModifier.cpp" />
-    <ClCompile Include="VulkanEngine\VulkanRhiSwapchain.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12Texture.cpp" />
     <ClCompile Include="InventoryRenderer.cpp" />
+    <ClCompile Include="MeshModifier.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Texture.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ForcedIncludeFiles>
@@ -1469,7 +1469,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="PointShadow\SkeletalCubeCasters.cpp" />
     <ClCompile Include="D3D11GraphicsEngineBase.cpp" />
     <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12Skinning.cpp" />
     <ClCompile Include="BaseLineRenderer.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12MeshArena.cpp" />
     <ClCompile Include="D3D11PFX_FSR3.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
@@ -1477,9 +1479,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="RenderToTextureBuffer.cpp" />
     <ClCompile Include="ConstantBufferPool.cpp" />
     <ClCompile Include="D3D12Engine\D3D12UI2D.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12LowClouds.cpp" />
     <ClCompile Include="D3D11DeferredRenderer.cpp" />
     <ClCompile Include="VulkanEngine\VulkanRhiFormats.cpp" />
-    <ClCompile Include="D3D12Engine\D3D12LowClouds.cpp" />
     <ClCompile Include="D3D11PFX_Bloom.cpp" />
     <ClCompile Include="MorphBlend.cpp" />
     <ClCompile Include="D3D11OcclusionQuerry.cpp" />
@@ -1489,15 +1491,15 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11InventoryItems.cpp" />
     <ClCompile Include="PointShadow\PointShadowCasters.cpp" />
     <ClCompile Include="D3D12Engine\D3D12LineRenderer.cpp" />
+    <ClCompile Include="D3D11PointLight.cpp" />
     <ClCompile Include="D3D11PFX_FSR1.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Ssr.cpp" />
     <ClCompile Include="D3D11UI2D.cpp" />
-    <ClCompile Include="D3D11PointLight.cpp" />
     <ClCompile Include="GMesh.cpp" />
     <ClCompile Include="Engine.cpp" />
     <ClCompile Include="ImGuiPreviewImages.cpp" />
-    <ClCompile Include="Widget_TransRot.cpp" />
     <ClCompile Include="WorldObjects.cpp" />
+    <ClCompile Include="Widget_TransRot.cpp" />
     <ClCompile Include="D3D12Engine\D3D12AliasedTextureArena.cpp" />
     <ClCompile Include="D3D11Upscaling.cpp" />
     <ClCompile Include="AsyncVisualExtractor.cpp" />

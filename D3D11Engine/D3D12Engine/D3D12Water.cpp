@@ -35,6 +35,7 @@
 #include "../zCTexture.h"
 #include "../WaterProfile.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
+#include "D3D12RtReflections.h"
 
 #include <fstream>
 #include <filesystem>
@@ -82,8 +83,12 @@ namespace {
         float SkyReflection;          // 1 => march the reflected sky in screen space
         UINT SkyAverageIndex;         // 4x1 average on-screen sky; 0xFFFFFFFF => none
         float OceanTexture;           // 0 = pure water body, 1 = legacy-strength texture blend
+
+        UINT RtColorIndex;            // ray-traced reflection result; 0xFFFFFFFF => screen-space reflections
+        UINT RtDistanceIndex;
+        float RtPad[2];
     };
-    static_assert( sizeof( WaterCBData ) == 256, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 272, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of the water copies: the water PS and the sky-average compute pass both read them.
     constexpr D3D12_RESOURCE_STATES kWaterCopyReadState =
@@ -101,6 +106,7 @@ namespace {
     };
     static_assert( sizeof( WaterSkyAverageConsts ) == 8 * sizeof( UINT ), "WaterSkyAverage root constants must be 8 DWORDs" );
     constexpr float kWaterSkyAverageSeconds = 1.0f;   // history time constant
+    constexpr UINT kWaterCbBytes = 768;
 
     // D3D11's SSR_QUALITY permutation table (PS_Water.hlsl lines 72-81), as runtime loop bounds. Shared
     // with opaque-surface SSR (D3D12AO.cpp) via D3D12EngineCommon.h's SsrStepsForQuality.
@@ -112,12 +118,12 @@ namespace {
 
 
 bool D3D12GraphicsEngine::CreateWaterConstantBuffers() {
-    // One persistently-mapped UPLOAD buffer per frame-in-flight, 512 B: [0,256) WaterCBData (b2),
-    // [256,512) the AtmosphereConstantBuffer (b1). Both root CBV addresses must be 256-byte aligned, hence
+    // One persistently-mapped UPLOAD buffer per frame-in-flight, 768 B: [0,512) WaterCBData (b2),
+    // [512,768) the AtmosphereConstantBuffer (b1). Both root CBV addresses must be 256-byte aligned, hence
     // the split rather than one packed struct. Same pattern as CreateFogConstantBuffers.
     static_assert( sizeof( WaterCBData ) <= kWaterAtmosphereCbOffset,
         "WaterCBData must fit in the first 256-byte block of the water CB" );
-    static_assert( sizeof( AtmosphereConstantBuffer ) <= 512 - kWaterAtmosphereCbOffset,
+    static_assert( sizeof( AtmosphereConstantBuffer ) <= kWaterCbBytes - kWaterAtmosphereCbOffset,
         "AtmosphereConstantBuffer must fit in the second 256-byte block of the water CB" );
 
     D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -125,7 +131,7 @@ bool D3D12GraphicsEngine::CreateWaterConstantBuffers() {
 
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    cbDesc.Width = 512;
+    cbDesc.Width = kWaterCbBytes;
     cbDesc.Height = 1;
     cbDesc.DepthOrArraySize = 1;
     cbDesc.MipLevels = 1;
@@ -349,8 +355,10 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
 
 
 void D3D12GraphicsEngine::DrawWaterSurfaces() {
-    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
+    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() ) {
+        if ( m_RtReflections && m_FrameOpen ) m_RtReflections->Idle();
         return;
+    }
 
     DX_ZONE( m_CmdList.Get(), "DrawWaterSurfaces" );
 
@@ -487,6 +495,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             cb.CameraUnderwater = 1;
         }
         cb.SurfaceDepthIndex = UINT_MAX;   // patched after the prepass copy below
+        cb.RtColorIndex = UINT_MAX;        // patched after the ray-traced reflections below
+        cb.RtDistanceIndex = UINT_MAX;
         cb.LowCloudIndex = m_LowCloudLayerSrvSlot;   // set by GenerateLowClouds this frame, UINT_MAX without clouds
 
         const OceanProfile ocean = GetOceanProfile();
@@ -569,6 +579,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         return;
     }
 
+    UINT surfaceDepthSrvSlot = UINT_MAX;
     // Depth with the water surfaces in it, for the shore probes' coverage test. The color pass keeps the
     // writable DSV bound, so it reads a copy rather than the live buffer.
     if ( m_Pipelines.Water.DepthPrepassPSO ) {
@@ -598,10 +609,43 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         surfaceGraph.Execute( m_CmdList );
 
         // The CB is plain upload memory the GPU reads at execution, so patching it after recording the prepass is safe.
-        if ( D3D12RenderTarget* surface = surfaceGraph.GetPhysicalTexture( surfaceHandle ) )
-            reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] )->SurfaceDepthIndex = surface->GetSrvSlot();
+        if ( D3D12RenderTarget* surface = surfaceGraph.GetPhysicalTexture( surfaceHandle ) ) {
+            surfaceDepthSrvSlot = surface->GetSrvSlot();
+            reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] )->SurfaceDepthIndex = surfaceDepthSrvSlot;
+        }
         m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &mainDsv );
     }
+
+    // Ray-traced reflections replace the screen-space march; the pixel shader falls back to SSR without them.
+    const int rtQuality = Engine::GAPI->GetRendererState().RendererSettings.WaterRayTracing;
+    bool traced = false;
+    if ( m_RtReflections && rtQuality != GothicRendererSettings::WATER_RT_OFF && surfaceDepthSrvSlot != UINT_MAX
+        && !Engine::GAPI->IsUnderWater() ) {
+        D3D12RtReflections::Inputs in = {};
+        in.SurfaceDepthSlot = surfaceDepthSrvSlot;
+        in.SceneDepthSlot = waterDepthSrvSlot;
+        in.SceneColorSlot = waterSceneSrvSlot;
+        in.DistortionSlot = ( m_DistortionTexture && m_DistortionTexture->HasSRV() )
+            ? m_DistortionTexture->GetSrvSlot() : m_BlackTexture->GetSrvSlot();   // same choice as the water CB
+        in.View = viewM;
+        in.Projection = projM;
+        in.CameraPosition = Engine::GAPI->GetCameraPosition();
+        in.Time = Engine::GAPI->GetTimeSeconds();
+        in.Quality = rtQuality;
+        UINT colorSlot = UINT_MAX, distanceSlot = UINT_MAX;
+        if ( m_RtReflections->Trace( in, colorSlot, distanceSlot ) ) {
+            WaterCBData* patch = reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] );
+            patch->RtColorIndex = colorSlot;
+            patch->RtDistanceIndex = distanceSlot;
+            traced = true;
+        }
+        // The trace left a compute root signature and PSO bound; the color pass below rebinds its graphics state.
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        m_CmdList->SetGraphicsRootConstantBufferView( 2, m_WaterCBGpu[m_FrameIndex] );
+        m_CmdList->SetGraphicsRootConstantBufferView( 3, m_WaterCBGpu[m_FrameIndex] + kWaterAtmosphereCbOffset );
+    }
+    if ( m_RtReflections && !traced ) m_RtReflections->Idle();
 
     m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
     unsigned int drawnIndices = 0;

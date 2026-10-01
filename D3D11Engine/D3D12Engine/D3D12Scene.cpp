@@ -35,6 +35,7 @@
 
 #include "D3D12RenderQueue.h"
 #include "D3D12RenderGraph.h"
+#include "D3D12RtReflections.h"
 #include "InstancingUtils.h"
 #include "../ThreadPool.h"   // Engine::RenderingThreadPool — MT shadow-cascade cull/record fan-out
 
@@ -316,6 +317,14 @@ namespace {
     RenderView g_GeometryPassVobs;
 }
 
+size_t D3D12GraphicsEngine::VobVisualBucketCount() const { return g_vobInfoVisualIndexToVisualInfo.size(); }
+MeshVisualInfo* D3D12GraphicsEngine::VobVisualForBucket( size_t bucket ) const {
+    return bucket < g_vobInfoVisualIndexToVisualInfo.size() ? static_cast<MeshVisualInfo*>( g_vobInfoVisualIndexToVisualInfo[bucket] ) : nullptr;
+}
+std::span<const FrameSkelDraw> D3D12GraphicsEngine::FrameSkelDraws() const { return g_FrameSkelDraws; }
+std::span<const FrameAttachDraw> D3D12GraphicsEngine::FrameAttachDraws() const { return g_FrameAttachDraws; }
+
+
 // Externally-linked shim over the file-local MakeFogConstants above, for the split-out passes that need the
 // same b1 FogCB (D3D12Transparency.cpp's blended-VOB pass). Declared in D3D12EngineCommon.h. A shim rather
 // than a move because MakeFogConstants leans on this TU's GetSceneFogColorXM/g_HeightFogActive.
@@ -386,6 +395,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
     }
     m_RainShadowVobs.Reset();
     m_RainShadowViewProjValid = false;   // the occlusion map shows the old world until redrawn
+    if ( m_RtReflections ) m_RtReflections->OnLoadWorld();
     // Every MeshInfo the arena indexes is about to be freed, so the ranges have to go before the new world's
     // OnAddVob calls refill them. The buffers themselves are kept — see D3D12VobArena::Reset.
     m_VobArena->Reset();
@@ -3425,13 +3435,13 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
         barriers.push_back( { c.Src->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE,
             D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
     }
+    // Shader-resource too: the ray-traced reflections build from and read these buffers later in the frame.
+    constexpr D3D12_RESOURCE_STATES kArenaRead = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     if ( vobArena ) {
-        barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
+        barriers.push_back( { m_VobArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST, kArenaRead } );
     }
     if ( attachArena ) {
-        barriers.push_back( { m_AttachArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER } );
+        barriers.push_back( { m_AttachArena->GetVertexBuffer(), D3D12_RESOURCE_STATE_COPY_DEST, kArenaRead } );
     }
     m_CmdList->TransitionBarriers( barriers.data(), static_cast<UINT>( barriers.size() ) );
 }

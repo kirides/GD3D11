@@ -5915,6 +5915,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterRayTracing", to_string_locale_independent( (int)s.WaterRayTracing ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanColor", to_string_locale_independent( (int)s.OceanColor ).c_str(), ini.c_str() );
     WritePrivateProfileRGB( "Display", "OceanCustomColor", s.OceanCustomColor, ini );
     WritePrivateProfileStringA( "Display", "OceanCustomColorStrength", float_to_string( s.OceanCustomColorStrength, 2 ).c_str(), ini.c_str() );
@@ -6190,6 +6191,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));
         s.OpaqueSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "OpaqueSSRQuality", ds.OpaqueSSRQuality, ini.c_str()), 0, 3));
         s.WaterReflectionMode = static_cast<GothicRendererSettings::E_WaterReflectionMode>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterReflectionMode", ds.WaterReflectionMode, ini.c_str() ), 0, 1 ) );
+        s.WaterRayTracing = static_cast<GothicRendererSettings::E_WaterRayTracing>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterRayTracing", ds.WaterRayTracing, ini.c_str() ),
+            GothicRendererSettings::WATER_RT_OFF, GothicRendererSettings::WATER_RT_ULTRA ) );
         s.OceanColor = static_cast<GothicRendererSettings::E_OceanColor>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "OceanColor", ds.OceanColor, ini.c_str() ), 0, 3 ) );
         s.OceanCustomColor = ds.OceanCustomColor;
         GetPrivateProfileRGB( "Display", "OceanCustomColor", s.OceanCustomColor, ini );
