@@ -102,6 +102,7 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	
 	// Apply stars
 	atmoColor += night * 0.4f;
+	atmoColor *= AC_SkyHorizonFade( Input.vWorldPosition );
 
 	// Apply the moon, over the stars and ADDITIVELY (zRND_ALPHA_FUNC_ADD, as RenderPlanets draws it), tinted
 	// by the height-interpolated planet colour. Whatever frame the moon material currently holds is what got

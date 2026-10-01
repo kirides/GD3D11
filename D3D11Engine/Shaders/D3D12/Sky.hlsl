@@ -134,6 +134,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float3 atmoColor = ApplyAtmosphericScatteringSky( i.worldPos ) * 2.0f;
     atmoColor = ApplySkyLayers( atmoColor, i.worldPos );
+	atmoColor *= AC_SkyHorizonFade( i.worldPos );
+
     return float4( ApplyMoon( atmoColor, i.clip.xy ), 1.0f );
 }
 
