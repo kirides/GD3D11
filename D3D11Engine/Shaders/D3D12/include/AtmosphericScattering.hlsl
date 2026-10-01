@@ -164,6 +164,17 @@ float3 AC_ScatterSkyShell( float3 vPos, float mieG )
 
     float fFar = length( vRay );
     vRay /= fFar;
+	
+	// Rays below -20 deg march through the planet and overflow to inf; the sky there is already black.
+    if ( vRay.y < -0.342f )
+    {
+        float hl = length( vRay.xz );
+        float2 h = hl > 1e-6f ? vRay.xz / hl : float2( 1.0f, 0.0f );
+        vRay = float3( h.x * 0.9397f, -0.342f, h.y * 0.9397f );
+        float b = dot( camPos, vRay );
+        fFar = -b + sqrt( max( b * b - ( dot( camPos, camPos ) - AC_OuterRadius * AC_OuterRadius ), 0.0f ) );
+        vPos = camPos + vRay * fFar;
+    }
 
     // Calculate the ray's starting position, then calculate its scattering offset
     float3 vStart = camPos;
