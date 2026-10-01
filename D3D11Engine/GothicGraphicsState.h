@@ -978,6 +978,7 @@ struct GothicRendererSettings {
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
         WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
         WaterRayTracing = WATER_RT_OFF;
+        WaterRayTracingScreenSpace = true;
         OceanColor = OCEAN_COLOR_NATURAL;
         OceanCustomColor = float3( 0.85f, 0.975f, 1.0f );
         OceanCustomColorStrength = 0.18f;
@@ -1415,6 +1416,7 @@ struct GothicRendererSettings {
     E_WaterSSRQuality OpaqueSSRQuality;
     E_WaterReflectionMode WaterReflectionMode;   // sky march needs WaterSSRQuality != DISABLED (or ray tracing)
     E_WaterRayTracing WaterRayTracing;           // D3D12 with ray queries only; otherwise ignored
+    bool WaterRayTracingScreenSpace;             // Medium+: shade hits the camera sees from the scene image
     E_OceanColor OceanColor;
     float3 OceanCustomColor;          // hue only; the shader keeps the water's brightness
     float OceanCustomColorStrength;

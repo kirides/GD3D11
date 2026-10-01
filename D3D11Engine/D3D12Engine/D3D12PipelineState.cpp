@@ -2299,7 +2299,19 @@ bool D3D12PipelineState::CreateWaterRT() {
     D3D12RootLayout& rs = Layout( "WaterRT" );
     rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_ALL );
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_ALL );
-    for ( UINT t = 0; t <= 12; ++t ) rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );    // 2: t0 TLAS
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL );    // 3: t1 geometry records
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL );    // 4: t2 instance data
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_ALL );    // 5: t3 world geometry table
+    rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_ALL );    // 6: t4 world materials
+    rs.AddSRV( 5, D3D12_SHADER_VISIBILITY_ALL );    // 7: t5 world VB
+    rs.AddSRV( 6, D3D12_SHADER_VISIBILITY_ALL );    // 8: t6 world IB
+    rs.AddSRV( 7, D3D12_SHADER_VISIBILITY_ALL );    // 9: t7 VOB arena VB
+    rs.AddSRV( 8, D3D12_SHADER_VISIBILITY_ALL );    // 10: t8 VOB arena IB
+    rs.AddSRV( 9, D3D12_SHADER_VISIBILITY_ALL );    // 11: t9 attachment arena VB
+    rs.AddSRV( 10, D3D12_SHADER_VISIBILITY_ALL );   // 12: t10 attachment arena IB
+    rs.AddSRV( 11, D3D12_SHADER_VISIBILITY_ALL );   // 13: t11 posed skinning stream
+    rs.AddSRV( 12, D3D12_SHADER_VISIBILITY_ALL );   // 14: t12 skeletal arena IB
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_ALL ) );
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )

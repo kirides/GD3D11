@@ -494,7 +494,7 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         { "High", GothicRendererSettings::WATER_SSR_HIGH },
     };
     // Ray tracing replaces the screen-space geometry march; the stored SSR choice survives untouched.
-    const bool rayTracingAvailable = IsD3D12() && Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery;
+    const bool rayTracingAvailable = Engine::GraphicsEngine->GetDeviceCapabilities().RayQuery;
     const bool rayTracingActive = rayTracingAvailable && settings.WaterRayTracing != GothicRendererSettings::WATER_RT_OFF;
     if ( rayTracingAvailable ) {
         constexpr ListItem<GothicRendererSettings::E_WaterRayTracing> waterRt[] = {
@@ -507,6 +507,12 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
         ComboRow( "Ray-Traced Water Reflections", "##WaterRayTracing", waterRt, &settings.WaterRayTracing,
             "Traces reflection rays against the world, objects and characters, so off-screen and occluded\n"
             "geometry reflects too. Replaces the screen-space Water Reflections. D3D12 only." );
+        ImGui::BeginDisabled( settings.WaterRayTracing < GothicRendererSettings::WATER_RT_MEDIUM );
+        CheckRow( "Combine With Screen Space", &settings.WaterRayTracingScreenSpace,
+            "Reflected objects the camera also sees take their color from the finished image, torch light\n"
+            "included. Off shades every hit by ray tracing alone: no seams where hits leave the screen,\n"
+            "but point lights don't show in reflections. Has no effect on Low." );
+        ImGui::EndDisabled();
     }
 
     ImGui::BeginDisabled( rayTracingActive );

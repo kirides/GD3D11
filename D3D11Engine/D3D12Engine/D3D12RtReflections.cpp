@@ -738,10 +738,9 @@ struct D3D12RtReflections::Impl {
             }
             const D3D12_GPU_VIRTUAL_ADDRESS scratch = TakeScratch( s, info.ScratchDataSizeInBytes );
             if ( !scratch ) continue;
+            const D3D12_GPU_VIRTUAL_ADDRESS dest = s.DynamicBlas->GetGPUVirtualAddress() + DynamicCursor;
             const uint32_t first = ReserveGeoms( static_cast<UINT>( records.size() ) );
             if ( first == UINT32_MAX ) break;
-
-            const D3D12_GPU_VIRTUAL_ADDRESS dest = s.DynamicBlas->GetGPUVirtualAddress() + DynamicCursor;
             DynamicCursor += bytes;
             D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {};
             desc.Inputs = in;
@@ -996,6 +995,7 @@ struct D3D12RtReflections::Impl {
         AddAttachments( s, E.FrameAttachDraws() );
         if ( skinned ) AddSkinned( s, E.FrameSkelDraws() );
 
+        Cmd()->AccelerationStructureBarrier();
         // Compacted sizes out to the readback copy
         if ( !s.Pending.empty() ) {
             Cmd()->TransitionBarrier( s.PostbuildGpu.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -1003,7 +1003,6 @@ struct D3D12RtReflections::Impl {
             Cmd()->CopyBufferRegion( s.PostbuildReadback.Get(), 0, s.PostbuildGpu.Get(), 0, s.Pending.size() * sizeof( uint64_t ) );
             Cmd()->TransitionBarrier( s.PostbuildGpu.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         }
-        Cmd()->AccelerationStructureBarrier();
 
         // TLAS
         tin.NumDescs = InstanceCount;
@@ -1052,7 +1051,7 @@ struct D3D12RtReflections::Impl {
         cb.FogFar = fog.FogFar;
         cb.ShadowRays = tier.ShadowRays ? 1u : 0u;
         cb.AlphaShadows = tier.AlphaShadows ? 1u : 0u;
-        cb.ScreenReuse = tier.ScreenReuse ? 1u : 0u;
+        cb.ScreenReuse = tier.ScreenReuse && in.ScreenSpace ? 1u : 0u;
         memcpy( s.RingPtr + kOffCb, &cb, sizeof( cb ) );
 
         // Dispatch

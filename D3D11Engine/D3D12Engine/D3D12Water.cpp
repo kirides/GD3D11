@@ -632,6 +632,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         in.CameraPosition = Engine::GAPI->GetCameraPosition();
         in.Time = Engine::GAPI->GetTimeSeconds();
         in.Quality = rtQuality;
+        in.ScreenSpace = Engine::GAPI->GetRendererState().RendererSettings.WaterRayTracingScreenSpace;
         UINT colorSlot = UINT_MAX, distanceSlot = UINT_MAX;
         if ( m_RtReflections->Trace( in, colorSlot, distanceSlot ) ) {
             WaterCBData* patch = reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] );

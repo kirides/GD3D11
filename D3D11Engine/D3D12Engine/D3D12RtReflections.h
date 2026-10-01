@@ -36,6 +36,7 @@ public:
         DirectX::XMFLOAT3 CameraPosition;
         float Time;
         int Quality;             // GothicRendererSettings::E_WaterRayTracing, not OFF
+        bool ScreenSpace;        // reuse the on-screen scene color for hits the camera sees
     };
     /** Builds the frame's acceleration structures and traces. On true the two slots hold Water.hlsl's inputs,
         already in PIXEL_SHADER_RESOURCE. */
