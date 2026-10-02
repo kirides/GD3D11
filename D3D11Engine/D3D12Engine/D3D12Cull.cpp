@@ -23,7 +23,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
 namespace {
-    // Mirrors VobCull.hlsl's VobCullCB, field for field (32 root constants).
+    // Mirrors VobCull.hlsl's VobCullCB, field for field (36 root constants).
     struct VobCullCB {
         XMFLOAT4X4 ViewProj;
         uint32_t VisualCount;
@@ -40,8 +40,11 @@ namespace {
         float    OutdoorRadius;
         float    SmallRadius;
         uint32_t FocusSlot;
+        float    MobRadius;
+        float    Pad[3];
     };
-    static_assert( sizeof( VobCullCB ) == 32 * sizeof( uint32_t ), "VobCullCB must match the 32 root constants in CreateCull()" );
+    constexpr UINT kVobCullConstants = sizeof( VobCullCB ) / sizeof( uint32_t );
+    static_assert( kVobCullConstants == 36, "VobCullCB must match the 36 root constants in CreateCull()" );
 
     // Mirrors VobCull.hlsl's SceneArgsCB.
     struct SceneArgsCB {
@@ -429,6 +432,8 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     cb.OutdoorRadius = rs.OutdoorVobDrawRadius;
     cb.SmallRadius = rs.OutdoorSmallVobDrawRadius;
     cb.FocusSlot = m_GpuSceneFocusSlot;
+    // The CPU path's MOB reach: the leaf walk's VOB radius and PrepareFrameSkeletals' skeletal radius.
+    cb.MobRadius = std::min( rs.OutdoorVobDrawRadius, rs.SkeletalMeshDrawRadius );
 
     if ( runCpu ) {
         // The cull strides the instance stream itself, so it must agree with VobInstanceStride().
@@ -436,7 +441,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
         m_CmdList->SetPipelineState( motion ? m_Pipelines.Cull.VobCullPSO.Get()
                                             : m_Pipelines.Cull.VobCullNoMotionPSO.Get() );
         m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
-        m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 0, kVobCullConstants, &cb, 0 );
         m_CmdList->SetComputeRootShaderResourceView( 1, m_VobCullVisuals[m_FrameIndex]->GetGPUVirtualAddress() );
         m_CmdList->SetComputeRootShaderResourceView( 2, m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
         m_CmdList->SetComputeRootUnorderedAccessView( 3, m_VobCulledInstances->GetGPUVirtualAddress() );
@@ -522,7 +527,7 @@ void D3D12GraphicsEngine::CullGpuScene( const void* cullCb ) {
     m_CmdList->SetPipelineState( MotionGBufferActive() ? m_Pipelines.Cull.VobCullScenePSO.Get()
                                                        : m_Pipelines.Cull.VobCullSceneNoMotionPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
-    m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+    m_CmdList->SetComputeRoot32BitConstants( 0, kVobCullConstants, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, scene.Records()->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootShaderResourceView( 2, scene.Table()->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 3, m_VobCulledInstances->GetGPUVirtualAddress() );
@@ -609,8 +614,9 @@ bool D3D12GraphicsEngine::CullGpuSceneCasters( const GpuSceneCasterView* views, 
         cb.MinMeshSize = views[c].MinMeshSize;
         cb.OutdoorRadius = views[c].OutdoorRadius;
         cb.SmallRadius = views[c].SmallRadius;
+        cb.MobRadius = views[c].MobRadius;
         cb.OutputOffset = ( first + c ) * slots;
-        m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 0, kVobCullConstants, &cb, 0 );
         m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.CasterCounts()->GetGPUVirtualAddress() + ( first + c ) * scene.CasterCountsStride() );
         m_CmdList->Dispatch( scene.VisualCount(), 1, 1 );
     }
@@ -699,7 +705,7 @@ bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UI
     m_CmdList->SetComputeRootShaderResourceView( 1, scene.Records()->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootShaderResourceView( 2, scene.Table()->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 3, scene.PointInstances()->GetGPUVirtualAddress() );
-    m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+    m_CmdList->SetComputeRoot32BitConstants( 0, kVobCullConstants, &cb, 0 );
     m_CmdList->SetPipelineState( cull.VobSphereClearPSO.Get() );
     for ( UINT c = 0; c < count; ++c ) {
         m_CmdList->SetComputeRootUnorderedAccessView( 4, counts + c * scene.PointCountsStride() );
@@ -712,7 +718,7 @@ bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UI
         cb.OutdoorRadius = views[c].Radius;
         cb.MinMeshSize = views[c].MinSizePerDistance;
         cb.OutputOffset = c * D3D12GpuScene::kPointInstanceCapacity;
-        m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+        m_CmdList->SetComputeRoot32BitConstants( 0, kVobCullConstants, &cb, 0 );
         m_CmdList->SetComputeRootUnorderedAccessView( 4, counts + c * scene.PointCountsStride() );
         m_CmdList->Dispatch( scene.VisualCount(), 1, 1 );
     }

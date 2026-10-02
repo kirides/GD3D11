@@ -11,9 +11,13 @@
 class D3D12GraphicsEngine;
 namespace Rhi { class CmdList; }
 class zCVob;
+class zCVisual;
+class zCModel;
 class Frustum;
 struct VobInfo;
+struct SkeletalVobInfo;
 struct MeshVisualInfo;
+struct VobInstanceInfo;
 
 /** One shadow view the scene's static casters are culled into (a CSM cascade). */
 struct GpuSceneCasterView {
@@ -21,6 +25,7 @@ struct GpuSceneCasterView {
     float MinMeshSize;                  // smaller visuals cast nothing in this view
     float OutdoorRadius;
     float SmallRadius;
+    float MobRadius;                    // leaf MOB snapshots; 0 = none
     bool  UseLod;                       // draw the LOD index range
     bool  Active;                       // false: neither culled nor drawn this frame (a frozen cascade)
 };
@@ -33,7 +38,8 @@ struct GpuScenePointView {
 };
 
 /** Static VOBs (still in their BSP leaf) in a persistent GPU table. The main view and the shadow cascades cull
-    them and generate their draw commands on the GPU instead of walking the leaves every frame; see GPU_SCENE_PLAN.md. */
+    them and generate their draw commands on the GPU instead of walking the leaves every frame; see GPU_SCENE_PLAN.md.
+    Leaf MOBs whose pose is still join as snapshots: one slot per node mesh, posed once. */
 class D3D12GpuScene {
 public:
     // Mirrors VobCull.hlsl's SceneTemplate: the VobDrawCommand fields that do not depend on the cull.
@@ -76,12 +82,18 @@ public:
     void OnSrvSlotFreed( UINT slot );
 
     /** Main thread, open frame, before the main view collects: builds the table after a world load, applies flag
-        changes and records their uploads. Returns whether the scene draws this frame. */
-    bool BeginFrame( Rhi::CmdList& cmd );
+        changes and MOB hand-overs (UpdateMobs) and records their uploads. Returns whether the scene draws this frame. */
+    bool BeginFrame( Rhi::CmdList& cmd, const zCVob* focusVob, bool mobs );
     /** After the VOB arena flush: visibility feedback, template (re)builds and their uploads. */
     void PrepareDraws( Rhi::CmdList& cmd );
     /** After the command build: the visible counts go to the readback slot of this frame. */
     void RecordFeedbackCopy( Rhi::CmdList& cmd );
+    /** Bounds (centre + radius) whose point-light cubes no longer match a MOB's pose; refilled by BeginFrame. */
+    const std::vector<DirectX::XMFLOAT4>& MobInvalidations() const { return m_MobInvalidations; }
+    /** The live snapshot instances of a MOB visual within `radius` of `center` (the RT scene). */
+    void GatherMobInstances( uint32_t visual, const DirectX::XMFLOAT3& center, float radius, std::vector<VobInstanceInfo>& out ) const;
+    uint32_t FirstMobVisual() const { return m_FirstMobVisual; }
+    MeshVisualInfo* VisualInfo( uint32_t visual ) const { return m_Visuals[visual].Info; }
 
     /** Static VOBs the CPU path still draws: floating plants, visual alpha, visuals with a blended material. */
     const std::vector<VobInfo*>& CpuVobs() const { return m_CpuVobs; }
@@ -149,6 +161,27 @@ private:
         bool     Split = false;    // near + far templates (LOD)
         bool     CasterStale = false;    // casters unbuilt or a texture unresolved: re-resolved round-robin
         bool     CasterQueued = false;   // in m_CasterRefresh
+        bool     Mob = false;            // a MOB node mesh; Info holds a SharedVisualRegistry reference
+    };
+    // A leaf MOB: a zCModel whose geometry hangs off its nodes (chests, doors, beds).
+    struct Mob {
+        SkeletalVobInfo* Info = nullptr;   // null once it left
+        zCModel* Model = nullptr;
+        uint32_t SlotFirst = 0, SlotCount = 0;   // -> m_MobSlots
+        DirectX::XMFLOAT4 Sphere = {};           // world bounds of the snapshot pose
+        uint16_t RestFrames = 0;
+        uint8_t  State = 0;        // kMob*
+        bool     InRange = false;  // within the CPU skeletal draw radius last frame
+        bool     CubesStale = false;   // left the table for more than the focus: re-bake on return
+    };
+    struct MobPart { MeshVisualInfo* Visual; uint32_t Mob; uint32_t Node; zCVisual* NodeVisual; };
+    // Per MOB slot (slot - m_FirstMobSlot): what WriteInstance uploads.
+    struct MobSlot {
+        uint32_t Mob;
+        uint32_t Node;
+        zCVisual* NodeVisual;   // the node's visual when snapshotted
+        DirectX::XMFLOAT3X4 World;
+        uint32_t Color;
     };
     // Mirrors D3D12GraphicsEngine::VobCullVisual.
     struct Record {
@@ -161,6 +194,13 @@ private:
     };
 
     bool Build( Rhi::CmdList& cmd );
+    void GatherMobs( std::vector<MobPart>& parts );
+    /** MOBs near the camera that animate, fade or have the focus go to the CPU path, and come back with a fresh
+        pose once still. enabled = false hands every MOB to the CPU path. */
+    void UpdateMobs( const zCVob* focusVob, bool enabled );
+    bool IsMobStill( const Mob& mob ) const;
+    void SnapshotMob( uint32_t m );
+    void PinMob( uint32_t m, bool cubesStale, bool forever = false );
     bool CreateBuffers( UINT templateCapacity );
     void WriteInstance( uint32_t slot, uint8_t* dst ) const;
     void WriteRecord( uint32_t v );
@@ -198,6 +238,13 @@ void MoveVisualToCpu( uint32_t v );
     std::vector<uint32_t> m_CasterRefresh;
     size_t m_CasterRefreshCursor = 0;
     std::vector<uint32_t> m_MorphSlots;   // slots whose visual is a morph mesh
+    std::vector<Mob>      m_Mobs;
+    std::vector<uint32_t> m_MobSlots;
+    std::vector<MobSlot>  m_MobSlotData;
+    uint32_t m_FirstMobVisual = 0;   // MOB visuals (and their slots) follow the VOB ones
+    uint32_t m_FirstMobSlot = 0;
+    std::vector<DirectX::XMFLOAT4> m_MobInvalidations;
+    size_t m_LastMobFrame = 0;
     uint32_t m_FlagCursor = 0;
     uint32_t m_Frame = 0;
     bool m_TemplatesGrew = false;

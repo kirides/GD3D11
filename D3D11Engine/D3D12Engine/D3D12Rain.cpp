@@ -586,7 +586,7 @@ void D3D12GraphicsEngine::CollectRainShadowVobs() {
     // GPU scene: the static casters are culled into the rain view on the GPU (its box is the map's own
     // projection), welded indices like cascade 0; only moved vobs and the scene's CPU list are walked below.
     if ( m_GpuSceneActive ) {
-        GpuSceneCasterView view = { m_RainShadowViewProj, 0.0f, range, range, false, true };
+        GpuSceneCasterView view = { m_RainShadowViewProj, 0.0f, range, range, 0.0f, false, true };   // no MOBs, as below
         m_RainSceneCasters = CullGpuSceneCasters( &view, D3D12GpuScene::kCasterViewRain, 1 );
     }
 

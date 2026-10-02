@@ -199,7 +199,7 @@ private:
     void BakeWorldCasters( const FrameLight& ps );
     void BakeVobsAndMobs( const FrameLight& ps, bool tableOnGpu );
     void BakeVobs( const FrameLight& ps );
-    void BakeMobs( const FrameLight& ps );
+    void BakeMobs( const FrameLight& ps, bool tableOnGpu );
     void ResolveOverlay( const FrameLight& ps );
     bool InstanceRingFull( const char* what );
 
