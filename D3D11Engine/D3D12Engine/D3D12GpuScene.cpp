@@ -368,16 +368,6 @@ bool D3D12GpuScene::CreateCasterArgs( UINT capacity, ComPtr<Rhi::Resource>& out,
 }
 
 
-bool D3D12GpuScene::CreatePointArgs( UINT capacity, ComPtr<Rhi::Resource>& out, UINT64& stride ) const {
-    stride = ( static_cast<UINT64>( capacity ) * 2u * kPointCommandStride + 255u ) & ~255ull;
-    const D3D12_RESOURCE_DESC bd = BufferDesc( stride * kPointViews, true );
-    if ( FAILED( m_E.GetRhi()->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf() ) ) )
-        return false;
-    out->SetName( L"GpuScenePointArgs" );
-    return true;
-}
-
-
 bool D3D12GpuScene::CreateBuffers( UINT templateCapacity ) {
     Rhi::Device* rhi = m_E.GetRhi();
     if ( !rhi ) return false;
@@ -415,10 +405,11 @@ bool D3D12GpuScene::CreateBuffers( UINT templateCapacity ) {
 
     // Point views: the fill counter sits behind each view's per-visual pairs.
     m_PointCountsStride = ( ( static_cast<UINT64>( visuals ) * 2u + 1u ) * sizeof( uint32_t ) + 255u ) & ~255ull;
+    m_PointArgsStride = static_cast<UINT64>( kPointCommandCapacity ) * 2u * kPointCommandStride;
     ok = make( PointInstanceBytes(), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuScenePointInstances", m_PointInstances )
         && make( m_PointCountsStride * kPointViews, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuScenePointCounts", m_PointCounts )
         && make( kCasterArgCountStride * kPointViews, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuScenePointArgCount", m_PointArgCount )
-        && CreatePointArgs( templateCapacity, m_PointArgs, m_PointArgsStride );
+        && make( m_PointArgsStride * kPointViews, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuScenePointArgs", m_PointArgs );
     if ( !ok ) return false;
     PointInstancesDrawable = false;
     PointCountsReadable = false;
@@ -663,8 +654,8 @@ bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
         ZoneScopedN( "GpuScene template growth" )
         Rhi::Device* rhi = m_E.GetRhi();
         const UINT capacity = static_cast<UINT>( m_Templates.size() ) + kSpareTemplates;
-        ComPtr<Rhi::Resource> templates, args, casterArgs, pointArgs, upload;
-        UINT64 casterArgsStride = 0, pointArgsStride = 0;
+        ComPtr<Rhi::Resource> templates, args, casterArgs, upload;
+        UINT64 casterArgsStride = 0;
         const D3D12_RESOURCE_DESC td = BufferDesc( static_cast<UINT64>( capacity ) * sizeof( Template ), false );
         const D3D12_RESOURCE_DESC ad = BufferDesc( static_cast<UINT64>( capacity ) * 2u * sizeof( D3D12GraphicsEngine::VobDrawCommand ), true );
         const UINT64 bytes = static_cast<UINT64>( m_Templates.size() ) * sizeof( Template );
@@ -672,8 +663,7 @@ bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
         if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, templates.GetAddressOf() ) )
             || FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &ad, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, args.GetAddressOf() ) )
             || !CreateCasterArgs( capacity, casterArgs, casterArgsStride )
-            || !CreatePointArgs( capacity, pointArgs, pointArgsStride )
-            || FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.GetAddressOf() ) ) ) {
+|| FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.GetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: GPU scene template growth failed; static VOBs stay on the CPU path." );
             return false;
         }
@@ -690,14 +680,11 @@ bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
         m_E.QueueResourceForRelease( std::move( m_TemplateBuffer ) );
         m_E.QueueResourceForRelease( std::move( m_Args ) );
         m_E.QueueResourceForRelease( std::move( m_CasterArgs ) );
-        m_E.QueueResourceForRelease( std::move( m_PointArgs ) );
-        m_TemplateBuffer = std::move( templates );
+m_TemplateBuffer = std::move( templates );
         m_Args = std::move( args );
         m_CasterArgs = std::move( casterArgs );
         m_CasterArgsStride = casterArgsStride;
-        m_PointArgs = std::move( pointArgs );
-        m_PointArgsStride = pointArgsStride;
-        m_TemplateCapacity = capacity;
+m_TemplateCapacity = capacity;
         m_CommandCapacity = capacity;
         m_TemplatesGrew = false;
         // The new arg buffers are born in UAV and the count buffers share their state flags, so they follow.
@@ -709,11 +696,7 @@ bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
             cmd.TransitionBarrier( m_CasterArgCount.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
             CasterArgsDrawable = false;
         }
-        if ( PointArgsDrawable ) {
-            cmd.TransitionBarrier( m_PointArgCount.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
-            PointArgsDrawable = false;
-        }
-        // Everything is uploaded; only instance and record changes are left.
+// Everything is uploaded; only instance and record changes are left.
         for ( uint32_t& v : m_DirtyVisuals ) v |= 0x80000000u;
     }
 

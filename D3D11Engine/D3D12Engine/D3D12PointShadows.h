@@ -58,7 +58,7 @@ public:
 
     static constexpr UINT kBackBufferMax = 3;   // must match D3D12GraphicsEngine::kBackBufferMax (asserted in the .cpp)
     // Lights per frame whose static casters the GPU scene / GPU world cull (asserted against both in the .cpp).
-    static constexpr UINT kGpuBakeViews = 8;
+    static constexpr UINT kGpuBakeViews = 16;
     UINT kBackBufferCount = 2;   // synced from the engine in Attach() below
 
     // The engine back-reference, handed over in the engine's CONSTRUCTOR so it is valid before Init() runs
@@ -191,6 +191,7 @@ private:
     // ---- Prepare(), in the order it runs (D3D12PointShadows.cpp) ----
     bool BeginPrepare();
     void GatherOverlayInputs();
+    void ChooseBakes();
     void StartBakes();
     void ScheduleGpuBakes();
     D3D12_GPU_VIRTUAL_ADDRESS WriteFaceCb( const FrameLight& ps );
@@ -222,10 +223,12 @@ private:
     bool RequestResident( const PendingBake& pending );
     void UpdatePendingBakes();
 
-    // GPU bakes report what they left out: per view { count, material indices } then { count, visual indices },
-    // read back kBackBufferCount frames later.
+    // GPU bakes report what they left out: per view { count, material indices, overflow } for the world, then the
+    // same for scene visuals, read back kBackBufferCount frames later.
     static constexpr UINT kReportBytes = 512;
-    static constexpr uint32_t kReportCapacity = 63;   // WorldCull.hlsl / VobCull.hlsl REPORT_CAPACITY
+    static constexpr uint32_t kReportCapacity = 62;     // WorldCull.hlsl / VobCull.hlsl REPORT_CAPACITY
+    static constexpr uint32_t kReportOverflowWord = 63; // REPORT_OVERFLOW_WORD: casters were dropped
+    bool m_ReportOverflowLogged = false;
     struct ReportedBake { UINT slot; uint32_t serial; };
     bool CreateBakeReports();
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Report, m_ReportZero;

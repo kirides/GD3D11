@@ -494,6 +494,8 @@ cbuffer SceneArgsCB : register( b0 )
     uint AlphaCapacity;     // commands in the alpha list, which starts at command OpaqueCapacity
     uint SceneOutputOffset; // the cull's OutputOffset
     uint UseLodIndices;     // casters: draw the LOD range (outer cascades)
+    uint FillCounter;       // cube commands: index of CSCullSphere's fill counter in SceneCounts
+    uint InstanceCapacity;  // cube commands: the view's instance region
 };
 
 StructuredBuffer<SceneTemplate> Templates     : register( t0 );
@@ -558,11 +560,14 @@ void CSBuildCasterArgs( uint3 DTid : SV_DispatchThreadID )
 // A point light's cube commands over CSCullSphere's { count, first } pairs, in D3D12PointShadows'
 // PointShadowCasterCommand layout: b1 diffuse + a draw whose instances repeat per cube face.
 #define CUBE_COMMAND_STRIDE 24u
-#define REPORT_CAPACITY 63u   // D3D12PointShadows::kReportCapacity
+#define REPORT_CAPACITY 62u        // D3D12PointShadows::kReportCapacity
+#define REPORT_OVERFLOW_WORD 63u   // non-zero: commands (1) or instances (2) were dropped
 
 [numthreads(64, 1, 1)]
 void CSBuildCubeArgs( uint3 DTid : SV_DispatchThreadID )
 {
+    // A cached bake that lost instances to a full region is incomplete; say so once.
+    if ( DTid.x == 0u && SceneCounts[FillCounter] > InstanceCapacity ) BakeReport.InterlockedOr( REPORT_OVERFLOW_WORD * 4u, 2u );
     if ( DTid.x >= TemplateCount ) return;
     const SceneTemplate t = Templates[DTid.x];
     if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) return;
@@ -582,7 +587,11 @@ void CSBuildCubeArgs( uint3 DTid : SV_DispatchThreadID )
     const bool alpha = ( t.Flags & SCENE_TEMPLATE_ALPHA ) != 0u;
     uint slot;
     SceneArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
-    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;
+    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) )
+    {
+        BakeReport.InterlockedOr( REPORT_OVERFLOW_WORD * 4u, 1u );
+        return;
+    }
     const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * CUBE_COMMAND_STRIDE;
     SceneArgs.Store3( at,      uint3( t.MatDiffuseIndex, t.IndexCount, count * 6u ) );
     SceneArgs.Store3( at + 12, uint3( t.StartIndex, asuint( t.BaseVertex ), SceneCounts[t.VisualIndex * 2u + 1u] ) );

@@ -115,8 +115,9 @@ public:
 
     // Point-light bakes: per view a packed instance region, the per-visual { count, first } pairs (and the
     // region's fill counter behind them), the cube command lists and their two counts.
-    static constexpr UINT kPointViews = 8;                  // static cube bakes per frame
+    static constexpr UINT kPointViews = 16;                 // static cube bakes per frame
     static constexpr UINT kPointInstanceCapacity = 4096;    // instances per view
+    static constexpr UINT kPointCommandCapacity = 4096;     // commands per list (opaque, alpha) per view
     static constexpr UINT kPointCommandStride = 24;         // D3D12PointShadows' PointShadowCasterCommand
     Rhi::Resource* PointInstances() const { return m_PointInstances.Get(); }
     UINT PointInstanceBytes() const { return kPointViews * kPointInstanceCapacity * kCasterInstanceStride; }
@@ -168,8 +169,7 @@ private:
     void MarkCasterStale( uint32_t v );
     void RefreshCasters();
     bool CreateCasterArgs( UINT capacity, Microsoft::WRL::ComPtr<Rhi::Resource>& out, UINT64& stride ) const;
-    bool CreatePointArgs( UINT capacity, Microsoft::WRL::ComPtr<Rhi::Resource>& out, UINT64& stride ) const;
-    void MoveVisualToCpu( uint32_t v );
+void MoveVisualToCpu( uint32_t v );
     void SetSlotState( uint32_t slot, uint8_t state );
     void ScanFlags();
     void ProcessFeedback();

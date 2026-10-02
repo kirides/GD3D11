@@ -3995,7 +3995,7 @@ bool D3D12PipelineState::CreateCull() {
     }
 
     D3D12RootLayout& sceneArgsRs = Layout( "CullSceneArgs" );
-    sceneArgsRs.AddConstants( 0, 5, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
+    sceneArgsRs.AddConstants( 0, 7, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
     sceneArgsRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Templates
     sceneArgsRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 SceneVisuals
     sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 SceneCounts
