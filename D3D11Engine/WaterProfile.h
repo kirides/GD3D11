@@ -26,28 +26,28 @@ inline bool MatchesWaterIdentifier( std::string_view name, std::string_view patt
     return pattern.size() == name.size() && equalsAt( 0 );
 }
 
-/** Sea water gets the physical ocean body in PS_Water and D3D12 Water.hlsl; lakes, rivers and waterfalls don't.
-    Sea = the material or its texture name matches one of the '|'-separated [Display] OceanIdentifiers. */
-inline bool IsOceanWaterMaterial( zCMaterial* mat ) {
-    if ( !mat ) return false;
-    const std::string_view identifiers = Engine::GAPI->GetRendererState().RendererSettings.OceanIdentifiers;
-    const std::string_view materialName = mat->GetNameView();
-    zCTexture* texture = mat->GetTextureSingle();
-    const std::string_view textureName = texture ? texture->GetNameWithoutExtView() : std::string_view{};
-
+/** True when `name` matches one of the '|'-separated identifiers (spaces around them are ignored). */
+inline bool MatchesIdentifierList( std::string_view name, std::string_view identifiers ) {
     for ( size_t start = 0; start <= identifiers.size(); ) {
         size_t end = identifiers.find( '|', start );
         if ( end == std::string_view::npos ) end = identifiers.size();
         std::string_view pattern = identifiers.substr( start, end - start );
         while ( !pattern.empty() && pattern.front() == ' ' ) pattern.remove_prefix( 1 );
         while ( !pattern.empty() && pattern.back() == ' ' ) pattern.remove_suffix( 1 );
-        if ( !pattern.empty()
-            && ( MatchesWaterIdentifier( materialName, pattern ) || MatchesWaterIdentifier( textureName, pattern ) ) ) {
-            return true;
-        }
+        if ( !pattern.empty() && MatchesWaterIdentifier( name, pattern ) ) return true;
         start = end + 1;
     }
     return false;
+}
+
+/** Sea water gets the physical ocean body in PS_Water and D3D12 Water.hlsl; lakes, rivers and waterfalls don't.
+    Sea = the material or its texture name matches one of the '|'-separated [Display] OceanIdentifiers. */
+inline bool IsOceanWaterMaterial( zCMaterial* mat ) {
+    if ( !mat ) return false;
+    const std::string_view identifiers = Engine::GAPI->GetRendererState().RendererSettings.OceanIdentifiers;
+    zCTexture* texture = mat->GetTextureSingle();
+    return MatchesIdentifierList( mat->GetNameView(), identifiers )
+        || ( texture && MatchesIdentifierList( texture->GetNameWithoutExtView(), identifiers ) );
 }
 
 /** Ocean look from the OceanColor setting. Tints are luma-neutral; climate 1 is Jharkendar's clear turquoise sea. */

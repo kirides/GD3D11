@@ -5,6 +5,7 @@
 #include "pch.h"
 #include "GothicAPI.h"
 #include "GothicAPIState.h"
+#include "FloatingVobs.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
@@ -623,6 +624,20 @@ void GothicAPI::OnWorldUpdate() {
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
     RendererState.GraphicsState.FF_Time = GetTimeSeconds();
 
+    // Floating plants follow the water's vertex waves (same build gate as the waves themselves)
+    if ( !State->FloatingVobs.empty() ) {
+        ZoneScopedN( "UpdateFloatingVobs" );
+#ifdef BUILD_GOTHIC_2_6_fix
+        const int waveMode = RendererState.RendererSettings.WaterWaves;
+#else
+        const int waveMode = GothicRendererSettings::WATER_WAVES_OFF;
+#endif
+        const float totalTime = GetTotalTime();
+        for ( VobInfo* vi : State->FloatingVobs ) {
+            UpdateWaterBob( *vi->WaterBob, totalTime, waveMode );
+        }
+    }
+
     if ( zCCamera* camera = GetSceneCamera() ) {
         RendererState.RendererInfo.FarPlane = camera->GetFarPlane();
         RendererState.RendererInfo.NearPlane = camera->GetNearPlane();
@@ -989,6 +1004,7 @@ void GothicAPI::ResetVobs() {
     State->PortalCuller.Clear();
     DynamicallyAddedVobs.clear();
     DynamicMeshVobs.clear();   // non-owning, aliases VobMap's VobInfo* -- deleted below via VobMap, not here
+    State->FloatingVobs.clear();   // likewise
     DecalVobs.clear();
     State->VobsByVisual.clear();
     State->SkeletalVobMap.clear();
@@ -1125,6 +1141,9 @@ void GothicAPI::OnWorldLoaded() {
 
     // Build instancing cache for the static vobs for each section
     BuildStaticMeshInstancingCache();
+    if ( !State->FloatingVobs.empty() ) {
+        Logging::Inf( "{} plant vobs float on wave-animated water", State->FloatingVobs.size() );
+    }
 
     // Build vob info cache for the bsp-leafs
     BuildBspVobMapCache();
@@ -2339,6 +2358,13 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
     if ( vi && vi->VobSection ) {
         vi->VobSection->Vobs.remove( vi );
     }
+    if ( vi && vi->WaterBob ) {
+        auto fit = std::ranges::find( State->FloatingVobs, vi );
+        if ( fit != State->FloatingVobs.end() ) {
+            *fit = State->FloatingVobs.back();
+            State->FloatingVobs.pop_back();
+        }
+    }
     // Erase it from the skeletal vob-list
     for ( size_t i = 0; i< SkeletalMeshVobs.size(); ++i ) {
         if ( SkeletalMeshVobs[i]->Vob == vob ) {
@@ -2496,7 +2522,10 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 
                 vi->VobSection = &State->WorldSections[section.x][section.y];
                 vi->VobSection->Vobs.push_back( vi );
-                vi->UpdateState(); 
+                vi->UpdateState();
+                if ( AttachWaterBob( vi, State->WorldSections, RendererState.RendererSettings.FloatingPlantIdentifiers ) ) {
+                    State->FloatingVobs.push_back( vi );
+                } 
 
                 if ( !State->BspLeafVobLists.empty() ) { // Check if this is the initial loading
                     // It's not, chose this as a dynamically added vob
@@ -4445,6 +4474,7 @@ void GothicAPI::CollectVisibleVobs(
             VobInstanceInfo vii = {};
             PackAffine3x4( vii.world, it->WorldMatrix );
             PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
+            ApplyWaterBob( vii, *it );
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
@@ -5941,6 +5971,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "WaterShoreFoam", to_string_locale_independent( (int)s.WaterShoreFoam ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterShoreFoamStyle", to_string_locale_independent( (int)s.WaterShoreFoamStyle ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanIdentifiers", s.OceanIdentifiers, ini.c_str() );
+    WritePrivateProfileStringA( "Display", "FloatingPlantIdentifiers", s.FloatingPlantIdentifiers, ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "BacklitVegetation", to_string_locale_independent( s.BacklitVegetation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6244,6 +6275,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             GothicRendererSettings::WATER_FOAM_STYLE_SIMPLE, GothicRendererSettings::WATER_FOAM_STYLE_COAST ) );
         if ( !s.SetOceanIdentifiers( GetPrivateProfileStringA( "Display", "OceanIdentifiers", ds.OceanIdentifiers, ini ) ) ) {
             Logging::Wrn( "[Display] OceanIdentifiers is longer than {} characters and was truncated", sizeof( s.OceanIdentifiers ) - 1 );
+        }
+        if ( !s.SetFloatingPlantIdentifiers( GetPrivateProfileStringA( "Display", "FloatingPlantIdentifiers", ds.FloatingPlantIdentifiers, ini ) ) ) {
+            Logging::Wrn( "[Display] FloatingPlantIdentifiers is longer than {} characters and was truncated", sizeof( s.FloatingPlantIdentifiers ) - 1 );
         }
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
         s.BacklitVegetation = GetPrivateProfileBoolA( "Display", "BacklitVegetation", ds.BacklitVegetation, ini );

@@ -24,6 +24,9 @@ struct GothicAPIState {
     std::unique_ptr<ShoreField> ShoreFieldData;
     bool ShoreFieldBaked = false;   // tried for this world, so a failed bake isn't retried every frame
 
+    /** Static vobs with a WaterBob, updated once per frame; non-owning, aliases VobMap. */
+    std::vector<VobInfo*> FloatingVobs;
+
     std::unordered_map<zCVob*, std::string> tempParticleNames;
 
     /** List of Meshes derived from a zCParticleFX-Visual */

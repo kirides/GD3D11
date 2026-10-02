@@ -855,6 +855,9 @@
     <ClInclude Include="ShoreField.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="FloatingVobs.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1192,6 +1195,9 @@
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="ShoreField.cpp">
+      <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="FloatingVobs.cpp">
       <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">

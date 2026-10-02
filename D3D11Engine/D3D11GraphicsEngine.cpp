@@ -21,6 +21,7 @@
 #include "GSky.h"
 #include "WaterProfile.h"
 #include "ShoreField.h"
+#include "FloatingVobs.h"
 #include "GVegetationBox.h"
 #include "RenderToTextureBuffer.h"
 #include "zCParticleFX.h"
@@ -6308,6 +6309,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             VobInstanceInfo vii = {};
             PackAffine3x4( vii.world, it->WorldMatrix );
             PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
+            ApplyWaterBob( vii, *it );
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
