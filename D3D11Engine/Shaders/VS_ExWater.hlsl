@@ -42,83 +42,9 @@ struct VS_OUTPUT
 // Vertex Shader
 //--------------------------------------------------------------------------------------
 #if SHD_WATERANI
-struct Wave
-{
-    float3 offset;
-    float3 normal;
-    float3 binormal;
-    float3 tangent;
-};
-
-float gerWave(inout Wave w, float2 d, float amplitude, float2 pos, float speed, float frequency)
-{
-    float x = dot(d, pos) * frequency + M_TotalTime * 0.001 * speed;
-    float a = amplitude;
-    float sinX, cosX;
-    sincos(x, sinX, cosX);
-
-    w.binormal += float3(
-        -d.x * d.y * (a * sinX),
-               d.y * (a * cosX),
-        -d.y * d.y * (a * sinX)
-        ) * frequency;
-    w.tangent += float3(
-        -d.x * d.x * (a * sinX),
-        +d.x * (a * cosX),
-        -d.x * d.y * (a * sinX)
-        ) * frequency;
-    w.offset += float3(d.x * (a * cosX),
-                         (a * sinX),
-                   d.y * (a * cosX));
-    return a * cosX;
-}
-
-Wave wave(float3 pos, float minLength, const float waveSpeed, const float amplitude)
-{
-    const int iterations = 10;
-    const float dragMult = 0.48;
-
-    float wx = 1.0;
-    float wsum = 0.0;
-    [unroll] for (int j = 0; j < iterations; j++)
-    {
-        wsum += wx;
-        wx *= 0.8;
-    }
-
-    Wave w;
-    w.offset = float3(0, 0, 0);
-    w.normal = float3(0, 1, 0);
-    w.tangent = float3(1, 0, 0);
-    w.binormal = float3(0, 0, 1);
-
-    float freq = 0.6 * 0.005;
-    float speed = 2.0;
-    float iter = 0.0;
-    float weight = 1.0;
-
-    for (int i = 0; i < iterations; i++)
-    {
-        if (freq * minLength > 2.0)
-            continue;
-
-        float sinIter, cosIter;
-        sincos(iter, sinIter, cosIter);
-        float2 dir = float2(cosIter, sinIter);
-        float res = gerWave(w, dir, weight * amplitude / wsum, pos.xz, speed * waveSpeed, freq);
-
-        pos.xz += res * weight * dir * dragMult;
-
-        iter += 12.0;
-        weight *= 0.8;
-        freq *= 1.18;
-        speed *= 1.07;
-    }
-
-    w.normal = normalize(cross(w.binormal, w.tangent));
-    return w;
-}
+#include <include/WaterVertexWaves.hlsl>
 #endif
+
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
@@ -130,12 +56,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	texAniMap -= floor( texAniMap );
     
 #if SHD_WATERANI
-    const float waveMaxAmplitude = Input.vDiffuse.z;
-    if (waveMaxAmplitude > 0)
-    {
-        Wave w = wave(positionWorld, 0.0, Input.vDiffuse.w * 25.5f, waveMaxAmplitude * 1275.f);
-        positionWorld += w.offset;
-    }
+    positionWorld += WaterWaveOffset( positionWorld, Input.vDiffuse, M_TotalTime );
 #endif
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);

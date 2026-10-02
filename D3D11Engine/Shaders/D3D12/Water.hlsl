@@ -18,12 +18,12 @@
 //   2. Every screen-space input (scene copy, depth copy, distortion, reflection cube) is fetched
 //      BINDLESSLY via SM6.6 ResourceDescriptorHeap instead of fixed t2..t5 slots. Only the per-material
 //      diffuse still rides a descriptor table, because the color loop rebinds it per texture batch.
-//
-// Not ported: the SHD_WATERANI Gerstner wave displacement in VS_ExWater (vertex-level wave offset). The
-// surface is still geometrically flat; all the wave *shading* below comes from the distortion texture.
+//   3. The Gerstner swell (D3D11's SHD_WATERANI permutation) is the runtime WaveAnimation flag, for the
+//      same reason as 1.
 
 #include "include/AtmosphericScattering.hlsl"   // ApplyAtmosphericScatteringGround + the Atmosphere cbuffer (b1)
 #include "../include/MathHelpers.hlsl"
+#include "../include/WaterVertexWaves.hlsl"
 
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // root constants, VS only
 
@@ -65,7 +65,8 @@ cbuffer WaterCB : register(b2)
 
     uint   RtColorIndex;         // WaterRT.hlsl result, premultiplied (0xFFFFFFFF = screen-space reflections)
     uint   RtDistanceIndex;      // its hit distance, premultiplied
-    float2 RtPad;
+    uint   WaveAnimation;        // 1 = Gerstner swell on water materials with a wave mode
+    float  RtPad;
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -98,17 +99,19 @@ struct VS_OUT
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    float3 pos = i.pos;
+    [branch] if ( WaveAnimation != 0 ) pos += WaterWaveOffset( pos, i.col, RI_TotalTime );
+    o.clip = mul( float4( pos, 1.0 ), ViewProj );
     float2 ani = i.scroll * RI_TotalTime;   // scroll delta (TexCoord2) * total time (ms), like VS_ExWater
     ani -= floor( ani );                    // wrap to [0,1) so the float stays precise over long sessions
     o.uv = i.uv + ani;
     o.col = i.col;
     o.wnrm = DecodeOctNormal( i.nrm );      // already world-space
-    o.wpos = i.pos;
+    o.wpos = pos;
     // mul(v, M) with a verbatim-uploaded Gothic matrix evaluates to M*v (see CLAUDE.md's column-major
     // note) — the same convention D3D11's PS_Water/VS_ExWater rely on.
-    o.vz.x = mul( float4( i.pos, 1.0 ), RI_View ).z;
-    o.vz.y = length( mul( float4( i.pos, 1.0 ), RI_View ) );
+    o.vz.x = mul( float4( pos, 1.0 ), RI_View ).z;
+    o.vz.y = length( mul( float4( pos, 1.0 ), RI_View ) );
     return o;
 }
 

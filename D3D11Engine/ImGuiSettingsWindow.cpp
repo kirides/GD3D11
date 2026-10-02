@@ -648,7 +648,8 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         "Wet surfaces, puddles and splashes while it rains.", "RainEffects" );
     ImGui::EndDisabled();
 
-    if ( CheckRow( "Water Waves", &settings.EnableWaterAnimation, nullptr, "WaterWaves" ) ) {
+    // A runtime flag on D3D12, a shader permutation on D3D11
+    if ( CheckRow( "Water Waves", &settings.EnableWaterAnimation, nullptr, "WaterWaves" ) && !IsD3D12() ) {
         shadersToReload |= ShaderCategory::Water;
     }
 
