@@ -509,6 +509,9 @@ void ShaderRegistry::Build() {
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_WaterSkyAverage>( "CS_WaterSkyAverage.hlsl" )
             .with_category( ShaderCategory::Water ) );
 
+        // Tileable 3D noise for the low clouds, generated once
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_LowCloudNoise>( "CS_LowCloudNoise.hlsl" ) );
+
         // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));
 

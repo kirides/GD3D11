@@ -171,7 +171,12 @@ private:
     std::unique_ptr<D3D11PFX_ASSAO> PFX_ASSAO;
     std::unique_ptr<TexturePool> m_texturePool;
     std::unique_ptr<DepthStencilPool> m_depthStencilPool;
-    
+
+    /** Binds the low cloud noise (t4) and its wrap sampler (s3), generating the noise on first use */
+    bool BindLowCloudNoise();
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> LowCloudNoiseSRV;   // 64^3 RGBA8, filled once
+    bool LowCloudNoiseFailed = false;
+
     std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D11SamplerState>> m_Samplers;
 };
 
