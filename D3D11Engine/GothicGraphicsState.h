@@ -728,7 +728,7 @@ struct GothicRendererSettings {
     /** Foam along shores; 0/1/2 is what Water.hlsl and PS_Water read as WaterFrame::shoreFoam. */
     enum E_WaterShoreFoam {
         WATER_FOAM_OFF   = 0,
-        WATER_FOAM_OCEAN = 1,   // NW_WATER_LAKE* sea only (IsOceanWaterTexture)
+        WATER_FOAM_OCEAN = 1,   // MT_Ocean water only (IsOceanWaterMaterial)
         WATER_FOAM_ALL   = 2,   // lakes and rivers too, gentler
     };
 
@@ -747,6 +747,14 @@ struct GothicRendererSettings {
         VeryHigh = 2048,
         MAX = 16384,
     };
+
+    /** Copies `identifiers` into OceanIdentifiers, zero-filled; false when it had to be truncated. */
+    bool SetOceanIdentifiers( std::string_view identifiers ) {
+        memset( OceanIdentifiers, 0, sizeof( OceanIdentifiers ) );
+        const size_t count = std::min( identifiers.size(), sizeof( OceanIdentifiers ) - 1 );
+        memcpy( OceanIdentifiers, identifiers.data(), count );
+        return count == identifiers.size();
+    }
 
     /** Sets the default values for this struct */
     void SetDefault() {
@@ -1016,6 +1024,7 @@ struct GothicRendererSettings {
 #else
         WaterShoreFoam = WATER_FOAM_OCEAN;
 #endif
+        SetOceanIdentifiers( "NW_WATER_LAKE*|*OCEAN*" );
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
@@ -1459,6 +1468,9 @@ struct GothicRendererSettings {
     float OceanCustomClarity;         // 0 = dense coastal water, 1 = clear tropical water
     float OceanCustomTexture;         // water texture over the body; 1 = classic GD3D11 amount
     E_WaterShoreFoam WaterShoreFoam;
+    // Water materials or textures that are sea: '|'-separated, case-insensitive; X* prefix, *X suffix, *X* contains,
+    // X exact. Zero-filled so the per-frame memcmp stays stable. Read at world load (IsOceanWaterMaterial).
+    char OceanIdentifiers[256];
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

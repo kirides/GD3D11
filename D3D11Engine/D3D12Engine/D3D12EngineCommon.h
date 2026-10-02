@@ -143,7 +143,10 @@ extern std::array<SkelMatSlot, kMaxSkelMatSlots> g_SkelMatSlots;
 // later by DrawWaterSurfaces (D3D12Water.cpp), grouped by texture to minimize SRV binds. Both run on the
 // same thread within one frame (OnStartWorldRendering), so a single file-scope scratch map is safe; it is
 // filled at build time and cleared by the water pass. Defined in D3D12Water.cpp.
-extern std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
+// [1] holds MT_Ocean, so one texture can be lake in one material and sea in another.
+extern std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces[2];
+inline bool FrameWaterSurfacesEmpty() { return g_FrameWaterSurfaces[0].empty() && g_FrameWaterSurfaces[1].empty(); }
+inline void ClearFrameWaterSurfaces() { g_FrameWaterSurfaces[0].clear(); g_FrameWaterSurfaces[1].clear(); }
 
 // Alpha-blended world-mesh surfaces (ice, glass, magic barriers) peeled out of the opaque world pass by
 // BuildWorldDrawCommands (D3D12Scene.cpp) and drawn back-to-front by DrawWorldTransparencyRun

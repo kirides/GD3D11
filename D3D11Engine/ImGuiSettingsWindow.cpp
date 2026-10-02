@@ -678,7 +678,7 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
 
     constexpr ListItem<GothicRendererSettings::E_WaterShoreFoam> shoreFoams[] = {
         { "Off", GothicRendererSettings::WATER_FOAM_OFF },
-        { "Ocean", GothicRendererSettings::WATER_FOAM_OCEAN, "Surf along the shores of the sea (Gothic II's sea textures)." },
+        { "Ocean", GothicRendererSettings::WATER_FOAM_OCEAN, "Surf along the shores of the sea ([Display] OceanIdentifiers)." },
         { "All Water", GothicRendererSettings::WATER_FOAM_ALL, "The sea, plus gentler foam along lakes and rivers." },
     };
     ComboRow( "Shore Foam", "##WaterShoreFoam", shoreFoams, &settings.WaterShoreFoam,

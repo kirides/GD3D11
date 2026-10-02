@@ -1226,7 +1226,7 @@ void ImGuiShim::RenderSettingsWindow()
                 if ( ImGui::Combo( "Shore Foam", &shoreFoam, shoreFoams, IM_ARRAYSIZE( shoreFoams ) ) ) {
                     settings.WaterShoreFoam = (GothicRendererSettings::E_WaterShoreFoam)shoreFoam;
                 }
-                ImGui::SetItemTooltip( "Foam over shallow water along shores. Ocean = NW_WATER_LAKE* textures only." );
+                ImGui::SetItemTooltip( "Foam over shallow water along shores. Ocean = water matching [Display] OceanIdentifiers." );
             }
             // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
             // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime

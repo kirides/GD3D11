@@ -6,23 +6,47 @@
 #include "zCMaterial.h"
 #include "zCTexture.h"
 
-/** Sea water gets the physical ocean body in PS_Water and D3D12 Water.hlsl; lakes, rivers and waterfalls don't. */
-inline bool IsOceanWaterTexture( zCTexture* texture ) {
-    if ( !texture ) return false;
-    constexpr std::string_view kPrefix = "NW_WATER_LAKE";
-    const std::string_view name = texture->GetNameWithoutExtView();
-    if ( name.size() < kPrefix.size() ) return false;
-    return _strnicmp( name.data(), kPrefix.data(), kPrefix.size() ) == 0;
+/** Case-insensitive match against one identifier: X* prefix, *X suffix, *X* contains, X exact, * anything. */
+inline bool MatchesWaterIdentifier( std::string_view name, std::string_view pattern ) {
+    const bool leading = !pattern.empty() && pattern.front() == '*';
+    if ( leading ) pattern.remove_prefix( 1 );
+    const bool trailing = !pattern.empty() && pattern.back() == '*';
+    if ( trailing ) pattern.remove_suffix( 1 );
+    if ( pattern.size() > name.size() ) return false;
+
+    auto equalsAt = [&]( size_t offset ) { return _strnicmp( name.data() + offset, pattern.data(), pattern.size() ) == 0; };
+    if ( leading && trailing ) {
+        for ( size_t i = 0; i + pattern.size() <= name.size(); ++i ) {
+            if ( equalsAt( i ) ) return true;
+        }
+        return false;
+    }
+    if ( trailing ) return equalsAt( 0 );
+    if ( leading ) return equalsAt( name.size() - pattern.size() );
+    return pattern.size() == name.size() && equalsAt( 0 );
 }
 
+/** Sea water gets the physical ocean body in PS_Water and D3D12 Water.hlsl; lakes, rivers and waterfalls don't.
+    Sea = the material or its texture name matches one of the '|'-separated [Display] OceanIdentifiers. */
 inline bool IsOceanWaterMaterial( zCMaterial* mat ) {
-    // TODO: quick prefix scan
-    // TODO: contains-check for "ocean"
-    // TODO: make strings configurable in UserSettings.ini
-    // TODO: something like "OCEAN_IDENTIFIERS=OCEAN*|*OCEAN*|*OCEAN"
-    // Single * means Prefix/Suffix depending on location, double * means substring-contains
-    // Use mat->GetNameView() and mat->GetTextureSingle()->GetNameWithoutExtView()
     if ( !mat ) return false;
+    const std::string_view identifiers = Engine::GAPI->GetRendererState().RendererSettings.OceanIdentifiers;
+    const std::string_view materialName = mat->GetNameView();
+    zCTexture* texture = mat->GetTextureSingle();
+    const std::string_view textureName = texture ? texture->GetNameWithoutExtView() : std::string_view{};
+
+    for ( size_t start = 0; start <= identifiers.size(); ) {
+        size_t end = identifiers.find( '|', start );
+        if ( end == std::string_view::npos ) end = identifiers.size();
+        std::string_view pattern = identifiers.substr( start, end - start );
+        while ( !pattern.empty() && pattern.front() == ' ' ) pattern.remove_prefix( 1 );
+        while ( !pattern.empty() && pattern.back() == ' ' ) pattern.remove_suffix( 1 );
+        if ( !pattern.empty()
+            && ( MatchesWaterIdentifier( materialName, pattern ) || MatchesWaterIdentifier( textureName, pattern ) ) ) {
+            return true;
+        }
+        start = end + 1;
+    }
     return false;
 }
 

@@ -268,6 +268,7 @@ float3 WaterMoonGlint( float3 viewDirection, float3 smallWaveNormal, float3 bigW
 //--------------------------------------------------------------------------------------
 static const float  WATER_FOAM_FADE_DISTANCE = 20000.0f;   // view distance where foam is gone
 static const float3 WATER_FOAM_ALBEDO = float3( 0.76f, 0.79f, 0.80f );
+static const float  WATER_FOAM_BUMP = 3.0f;                 // world units of foam relief
 
 // 1 = inside the underwater scene, `gap` view units behind it; 0 = in front of it; -1 = off screen or hidden
 // behind something nearer or above the water (a swimmer's head must not read as a shallow floor)
@@ -354,14 +355,17 @@ float WaterFoamNoise( float2 p )
     return lerp( lerp( a, b, f.x ), lerp( d, e, f.x ), f.y );
 }
 
-// Bubble lace: 1 along the borders of drifting cells, 0 in their middles. Per-cell weights bend the borders and
-// vary the cell sizes; width = strand thickness in cells.
-float WaterFoamLace( float2 p, float time, float width )
+// Bubble lace: 1 along the borders of drifting cells, 0 in their middles; grad = its gradient per cell. Per-cell
+// weights bend the borders and vary the cell sizes; width = strand thickness in cells.
+float WaterFoamLace( float2 p, float time, float width, out float2 grad )
 {
     float2 c = floor( p );
     float2 f = p - c;
     int2 i = int2( c );
-    float2 d = float2( 8.0f, 8.0f );   // weighted squared distance to the nearest and second-nearest point
+    float d1 = 8.0f;   // weighted squared distance to the nearest and second-nearest point
+    float d2 = 8.0f;
+    float2 g1 = float2( 0.0f, 0.0f );   // weight * (point - p); the distance's gradient is -g / distance
+    float2 g2 = float2( 0.0f, 0.0f );
     [unroll]
     for ( int y = -1; y <= 1; ++y )
     {
@@ -370,18 +374,36 @@ float WaterFoamLace( float2 p, float time, float width )
         {
             float2 h = WaterFoamHash( i + int2( x, y ) );
             float2 pt = float2( x, y ) + 0.5f + 0.36f * sin( time * ( 0.7f + h.yx * 0.6f ) + h * 6.2831853f ) - f;
-            float dist = dot( pt, pt ) * lerp( 0.65f, 1.35f, h.x );
-            d = dist < d.x ? float2( dist, d.x ) : float2( d.x, min( d.y, dist ) );
+            float w = lerp( 0.65f, 1.35f, h.x );
+            float dist = dot( pt, pt ) * w;
+            bool nearest = dist < d1;
+            bool second = dist < d2;
+            d2 = nearest ? d1 : ( second ? dist : d2 );
+            g2 = nearest ? g1 : ( second ? pt * w : g2 );
+            d1 = nearest ? dist : d1;
+            g1 = nearest ? pt * w : g1;
         }
     }
-    d = sqrt( d );
-    return 1.0f - smoothstep( 0.0f, width, d.y - d.x );
+    float f1 = max( sqrt( d1 ), 0.0001f );
+    float f2 = max( sqrt( d2 ), 0.0001f );
+    float u = saturate( ( f2 - f1 ) / width );
+    grad = -( 6.0f * u * ( 1.0f - u ) / width ) * ( g1 / f1 - g2 / f2 );
+    return 1.0f - u * u * ( 3.0f - 2.0f * u );
 }
 
-// Foam at a surface point `depth` units above the floor: x = opacity, y = brightness (thick foam is brighter).
-// footprint = world units per pixel; isolated = a shallow spot in deep water, which keeps only its waterline.
-float2 WaterShoreFoam( float2 posXZ, float depth, float time, float footprint, bool isOcean, float isolated )
+struct WaterFoamSample
 {
+    float  opacity;
+    float  thickness;   // 0 on thin strands, 1 in dense foam
+    float2 slope;       // gradient of the foam height per world unit, for the bump normal
+    float  rim;         // a soft ring just outside the foam and in its holes, where it shades the water
+};
+
+// Foam at a surface point `depth` units above the floor. footprint = world units per pixel; isolated = a shallow
+// spot in deep water, which keeps only its waterline.
+WaterFoamSample WaterShoreFoam( float2 posXZ, float depth, float time, float footprint, bool isOcean, float isolated )
+{
+    WaterFoamSample foam = (WaterFoamSample)0;
     float lineDepth    = isOcean ? 9.0f : 5.0f;
     float residueDepth = isOcean ? 32.0f : 15.0f;
     float bandDepth    = isOcean ? 66.0f : 26.0f;
@@ -410,28 +432,50 @@ float2 WaterShoreFoam( float2 posXZ, float depth, float time, float footprint, b
     band *= ( 1.0f - smoothstep( bandDepth * 0.45f, bandDepth, depth ) ) * lerp( 0.40f, 0.80f, patches );
     float swash = ( residue + band ) * lerp( 0.65f, 1.25f, clumps ) * ( 1.0f - isolated * 0.75f );
     float amount = saturate( max( waterline, swash ) );
-    if ( amount <= 0.001f ) return float2( 0.0f, 0.0f );
+    if ( amount <= 0.001f ) return foam;
 
     float coarse = 0.4f;
     float fine = 0.4f;
+    float2 coarseGrad = float2( 0.0f, 0.0f );
+    float2 fineGrad = float2( 0.0f, 0.0f );
     [branch] if ( coarseDetail > 0.001f )
     {
         float2 warp = float2( clumps, WaterFoamNoise( posXZ / clumpCell + 31.7f ) ) * 0.8f;
         float width = lerp( 0.22f, 0.52f, WaterFoamNoise( posXZ / 300.0f - 7.1f ) );
-        coarse = lerp( 0.4f, WaterFoamLace( posXZ / coarseCell + warp, time * 0.35f, width ), coarseDetail );
+        coarse = lerp( 0.4f, WaterFoamLace( posXZ / coarseCell + warp, time * 0.35f, width, coarseGrad ), coarseDetail );
+        coarseGrad *= coarseDetail / coarseCell;
     }
     [branch] if ( fineDetail > 0.001f )
-        fine = lerp( 0.4f, WaterFoamLace( posXZ / fineCell + 17.3f, time * 0.8f, 0.42f ), fineDetail );
+    {
+        fine = lerp( 0.4f, WaterFoamLace( posXZ / fineCell + 17.3f, time * 0.8f, 0.42f, fineGrad ), fineDetail );
+        fineGrad *= fineDetail / fineCell;
+    }
     float pattern = ( coarse * 0.6f + fine * 0.4f ) * 0.85f + 0.15f;
+    float2 patternGrad = ( coarseGrad * 0.6f + fineGrad * 0.4f ) * 0.85f;
     float detail = coarseDetail * 0.6f + fineDetail * 0.4f;
 
-    // Dissolve: dense foam closes the holes, thin foam keeps only the lace's ridges. The edge widens as detail is
+    // Dissolve: dense foam closes the holes, thin foam keeps only the lace ridges. The edge widens as detail is
     // lost, so far foam becomes its average cover instead of a hard-edged solid band.
     float threshold = 1.0f - amount * 0.95f;
     float softness = lerp( 0.45f, 0.07f, detail );
     float cover = smoothstep( threshold - softness, threshold + softness, pattern );
-    float opacity = cover * lerp( 0.72f, 0.92f, amount ) * lerp( 0.60f, 1.0f, detail ) * ( isOcean ? 1.0f : 0.75f );
-    return float2( opacity, lerp( 0.78f, 1.0f, saturate( ( pattern - threshold ) * 3.0f ) ) );
+    foam.opacity = cover * lerp( 0.72f, 0.92f, amount ) * lerp( 0.60f, 1.0f, detail ) * ( isOcean ? 1.0f : 0.75f );
+    foam.thickness = saturate( ( pattern - threshold ) * 3.0f );
+
+    // Height: the cover with rounded shoulders so blobs bulge, plus the lace ridges as bumps on top
+    float shoulder = max( softness * 2.5f, 0.16f );
+    float hu = saturate( ( pattern - threshold + shoulder ) / ( 2.0f * shoulder ) );
+    foam.slope = patternGrad * ( 6.0f * hu * ( 1.0f - hu ) / ( 2.0f * shoulder ) + 0.8f * cover );
+    foam.rim = smoothstep( threshold - softness - 0.25f, threshold - softness, pattern ) * ( 1.0f - cover ) * detail * amount;
+    return foam;
+}
+
+// Bumped foam under a light, relative to flat foam: the bumps show without changing its overall brightness
+float WaterFoamRelief( float3 n, float3 lightDir )
+{
+    float bumped = saturate( ( dot( n, lightDir ) + 0.6f ) / 1.6f );
+    float flat = max( ( lightDir.y + 0.6f ) / 1.6f, 0.05f );
+    return clamp( bumped / flat, 0.5f, 1.5f );
 }
 
 // Foam is lit like the water texture by day; at night moonlight, or the shore's own light (torches, fires)
@@ -716,10 +760,20 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
         // Unknown: the depth at the view ray's floor hit, exact when looking straight down. Steep banks have
         // no shallow water in front of them; the view ray's run to the bank stands in.
         float foamDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
-        float2 foam = WaterShoreFoam( px.worldPos.xz + distortionSmall.xy * 14.0f, foamDepth, fr.time, footprint, isOcean,
-                                      isolatedShallow );
-        float3 foamColor = WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint ) * foam.y;
-        color = lerp( color, foamColor, foam.x * foamFade );
+        WaterFoamSample foam = WaterShoreFoam( px.worldPos.xz + distortionSmall.xy * 14.0f, foamDepth, fr.time, footprint,
+                                               isOcean, isolatedShallow );
+        float3 foamNormal = normalize( float3( -foam.slope.x * WATER_FOAM_BUMP, 1.0f, -foam.slope.y * WATER_FOAM_BUMP ) );
+        float3 sunDir = normalize( AC_LightPos.xyz );
+        float relief = lerp( WaterFoamRelief( foamNormal, sunDir ), WaterFoamRelief( foamNormal, fr.moonDir ), night );
+        relief = lerp( 1.0f, relief, lerp( 0.9f, 0.35f, rain ) );   // overcast light is flat
+        // Thin foam lets the water hue through and sits in the shade of the thick foam around it
+        float3 waterHue = min( color / max( WaterLuma( color ), 0.02f ), 2.0f );
+        float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, 1.0f, foam.thickness );
+        float sparkle = pow( saturate( dot( reflect( viewDirection, foamNormal ), sunDir ) ), 60.0f )
+                      * 0.20f * sunVisibility * foam.thickness;
+        float3 foamColor = WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint ) * relief * body + sparkle;
+        color *= 1.0f - foam.rim * 0.14f * foamFade;
+        color = lerp( color, foamColor, foam.opacity * foamFade );
     }
     return max( color, 0.0f );
 }

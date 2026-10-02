@@ -686,7 +686,7 @@ void D3D12PointShadows::Prepare() {
 						if ( dx * dx + dy * dy + dz * dz >= rangeSq ) continue;   // section outside the light sphere
 						for ( auto const& [meshKey, mesh] : section.WorldMeshes ) {
 							if ( !mesh || mesh->Indices.empty() ) continue;
-							if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
+							if ( meshKey.Info && meshKey.Info->IsWater() ) continue;
 							zCTexture* tex = meshKey.Material->GetAniTexture();
 							if ( tex != boundTex ) { boundSrv = resolveDiffuse( tex ); boundTex = tex; }
 
