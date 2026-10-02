@@ -90,6 +90,12 @@ inline OceanProfile GetOceanProfile() {
     return profile;
 }
 
+/** WaterFrame::shoreFieldState: 0 = no field, 1 = field, 2 = field painted for debugging. */
+inline float WaterShoreFieldState( bool haveField ) {
+    if ( !haveField ) return 0.0f;
+    return Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.WaterDebug.ShowShoreField ? 2.0f : 1.0f;
+}
+
 /** WaterFrame::shoreFoam: 0 = off, 1 = ocean only, 2 = all water. */
 inline float WaterShoreFoamMode() {
     return static_cast<float>( Engine::GAPI->GetRendererState().RendererSettings.WaterShoreFoam );

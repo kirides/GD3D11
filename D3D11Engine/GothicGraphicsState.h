@@ -1587,6 +1587,9 @@ struct GothicRendererSettings {
             // camera. See ImGuiShim::RenderPointLightShadowDebugWindow.
             bool Enabled;
         } PointLightDebug;
+        struct {
+            bool ShowShoreField;   // paints the baked shoreline field over the water
+        } WaterDebug;
     } DebugSettings;
 
     // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks.

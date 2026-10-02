@@ -1227,6 +1227,8 @@ void ImGuiShim::RenderSettingsWindow()
                     settings.WaterShoreFoam = (GothicRendererSettings::E_WaterShoreFoam)shoreFoam;
                 }
                 ImGui::SetItemTooltip( "Foam over shallow water along shores. Ocean = water matching [Display] OceanIdentifiers." );
+                ImGui::Checkbox( "Show Shore Field", &settings.DebugSettings.WaterDebug.ShowShoreField );
+                ImGui::SetItemTooltip( "Paints the baked shoreline field over the water: distance bands, depth and the seaward direction." );
             }
             // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
             // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime

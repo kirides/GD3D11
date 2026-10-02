@@ -926,6 +926,7 @@ void GothicAPI::ResetWorld() {
     ResetVobs();
     ClearWorldSectionBVH();
     State->WorldSections.clear();
+    State->ShoreFieldData.reset();
 
     SAFE_DELETE( WrappedWorldMesh );
 
@@ -1057,6 +1058,7 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
     }
 #endif
     BuildWorldSectionBVH();
+    State->ShoreFieldData = ShoreField::Bake( State->WorldSections );
     Logging::Inf( "Done extracting world!" );
 }
 
@@ -3576,6 +3578,10 @@ void GothicAPI::ResetViewTransform() {
 /** Returns the wrapped world mesh */
 MeshInfo* GothicAPI::GetWrappedWorldMesh() {
     return WrappedWorldMesh;
+}
+
+ShoreField* GothicAPI::GetShoreField() const {
+    return State->ShoreFieldData.get();
 }
 
 /** Returns the loaded sections */
