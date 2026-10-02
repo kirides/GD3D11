@@ -655,6 +655,115 @@ bool D3D12GraphicsEngine::CullGpuSceneCasters( const GpuSceneCasterView* views, 
 }
 
 
+bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UINT count, D3D12_GPU_VIRTUAL_ADDRESS reportBase,
+    UINT64 reportStride ) {
+    if ( !m_GpuSceneActive || !m_FrameOpen || !m_GpuScene || count == 0 ) return false;
+    D3D12GpuScene& scene = *m_GpuScene;
+    const auto& cull = m_Pipelines.Cull;
+    if ( !cull.VobCullSpherePSO || !cull.VobSphereClearPSO || !cull.SceneCubeArgsPSO || !cull.SceneClearPSO
+        || !cull.SceneArgsRootSig || !scene.PointInstances() || !scene.PointArgs() || scene.VisualCount() == 0 ) return false;
+    count = std::min( count, D3D12GpuScene::kPointViews );
+
+    ZoneScopedN( "GPU scene point casters" )
+    DX_ZONE( m_CmdList.Get(), "GPU scene point casters" );
+
+    // Rest states the previous frame's cube draws left.
+    {
+        D3D12ResourceTransition pre[4] = {};
+        UINT n = 0;
+        if ( scene.PointInstancesDrawable ) {
+            pre[n++] = { scene.PointInstances(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.PointInstancesDrawable = false;
+        }
+        if ( scene.PointCountsReadable ) {
+            pre[n++] = { scene.PointCounts(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.PointCountsReadable = false;
+        }
+        if ( scene.PointArgsDrawable ) {
+            pre[n++] = { scene.PointArgs(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            pre[n++] = { scene.PointArgCount(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.PointArgsDrawable = false;
+        }
+        if ( n ) m_CmdList->TransitionBarriers( pre, n );
+    }
+
+    // --- Each light's casters, packed into its own region ---
+    const D3D12_GPU_VIRTUAL_ADDRESS counts = scene.PointCounts()->GetGPUVirtualAddress();
+    VobCullCB cb{};
+    cb.VisualCount = scene.VisualCount();
+    cb.HiZIndex = D3D12GpuScene::kPointInstanceCapacity;   // CSCullSphere's SphereCapacity
+    cb.FocusSlot = 0xFFFFFFFFu;
+    m_CmdList->SetComputeRootSignature( cull.VobCullRootSig.Get() );
+    m_CmdList->SetComputeRootShaderResourceView( 1, scene.Records()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 2, scene.Table()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 3, scene.PointInstances()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+    m_CmdList->SetPipelineState( cull.VobSphereClearPSO.Get() );
+    for ( UINT c = 0; c < count; ++c ) {
+        m_CmdList->SetComputeRootUnorderedAccessView( 4, counts + c * scene.PointCountsStride() );
+        m_CmdList->Dispatch( 1, 1, 1 );
+    }
+    m_CmdList->UAVBarrier( scene.PointCounts(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
+    m_CmdList->SetPipelineState( cull.VobCullSpherePSO.Get() );
+    for ( UINT c = 0; c < count; ++c ) {
+        cb.CamPosWS = views[c].Center;
+        cb.OutdoorRadius = views[c].Radius;
+        cb.MinMeshSize = views[c].MinSizePerDistance;
+        cb.OutputOffset = c * D3D12GpuScene::kPointInstanceCapacity;
+        m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+        m_CmdList->SetComputeRootUnorderedAccessView( 4, counts + c * scene.PointCountsStride() );
+        m_CmdList->Dispatch( scene.VisualCount(), 1, 1 );
+    }
+    m_CmdList->TransitionBarrier( scene.PointCounts(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+    scene.PointCountsReadable = true;
+
+    // --- Their cube commands ---
+    const D3D12_GPU_VIRTUAL_ADDRESS argCount = scene.PointArgCount()->GetGPUVirtualAddress();
+    m_CmdList->SetComputeRootSignature( cull.SceneArgsRootSig.Get() );
+    m_CmdList->SetComputeRootShaderResourceView( 1, scene.Templates()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 2, scene.Records()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 3, counts );
+    m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.PointArgs()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 6, reportBase );
+    m_CmdList->SetPipelineState( cull.SceneClearPSO.Get() );
+    for ( UINT c = 0; c < count; ++c ) {
+        m_CmdList->SetComputeRootUnorderedAccessView( 5, argCount + c * D3D12GpuScene::kCasterArgCountStride );
+        m_CmdList->Dispatch( 1, 1, 1 );
+    }
+    m_CmdList->UAVBarrier( scene.PointArgCount(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
+    if ( scene.TemplateCount() > 0 ) {
+        m_CmdList->SetPipelineState( cull.SceneCubeArgsPSO.Get() );
+        const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), 0u, 0u };
+        m_CmdList->SetComputeRoot32BitConstants( 0, kSceneArgsConstants, &acb, 0 );
+        for ( UINT c = 0; c < count; ++c ) {
+            m_CmdList->SetComputeRootShaderResourceView( 3, counts + c * scene.PointCountsStride() );
+            m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.PointArgs()->GetGPUVirtualAddress() + c * scene.PointArgsStride() );
+            m_CmdList->SetComputeRootUnorderedAccessView( 5, argCount + c * D3D12GpuScene::kCasterArgCountStride );
+            m_CmdList->SetComputeRootUnorderedAccessView( 6, reportBase + c * reportStride );
+            m_CmdList->Dispatch( ( scene.TemplateCount() + 63 ) / 64, 1, 1 );
+        }
+    }
+    m_CmdList->TransitionBarriers( {
+        { scene.PointArgs(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+        { scene.PointArgCount(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+        { scene.PointInstances(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+    } );
+    scene.PointArgsDrawable = true;
+    scene.PointInstancesDrawable = true;
+    return true;
+}
+
+
+void D3D12GraphicsEngine::DrawGpuScenePoints( D3D12CmdList& cmdList, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const {
+    const D3D12GpuScene& scene = *m_GpuScene;
+    const UINT capacity = scene.CommandCapacity();
+    cmdList->ExecuteIndirect( sig, capacity, scene.PointArgs(),
+        view * scene.PointArgsStride() + ( alphaTested ? static_cast<UINT64>( capacity ) * D3D12GpuScene::kPointCommandStride : 0ull ),
+        scene.PointArgCount(), view * D3D12GpuScene::kCasterArgCountStride + ( alphaTested ? sizeof( uint32_t ) : 0u ) );
+}
+
+
 void D3D12GraphicsEngine::DrawGpuSceneCasters( D3D12CmdList& cmdList, UINT view, bool alphaTested ) const {
     const D3D12GpuScene& scene = *m_GpuScene;
     const UINT capacity = scene.CommandCapacity();

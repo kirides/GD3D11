@@ -33,14 +33,16 @@ namespace {
     static_assert( sizeof( SectionGpu ) == 32 && sizeof( MeshGpu ) == 40 && sizeof( ClusterGpu ) == 32, "WorldCull.hlsl structs" );
     static_assert( sizeof( WorldCullCB ) == 31 * sizeof( uint32_t ), "CreateWorldCull's 31 root constants" );
 
-    constexpr uint32_t kMeshMain = 1u, kMeshCaster = 2u;
-    constexpr uint32_t kMaterialAlpha = 1u;
+    constexpr uint32_t kMeshMain = 1u, kMeshCaster = 2u, kMeshPoint = 4u;
+    constexpr uint32_t kMaterialAlpha = 1u, kMaterialReady = 2u;
     constexpr uint32_t kViewMainFlag = 1u, kViewNoFrustum = 2u, kViewFeedback = 4u, kViewGridRadius = 8u;
+    constexpr uint32_t kViewSphere = 16u, kViewCube = 32u;
     constexpr uint32_t kTouchInterval = 30;       // frames between CacheIn touches of a seen material
     constexpr uint32_t kResolvesPerFrame = 64;
     constexpr uint32_t kRefreshPerFrame = 32;     // unresolved materials re-polled without CacheIn
     constexpr uint32_t kOrmIndexMask = 0x0FFFFFFFu;
     constexpr UINT kCommandStride = 36;   // WorldDrawCommand, WorldCull.hlsl WORLD_DRAW_COMMAND_STRIDE
+    constexpr UINT kCubeCommandStride = 24;   // PointShadowCasterCommand, WorldCull.hlsl CUBE_COMMAND_STRIDE
 
     D3D12_RESOURCE_DESC BufferDesc( UINT64 bytes, bool uav ) {
         D3D12_RESOURCE_DESC bd = {};
@@ -120,7 +122,8 @@ void D3D12GpuWorld::OnSrvSlotFreed( UINT slot ) {
 void D3D12GpuWorld::Resolve( uint32_t i, bool cacheIn ) {
     Material& m = m_Materials[i];
     const D3D12GraphicsEngine::WorldMaterial r = m_E.ResolveWorldMaterial( *m.Key, cacheIn );
-    MaterialGpu g = { r.Normal, r.Orm, r.Diffuse, r.NormalStrength, r.AlphaTested ? kMaterialAlpha : 0u, {} };
+    MaterialGpu g = { r.Normal, r.Orm, r.Diffuse, r.NormalStrength,
+        ( r.AlphaTested ? kMaterialAlpha : 0u ) | ( r.TextureReady ? kMaterialReady : 0u ), {} };
     m.Ready = r.TextureReady;
     if ( cacheIn ) m.LastTouch = m_Frame;
     if ( memcmp( &g, &m.Gpu, sizeof( g ) ) != 0 ) {
@@ -151,7 +154,9 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
                 if ( !mesh || mesh->Indices.empty() || !key.Material ) continue;
                 const bool special = IsSpecial( key );
                 if ( special ) m_Specials.push_back( { &section, mesh, &key, x, y } );
-                const uint32_t flags = ( special ? 0u : kMeshMain ) | ( IsCaster( key ) ? kMeshCaster : 0u );
+                // Point-light bakes take everything but water, as their CPU gather did.
+                const uint32_t flags = ( special ? 0u : kMeshMain ) | ( IsCaster( key ) ? kMeshCaster : 0u )
+                    | ( key.Info && key.Info->IsWater() ? 0u : kMeshPoint );
                 const zTBBox3D& box = mesh->HasBoundingBox ? mesh->BoundingBox : section.BoundingBox;
                 if ( !flags || !IsValidBox( box ) ) continue;
 
@@ -221,7 +226,8 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
         && make( materialBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldMaterials", m_MaterialBuffer )
         && make( m_Materials.size() * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldSeen", m_Seen );
     for ( UINT v = 0; ok && v < kViews; ++v ) {
-        ok = make( static_cast<UINT64>( m_Capacity ) * 2u * kCommandStride, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldArgs", m_Args[v] )
+        const UINT stride = v >= kViewPointFirst ? kCubeCommandStride : kCommandStride;
+        ok = make( static_cast<UINT64>( m_Capacity ) * 2u * stride, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldArgs", m_Args[v] )
             && make( 2u * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldArgCount", m_ArgCount[v] );
         m_ArgsDrawable[v] = false;
     }
@@ -439,13 +445,18 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
         const bool isMain = v == kViewMain;
         cb.CullViewProj = views[i].CullViewProj;
         cb.ViewFlags = ( isMain ? kViewMainFlag | kViewFeedback | ( gridRadius ? kViewGridRadius : 0u ) : 0u )
-            | ( views[i].NoFrustum ? kViewNoFrustum : 0u );
+            | ( views[i].NoFrustum ? kViewNoFrustum : 0u ) | ( views[i].Sphere ? kViewSphere | kViewCube : 0u );
         cb.SectionRadiusSq = isMain && !gridRadius ? radius * radius : 0.0f;
+        // A sphere view's sections and boxes are both tested against the light.
+        cb.CamPos = views[i].Sphere ? views[i].Center : camPos;
+        if ( views[i].Sphere ) cb.SectionRadiusSq = views[i].Radius * views[i].Radius;
         cmd.SetComputeRoot32BitConstants( 0, sizeof( cb ) / sizeof( uint32_t ), &cb, 0 );
         cmd.SetComputeRootUnorderedAccessView( 5, m_Args[v]->GetGPUVirtualAddress() );
         cmd.SetComputeRootUnorderedAccessView( 6, m_ArgCount[v]->GetGPUVirtualAddress() );
-        // Only the main view writes feedback; a cascade gets a stand-in, since m_Seen may sit in COPY_SOURCE.
-        cmd.SetComputeRootUnorderedAccessView( 7, ( isMain ? m_Seen : m_ArgCount[v] )->GetGPUVirtualAddress() );
+        // u2: the main view's seen flags, a sphere view's bake report, else a stand-in (m_Seen may sit in COPY_SOURCE).
+        const D3D12_GPU_VIRTUAL_ADDRESS feedback = isMain ? m_Seen->GetGPUVirtualAddress()
+            : views[i].Report ? views[i].Report : m_ArgCount[v]->GetGPUVirtualAddress();
+        cmd.SetComputeRootUnorderedAccessView( 7, feedback );
         cmd.SetPipelineState( pipe.WorldClearPSO.Get() );
         cmd.Dispatch( isMain ? std::max<UINT>( 1u, ( cb.MaterialCount + 63 ) / 64 ) : 1u, 1, 1 );
         cmd.UAVBarrier( m_ArgCount[v].Get(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
@@ -479,8 +490,27 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
 }
 
 
+bool D3D12GpuWorld::RequestResident( uint32_t material ) {
+    if ( material >= m_Materials.size() ) return true;   // the tables were rebuilt since it was reported
+    Material& m = m_Materials[material];
+    if ( m.Ready ) return true;
+    if ( !m.Queued ) {
+        m.Queued = true;
+        m_Queue.push_back( material );   // resolved with CacheIn by ProcessFeedback
+    }
+    return false;
+}
+
+
 void D3D12GpuWorld::Draw( Rhi::CmdList& cmd, UINT view, bool alphaTested ) const {
     cmd.ExecuteIndirect( m_E.m_WorldIndirectCmdSig.Get(), m_Capacity, m_Args[view].Get(),
         alphaTested ? static_cast<UINT64>( m_Capacity ) * kCommandStride : 0ull,
+        m_ArgCount[view].Get(), alphaTested ? sizeof( uint32_t ) : 0u );
+}
+
+
+void D3D12GpuWorld::DrawCube( Rhi::CmdList& cmd, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const {
+    cmd.ExecuteIndirect( sig, m_Capacity, m_Args[view].Get(),
+        alphaTested ? static_cast<UINT64>( m_Capacity ) * kCubeCommandStride : 0ull,
         m_ArgCount[view].Get(), alphaTested ? sizeof( uint32_t ) : 0u );
 }

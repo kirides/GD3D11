@@ -25,6 +25,13 @@ struct GpuSceneCasterView {
     bool  Active;                       // false: neither culled nor drawn this frame (a frozen cascade)
 };
 
+/** One point light whose static cube is baked this frame from the scene's casters in its sphere. */
+struct GpuScenePointView {
+    DirectX::XMFLOAT3 Center;
+    float Radius;
+    float MinSizePerDistance;           // a caster's box diagonal must reach this times its distance
+};
+
 /** Static VOBs (still in their BSP leaf) in a persistent GPU table. The main view and the shadow cascades cull
     them and generate their draw commands on the GPU instead of walking the leaves every frame; see GPU_SCENE_PLAN.md. */
 class D3D12GpuScene {
@@ -50,6 +57,7 @@ public:
     static constexpr uint32_t kTemplateAlpha = 1u;    // VobCull.hlsl SCENE_TEMPLATE_ALPHA
     static constexpr uint32_t kTemplateReady = 2u;    // SCENE_TEMPLATE_READY
     static constexpr uint32_t kTemplateCaster = 4u;   // SCENE_TEMPLATE_CASTER
+    static constexpr uint32_t kTemplateResolved = 8u; // SCENE_TEMPLATE_RESOLVED: the caster's diffuse is resident
 
     static constexpr UINT kCasterViews = 4;              // the three cascades, then the rain shadowmap
     static constexpr UINT kCasterViewRain = 3;
@@ -61,8 +69,9 @@ public:
 
     /** Drops the table; the next frame rebuilds it from the BSP leaf cache. */
     void Reset();
-    /** The vob left its leaf (it moved) or the world: it stops drawing from the table. */
-    void OnVobLeft( const zCVob* vob );
+    /** The vob left its leaf (it moved) or the world: it stops drawing from the table. True when it was a table
+        slot; `bakedSphere` then gets its load-time bounds, which point-light cubes may have baked. */
+    bool OnVobLeft( const zCVob* vob, DirectX::XMFLOAT4* bakedSphere = nullptr );
     /** A bindless slot was freed; templates naming it stop drawing until the visual is re-resolved. */
     void OnSrvSlotFreed( UINT slot );
 
@@ -89,6 +98,8 @@ public:
     UINT SlotCount() const { return static_cast<UINT>( m_SlotVob.size() ); }
     UINT CommandCapacity() const { return m_CommandCapacity; }   // per list; the alpha list starts here
     UINT ReadyVisualCount() const;
+    /** Whether every caster texture of a visual is resident; if not, its templates are rebuilt with CacheIn. */
+    bool RequestCasterTextures( uint32_t visual );
 
     // Shadow casters, one region per GpuSceneCasterView: instances (view * SlotCount elements in), counts, both
     // command lists, and their two counts.
@@ -102,12 +113,28 @@ public:
     /** A morph-animated static caster intersects f, so a lazily updated cascade must not freeze. Main thread. */
     bool AnyAnimatedCasterIn( const Frustum& f ) const;
 
+    // Point-light bakes: per view a packed instance region, the per-visual { count, first } pairs (and the
+    // region's fill counter behind them), the cube command lists and their two counts.
+    static constexpr UINT kPointViews = 8;                  // static cube bakes per frame
+    static constexpr UINT kPointInstanceCapacity = 4096;    // instances per view
+    static constexpr UINT kPointCommandStride = 24;         // D3D12PointShadows' PointShadowCasterCommand
+    Rhi::Resource* PointInstances() const { return m_PointInstances.Get(); }
+    UINT PointInstanceBytes() const { return kPointViews * kPointInstanceCapacity * kCasterInstanceStride; }
+    Rhi::Resource* PointCounts() const { return m_PointCounts.Get(); }
+    UINT64 PointCountsStride() const { return m_PointCountsStride; }
+    Rhi::Resource* PointArgs() const { return m_PointArgs.Get(); }
+    UINT64 PointArgsStride() const { return m_PointArgsStride; }
+    Rhi::Resource* PointArgCount() const { return m_PointArgCount.Get(); }
+
     // Resource states between the cull, the command build, the feedback copy and the draws.
     bool CountsReadable = false;   // NON_PIXEL_SHADER_RESOURCE | COPY_SOURCE, else UNORDERED_ACCESS
     bool ArgsDrawable = false;     // Args + ArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
     bool CasterInstancesDrawable = false;   // VERTEX_AND_CONSTANT_BUFFER, else UNORDERED_ACCESS
     bool CasterCountsReadable = false;      // NON_PIXEL_SHADER_RESOURCE, else UNORDERED_ACCESS
     bool CasterArgsDrawable = false;        // CasterArgs + CasterArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
+    bool PointInstancesDrawable = false;    // VERTEX_AND_CONSTANT_BUFFER, else UNORDERED_ACCESS
+    bool PointCountsReadable = false;       // NON_PIXEL_SHADER_RESOURCE, else UNORDERED_ACCESS
+    bool PointArgsDrawable = false;         // PointArgs + PointArgCount in INDIRECT_ARGUMENT, else UNORDERED_ACCESS
 
 private:
     struct Visual {
@@ -141,6 +168,7 @@ private:
     void MarkCasterStale( uint32_t v );
     void RefreshCasters();
     bool CreateCasterArgs( UINT capacity, Microsoft::WRL::ComPtr<Rhi::Resource>& out, UINT64& stride ) const;
+    bool CreatePointArgs( UINT capacity, Microsoft::WRL::ComPtr<Rhi::Resource>& out, UINT64& stride ) const;
     void MoveVisualToCpu( uint32_t v );
     void SetSlotState( uint32_t slot, uint8_t state );
     void ScanFlags();
@@ -162,6 +190,7 @@ private:
     std::vector<VobInfo*> m_SlotVob;     // null once the vob left
     std::vector<uint8_t>  m_SlotState;   // kSlot*
     std::vector<uint32_t> m_SlotVisual;  // slot -> visual
+    std::vector<DirectX::XMFLOAT4> m_SlotSphere;   // load-time bounds: centre + radius
     std::vector<VobInfo*> m_CpuVobs;
     std::vector<uint32_t> m_DirtySlots;
     std::vector<uint32_t> m_DirtyVisuals;
@@ -186,6 +215,9 @@ private:
     Microsoft::WRL::ComPtr<Rhi::Resource> m_CasterInstances, m_CasterCounts, m_CasterArgs, m_CasterArgCount;
     UINT64 m_CasterCountsStride = 0;
     UINT64 m_CasterArgsStride = 0;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_PointInstances, m_PointCounts, m_PointArgs, m_PointArgCount;
+    UINT64 m_PointCountsStride = 0;
+    UINT64 m_PointArgsStride = 0;
     static constexpr UINT kFrames = 3;   // D3D12GraphicsEngine::kBackBufferMax, asserted in the .cpp
     static constexpr UINT kStagingBytes = 128 * 1024;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_Staging[kFrames];

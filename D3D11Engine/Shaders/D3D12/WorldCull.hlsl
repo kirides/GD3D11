@@ -21,6 +21,7 @@ struct WorldMesh
 };
 #define WORLD_MESH_MAIN    1u   // drawn by the main view
 #define WORLD_MESH_CASTER  2u   // drawn by the shadow cascades
+#define WORLD_MESH_POINT   4u   // drawn into point-light cubes (everything but water)
 
 struct WorldCluster
 {
@@ -40,6 +41,7 @@ struct WorldMaterial
     uint3 _pad;
 };
 #define WORLD_MATERIAL_ALPHA  1u
+#define WORLD_MATERIAL_READY  2u   // its texture is resident (or it has none)
 
 cbuffer WorldCullCB : register( b0 )
 {
@@ -62,6 +64,8 @@ cbuffer WorldCullCB : register( b0 )
 #define VIEW_NO_FRUSTUM   2u
 #define VIEW_FEEDBACK     4u   // mark the materials of drawn meshes in MaterialSeen
 #define VIEW_GRID_RADIUS  8u   // section radius in grid cells instead of SectionRadiusSq
+#define VIEW_SPHERE      16u   // boxes are tested against the sphere CamPos / SectionRadiusSq, not CullViewProj
+#define VIEW_CUBE        32u   // point-light cube: WORLD_MESH_POINT meshes, PointShadowCasterCommand records
 
 StructuredBuffer<WorldSection>  Sections     : register( t0 );
 StructuredBuffer<WorldMesh>     Meshes       : register( t1 );
@@ -69,15 +73,24 @@ StructuredBuffer<WorldCluster>  Clusters     : register( t2 );
 StructuredBuffer<WorldMaterial> Materials    : register( t3 );
 RWByteAddressBuffer             Args         : register( u0 );   // WorldDrawCommand x (OpaqueCapacity + AlphaCapacity)
 RWByteAddressBuffer             ArgCount     : register( u1 );   // [0] opaque, [4] alpha
-RWByteAddressBuffer             MaterialSeen : register( u2 );   // one uint per material
+// Main view: one seen flag per material. Cube view: the bake report, { count, material indices } of the casters
+// left out because their texture is not resident (D3D12PointShadows re-bakes the light once they are).
+RWByteAddressBuffer             Feedback     : register( u2 );
 
 #define WORLD_DRAW_COMMAND_STRIDE 36u
+#define CUBE_COMMAND_STRIDE 24u       // D3D12PointShadows' PointShadowCasterCommand: b1 diffuse + DrawIndexed
 #define WORLDCULL_GROUP_SIZE 64
 #define MAX_CLUSTER_WORDS 64        // 2048 clusters per mesh; the rest join the last run unculled
+#define REPORT_CAPACITY 63u         // D3D12PointShadows::kReportCapacity
 
 bool IsBoxVisible( float3 mn, float3 mx )
 {
     if ( ViewFlags & VIEW_NO_FRUSTUM ) return true;
+    if ( ViewFlags & VIEW_SPHERE )
+    {
+        const float3 d = CamPos - clamp( CamPos, mn, mx );
+        return dot( d, d ) < SectionRadiusSq;
+    }
     bool outNegX = true, outPosX = true, outNegY = true, outPosY = true, outNear = true, outFar = true;
     [unroll]
     for ( uint c = 0; c < 8; ++c )
@@ -110,8 +123,16 @@ void EmitCommand( WorldMaterial mat, uint startIndex, uint indexCount )
     uint slot;
     ArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
     if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;   // the draw clamps the count to capacity
+    if ( ViewFlags & VIEW_CUBE )
+    {
+        // One instance per cube face, routed by the cube VS.
+        const uint cubeAt = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * CUBE_COMMAND_STRIDE;
+        Args.Store3( cubeAt,      uint3( mat.Diffuse, indexCount, 6u ) );
+        Args.Store3( cubeAt + 12, uint3( startIndex, 0u, 0u ) );
+        return;
+    }
 
-    uint normal = 0xFFFFFFFFu, orm = DefaultOrm;
+    uint normal= 0xFFFFFFFFu, orm = DefaultOrm;
     float strength = 0.0;
     if ( ViewFlags & VIEW_MAIN )
     {
@@ -128,6 +149,13 @@ void EmitCommand( WorldMaterial mat, uint startIndex, uint indexCount )
     Args.Store4( at,      uint4( normal, orm, mat.Diffuse, asuint( strength ) ) );
     Args.Store4( at + 16, uint4( indexCount, 1u, startIndex, 0u ) );
     Args.Store( at + 32, 0u );
+}
+
+void ReportMissing( uint materialIndex )
+{
+    uint at;
+    Feedback.InterlockedAdd( 0, 1u, at );
+    if ( at < REPORT_CAPACITY ) Feedback.Store( 4u + at * 4u, materialIndex );
 }
 
 groupshared uint gVisible[MAX_CLUSTER_WORDS];
@@ -158,9 +186,15 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
 {
     const uint meshIndex = min( gid.x, MeshCount - 1u );
     const WorldMesh m = Meshes[meshIndex];
-    const uint wanted = ( ViewFlags & VIEW_MAIN ) ? WORLD_MESH_MAIN : WORLD_MESH_CASTER;
-    const bool active = gid.x < MeshCount && ( m.FlagsSection & wanted ) != 0u
+    const WorldMaterial mat = Materials[m.MaterialIndex];
+    const uint wanted = ( ViewFlags & VIEW_MAIN ) ? WORLD_MESH_MAIN : ( ViewFlags & VIEW_CUBE ) ? WORLD_MESH_POINT : WORLD_MESH_CASTER;
+    const bool inView = gid.x < MeshCount && ( m.FlagsSection & wanted ) != 0u
         && IsSectionInRange( m.FlagsSection >> 8 ) && IsBoxVisible( m.Min, m.Max );
+    // A cube is cached, so a caster whose texture is not resident must not bake with a fallback (an alpha-tested
+    // one would stay solid): leave it out and report it.
+    const bool missing = inView && ( ViewFlags & VIEW_CUBE ) && !( mat.Flags & WORLD_MATERIAL_READY );
+    if ( missing && gtid == 0 ) ReportMissing( m.MaterialIndex );
+    const bool active = inView && !missing;
 
     const uint culled = min( m.ClusterCount, MAX_CLUSTER_WORDS * 32u );
     if ( gtid < MAX_CLUSTER_WORDS ) gVisible[gtid] = 0u;
@@ -176,7 +210,6 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
     GroupMemoryBarrierWithGroupSync();
     if ( !active ) return;
 
-    const WorldMaterial mat = Materials[m.MaterialIndex];
     bool any = false;
     for ( uint i = gtid; i < culled; i += WORLDCULL_GROUP_SIZE )
     {
@@ -197,7 +230,7 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         EmitCommand( mat, start, last.IndexStart + last.IndexCount - start );
     }
     if ( ( ViewFlags & VIEW_FEEDBACK ) && WaveActiveAnyTrue( any ) && WaveIsFirstLane() )
-        MaterialSeen.Store( m.MaterialIndex * 4u, 1u );
+        Feedback.Store( m.MaterialIndex * 4u, 1u );
 }
 
 // Zeroes a view's two command counts and, with VIEW_FEEDBACK, the material feedback.
@@ -205,5 +238,5 @@ void CSWorldCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
 void CSWorldClear( uint3 DTid : SV_DispatchThreadID )
 {
     if ( DTid.x == 0u ) ArgCount.Store2( 0, uint2( 0u, 0u ) );
-    if ( ( ViewFlags & VIEW_FEEDBACK ) && DTid.x < MaterialCount ) MaterialSeen.Store( DTid.x * 4u, 0u );
+    if ( ( ViewFlags & VIEW_FEEDBACK ) && DTid.x < MaterialCount ) Feedback.Store( DTid.x * 4u, 0u );
 }

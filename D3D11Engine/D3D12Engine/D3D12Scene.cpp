@@ -375,14 +375,20 @@ XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     // by POINTER against what each slot baked -- nothing about the dying vob can be read here, which is also
     // why no StaticVob gate is left: a slot that never baked it simply doesn't match.
     m_PointShadows.InvalidateStaticForVobRemoved( vob );
-    m_GpuScene->OnVobLeft( vob );
+    // GPU-baked cubes keep no pointers, so a table vob invalidates by its load-time bounds instead.
+    XMFLOAT4 baked;
+    if ( m_GpuScene->OnVobLeft( vob, &baked ) )
+        m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( baked.x, baked.y, baked.z ), baked.w );
     return XR_SUCCESS;
 }
 
 
 void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
-    // It left its leaf (GothicAPI::OnVobMoved), so DynamicallyAddedVobs draws it from now on.
-    m_GpuScene->OnVobLeft( vob );
+    // It left its leaf (GothicAPI::OnVobMoved), so DynamicallyAddedVobs draws it from now on, and a cube that
+    // GPU-baked it where it stood has to let go.
+    XMFLOAT4 baked;
+    if ( m_GpuScene->OnVobLeft( vob, &baked ) )
+        m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( baked.x, baked.y, baked.z ), baked.w );
     // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
     // missing from its cube. Queued because a falling item moves several times before coming to rest.
     m_PointShadows.QueueVobChangedInvalidation( vob );
@@ -3234,7 +3240,6 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
     // cacheIn=false: a pure GetCacheState read, safe on a worker thread (CacheIn mutates Gothic's resource manager).
     const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
                                          : ( tex->GetCacheState() == zRES_CACHED_IN ) );
-    m.TextureReady = !tex || cached;
     if ( cached ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* gfx = s->GetEngineTexture() ) {
@@ -3247,6 +3252,8 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
             }
         }
     }
+    // Resident means an SRV to sample, not just "cached in": the black fallback is no texture at all.
+    m.TextureReady = !tex || m.Diffuse != m_BlackTexture->GetSrvSlot();
     const int alphaFunc = key.Material ? key.Material->GetAlphaFunc() : zMAT_ALPHA_FUNC_NONE;
     m.Blended = alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD;
     m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || ( key.Material && key.Material->HasAlphaTest() );
@@ -3278,7 +3285,6 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     // CacheIn also loads the normal/ORM side textures; cacheIn=false only reads the state.
     const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
                                          : ( tex->GetCacheState() == zRES_CACHED_IN ) );
-    m.TextureReady = !tex || cached;
     if ( cached ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* gfx = s->GetEngineTexture() ) { D3D12Texture* d = D3D12Texture::From( gfx ); if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot(); }
@@ -3286,6 +3292,8 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
             if ( GfxTexture* o = s->GetFxMap() )           { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
         }
     }
+    // Resident means an SRV to sample, not just "cached in": the black fallback is no texture at all.
+    m.TextureReady = !tex || m.Diffuse != m_BlackTexture->GetSrvSlot();
     // Same predicate D3D11 uses to pick between PS_DiffuseAlphaTestShadows and no pixel shader at all in its
     // Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
     m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || key.Material->HasAlphaTest();
@@ -5153,7 +5161,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
                     zCTexture* matTex = mat ? mat->GetAniTexture() : nullptr;
                     g_SkelMatSlots[g_SkelMatSlotCount++] = { ResolveShadowDiffuseSlot( matTex ),
-                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ) };
+                        ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ), matTex };
                 }
                 entry.matCount = static_cast<uint32_t>( numMats );
             } else if ( !g_SkelMatSlotsOverflowLogged ) {

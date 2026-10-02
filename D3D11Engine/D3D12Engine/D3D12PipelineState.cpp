@@ -3986,6 +3986,13 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullCasterCsBlob.ReleaseAndGetAddressOf(),
             Cull.VobCullCasterPSO.ReleaseAndGetAddressOf(), casterDefines ) )
         Cull.VobCullCasterPSO.Reset();
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCullSphere", vobCullRs, Cull.VobCullSphereCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullSpherePSO.ReleaseAndGetAddressOf(), sceneNoMotionDefines )
+        || !makeComputePSO( "VobCull.hlsl", "CSClearSphere", vobCullRs, Cull.VobSphereClearCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobSphereClearPSO.ReleaseAndGetAddressOf(), sceneNoMotionDefines ) ) {
+        Cull.VobCullSpherePSO.Reset();
+        Cull.VobSphereClearPSO.Reset();
+    }
 
     D3D12RootLayout& sceneArgsRs = Layout( "CullSceneArgs" );
     sceneArgsRs.AddConstants( 0, 5, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
@@ -3994,6 +4001,7 @@ bool D3D12PipelineState::CreateCull() {
     sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 SceneCounts
     sceneArgsRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 4: u0 SceneArgs
     sceneArgsRs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 5: u1 SceneArgCount
+    sceneArgsRs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 6: u2 BakeReport (cube commands only)
     if ( !sceneArgsRs.Build( device ) ) return true;
     Cull.SceneArgsRootSig = sceneArgsRs.RootSig();
     if ( !makeComputePSO( "VobCull.hlsl", "CSBuildArgs", sceneArgsRs,
@@ -4006,6 +4014,9 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "VobCull.hlsl", "CSBuildCasterArgs", sceneArgsRs,
             Cull.SceneCasterArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneCasterArgsPSO.ReleaseAndGetAddressOf() ) )
         Cull.SceneCasterArgsPSO.Reset();
+    if ( !makeComputePSO( "VobCull.hlsl", "CSBuildCubeArgs", sceneArgsRs,
+            Cull.SceneCubeArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneCubeArgsPSO.ReleaseAndGetAddressOf() ) )
+        Cull.SceneCubeArgsPSO.Reset();
     return true;
 }
 

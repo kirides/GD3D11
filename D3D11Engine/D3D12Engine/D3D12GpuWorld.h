@@ -19,14 +19,20 @@ struct WorldMeshSectionInfo;
 class D3D12GpuWorld {
 public:
     static constexpr UINT kViewMain = 0;
-    static constexpr UINT kViews = 5;   // the main view, the three shadow cascades, the rain shadowmap
-    static constexpr UINT kViewRain = 4;
+    static constexpr UINT kViewRain = 4;         // after the three shadow cascades
+    static constexpr UINT kViewPointFirst = 5;   // then one per point-light bake of the frame
+    static constexpr UINT kPointViews = 8;
+    static constexpr UINT kViews = kViewPointFirst + kPointViews;
 
     /** One view to cull into. */
     struct View {
         DirectX::XMFLOAT4X4 CullViewProj;   // world to D3D clip space (z in [0, w]); transposed like ViewProj
         bool Active;                        // false: neither culled nor drawn this frame
         bool NoFrustum;                     // draw every mesh in range
+        bool Sphere = false;                // point-light bake: boxes against Center/Radius, cube commands
+        DirectX::XMFLOAT3 Center = {};
+        float Radius = 0.0f;
+        D3D12_GPU_VIRTUAL_ADDRESS Report = 0;   // sphere view: where it reports materials it left out (u2)
     };
 
     /** Water, portals, waterfall foam and alpha-blended meshes: the main view still collects them on the CPU. */
@@ -52,7 +58,11 @@ public:
     bool Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT count );
     /** A view's opaque or alpha-tested list, GPU-counted; the world VB/IB and root state must be bound. Any thread. */
     void Draw( Rhi::CmdList& cmd, UINT view, bool alphaTested ) const;
+    /** A point view's cube commands through `sig` (D3D12PointShadows' caster signature). Any thread. */
+    void DrawCube( Rhi::CmdList& cmd, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const;
     bool Drawable( UINT view ) const { return m_ArgsDrawable[view]; }
+    /** Whether a material's texture is resident; if not, it is cached in from the next BeginFrame on. */
+    bool RequestResident( uint32_t material );
 
     const std::vector<Special>& Specials() const { return m_Specials; }
     UINT MeshCount() const { return static_cast<UINT>( m_MeshCount ); }

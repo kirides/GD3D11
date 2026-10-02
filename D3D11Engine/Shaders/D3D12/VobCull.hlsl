@@ -333,6 +333,89 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
     }
 }
 
+#if VOB_SCENE
+//--------------------------------------------------------------------------------------
+// GPU scene, point-light bake: the table's static casters inside one light's sphere
+//--------------------------------------------------------------------------------------
+// A sphere keeps a few dozen of the table's instances, so they pack tightly into this view's region instead of
+// keeping their table positions. Per visual VisibleCounts holds { count, first element }; the region's fill
+// counter sits behind the visuals at VisibleCounts[VisualCount * 2]. CullCamPosWS is the light, OutdoorRadius
+// its reach, MinMeshSize the caster size per unit of distance, OutputOffset the region and HiZIndex its size.
+#define SphereCapacity HiZIndex
+
+// CollectStaticCastersInSphere's test, on the instance's world box.
+bool IsInSphere( VobCullVisual v, SceneInstanceGpu s )
+{
+    if ( ( s.GPSlot & SCENE_GPSLOT_HIDDEN ) || any( v.BBoxMin > v.BBoxMax ) ) return false;
+    const float3x4 world = float3x4( s.World0, s.World1, s.World2 );
+    const float3 centre = mul( world, float4( ( v.BBoxMin + v.BBoxMax ) * 0.5, 1.0 ) );
+    const float3 halfExtent = mul( abs( (float3x3)world ), ( v.BBoxMax - v.BBoxMin ) * 0.5 );
+    const float3 d = clamp( CullCamPosWS, centre - halfExtent, centre + halfExtent ) - CullCamPosWS;
+    const float distSq = dot( d, d );
+    if ( distSq >= OutdoorRadius * OutdoorRadius ) return false;
+    const float3 diagonal = halfExtent * 2.0;
+    return dot( diagonal, diagonal ) >= distSq * MinMeshSize * MinMeshSize;
+}
+
+groupshared uint gSphereCount;
+groupshared uint gSphereBase;
+groupshared uint gSphereCursor;
+
+[numthreads(VOBCULL_GROUP_SIZE, 1, 1)]
+void CSCullSphere( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
+{
+    const uint visualIdx = gid.x;
+    const VobCullVisual v = Visuals[min( visualIdx, VisualCount - 1u )];
+    const uint instances = visualIdx < VisualCount ? v.InstanceCount : 0u;
+    if ( gtid == 0 ) { gSphereCount = 0; gSphereCursor = 0; }
+    GroupMemoryBarrierWithGroupSync();
+
+    // Count, reserve one run in the region, then write: the run must be contiguous for one draw per sub-mesh.
+    for ( uint i = gtid; i < instances; i += VOBCULL_GROUP_SIZE )
+    {
+        const bool inside = IsInSphere( v, InInstances[v.InstanceBase + i] );
+        const uint hits = WaveActiveCountBits( inside );
+        if ( hits != 0 && WaveIsFirstLane() ) InterlockedAdd( gSphereCount, hits );
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if ( gtid == 0 )
+    {
+        uint count = gSphereCount, base = 0;
+        if ( count != 0 ) InterlockedAdd( VisibleCounts[VisualCount * 2u], count, base );
+        count = base < SphereCapacity ? min( count, SphereCapacity - base ) : 0u;   // full: the rest cast nothing
+        gSphereCount = count;
+        gSphereBase = base;
+        if ( visualIdx < VisualCount )
+        {
+            VisibleCounts[visualIdx * 2u] = count;
+            VisibleCounts[visualIdx * 2u + 1u] = OutputOffset + base;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    for ( uint i = gtid; i < instances; i += VOBCULL_GROUP_SIZE )
+    {
+        const SceneInstanceGpu s = InInstances[v.InstanceBase + i];
+        const bool inside = IsInSphere( v, s );
+        const uint hits = WaveActiveCountBits( inside );
+        if ( hits == 0 ) continue;
+        uint first = 0;
+        if ( WaveIsFirstLane() ) InterlockedAdd( gSphereCursor, hits, first );
+        first = WaveReadLaneFirst( first );
+        const uint slot = first + WavePrefixCountBits( inside );
+        if ( inside && slot < gSphereCount )
+            OutInstances[OutputOffset + gSphereBase + slot] = ExpandSceneInstance( s, v.InstanceBase + i );
+    }
+}
+
+// Zeroes a point view's fill counter ahead of its CSCullSphere.
+[numthreads(1, 1, 1)]
+void CSClearSphere()
+{
+    VisibleCounts[VisualCount * 2u] = 0u;
+}
+#endif
+
 //--------------------------------------------------------------------------------------
 // Pass 2 — patch the indirect argument buffer
 //--------------------------------------------------------------------------------------
@@ -402,6 +485,7 @@ struct SceneTemplate
 #define SCENE_TEMPLATE_ALPHA   1u   // goes into the alpha-tested list
 #define SCENE_TEMPLATE_READY   2u   // main view: its textures are resolved; not drawn until then
 #define SCENE_TEMPLATE_CASTER  4u   // a shadow-caster template; IndexCount/StartIndex name its near-cascade range
+#define SCENE_TEMPLATE_RESOLVED 8u  // caster: its diffuse is resident (or it has none)
 
 cbuffer SceneArgsCB : register( b0 )
 {
@@ -417,6 +501,8 @@ StructuredBuffer<VobCullVisual> SceneVisuals  : register( t1 );
 StructuredBuffer<uint>          SceneCounts   : register( t2 );
 RWByteAddressBuffer             SceneArgs     : register( u0 );   // VobDrawCommand x (OpaqueCapacity + AlphaCapacity)
 RWByteAddressBuffer             SceneArgCount : register( u1 );   // [0] opaque, [4] alpha: the ExecuteIndirect counts
+// Cube commands only: { count, visual indices } of the casters left out because their texture is not resident.
+RWByteAddressBuffer             BakeReport    : register( u2 );
 
 #define VOB_DRAW_COMMAND_STRIDE 48u
 
@@ -467,4 +553,37 @@ void CSBuildCasterArgs( uint3 DTid : SV_DispatchThreadID )
     const uint start = SceneOutputOffset + SceneVisuals[t.VisualIndex].InstanceBase;
     AppendSceneCommand( t, UseLodIndices ? t.LodBucket : t.IndexCount,
         UseLodIndices ? t.CasterLodStart : t.StartIndex, count, start, 0u );
+}
+
+// A point light's cube commands over CSCullSphere's { count, first } pairs, in D3D12PointShadows'
+// PointShadowCasterCommand layout: b1 diffuse + a draw whose instances repeat per cube face.
+#define CUBE_COMMAND_STRIDE 24u
+#define REPORT_CAPACITY 63u   // D3D12PointShadows::kReportCapacity
+
+[numthreads(64, 1, 1)]
+void CSBuildCubeArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u];
+    if ( count == 0u ) return;
+
+    // A cube is cached, so a caster whose texture is not resident must not bake with a fallback (an alpha-tested
+    // one would stay solid): leave it out and report its visual.
+    if ( ( t.Flags & SCENE_TEMPLATE_RESOLVED ) == 0u )
+    {
+        uint reported;
+        BakeReport.InterlockedAdd( 0, 1u, reported );
+        if ( reported < REPORT_CAPACITY ) BakeReport.Store( 4u + reported * 4u, t.VisualIndex );
+        return;
+    }
+
+    const bool alpha = ( t.Flags & SCENE_TEMPLATE_ALPHA ) != 0u;
+    uint slot;
+    SceneArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
+    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;
+    const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * CUBE_COMMAND_STRIDE;
+    SceneArgs.Store3( at,      uint3( t.MatDiffuseIndex, t.IndexCount, count * 6u ) );
+    SceneArgs.Store3( at + 12, uint3( t.StartIndex, asuint( t.BaseVertex ), SceneCounts[t.VisualIndex * 2u + 1u] ) );
 }
