@@ -3,7 +3,7 @@
 
 #include "include/AtmosphericScattering.hlsl"   // the Atmosphere cbuffer (b1)
 
-// Generate: Idx0 = scene depth SRV, Idx1 = cloud UAV, Idx2 = footprint depth UAV, Idx3 = sky cloud UAV
+// Generate: Idx0 = scene depth SRV, Idx1 = cloud UAV, Idx2 = footprint depth UAV, Idx3 = sky cloud UAV; noise SRV in LC_NoiseIndex
 // Composite: Idx0 = cloud SRV, Idx1 = footprint depth SRV, Idx2 = sky cloud SRV, Idx3 = scene depth SRV
 cbuffer LowCloudPassCB : register(b0) { uint Idx0; uint Idx1; uint Idx2; uint Idx3; };
 
@@ -19,8 +19,18 @@ int2 LowCloudLayerSize()
 }
 
 #define LOW_CLOUD_CB_REGISTER b2
+#define LOW_CLOUD_BINDLESS_NOISE
 #define LOW_CLOUDS_COMPOSITE
 #include "../include/LowClouds.hlsl"
+#include "../include/LowCloudNoise.hlsl"
+
+// Noise: Idx0 = 3D noise UAV; run once
+[numthreads( 4, 4, 4 )]
+void CSNoise( uint3 id : SV_DispatchThreadID )
+{
+    RWTexture3D<float4> noiseOut = ResourceDescriptorHeap[Idx0];
+    noiseOut[id] = LowCloudNoiseTexel( id );
+}
 
 [numthreads( 8, 8, 1 )]
 void CSGenerate( uint3 id : SV_DispatchThreadID )

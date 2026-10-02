@@ -165,5 +165,6 @@ enum class CShaderID : size_t {
     CS_GenerateNormalsFromDepth,
     CS_PFX_TAAResolve,
     CS_WaterSkyAverage,
+    CS_LowCloudNoise,
     COUNT
 };

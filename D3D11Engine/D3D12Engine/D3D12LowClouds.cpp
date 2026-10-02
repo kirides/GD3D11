@@ -41,6 +41,45 @@ bool D3D12GraphicsEngine::CreateLowCloudConstantBuffers() {
         m_LowCloudCBMapped[i] = static_cast<uint8_t*>( mapped );
         m_LowCloudCBGpu[i] = m_LowCloudCB[i]->GetGPUVirtualAddress();
     }
+
+    // Created in UNORDERED_ACCESS: GenerateLowClouds fills it once, then it stays a shader resource
+    constexpr UINT kNoiseSize = 64;
+    D3D12_RESOURCE_DESC noiseDesc = {};
+    noiseDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    noiseDesc.Width = kNoiseSize;
+    noiseDesc.Height = kNoiseSize;
+    noiseDesc.DepthOrArraySize = kNoiseSize;
+    noiseDesc.MipLevels = 1;
+    noiseDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    noiseDesc.SampleDesc.Count = 1;
+    noiseDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    noiseDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &noiseDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            m_LowCloudNoise.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
+        Logging::Wrn( "D3D12: failed to create the low cloud noise texture." );
+        return false;
+    }
+    m_LowCloudNoise->SetName( L"LowCloudNoise" );
+    m_LowCloudNoiseReady = false;
+    if ( m_LowCloudNoiseSrvSlot == UINT_MAX ) m_LowCloudNoiseSrvSlot = AllocateSrvSlot();
+    if ( m_LowCloudNoiseUavSlot == UINT_MAX ) m_LowCloudNoiseUavSlot = AllocateSrvSlot();
+    if ( m_LowCloudNoiseSrvSlot == UINT_MAX || m_LowCloudNoiseUavSlot == UINT_MAX ) {
+        m_LowCloudNoise.Reset();
+        return false;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture3D.MipLevels = 1;
+    m_Rhi->CreateShaderResourceView( m_LowCloudNoise.Get(), &srv, GetSrvCpuHandle( m_LowCloudNoiseSrvSlot ) );
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = {};
+    uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+    uav.Texture3D.WSize = kNoiseSize;
+    m_Rhi->CreateUnorderedAccessView( m_LowCloudNoise.Get(), nullptr, &uav, GetSrvCpuHandle( m_LowCloudNoiseUavSlot ) );
     return true;
 }
 
@@ -53,13 +92,28 @@ void D3D12GraphicsEngine::GenerateLowClouds() {
     GSky* sky = Engine::GAPI->GetSky();
     if ( !m_FrameOpen || !m_CmdList || !sky || !sky->AreLowCloudsVisible() ) return;
     if ( !m_Pipelines.LowClouds.GeneratePSO || !m_Pipelines.LowClouds.CompositePSO || !m_LowCloudCBMapped[m_FrameIndex] ) return;
+    if ( !m_Pipelines.LowClouds.NoisePSO || !m_LowCloudNoise ) return;
     if ( !m_DepthBuffer || m_DepthSrvSlot == UINT_MAX ) return;
 
     LowCloudConstantBuffer cb;
     sky->FillLowCloudConstants( cb );
+    cb.LC_NoiseIndex = m_LowCloudNoiseSrvSlot;
     memcpy( m_LowCloudCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
     const auto& atmo = sky->GetAtmosphereCB();
     memcpy( m_LowCloudCBMapped[m_FrameIndex] + kLowCloudAtmosphereCbOffset, &atmo, sizeof( atmo ) );
+
+    if ( !m_LowCloudNoiseReady ) {
+        DX_ZONE( m_CmdList.Get(), "Low cloud noise" );
+        const UINT consts[4] = { m_LowCloudNoiseUavSlot, 0, 0, 0 };
+        m_CmdList->SetComputeRootSignature( m_Pipelines.LowClouds.GenerateRootSig.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.LowClouds.NoisePSO.Get() );
+        m_CmdList->SetComputeRoot32BitConstants( 0, 4, consts, 0 );
+        m_CmdList->SetComputeRootConstantBufferView( 1, m_LowCloudCBGpu[m_FrameIndex] );
+        m_CmdList->SetComputeRootConstantBufferView( 2, m_LowCloudCBGpu[m_FrameIndex] + kLowCloudAtmosphereCbOffset );
+        m_CmdList->Dispatch( 64 / 4, 64 / 4, 64 / 4 );
+        m_CmdList->TransitionBarriers( { { m_LowCloudNoise.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE } } );
+        m_LowCloudNoiseReady = true;
+    }
 
     const uint32_t width = static_cast<uint32_t>( std::max( 1, ( m_Resolution.x + 1 ) / 2 ) );
     const uint32_t height = static_cast<uint32_t>( std::max( 1, ( m_Resolution.y + 1 ) / 2 ) );

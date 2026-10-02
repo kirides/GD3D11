@@ -1769,6 +1769,11 @@ private:
     UINT m_LowCloudLayerSrvSlot = UINT_MAX;
     UINT m_LowCloudDepthSrvSlot = UINT_MAX;
     UINT m_SkyLowCloudSrvSlot = UINT_MAX;
+    // 64^3 RGBA8 tileable cloud noise, filled by CSNoise on the first frame that draws clouds
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_LowCloudNoise;
+    UINT m_LowCloudNoiseSrvSlot = UINT_MAX;
+    UINT m_LowCloudNoiseUavSlot = UINT_MAX;
+    bool m_LowCloudNoiseReady = false;
     bool CreateLowCloudConstantBuffers();
     void GenerateLowClouds();                                      // before water, which reflects the layer
     void AddLowCloudCompositePass( class D3D12RenderGraph& graph );   // after the fog composition

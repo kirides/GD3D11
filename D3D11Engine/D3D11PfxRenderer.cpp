@@ -412,12 +412,66 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     return XR_SUCCESS;
 }
 
+bool D3D11PfxRenderer::BindLowCloudNoise() {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& context = engine->GetContext();
+    if ( !LowCloudNoiseSRV ) {
+        if ( LowCloudNoiseFailed ) return false;
+        auto& cs = engine->GetShaderManager().GetCShader( CShaderID::CS_LowCloudNoise );
+        if ( !cs ) return false;
+
+        constexpr UINT kNoiseSize = 64;
+        D3D11_TEXTURE3D_DESC desc = {};
+        desc.Width = kNoiseSize;
+        desc.Height = kNoiseSize;
+        desc.Depth = kNoiseSize;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        Microsoft::WRL::ComPtr<ID3D11Texture3D> tex;
+        Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> uav;
+        if ( FAILED( engine->GetDevice()->CreateTexture3D( &desc, nullptr, tex.GetAddressOf() ) )
+            || FAILED( engine->GetDevice()->CreateShaderResourceView( tex.Get(), nullptr, LowCloudNoiseSRV.ReleaseAndGetAddressOf() ) )
+            || FAILED( engine->GetDevice()->CreateUnorderedAccessView( tex.Get(), nullptr, uav.GetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D11: failed to create the low cloud noise texture; low clouds are off." );
+            LowCloudNoiseSRV.Reset();
+            LowCloudNoiseFailed = true;
+            return false;
+        }
+        SetDebugName( tex.Get(), "LowCloudNoise" );
+
+        cs->Apply();
+        context->CSSetUnorderedAccessViews( 0, 1, uav.GetAddressOf(), nullptr );
+        context->Dispatch( kNoiseSize / 4, kNoiseSize / 4, kNoiseSize / 4 );
+        ID3D11UnorderedAccessView* nullUAV = nullptr;
+        context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+        context->CSSetShader( nullptr, nullptr, 0 );
+    }
+
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    context->PSSetShaderResources( 4, 1, LowCloudNoiseSRV.GetAddressOf() );
+    context->PSSetSamplers( 3, 1, GetSampler( samplerDesc ).GetAddressOf() );
+    return true;
+}
+
 XRESULT D3D11PfxRenderer::RenderLowCloudLayer( ID3D11RenderTargetView* cloudRTV, ID3D11RenderTargetView* depthRTV,
     ID3D11RenderTargetView* skyRTV, INT2 layerSize, ID3D11ShaderResourceView* sceneDepth ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
     auto ps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_LowClouds );
     if ( !ps ) return XR_FAILED;
+    if ( !BindLowCloudNoise() ) {
+        const float clear[4] = {};
+        context->ClearRenderTargetView( cloudRTV, clear );   // water reflects this layer
+        return XR_FAILED;
+    }
     engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
     ps->Apply();
 
@@ -448,6 +502,7 @@ XRESULT D3D11PfxRenderer::RenderLowCloudLayer( ID3D11RenderTargetView* cloudRTV,
 
     ID3D11ShaderResourceView* nullSRV = nullptr;
     context->PSSetShaderResources( 0, 1, &nullSRV );
+    context->PSSetShaderResources( 4, 1, &nullSRV );
     ID3D11RenderTargetView* nullRTVs[3] = {};
     context->OMSetRenderTargets( 3, nullRTVs, nullptr );
     depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::DEFAULT_DEPTH_COMP_STATE;
@@ -461,7 +516,7 @@ XRESULT D3D11PfxRenderer::CompositeLowClouds( ID3D11RenderTargetView* outputRTV,
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
     auto ps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_LowCloudComposite );
-    if ( !ps ) return XR_FAILED;
+    if ( !ps || !BindLowCloudNoise() ) return XR_FAILED;
     engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
     ps->Apply();
 
@@ -496,8 +551,8 @@ XRESULT D3D11PfxRenderer::CompositeLowClouds( ID3D11RenderTargetView* outputRTV,
 
     DrawFullScreenQuad();
 
-    ID3D11ShaderResourceView* nullSRVs[4] = {};
-    context->PSSetShaderResources( 0, 4, nullSRVs );
+    ID3D11ShaderResourceView* nullSRVs[5] = {};
+    context->PSSetShaderResources( 0, 5, nullSRVs );
     blend.SetDefault();
     blend.SetDirty();
     depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::DEFAULT_DEPTH_COMP_STATE;
