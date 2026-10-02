@@ -165,11 +165,11 @@ void D3D11TiledDeferredShading::EnsureDynShadowArray() {
             DYN_SHADOW_CUBE_SIZE, DYN_SHADOW_CUBE_SIZE, faceDSVs.data(),
             m_ShadowDynArrayDSV, slot * 6 );
 
-        // A fresh D3D11 texture holds UNDEFINED depth, and a comparison sample against 0 reads as fully
-        // OCCLUDED - a slot nothing has drawn into yet would shade its light solid black. Nothing should
-        // sample an undrawn slot (see PointLightSlotSelector::DynSlot::valid), so this is belt and braces:
-        // it makes any future hole of that class a no-op instead of a black light.
-        m_context->ClearDepthStencilView( m_SlotDynDSVs[slot].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+        // Undefined depth comparison-samples as fully occluded, so every slot starts at "nothing occludes".
+        // Per face: NVIDIA mishandles multi-slice views at an offset (RequiresNvidiaTiledShadowFaceFallback).
+        for ( auto& face : faceDSVs ) {
+            if ( face ) m_context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+        }
     }
 
     if ( dynSlotFailures > 0 ) {
@@ -288,9 +288,10 @@ void D3D11TiledDeferredShading::EnsureStaticShadowArray() {
             STATIC_SHADOW_CUBE_SIZE, STATIC_SHADOW_CUBE_SIZE, faceDSVs.data(),
             m_ShadowStaticArrayDSV, slot * 6 );
 
-        // See the identical note in EnsureDynShadowArray: undefined depth comparison-samples as fully
-        // occluded, so every slot starts at "nothing occludes".
-        m_context->ClearDepthStencilView( m_StaticSlotDSVs[slot].Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+        // Per face, as in EnsureDynShadowArray.
+        for ( auto& face : faceDSVs ) {
+            if ( face ) m_context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+        }
     }
 
     if ( staticSlotFailures > 0 ) {

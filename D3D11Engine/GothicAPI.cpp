@@ -5922,6 +5922,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "OceanCustomColorStrength", float_to_string( s.OceanCustomColorStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanCustomClarity", float_to_string( s.OceanCustomClarity, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanCustomTexture", float_to_string( s.OceanCustomTexture, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterShoreFoam", to_string_locale_independent( (int)s.WaterShoreFoam ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "OceanIdentifiers", s.OceanIdentifiers, ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "BacklitVegetation", to_string_locale_independent( s.BacklitVegetation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6218,6 +6220,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.OceanCustomColorStrength = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomColorStrength", ds.OceanCustomColorStrength, ini ), 0.0f, 1.0f );
         s.OceanCustomClarity = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomClarity", ds.OceanCustomClarity, ini ), 0.0f, 1.0f );
         s.OceanCustomTexture = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomTexture", ds.OceanCustomTexture, ini ), 0.0f, 1.0f );
+        s.WaterShoreFoam = static_cast<GothicRendererSettings::E_WaterShoreFoam>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterShoreFoam", ds.WaterShoreFoam, ini.c_str() ),
+            GothicRendererSettings::WATER_FOAM_OFF, GothicRendererSettings::WATER_FOAM_ALL ) );
+        if ( !s.SetOceanIdentifiers( GetPrivateProfileStringA( "Display", "OceanIdentifiers", ds.OceanIdentifiers, ini ) ) ) {
+            Logging::Wrn( "[Display] OceanIdentifiers is longer than {} characters and was truncated", sizeof( s.OceanIdentifiers ) - 1 );
+        }
         s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
         s.BacklitVegetation = GetPrivateProfileBoolA( "Display", "BacklitVegetation", ds.BacklitVegetation, ini );
 

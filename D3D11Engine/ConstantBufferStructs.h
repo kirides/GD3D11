@@ -508,7 +508,8 @@ struct WaterParamsConstantBuffer {
     float WP_MoonDisc;
     float WP_SkyReflection;
     float WP_OceanTexture;
-    float WP_Pad[3];
+    float WP_ShoreFoam;     // E_WaterShoreFoam
+    float WP_Pad[2];
 };
 static_assert( sizeof( WaterParamsConstantBuffer ) == 64 );
 

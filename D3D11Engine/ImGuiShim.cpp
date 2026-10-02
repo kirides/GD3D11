@@ -1220,6 +1220,13 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::SliderFloat( "Ocean Clarity", &settings.OceanCustomClarity, 0.0f, 1.0f );
                 ImGui::SliderFloat( "Ocean Texture", &settings.OceanCustomTexture, 0.0f, 1.0f );
                 ImGui::EndDisabled();
+
+                const char* shoreFoams[] = { "Off", "Ocean", "All Water" };
+                int shoreFoam = settings.WaterShoreFoam;
+                if ( ImGui::Combo( "Shore Foam", &shoreFoam, shoreFoams, IM_ARRAYSIZE( shoreFoams ) ) ) {
+                    settings.WaterShoreFoam = (GothicRendererSettings::E_WaterShoreFoam)shoreFoam;
+                }
+                ImGui::SetItemTooltip( "Foam over shallow water along shores. Ocean = water matching [Display] OceanIdentifiers." );
             }
             // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
             // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime
@@ -2155,20 +2162,19 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ImGui::Checkbox( "NVIDIA tiled shadow face-fallback", &RequiresNvidiaTiledShadowFaceFallback );
                     ImGui::SetItemTooltip(
                         "Auto-detected from the GPU vendor at startup (on = real NVIDIA D3D11 driver, DXVK excluded).\n"
-                        "Overriding it here is for A/B testing: with Use Tiled Lighting on, force it OFF to reproduce\n"
-                        "the bug (a point light's shadow only correct in one of its 6 cube directions on NVIDIA), or\n"
-                        "force it ON to verify the fix - on AMD/Intel/DXVK the batched path was never broken, so\n"
-                        "forcing this on there should look identical, just slower.\n"
+                        "Clears and draws the tiled shadow cubes through single-face views only. With Clustered\n"
+                        "Lighting on, force it OFF to reproduce the NVIDIA bug, or ON to verify the fix - on\n"
+                        "AMD/Intel/DXVK it should look identical, just slower.\n"
                         "Existing bakes are cached, so toggling this alone won't visibly change anything until a\n"
                         "light re-renders - use the button below, or watch the raw cube faces in the point light\n"
                         "shadow debug window above." );
 
                     ImGui::Checkbox( "Absolute cube slice indexing", &UseAbsoluteCubeSliceIndexing );
                     ImGui::SetItemTooltip(
-                        "Binds the whole tiled cube array as one FirstArraySlice=0 view and writes an absolute\n"
-                        "slice, so no view is ever offset - one draw per cube instead of the six above, and it\n"
-                        "wins when both are on. Only helps if the driver reads the index as absolute into the\n"
-                        "resource. Re-bake after toggling." );
+                        "Draws through the whole tiled cube array as one FirstArraySlice=0 view with an absolute\n"
+                        "slice - one draw per cube instead of one per face. With the face-fallback also on, the\n"
+                        "clears stay per face: if NVIDIA looks right that way, only the clear was broken.\n"
+                        "Re-bake after toggling." );
 
                     if ( ImGui::Button( "Force re-bake all point light shadows" ) ) {
                         for ( auto& vobLightPair : Engine::GAPI->GetVobLightMap() ) {

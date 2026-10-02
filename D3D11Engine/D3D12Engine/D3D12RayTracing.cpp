@@ -541,7 +541,7 @@ struct D3D12RayTracing::Impl {
             for ( auto& [y, section] : row ) {
                 for ( auto const& [key, mesh] : section.WorldMeshes ) {
                     if ( !mesh || mesh->Indices.empty() || !key.Material ) continue;
-                    if ( key.Info && ( key.Info->MaterialType == MaterialInfo::MT_Water || key.Info->MaterialType == MaterialInfo::MT_Portal
+                    if ( key.Info && ( key.Info->IsWater() || key.Info->MaterialType == MaterialInfo::MT_Portal
                         || key.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) ) continue;
                     if ( D3D12GraphicsEngine::IsWorldMeshAlphaBlended( key.Material ) ) continue;
                     auto [it, inserted] = materialIndex.try_emplace( key.Material, static_cast<uint32_t>( WorldBlas.Materials.size() ) );

@@ -35,7 +35,8 @@ cbuffer WaterParams : register( b3 )
 	float WP_MoonDisc;          // visibility of the moon disc in the sky
 	float WP_SkyReflection;     // 1 = march the reflected sky in screen space
 	float WP_OceanTexture;      // 0 = pure water body, 1 = legacy-strength texture blend
-	float3 WP_Pad;
+	float WP_ShoreFoam;         // 0 = off, 1 = ocean only, 2 = all water
+	float2 WP_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -229,6 +230,11 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 // Hooks for include/WaterShading.hlsl (D3D11 renders in gamma space, so no conversion)
 //--------------------------------------------------------------------------------------
 float WaterSceneRawDepth( float2 uv ) { return TX_Depth.SampleLevel( SS_Linear, uv, 0 ).r; }
+float WaterSceneRawDepthTexel( float2 uv )
+{
+	int2 px = clamp( int2( uv * RI_ViewportSize ), int2( 0, 0 ), int2( RI_ViewportSize ) - 1 );
+	return TX_Depth.Load( int3( px, 0 ) ).r;
+}
 float WaterSurfaceRawDepth( float2 uv ) { return TX_WaterSurfaceDepth.SampleLevel( SS_Linear, uv, 0 ).r; }
 float WaterLinearDepth( float raw ) { return RI_Projection._43 / ( raw - RI_Projection._33 ); }
 float3 WaterWorldToView( float3 p ) { return mul( float4( p, 1.0f ), RI_View ).xyz; }
@@ -299,6 +305,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	fr.moonGlint = WP_MoonGlint;
 	fr.moonDisc = WP_MoonDisc;
 	fr.skyReflection = WP_SkyReflection;
+	fr.shoreFoam = WP_ShoreFoam;
 
 	return float4( ShadeWater( px, fr ), 1.0f );
 }

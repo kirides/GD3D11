@@ -18,6 +18,7 @@
 #include "zCMesh.h"
 #include "zCLightmap.h"
 #include "GMesh.h"
+#include "WaterProfile.h"
 #include "MeshModifier.h"
 #include "D3D11Texture.h"
 #include "D3D7\MyDirectDrawSurface7.h"
@@ -665,7 +666,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat);
                 if ( info ) {
                     info->PixelShader = PShaderID::PS_Water;
-                    info->MaterialType = MaterialInfo::MT_Water;
+                    info->MaterialType = IsOceanWaterMaterial( mat ) ? MaterialInfo::MT_Ocean : MaterialInfo::MT_Water;
                 }
             }
         }
@@ -1066,7 +1067,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 // Give water surfaces a water-shader
                 if ( info ) {
                     info->PixelShader = PShaderID::PS_Water;
-                    info->MaterialType = MaterialInfo::MT_Water;
+                    info->MaterialType = IsOceanWaterMaterial( mat ) ? MaterialInfo::MT_Ocean : MaterialInfo::MT_Water;
                 }
             }
             else {
@@ -1081,7 +1082,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
             if ( info ) {
                 info->PixelShader = PShaderID::PS_Water;
-                info->MaterialType = MaterialInfo::MT_Water;
+                info->MaterialType = IsOceanWaterMaterial( mat ) ? MaterialInfo::MT_Ocean : MaterialInfo::MT_Water;
             }
 #endif
         }

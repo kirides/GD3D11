@@ -44,7 +44,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
 // Declared in D3D12EngineCommon.h; filled by BuildWorldDrawCommands (D3D12Scene.cpp), drained here.
-std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
+std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces[2];
 
 namespace {
     // b2 of Shaders/D3D12/Water.hlsl. Every row is 16-byte aligned, so the HLSL packing rules place these
@@ -87,7 +87,7 @@ namespace {
         UINT RtColorIndex;            // ray-traced reflection result; 0xFFFFFFFF => screen-space reflections
         UINT RtDistanceIndex;
         UINT WaveAnimation;           // E_WaterWaves (D3D11: SHD_WATERANI)
-        float RtPad;
+        float ShoreFoam;              // E_WaterShoreFoam
     };
     static_assert( sizeof( WaterCBData ) == 272, "WaterCBData must match Water.hlsl's b2 layout" );
 
@@ -356,16 +356,16 @@ bool D3D12GraphicsEngine::LoadReflectionCube() {
 
 
 void D3D12GraphicsEngine::DrawWaterSurfaces() {
-    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
+    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || FrameWaterSurfacesEmpty() )
         return;
 
     DX_ZONE( m_CmdList.Get(), "DrawWaterSurfaces" );
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
-    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { g_FrameWaterSurfaces.clear(); return; }
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { ClearFrameWaterSurfaces(); return; }
     D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
     D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
-    if ( !vb->GetResource() || !ib->GetResource() ) { g_FrameWaterSurfaces.clear(); return; }
+    if ( !vb->GetResource() || !ib->GetResource() ) { ClearFrameWaterSurfaces(); return; }
 
     // ViewProj — identical derivation to DrawWorldMesh (water verts are already world-space).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -504,6 +504,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.OceanTint = ocean.Tint;
         cb.OceanTexture = ocean.TextureStrength;
         cb.SkyReflection = WaterSkyReflectionEnabled();
+        cb.ShoreFoam = WaterShoreFoamMode();
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
         // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -563,11 +564,13 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( m_Pipelines.Water.DepthPrepassPSO ) {
         DX_ZONE( m_CmdList.Get(), "Water Z-Prepass" );
         m_CmdList->SetPipelineState( m_Pipelines.Water.DepthPrepassPSO.Get() );
-        for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
-            for ( MeshInfo* mesh : meshes ) {
-                if ( !mesh || mesh->Indices.empty() ) continue;
-                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
-                    mesh->BaseIndexLocation, 0, 0 );
+        for ( const auto& surfaces : g_FrameWaterSurfaces ) {
+            for ( auto const& [tex, meshes] : surfaces ) {
+                for ( MeshInfo* mesh : meshes ) {
+                    if ( !mesh || mesh->Indices.empty() ) continue;
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
+                        mesh->BaseIndexLocation, 0, 0 );
+                }
             }
         }
     }
@@ -578,7 +581,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( !copiesReady ) {
         static bool warned = false;
         if ( !warned ) { warned = true; Logging::Wrn( "D3D12: water refraction resources unavailable — water surfaces will not be shaded." ); }
-        g_FrameWaterSurfaces.clear();
+        ClearFrameWaterSurfaces();
         return;
     }
 
@@ -650,7 +653,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
     m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
     unsigned int drawnIndices = 0;
-    for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
+    for ( UINT ocean = 0; ocean < 2; ++ocean )
+    for ( auto const& [tex, meshes] : g_FrameWaterSurfaces[ocean] ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = blackSrv;
         if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
             if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
@@ -661,7 +665,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             }
         }
         m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-        m_CmdList->SetGraphicsRoot32BitConstant( 4, IsOceanWaterTexture( tex ) ? 1u : 0u, 0 );
+        m_CmdList->SetGraphicsRoot32BitConstant( 4, ocean, 0 );
         for ( MeshInfo* mesh : meshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
             m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
@@ -671,5 +675,5 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     }
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
-    g_FrameWaterSurfaces.clear();
+    ClearFrameWaterSurfaces();
 }

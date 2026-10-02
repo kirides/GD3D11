@@ -94,14 +94,12 @@ bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
 
-// NVIDIA driver bug: a DSV windowed onto a non-zero-offset sub-range of a larger Texture2DArray/
-// TextureCubeArray mis-routes SV_RenderTargetArrayIndex writes, so a point light in any slot but 0 of
-// the shared tiled shadow cube array only gets one of its six faces. DXVK/AMD/Intel are unaffected -
-// see PointShadowBatch's PerFace rasterization.
+// NVIDIA's native driver breaks point-light shadows written through a multi-slice DSV at an offset into
+// the shared cube arrays; DXVK/AMD/Intel are fine. Clears and draws then use single-slice views only.
 bool RequiresNvidiaTiledShadowFaceFallback = false;
 
-// Binds the whole cube array as one FirstArraySlice=0 DSV and has the layered VS/GS write an absolute
-// slice (PCR_SliceBase + face), so no view is ever offset. Alternative to the 6-pass fallback above.
+// Draws through one FirstArraySlice=0 view with absolute slice indices instead of per face. With the
+// fallback on, clears stay per face, so this A/B-tests whether the window clear alone was broken.
 bool UseAbsoluteCubeSliceIndexing = false;
 
 VS_ExConstantBuffer_Wind g_windBuffer;
@@ -3896,7 +3894,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     
     // Clear textures from the last frame
     RenderedVobs.clear();
-    FrameWaterSurfaces.clear();
+    FrameWaterSurfaces[0].clear();
+    FrameWaterSurfaces[1].clear();
     m_FrameGeometryCache.Reset();
     m_SkeletalPoses->BeginFrame();
 
@@ -5271,9 +5270,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             if ( !matTex ) continue;
 
             const MaterialInfo::EMaterialType matType = range.Key.Info->MaterialType;
-            if ( matType == MaterialInfo::MT_Water ) {
+            if ( range.Key.Info->IsWater() ) {
                 if ( !isZPrepass && handledWholeMeshes.insert( range.Mesh ).second ) {
-                    FrameWaterSurfaces[matTex].push_back( range.Mesh );
+                    FrameWaterSurfaces[matType == MaterialInfo::MT_Ocean][matTex].push_back( range.Mesh );
                 }
                 continue;
             }
@@ -5365,7 +5364,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
             // Skip blended meshes (rendered in the main pass) and water (not pre-rendered).
             return isBlend || zColor( mesh.Range.Key.Material->GetColor() ).bgra.alpha < 255
-                || mesh.Range.Key.Info->MaterialType == MaterialInfo::MT_Water;
+                || mesh.Range.Key.Info->IsWater();
         };
 
         // Opaque geometry is depth-only (null PS) and needs only Position, so feed the slim
@@ -5520,7 +5519,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
 /** Draws the given mesh infos as water */
 void D3D11GraphicsEngine::DrawWaterSurfaces() {
-    if ( FrameWaterSurfaces.empty() ) {
+    if ( FrameWaterSurfaces[0].empty() && FrameWaterSurfaces[1].empty() ) {
         return;
     }
 
@@ -5563,6 +5562,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     // Build per-texture batch descriptors and flat indirect draw args
     struct WaterTextureBatch {
         zCTexture* texture;
+        bool ocean;
         unsigned int argsOffset; // index into waterDrawArgs
         unsigned int drawCount;
     };
@@ -5575,24 +5575,27 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     {
         ZoneScopedN( "DrawWaterSurfaces::BuildBatches" );
         auto _scopeBuildBatches = RecordGraphicsEvent( GE_NAME( "DrawWaterSurfaces::BuildBatches" ) );
-        for ( const auto& [texture, meshes] : FrameWaterSurfaces ) {
-            WaterTextureBatch batch;
-            batch.texture = texture;
-            batch.argsOffset = static_cast<unsigned int>( waterDrawArgs.size() );
-            batch.drawCount = 0;
+        for ( int ocean = 0; ocean < 2; ++ocean ) {
+            for ( const auto& [texture, meshes] : FrameWaterSurfaces[ocean] ) {
+                WaterTextureBatch batch;
+                batch.texture = texture;
+                batch.ocean = ocean != 0;
+                batch.argsOffset = static_cast<unsigned int>( waterDrawArgs.size() );
+                batch.drawCount = 0;
 
-            for ( const auto& mesh : meshes ) {
-                D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
-                args.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
-                args.InstanceCount = 1;
-                args.StartIndexLocation = mesh->BaseIndexLocation;
-                args.BaseVertexLocation = 0;
-                args.StartInstanceLocation = 0;
-                waterDrawArgs.push_back( args );
-                batch.drawCount++;
+                for ( const auto& mesh : meshes ) {
+                    D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
+                    args.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
+                    args.InstanceCount = 1;
+                    args.StartIndexLocation = mesh->BaseIndexLocation;
+                    args.BaseVertexLocation = 0;
+                    args.StartInstanceLocation = 0;
+                    waterDrawArgs.push_back( args );
+                    batch.drawCount++;
+                }
+
+                waterBatches.push_back( batch );
             }
-
-            waterBatches.push_back( batch );
         }
     }
 
@@ -5705,8 +5708,9 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         waterParams.WP_OceanClimate = ocean.Climate;
         waterParams.WP_OceanTexture = ocean.TextureStrength;
         waterParams.WP_SkyReflection = WaterSkyReflectionEnabled();
-        auto bindWaterParams = [&]( zCTexture* texture ) {
-            waterParams.WP_IsOcean = IsOceanWaterTexture( texture ) ? 1.0f : 0.0f;
+        waterParams.WP_ShoreFoam = WaterShoreFoamMode();
+        auto bindWaterParams = [&]( bool ocean ) {
+            waterParams.WP_IsOcean = ocean ? 1.0f : 0.0f;
             BindDynamicCBToPixelShader( 3, AllocateDynamicCB( &waterParams ) );
         };
 
@@ -5715,7 +5719,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
-                bindWaterParams( batch.texture );
+                bindWaterParams( batch.ocean );
 
                 DrawMultiIndexedInstancedIndirect( Context.Get(),
                     batch.drawCount,
@@ -5727,7 +5731,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
-                bindWaterParams( batch.texture );
+                bindWaterParams( batch.ocean );
 
                 for ( unsigned int i = 0; i < batch.drawCount; i++ ) {
                     const auto& args = waterDrawArgs[batch.argsOffset + i];

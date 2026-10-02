@@ -1430,7 +1430,7 @@ float D3D12GraphicsEngine::RtSceneVobRadius() const {
 	if ( rs.EnableShadows && rs.RayTracedSunShadows != GothicRendererSettings::RT_SHADOWS_OFF )
 		radius = std::max( radius, rs.RayTracedSunShadowDistance + 4000.0f );   // occluders up the sun ray
 	if ( m_RtPointShadowsActive ) radius = std::max( radius, 15000.0f );
-	if ( rs.WaterRayTracing != GothicRendererSettings::WATER_RT_OFF && !g_FrameWaterSurfaces.empty() )
+	if ( rs.WaterRayTracing != GothicRendererSettings::WATER_RT_OFF && !FrameWaterSurfacesEmpty() )
 		radius = std::max( radius, D3D12RayTracing::WaterVobRadius( rs.WaterRayTracing ) );
 	return radius;
 }
@@ -3216,7 +3216,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     m_WorldDrawCount = 0;
     m_WorldOpaqueDrawCount = 0;
     m_WorldDrawnIndices = 0;
-    g_FrameWaterSurfaces.clear();
+    ClearFrameWaterSurfaces();
     g_FrameWorldTransparency.clear();
     g_FrameWorldTransparencyPortal.clear();
     g_FrameWorldTransparencyFoam.clear();
@@ -3286,8 +3286,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             // command set. Forest portals and waterfall foam get their own sorted lists for the same reason,
             // each drawn with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / ...Waterfall).
             if ( meshKey.Info) {
-                if ( meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
-                    g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
+                if ( meshKey.Info->IsWater() ) {
+                    g_FrameWaterSurfaces[meshKey.Info->MaterialType == MaterialInfo::MT_Ocean][meshKey.Material->GetAniTexture()].push_back( mesh );
                     continue;
                 } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
                     g_FrameWorldTransparencyPortal.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );

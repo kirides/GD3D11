@@ -246,6 +246,9 @@ struct MaterialInfo {
 
     ~MaterialInfo() = default;
 
+    /** Lakes, rivers and the sea alike: every surface drawn by the water pass. */
+    bool IsWater() const { return MaterialType == MT_Water || MaterialType == MT_Ocean; }
+
     MaterialInfo( MaterialInfo&& other ) = default;
     MaterialInfo& operator=( MaterialInfo&& ) = default;
 

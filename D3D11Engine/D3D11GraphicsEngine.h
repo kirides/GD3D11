@@ -608,7 +608,7 @@ protected:
 
 
     /** List of water surfaces for this frame */
-    std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;
+    std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces[2];   // [1] = MT_Ocean
 
     INT2 m_scaledResolution;
 
