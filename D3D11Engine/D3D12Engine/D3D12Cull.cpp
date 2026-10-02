@@ -15,11 +15,42 @@
 // their own CPU cull against their own frustum (a caster outside the player's view still casts into it).
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12GpuScene.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
+
+namespace {
+    // Mirrors VobCull.hlsl's VobCullCB, field for field (32 root constants).
+    struct VobCullCB {
+        XMFLOAT4X4 ViewProj;
+        uint32_t VisualCount;
+        uint32_t HiZIndex;
+        uint32_t HiZWidth;
+        uint32_t HiZHeight;
+        uint32_t HiZMipCount;
+        uint32_t EnableOcclusion;
+        float    LodDistance;
+        uint32_t Pad0;           // mirrors VobCull.hlsl's explicit float3 alignment pad
+        XMFLOAT3 CamPosWS;
+        uint32_t OutputOffset;   // 0: the ring's survivors land at their own element index
+        float    IndoorRadius;   // GPU scene only, from here on
+        float    OutdoorRadius;
+        float    SmallRadius;
+        uint32_t FocusSlot;
+    };
+    static_assert( sizeof( VobCullCB ) == 32 * sizeof( uint32_t ), "VobCullCB must match the 32 root constants in CreateCull()" );
+
+    // Mirrors VobCull.hlsl's SceneArgsCB.
+    struct SceneArgsCB {
+        uint32_t TemplateCount;
+        uint32_t OpaqueCapacity;
+        uint32_t AlphaCapacity;
+        uint32_t OutputOffset;
+    };
+}
 
 bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
     m_HiZReady = false;
@@ -98,7 +129,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
     // VobCull.hlsl mirrors both of these as structured-buffer element types; a size change on either side
     // would silently mis-index every instance. Verified against `dxc -Fc` reflection (112 B / 36 B).
     static_assert( sizeof( VobInstanceInfo ) == 112, "VobCull.hlsl's VobInstanceGpu mirrors VobInstanceInfo" );
-    static_assert( sizeof( VobCullVisual ) == 36, "VobCull.hlsl's VobCullVisual must match this layout" );
+    static_assert( sizeof( VobCullVisual ) == 40, "VobCull.hlsl's VobCullVisual must match this layout" );
 
     m_VobCullReady = false;
     Rhi::Device* device = m_Rhi.Get();
@@ -148,6 +179,7 @@ bool D3D12GraphicsEngine::CreateVobCullResources() {
             return false;
         }
         m_VobCulledInstances->SetName( L"VobCulledInstances" );
+        m_VobCulledInstancesBytes = m_VobInstanceBufferCapacity;
     }
     {
         // TWO counts per visual (near, far); CSPatchArgs indexes (visualIndex * 2 + LodBucket).
@@ -207,6 +239,48 @@ Rhi::Resource* D3D12GraphicsEngine::GetVobInstanceBufferForDraws() const {
     // assumed, which is the same m_GpuVobCullActive snapshot taken once at the top of the frame.
     if ( m_GpuVobCullActive && m_VobCulledInstances ) return m_VobCulledInstances.Get();
     return m_VobInstanceBuffer[m_FrameIndex].Get();
+}
+
+
+UINT D3D12GraphicsEngine::GetVobInstanceBytesForDraws() const {
+    if ( m_GpuVobCullActive && m_VobCulledInstances ) return static_cast<UINT>( m_VobCulledInstancesBytes );
+    return m_VobInstanceBufferCapacity;
+}
+
+
+bool D3D12GraphicsEngine::EnsureCulledInstanceCapacity( UINT64 bytes ) {
+    if ( m_VobCulledInstances && m_VobCulledInstancesBytes >= bytes ) return true;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = bytes;
+    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ComPtr<Rhi::Resource> buffer;
+    if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, buffer.GetAddressOf() ) ) )
+        return false;
+    buffer->SetName( L"VobCulledInstances" );
+    if ( m_VobCulledInstances ) QueueResourceForRelease( std::move( m_VobCulledInstances ) );
+    m_VobCulledInstances = std::move( buffer );
+    m_VobCulledInstancesBytes = bytes;
+    m_VobCulledInstancesInVertexState = false;
+    return true;
+}
+
+
+UINT D3D12GraphicsEngine::GpuSceneOutputOffset() const {
+    const UINT stride = VobInstanceStride();
+    return ( m_VobInstanceBufferCapacity + stride - 1 ) / stride;
+}
+
+
+void D3D12GraphicsEngine::DrawGpuSceneVobs( bool alphaTested ) {
+    if ( !m_GpuSceneActive || !m_GpuScene->ArgsDrawable ) return;
+    const UINT capacity = m_GpuScene->CommandCapacity();
+    m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), capacity, m_GpuScene->Args(),
+        alphaTested ? static_cast<UINT64>( capacity ) * sizeof( VobDrawCommand ) : 0ull,
+        m_GpuScene->ArgCount(), alphaTested ? sizeof( uint32_t ) : 0u );
 }
 
 
@@ -316,11 +390,15 @@ void D3D12GraphicsEngine::CullVobsGPU() {
         }
     }
 
-    if ( m_VobDrawCount == 0 || m_VobCullVisualCount == 0 ) return;
+    const bool runCpu = m_VobDrawCount != 0 && m_VobCullVisualCount != 0;
+    const bool runScene = m_GpuSceneActive && m_GpuScene->VisualCount() > 0;
+    if ( !runCpu && !runScene ) return;
 
     // --- Stage the CPU-built commands into the DEFAULT buffer the patch pass writes ---
-    m_CmdList->CopyBufferRegion( m_VobDrawArgsGpu.Get(), 0, m_VobDrawArgs[m_FrameIndex].Get(), 0,
-        static_cast<UINT64>( m_VobDrawCount ) * sizeof( VobDrawCommand ) );
+    if ( runCpu ) {
+        m_CmdList->CopyBufferRegion( m_VobDrawArgsGpu.Get(), 0, m_VobDrawArgs[m_FrameIndex].Get(), 0,
+            static_cast<UINT64>( m_VobDrawCount ) * sizeof( VobDrawCommand ) );
+    }
 
     // --- Pass 1: frustum + Hi-Z cull, compacting survivors per visual ---
     const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
@@ -331,19 +409,7 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     const bool occlusion = Engine::GAPI->GetRendererState().RendererSettings.GpuVobOcclusionCulling
         && m_HiZReady && m_HiZInSrvState && m_HiZSrvSlot != UINT_MAX && m_HiZMipCount > 0;
 
-    struct VobCullCB {
-        XMFLOAT4X4 ViewProj;
-        uint32_t VisualCount;
-        uint32_t HiZIndex;
-        uint32_t HiZWidth;
-        uint32_t HiZHeight;
-        uint32_t HiZMipCount;
-        uint32_t EnableOcclusion;
-        float    LodDistance;
-        uint32_t Pad0;        // mirrors VobCull.hlsl's explicit float3 alignment pad
-        XMFLOAT3 CamPosWS;
-    } cb{};
-    static_assert( sizeof( VobCullCB ) == 27 * sizeof( uint32_t ), "VobCullCB must match the 27 root constants in CreateCull()" );
+    VobCullCB cb{};
     cb.ViewProj = viewProj;
     cb.VisualCount = m_VobCullVisualCount;
     cb.HiZIndex = occlusion ? m_HiZSrvSlot : 0u;
@@ -354,20 +420,35 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     // Must be the SAME value BuildVobDrawCommands used, or a far run ends up with no command to draw it.
     cb.LodDistance = m_VobLodDistance;
     cb.CamPosWS = Engine::GAPI->GetCameraPosition();
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    cb.IndoorRadius = rs.IndoorVobDrawRadius;
+    cb.OutdoorRadius = rs.OutdoorVobDrawRadius;
+    cb.SmallRadius = rs.OutdoorSmallVobDrawRadius;
+    cb.FocusSlot = m_GpuSceneFocusSlot;
 
-    // The cull strides the instance stream itself, so it must agree with VobInstanceStride().
-    const bool motion = MotionGBufferActive();
-    m_CmdList->SetPipelineState( motion ? m_Pipelines.Cull.VobCullPSO.Get()
-                                        : m_Pipelines.Cull.VobCullNoMotionPSO.Get() );
-    m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
-    m_CmdList->SetComputeRoot32BitConstants( 0, 27, &cb, 0 );
-    m_CmdList->SetComputeRootShaderResourceView( 1, m_VobCullVisuals[m_FrameIndex]->GetGPUVirtualAddress() );
-    m_CmdList->SetComputeRootShaderResourceView( 2, m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
-    m_CmdList->SetComputeRootUnorderedAccessView( 3, m_VobCulledInstances->GetGPUVirtualAddress() );
-    m_CmdList->SetComputeRootUnorderedAccessView( 4, m_VobVisibleCounts->GetGPUVirtualAddress() );
-    // One thread group per visual — the group owns that visual's whole instance range, so compaction needs
-    // only a groupshared counter (see CSCull).
-    m_CmdList->Dispatch( m_VobCullVisualCount, 1, 1 );
+    if ( runCpu ) {
+        // The cull strides the instance stream itself, so it must agree with VobInstanceStride().
+        const bool motion = MotionGBufferActive();
+        m_CmdList->SetPipelineState( motion ? m_Pipelines.Cull.VobCullPSO.Get()
+                                            : m_Pipelines.Cull.VobCullNoMotionPSO.Get() );
+        m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
+        m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+        m_CmdList->SetComputeRootShaderResourceView( 1, m_VobCullVisuals[m_FrameIndex]->GetGPUVirtualAddress() );
+        m_CmdList->SetComputeRootShaderResourceView( 2, m_VobInstanceBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
+        m_CmdList->SetComputeRootUnorderedAccessView( 3, m_VobCulledInstances->GetGPUVirtualAddress() );
+        m_CmdList->SetComputeRootUnorderedAccessView( 4, m_VobVisibleCounts->GetGPUVirtualAddress() );
+        // One thread group per visual — the group owns that visual's whole instance range, so compaction needs
+        // only a groupshared counter (see CSCull).
+        m_CmdList->Dispatch( m_VobCullVisualCount, 1, 1 );
+    }
+    // Writes behind the ring's region of the same output, so no barrier between the two.
+    if ( runScene ) CullGpuScene( &cb );
+    if ( !runCpu ) {
+        m_CmdList->TransitionBarrier( m_VobCulledInstances.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER );
+        m_VobCulledInstancesInVertexState = true;
+        return;
+    }
 
     // --- Pass 2: write the surviving counts into the indirect arguments ---
     {
@@ -405,4 +486,69 @@ void D3D12GraphicsEngine::CullVobsGPU() {
     } );
     m_VobDrawArgsGpuInIndirectState = true;
     m_VobCulledInstancesInVertexState = true;
+}
+
+
+void D3D12GraphicsEngine::CullGpuScene( const void* cullCb ) {
+    D3D12GpuScene& scene = *m_GpuScene;
+    DX_ZONE( m_CmdList.Get(), "GPU scene cull" );
+
+    // Rest states the previous frame left: counts were read by the command build and the feedback copy, the
+    // generated lists by the two VOB passes.
+    {
+        D3D12ResourceTransition pre[3] = {};
+        UINT n = 0;
+        if ( scene.CountsReadable ) {
+            pre[n++] = { scene.Counts(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.CountsReadable = false;
+        }
+        if ( scene.ArgsDrawable ) {
+            pre[n++] = { scene.Args(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            pre[n++] = { scene.ArgCount(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.ArgsDrawable = false;
+        }
+        if ( n ) m_CmdList->TransitionBarriers( pre, n );
+    }
+
+    // --- Cull + compact the table into the scene's region of the compacted buffer ---
+    VobCullCB cb = *static_cast<const VobCullCB*>( cullCb );
+    cb.VisualCount = scene.VisualCount();
+    cb.OutputOffset = GpuSceneOutputOffset();
+    m_CmdList->SetPipelineState( MotionGBufferActive() ? m_Pipelines.Cull.VobCullScenePSO.Get()
+                                                       : m_Pipelines.Cull.VobCullSceneNoMotionPSO.Get() );
+    m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.VobCullRootSig.Get() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+    m_CmdList->SetComputeRootShaderResourceView( 1, scene.Records()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 2, scene.Table()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 3, m_VobCulledInstances->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.Counts()->GetGPUVirtualAddress() );
+    m_CmdList->Dispatch( scene.VisualCount(), 1, 1 );
+    m_CmdList->TransitionBarrier( scene.Counts(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_COPY_SOURCE );
+    scene.CountsReadable = true;
+
+    // --- Generate the opaque and alpha-tested command lists, with their counts ---
+    const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), cb.OutputOffset };
+    m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.SceneArgsRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.Cull.SceneClearPSO.Get() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 4, &acb, 0 );
+    m_CmdList->SetComputeRootShaderResourceView( 1, scene.Templates()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 2, scene.Records()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 3, scene.Counts()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.Args()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 5, scene.ArgCount()->GetGPUVirtualAddress() );
+    m_CmdList->Dispatch( 1, 1, 1 );
+    m_CmdList->UAVBarrier( scene.ArgCount(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
+    if ( scene.TemplateCount() > 0 ) {
+        m_CmdList->SetPipelineState( m_Pipelines.Cull.SceneArgsPSO.Get() );
+        m_CmdList->Dispatch( ( scene.TemplateCount() + 63 ) / 64, 1, 1 );
+    }
+    m_CmdList->TransitionBarriers( {
+        { scene.Args(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+        { scene.ArgCount(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+    } );
+    scene.ArgsDrawable = true;
+
+    scene.RecordFeedbackCopy( m_CmdList );
 }

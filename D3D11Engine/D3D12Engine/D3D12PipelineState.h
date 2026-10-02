@@ -504,6 +504,16 @@ public:
         Microsoft::WRL::ComPtr<Rhi::RootSignature> PatchRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            PatchCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> PatchPSO;
+        // GPU scene (D3D12GpuScene): CSCull over the persistent table, then CSBuildArgs generates the commands.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullSceneCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullScenePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullSceneNoMotionCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullSceneNoMotionPSO;
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> SceneArgsRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneArgsCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneArgsPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneClearCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneClearPSO;
     };
 
     // Debug/editor lines (D3D12LineRenderer): one root sig (b0 ViewProj, b1 viewport) + one VS/PS set,

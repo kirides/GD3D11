@@ -28,7 +28,9 @@ struct VobCullVisual
     // strands those instances and they vanish from the main view — which is why the CPU only raises this
     // once it has emitted the far commands.
     uint   SplitMode;
+    uint   SceneFlags;      // GPU scene: SCENE_VISUAL_*; 0 for ring records
 };
+#define SCENE_VISUAL_SMALL  1u   // outdoor instances use SmallRadius instead of OutdoorRadius
 #define VOB_SPLIT_NONE  0u
 #define VOB_SPLIT_LOD   1u
 
@@ -47,6 +49,20 @@ struct VobInstanceGpu
 #endif
 };
 
+// GPU scene (D3D12GpuScene): the persistent table holds static instances without a previous transform, and
+// flags in GPSlot that only the cull reads.
+struct SceneInstanceGpu
+{
+    float4 World0, World1, World2;
+    uint   Color;
+    float  WindStrength;
+    float  CanBeAffectedByPlayer;
+    uint   GPSlot;
+};
+#define SCENE_GPSLOT_FOCUS   0x80000000u   // Vob.hlsl's focus highlight
+#define SCENE_GPSLOT_HIDDEN  0x20000000u   // not drawn (hidden, or handed to the CPU path)
+#define SCENE_GPSLOT_INDOOR  0x10000000u   // IndoorRadius instead of the visual's DrawRadius
+
 //--------------------------------------------------------------------------------------
 // Pass 1 — cull + compact
 //--------------------------------------------------------------------------------------
@@ -64,10 +80,19 @@ cbuffer VobCullCB : register( b0 )
     float    LodDistance;       // @88
     uint     _cullPad0;         // @92  explicit: HLSL won't let the float3 straddle 16 B, and the C++ mirror
     float3   CullCamPosWS;      // @96  must match field-for-field (its static_assert only checks size)
-};                              // -> 108 B == 27 root constants
+    uint     OutputOffset;      // @108 added to InstanceBase for the output element; 0 for the ring
+    float    IndoorRadius;      // @112 GPU scene draw distances (pivot to camera)
+    float    OutdoorRadius;     // @116
+    float    SmallRadius;       // @120
+    uint     FocusSlot;         // @124 GPU scene: table index of the focused vob, 0xFFFFFFFF = none
+};                              // -> 128 B == 32 root constants
 
 StructuredBuffer<VobCullVisual>    Visuals       : register( t0 );
+#if VOB_SCENE
+StructuredBuffer<SceneInstanceGpu> InInstances   : register( t1 );
+#else
 StructuredBuffer<VobInstanceGpu>   InInstances   : register( t1 );
+#endif
 RWStructuredBuffer<VobInstanceGpu> OutInstances  : register( u0 );
 RWStructuredBuffer<uint>           VisibleCounts : register( u1 );
 
@@ -76,6 +101,33 @@ float3x4 BuildWorldMatrix( VobInstanceGpu inst )
     // The rows are the matrix, as in Vob.hlsl's row_major iworld input.
     return float3x4( inst.World0, inst.World1, inst.World2 );
 }
+
+#if VOB_SCENE
+// The draw instance for a table entry: no motion of its own, so the previous transform is the current one.
+VobInstanceGpu ExpandSceneInstance( SceneInstanceGpu s, uint tableIndex )
+{
+    VobInstanceGpu o;
+    o.World0 = s.World0; o.World1 = s.World1; o.World2 = s.World2;
+    o.Color = s.Color;
+    o.WindStrength = s.WindStrength;
+    o.CanBeAffectedByPlayer = s.CanBeAffectedByPlayer;
+    o.GPSlot = ( s.GPSlot & ~SCENE_GPSLOT_FOCUS ) | ( tableIndex == FocusSlot ? SCENE_GPSLOT_FOCUS : 0u );
+#if !VOB_NO_MOTION
+    o.PrevWorld0 = s.World0; o.PrevWorld1 = s.World1; o.PrevWorld2 = s.World2;
+#endif
+    return o;
+}
+
+// The draw-distance and hidden tests the CPU leaf walk used to make.
+bool IsSceneInstanceInRange( VobCullVisual v, SceneInstanceGpu s )
+{
+    if ( s.GPSlot & SCENE_GPSLOT_HIDDEN ) return false;
+    const float radius = ( s.GPSlot & SCENE_GPSLOT_INDOOR ) ? IndoorRadius
+        : ( v.SceneFlags & SCENE_VISUAL_SMALL ) ? SmallRadius : OutdoorRadius;
+    const float3 pivot = float3( s.World0.w, s.World1.w, s.World2.w );
+    return distance( pivot, CullCamPosWS ) < radius;
+}
+#endif
 
 bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
 {
@@ -189,13 +241,20 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
         VobCullVisual v = Visuals[visualIdx];
         for ( uint i = gtid; i < v.InstanceCount; i += VOBCULL_GROUP_SIZE )
         {
+#if VOB_SCENE
+            const SceneInstanceGpu sceneInst = InInstances[v.InstanceBase + i];
+            VobInstanceGpu inst = ExpandSceneInstance( sceneInst, v.InstanceBase + i );
+            const bool inRange = IsSceneInstanceInRange( v, sceneInst );
+#else
             VobInstanceGpu inst = InInstances[v.InstanceBase + i];
+            const bool inRange = true;
+#endif
 
             // NOTE: no early-out/continue on visibility -- every lane must reach the wave ops below with the
             // same activity mask, so an invisible instance falls through with both predicates false instead
             // of exiting the loop.
             bool isFar = false;
-            const bool visible = IsInstanceVisible( v, inst );
+            const bool visible = inRange && IsInstanceVisible( v, inst );
             if ( visible )
             {
                 // Bbox centre, not the origin: Gothic vob pivots are often off the mesh entirely (a door's
@@ -218,7 +277,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 uint nearBase = 0;
                 if ( WaveIsFirstLane() ) InterlockedAdd( gNearInGroup, nearHits, nearBase );
                 nearBase = WaveReadLaneFirst( nearBase );
-                if ( isNear ) OutInstances[v.InstanceBase + nearBase + WavePrefixCountBits( isNear )] = inst;
+                if ( isNear ) OutInstances[OutputOffset + v.InstanceBase + nearBase + WavePrefixCountBits( isNear )] = inst;
             }
 
             const uint farHits = WaveActiveCountBits( isFarVisible );
@@ -228,7 +287,7 @@ void CSCull( uint3 gid : SV_GroupID, uint gtid : SV_GroupIndex )
                 if ( WaveIsFirstLane() ) InterlockedAdd( gFarInGroup, farHits, farBase );
                 farBase = WaveReadLaneFirst( farBase );
                 if ( isFarVisible )
-                    OutInstances[v.InstanceBase + v.InstanceCount - 1 - ( farBase + WavePrefixCountBits( isFarVisible ) )] = inst;
+                    OutInstances[OutputOffset + v.InstanceBase + v.InstanceCount - 1 - ( farBase + WavePrefixCountBits( isFarVisible ) )] = inst;
             }
         }
     }
@@ -286,4 +345,71 @@ void CSPatchArgs( uint3 DTid : SV_DispatchThreadID )
 
     PatchArgs.Store( base + PatchInstCountOffset, count );
     PatchArgs.Store( base + PatchStartInstOffset, start );
+}
+
+//--------------------------------------------------------------------------------------
+// GPU scene — generate the draw commands of every visual with survivors
+//--------------------------------------------------------------------------------------
+// Mirrors D3D12GpuScene::Template: the VobDrawCommand fields that do not depend on the cull.
+struct SceneTemplate
+{
+    uint  MatNormalIndex;
+    uint  MatOrmIndex;
+    uint  MatDiffuseIndex;
+    float WindMinHeight;
+    float WindMaxHeight;
+    uint  IndexCount;
+    uint  StartIndex;
+    int   BaseVertex;
+    uint  VisualIndex;      // scene record
+    uint  LodBucket;
+    uint  Flags;            // SCENE_TEMPLATE_*
+    uint  _templatePad;
+};
+#define SCENE_TEMPLATE_ALPHA  1u   // goes into the alpha-tested list
+#define SCENE_TEMPLATE_READY  2u   // its textures are resolved; not drawn until then
+
+cbuffer SceneArgsCB : register( b0 )
+{
+    uint TemplateCount;
+    uint OpaqueCapacity;    // commands in the opaque list, which starts at command 0
+    uint AlphaCapacity;     // commands in the alpha list, which starts at command OpaqueCapacity
+    uint SceneOutputOffset; // the cull's OutputOffset
+};
+
+StructuredBuffer<SceneTemplate> Templates     : register( t0 );
+StructuredBuffer<VobCullVisual> SceneVisuals  : register( t1 );
+StructuredBuffer<uint>          SceneCounts   : register( t2 );
+RWByteAddressBuffer             SceneArgs     : register( u0 );   // VobDrawCommand x (OpaqueCapacity + AlphaCapacity)
+RWByteAddressBuffer             SceneArgCount : register( u1 );   // [0] opaque, [4] alpha: the ExecuteIndirect counts
+
+#define VOB_DRAW_COMMAND_STRIDE 48u
+
+[numthreads(1, 1, 1)]
+void CSClearCounts()
+{
+    SceneArgCount.Store2( 0, uint2( 0, 0 ) );
+}
+
+[numthreads(64, 1, 1)]
+void CSBuildArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & SCENE_TEMPLATE_READY ) == 0u ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u + t.LodBucket];
+    if ( count == 0u ) return;
+
+    const bool alpha = ( t.Flags & SCENE_TEMPLATE_ALPHA ) != 0u;
+    uint slot;
+    SceneArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
+    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;   // the draw clamps the count to capacity
+
+    // Near packs forward from the output base, far backward from its end (see CSCull).
+    const VobCullVisual v = SceneVisuals[t.VisualIndex];
+    const uint start = SceneOutputOffset + v.InstanceBase + ( t.LodBucket == 0u ? 0u : v.InstanceCount - count );
+    const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * VOB_DRAW_COMMAND_STRIDE;
+    SceneArgs.Store4( at,      uint4( t.MatNormalIndex, t.MatOrmIndex, t.MatDiffuseIndex, asuint( t.WindMinHeight ) ) );
+    SceneArgs.Store4( at + 16, uint4( asuint( t.WindMaxHeight ), t.IndexCount, count, t.StartIndex ) );
+    SceneArgs.Store4( at + 32, uint4( asuint( t.BaseVertex ), start, t.VisualIndex, t.LodBucket ) );
 }

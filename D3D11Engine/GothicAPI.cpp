@@ -977,6 +977,7 @@ void GothicAPI::ResetVobs() {
     
     // Pending UI item previews hold raw mesh pointers into what gets deleted below.
     if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->FlushUI2D();
+    if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->OnVobsReset();
 
     // complete what ever is currently working, and clear everything else.
     Engine::WorkerThreadPool->clearAndFlush();
@@ -4363,7 +4364,9 @@ void GothicAPI::CollectVisibleVobs(
     std::vector<SkeletalVobInfo*>& mobs, 
     EGothicCullFlags cullFlags,
     EBspTreeCollectFlags collectFlags,
-    bool skipVobFrustumCull ) {
+    bool skipVobFrustumCull,
+    bool skipStaticVobs,
+    const std::vector<VobInfo*>* extraVobs ) {
     ZoneScopedN( "GothicAPI::CollectVisibleVobsLegacy" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
@@ -4418,6 +4421,8 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawFlags.EnableOcclusionCulling = RendererState.RendererSettings.EnableOcclusionCulling;
     ctx.drawFlags.CullVobs = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
     ctx.drawFlags.SkipVobFrustumCull = skipVobFrustumCull;
+    ctx.drawFlags.SkipStaticVobs = skipStaticVobs;
+    ctx.extraVobs = extraVobs;
     ctx.drawFlags.CollectIndoorVobs = true;
     ctx.drawFlags.CollectMobs = true;
     ctx.drawFlags.CollectLights = true;
@@ -6155,6 +6160,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "SynchronousMeshExtraction", to_string_locale_independent( s.SynchronousMeshExtraction ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuScene", to_string_locale_independent( s.GpuScene ? TRUE : FALSE ).c_str(), ini.c_str() );
     // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
     // morph vertex buffers get created), so the only way to turn it off is for the NEXT run.
     WritePrivateProfileStringA( "Debug", "GpuMorphFold", to_string_locale_independent( s.UseGpuMorphFold ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6448,6 +6454,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SynchronousMeshExtraction = GetPrivateProfileBoolA( "Debug", "SynchronousMeshExtraction", ds.SynchronousMeshExtraction, ini );
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
         s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
+        s.GpuScene = GetPrivateProfileBoolA( "Debug", "GpuScene", ds.GpuScene, ini );
         s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );
         s.UseGpuUploadRings = GetPrivateProfileBoolA( "Debug", "GpuUploadRings", ds.UseGpuUploadRings, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
@@ -7142,7 +7149,7 @@ static void CollectLeafVobs(
     std::vector<LeafVobEntry>& listC = base->Vobs;
     std::vector<SkeletalVobInfo*>& listD = base->Mobs;
 
-    if ( ctx.drawFlags.DrawVOBs ) {
+    if ( ctx.drawFlags.DrawVOBs && !ctx.drawFlags.SkipStaticVobs ) {
         if ( collectIndoorVobs && leafDistSq < vobIndoorDistSq ) {
             // Portal culling: a room the camera cannot see into through any chain of portals has
             // none of its VOBs collected at all. Leafs outside every sector pass through untouched.
@@ -7582,40 +7589,42 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs
         && !ctx.drawFlags.SkipVobFrustumCull;
 
-    // Add visible dynamically added vobs
-    if ( RendererState.RendererSettings.DrawVOBs ) {
+    // Add visible dynamically added vobs (and the GPU scene's CPU-path static ones)
+    auto collectListed = [&]( VobInfo* it ) {
+        if ( !bspVobVisitor.Visit( it ) ) return;
+
+        // Get distance to this vob
         float dist;
-        for ( VobInfo* it : DynamicallyAddedVobs ) {
-            if ( !bspVobVisitor.Visit( it ) ) continue;
+        XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
+        // Draw, if in range
+        if ( it->VisualInfo && (
+            (dist < vobIndoorDist && it->IsIndoorVob && collectIndoor)
+            || (!it->IsIndoorVob && (
+                (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
+                || (dist < vobOutdoorDist)
+                )
+                )
+            ) ) {
 
-            // Get distance to this vob
-            XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
-            // Draw, if in range
-            if ( it->VisualInfo && (
-                (dist < vobIndoorDist && it->IsIndoorVob && collectIndoor)
-                || (!it->IsIndoorVob && (
-                    (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
-                    || (dist < vobOutdoorDist)
-                    )
-                    )
-                ) ) {
-
-                if ( !it->Vob->GetShowVisual() ) {
-                    continue;
-                }
-
-                if ( cullingEnabled && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
-                    continue;
-                }
-
-                if ( it->Vob->GetVisualAlpha() ) {
-                    ctx.queue->PushTransparencyVob( TransparencyVobInfo{ dist, it->Vob->GetVobTransparency(), nullptr, it } );
-                    continue;
-                }
-
-                ctx.queue->PushStaticVob( it );
+            if ( !it->Vob->GetShowVisual() ) {
+                return;
             }
+
+            if ( cullingEnabled && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
+                return;
+            }
+
+            if ( it->Vob->GetVisualAlpha() ) {
+                ctx.queue->PushTransparencyVob( TransparencyVobInfo{ dist, it->Vob->GetVobTransparency(), nullptr, it } );
+                return;
+            }
+
+            ctx.queue->PushStaticVob( it );
         }
+    };
+    if ( RendererState.RendererSettings.DrawVOBs ) {
+        for ( VobInfo* it : DynamicallyAddedVobs ) collectListed( it );
+        if ( ctx.extraVobs ) for ( VobInfo* it : *ctx.extraVobs ) collectListed( it );
     }
 
     bspVobVisitor.ClearForReuse();

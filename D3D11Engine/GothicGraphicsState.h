@@ -913,6 +913,7 @@ struct GothicRendererSettings {
         SynchronousMeshExtraction = false;
         GpuVobCulling = false;
         GpuVobOcclusionCulling = false;
+        GpuScene = false;
         UseGpuUploadRings = false;
         EnableVSync = true;
         DoZPrepass = false;
@@ -1227,6 +1228,9 @@ struct GothicRendererSettings {
     // out as its own toggle because it is the part that can wrongly hide geometry.
     bool GpuVobCulling;
     bool GpuVobOcclusionCulling;
+    // D3D12: static VOBs live in a persistent GPU table; the main view culls them and generates their draw
+    // commands on the GPU instead of walking the BSP leaves (GPU_SCENE_PLAN.md). Implies GpuVobCulling.
+    bool GpuScene;
     // D3D12/Vulkan: the light, skeletal and VOB/shadow instance rings live in CPU-writable VRAM (GPU_UPLOAD /
     // ReBAR) instead of system memory. Read when the rings are created, so it takes effect after a restart.
     bool UseGpuUploadRings;
