@@ -209,6 +209,9 @@ struct BspLeafLinearCache {
     VectorA32<float> MaxX, MaxY, MaxZ;
     std::vector<BspInfo*> Leaves;
     uint32_t Count = 0;
+    // Bounds of each run of kChunk consecutive leaves; DFS order keeps a run spatially tight.
+    static constexpr uint32_t kChunk = 32;
+    std::vector<DirectX::XMFLOAT3> ChunkMin, ChunkMax;
 
     void Build( BspInfo* root );
     void Clear();
@@ -575,6 +578,8 @@ public:
     /** Returns the loaded skeletal mesh vobs */
     std::vector<SkeletalVobInfo*>& GetSkeletalMeshVobs();
     std::vector<SkeletalVobInfo*>& GetAnimatedSkeletalMeshVobs();
+    /** Main-world NPCs (zVOB_TYPE_NSC), moved or not; a subset of GetSkeletalMeshVobs. */
+    const std::vector<SkeletalVobInfo*>& GetNpcSkeletalVobs() const { return NpcSkeletalVobs; }
     std::vector<VobInfo*>& GetDynamicallyAddedVobs();
 
     /** Non-skeletal mesh vobs with StaticVob clear (items) -- moving-caster source for the D3D12
@@ -774,12 +779,16 @@ public:
     /** Returns whether a world mesh intersects the given frustum (true when no bounds are available). */
     bool IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const;
 
-    /** Finer-grained sibling of CollectVisibleSections: queries the world-mesh CLUSTER BVH (see
-        BuildWorldMeshClusterBVH) instead of section bounding boxes, and fuses adjacent surviving
-        clusters into a handful of draw ranges instead of one per cluster. */
-    void CollectVisibleMeshRanges( const Frustum& frustum,
+    /** Cluster-BVH sibling of CollectVisibleSections: appends surviving clusters, fused per mesh into draw ranges
+        unless !merge (then one unordered range per cluster). Returns false when no cluster tree is built. */
+    bool CollectVisibleMeshRanges( const Frustum& frustum,
         bool useSectionRadiusFilter,
-        std::vector<MeshDrawRange>& outRanges );
+        std::vector<MeshDrawRange>& outRanges, bool merge = true );
+
+    /** Shown, opaque VOBs whose box reaches the sphere and not-yet-moved MOBs whose pivot does, deduplicated. VOBs
+        whose box diagonal is below minSizePerDistance x their distance are dropped (sub-texel casters). */
+    void CollectStaticCastersInSphere( const XMFLOAT3& center, float radius,
+        std::vector<VobInfo*>* outVobs, std::vector<SkeletalVobInfo*>* outMobs, float minSizePerDistance = 0.0f );
 
     /** Builds our BspTreeVobMap */
     void BuildBspVobMapCache();
@@ -1121,6 +1130,7 @@ private:
     /** List of vobs with skeletal meshes (Having a zCModel-Visual) */
     std::vector<SkeletalVobInfo*> SkeletalMeshVobs;
     std::vector<SkeletalVobInfo*> AnimatedSkeletalVobs;
+    std::vector<SkeletalVobInfo*> NpcSkeletalVobs;
     /** Non-skeletal mesh vobs added with GetFlags().StaticVob clear -- see GetDynamicMeshVobs(). */
     std::vector<VobInfo*> DynamicMeshVobs;
     std::vector<TransparencyVobInfo> TransparencyVobs;

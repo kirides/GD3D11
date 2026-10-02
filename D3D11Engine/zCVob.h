@@ -4,6 +4,7 @@
 #include "zCArray.h"
 #include "zCObject.h"
 #include "zCPolygon.h"
+#include "zCTree.h"
 #include "zSTRING.h"
 
 enum EVobType {
@@ -357,6 +358,11 @@ public:
     /** Vob type */
     EVobType GetVobType() const {
         return *reinterpret_cast<EVobType*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Type ));
+    }
+
+    /** This vob's node in the world's vob tree (parent, children, siblings), or null outside a world. */
+    zCTree<zCVob>* GetVobTreeNode() const {
+        return *reinterpret_cast<zCTree<zCVob>**>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_VobTree ));
     }
 
     /** Vob parent */

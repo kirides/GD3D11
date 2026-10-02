@@ -27,6 +27,7 @@
 #include "GInventory.h"
 
 #define DIRECTINPUT_VERSION 0x0700
+#include <bit>
 #include <charconv>
 #include <numeric>
 #include <dinput.h>
@@ -1042,6 +1043,7 @@ void GothicAPI::ResetVobs() {
     }
     SkeletalMeshVobs.clear();
     AnimatedSkeletalVobs.clear();
+    NpcSkeletalVobs.clear();
 
     // Every skeletal vob is gone, so this should find nothing left to own. Drops (and logs) whatever
     // is still there rather than carrying converted meshes into the next world.
@@ -2003,6 +2005,8 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
             MoveVobFromBspToDynamic( vi );
         }
 
+        if ( !vi->IsMoving( FrameNumber ) ) vi->MoveStartFrame = FrameNumber;
+        vi->LastMovedFrame = FrameNumber;
         vi->UpdateState();
         Engine::GraphicsEngine->OnVobMoved( vob );
         Engine::GAPI->GetRendererState().RendererInfo.FrameVobUpdates++;
@@ -2381,6 +2385,7 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world, bool tearDownLight ) {
             break;
         }
     }
+    if ( svi ) std::erase( NpcSkeletalVobs, svi );
 
     for ( size_t i = 0; i< DynamicallyAddedVobs.size(); ++i ) {
         if ( DynamicallyAddedVobs[i]->Vob == vob ) {
@@ -2598,6 +2603,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             if ( world == oCGame::GetGame()->_zCSession_world ) {
                 SkeletalMeshVobs.push_back( vi );
                 State->SkeletalVobMap[vob] = vi;
+                if ( vob->GetVobType() == zVOB_TYPE_NSC ) NpcSkeletalVobs.push_back( vi );
 
                 // If this can be animated, put it into another map as well
                 if ( !State->BspLeafVobLists.empty() ) // Check if this is the initial loading
@@ -4413,6 +4419,7 @@ void GothicAPI::CollectVisibleVobs(
     // This overload is the main camera pass of both backends, and the only place portal culling
     // applies: shadow passes need casters from rooms the player cannot see into.
     if ( haveCameraMatrices && State->PortalCuller.IsActive() ) {
+        ZoneScopedN( "CVV: portal solve" )
         oCGame* game = oCGame::GetGame();
         State->PortalCuller.Solve( worldToClip, ctx.cameraPosition, game ? game->_zCSession_camVob : nullptr );
         ctx.portalCuller = &State->PortalCuller;
@@ -4461,6 +4468,7 @@ void GothicAPI::CollectVisibleVobs(
     // they should be unique at this point.
 
     if ( collectFlags & COLLECT_MUTATE ) {
+        ZoneScopedN( "CVV: instances + lights" )
         const int interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
         const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
 
@@ -4904,11 +4912,11 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 }
 
 /** Finer-grained sibling of CollectVisibleSections - see its declaration in GothicAPI.h. */
-void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
+bool GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
     bool useSectionRadiusFilter,
-    std::vector<MeshDrawRange>& outRanges ) {
+    std::vector<MeshDrawRange>& outRanges, bool merge ) {
     if ( !State->WorldMeshClusterTree.IsValid() ) {
-        return;
+        return false;
     }
 
     ZoneScopedN( "GothicAPI::CollectVisibleMeshRanges" );
@@ -4921,11 +4929,10 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
         sectionViewDistWorldSq = sectionViewDistWorld * sectionViewDistWorld;
     }
 
-    // Gathered per-mesh so the merge pass below never compares ranges from different index buffers.
-    static thread_local std::map<WorldMeshInfo*, std::vector<MeshDrawRange>> byMesh;
-    for ( auto& [mesh, ranges] : byMesh ) {
-        ranges.clear();
-    }
+    // Flat and sorted by (mesh, offset) below, so the merge never compares ranges from different index buffers.
+    static thread_local std::vector<MeshDrawRange> hits;
+    hits.clear();
+    std::vector<MeshDrawRange>& sink = merge ? hits : outRanges;
 
     SpatialBVH::Query( State->WorldMeshClusterTree, frustum,
         [&]( const WorldMeshClusterRef& ref ) {
@@ -4956,31 +4963,107 @@ void GothicAPI::CollectVisibleMeshRanges( const Frustum& frustum,
                 range.IndexCount = cluster.IndexCount;
             }
 
-            byMesh[ref.Mesh].push_back( range );
+            sink.push_back( range );
         } );
+
+    if ( hits.empty() ) {
+        return true;
+    }
 
     // Merge exactly-adjacent ranges per mesh (clusters are contiguous in index-buffer order - see
     // ClusterWorldMeshTriangles), same rule as D3D12's CoalesceWorldDepthCommands.
-    for ( auto& [mesh, ranges] : byMesh ) {
-        if ( ranges.empty() ) {
-            continue;
+    std::ranges::sort( hits, []( const MeshDrawRange& a, const MeshDrawRange& b ) {
+        return a.Mesh != b.Mesh ? std::less<>{}( a.Mesh, b.Mesh ) : a.IndexOffset < b.IndexOffset;
+    } );
+
+    MeshDrawRange run = hits[0];
+    for ( size_t i = 1; i < hits.size(); ++i ) {
+        const MeshDrawRange& next = hits[i];
+        if ( next.Mesh == run.Mesh && run.IndexOffset + run.IndexCount == next.IndexOffset ) {
+            run.IndexCount += next.IndexCount;
+        } else {
+            outRanges.push_back( run );
+            run = next;
         }
+    }
+    outRanges.push_back( run );
+    return true;
+}
 
-        std::ranges::sort(ranges, []( const MeshDrawRange& a, const MeshDrawRange& b ) {
-            return a.IndexOffset < b.IndexOffset;
-        } );
+void GothicAPI::CollectStaticCastersInSphere( const XMFLOAT3& center, float radius,
+    std::vector<VobInfo*>* outVobs, std::vector<SkeletalVobInfo*>* outMobs, float minSizePerDistance ) {
+    ZoneScopedN( "GothicAPI::CollectStaticCastersInSphere" )
+    if ( outVobs ) outVobs->clear();
+    if ( outMobs ) outMobs->clear();
+    if ( !outVobs && !outMobs ) return;
 
-        MeshDrawRange run = ranges[0];
-        for ( size_t i = 1; i < ranges.size(); ++i ) {
-            const MeshDrawRange& next = ranges[i];
-            if ( run.IndexOffset + run.IndexCount == next.IndexOffset ) {
-                run.IndexCount += next.IndexCount;
-            } else {
-                outRanges.push_back( run );
-                run = next;
+    // A vob sits in every leaf its box touches; the pointer set drops repeats before they touch the VobInfo.
+    static thread_local gtl::flat_hash_set<const void*> seen;
+    seen.clear();
+    const float radiusSq = radius * radius;
+    const float minSizeSqPerDistSq = minSizePerDistance * minSizePerDistance;
+    const XMVECTOR c = XMLoadFloat3( &center );
+    auto acceptVob = [&]( VobInfo* vi ) {
+        if ( !vi || !seen.insert( vi ).second || !vi->Vob || !vi->VisualInfo ) return;
+        const XMVECTOR bbMin = XMLoadFloat3( &vi->LastRenderBBox.Min );
+        const XMVECTOR bbMax = XMLoadFloat3( &vi->LastRenderBBox.Max );
+        const float distSq = XMVectorGetX( XMVector3LengthSq( XMVectorClamp( c, bbMin, bbMax ) - c ) );
+        if ( distSq >= radiusSq ) return;
+        if ( XMVectorGetX( XMVector3LengthSq( bbMax - bbMin ) ) < distSq * minSizeSqPerDistSq ) return;
+        const zTVobFlags flags = vi->Vob->GetFlags();
+        if ( !flags.ShowVisual || flags.VisualAlphaEnabled ) return;
+        outVobs->push_back( vi );
+    };
+
+    // Leaves whose box reaches the sphere: chunks first, then 4 leaves at a time. The arrays are padded to a
+    // multiple of 8 with boxes that sit at infinity, so a chunk's tail needs no special case.
+    const BspLeafLinearCache& cache = LeafLinearCache;
+    const uint32_t padded = ( cache.Count + 7u ) & ~7u;
+    const __m128 vZero = _mm_setzero_ps();
+    const __m128 vCx = _mm_set1_ps( center.x ), vCy = _mm_set1_ps( center.y ), vCz = _mm_set1_ps( center.z );
+    const __m128 vRadiusSq = _mm_set1_ps( radiusSq );
+    auto visitLeaf = [&]( BspInfo* leaf ) {
+        if ( outVobs ) {
+            for ( const auto* list : { &leaf->IndoorVobs, &leaf->SmallVobs, &leaf->Vobs } )
+                for ( const LeafVobEntry& e : *list ) acceptVob( e.Info );
+        }
+        if ( outMobs ) {
+            // Mobs still in a leaf have not moved since load, so the matrix captured at registration holds.
+            for ( SkeletalVobInfo* mob : leaf->Mobs ) {
+                if ( !mob || !seen.insert( mob ).second || !mob->Vob ) continue;
+                const float mx = mob->WorldMatrix._14 - center.x, my = mob->WorldMatrix._24 - center.y,
+                    mz = mob->WorldMatrix._34 - center.z;
+                if ( mx * mx + my * my + mz * mz < radiusSq ) outMobs->push_back( mob );
             }
         }
-        outRanges.push_back( run );
+    };
+    for ( uint32_t chunk = 0; chunk < cache.ChunkMin.size(); ++chunk ) {
+        const XMFLOAT3& cMin = cache.ChunkMin[chunk];
+        const XMFLOAT3& cMax = cache.ChunkMax[chunk];
+        const float cdx = std::max( { 0.0f, cMin.x - center.x, center.x - cMax.x } );
+        const float cdy = std::max( { 0.0f, cMin.y - center.y, center.y - cMax.y } );
+        const float cdz = std::max( { 0.0f, cMin.z - center.z, center.z - cMax.z } );
+        if ( cdx * cdx + cdy * cdy + cdz * cdz >= radiusSq ) continue;
+
+        const uint32_t chunkEnd = std::min( ( chunk + 1 ) * BspLeafLinearCache::kChunk, padded );
+        for ( uint32_t i = chunk * BspLeafLinearCache::kChunk; i < chunkEnd; i += 4 ) {
+            const __m128 dx = _mm_max_ps( vZero, _mm_max_ps( _mm_sub_ps( _mm_load_ps( cache.MinX.data() + i ), vCx ),
+                _mm_sub_ps( vCx, _mm_load_ps( cache.MaxX.data() + i ) ) ) );
+            const __m128 dy = _mm_max_ps( vZero, _mm_max_ps( _mm_sub_ps( _mm_load_ps( cache.MinY.data() + i ), vCy ),
+                _mm_sub_ps( vCy, _mm_load_ps( cache.MaxY.data() + i ) ) ) );
+            const __m128 dz = _mm_max_ps( vZero, _mm_max_ps( _mm_sub_ps( _mm_load_ps( cache.MinZ.data() + i ), vCz ),
+                _mm_sub_ps( vCz, _mm_load_ps( cache.MaxZ.data() + i ) ) ) );
+            const __m128 distSq = _mm_add_ps( _mm_add_ps( _mm_mul_ps( dx, dx ), _mm_mul_ps( dy, dy ) ), _mm_mul_ps( dz, dz ) );
+            for ( uint32_t mask = static_cast<uint32_t>( _mm_movemask_ps( _mm_cmplt_ps( distSq, vRadiusSq ) ) ); mask; mask &= mask - 1 ) {
+                const uint32_t idx = i + static_cast<uint32_t>( std::countr_zero( mask ) );
+                if ( idx < cache.Count && cache.Leaves[idx] ) visitLeaf( cache.Leaves[idx] );
+            }
+        }
+    }
+
+    // Added after load or moved since: not in any leaf.
+    if ( outVobs ) {
+        for ( VobInfo* vi : DynamicallyAddedVobs ) acceptVob( vi );
     }
 }
 
@@ -5330,12 +5413,23 @@ void BspLeafLinearCache::Build( BspInfo* root ) {
     MinX.resize( padded,  FLT_MAX ); MinY.resize( padded,  FLT_MAX ); MinZ.resize( padded,  FLT_MAX );
     MaxX.resize( padded, -FLT_MAX ); MaxY.resize( padded, -FLT_MAX ); MaxZ.resize( padded, -FLT_MAX );
     Leaves.resize( padded, nullptr );
+
+    const uint32_t chunks = ( Count + kChunk - 1 ) / kChunk;
+    ChunkMin.assign( chunks, XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX ) );
+    ChunkMax.assign( chunks, XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX ) );
+    for ( uint32_t i = 0; i < Count; ++i ) {
+        XMFLOAT3& mn = ChunkMin[i / kChunk];
+        XMFLOAT3& mx = ChunkMax[i / kChunk];
+        mn = XMFLOAT3( std::min( mn.x, MinX[i] ), std::min( mn.y, MinY[i] ), std::min( mn.z, MinZ[i] ) );
+        mx = XMFLOAT3( std::max( mx.x, MaxX[i] ), std::max( mx.y, MaxY[i] ), std::max( mx.z, MaxZ[i] ) );
+    }
 }
 
 void BspLeafLinearCache::Clear() {
     MinX.clear(); MinY.clear(); MinZ.clear();
     MaxX.clear(); MaxY.clear(); MaxZ.clear();
     Leaves.clear();
+    ChunkMin.clear(); ChunkMax.clear();
     Count = 0;
 }
 

@@ -494,6 +494,14 @@ struct VobInfo : public BaseVobInfo {
     XMFLOAT4X4 PrevWorldMatrix;
     bool HasValidPrevMatrix;
 
+    /** GetFrameNumber() of the last real transform change (OnVobMoved), 0 = never moved. A move within
+        kMovingFrames of the previous one continues the episode that started at MoveStartFrame. */
+    static constexpr size_t kMovingFrames = 30;
+    size_t LastMovedFrame = 0;
+    size_t MoveStartFrame = 0;
+    bool   SettlePending = false;   // a movement episode ended without its settle being reported yet
+    bool IsMoving( size_t now ) const { return LastMovedFrame && now - LastMovedFrame <= kMovingFrames; }
+
     /** Set on plants floating on wave-animated water; the instance builders add its offset (ApplyWaterBob). */
     std::unique_ptr<VobWaterBob> WaterBob;
 };
