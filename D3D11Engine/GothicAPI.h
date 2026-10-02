@@ -67,7 +67,7 @@ struct RndCullContext {
         float OutdoorVobsSmall;
         float IndoorVobs;
         float VisualFX;
-    } drawDistances;
+    } drawDistances{};
 
     struct
     {
@@ -75,7 +75,7 @@ struct RndCullContext {
         float OutdoorVobsSmall;
         float IndoorVobs;
         float VisualFX;
-    } drawDistancesSq;
+    } drawDistancesSq{};
 
     struct
     {
@@ -95,7 +95,7 @@ struct RndCullContext {
         bool CollectIndoorVobs;
         bool CollectMobs;
         bool CollectLights;
-    } drawFlags;
+    } drawFlags{};   // zeroed: passes set only the flags they care about
 };
 
 enum EBspTreeCollectFlags : unsigned int {

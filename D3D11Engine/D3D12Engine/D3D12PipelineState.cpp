@@ -3981,9 +3981,14 @@ bool D3D12PipelineState::CreateCull() {
         Cull.VobCullSceneNoMotionPSO.Reset();
         return true;
     }
+    // Shadow-cascade casters: always the no-motion stride, the caster layouts stop before prevWorld.
+    const D3D_SHADER_MACRO casterDefines[] = { { "VOB_SCENE", "1" }, { "VOB_NO_MOTION", "1" }, { "VOB_SHADOW", "1" }, { nullptr, nullptr } };
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullCasterCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullCasterPSO.ReleaseAndGetAddressOf(), casterDefines ) )
+        Cull.VobCullCasterPSO.Reset();
 
     D3D12RootLayout& sceneArgsRs = Layout( "CullSceneArgs" );
-    sceneArgsRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
+    sceneArgsRs.AddConstants( 0, 5, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
     sceneArgsRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Templates
     sceneArgsRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 SceneVisuals
     sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 SceneCounts
@@ -3998,6 +4003,9 @@ bool D3D12PipelineState::CreateCull() {
         Cull.SceneArgsPSO.Reset();
         Cull.SceneClearPSO.Reset();
     }
+    if ( !makeComputePSO( "VobCull.hlsl", "CSBuildCasterArgs", sceneArgsRs,
+            Cull.SceneCasterArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneCasterArgsPSO.ReleaseAndGetAddressOf() ) )
+        Cull.SceneCasterArgsPSO.Reset();
     return true;
 }
 

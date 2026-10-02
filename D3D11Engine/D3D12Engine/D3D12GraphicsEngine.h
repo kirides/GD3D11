@@ -45,6 +45,7 @@ class zCVobLight;
     Engine::CreateGraphicsEngine keeps D3D11. */
 class D3D12VobArena;
 class D3D12GpuScene;
+struct GpuSceneCasterView;
 class D3D12MeshArena;
 class D3D12RayTracing;
 struct FrameSkelDraw;
@@ -927,8 +928,8 @@ private:
         stream, and `instances` (the per-instance VobInstanceInfo stream this pass draws from — the raw
         upload ring for the shadow/rain passes, the GPU-compacted buffer for a culled main view) on slot 1.
         Returns false when the arena holds nothing, in which case the caller must not submit: its commands
-        would index a buffer that doesn't exist. */
-    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes );
+        would index a buffer that doesn't exist. instanceStride 0 = VobInstanceStride(). */
+    bool BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes, UINT instanceStride = 0 );
     Microsoft::WRL::ComPtr<Rhi::Resource> m_VobDrawArgs[kBackBufferMax];   // main-view (prepass+color share it)
     uint8_t* m_VobDrawArgsPtr[kBackBufferMax] = {};
     UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
@@ -948,6 +949,7 @@ public:
         UINT SplitLod;        // cannot be doing anything, whatever it is set to
         bool GpuCullActive;   // which of the two paths produced the split (compute vs the CPU upload)
         bool SceneActive;     // GPU scene: static VOBs drawn from the persistent table
+        bool SceneCasters;    // ...and the shadow cascades' static casters too
         UINT SceneInstances, SceneVisuals, SceneReadyVisuals, SceneTemplates, SceneCpuVobs;
     };
     const VobFrameStats& GetVobFrameStats() const { return m_VobStats; }
@@ -1136,6 +1138,11 @@ private:
     UINT GpuSceneOutputOffset() const;
     // Both VOB passes: the scene's opaque or alpha-tested list, with its GPU-written count.
     void DrawGpuSceneVobs( bool alphaTested );
+    // Main thread, before the cascade jobs record: culls the scene's static casters into every active view and
+    // builds their lists on m_CmdList. False = nothing recorded; the cascades then walk the leaves themselves.
+    bool CullGpuSceneCasters( const GpuSceneCasterView* views, UINT count );
+    // A cascade's scene casters (its opaque or alpha-tested list); any thread, into that cascade's list.
+    void DrawGpuSceneCasters( D3D12CmdList& cmdList, UINT view, bool alphaTested ) const;
 
     // ---- GPU morph fold (D3D12MorphFold.cpp + MorphGpu.h + Shaders/D3D12/MorphFold.hlsl) ----
     // Morph attachments (NPC heads, bow/crossbow draw meshes) fold their blend shapes in a compute pass that

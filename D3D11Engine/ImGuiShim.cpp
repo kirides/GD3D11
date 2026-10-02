@@ -2456,8 +2456,9 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::Text( "%u / %u", vs.SplitNone, vs.SplitLod );
                 addRowLabel( "GPU scene" );
                 if ( vs.SceneActive ) {
-                    ImGui::Text( "%u inst, %u/%u visuals ready, %u templates, %u on CPU", vs.SceneInstances,
-                        vs.SceneReadyVisuals, vs.SceneVisuals, vs.SceneTemplates, vs.SceneCpuVobs );
+                    ImGui::Text( "%u inst, %u/%u visuals ready, %u templates, %u on CPU, casters %s", vs.SceneInstances,
+                        vs.SceneReadyVisuals, vs.SceneVisuals, vs.SceneTemplates, vs.SceneCpuVobs,
+                        vs.SceneCasters ? "GPU" : "CPU" );
                 } else {
                     ImGui::Text( "off" );
                 }

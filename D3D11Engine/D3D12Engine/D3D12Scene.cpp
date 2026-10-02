@@ -2676,6 +2676,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_VobStats.CullVisuals = m_VobCullVisualCount;
 	m_VobStats.GpuCullActive = m_GpuVobCullActive;
 	m_VobStats.SceneActive = m_GpuSceneActive;
+	m_VobStats.SceneCasters = m_ShadowMap.SceneCasters();
 	m_VobStats.SceneInstances = m_GpuSceneActive ? m_GpuScene->SlotCount() : 0u;
 	m_VobStats.SceneVisuals = m_GpuSceneActive ? m_GpuScene->VisualCount() : 0u;
 	m_VobStats.SceneReadyVisuals = m_GpuSceneActive ? m_GpuScene->ReadyVisualCount() : 0u;
@@ -3615,7 +3616,8 @@ void D3D12GraphicsEngine::RefreshDynamicVobArena() {
 }
 
 
-bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes ) {
+bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* instances, UINT instanceBytes,
+    UINT instanceStride ) {
     if ( !m_VobArena->Ready() || !instances || instanceBytes == 0 ) return false;
 
     // The whole buffer is bound once: a VOB command addresses its sub-mesh through
@@ -3624,7 +3626,7 @@ bool D3D12GraphicsEngine::BindVobArenaIA( D3D12CmdList& cmdList, Rhi::Resource* 
     const D3D12_VERTEX_BUFFER_VIEW views[2] = {
         { m_VobArena->GetVertexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetVertexBytes(),
           D3D12VobArena::VertexStride() },
-        { instances->GetGPUVirtualAddress(), instanceBytes, VobInstanceStride() },
+        { instances->GetGPUVirtualAddress(), instanceBytes, instanceStride ? instanceStride : VobInstanceStride() },
     };
     const D3D12_INDEX_BUFFER_VIEW ibv = {
         m_VobArena->GetIndexBuffer()->GetGPUVirtualAddress(), m_VobArena->GetIndexBytes(), DXGI_FORMAT_R16_UINT };
