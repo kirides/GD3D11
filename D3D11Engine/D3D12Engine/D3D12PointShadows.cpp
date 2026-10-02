@@ -1030,7 +1030,7 @@ void D3D12PointShadows::BakeVobsAndMobs( const FrameLight& ps, bool tableOnGpu )
 	}
 	if ( g_In.haveVobs && tableOnGpu ) GatherNonTableVobs( ps.posWS, reach, m_E->m_GpuScene->CpuVobs() );
 	if ( g_In.haveVobs ) BakeVobs( ps );
-	if ( g_In.haveSkel ) BakeMobs( ps );
+	if ( g_In.haveSkel ) BakeMobs( ps, tableOnGpu );
 }
 
 
@@ -1087,15 +1087,15 @@ void D3D12PointShadows::BakeVobs( const FrameLight& ps ) {
 }
 
 
-void D3D12PointShadows::BakeMobs( const FrameLight& ps ) {
+void D3D12PointShadows::BakeMobs( const FrameLight& ps, bool tableOnGpu ) {
 	// Furniture that is a zCModel (chests, beds, doors) belongs in the cached cube. Not conditioned on an overlay
-	// slot: those come and go, and a bake must not depend on one.
+	// slot: those come and go, and a bake must not depend on one. The GPU scene's MOB snapshots bake with its table.
 	ZoneScopedN( "PS bake: MOBs" )
 	PointShadowLightRecord& rec = CurrentLight();
 	std::vector<const zCVob*>& bakedVobs = m_Sel.StaticSlotAt( ps.staticSlot ).bakedVobs;
 	s_lightMobs.clear();
 	for ( SkeletalVobInfo* mob : s_sphereMobs )
-		if ( !RidesNpc( mob ) ) s_lightMobs.push_back( mob );
+		if ( !RidesNpc( mob ) && !( tableOnGpu && mob->InGpuScene ) ) s_lightMobs.push_back( mob );
 	SkelScratch.clear();
 	AttachScratch.clear();
 	if ( !s_lightMobs.empty() )

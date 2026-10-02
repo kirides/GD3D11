@@ -617,6 +617,8 @@ struct SkeletalVobInfo : public BaseVobInfo {
     XMFLOAT4X4 PrevWorldMatrix;
     bool HasValidPrevTransforms;
     size_t LastAniUpdateFrame;
+    /** D3D12: drawn from the GPU scene's table as a posed snapshot, so the CPU skeletal passes skip it. */
+    bool InGpuScene = false;
 };
 
 class zCBspTree;

@@ -11,6 +11,11 @@
 #include "../Frustum.h"
 #include "../zCVob.h"
 #include "../zCMorphMesh.h"
+#include "../zCModel.h"
+#include "../zCVisual.h"
+#include "../WorldConverter.h"
+#include "../SharedVisualRegistry.h"
+#include "../PointLightSlotSelector.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -23,10 +28,14 @@ namespace {
     constexpr uint32_t kGpSlotHidden = 0x20000000u;
     constexpr uint32_t kGpSlotIndoor = 0x10000000u;
     constexpr uint32_t kSceneVisualSmall = 1u;   // SCENE_VISUAL_SMALL
+    constexpr uint32_t kSceneVisualMob = 2u;     // SCENE_VISUAL_MOB
     constexpr UINT kInstanceBytes = 64;          // the no-motion VobInstanceInfo prefix
 
     enum : uint8_t { kSlotLive, kSlotHidden, kSlotOnCpu, kSlotCpuVisual, kSlotGone };
     enum : uint8_t { kVisualUnbuilt, kVisualReady, kVisualCpu };
+    enum : uint8_t { kMobCpu, kMobGpu, kMobCpuAlways, kMobGone };
+
+    constexpr uint16_t kMobRestFrames = 30;   // a MOB the CPU path drew must be still this long to return
 
     constexpr uint32_t kFlagScanPerFrame = 512;   // ShowVisual / visual-alpha changes, round-robin
     constexpr uint32_t kBuildsPerFrame = 48;      // template (re)builds, each a few CacheIn calls
@@ -47,10 +56,17 @@ namespace {
         bd.Flags = uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
         return bd;
     }
+
+    XMFLOAT4 SphereOf( const zTBBox3D& bb ) {
+        const float dx = bb.Max.x - bb.Min.x, dy = bb.Max.y - bb.Min.y, dz = bb.Max.z - bb.Min.z;
+        return XMFLOAT4( ( bb.Min.x + bb.Max.x ) * 0.5f, ( bb.Min.y + bb.Max.y ) * 0.5f, ( bb.Min.z + bb.Max.z ) * 0.5f,
+            0.5f * std::sqrt( dx * dx + dy * dy + dz * dz ) );
+    }
 }
 
 struct D3D12GpuScene::VobSlotMap {
     gtl::flat_hash_map<const zCVob*, uint32_t> Map;
+    gtl::flat_hash_map<const zCVob*, uint32_t> Mobs;   // -> m_Mobs
 };
 
 D3D12GpuScene::D3D12GpuScene( D3D12GraphicsEngine& engine ) : m_E( engine ), m_VobSlot( std::make_unique<VobSlotMap>() ) {}
@@ -59,6 +75,17 @@ D3D12GpuScene::~D3D12GpuScene() = default;
 
 
 void D3D12GpuScene::Reset() {
+    // The MOBs go back to the CPU path, and their node meshes back to the registry.
+    for ( const Mob& mob : m_Mobs ) if ( mob.Info ) mob.Info->InGpuScene = false;
+    for ( const Visual& v : m_Visuals ) if ( v.Mob && v.Info ) s_SharedVisualRegistry->Release( v.Info );
+    m_Mobs.clear();
+    m_MobSlots.clear();
+    m_MobSlotData.clear();
+    m_MobInvalidations.clear();
+    m_FirstMobVisual = 0;
+    m_FirstMobSlot = 0;
+    m_VobSlot->Mobs.clear();
+
     m_Built = false;
     m_BuildFailed = false;
     m_Visuals.clear();
@@ -138,10 +165,22 @@ uint32_t D3D12GpuScene::SlotOf( const zCVob* vob ) const {
 
 
 bool D3D12GpuScene::OnVobLeft( const zCVob* vob, XMFLOAT4* bakedSphere ) {
-    // Runs for every move of every vob, so anything the scene never knew leaves after one lookup.
+    // Runs for every move of every vob, so anything the scene never knew leaves after two lookups.
     if ( !vob ) return false;
     const auto it = m_VobSlot->Map.find( vob );
-    if ( it == m_VobSlot->Map.end() ) return false;
+    if ( it == m_VobSlot->Map.end() ) {
+        const auto mit = m_VobSlot->Mobs.find( vob );
+        if ( mit == m_VobSlot->Mobs.end() ) return false;
+        Mob& mob = m_Mobs[mit->second];
+        m_VobSlot->Mobs.erase( mit );
+        for ( uint32_t i = 0; i < mob.SlotCount; ++i ) SetSlotState( m_MobSlots[mob.SlotFirst + i], kSlotGone );
+        mob.Info->InGpuScene = false;
+        mob.Info = nullptr;
+        mob.State = kMobGone;
+        // A cube may hold its snapshot even while the CPU path draws it (the focus hand-over re-bakes nothing).
+        if ( bakedSphere ) *bakedSphere = mob.Sphere;
+        return true;
+    }
     const uint32_t slot = it->second;
     m_VobSlot->Map.erase( it );
     if ( slot == kNoSlot || m_SlotState[slot] == kSlotOnCpu || m_SlotState[slot] == kSlotCpuVisual )
@@ -172,7 +211,13 @@ void D3D12GpuScene::SetSlotState( uint32_t slot, uint8_t state ) {
 void D3D12GpuScene::WriteInstance( uint32_t slot, uint8_t* dst ) const {
     VobInstanceInfo vii = {};
     uint32_t gp = kGpSlotHidden;
-    if ( VobInfo* vi = m_SlotVob[slot] ) {
+    if ( slot >= m_FirstMobSlot ) {
+        // A MOB node mesh: no wind, no static or indoor flag, as the CPU path's attachment instances.
+        const MobSlot& ms = m_MobSlotData[slot - m_FirstMobSlot];
+        vii.world = ms.World;
+        vii.color = ms.Color;
+        gp = m_SlotState[slot] == kSlotLive ? 0u : kGpSlotHidden;
+    } else if ( VobInfo* vi = m_SlotVob[slot] ) {
         PackAffine3x4( vii.world, vi->WorldMatrix );
         vii.color = vi->GroundColor;
         const zTAnimationMode aniMode = vi->Vob->GetVisualAniMode();
@@ -199,7 +244,7 @@ void D3D12GpuScene::WriteRecord( uint32_t v ) {
     r.BBoxMax[0] = mx.x; r.BBoxMax[1] = mx.y; r.BBoxMax[2] = mx.z;
     r.InstanceBase = vis.SlotBase;
     r.InstanceCount = vis.State == kVisualCpu ? 0u : vis.SlotCount;
-    r.SceneFlags = ( ready && vis.Info->MeshSize < m_BuiltSmallVobSize ) ? kSceneVisualSmall : 0u;
+    r.SceneFlags = vis.Mob ? kSceneVisualMob : ( ready && vis.Info->MeshSize < m_BuiltSmallVobSize ) ? kSceneVisualSmall : 0u;
     // Split only when every near template has a far counterpart.
     r.SplitMode = vis.Split ? D3D12GraphicsEngine::kSplitModeLod : D3D12GraphicsEngine::kSplitModeNone;
     m_DirtyVisuals.push_back( v );
@@ -210,6 +255,12 @@ void D3D12GpuScene::MoveVisualToCpu( uint32_t v ) {
     Visual& vis = m_Visuals[v];
     vis.State = kVisualCpu;
     for ( uint32_t slot = vis.SlotBase; slot < vis.SlotBase + vis.SlotCount; ++slot ) {
+        if ( vis.Mob ) {
+            // The whole MOB, not just this node mesh: the CPU path draws all of it.
+            const uint32_t m = m_MobSlotData[slot - m_FirstMobSlot].Mob;
+            if ( m_Mobs[m].State == kMobCpu || m_Mobs[m].State == kMobGpu ) PinMob( m, true, true );
+            continue;
+        }
         const uint8_t state = m_SlotState[slot];
         if ( state == kSlotGone || state == kSlotCpuVisual ) continue;
         if ( state != kSlotOnCpu ) m_CpuVobs.push_back( m_SlotVob[slot] );
@@ -466,6 +517,11 @@ bool D3D12GpuScene::Build( Rhi::CmdList& cmd ) {
         }
     }
 
+    // Leaf MOBs as node-mesh parts, converted before the layout so that every part knows its mesh.
+    static std::vector<MobPart> parts;
+    parts.clear();
+    GatherMobs( parts );
+
     // Group by visual: a contiguous table segment per visual is what CSCull's one-group-per-visual walks.
     const size_t buckets = m_E.VobVisualBucketCount();
     std::vector<int32_t> ordinal( buckets, -1 );
@@ -479,8 +535,23 @@ bool D3D12GpuScene::Build( Rhi::CmdList& cmd ) {
         }
         ++m_Visuals[o].SlotCount;
     }
+    // MOB node meshes after them, one visual per mesh.
+    m_FirstMobVisual = VisualCount();
+    gtl::flat_hash_map<MeshVisualInfo*, uint32_t> mobVisual;
+    for ( const MobPart& p : parts ) {
+        const auto [it, added] = mobVisual.try_emplace( p.Visual, VisualCount() );
+        if ( added ) {
+            m_Visuals.push_back( Visual{} );
+            m_Visuals.back().Info = p.Visual;
+            m_Visuals.back().Mob = true;
+            s_SharedVisualRegistry->AddRef( p.Visual );   // released in Reset
+            m_E.m_VobArena->QueueVisual( p.Visual );
+        }
+        ++m_Visuals[it->second].SlotCount;
+    }
     uint32_t base = 0;
     for ( Visual& v : m_Visuals ) { v.SlotBase = base; base += v.SlotCount; v.SlotCount = 0; }
+    m_FirstMobSlot = m_FirstMobVisual < VisualCount() ? m_Visuals[m_FirstMobVisual].SlotBase : base;
     m_SlotVob.assign( base, nullptr );
     m_SlotState.assign( base, kSlotLive );
     m_SlotVisual.assign( base, 0 );
@@ -492,16 +563,26 @@ bool D3D12GpuScene::Build( Rhi::CmdList& cmd ) {
         const uint32_t slot = m_Visuals[v].SlotBase + m_Visuals[v].SlotCount++;
         m_SlotVob[slot] = vi;
         m_SlotVisual[slot] = v;
-        const XMFLOAT3& bbMin = vi->LastRenderBBox.Min;
-        const XMFLOAT3& bbMax = vi->LastRenderBBox.Max;
-        const float dx = bbMax.x - bbMin.x, dy = bbMax.y - bbMin.y, dz = bbMax.z - bbMin.z;
-        m_SlotSphere[slot] = XMFLOAT4( ( bbMin.x + bbMax.x ) * 0.5f, ( bbMin.y + bbMax.y ) * 0.5f, ( bbMin.z + bbMax.z ) * 0.5f,
-            0.5f * std::sqrt( dx * dx + dy * dy + dz * dz ) );
+        m_SlotSphere[slot] = SphereOf( vi->LastRenderBBox );
         m_VobSlot->Map[vi->Vob] = slot;
         if ( m_Visuals[v].Info->MorphMeshVisual ) m_MorphSlots.push_back( slot );
         const zTVobFlags flags = vi->Vob->GetFlags();
         if ( flags.VisualAlphaEnabled ) { m_SlotState[slot] = kSlotOnCpu; m_CpuVobs.push_back( vi ); }
         else if ( !flags.ShowVisual ) m_SlotState[slot] = kSlotHidden;
+    }
+    m_MobSlots.resize( parts.size() );
+    m_MobSlotData.resize( base - m_FirstMobSlot );
+    for ( size_t i = 0; i < parts.size(); ++i ) {
+        const MobPart& p = parts[i];
+        const uint32_t v = mobVisual[p.Visual];
+        const uint32_t slot = m_Visuals[v].SlotBase + m_Visuals[v].SlotCount++;
+        m_SlotVisual[slot] = v;
+        m_MobSlots[i] = slot;
+        m_MobSlotData[slot - m_FirstMobSlot] = { p.Mob, p.Node, p.NodeVisual, {}, 0u };
+    }
+    for ( uint32_t m = 0; m < m_Mobs.size(); ++m ) {
+        if ( IsMobStill( m_Mobs[m] ) ) SnapshotMob( m );
+        else PinMob( m, false );
     }
 
     // Templates for visuals that are ready and resident now; the rest follow their first sighting.
@@ -552,9 +633,180 @@ bool D3D12GpuScene::Build( Rhi::CmdList& cmd ) {
 
     uint32_t ready = 0;
     for ( const Visual& v : m_Visuals ) ready += v.State == kVisualReady ? 1u : 0u;
-    Logging::Inf( "D3D12: GPU scene built: {} instances, {} visuals ({} drawable now), {} templates, {} vobs on the CPU path",
-        SlotCount(), VisualCount(), ready, m_Templates.size(), m_CpuVobs.size() );
+    Logging::Inf( "D3D12: GPU scene built: {} instances, {} visuals ({} drawable now), {} templates, {} vobs on the CPU path, "
+        "{} MOBs as {} node meshes", SlotCount(), VisualCount(), ready, m_Templates.size(), m_CpuVobs.size(), m_Mobs.size(), parts.size() );
     return true;
+}
+
+
+void D3D12GpuScene::GatherMobs( std::vector<MobPart>& parts ) {
+    // Leaf MOBs built from rigid .3DS node meshes only: no soft skin, no per-node texture animation, not an NPC.
+    // Their node visuals are converted here and the workers awaited once, so every part has its mesh.
+    const BspLeafLinearCache& cache = Engine::GAPI->LeafLinearCache;
+    gtl::flat_hash_set<SkeletalVobInfo*> seen;
+    std::vector<SkeletalVobInfo*> mobs;
+    for ( uint32_t i = 0; i < cache.Count; ++i ) {
+        BspInfo* leaf = cache.Leaves[i];
+        if ( !leaf ) continue;
+        for ( SkeletalVobInfo* vi : leaf->Mobs ) {
+            if ( !vi || !vi->Vob || !seen.insert( vi ).second ) continue;
+            zCVob* vob = vi->Vob;
+            if ( vob->GetVobType() == zVOB_TYPE_NSC || PointLightSlotSelector::IsNpcAttached( vob ) ) continue;
+            zCModel* model = static_cast<zCModel*>( vob->GetVisual() );
+            zCArray<zCModelNodeInst*>* nodes = model ? model->GetNodeList() : nullptr;
+            if ( !nodes || model->GetMeshSoftSkinList()->NumInArray > 0 ) continue;
+            bool rigid = true, any = false;
+            for ( int n = 0; n < nodes->NumInArray && rigid; ++n ) {
+                const zCModelNodeInst* node = nodes->Array[n];
+                if ( !node || !node->NodeVisual ) continue;
+                rigid = strcmp( node->NodeVisual->GetFileExtension( 0 ), ".3DS" ) == 0 && node->TexAniState.NumNodeTex == 0;
+                any = true;
+            }
+            if ( !rigid || !any ) continue;
+            for ( int n = 0; n < nodes->NumInArray; ++n ) {
+                zCModelNodeInst* node = nodes->Array[n];
+                if ( !node || !node->NodeVisual ) continue;
+                const auto it = vi->NodeAttachments.find( n );
+                const MeshVisualInfo* mvi = ( it != vi->NodeAttachments.end() && !it->second.empty() ) ? it->second[0] : nullptr;
+                if ( !mvi || ( mvi->GetIsReady() && mvi->Visual != node->NodeVisual ) )
+                    WorldConverter::ExtractNodeVisualAsync( n, node, vi->NodeAttachments );
+            }
+            mobs.push_back( vi );
+        }
+    }
+    if ( mobs.empty() ) return;
+    WorldConverter::WaitForAllPendingNodeVisuals();
+
+    for ( SkeletalVobInfo* vi : mobs ) {
+        zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
+        zCArray<zCModelNodeInst*>* nodes = model->GetNodeList();
+        const uint32_t m = static_cast<uint32_t>( m_Mobs.size() );
+        const size_t first = parts.size();
+        bool ok = true;
+        for ( int n = 0; n < nodes->NumInArray && ok; ++n ) {
+            zCModelNodeInst* node = nodes->Array[n];
+            if ( !node || !node->NodeVisual ) continue;
+            const auto it = vi->NodeAttachments.find( n );
+            if ( it == vi->NodeAttachments.end() || it->second.empty() ) continue;   // nothing to draw, as on the CPU path
+            MeshVisualInfo* mvi = it->second[0];
+            ok = mvi && mvi->GetIsReady() && mvi->Visual == node->NodeVisual && mvi->NodeAttachment;
+            if ( ok && !mvi->MeshesByTexture.empty() ) parts.push_back( { mvi, m, static_cast<uint32_t>( n ), node->NodeVisual } );
+        }
+        if ( !ok || parts.size() == first ) { parts.resize( first ); continue; }
+        Mob mob;
+        mob.Info = vi;
+        mob.Model = model;
+        mob.SlotFirst = static_cast<uint32_t>( first );
+        mob.SlotCount = static_cast<uint32_t>( parts.size() - first );
+        m_Mobs.push_back( mob );
+        m_VobSlot->Mobs[vi->Vob] = m;
+    }
+}
+
+
+bool D3D12GpuScene::IsMobStill( const Mob& mob ) const {
+    // Shown, opaque, and either no animation or only a one-frame state pose (IdleAnimationRunning, never on G1).
+    const zTVobFlags flags = mob.Info->Vob->GetFlags();
+    if ( !flags.ShowVisual || flags.VisualAlphaEnabled ) return false;
+    return mob.Model->GetNumActiveAnimations() == 0 || mob.Model->IdleAnimationRunning();
+}
+
+
+void D3D12GpuScene::SnapshotMob( uint32_t m ) {
+    // The live pose into the MOB's slots: world = vob * model scale * node, as PrepareFrameSkeletals poses it.
+    Mob& mob = m_Mobs[m];
+    zCVob* vob = mob.Info->Vob;
+    zCArray<zCModelNodeInst*>* nodes = mob.Model->GetNodeList();
+    static std::vector<XMFLOAT4X4> bones;
+    bones.clear();
+    mob.Model->GetBoneTransformsTo( bones );
+    const XMMATRIX world = vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( mob.Model->GetModelScaleXM() );
+    const uint32_t color = D3D12GraphicsEngine::SkeletalGroundLight( vob ).ToDWORD();
+    bool posed = mob.CubesStale;
+    for ( uint32_t i = 0; i < mob.SlotCount; ++i ) {
+        const uint32_t slot = m_MobSlots[mob.SlotFirst + i];
+        MobSlot& ms = m_MobSlotData[slot - m_FirstMobSlot];
+        if ( ms.Node >= bones.size() || nodes->Array[ms.Node]->NodeVisual != ms.NodeVisual ) {
+            PinMob( m, true, true );   // its node meshes changed: the CPU path keeps it
+            return;
+        }
+        XMFLOAT4X4 nodeWorld;
+        XMStoreFloat4x4( &nodeWorld, world * XMLoadFloat4x4( &bones[ms.Node] ) );
+        XMFLOAT3X4 packed;
+        PackAffine3x4( packed, nodeWorld );
+        if ( memcmp( &packed, &ms.World, sizeof( packed ) ) != 0 || ms.Color != color ) {
+            ms.World = packed;
+            ms.Color = color;
+            m_DirtySlots.push_back( slot );
+            posed = true;
+        }
+        SetSlotState( slot, kSlotLive );
+    }
+    // Cubes that baked the old pose (or baked without it while the CPU path had it) re-bake, at both bounds.
+    if ( posed ) m_MobInvalidations.push_back( mob.Sphere );
+    mob.Sphere = SphereOf( vob->GetBBox() );
+    if ( posed ) m_MobInvalidations.push_back( mob.Sphere );
+    mob.State = kMobGpu;
+    mob.RestFrames = 0;
+    mob.CubesStale = false;
+    mob.Info->InGpuScene = true;
+}
+
+
+void D3D12GpuScene::PinMob( uint32_t m, bool cubesStale, bool forever ) {
+    // To the CPU skeletal path, which draws it until it is still again (or for good).
+    Mob& mob = m_Mobs[m];
+    for ( uint32_t i = 0; i < mob.SlotCount; ++i ) SetSlotState( m_MobSlots[mob.SlotFirst + i], kSlotOnCpu );
+    if ( cubesStale && mob.State == kMobGpu ) {
+        mob.CubesStale = true;
+        m_MobInvalidations.push_back( mob.Sphere );
+    }
+    mob.State = forever ? kMobCpuAlways : kMobCpu;
+    mob.RestFrames = 0;
+    mob.Info->InGpuScene = false;
+    mob.Info->HasValidPrevTransforms = false;   // its stored pose predates the snapshot
+}
+
+
+void D3D12GpuScene::UpdateMobs( const zCVob* focusVob, bool enabled ) {
+    m_MobInvalidations.clear();
+    if ( m_Mobs.empty() ) return;
+    ZoneScopedN( "GpuScene MOBs" )
+    // After a gap (the scene was off) every MOB re-checks its pose on its next frame in range.
+    const size_t frame = Engine::GAPI->GetFrameNumber();
+    if ( frame != m_LastMobFrame + 1 ) for ( Mob& mob : m_Mobs ) mob.InRange = false;
+    m_LastMobFrame = frame;
+
+    const XMVECTOR cam = Engine::GAPI->GetCameraPositionXM();
+    const float radius = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
+    for ( uint32_t m = 0; m < static_cast<uint32_t>( m_Mobs.size() ); ++m ) {
+        Mob& mob = m_Mobs[m];
+        if ( mob.State == kMobGone || mob.State == kMobCpuAlways ) continue;
+        if ( !enabled ) {
+            if ( mob.State == kMobGpu ) PinMob( m, false );
+            continue;
+        }
+        // Outside the CPU skeletal draw radius the CPU path would not draw it either. Entering it, a snapshot
+        // is re-posed: the MOB may have animated unseen meanwhile.
+        const float reach = radius + mob.Sphere.w;
+        const XMVECTOR center = XMLoadFloat3( reinterpret_cast<const XMFLOAT3*>( &mob.Sphere ) );
+        const bool inRange = XMVectorGetX( XMVector3LengthSq( center - cam ) ) < reach * reach;
+        const bool entered = inRange && !mob.InRange;
+        mob.InRange = inRange;
+        if ( !inRange ) continue;
+        if ( mob.Info->Vob->GetVisual() != mob.Model ) { PinMob( m, true, true ); continue; }
+
+        const bool focused = mob.Info->Vob == focusVob;   // the CPU path draws the highlight
+        const bool still = !focused && IsMobStill( mob );
+        if ( mob.State == kMobGpu ) {
+            if ( !still ) PinMob( m, !focused );
+            else if ( entered ) SnapshotMob( m );
+        } else if ( !still ) {
+            mob.RestFrames = 0;
+        } else if ( ++mob.RestFrames >= kMobRestFrames ) {
+            SnapshotMob( m );
+        }
+    }
 }
 
 
@@ -764,7 +1016,7 @@ m_TemplateCapacity = capacity;
 }
 
 
-bool D3D12GpuScene::BeginFrame( Rhi::CmdList& cmd ) {
+bool D3D12GpuScene::BeginFrame( Rhi::CmdList& cmd, const zCVob* focusVob, bool mobs ) {
     const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
     if ( m_Built && ( static_cast<int>( rs.WindQuality ) != m_BuiltWindQuality
         || ( m_E.m_VobLodDistance > 0.0f ) != m_BuiltLod || rs.SmallVobSize != m_BuiltSmallVobSize ) ) {
@@ -781,6 +1033,7 @@ bool D3D12GpuScene::BeginFrame( Rhi::CmdList& cmd ) {
         m_Built = true;
     }
     ScanFlags();
+    UpdateMobs( focusVob, mobs );
     return UploadDirty( cmd );
 }
 
@@ -799,4 +1052,22 @@ void D3D12GpuScene::RecordFeedbackCopy( Rhi::CmdList& cmd ) {
     if ( !m_Readback[f] || !m_Counts || VisualCount() == 0 ) return;
     cmd.CopyBufferRegion( m_Readback[f].Get(), 0, m_Counts.Get(), 0, static_cast<UINT64>( VisualCount() ) * 2u * sizeof( uint32_t ) );
     m_ReadbackVisuals[f] = VisualCount();
+}
+
+
+void D3D12GpuScene::GatherMobInstances( uint32_t visual, const XMFLOAT3& center, float radius, std::vector<VobInstanceInfo>& out ) const {
+    out.clear();
+    const Visual& vis = m_Visuals[visual];
+    if ( !vis.Mob ) return;
+    const float radiusSq = radius * radius;
+    for ( uint32_t slot = vis.SlotBase; slot < vis.SlotBase + vis.SlotCount; ++slot ) {
+        if ( m_SlotState[slot] != kSlotLive ) continue;
+        const MobSlot& ms = m_MobSlotData[slot - m_FirstMobSlot];
+        const float dx = ms.World._14 - center.x, dy = ms.World._24 - center.y, dz = ms.World._34 - center.z;
+        if ( dx * dx + dy * dy + dz * dz > radiusSq ) continue;
+        VobInstanceInfo& vii = out.emplace_back();
+        vii = {};
+        vii.world = ms.World;
+        vii.color = ms.Color;
+    }
 }

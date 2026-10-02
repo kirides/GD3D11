@@ -963,20 +963,6 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 		return;
 	}
 
-	// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
-	// skeletal-vob list against the cascade frusta, not the player's view frustum — a caster invisible to the
-	// player can still cast a visible shadow. This is the ONE part of the cascade preparation that mutates
-	// Gothic state (the once/frame animation update, texani, morph meshes) and writes the shared skeletal CB
-	// ring, so it has to be a single MAIN-THREAD pass and cannot move into the per-cascade jobs launched below.
-	// It therefore runs HERE, ahead of them, rather than in a join step the cascades would have to wait on.
-	// Restricted to the near cascades (kSkeletalShadowCascades) — the far slices then have empty lists and
-	// RecordCascade skips its per-mesh skeletal/attachment loops for them entirely.
-	// Safe at this point in the frame: the main view already populated g_SkelUploadCache (PrepareFrameSkeletals
-	// in OnStartWorldRendering), so the per-vob uploads this walk needs are cached rather than redone.
-	for ( UINT c = 0; c < kShadowCascades; ++c ) { SkelDraws[c].clear(); AttachDraws[c].clear(); }
-	m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f,
-		kSkeletalShadowCascades );
-
 	// Static VOB casters from the GPU scene: culled and listed on m_CmdList, which reaches the queue ahead of the
 	// cascade lists. Decided here, before the jobs launch, since they read m_SceneCasters.
 	if ( m_E->m_GpuSceneActive && rsA.DrawVOBs ) {
@@ -985,12 +971,20 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 		const float minTexels = rsA.DebugSettings.ShadowCascades.CasterMinTexels;
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
 			const CasterRadii radii = GetCasterRadii( c );
+			// MOB snapshots cast where the CPU skeletal casters would: the near cascades, within the skeletal radius.
+			const float mobRadius = c < kSkeletalShadowCascades ? rsA.SkeletalMeshDrawRadius : 0.0f;
 			views[c] = { m_CascadeCullViewProj[c], minTexels > 0.0f ? m_CascadeTexelWorld[c] * minTexels : 0.0f,
-				radii.Outdoor, radii.Small, static_cast<int>( c ) >= firstLod, m_ShouldUpdateCascade[c] };
+				radii.Outdoor, radii.Small, mobRadius, static_cast<int>( c ) >= firstLod, m_ShouldUpdateCascade[c] };
 			m_SceneAnimatedCaster[c] = views[c].Active && m_E->m_GpuScene->AnyAnimatedCasterIn( m_CascadeFrustum[c] );
 		}
 		m_SceneCasters = m_E->CullGpuSceneCasters( views, 0, kShadowCascades );
 	}
+
+	// Skeletal casters: the whole registered list against the near cascades' frusta, on the main thread since it
+	// mutates Gothic state, ahead of the jobs. MOB snapshots the scene's casters hold are left out.
+	for ( UINT c = 0; c < kShadowCascades; ++c ) { SkelDraws[c].clear(); AttachDraws[c].clear(); }
+	m_E->PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f,
+		kSkeletalShadowCascades, false, nullptr, m_SceneCasters );
 
 	// --- Phase B+C+D: per-cascade cull -> build -> record — LAUNCHED HERE, JOINED IN FinishShadowPasses ----
 	// Mirrors D3D11ShadowMap: PrepareRender() enqueues one CollectVisibleVobs job per cascade on the WORKER

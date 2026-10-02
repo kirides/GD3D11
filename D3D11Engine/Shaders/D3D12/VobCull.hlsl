@@ -30,6 +30,7 @@ struct VobCullVisual
     uint   SceneFlags;      // GPU scene: SCENE_VISUAL_*; 0 for ring records
 };
 #define SCENE_VISUAL_SMALL  1u   // outdoor instances use SmallRadius instead of OutdoorRadius
+#define SCENE_VISUAL_MOB    2u   // a leaf MOB's node mesh: MobRadius
 #define VOB_SPLIT_NONE  0u
 #define VOB_SPLIT_LOD   1u
 
@@ -84,7 +85,9 @@ cbuffer VobCullCB : register( b0 )
     float    OutdoorRadius;     // @116
     float    SmallRadius;       // @120
     uint     FocusSlot;         // @124 GPU scene: table index of the focused vob, 0xFFFFFFFF = none
-};                              // -> 128 B == 32 root constants
+    float    MobRadius;         // @128 GPU scene: MOB snapshots, 0 = none in this view
+    float3   CullPad;
+};                              // -> 144 B == 36 root constants
 
 StructuredBuffer<VobCullVisual>    Visuals       : register( t0 );
 #if VOB_SCENE
@@ -126,7 +129,8 @@ bool IsSceneInstanceInRange( VobCullVisual v, SceneInstanceGpu s )
     if ( s.GPSlot & SCENE_GPSLOT_INDOOR ) return false;
     if ( length( v.BBoxMax - v.BBoxMin ) < MinMeshSize ) return false;
 #endif
-    const float radius = ( s.GPSlot & SCENE_GPSLOT_INDOOR ) ? IndoorRadius
+    const float radius = ( v.SceneFlags & SCENE_VISUAL_MOB ) ? MobRadius
+        : ( s.GPSlot & SCENE_GPSLOT_INDOOR ) ? IndoorRadius
         : ( v.SceneFlags & SCENE_VISUAL_SMALL ) ? SmallRadius : OutdoorRadius;
     const float3 pivot = float3( s.World0.w, s.World1.w, s.World2.w );
     return distance( pivot, CullCamPosWS ) < radius;

@@ -396,9 +396,13 @@ void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
 
 
 void D3D12GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
-    // It started moving (a door swinging open, a chest lid), so anything that baked it has to let go --
-    // same pointer match as the removal case, and equally cheap when nothing baked it.
+    // A skeletal vob left its leaf (its transform changed), so anything that baked it has to let go -- same
+    // pointer match as the removal case, and equally cheap when nothing baked it.
     m_PointShadows.InvalidateStaticForVobRemoved( vob );
+    // The CPU path draws it from now on; a cube that GPU-baked its snapshot lets go by bounds.
+    XMFLOAT4 baked;
+    if ( m_GpuScene->OnVobLeft( vob, &baked ) )
+        m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( baked.x, baked.y, baked.z ), baked.w );
 }
 
 
@@ -2560,8 +2564,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 			&& cull.VobCullPSO && cull.VobCullNoMotionPSO && cull.VobCullRootSig && cull.PatchPSO && cull.PatchRootSig
 			&& cull.VobCullScenePSO && cull.VobCullSceneNoMotionPSO && cull.SceneArgsRootSig && cull.SceneArgsPSO
 			&& cull.SceneClearPSO;
-		m_GpuSceneActive = sceneWanted && m_GpuScene->BeginFrame( m_CmdList );
+		m_GpuSceneActive = sceneWanted && m_GpuScene->BeginFrame( m_CmdList, ComputeSkeletalFocusVob(), srs.DrawMobs );
 		if ( m_GpuSceneActive ) m_GpuVobCullActive = true;
+		// A MOB whose pose left or rejoined the table: cubes holding its old pose re-bake.
+		if ( m_GpuSceneActive ) {
+			for ( const XMFLOAT4& s : m_GpuScene->MobInvalidations() )
+				m_PointShadows.InvalidateStaticForVobAdded( XMFLOAT3( s.x, s.y, s.z ), s.w );
+		}
 		m_GpuSceneFocusSlot = 0xFFFFFFFFu;
 		if ( m_GpuSceneActive && oCGame::GetHighlightInteractFocus() && oCGame::GetPlayer() )
 			m_GpuSceneFocusSlot = m_GpuScene->SlotOf( oCGame::GetPlayer()->GetFocusVob() );
@@ -2615,7 +2624,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// plain drop — D3D11 does not reroute them either.
 	const zCVob* skeletalFocusVob = ComputeSkeletalFocusVob();
 	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), nullptr, -1, nullptr, 0.0f, 1, true, skeletalFocusVob );
-	PrepareFrameSkeletals( g_FrameMobs, nullptr, -1, nullptr, 0.0f, 1, false, skeletalFocusVob );
+	PrepareFrameSkeletals( g_FrameMobs, nullptr, -1, nullptr, 0.0f, 1, false, skeletalFocusVob, m_GpuSceneActive );
 	// Upload what those two just met for the first time (and what last frame's shadow passes met), so new
 	// NPCs draw this frame. Before the cascade jobs launch, which read the arenas lock-free.
 	m_SkelArena->Flush( this );
@@ -5014,8 +5023,21 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 }
 
 
+float4 D3D12GraphicsEngine::SkeletalGroundLight( zCVob* vob ) {
+    // D3D11's DrawSkeletalMeshVobs modelColor; sampled per vob, not per vertex.
+    if ( vob->IsIndoorVob() ) return DEFAULT_LIGHTMAP_POLY_COLOR_F;
+    if ( zCPolygon* groundPoly = vob->GetGroundPoly() ) {
+        float3 pos = vob->GetPositionWorld();
+        const float3 lightStat = groundPoly->GetLightStatAtPos( pos );
+        return float4( lightStat.z / 255.0f, lightStat.y / 255.0f, lightStat.x / 255.0f, 1.0f );
+    }
+    return float4( 1.0f, 1.0f, 1.0f, 1.0f );
+}
+
+
 void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade,
-    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts, const zCVob* playerFocusVob ) {
+    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts, const zCVob* playerFocusVob,
+    bool skipSceneMobs ) {
     // Run each candidate skeletal vob's once-per-frame animation update, upload its instance + bone CBs and
     // its attachments' VOB-instance data ONCE (cached in g_SkelUploadCache — the pose is view-independent),
     // and record the resulting GPU addresses into the caller's list: the main view's g_FrameSkelDraws/
@@ -5056,6 +5078,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
     for ( SkeletalVobInfo* vi : vobs ) {
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
+        if ( skipSceneMobs && vi->InGpuScene ) continue;   // drawn from the GPU scene's table
         if ( !vi->Vob->GetShowVisual() ) continue;
 
         // Ghost vobs (invisible-potion NPCs, fading spawns, spirits) never join the regular skinned draw:
@@ -5180,21 +5203,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
             const XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-            // Baked ground/ambient light for this vob (mirrors D3D11's DrawSkeletalMeshVobs non-shadow-branch
-            // modelColor: DEFAULT_LIGHTMAP_POLY_COLOR indoors, else the ground polygon's lightStat at the vob's
-            // position). A hardcoded white here (as this used to be, "first-light" placeholder) makes vertLighting
-            // (i.col.g) == 1 always, which zeroes out ShadowAOStrength/WorldAOStrength's lerp(1.0, vertLighting,
-            // strength) to a no-op regardless of the slider — skeletal meshes/attachments then can't darken
-            // indoors like world/VOB geometry does. Sampled once per vob per frame (one polygon lookup), not
-            // per-vertex.
-            float4 groundLight( 1.0f, 1.0f, 1.0f, 1.0f );
-            if ( vi->Vob->IsIndoorVob() ) {
-                groundLight = DEFAULT_LIGHTMAP_POLY_COLOR_F;
-            } else if ( zCPolygon* groundPoly = vi->Vob->GetGroundPoly() ) {
-                float3 vobPos = vi->Vob->GetPositionWorld();
-                float3 lightStat = groundPoly->GetLightStatAtPos( vobPos );
-                groundLight = float4( lightStat.z / 255.0f, lightStat.y / 255.0f, lightStat.x / 255.0f, 1.0f );
-            }
+            // Once per vob per frame (one polygon lookup); it is what darkens skeletal meshes indoors (vertLighting).
+            const float4 groundLight = SkeletalGroundLight( vi->Vob );
 
             // First-person hands: when the player model is set to hands-only (Gothic's own first-person
             // view mode), the base skinned mesh (the whole body) must NOT draw, and node attachments are

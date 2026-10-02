@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "D3D12RayTracing.h"
 #include "D3D12GraphicsEngine.h"
+#include "D3D12GpuScene.h"
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
 #include "D3D12VertexBuffer.h"
@@ -661,7 +662,8 @@ struct D3D12RayTracing::Impl {
         return local * std::sqrt( scaleSq ) * 2.0f + 5.0f;
     }
 
-    void AddVisual( FrameSlot& s, MeshVisualInfo* visual, const std::vector<VobInstanceInfo>& instances ) {
+    void AddVisual( FrameSlot& s, MeshVisualInfo* visual, const std::vector<VobInstanceInfo>& instances,
+        uint32_t mask = D3D12RayTracing::kMaskVob ) {
         D3D12VobArena* arena = E.m_VobArena.get();
         if ( !visual || !visual->GetIsReady() || instances.empty() ) return;
 
@@ -710,7 +712,7 @@ struct D3D12RayTracing::Impl {
             vb.FrameRecordBase = first;
         }
         for ( const VobInstanceInfo& inst : instances )
-            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, kMaskVob, SwayReach( inst ) ) ) return;
+            if ( !AddInstance( vb.Mem.Address, &inst.world._11, vb.FrameRecordBase, inst.color, mask, SwayReach( inst ) ) ) return;
     }
 
     void AddAttachments( FrameSlot& s, std::span<const FrameAttachDraw> draws ) {
@@ -866,6 +868,22 @@ struct D3D12RayTracing::Impl {
             const auto& instances = Vobs.buckets[i].instances;
             if ( instances.empty() ) continue;
             AddVisual( s, E.VobVisualForBucket( i ), instances );
+        }
+    }
+
+    /** MOB snapshots the GPU scene draws have no attachment records; their node meshes come from the scene. */
+    void CollectSceneMobs( FrameSlot& s, float radius ) {
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        if ( !E.m_GpuSceneActive || !rs.DrawMobs || !E.m_VobArena->Ready() ) return;
+        ZoneScopedN( "RT scene MOBs" );
+        const D3D12GpuScene& scene = *E.m_GpuScene;
+        const XMFLOAT3 cam = Engine::GAPI->GetCameraPosition();
+        const float reach = std::min( radius, rs.SkeletalMeshDrawRadius );
+        static std::vector<VobInstanceInfo> instances;
+        for ( uint32_t v = scene.FirstMobVisual(); v < scene.VisualCount(); ++v ) {
+            scene.GatherMobInstances( v, cam, reach, instances );
+            // The mask the CPU path's attachment instances carry.
+            if ( !instances.empty() ) AddVisual( s, scene.VisualInfo( v ), instances, D3D12RayTracing::kMaskDynamic );
         }
     }
 
@@ -1124,6 +1142,7 @@ struct D3D12RayTracing::Impl {
 
         AcquirePosed();
         CollectVobs( s, vobRadius, indoorVobs );
+        CollectSceneMobs( s, vobRadius );
         AddAttachments( s, E.FrameAttachDraws() );
         if ( PosedInRead ) AddSkinned( s, E.FrameSkelDraws() );
 

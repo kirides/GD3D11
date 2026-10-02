@@ -386,9 +386,12 @@ private:
     // D3D12 stand-in for the reroute D3D11 does in GothicAPI::DrawWorldMeshNaive (:1394), which this backend
     // never calls. Shadow callers must leave it false: ghosts cast no shadows on either backend.
     // playerFocusVob: the interact/melee-focus highlight vob (see ComputeSkeletalFocusVob in D3D12Scene.cpp).
+    // skipSceneMobs: leave out MOBs the GPU scene draws as snapshots (SkeletalVobInfo::InGpuScene) in this view.
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1,
         const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f, UINT cascadeCount = 1,
-        bool collectGhosts = false, const zCVob* playerFocusVob = nullptr );
+        bool collectGhosts = false, const zCVob* playerFocusVob = nullptr, bool skipSceneMobs = false );
+    /** Baked light under a skeletal vob: the default lightmap colour indoors, else the ground polygon's lightStat. */
+    static float4 SkeletalGroundLight( zCVob* vob );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     // Turn this frame's g_FrameSkelDraws/g_FrameAttachDraws into the two main-view ExecuteIndirect argument
