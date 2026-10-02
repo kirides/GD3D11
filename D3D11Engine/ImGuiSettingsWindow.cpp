@@ -927,8 +927,8 @@ void ImGuiSettings::RenderWindow( ImGuiShim& shim ) {
     // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or
     // oversample the game. Use whatever resolution the engine reports instead.
     const auto windowSize = shim.CurrentResolution;
-    ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2.0f, windowSize.y / 2.0f ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
-    ImGui::SetNextWindowSize( ImVec2( 720, 640 ), ImGuiCond_Appearing );
+    ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2.0f, windowSize.y / 2.0f ), ImGuiCond_Once, ImVec2( 0.5f, 0.5f ) );
+    ImGui::SetNextWindowSize( ImVec2( 720, 640 ), ImGuiCond_Once );
 
     ShaderCategory shadersToReload = ShaderCategory::None;
     ImVec2 anchorMin{}, anchorMax{};
