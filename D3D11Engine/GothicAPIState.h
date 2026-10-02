@@ -20,8 +20,9 @@ struct GothicAPIState {
     /** Loaded game sections */
     std::map<int, std::map<int, WorldMeshSectionInfo>> WorldSections;
 
-    /** Shoreline distance/depth field of the loaded world; null without one. */
+    /** Shoreline distance/depth field of the loaded world; null without one or before it is wanted. */
     std::unique_ptr<ShoreField> ShoreFieldData;
+    bool ShoreFieldBaked = false;   // tried for this world, so a failed bake isn't retried every frame
 
     std::unordered_map<zCVob*, std::string> tempParticleNames;
 

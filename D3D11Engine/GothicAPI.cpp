@@ -927,6 +927,7 @@ void GothicAPI::ResetWorld() {
     ClearWorldSectionBVH();
     State->WorldSections.clear();
     State->ShoreFieldData.reset();
+    State->ShoreFieldBaked = false;
 
     SAFE_DELETE( WrappedWorldMesh );
 
@@ -1058,7 +1059,7 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
     }
 #endif
     BuildWorldSectionBVH();
-    State->ShoreFieldData = ShoreField::Bake( State->WorldSections );
+    GetShoreField();   // bake during the load rather than on the first frame, if the coast simulation is on
     Logging::Inf( "Done extracting world!" );
 }
 
@@ -3580,7 +3581,16 @@ MeshInfo* GothicAPI::GetWrappedWorldMesh() {
     return WrappedWorldMesh;
 }
 
-ShoreField* GothicAPI::GetShoreField() const {
+ShoreField* GothicAPI::GetShoreField() {
+    const GothicRendererSettings& settings = RendererState.RendererSettings;
+    if ( settings.WaterShoreFoam == GothicRendererSettings::WATER_FOAM_OFF
+        || settings.WaterShoreFoamStyle != GothicRendererSettings::WATER_FOAM_STYLE_COAST ) {
+        return nullptr;
+    }
+    if ( !State->ShoreFieldBaked ) {
+        State->ShoreFieldBaked = true;
+        State->ShoreFieldData = ShoreField::Bake( State->WorldSections );
+    }
     return State->ShoreFieldData.get();
 }
 
@@ -5929,6 +5939,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "OceanCustomClarity", float_to_string( s.OceanCustomClarity, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanCustomTexture", float_to_string( s.OceanCustomTexture, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterShoreFoam", to_string_locale_independent( (int)s.WaterShoreFoam ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterShoreFoamStyle", to_string_locale_independent( (int)s.WaterShoreFoamStyle ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "OceanIdentifiers", s.OceanIdentifiers, ini.c_str() );
     WritePrivateProfileStringA( "Display", "OpaqueSSRQuality", to_string_locale_independent( (int)s.OpaqueSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6228,6 +6239,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.OceanCustomTexture = std::clamp( GetPrivateProfileFloatA( "Display", "OceanCustomTexture", ds.OceanCustomTexture, ini ), 0.0f, 1.0f );
         s.WaterShoreFoam = static_cast<GothicRendererSettings::E_WaterShoreFoam>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterShoreFoam", ds.WaterShoreFoam, ini.c_str() ),
             GothicRendererSettings::WATER_FOAM_OFF, GothicRendererSettings::WATER_FOAM_ALL ) );
+        s.WaterShoreFoamStyle = static_cast<GothicRendererSettings::E_WaterShoreFoamStyle>( std::clamp<INT>(
+            GetPrivateProfileIntA( "Display", "WaterShoreFoamStyle", ds.WaterShoreFoamStyle, ini.c_str() ),
+            GothicRendererSettings::WATER_FOAM_STYLE_SIMPLE, GothicRendererSettings::WATER_FOAM_STYLE_COAST ) );
         if ( !s.SetOceanIdentifiers( GetPrivateProfileStringA( "Display", "OceanIdentifiers", ds.OceanIdentifiers, ini ) ) ) {
             Logging::Wrn( "[Display] OceanIdentifiers is longer than {} characters and was truncated", sizeof( s.OceanIdentifiers ) - 1 );
         }

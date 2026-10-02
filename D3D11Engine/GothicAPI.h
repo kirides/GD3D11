@@ -568,8 +568,9 @@ public:
     /** Returns the wrapped world mesh */
     MeshInfo* GetWrappedWorldMesh();
 
-    /** The loaded world's shoreline field (ShoreField.h); null without water next to land. */
-    ShoreField* GetShoreField() const;
+    /** The loaded world's shoreline field (ShoreField.h), baked on first use; null without water next to land
+        or while the coast simulation is off. */
+    ShoreField* GetShoreField();
 
     /** Returns the loaded skeletal mesh vobs */
     std::vector<SkeletalVobInfo*>& GetSkeletalMeshVobs();

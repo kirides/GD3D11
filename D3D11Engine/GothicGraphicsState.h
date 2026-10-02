@@ -732,6 +732,11 @@ struct GothicRendererSettings {
         WATER_FOAM_ALL   = 2,   // lakes and rivers too, gentler
     };
 
+    enum E_WaterShoreFoamStyle {
+        WATER_FOAM_STYLE_SIMPLE = 0,   // foam bands from the depth under each pixel
+        WATER_FOAM_STYLE_COAST  = 1,   // waves from the baked ShoreField break and carry the foam
+    };
+
     enum E_OceanColor {
         OCEAN_COLOR_NATURAL   = 0,   // the coastal Khorinis sea in every world
         OCEAN_COLOR_PER_WORLD = 1,   // Jharkendar gets the clear turquoise sea
@@ -1024,6 +1029,7 @@ struct GothicRendererSettings {
 #else
         WaterShoreFoam = WATER_FOAM_OCEAN;
 #endif
+        WaterShoreFoamStyle = WATER_FOAM_STYLE_COAST;
         SetOceanIdentifiers( "NW_WATER_LAKE*|*OCEAN*" );
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
@@ -1468,6 +1474,7 @@ struct GothicRendererSettings {
     float OceanCustomClarity;         // 0 = dense coastal water, 1 = clear tropical water
     float OceanCustomTexture;         // water texture over the body; 1 = classic GD3D11 amount
     E_WaterShoreFoam WaterShoreFoam;
+    E_WaterShoreFoamStyle WaterShoreFoamStyle;
     // Water materials or textures that are sea: '|'-separated, case-insensitive; X* prefix, *X suffix, *X* contains,
     // X exact. Zero-filled so the per-frame memcmp stays stable. Read at world load (IsOceanWaterMaterial).
     char OceanIdentifiers[256];

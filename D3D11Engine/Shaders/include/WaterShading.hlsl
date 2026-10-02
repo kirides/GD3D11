@@ -268,7 +268,7 @@ float3 WaterMoonGlint( float3 viewDirection, float3 smallWaveNormal, float3 bigW
 // Shore foam: a line at the waterline, swash bands running up the shore, a drifting bubble lace
 //--------------------------------------------------------------------------------------
 static const float  WATER_FOAM_FADE_DISTANCE = 20000.0f;   // view distance where foam is gone
-static const float3 WATER_FOAM_ALBEDO = float3( 0.76f, 0.79f, 0.80f );
+static const float3 WATER_FOAM_ALBEDO = float3( 0.68f, 0.71f, 0.72f );
 static const float  WATER_FOAM_BUMP = 3.0f;                 // world units of foam relief
 
 // 1 = inside the underwater scene, `gap` view units behind it; 0 = in front of it; -1 = off screen or hidden
@@ -450,7 +450,7 @@ WaterFoamSample WaterFoamCover( float2 p, float amount, float time, float footpr
     float threshold = 1.0f - amount * 0.95f;
     float softness = lerp( 0.45f, 0.07f, detail );
     float cover = smoothstep( threshold - softness, threshold + softness, pattern );
-    foam.opacity = cover * lerp( 0.72f, 0.92f, amount ) * lerp( 0.60f, 1.0f, detail ) * ( isOcean ? 1.0f : 0.75f );
+    foam.opacity = cover * lerp( 0.58f, 0.80f, amount ) * lerp( 0.60f, 1.0f, detail ) * ( isOcean ? 1.0f : 0.75f );
     foam.thickness = saturate( ( pattern - threshold ) * 3.0f );
 
     // Height: the cover with rounded shoulders so blobs bulge, plus the lace ridges as bumps on top
@@ -939,9 +939,10 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
         float3 sunDir = normalize( AC_LightPos.xyz );
         float relief = lerp( WaterFoamRelief( foamNormal, sunDir ), WaterFoamRelief( foamNormal, fr.moonDir ), night );
         relief = lerp( 1.0f, relief, lerp( 0.9f, 0.35f, rain ) );   // overcast light is flat
-        // Thin foam lets the water hue through and sits in the shade of the thick foam around it
+        // Thin foam lets the water hue through and sits in the shade of the thick foam around it; even thick foam
+        // keeps a trace of it, so it isn't stark white
         float3 waterHue = min( color / max( WaterLuma( color ), 0.02f ), 2.0f );
-        float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, 1.0f, foam.thickness );
+        float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, lerp( 1.0f, waterHue, 0.12f ), foam.thickness );
         float sparkle = pow( saturate( dot( reflect( viewDirection, foamNormal ), sunDir ) ), 60.0f )
                       * 0.20f * sunVisibility * foam.thickness;
         float3 foamLight = WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint );
@@ -949,7 +950,7 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
 
         // Water churned up behind the bores turns milky before any foam sits on it
         float3 milky = lerp( color, foamLight * lerp( 1.0f, waterHue, 0.5f ) * 0.8f, 0.5f );
-        color = lerp( color, milky, aeration * 0.4f * foamFade );
+        color = lerp( color, milky, aeration * 0.32f * foamFade );
         color *= 1.0f - foam.rim * 0.14f * foamFade;
         color = lerp( color, foamColor, foam.opacity * foamFade );
     }

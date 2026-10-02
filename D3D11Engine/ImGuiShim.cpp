@@ -1227,8 +1227,15 @@ void ImGuiShim::RenderSettingsWindow()
                     settings.WaterShoreFoam = (GothicRendererSettings::E_WaterShoreFoam)shoreFoam;
                 }
                 ImGui::SetItemTooltip( "Foam over shallow water along shores. Ocean = water matching [Display] OceanIdentifiers." );
+                const char* shoreFoamStyles[] = { "Simple", "Coast Simulation" };
+                int shoreFoamStyle = settings.WaterShoreFoamStyle;
+                if ( ImGui::Combo( "Shore Foam Style", &shoreFoamStyle, shoreFoamStyles, IM_ARRAYSIZE( shoreFoamStyles ) ) ) {
+                    settings.WaterShoreFoamStyle = (GothicRendererSettings::E_WaterShoreFoamStyle)shoreFoamStyle;
+                }
+                ImGui::SetItemTooltip( "Simple = depth bands per pixel. Coast Simulation = waves from the baked shoreline field." );
                 ImGui::Checkbox( "Show Shore Field", &settings.DebugSettings.WaterDebug.ShowShoreField );
-                ImGui::SetItemTooltip( "Paints the baked shoreline field over the water: distance bands, depth and the seaward direction." );
+                ImGui::SetItemTooltip( "Paints the baked shoreline field over the water: distance bands, depth and the seaward\n"
+                    "direction. Coast Simulation only." );
             }
             // D3D12 only, and only meaningful once the temporal SSR marcher (D3D12_SSR_WET_SURFACES_PLAN.md)
             // reads this — no shader-recompile trigger needed either way: D3D12 treats quality as a runtime
