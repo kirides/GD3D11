@@ -46,6 +46,7 @@ class zCVobLight;
 class D3D12VobArena;
 class D3D12GpuScene;
 struct GpuSceneCasterView;
+class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
 struct FrameSkelDraw;
@@ -65,6 +66,7 @@ class D3D12GraphicsEngine : public BaseGraphicsEngine {
     // buffers out from under frames that may still be reading them.
     friend class D3D12VobArena;
     friend class D3D12GpuScene;
+    friend class D3D12GpuWorld;
     friend class D3D12MeshArena;
     // The ray-traced scene builds over the arenas, the posed skinning streams and the frame's draw lists.
     friend class D3D12RayTracing;
@@ -265,7 +267,8 @@ public:
     void OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) override;
     void OnLoadWorld() override;
     void OnVobsReset() override;
-    void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
+    void OnWorldMeshReset() override;
+void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     void DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera ) override;  // same, for a skinned item visual
     D3D12MA::Allocator* GetAllocator() const { return D3D12Rhi::NativeAllocator( m_Rhi.Get() ); }
 
@@ -869,6 +872,18 @@ private:
         bool     Blended;                // BLEND/ADD: DrawVobAlphaMeshes draws it, never the opaque set
     };
     VobMaterial ResolveVobMaterial( const MeshKey& key, const std::string& visualName, bool cacheIn, bool resolveMaps ) const;
+    struct WorldMaterial {
+        uint32_t Normal, Orm, Diffuse;   // Orm carries the backlit class
+        float    NormalStrength;
+        bool     AlphaTested;
+        bool     TextureReady;           // no texture, or it is cached in
+    };
+    // A world mesh material's bindless slots, without the wet-ground normal fallback (WetNormalFallback).
+    WorldMaterial ResolveWorldMaterial( const MeshKey& key, bool cacheIn ) const;
+    // While it rains, materials without a normal map perturb with this slot and strength; UINT32_MAX = dry.
+    void WetNormalFallback( uint32_t& slot, float& strength ) const;
+    // The main view's GPU world cull, before the depth prepass.
+    void CullGpuWorldMain();
 
     struct VobDrawCommand {                          // 48 bytes; all members 4-byte, no GPUVA alignment to keep
         uint32_t MatNormalIndex;                     // @0  b6.x  (0xFFFFFFFF = no normal map)
@@ -902,6 +917,9 @@ private:
     // Static VOBs as a persistent GPU table (D3D12GpuScene.h); active per frame when [Debug] GpuScene is on.
     std::unique_ptr<D3D12GpuScene> m_GpuScene;
     bool m_GpuSceneActive = false;
+    // World mesh culled per view on the GPU (D3D12GpuWorld.cpp); decided once per frame in OnStartWorldRendering.
+    std::unique_ptr<D3D12GpuWorld> m_GpuWorld;
+    bool m_GpuWorldActive = false;
     // Skinned bodies (ExSkelVertexStruct) and node attachments (ExVertexStruct), requested by
     // PrepareFrameSkeletals and flushed right after the main view's prepare. See D3D12MeshArena.h.
     std::unique_ptr<D3D12MeshArena> m_SkelArena;

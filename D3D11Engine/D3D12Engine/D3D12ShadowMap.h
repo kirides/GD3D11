@@ -246,7 +246,10 @@ private:
     // The GPU scene culled its static casters into this frame's cascades (Prepare), so the cascade jobs skip the
     // leaves' static lists and draw the scene's lists instead. Resolved before the jobs launch.
     bool m_SceneCasters = false;
-    bool m_SceneAnimatedCaster[kShadowCascades] = {};   // a scene caster with a live morph channel, per cascade
+    // The GPU world culled its casters into this frame's cascades (D3D12GpuWorld views 1..3), so Phase A builds no
+    // CPU world caster set. Resolved before the jobs launch.
+    bool m_WorldGpu = false;
+bool m_SceneAnimatedCaster[kShadowCascades] = {};   // a scene caster with a live morph channel, per cascade
 
     bool m_CullingPending = false;   // cascade jobs are in flight and must be joined before the results are read
     bool m_RecordedInJob = false;    // this frame's jobs also RECORDED (not just culled/built) — see RecordedInJob()

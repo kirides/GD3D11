@@ -27,6 +27,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "D3D12VobArena.h"
 #include "D3D12GpuScene.h"
+#include "D3D12GpuWorld.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
 #include "../WorldObjects.h"
@@ -44,6 +45,7 @@ namespace {
 
 D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ),
     m_GpuScene( std::make_unique<D3D12GpuScene>( *this ) ),
+    m_GpuWorld( std::make_unique<D3D12GpuWorld>( *this ) ),
     m_SkelArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExSkelVertexStruct ) ),
         L"SkeletalVertexArena", L"SkeletalIndexArena", "Skeletal mesh" ) ),
     m_AttachArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExVertexStruct ) ),
@@ -258,6 +260,8 @@ bool D3D12GraphicsEngine::InitScene() {
         // instance buffer from m_VobInstanceBufferCapacity) and after CreateVobIndirect.
         Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the GPU VOB-culling resources (falling back to CPU frustum culling)." );
     }
+    if ( !m_Pipelines.CreateWorldCull() )
+        Logging::Wrn( "D3D12GraphicsEngine::Init: failed to create the GPU world-cull pipelines (the world stays CPU-collected)." );
     if ( !m_Pipelines.CreateMorphFold() || !CreateMorphFoldResources() ) {
         // Non-fatal, but it MUST be attempted here — before the first world/attachment conversion. Whether
         // the fold is available is what decides how a morph submesh's vertex buffer is created (DEFAULT+UAV
@@ -983,6 +987,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 
 	m_FreeSrvSlots.push_back( slot );
 	if ( m_GpuScene ) m_GpuScene->OnSrvSlotFreed( slot );
+	if ( m_GpuWorld ) m_GpuWorld->OnSrvSlotFreed( slot );
 }
 
 

@@ -245,6 +245,8 @@ public:
     virtual void OnLoadWorld() {}
     /** Every VobInfo and visual is about to be deleted (GothicAPI::ResetVobs), without per-vob notifications. */
     virtual void OnVobsReset() {}
+    /** The world sections and the wrapped world mesh are about to be deleted (GothicAPI::ResetWorld). */
+    virtual void OnWorldMeshReset() {}
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
     virtual XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
