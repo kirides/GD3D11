@@ -26,6 +26,8 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "../WorldMeshSection.h"
 #include "D3D12VobArena.h"
+#include "D3D12GpuScene.h"
+#include "D3D12GpuWorld.h"
 
 namespace {
     const float2 snowScale( 3.0f, 3.0f );
@@ -581,6 +583,13 @@ void D3D12GraphicsEngine::CollectRainShadowVobs() {
     // that setting trades sun-shadow quality for range, while the rain map's range is fixed by its camera.
     const float range = kRainShadowWorldSpan * 0.5f;
 
+    // GPU scene: the static casters are culled into the rain view on the GPU (its box is the map's own
+    // projection), welded indices like cascade 0; only moved vobs and the scene's CPU list are walked below.
+    if ( m_GpuSceneActive ) {
+        GpuSceneCasterView view = { m_RainShadowViewProj, 0.0f, range, range, false, true };
+        m_RainSceneCasters = CullGpuSceneCasters( &view, D3D12GpuScene::kCasterViewRain, 1 );
+    }
+
     // Function-static, not thread_local: unlike CullCascade this only ever runs on the main thread, and the
     // point is simply to keep the scratch lists' capacity across frames.
     static std::vector<SkeletalVobInfo*> nopMobs;
@@ -615,6 +624,8 @@ void D3D12GraphicsEngine::CollectRainShadowVobs() {
     // MUST stay false: it is the one branch of CollectLeafVobs that mutates (lazily allocating a
     // VobLightInfo), and this walk runs concurrently with the cascade culls on the worker pool.
     ctx.drawFlags.CollectLights = false;
+    ctx.drawFlags.SkipStaticVobs = m_RainSceneCasters;
+    ctx.extraVobs = m_RainSceneCasters ? &m_GpuScene->CpuVobs() : nullptr;
 
     Engine::GAPI->CollectVisibleVobs( ctx );
 
@@ -649,6 +660,8 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     g_RainShadowVb = nullptr;
     g_RainShadowIb = nullptr;
     m_RainVobDrawCount = 0;
+    m_RainSceneCasters = false;
+    m_RainWorldGpu = false;
 
     Rhi::PipelineState* casterPso = m_ShadowMap.GetWorldCasterPSO();
     if ( !m_FrameOpen || !casterPso || !m_Pipelines.World.RootSig || !m_BlackTexture || GetDefaultOrmSrvSlot() == UINT_MAX )
@@ -759,14 +772,19 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
         && (ib->GetSizeInBytes() / sizeof( uint32_t )) > 0;
     if ( !haveWorld ) return;
 
-    static std::vector<WorldMeshSectionInfo*> rainShadowSections;
-    rainShadowSections.clear();
-
-    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    Engine::GAPI->CollectVisibleSections( rainShadowSections, &m_RainShadowFrustum, false );
-
     g_RainShadowVb = vb;
     g_RainShadowIb = ib;
+
+    // GPU world: its casters are culled into the rain view on the GPU instead.
+    if ( m_GpuWorldActive ) {
+        const D3D12GpuWorld::View view = { m_RainShadowViewProj, true, false };
+        m_RainWorldGpu = m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewRain, 1 );
+        if ( m_RainWorldGpu ) return;
+    }
+
+    static std::vector<WorldMeshSectionInfo*> rainShadowSections;
+    rainShadowSections.clear();
+    Engine::GAPI->CollectVisibleSections( rainShadowSections, &m_RainShadowFrustum, false );
 
     for ( WorldMeshSectionInfo* section : rainShadowSections ) {
         if ( !section ) continue;
@@ -830,7 +848,8 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
     cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &m_RainShadowDsv );
     cmdList->ClearDepthStencilView( m_RainShadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
 
-    if ( !g_RainShadowDraws.empty() && g_RainShadowVb && g_RainShadowIb ) {
+    const bool gpuWorld = m_RainWorldGpu && m_GpuWorld->Drawable( D3D12GpuWorld::kViewRain );
+    if ( ( gpuWorld || !g_RainShadowDraws.empty() ) && g_RainShadowVb && g_RainShadowIb ) {
         const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kRainShadowMapSize), static_cast<float>(kRainShadowMapSize), 0.0f, 1.0f };
         const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kRainShadowMapSize), static_cast<LONG>(kRainShadowMapSize) };
         cmdList->RSSetViewports( 1, &vp );
@@ -852,6 +871,12 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
         cmdList->IASetVertexBuffers( 0, 1, &vbv );
         cmdList->IASetIndexBuffer( &ibv );
 
+        if ( gpuWorld ) {
+            cmdList->SetPipelineState( noAlphaPso );
+            m_GpuWorld->Draw( cmdList, D3D12GpuWorld::kViewRain, false );
+            cmdList->SetPipelineState( clipPso );
+            m_GpuWorld->Draw( cmdList, D3D12GpuWorld::kViewRain, true );
+        }
         for ( const RainShadowDraw& d : g_RainShadowDraws ) {
             Rhi::PipelineState* wantPso = d.alphaTested ? clipPso : noAlphaPso;
             if ( wantPso != boundPso ) {
@@ -902,6 +927,28 @@ void D3D12GraphicsEngine::RecordRainShadowmap( D3D12CmdList& cmdList ) {
                     m_RainVobDrawCount - m_RainVobOpaqueDrawCount, m_RainVobDrawArgs[m_FrameIndex].Get(),
                     static_cast<UINT64>( m_RainVobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
             }
+        }
+    }
+
+    // --- GPU scene static casters: the rain view's lists, GPU-counted ---
+    if ( m_RainSceneCasters && m_ShadowMap.GetVobIndirectCasterPSO() && m_VobIndirectCmdSig && m_VobArena->Ready() ) {
+        DX_ZONE( cmdList.Get(), "Scene Vobs" );
+        TracyD3D12ZoneCGX( cmdList.Get(), "Scene Vobs" );
+        const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kRainShadowMapSize), static_cast<float>(kRainShadowMapSize), 0.0f, 1.0f };
+        const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kRainShadowMapSize), static_cast<LONG>(kRainShadowMapSize) };
+        cmdList->RSSetViewports( 1, &vp );
+        cmdList->RSSetScissorRects( 1, &sc );
+        cmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        Rhi::PipelineState* const vobNoAlphaPso = m_ShadowMap.GetVobIndirectCasterNoAlphaPSO();
+        cmdList->SetPipelineState( vobNoAlphaPso ? vobNoAlphaPso : m_ShadowMap.GetVobIndirectCasterPSO() );
+        cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+        cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
+        cmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
+        const D3D12GpuScene& scene = *m_GpuScene;
+        if ( BindVobArenaIA( cmdList, scene.CasterInstances(), scene.CasterInstanceBytes(), D3D12GpuScene::kCasterInstanceStride ) ) {
+            DrawGpuSceneCasters( cmdList, D3D12GpuScene::kCasterViewRain, false );
+            if ( vobNoAlphaPso ) cmdList->SetPipelineState( m_ShadowMap.GetVobIndirectCasterPSO() );
+            DrawGpuSceneCasters( cmdList, D3D12GpuScene::kCasterViewRain, true );
         }
     }
 

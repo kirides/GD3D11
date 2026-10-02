@@ -19,7 +19,8 @@ struct WorldMeshSectionInfo;
 class D3D12GpuWorld {
 public:
     static constexpr UINT kViewMain = 0;
-    static constexpr UINT kViews = 4;   // the main view and the three shadow cascades
+    static constexpr UINT kViews = 5;   // the main view, the three shadow cascades, the rain shadowmap
+    static constexpr UINT kViewRain = 4;
 
     /** One view to cull into. */
     struct View {

@@ -1158,7 +1158,7 @@ private:
     void DrawGpuSceneVobs( bool alphaTested );
     // Main thread, before the cascade jobs record: culls the scene's static casters into every active view and
     // builds their lists on m_CmdList. False = nothing recorded; the cascades then walk the leaves themselves.
-    bool CullGpuSceneCasters( const GpuSceneCasterView* views, UINT count );
+    bool CullGpuSceneCasters( const GpuSceneCasterView* views, UINT first, UINT count );
     // A cascade's scene casters (its opaque or alpha-tested list); any thread, into that cascade's list.
     void DrawGpuSceneCasters( D3D12CmdList& cmdList, UINT view, bool alphaTested ) const;
 
@@ -2025,7 +2025,10 @@ private:
     uint8_t* m_RainVobDrawArgsPtr[kBackBufferMax] = {};
     UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
     UINT     m_RainVobOpaqueDrawCount = 0;   // alpha-test partition — see m_WorldOpaqueDrawCount
-    // Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
+    // The GPU scene / GPU world culled this frame's static VOB / world casters into their rain view.
+    bool     m_RainSceneCasters = false;
+    bool     m_RainWorldGpu = false;
+// Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
     // main-view / per-cascade views, since the bucket index IS the visual index.
     RenderView m_RainShadowVobs;
     bool CreateRainShadowResources();   // one-time (or on-demand retry) DSV/SRV + resource creation
