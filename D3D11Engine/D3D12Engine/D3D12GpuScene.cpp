@@ -1,0 +1,661 @@
+// D3D12GpuScene — static VOBs in a persistent GPU table, culled and drawn without a per-frame CPU walk.
+// See GPU_SCENE_PLAN.md and VobCull.hlsl (CSCull with VOB_SCENE, CSBuildArgs).
+#include "../pch.h"
+#include "D3D12GpuScene.h"
+#include "D3D12GraphicsEngine.h"
+#include "D3D12VobArena.h"
+#include "../Engine.h"
+#include "../GothicAPI.h"
+#include "../WorldObjects.h"
+#include "../ConstantBufferStructs.h"
+#include "../zCVob.h"
+
+using Microsoft::WRL::ComPtr;
+
+static_assert( sizeof( D3D12GpuScene::Template ) == 48, "VobCull.hlsl's SceneTemplate mirrors this" );
+static_assert( D3D12GraphicsEngine::kBackBufferMax == 3, "D3D12GpuScene::kFrames mirrors kBackBufferMax" );
+
+namespace {
+    // VobCull.hlsl SCENE_GPSLOT_*; bit 30 is the StaticVob flag the CPU path sets too.
+    constexpr uint32_t kGpSlotStatic = 1u << 30;
+    constexpr uint32_t kGpSlotHidden = 0x20000000u;
+    constexpr uint32_t kGpSlotIndoor = 0x10000000u;
+    constexpr uint32_t kSceneVisualSmall = 1u;   // SCENE_VISUAL_SMALL
+    constexpr UINT kInstanceBytes = 64;          // the no-motion VobInstanceInfo prefix
+
+    enum : uint8_t { kSlotLive, kSlotHidden, kSlotOnCpu, kSlotCpuVisual, kSlotGone };
+    enum : uint8_t { kVisualUnbuilt, kVisualReady, kVisualCpu };
+
+    constexpr uint32_t kFlagScanPerFrame = 512;   // ShowVisual / visual-alpha changes, round-robin
+    constexpr uint32_t kBuildsPerFrame = 48;      // template (re)builds, each a few CacheIn calls
+    constexpr uint32_t kTouchInterval = 30;       // frames between CacheIn touches of a visible visual
+    constexpr uint16_t kMaxWaitFrames = 120;      // then a visual draws with fallback slots, as the CPU path does
+    constexpr UINT kSpareTemplates = 4096;
+    constexpr uint32_t kOrmIndexMask = 0x0FFFFFFFu;   // D3D12Scene.cpp's EncodeOrmSlot
+    constexpr uint32_t kNoSlot = 0xFFFFFFFFu;         // a vob the scene tracks but the CPU path draws
+
+    D3D12_RESOURCE_DESC BufferDesc( UINT64 bytes, bool uav ) {
+        D3D12_RESOURCE_DESC bd = {};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = std::max<UINT64>( bytes, 16 );
+        bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+        bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        bd.Flags = uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
+        return bd;
+    }
+}
+
+struct D3D12GpuScene::VobSlotMap {
+    gtl::flat_hash_map<const zCVob*, uint32_t> Map;
+};
+
+D3D12GpuScene::D3D12GpuScene( D3D12GraphicsEngine& engine ) : m_E( engine ), m_VobSlot( std::make_unique<VobSlotMap>() ) {}
+
+D3D12GpuScene::~D3D12GpuScene() = default;
+
+
+void D3D12GpuScene::Reset() {
+    m_Built = false;
+    m_BuildFailed = false;
+    m_Visuals.clear();
+    m_RecordsCpu.clear();
+    m_Templates.clear();
+    m_SlotVob.clear();
+    m_SlotState.clear();
+    m_SlotVisual.clear();
+    m_CpuVobs.clear();
+    m_DirtySlots.clear();
+    m_DirtyVisuals.clear();
+    m_BuildQueue.clear();
+    m_VobSlot->Map.clear();
+    m_FlagCursor = 0;
+    m_TemplatesGrew = false;
+    for ( UINT i = 0; i < kFrames; ++i ) m_ReadbackVisuals[i] = 0;
+    for ( ComPtr<Rhi::Resource>* r : { std::addressof( m_Table ), std::addressof( m_Records ), std::addressof( m_TemplateBuffer ),
+              std::addressof( m_Counts ), std::addressof( m_Args ), std::addressof( m_ArgCount ) } )
+        if ( *r ) m_E.QueueResourceForRelease( std::move( *r ) );
+    for ( UINT i = 0; i < kFrames; ++i ) {
+        if ( m_Readback[i] ) m_E.QueueResourceForRelease( std::move( m_Readback[i] ) );
+        m_ReadbackPtr[i] = nullptr;
+    }
+    CountsReadable = false;
+    ArgsDrawable = false;
+}
+
+
+UINT D3D12GpuScene::ReadyVisualCount() const {
+    UINT n = 0;
+    for ( const Visual& v : m_Visuals ) n += v.State == kVisualReady ? 1u : 0u;
+    return n;
+}
+
+
+uint32_t D3D12GpuScene::SlotOf( const zCVob* vob ) const {
+    if ( !vob ) return kNoSlot;
+    const auto it = m_VobSlot->Map.find( vob );
+    return it == m_VobSlot->Map.end() ? kNoSlot : it->second;
+}
+
+
+void D3D12GpuScene::OnVobLeft( const zCVob* vob ) {
+    // Runs for every move of every vob, so anything the scene never knew leaves after one lookup.
+    if ( !vob ) return;
+    const auto it = m_VobSlot->Map.find( vob );
+    if ( it == m_VobSlot->Map.end() ) return;
+    const uint32_t slot = it->second;
+    m_VobSlot->Map.erase( it );
+    if ( slot == kNoSlot || m_SlotState[slot] == kSlotOnCpu || m_SlotState[slot] == kSlotCpuVisual )
+        std::erase_if( m_CpuVobs, [vob]( const VobInfo* vi ) { return vi->Vob == vob; } );
+    if ( slot == kNoSlot ) return;
+    // The table never refreshed its previous transform, so its first CPU-drawn frame must not reproject from it.
+    if ( VobInfo* vi = m_SlotVob[slot] ) vi->HasValidPrevMatrix = false;
+    m_SlotVob[slot] = nullptr;
+    SetSlotState( slot, kSlotGone );
+}
+
+
+void D3D12GpuScene::OnSrvSlotFreed( UINT slot ) {
+    std::lock_guard<std::mutex> lock( m_FreedMutex );
+    if ( m_Built ) m_FreedSlots.push_back( slot );
+}
+
+
+void D3D12GpuScene::SetSlotState( uint32_t slot, uint8_t state ) {
+    if ( m_SlotState[slot] == state ) return;
+    m_SlotState[slot] = state;
+    m_DirtySlots.push_back( slot );
+}
+
+
+void D3D12GpuScene::WriteInstance( uint32_t slot, uint8_t* dst ) const {
+    VobInstanceInfo vii = {};
+    uint32_t gp = kGpSlotHidden;
+    if ( VobInfo* vi = m_SlotVob[slot] ) {
+        PackAffine3x4( vii.world, vi->WorldMatrix );
+        vii.color = vi->GroundColor;
+        const zTAnimationMode aniMode = vi->Vob->GetVisualAniMode();
+        if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+            vii.canBeAffectedByPlayer = !vi->Vob->GetDynColl() ? 1.0f : 0.0f;
+            GothicAPI::ProcessVobAnimation( vi->Vob, aniMode, vii );
+        }
+        gp = ( vi->Vob->GetFlags().StaticVob ? kGpSlotStatic : 0u ) | ( vi->IsIndoorVob ? kGpSlotIndoor : 0u )
+            | ( m_SlotState[slot] == kSlotLive ? 0u : kGpSlotHidden );
+    }
+    vii.GP_Slot = gp;
+    memcpy( dst, &vii, kInstanceBytes );
+}
+
+
+void D3D12GpuScene::WriteRecord( uint32_t v ) {
+    const Visual& vis = m_Visuals[v];
+    Record& r = m_RecordsCpu[v];
+    const bool ready = vis.Info && vis.Info->GetIsReady();
+    // An unknown box (min > max) counts as always visible, so the visual's feedback still arrives.
+    const XMFLOAT3 mn = ready ? vis.Info->BBox.Min : XMFLOAT3( 1.0f, 1.0f, 1.0f );
+    const XMFLOAT3 mx = ready ? vis.Info->BBox.Max : XMFLOAT3( -1.0f, -1.0f, -1.0f );
+    r.BBoxMin[0] = mn.x; r.BBoxMin[1] = mn.y; r.BBoxMin[2] = mn.z;
+    r.BBoxMax[0] = mx.x; r.BBoxMax[1] = mx.y; r.BBoxMax[2] = mx.z;
+    r.InstanceBase = vis.SlotBase;
+    r.InstanceCount = vis.State == kVisualCpu ? 0u : vis.SlotCount;
+    r.SceneFlags = ( ready && vis.Info->MeshSize < m_BuiltSmallVobSize ) ? kSceneVisualSmall : 0u;
+    // Split only when every template has a far counterpart (BuildTemplates writes those after the near run).
+    r.SplitMode = ( vis.TemplateUsed > 0 && m_Templates[vis.TemplateBase + vis.TemplateUsed - 1].LodBucket != 0 )
+        ? D3D12GraphicsEngine::kSplitModeLod : D3D12GraphicsEngine::kSplitModeNone;
+    m_DirtyVisuals.push_back( v );
+}
+
+
+void D3D12GpuScene::MoveVisualToCpu( uint32_t v ) {
+    Visual& vis = m_Visuals[v];
+    vis.State = kVisualCpu;
+    for ( uint32_t slot = vis.SlotBase; slot < vis.SlotBase + vis.SlotCount; ++slot ) {
+        const uint8_t state = m_SlotState[slot];
+        if ( state == kSlotGone || state == kSlotCpuVisual ) continue;
+        if ( state != kSlotOnCpu ) m_CpuVobs.push_back( m_SlotVob[slot] );
+        SetSlotState( slot, kSlotCpuVisual );
+    }
+    for ( uint32_t t = 0; t < vis.TemplateCapacity; ++t ) m_Templates[vis.TemplateBase + t].Flags = 0;
+    vis.TemplateUsed = 0;
+    WriteRecord( v );
+}
+
+
+bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn ) {
+    Visual& vis = m_Visuals[v];
+    MeshVisualInfo* info = vis.Info;
+    if ( vis.State == kVisualCpu ) return true;
+    if ( !info || !info->GetIsReady() ) return false;
+    const D3D12VobArena* arena = m_E.m_VobArena.get();
+
+    struct Staged { Template T; uint32_t LodStart, LodCount; bool Lod; };
+    static std::vector<Staged> staged;
+    staged.clear();
+    bool texturesReady = true;
+    bool allLod = true;
+    const float minH = info->BBox.Min.y;
+    const float maxH = info->BBox.Max.y;
+    for ( auto const& [key, meshList] : info->MeshesByTexture ) {
+        const D3D12GraphicsEngine::VobMaterial mat = m_E.ResolveVobMaterial( key, info->VisualName, cacheIn, true );
+        if ( mat.Blended ) {
+            // Blended materials are peeled into DrawVobAlphaMeshes, which only the CPU path feeds.
+            MoveVisualToCpu( v );
+            return true;
+        }
+        texturesReady = texturesReady && mat.TextureReady;
+        for ( MeshInfo* mi : meshList ) {
+            if ( !mi || mi->Indices.empty() ) continue;
+            const D3D12VobArena::Range* r = arena->Find( mi );
+            if ( !r || r->IndexCount == 0 ) return false;   // not uploaded yet, retried on the next sighting
+            Staged s;
+            s.T = { mat.Normal, mat.Orm, mat.Diffuse, minH, maxH, r->IndexCount, r->IndexStart,
+                static_cast<int32_t>( r->BaseVertex ), v, D3D12GraphicsEngine::kLodBucketNear,
+                mat.AlphaTested ? kTemplateAlpha : 0u, 0u };
+            s.Lod = m_BuiltLod && !mat.AlphaTested && r->LodCount > 0;
+            s.LodStart = r->LodStart;
+            s.LodCount = r->LodCount;
+            allLod = allLod && s.Lod;
+            staged.push_back( s );
+        }
+    }
+
+    const bool split = !staged.empty() && allLod;
+    const uint32_t used = static_cast<uint32_t>( staged.size() ) * ( split ? 2u : 1u );
+    if ( used > vis.TemplateCapacity ) {
+        // First build (or the visual's sub-meshes changed): a fresh range at the end. An old range must stop
+        // drawing, and only a whole upload reaches it.
+        if ( vis.TemplateCapacity > 0 ) {
+            for ( uint32_t t = 0; t < vis.TemplateCapacity; ++t ) m_Templates[vis.TemplateBase + t].Flags = 0;
+            m_TemplatesGrew = true;
+        }
+        vis.TemplateBase = static_cast<uint32_t>( m_Templates.size() );
+        vis.TemplateCapacity = static_cast<uint32_t>( staged.size() ) * 2u;
+        m_Templates.resize( m_Templates.size() + vis.TemplateCapacity, Template{} );
+        if ( m_Templates.size() > m_TemplateCapacity ) m_TemplatesGrew = true;
+    }
+
+    if ( !texturesReady && vis.WaitFrames < kMaxWaitFrames ) ++vis.WaitFrames;
+    const uint32_t ready = ( texturesReady || vis.WaitFrames >= kMaxWaitFrames ) ? kTemplateReady : 0u;
+
+    Template* dst = &m_Templates[vis.TemplateBase];
+    static std::vector<Template> next;
+    next.assign( vis.TemplateCapacity, Template{} );
+    uint32_t n = 0;
+    for ( const Staged& s : staged ) {
+        next[n] = s.T;
+        next[n++].Flags |= ready;
+    }
+    if ( split ) {
+        // LOD implies opaque, so every far template goes to the opaque list.
+        for ( const Staged& s : staged ) {
+            Template f = s.T;
+            f.LodBucket = D3D12GraphicsEngine::kLodBucketFar;
+            f.StartIndex = s.LodStart;
+            f.IndexCount = s.LodCount;
+            f.Flags = ready;
+            next[n++] = f;
+        }
+    }
+
+    const bool changed = vis.TemplateUsed != used
+        || memcmp( dst, next.data(), vis.TemplateCapacity * sizeof( Template ) ) != 0;
+    if ( changed ) {
+        memcpy( dst, next.data(), vis.TemplateCapacity * sizeof( Template ) );
+        vis.TemplateUsed = used;
+        WriteRecord( v );
+    }
+    vis.State = ready ? kVisualReady : kVisualUnbuilt;
+    vis.LastTouch = m_Frame;
+    return true;
+}
+
+
+bool D3D12GpuScene::CreateBuffers( UINT templateCapacity ) {
+    Rhi::Device* rhi = m_E.GetRhi();
+    if ( !rhi ) return false;
+    auto make = [&]( UINT64 bytes, bool uav, D3D12_RESOURCE_STATES state, const wchar_t* name, ComPtr<Rhi::Resource>& out ) {
+        const D3D12_RESOURCE_DESC bd = BufferDesc( bytes, uav );
+        if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &bd, state, nullptr, out.ReleaseAndGetAddressOf() ) ) )
+            return false;
+        out->SetName( name );
+        return true;
+        };
+    const UINT visuals = VisualCount();
+    m_TemplateCapacity = templateCapacity;
+    m_CommandCapacity = templateCapacity;
+    bool ok = make( static_cast<UINT64>( SlotCount() ) * kInstanceBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuSceneTable", m_Table )
+        && make( static_cast<UINT64>( visuals ) * sizeof( Record ), false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuSceneRecords", m_Records )
+        && make( static_cast<UINT64>( templateCapacity ) * sizeof( Template ), false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuSceneTemplates", m_TemplateBuffer )
+        && make( static_cast<UINT64>( visuals ) * 2u * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuSceneCounts", m_Counts )
+        && make( static_cast<UINT64>( templateCapacity ) * 2u * sizeof( D3D12GraphicsEngine::VobDrawCommand ), true,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuSceneArgs", m_Args )
+        && make( 2u * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuSceneArgCount", m_ArgCount );
+    if ( !ok ) return false;
+    CountsReadable = false;
+    ArgsDrawable = false;
+
+    for ( UINT i = 0; i < kFrames; ++i ) {
+        if ( !m_Staging[i] ) {
+            const D3D12_RESOURCE_DESC sd = BufferDesc( kStagingBytes, false );
+            if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &sd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_Staging[i].ReleaseAndGetAddressOf() ) ) )
+                return false;
+            m_Staging[i]->SetName( L"GpuSceneStaging" );
+            void* mapped = nullptr;
+            D3D12_RANGE noRead = { 0, 0 };
+            if ( FAILED( m_Staging[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+            m_StagingPtr[i] = static_cast<uint8_t*>( mapped );
+        }
+        const D3D12_RESOURCE_DESC rd = BufferDesc( static_cast<UINT64>( visuals ) * 2u * sizeof( uint32_t ), false );
+        if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_READBACK, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, m_Readback[i].ReleaseAndGetAddressOf() ) ) )
+            return false;
+        m_Readback[i]->SetName( L"GpuSceneFeedback" );
+        void* mapped = nullptr;
+        if ( FAILED( m_Readback[i]->Map( 0, nullptr, &mapped ) ) ) return false;
+        m_ReadbackPtr[i] = static_cast<const uint32_t*>( mapped );
+        m_ReadbackVisuals[i] = 0;
+    }
+    return true;
+}
+
+
+bool D3D12GpuScene::Build( Rhi::CmdList& cmd ) {
+    const BspLeafLinearCache& cache = Engine::GAPI->LeafLinearCache;
+    if ( cache.Count == 0 || !m_E.m_VobArena->Ready() ) return false;
+    ZoneScopedN( "GpuScene build" )
+
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    m_BuiltWindQuality = static_cast<int>( rs.WindQuality );
+    m_BuiltLod = m_E.m_VobLodDistance > 0.0f;
+    m_BuiltSmallVobSize = rs.SmallVobSize;
+
+    // Every VOB still in a leaf, once.
+    gtl::flat_hash_set<VobInfo*> seen;
+    std::vector<VobInfo*> vobs;
+    for ( uint32_t i = 0; i < cache.Count; ++i ) {
+        BspInfo* leaf = cache.Leaves[i];
+        if ( !leaf ) continue;
+        for ( const auto* list : { &leaf->IndoorVobs, &leaf->SmallVobs, &leaf->Vobs } ) {
+            for ( const LeafVobEntry& e : *list ) {
+                VobInfo* vi = e.Info;
+                if ( !vi || !vi->Vob || !vi->VisualInfo || vi->VisualIndex < 0 || !seen.insert( vi ).second ) continue;
+                // Floating plants bob every frame (ApplyWaterBob): they stay on the CPU path.
+                if ( vi->WaterBob ) { m_CpuVobs.push_back( vi ); m_VobSlot->Map[vi->Vob] = kNoSlot; continue; }
+                vobs.push_back( vi );
+            }
+        }
+    }
+
+    // Group by visual: a contiguous table segment per visual is what CSCull's one-group-per-visual walks.
+    const size_t buckets = m_E.VobVisualBucketCount();
+    std::vector<int32_t> ordinal( buckets, -1 );
+    for ( VobInfo* vi : vobs ) {
+        if ( static_cast<size_t>( vi->VisualIndex ) >= buckets ) continue;
+        int32_t& o = ordinal[vi->VisualIndex];
+        if ( o < 0 ) {
+            o = static_cast<int32_t>( m_Visuals.size() );
+            m_Visuals.push_back( Visual{} );
+            m_Visuals.back().Info = static_cast<MeshVisualInfo*>( vi->VisualInfo );
+        }
+        ++m_Visuals[o].SlotCount;
+    }
+    uint32_t base = 0;
+    for ( Visual& v : m_Visuals ) { v.SlotBase = base; base += v.SlotCount; v.SlotCount = 0; }
+    m_SlotVob.assign( base, nullptr );
+    m_SlotState.assign( base, kSlotLive );
+    m_SlotVisual.assign( base, 0 );
+    m_VobSlot->Map.reserve( base );
+    for ( VobInfo* vi : vobs ) {
+        if ( static_cast<size_t>( vi->VisualIndex ) >= buckets ) continue;
+        const uint32_t v = static_cast<uint32_t>( ordinal[vi->VisualIndex] );
+        const uint32_t slot = m_Visuals[v].SlotBase + m_Visuals[v].SlotCount++;
+        m_SlotVob[slot] = vi;
+        m_SlotVisual[slot] = v;
+        m_VobSlot->Map[vi->Vob] = slot;
+        const zTVobFlags flags = vi->Vob->GetFlags();
+        if ( flags.VisualAlphaEnabled ) { m_SlotState[slot] = kSlotOnCpu; m_CpuVobs.push_back( vi ); }
+        else if ( !flags.ShowVisual ) m_SlotState[slot] = kSlotHidden;
+    }
+
+    // Templates for visuals that are ready and resident now; the rest follow their first sighting.
+    m_RecordsCpu.assign( m_Visuals.size(), Record{} );
+    for ( uint32_t v = 0; v < VisualCount(); ++v ) {
+        if ( !BuildTemplates( v, false ) || m_Visuals[v].State != kVisualReady ) WriteRecord( v );
+    }
+    m_TemplatesGrew = false;
+    if ( !CreateBuffers( static_cast<UINT>( m_Templates.size() ) + kSpareTemplates ) ) {
+        Logging::Wrn( "D3D12: GPU scene buffers could not be created; static VOBs stay on the CPU path." );
+        return false;
+    }
+
+    // One-off upload of everything through a temporary buffer, released once this frame retires.
+    const UINT64 tableBytes = static_cast<UINT64>( SlotCount() ) * kInstanceBytes;
+    const UINT64 recordBytes = static_cast<UINT64>( VisualCount() ) * sizeof( Record );
+    const UINT64 templateBytes = static_cast<UINT64>( m_Templates.size() ) * sizeof( Template );
+    ComPtr<Rhi::Resource> upload;
+    const D3D12_RESOURCE_DESC ud = BufferDesc( tableBytes + recordBytes + templateBytes, false );
+    if ( FAILED( m_E.GetRhi()->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.GetAddressOf() ) ) )
+        return false;
+    uint8_t* p = nullptr;
+    D3D12_RANGE noRead = { 0, 0 };
+    if ( FAILED( upload->Map( 0, &noRead, reinterpret_cast<void**>( &p ) ) ) ) return false;
+    for ( uint32_t slot = 0; slot < SlotCount(); ++slot ) WriteInstance( slot, p + static_cast<UINT64>( slot ) * kInstanceBytes );
+    memcpy( p + tableBytes, m_RecordsCpu.data(), recordBytes );
+    if ( templateBytes ) memcpy( p + tableBytes + recordBytes, m_Templates.data(), templateBytes );
+    upload->Unmap( 0, nullptr );
+
+    if ( tableBytes ) cmd.CopyBufferRegion( m_Table.Get(), 0, upload.Get(), 0, tableBytes );
+    if ( recordBytes ) cmd.CopyBufferRegion( m_Records.Get(), 0, upload.Get(), tableBytes, recordBytes );
+    if ( templateBytes ) cmd.CopyBufferRegion( m_TemplateBuffer.Get(), 0, upload.Get(), tableBytes + recordBytes, templateBytes );
+    cmd.TransitionBarriers( {
+        { m_Table.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        { m_Records.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+        { m_TemplateBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
+    } );
+    m_E.QueueResourceForRelease( std::move( upload ) );
+    m_DirtySlots.clear();
+    m_DirtyVisuals.clear();
+
+    // The scene's survivors land behind the CPU ring's in the shared compacted buffer.
+    if ( !m_E.EnsureCulledInstanceCapacity( static_cast<UINT64>( m_E.m_VobInstanceBufferCapacity )
+        + static_cast<UINT64>( SlotCount() + 1 ) * sizeof( VobInstanceInfo ) ) ) {
+        Logging::Wrn( "D3D12: GPU scene could not grow the compacted instance buffer; static VOBs stay on the CPU path." );
+        return false;
+    }
+
+    uint32_t ready = 0;
+    for ( const Visual& v : m_Visuals ) ready += v.State == kVisualReady ? 1u : 0u;
+    Logging::Inf( "D3D12: GPU scene built: {} instances, {} visuals ({} drawable now), {} templates, {} vobs on the CPU path",
+        SlotCount(), VisualCount(), ready, m_Templates.size(), m_CpuVobs.size() );
+    return true;
+}
+
+
+void D3D12GpuScene::ScanFlags() {
+    const uint32_t slots = SlotCount();
+    if ( slots == 0 ) return;
+    for ( uint32_t i = 0; i < std::min( kFlagScanPerFrame, slots ); ++i ) {
+        const uint32_t slot = m_FlagCursor;
+        m_FlagCursor = ( m_FlagCursor + 1 ) % slots;
+        const uint8_t state = m_SlotState[slot];
+        VobInfo* vi = m_SlotVob[slot];
+        if ( !vi || state == kSlotGone || state == kSlotCpuVisual ) continue;
+        const zTVobFlags flags = vi->Vob->GetFlags();
+        const uint8_t want = flags.VisualAlphaEnabled ? kSlotOnCpu : ( flags.ShowVisual ? kSlotLive : kSlotHidden );
+        if ( want == state ) continue;
+        // The CPU path routes visual-alpha vobs to the transparency queue; the table hides them meanwhile.
+        if ( state == kSlotOnCpu ) std::erase( m_CpuVobs, vi );
+        if ( want == kSlotOnCpu ) m_CpuVobs.push_back( vi );
+        SetSlotState( slot, want );
+    }
+}
+
+
+void D3D12GpuScene::Unready( uint32_t v ) {
+    Visual& vis = m_Visuals[v];
+    if ( vis.State != kVisualReady ) return;
+    for ( uint32_t t = 0; t < vis.TemplateCapacity; ++t ) m_Templates[vis.TemplateBase + t].Flags &= ~kTemplateReady;
+    vis.State = kVisualUnbuilt;
+    vis.WaitFrames = 0;
+    m_DirtyVisuals.push_back( v );
+}
+
+
+void D3D12GpuScene::ProcessFeedback() {
+    // Freed bindless slots first: a template still naming one would sample whatever texture reuses it.
+    {
+        std::lock_guard<std::mutex> lock( m_FreedMutex );
+        m_FreedScratch.swap( m_FreedSlots );
+    }
+    if ( !m_FreedScratch.empty() ) {
+        gtl::flat_hash_set<UINT> freed( m_FreedScratch.begin(), m_FreedScratch.end() );
+        for ( uint32_t v = 0; v < VisualCount(); ++v ) {
+            const Visual& vis = m_Visuals[v];
+            if ( vis.State != kVisualReady ) continue;
+            for ( uint32_t t = 0; t < vis.TemplateUsed; ++t ) {
+                const Template& tp = m_Templates[vis.TemplateBase + t];
+                if ( freed.contains( tp.MatDiffuseIndex ) || freed.contains( tp.MatNormalIndex )
+                    || freed.contains( tp.MatOrmIndex & kOrmIndexMask ) ) {
+                    // Re-resolve now: a re-created texture keeps drawing under its new slot, an evicted one
+                    // stops until its visual is seen and cached in again.
+                    m_Visuals[v].WaitFrames = 0;
+                    if ( !BuildTemplates( v, false ) ) Unready( v );
+                    break;
+                }
+            }
+        }
+        m_FreedScratch.clear();
+    }
+
+    // This slot's copy was recorded kBackBufferCount frames ago; its fence was waited on at frame begin.
+    const UINT f = m_E.GetFrameIndex();
+    const uint32_t* counts = m_ReadbackPtr[f];
+    const bool fresh = m_ReadbackVisuals[f] == VisualCount();
+    m_ReadbackVisuals[f] = 0;   // consumed; a frame without the scene must not replay it
+    if ( counts && fresh ) {
+        for ( uint32_t v = 0; v < VisualCount(); ++v ) {
+            if ( ( counts[2u * v] | counts[2u * v + 1u] ) == 0u ) continue;
+            Visual& vis = m_Visuals[v];
+            vis.LastSeen = m_Frame;
+            const bool due = vis.State != kVisualReady || m_Frame - vis.LastTouch >= kTouchInterval;
+            if ( due && vis.State != kVisualCpu && !vis.Queued ) {
+                vis.Queued = true;
+                m_BuildQueue.push_back( v );
+            }
+        }
+    }
+
+    // Unbuilt visuals first; touches of ready ones can wait a frame.
+    std::stable_partition( m_BuildQueue.begin(), m_BuildQueue.end(),
+        [this]( uint32_t v ) { return m_Visuals[v].State != kVisualReady; } );
+    const size_t n = std::min<size_t>( m_BuildQueue.size(), kBuildsPerFrame );
+    for ( size_t i = 0; i < n; ++i ) {
+        const uint32_t v = m_BuildQueue[i];
+        m_Visuals[v].Queued = false;
+        BuildTemplates( v, true );
+    }
+    m_BuildQueue.erase( m_BuildQueue.begin(), m_BuildQueue.begin() + n );
+}
+
+
+bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
+    if ( m_TemplatesGrew ) {
+        // Rare: more visuals resolved than the spare capacity covered. Rebuild the template and arg buffers whole.
+        ZoneScopedN( "GpuScene template growth" )
+        Rhi::Device* rhi = m_E.GetRhi();
+        const UINT capacity = static_cast<UINT>( m_Templates.size() ) + kSpareTemplates;
+        ComPtr<Rhi::Resource> templates, args, upload;
+        const D3D12_RESOURCE_DESC td = BufferDesc( static_cast<UINT64>( capacity ) * sizeof( Template ), false );
+        const D3D12_RESOURCE_DESC ad = BufferDesc( static_cast<UINT64>( capacity ) * 2u * sizeof( D3D12GraphicsEngine::VobDrawCommand ), true );
+        const UINT64 bytes = static_cast<UINT64>( m_Templates.size() ) * sizeof( Template );
+        const D3D12_RESOURCE_DESC ud = BufferDesc( bytes, false );
+        if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, templates.GetAddressOf() ) )
+            || FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &ad, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, args.GetAddressOf() ) )
+            || FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.GetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: GPU scene template growth failed; static VOBs stay on the CPU path." );
+            return false;
+        }
+        templates->SetName( L"GpuSceneTemplates" );
+        args->SetName( L"GpuSceneArgs" );
+        void* p = nullptr;
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( upload->Map( 0, &noRead, &p ) ) ) return false;
+        memcpy( p, m_Templates.data(), bytes );
+        upload->Unmap( 0, nullptr );
+        cmd.CopyBufferRegion( templates.Get(), 0, upload.Get(), 0, bytes );
+        cmd.TransitionBarrier( templates.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        m_E.QueueResourceForRelease( std::move( upload ) );
+        m_E.QueueResourceForRelease( std::move( m_TemplateBuffer ) );
+        m_E.QueueResourceForRelease( std::move( m_Args ) );
+        m_TemplateBuffer = std::move( templates );
+        m_Args = std::move( args );
+        m_TemplateCapacity = capacity;
+        m_CommandCapacity = capacity;
+        m_TemplatesGrew = false;
+        // The new arg buffer is born in UAV and the count buffer shares its state flag, so it follows.
+        if ( ArgsDrawable ) {
+            cmd.TransitionBarrier( m_ArgCount.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            ArgsDrawable = false;
+        }
+        // Everything is uploaded; only instance and record changes are left.
+        for ( uint32_t& v : m_DirtyVisuals ) v |= 0x80000000u;
+    }
+
+    if ( m_DirtySlots.empty() && m_DirtyVisuals.empty() ) return true;
+    std::ranges::sort( m_DirtySlots );
+    m_DirtySlots.erase( std::ranges::unique( m_DirtySlots ).begin(), m_DirtySlots.end() );
+    std::ranges::sort( m_DirtyVisuals );
+    m_DirtyVisuals.erase( std::ranges::unique( m_DirtyVisuals ).begin(), m_DirtyVisuals.end() );
+
+    const UINT f = m_E.GetFrameIndex();
+    uint8_t* const staging = m_StagingPtr[f];
+    UINT cursor = 0;
+    bool table = false, records = false, templates = false;
+    struct Copy { Rhi::Resource* Dst; UINT64 DstOffset; UINT SrcOffset; UINT Bytes; };
+    static std::vector<Copy> copies;
+    copies.clear();
+
+    size_t slotsDone = 0;
+    while ( slotsDone < m_DirtySlots.size() ) {
+        size_t run = 1;
+        while ( slotsDone + run < m_DirtySlots.size() && m_DirtySlots[slotsDone + run] == m_DirtySlots[slotsDone] + run ) ++run;
+        const UINT bytes = static_cast<UINT>( run ) * kInstanceBytes;
+        if ( cursor + bytes > kStagingBytes ) break;
+        for ( size_t i = 0; i < run; ++i ) WriteInstance( m_DirtySlots[slotsDone + i], staging + cursor + i * kInstanceBytes );
+        copies.push_back( { m_Table.Get(), static_cast<UINT64>( m_DirtySlots[slotsDone] ) * kInstanceBytes, cursor, bytes } );
+        cursor += bytes;
+        slotsDone += run;
+        table = true;
+    }
+
+    size_t visualsDone = 0;
+    for ( ; visualsDone < m_DirtyVisuals.size(); ++visualsDone ) {
+        const bool recordOnly = ( m_DirtyVisuals[visualsDone] & 0x80000000u ) != 0;
+        const uint32_t v = m_DirtyVisuals[visualsDone] & 0x7FFFFFFFu;
+        const Visual& vis = m_Visuals[v];
+        const UINT templateBytes = recordOnly ? 0u : vis.TemplateCapacity * static_cast<UINT>( sizeof( Template ) );
+        if ( cursor + sizeof( Record ) + templateBytes > kStagingBytes ) break;
+        memcpy( staging + cursor, &m_RecordsCpu[v], sizeof( Record ) );
+        copies.push_back( { m_Records.Get(), static_cast<UINT64>( v ) * sizeof( Record ), cursor, sizeof( Record ) } );
+        cursor += sizeof( Record );
+        records = true;
+        if ( templateBytes ) {
+            memcpy( staging + cursor, &m_Templates[vis.TemplateBase], templateBytes );
+            copies.push_back( { m_TemplateBuffer.Get(), static_cast<UINT64>( vis.TemplateBase ) * sizeof( Template ), cursor, templateBytes } );
+            cursor += templateBytes;
+            templates = true;
+        }
+    }
+    if ( copies.empty() ) return true;
+
+    D3D12ResourceTransition pre[3], post[3];
+    UINT nb = 0;
+    for ( auto [res, used] : { std::pair{ m_Table.Get(), table }, std::pair{ m_Records.Get(), records }, std::pair{ m_TemplateBuffer.Get(), templates } } ) {
+        if ( !used ) continue;
+        pre[nb] = { res, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST };
+        post[nb++] = { res, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+    }
+    cmd.TransitionBarriers( pre, nb );
+    for ( const Copy& c : copies ) cmd.CopyBufferRegion( c.Dst, c.DstOffset, m_Staging[f].Get(), c.SrcOffset, c.Bytes );
+    cmd.TransitionBarriers( post, nb );
+
+    m_DirtySlots.erase( m_DirtySlots.begin(), m_DirtySlots.begin() + slotsDone );
+    m_DirtyVisuals.erase( m_DirtyVisuals.begin(), m_DirtyVisuals.begin() + visualsDone );
+    return true;
+}
+
+
+bool D3D12GpuScene::BeginFrame( Rhi::CmdList& cmd ) {
+    const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( m_Built && ( static_cast<int>( rs.WindQuality ) != m_BuiltWindQuality
+        || ( m_E.m_VobLodDistance > 0.0f ) != m_BuiltLod || rs.SmallVobSize != m_BuiltSmallVobSize ) ) {
+        Reset();   // baked into the instances, templates and records
+    }
+    ++m_Frame;
+    if ( !m_Built ) {
+        if ( m_BuildFailed ) return false;
+        if ( !Build( cmd ) ) {
+            if ( Engine::GAPI->LeafLinearCache.Count > 0 && m_E.m_VobArena->Ready() ) m_BuildFailed = true;
+            Reset();
+            return false;
+        }
+        m_Built = true;
+    }
+    ScanFlags();
+    return UploadDirty( cmd );
+}
+
+
+void D3D12GpuScene::PrepareDraws( Rhi::CmdList& cmd ) {
+    if ( !m_Built ) return;
+    ZoneScopedN( "GpuScene prepare" )
+    ProcessFeedback();
+    UploadDirty( cmd );
+}
+
+
+void D3D12GpuScene::RecordFeedbackCopy( Rhi::CmdList& cmd ) {
+    const UINT f = m_E.GetFrameIndex();
+    if ( !m_Readback[f] || !m_Counts || VisualCount() == 0 ) return;
+    cmd.CopyBufferRegion( m_Readback[f].Get(), 0, m_Counts.Get(), 0, static_cast<UINT64>( VisualCount() ) * 2u * sizeof( uint32_t ) );
+    m_ReadbackVisuals[f] = VisualCount();
+}

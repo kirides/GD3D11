@@ -3929,11 +3929,11 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "HiZ.hlsl", "CSReduce", hiZRs,
         Cull.HiZReduceCsBlob.ReleaseAndGetAddressOf(), Cull.HiZReducePSO.ReleaseAndGetAddressOf() ) ) return false;
 
-    // --- VOB cull root sig: b0 27 consts (ViewProj + Hi-Z params + LOD bucketing), t0/t1 root SRVs, u0/u1 root UAVs ---
+    // --- VOB cull root sig: b0 32 consts (ViewProj + Hi-Z params + LOD + scene), t0/t1 root SRVs, u0/u1 root UAVs ---
     // The visual records + instance streams are plain structured buffers, so they ride as root descriptors
     // (no heap slots). Only the Hi-Z pyramid is a texture and it comes in bindlessly by heap index.
     D3D12RootLayout& vobCullRs = Layout( "CullVob" );
-    vobCullRs.AddConstants( 0, 27, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 11
+    vobCullRs.AddConstants( 0, 32, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 16
     // Both inputs are CPU-written once per frame by UploadFrameVobInstances / BuildVobDrawCommands,
     // which complete before this dispatch is recorded and are not touched again this frame.
     vobCullRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Visuals
@@ -3969,6 +3969,35 @@ bool D3D12PipelineState::CreateCull() {
     if ( !makeComputePSO( "VobCull.hlsl", "CSPatchArgs", patchRs,
         Cull.PatchCsBlob.ReleaseAndGetAddressOf(), Cull.PatchPSO.ReleaseAndGetAddressOf() ) ) return false;
 
+    // --- GPU scene: the same cull over the persistent table, then command generation. Non-fatal: the scene
+    // stays off without them. ---
+    const D3D_SHADER_MACRO sceneDefines[] = { { "VOB_SCENE", "1" }, { nullptr, nullptr } };
+    const D3D_SHADER_MACRO sceneNoMotionDefines[] = { { "VOB_SCENE", "1" }, { "VOB_NO_MOTION", "1" }, { nullptr, nullptr } };
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullSceneCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullScenePSO.ReleaseAndGetAddressOf(), sceneDefines )
+        || !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs, Cull.VobCullSceneNoMotionCsBlob.ReleaseAndGetAddressOf(),
+            Cull.VobCullSceneNoMotionPSO.ReleaseAndGetAddressOf(), sceneNoMotionDefines ) ) {
+        Cull.VobCullScenePSO.Reset();
+        Cull.VobCullSceneNoMotionPSO.Reset();
+        return true;
+    }
+
+    D3D12RootLayout& sceneArgsRs = Layout( "CullSceneArgs" );
+    sceneArgsRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
+    sceneArgsRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Templates
+    sceneArgsRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 SceneVisuals
+    sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 SceneCounts
+    sceneArgsRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 4: u0 SceneArgs
+    sceneArgsRs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 5: u1 SceneArgCount
+    if ( !sceneArgsRs.Build( device ) ) return true;
+    Cull.SceneArgsRootSig = sceneArgsRs.RootSig();
+    if ( !makeComputePSO( "VobCull.hlsl", "CSBuildArgs", sceneArgsRs,
+            Cull.SceneArgsCsBlob.ReleaseAndGetAddressOf(), Cull.SceneArgsPSO.ReleaseAndGetAddressOf() )
+        || !makeComputePSO( "VobCull.hlsl", "CSClearCounts", sceneArgsRs,
+            Cull.SceneClearCsBlob.ReleaseAndGetAddressOf(), Cull.SceneClearPSO.ReleaseAndGetAddressOf() ) ) {
+        Cull.SceneArgsPSO.Reset();
+        Cull.SceneClearPSO.Reset();
+    }
     return true;
 }
 

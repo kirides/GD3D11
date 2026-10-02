@@ -53,6 +53,7 @@ using Microsoft::WRL::ComPtr;
 #include "../WorldMeshSection.h"
 #include "../GSky.h"
 #include "D3D12VobArena.h"
+#include "D3D12GpuScene.h"
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 
@@ -373,11 +374,14 @@ XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     // by POINTER against what each slot baked -- nothing about the dying vob can be read here, which is also
     // why no StaticVob gate is left: a slot that never baked it simply doesn't match.
     m_PointShadows.InvalidateStaticForVobRemoved( vob );
+    m_GpuScene->OnVobLeft( vob );
     return XR_SUCCESS;
 }
 
 
 void D3D12GraphicsEngine::OnVobMoved( zCVob* vob ) {
+    // It left its leaf (GothicAPI::OnVobMoved), so DynamicallyAddedVobs draws it from now on.
+    m_GpuScene->OnVobLeft( vob );
     // A vob baked at its old position leaves a shadow behind, and one that moved into a light's reach is
     // missing from its cube. Queued because a falling item moves several times before coming to rest.
     m_PointShadows.QueueVobChangedInvalidation( vob );
@@ -391,8 +395,14 @@ void D3D12GraphicsEngine::OnVobBecameDynamic( zCVob* vob ) {
 }
 
 
+void D3D12GraphicsEngine::OnVobsReset() {
+    m_GpuScene->Reset();
+}
+
+
 void D3D12GraphicsEngine::OnLoadWorld()
 {
+    m_GpuScene->Reset();
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
     g_GeometryPassVobs.Reset();
@@ -2527,6 +2537,22 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_VobLodDistance = Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius > 0.0f
 		? Engine::GAPI->GetRendererState().RendererSettings.VobLodDrawRadius : 0.0f;
 
+	// GPU scene (D3D12GpuScene.h): static VOBs come from a persistent table that the GPU culls, which also puts
+	// the rest (moved and CPU-path vobs) on the GPU cull. After the LOD snapshot, which the templates bake in.
+	{
+		const GothicRendererSettings& srs = Engine::GAPI->GetRendererState().RendererSettings;
+		const auto& cull = m_Pipelines.Cull;
+		const bool sceneWanted = srs.GpuScene && srs.DrawVOBs && m_FrameOpen && m_VobCullReady && m_VobIndirectCmdSig
+			&& cull.VobCullPSO && cull.VobCullNoMotionPSO && cull.VobCullRootSig && cull.PatchPSO && cull.PatchRootSig
+			&& cull.VobCullScenePSO && cull.VobCullSceneNoMotionPSO && cull.SceneArgsRootSig && cull.SceneArgsPSO
+			&& cull.SceneClearPSO;
+		m_GpuSceneActive = sceneWanted && m_GpuScene->BeginFrame( m_CmdList );
+		if ( m_GpuSceneActive ) m_GpuVobCullActive = true;
+		m_GpuSceneFocusSlot = 0xFFFFFFFFu;
+		if ( m_GpuSceneActive && oCGame::GetHighlightInteractFocus() && oCGame::GetPlayer() )
+			m_GpuSceneFocusSlot = m_GpuScene->SlotOf( oCGame::GetPlayer()->GetFocusVob() );
+	}
+
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
 	// Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
 	// then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
@@ -2552,13 +2578,16 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	}
 	g_FrameVobs.clear(); g_FrameLights.clear(); g_FrameMobs.clear();
 	Engine::GAPI->CollectVisibleVobs( g_FrameVobs, g_FrameLights, g_FrameMobs,
-		EGothicCullFlags::CullAll, EBspTreeCollectFlags::COLLECT_ALL_MUTATE, m_GpuVobCullActive );
+		EGothicCullFlags::CullAll, EBspTreeCollectFlags::COLLECT_ALL_MUTATE, m_GpuVobCullActive,
+		m_GpuSceneActive, m_GpuSceneActive ? &m_GpuScene->CpuVobs() : nullptr );
 	BuildFrameLightBuffer();
 	// Snapshot ALL opaque instanced geometry ONCE, before the depth prepass + cull, so every geometry pass draws
 	// from one shared upload: VOB instances (g_FrameVobUploads), then skeletal base/attachment CBs + instances
 	// (g_FrameSkelDraws/g_FrameAttachDraws — PrepareFrameSkeletals also runs the once/frame animation update, so
 	// it MUST run exactly once). Both skeletal lists (animated + static mobs) are prepared here up front.
 	UploadFrameVobInstances();
+	// After the arena flush at the top of UploadFrameVobInstances: templates need resident sub-meshes.
+	if ( m_GpuSceneActive ) m_GpuScene->PrepareDraws( m_CmdList );
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear(); g_FrameMorphAttachMeshes.clear();
 	BeginSkinningFrame();        // posed-vertex reservations start from zero; grows the streams if last frame ran out
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
@@ -2651,6 +2680,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	m_VobStats.OpaqueCommands = m_VobOpaqueDrawCount;
 	m_VobStats.CullVisuals = m_VobCullVisualCount;
 	m_VobStats.GpuCullActive = m_GpuVobCullActive;
+	m_VobStats.SceneActive = m_GpuSceneActive;
+	m_VobStats.SceneInstances = m_GpuSceneActive ? m_GpuScene->SlotCount() : 0u;
+	m_VobStats.SceneVisuals = m_GpuSceneActive ? m_GpuScene->VisualCount() : 0u;
+	m_VobStats.SceneReadyVisuals = m_GpuSceneActive ? m_GpuScene->ReadyVisualCount() : 0u;
+	m_VobStats.SceneTemplates = m_GpuSceneActive ? m_GpuScene->TemplateCount() : 0u;
+	m_VobStats.SceneCpuVobs = m_GpuSceneActive ? static_cast<UINT>( m_GpuScene->CpuVobs().size() ) : 0u;
 	{
 		UINT inst = 0;
 		for ( const FrameVobUpload& u : g_FrameVobUploads ) inst += u.numInstances;
@@ -3179,6 +3214,34 @@ namespace {
     }
 }
 
+D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const MeshKey& key, const std::string& visualName,
+    bool cacheIn, bool resolveMaps ) const {
+    VobMaterial m{ m_BlackTexture->GetSrvSlot(), 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), true, false, false };
+    zCTexture* tex = key.Material->GetAniTexture();
+    // cacheIn=false: a pure GetCacheState read, safe on a worker thread (CacheIn mutates Gothic's resource manager).
+    const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
+                                         : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+    m.TextureReady = !tex || cached;
+    if ( cached ) {
+        if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+            if ( GfxTexture* gfx = s->GetEngineTexture() ) {
+                D3D12Texture* d = D3D12Texture::From( gfx );
+                if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot();
+            }
+            if ( resolveMaps ) {
+                if ( GfxTexture* n = s->GetNormalmap() ) { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
+                if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
+            }
+        }
+    }
+    const int alphaFunc = key.Material ? key.Material->GetAlphaFunc() : zMAT_ALPHA_FUNC_NONE;
+    m.Blended = alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD;
+    m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || ( key.Material && key.Material->HasAlphaTest() );
+    if ( m.AlphaTested )
+        m.Orm |= IsThinTwoSidedPlant( visualName ) ? kBacklitThin : kBacklitFoliage;
+    return m;
+}
+
 UINT D3D12GraphicsEngine::CoalesceWorldDepthCommands(
     std::vector<WorldDrawCommand>& opaque, WorldDrawCommand* out, UINT outCapacity ) {
     // Draw-call merge for the depth-only world submits. Every command indexes the SAME wrapped world VB/IB,
@@ -3662,8 +3725,6 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         }
         return count;
         };
-    const uint32_t whiteSlot   = m_BlackTexture->GetSrvSlot();
-    const uint32_t defaultOrm  = GetDefaultOrmSrvSlot();
     // Resolved once per built buffer: the cascades run this on worker threads, so keep it a single read.
     const int firstLodCascade = GetFirstLodShadowCascade();
     // Attribute the triangle stat to the main-view build only (resolveMaps): the shadow cascades build the same
@@ -3722,27 +3783,11 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         float alphaDistanceSq = -1.0f;
 
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            uint32_t diffuseIdx = whiteSlot;
-            uint32_t normalIdx  = 0xFFFFFFFFu;
-            uint32_t ormIdx     = defaultOrm;
-            // cacheIn=false (cascade casters): a pure GetCacheState read, so this build is safe on a worker
-            // thread — CacheIn mutates Gothic's resource manager. See the declaration for why the resulting
-            // one-frame inaccuracy is invisible in a shadow pass.
-            const bool texReady = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                                                   : ( tex->GetCacheState() == zRES_CACHED_IN ) );
-            if ( texReady ) {
-                if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = s->GetEngineTexture() ) {
-                        D3D12Texture* d = D3D12Texture::From( gfx );
-                        if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
-                    }
-                    if ( resolveMaps ) {
-                        if ( GfxTexture* n = s->GetNormalmap() ) { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) normalIdx = d->GetSrvSlot(); }
-                        if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) ormIdx    = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
-                    }
-                }
-            }
+            // cacheIn=false (cascade casters) keeps this safe on a worker thread; see ResolveVobMaterial.
+            const VobMaterial mat = ResolveVobMaterial( meshKey, visual->VisualName, cacheIn, resolveMaps );
+            const uint32_t diffuseIdx = mat.Diffuse;
+            const uint32_t normalIdx  = mat.Normal;
+            const uint32_t ormIdx     = mat.Orm;
 
             // Blended VOB materials must never land in the opaque command set: its PSO alpha-CLIPS at 0.5,
             // writes depth and forces alpha 1 — which renders a spider web as a solid slab. D3D11 peels exactly
@@ -3750,8 +3795,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // unlit afterwards (DrawFrameAlphaMeshes); g_FrameVobAlpha + DrawVobAlphaMeshes are that pass.
             // Main view only: the shadow cascades and the rain map keep alpha-clipping them, as D3D11 does.
             const int alphaFunc = meshKey.Material ? meshKey.Material->GetAlphaFunc() : zMAT_ALPHA_FUNC_NONE;
-            const bool blended = peelBlended
-                && ( alphaFunc == zMAT_ALPHA_FUNC_BLEND || alphaFunc == zMAT_ALPHA_FUNC_ADD );
+            const bool blended = peelBlended && mat.Blended;
 
             // The caster PS alpha-clips against this material's diffuse, and the SHADOW index buffer is
             // position-welded — which merges wedges that share a position but not a UV. Feeding a leaf card
@@ -3761,10 +3805,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
             // The LOD buffer is no longer welded (see OptimizeLodIndices) so its UVs are correct, but
             // alpha-tested materials stay excluded from it too: an edge collapse deletes triangles, and on a
             // cutout that means chunks of the silhouette disappearing rather than getting coarser.
-            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
-                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
-            if ( alphaTested )
-                ormIdx |= IsThinTwoSidedPlant( visual->VisualName ) ? kBacklitThin : kBacklitFoliage;
+            const bool alphaTested = mat.AlphaTested;   // the backlit class rides in mat.Orm
 
             for ( MeshInfo* mi : meshList ) {
                 if ( !mi || mi->Indices.empty() ) continue;
@@ -4710,6 +4751,7 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
                 rec.BBoxMax = visual->BBox.Max;
                 rec.InstanceBase = instOffset / kInstStride;
                 rec.InstanceCount = numInstances;
+                rec.SceneFlags = 0;
                 // No split until BuildVobDrawCommands confirms the far bucket has commands to draw it;
                 // anything else would strand instances behind a bucket nothing draws.
                 rec.SplitMode = kSplitModeNone;
@@ -4744,7 +4786,9 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
         || !m_VobIndirectCmdSig || !m_DepthBuffer )
         return;
     Rhi::Resource* drawArgs = GetVobDrawArgsBuffer();
-    if ( m_VobDrawCount == 0 || !drawArgs ) return;
+    const bool cpuDraws = m_VobDrawCount > 0 && drawArgs;
+    const bool sceneDraws = m_GpuSceneActive && m_GpuScene->ArgsDrawable;
+    if ( !cpuDraws && !sceneDraws ) return;
 
     DX_ZONE( m_CmdList.Get(), "Depth Prepass (vobs)" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (vobs)" );
@@ -4782,7 +4826,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), m_VobInstanceBufferCapacity ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
         return;
 
     // One GPU-driven submit over the shared command set BuildVobDrawCommands filled (same set the color pass draws).
@@ -4793,22 +4837,26 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     if ( !splitAlpha ) {
         // Motion-G-buffer prepass: everything draws, including the far alpha-tested run — omitting it leaves
         // distant cutout pixels with no motion vector and no normal (TAA ghosting, wrong XeGTAO normals).
-        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        if ( cpuDraws ) m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        DrawGpuSceneVobs( false );
+        DrawGpuSceneVobs( true );
         return;
     }
     // drawArgs may be the GPU-culled DEFAULT copy, but CSPatchArgs only rewrites InstanceCount in place, so
     // the opaque/alpha-tested partition the CPU build laid out survives the cull. See D3D12Cull.cpp.
-    if ( m_VobOpaqueDrawCount > 0 ) {
+    if ( cpuDraws && m_VobOpaqueDrawCount > 0 ) {
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobOpaqueDrawCount, drawArgs, 0, nullptr, 0 );
     }
+    DrawGpuSceneVobs( false );
     // The alpha-tested run, whole — no distance trim. Leaving alpha-tested surfaces out of the prepass lets
     // grass and other later geometry draw on top of them.
-    const UINT alphaCount = m_VobDrawCount - m_VobOpaqueDrawCount;
+    const UINT alphaCount = cpuDraws ? m_VobDrawCount - m_VobOpaqueDrawCount : 0u;
+    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
     if ( alphaCount > 0 ) {
-        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
         m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), alphaCount, drawArgs,
             static_cast<UINT64>( m_VobOpaqueDrawCount ) * sizeof( VobDrawCommand ), nullptr, 0 );
     }
+    DrawGpuSceneVobs( true );
 }
 
 
@@ -4821,7 +4869,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     if ( !rs.RendererSettings.DrawVOBs )
         return XR_SUCCESS;
     Rhi::Resource* drawArgs = GetVobDrawArgsBuffer();
-    if ( m_VobDrawCount == 0 || !drawArgs )
+    const bool cpuDraws = m_VobDrawCount > 0 && drawArgs;
+    if ( !cpuDraws && !( m_GpuSceneActive && m_GpuScene->ArgsDrawable ) )
         return XR_SUCCESS;
 
     // Visible VOBs/lights/mobs were already collected once in OnStartWorldRendering (g_FrameVobs/Lights/Mobs);
@@ -4858,7 +4907,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), m_VobInstanceBufferCapacity ) )
+    if ( !BindVobArenaIA( m_CmdList, GetVobInstanceBufferForDraws(), GetVobInstanceBytesForDraws() ) )
         return XR_SUCCESS;
 
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
@@ -4870,7 +4919,9 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
         // instance VBVs + IBV, b6 { normal, orm, diffuse } bindless indices (PSMainBindless samples all three),
         // b4 per-visual min/max wind, then DrawIndexedInstanced. Replaces the per-mesh table/BindMaterialMaps/
         // IASetVertexBuffers/DrawIndexedInstanced calls that dominated this CPU-bound pass.
-        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        if ( cpuDraws ) m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, drawArgs, 0, nullptr, 0 );
+        DrawGpuSceneVobs( false );
+        DrawGpuSceneVobs( true );
     }
 
     // Static skeletal MOBs (g_FrameMobs) are now prepared up front (PrepareFrameSkeletals) and drawn by

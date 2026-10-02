@@ -26,6 +26,7 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "D3D12VobArena.h"
+#include "D3D12GpuScene.h"
 #include "D3D12MeshArena.h"
 #include "D3D12RayTracing.h"
 #include "../WorldObjects.h"
@@ -42,6 +43,7 @@ namespace {
 }
 
 D3D12GraphicsEngine::D3D12GraphicsEngine( Rhi::Backend api ) : m_Api( api ), m_VobArena( std::make_unique<D3D12VobArena>() ),
+    m_GpuScene( std::make_unique<D3D12GpuScene>( *this ) ),
     m_SkelArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExSkelVertexStruct ) ),
         L"SkeletalVertexArena", L"SkeletalIndexArena", "Skeletal mesh" ) ),
     m_AttachArena( std::make_unique<D3D12MeshArena>( static_cast<UINT>( sizeof( ExVertexStruct ) ),
@@ -973,6 +975,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	device->CreateShaderResourceView( m_WhiteTexture->GetResource(), &nullDesc, cpuHandle );
 
 	m_FreeSrvSlots.push_back( slot );
+	if ( m_GpuScene ) m_GpuScene->OnSrvSlotFreed( slot );
 }
 
 

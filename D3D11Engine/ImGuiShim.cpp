@@ -2245,10 +2245,12 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("GPU VOB culling", &settings.GpuVobCulling );
                 ImGui::SetItemTooltip("Collect static VOBs distance-only on the CPU and frustum-cull them in a compute shader instead. Off = the classic CPU per-VOB frustum test");
                 
-                ImGui::BeginDisabled( !settings.GpuVobCulling );
+                ImGui::BeginDisabled( !settings.GpuVobCulling && !settings.GpuScene );
                 ImGui::Checkbox("GPU occlusion culling", &settings.GpuVobOcclusionCulling );
                 ImGui::SetItemTooltip("Additionally reject VOB instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass");
                 ImGui::EndDisabled();
+                ImGui::Checkbox("GPU scene (static VOBs)", &settings.GpuScene );
+                ImGui::SetItemTooltip("Static VOBs live in a persistent GPU table: the main view culls them and builds their draw commands\non the GPU instead of walking the BSP leaves every frame. Implies GPU VOB culling");
 
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
@@ -2452,6 +2454,13 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 addRowUInt( "VOB Visuals", vs.CullVisuals );
                 addRowLabel( "VOB Splits none/lod" );
                 ImGui::Text( "%u / %u", vs.SplitNone, vs.SplitLod );
+                addRowLabel( "GPU scene" );
+                if ( vs.SceneActive ) {
+                    ImGui::Text( "%u inst, %u/%u visuals ready, %u templates, %u on CPU", vs.SceneInstances,
+                        vs.SceneReadyVisuals, vs.SceneVisuals, vs.SceneTemplates, vs.SceneCpuVobs );
+                } else {
+                    ImGui::Text( "off" );
+                }
             }
             addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );
