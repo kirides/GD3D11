@@ -725,6 +725,13 @@ struct GothicRendererSettings {
         WATER_WAVES_D3D11    = 2,   // Gerstner swell
     };
 
+    /** Foam along shores; 0/1/2 is what Water.hlsl and PS_Water read as WaterFrame::shoreFoam. */
+    enum E_WaterShoreFoam {
+        WATER_FOAM_OFF   = 0,
+        WATER_FOAM_OCEAN = 1,   // NW_WATER_LAKE* sea only (IsOceanWaterTexture)
+        WATER_FOAM_ALL   = 2,   // lakes and rivers too, gentler
+    };
+
     enum E_OceanColor {
         OCEAN_COLOR_NATURAL   = 0,   // the coastal Khorinis sea in every world
         OCEAN_COLOR_PER_WORLD = 1,   // Jharkendar gets the clear turquoise sea
@@ -1004,6 +1011,11 @@ struct GothicRendererSettings {
         OceanCustomColorStrength = 0.18f;
         OceanCustomClarity = 0.0f;
         OceanCustomTexture = 1.0f;
+#ifdef BUILD_GOTHIC_1_08k
+        WaterShoreFoam = WATER_FOAM_ALL;     // Gothic 1's sea has no NW_WATER_LAKE textures
+#else
+        WaterShoreFoam = WATER_FOAM_OCEAN;
+#endif
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
@@ -1446,6 +1458,7 @@ struct GothicRendererSettings {
     float OceanCustomColorStrength;
     float OceanCustomClarity;         // 0 = dense coastal water, 1 = clear tropical water
     float OceanCustomTexture;         // water texture over the body; 1 = classic GD3D11 amount
+    E_WaterShoreFoam WaterShoreFoam;
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;

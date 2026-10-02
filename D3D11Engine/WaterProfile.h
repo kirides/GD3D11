@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "WorldObjects.h"
+#include "zCMaterial.h"
 #include "zCTexture.h"
 
 /** Sea water gets the physical ocean body in PS_Water and D3D12 Water.hlsl; lakes, rivers and waterfalls don't. */
@@ -12,6 +13,17 @@ inline bool IsOceanWaterTexture( zCTexture* texture ) {
     const std::string_view name = texture->GetNameWithoutExtView();
     if ( name.size() < kPrefix.size() ) return false;
     return _strnicmp( name.data(), kPrefix.data(), kPrefix.size() ) == 0;
+}
+
+inline bool IsOceanWaterMaterial( zCMaterial* mat ) {
+    // TODO: quick prefix scan
+    // TODO: contains-check for "ocean"
+    // TODO: make strings configurable in UserSettings.ini
+    // TODO: something like "OCEAN_IDENTIFIERS=OCEAN*|*OCEAN*|*OCEAN"
+    // Single * means Prefix/Suffix depending on location, double * means substring-contains
+    // Use mat->GetNameView() and mat->GetTextureSingle()->GetNameWithoutExtView()
+    if ( !mat ) return false;
+    return false;
 }
 
 /** Ocean look from the OceanColor setting. Tints are luma-neutral; climate 1 is Jharkendar's clear turquoise sea. */
@@ -52,6 +64,11 @@ inline OceanProfile GetOceanProfile() {
         profile.TextureStrength = std::clamp( settings.OceanCustomTexture, 0.0f, 1.0f );
     }
     return profile;
+}
+
+/** WaterFrame::shoreFoam: 0 = off, 1 = ocean only, 2 = all water. */
+inline float WaterShoreFoamMode() {
+    return static_cast<float>( Engine::GAPI->GetRendererState().RendererSettings.WaterShoreFoam );
 }
 
 /** 1 when the water PS should march the reflected sky in screen space. */

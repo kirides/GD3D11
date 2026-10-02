@@ -66,7 +66,7 @@ cbuffer WaterCB : register(b2)
     uint   RtColorIndex;         // WaterRT.hlsl result, premultiplied (0xFFFFFFFF = screen-space reflections)
     uint   RtDistanceIndex;      // its hit distance, premultiplied
     uint   WaveAnimation;        // WATER_WAVES_*, for water materials with a wave mode
-    float  RtPad;
+    float  ShoreFoam;            // 0 = off, 1 = ocean only, 2 = all water
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -273,6 +273,13 @@ float WaterSceneRawDepth( float2 uv )
     return depthTex.SampleLevel( smpClamp, uv, 0 ).r;
 }
 
+float WaterSceneRawDepthTexel( float2 uv )
+{
+    Texture2D<float> depthTex = ResourceDescriptorHeap[DepthIndex];
+    int2 px = clamp( int2( uv * RI_ViewportSize ), int2( 0, 0 ), int2( RI_ViewportSize ) - 1 );
+    return depthTex.Load( int3( px, 0 ) );
+}
+
 float WaterSurfaceRawDepth( float2 uv )
 {
     if ( SurfaceDepthIndex == 0xFFFFFFFFu ) return 0.0f;
@@ -381,6 +388,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     fr.moonGlint = MoonGlint;
     fr.moonDisc = MoonDisc;
     fr.skyReflection = SkyReflection;
+    fr.shoreFoam = ShoreFoam;
 
     // Opaque write: the see-through look is composited from the scene copy, exactly like D3D11
     return float4( WaterToLinear( ShadeWater( px, fr ) ), 1.0f );

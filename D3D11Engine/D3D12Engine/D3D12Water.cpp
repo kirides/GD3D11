@@ -87,7 +87,7 @@ namespace {
         UINT RtColorIndex;            // ray-traced reflection result; 0xFFFFFFFF => screen-space reflections
         UINT RtDistanceIndex;
         UINT WaveAnimation;           // E_WaterWaves (D3D11: SHD_WATERANI)
-        float RtPad;
+        float ShoreFoam;              // E_WaterShoreFoam
     };
     static_assert( sizeof( WaterCBData ) == 272, "WaterCBData must match Water.hlsl's b2 layout" );
 
@@ -504,6 +504,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.OceanTint = ocean.Tint;
         cb.OceanTexture = ocean.TextureStrength;
         cb.SkyReflection = WaterSkyReflectionEnabled();
+        cb.ShoreFoam = WaterShoreFoamMode();
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
         // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
 #ifdef BUILD_GOTHIC_2_6_fix

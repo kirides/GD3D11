@@ -676,6 +676,14 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
             "How much of the water texture shows on the sea. 1 = classic GD3D11 water." );
     }
 
+    constexpr ListItem<GothicRendererSettings::E_WaterShoreFoam> shoreFoams[] = {
+        { "Off", GothicRendererSettings::WATER_FOAM_OFF },
+        { "Ocean", GothicRendererSettings::WATER_FOAM_OCEAN, "Surf along the shores of the sea (Gothic II's sea textures)." },
+        { "All Water", GothicRendererSettings::WATER_FOAM_ALL, "The sea, plus gentler foam along lakes and rivers." },
+    };
+    ComboRow( "Shore Foam", "##WaterShoreFoam", shoreFoams, &settings.WaterShoreFoam,
+        "Foam where the water gets shallow, with swash lines running up the shore." );
+
 #if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
 #if defined(BUILD_GOTHIC_1_CLASSIC)
     if ( haveWindAnimations )
