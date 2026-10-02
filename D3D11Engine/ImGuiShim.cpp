@@ -1185,8 +1185,13 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
             ImGui::Checkbox( "Enable Rain Effects", &settings.EnableRainEffects );
-            if ( ImGui::Checkbox( "Enable Water waves", &settings.EnableWaterAnimation ) ) {
-                shadersToReload |= ShaderCategory::Water;
+            {
+                const char* waveModes[] = { "Off", "Original", "DX11" };   // E_WaterWaves
+                int waves = settings.WaterWaves;
+                if ( ImGui::Combo( "Water waves", &waves, waveModes, IM_ARRAYSIZE( waveModes ) ) ) {
+                    settings.WaterWaves = (GothicRendererSettings::E_WaterWaves)waves;
+                    shadersToReload |= ShaderCategory::Water;
+                }
             }
             {
                 const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High" };

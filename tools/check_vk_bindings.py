@@ -28,14 +28,14 @@ def layout_bindings(chunk):
     layouts = {}
     for m in re.finditer(r"D3D12RootLayout&?\s+(\w+)\s*(?:=|;)", chunk):
         layouts.setdefault(m.group(1), {})
-    for m in re.finditer(r"\b(\w+)\.(AddConstants|AddCBV|AddSRV|AddUAV|AddTable|AddStaticSampler)\s*\(", chunk):
+    for m in re.finditer(r"\b(\w+)\.(AddConstants|AddPerDrawConstants|AddCBV|AddSRV|AddUAV|AddTable|AddStaticSampler)\s*\(", chunk):
         var, fn = m.group(1), m.group(2)
         if var not in layouts:
             continue
         args, _ = vs.split_args(chunk, m.end() - 1)
         out = layouts[var]
         first = args[0] if args else ""
-        if fn in ("AddConstants", "AddCBV") and first.isdigit():
+        if fn in ("AddConstants", "AddPerDrawConstants", "AddCBV") and first.isdigit():
             out[SHIFT["b"] + int(first)] = "uniform"
         elif fn == "AddSRV" and first.isdigit():
             out[SHIFT["t"] + int(first)] = "storage-buffer"
@@ -138,6 +138,8 @@ def main():
                 chunk = text[a:b]
                 layouts = layout_bindings(chunk)
                 if not any(layouts.values()):
+                    continue
+                if "GetCaps().RayQuery" in chunk:   # ray-query pipelines are D3D12-only, never lowered to Vulkan
                     continue
                 for call, di in vs.CALLS.items():
                     for m in re.finditer(r"\b" + call + r"\s*\(", chunk):

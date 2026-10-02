@@ -648,9 +648,15 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         "Wet surfaces, puddles and splashes while it rains.", "RainEffects" );
     ImGui::EndDisabled();
 
-    if ( CheckRow( "Water Waves", &settings.EnableWaterAnimation, nullptr, "WaterWaves" ) ) {
-        shadersToReload |= ShaderCategory::Water;
-    }
+    constexpr ListItem<GothicRendererSettings::E_WaterWaves> waterWaves[] = {
+        { "Off", GothicRendererSettings::WATER_WAVES_OFF, "Flat water surfaces." },
+        { "Original", GothicRendererSettings::WATER_WAVES_ORIGINAL, "Gothic's own waves: each vertex bobs on the material's wave grid." },
+        { "DX11", GothicRendererSettings::WATER_WAVES_D3D11, "A smooth rolling swell that also sways the surface sideways." },
+    };
+    // A runtime mode on D3D12, a shader permutation on D3D11
+    ComboRow( "Water Waves", "##WaterWaves", waterWaves, &settings.WaterWaves, nullptr, [&] {
+        if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
+    } );
 
     constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {
         { "Natural", GothicRendererSettings::OCEAN_COLOR_NATURAL, "Coastal sea water with the classic water texture, in every world." },
@@ -927,8 +933,8 @@ void ImGuiSettings::RenderWindow( ImGuiShim& shim ) {
     // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or
     // oversample the game. Use whatever resolution the engine reports instead.
     const auto windowSize = shim.CurrentResolution;
-    ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2.0f, windowSize.y / 2.0f ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
-    ImGui::SetNextWindowSize( ImVec2( 720, 640 ), ImGuiCond_Appearing );
+    ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2.0f, windowSize.y / 2.0f ), ImGuiCond_Once, ImVec2( 0.5f, 0.5f ) );
+    ImGui::SetNextWindowSize( ImVec2( 720, 640 ), ImGuiCond_Once );
 
     ShaderCategory shadersToReload = ShaderCategory::None;
     ImVec2 anchorMin{}, anchorMax{};
