@@ -71,6 +71,7 @@ namespace {
         XMFLOAT3 Position{};
         ECubeRaster Raster = ECubeRaster::Layered;
         bool Clear = false;
+        bool ClearPerFace = false;   // through FaceDSV, never the multi-slice window
         uint32_t FirstExcluded = 0;
         uint32_t NumExcluded = 0;
         // Per face for PerFace, [0] otherwise; re-allocated once the CB ring has moved past them.
@@ -694,12 +695,12 @@ namespace {
 
         for ( CubePass& pass : phase.Passes ) {
             if ( pass.Clear ) {
-                if ( pass.ClearDSV ) {
-                    context->ClearDepthStencilView( pass.ClearDSV.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
-                } else {
+                if ( pass.ClearPerFace ) {
                     for ( auto& face : pass.FaceDSV ) {
-                        if ( face ) context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+                        context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
                     }
+                } else {
+                    context->ClearDepthStencilView( pass.ClearDSV.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
                 }
             }
             // Up front, so the per-draw binds below almost never allocate.
@@ -750,21 +751,24 @@ namespace PointShadowBatch {
 
         const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
         const bool absoluteSlice = PointShadowCasters::UsesAbsoluteSliceIndexing( pass.Target );
+        // NVIDIA: only single-slice views into the shared array, for clears as well as draws.
+        const bool singleSliceViews = RequiresNvidiaTiledShadowFaceFallback && pass.TargetIsSharedArray;
 
         CubePass cube;
         cube.Constants = scope.Constants();
         cube.Constants.PCR_SliceBase = absoluteSlice ? pass.Target->GetBaseArraySlice() : 0u;
         cube.Constants.PCR_Face = 0;
-        cube.Raster = ( !absoluteSlice && RequiresNvidiaTiledShadowFaceFallback && pass.TargetIsSharedArray )
+        cube.Raster = ( !absoluteSlice && singleSliceViews )
             ? ECubeRaster::PerFace
             : ( settings.DebugSettings.FeatureSet.UseLayeredRendering ? ECubeRaster::Layered : ECubeRaster::Geometry );
+        cube.ClearPerFace = singleSliceViews;
 
-        // Drawing through the whole array leaves no view offset; the clear stays on this light's window.
+        // Drawing through the whole array leaves no view offset; the clear stays on this light's own slices.
         cube.ClearDSV = pass.Target->GetDepthStencilView();
         cube.DrawDSV = absoluteSlice ? pass.Target->GetArrayDepthStencilView() : cube.ClearDSV;
-        bool hasTarget = cube.DrawDSV != nullptr;
-        if ( cube.Raster == ECubeRaster::PerFace ) {
-            hasTarget = true;
+        bool hasTarget = ( cube.Raster == ECubeRaster::PerFace || cube.DrawDSV )
+            && ( !pass.ClearDepth || cube.ClearPerFace || cube.ClearDSV );
+        if ( singleSliceViews ) {
             for ( UINT face = 0; face < 6; ++face ) {
                 cube.FaceDSV[face] = pass.Target->GetDSVCubemapFace( face );
                 hasTarget = hasTarget && cube.FaceDSV[face] != nullptr;

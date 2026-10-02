@@ -94,14 +94,12 @@ bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
 
-// NVIDIA driver bug: a DSV windowed onto a non-zero-offset sub-range of a larger Texture2DArray/
-// TextureCubeArray mis-routes SV_RenderTargetArrayIndex writes, so a point light in any slot but 0 of
-// the shared tiled shadow cube array only gets one of its six faces. DXVK/AMD/Intel are unaffected -
-// see PointShadowBatch's PerFace rasterization.
+// NVIDIA's native driver breaks point-light shadows written through a multi-slice DSV at an offset into
+// the shared cube arrays; DXVK/AMD/Intel are fine. Clears and draws then use single-slice views only.
 bool RequiresNvidiaTiledShadowFaceFallback = false;
 
-// Binds the whole cube array as one FirstArraySlice=0 DSV and has the layered VS/GS write an absolute
-// slice (PCR_SliceBase + face), so no view is ever offset. Alternative to the 6-pass fallback above.
+// Draws through one FirstArraySlice=0 view with absolute slice indices instead of per face. With the
+// fallback on, clears stay per face, so this A/B-tests whether the window clear alone was broken.
 bool UseAbsoluteCubeSliceIndexing = false;
 
 VS_ExConstantBuffer_Wind g_windBuffer;
