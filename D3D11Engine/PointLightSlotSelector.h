@@ -194,6 +194,9 @@ public:
     /** Every writer of StaticSlot::bakedVobs calls this once the list is complete. */
     static void FinalizeBakedVobs( StaticSlot& slot ) { slot.bakedSorted = false; }
 
+    /** Drops one slot's cached bake, so it re-renders when the budget next allows. */
+    void InvalidateStatic( uint32_t slot, EPointLightRebakeCause cause );
+
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
     /** Matched by POINTER against StaticSlot::bakedVobs: by the time this fires the object may be half torn
         down, so `vob` is never dereferenced. */

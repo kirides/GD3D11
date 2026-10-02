@@ -521,6 +521,10 @@ static const char* PointLightRebakeCauseHelp( EPointLightRebakeCause c ) {
                                    "(Config::LowStaticRendersPerFrame) postponed to a later frame, so it is excluded\n"
                                    "from the total above. A steady rate means the queue of wanted bakes is longer\n"
                                    "than the budget drains - look at which cause above is filling it.";
+    case PLR_TEXTURES_LOADED: return "The previous bake left casters out because their textures were not resident\n"
+                                   "(a cached cube must not hold a caster drawn with a fallback texture: an\n"
+                                   "alpha-tested one would stay solid). Once they all loaded, the light re-baked.\n"
+                                   "Expected after loads and when walking into new areas, then zero.";
     default:                return "";
     }
 }

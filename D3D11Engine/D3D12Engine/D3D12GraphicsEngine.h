@@ -46,6 +46,7 @@ class zCVobLight;
 class D3D12VobArena;
 class D3D12GpuScene;
 struct GpuSceneCasterView;
+struct GpuScenePointView;
 class D3D12GpuWorld;
 class D3D12MeshArena;
 class D3D12RayTracing;
@@ -1161,6 +1162,12 @@ private:
     bool CullGpuSceneCasters( const GpuSceneCasterView* views, UINT first, UINT count );
     // A cascade's scene casters (its opaque or alpha-tested list); any thread, into that cascade's list.
     void DrawGpuSceneCasters( D3D12CmdList& cmdList, UINT view, bool alphaTested ) const;
+    // Main thread, in the point-shadow prepare: culls the scene's static casters into each baking light's sphere
+    // and builds their cube commands on m_CmdList. False = nothing recorded; those bakes gather on the CPU.
+    // View c reports what it left out at reportBase + c * reportStride (D3D12PointShadows' bake report).
+    bool CullGpuScenePoints( const GpuScenePointView* views, UINT count, D3D12_GPU_VIRTUAL_ADDRESS reportBase, UINT64 reportStride );
+    // A point view's cube commands through `sig` (D3D12PointShadows' caster signature); any thread.
+    void DrawGpuScenePoints( D3D12CmdList& cmdList, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const;
 
     // ---- GPU morph fold (D3D12MorphFold.cpp + MorphGpu.h + Shaders/D3D12/MorphFold.hlsl) ----
     // Morph attachments (NPC heads, bow/crossbow draw meshes) fold their blend shapes in a compute pass that

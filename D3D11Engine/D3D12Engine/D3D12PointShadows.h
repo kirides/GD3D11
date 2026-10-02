@@ -36,6 +36,7 @@
 class D3D12GraphicsEngine;
 class zCVobLight;
 class zCVob;
+class zCTexture;
 struct zTBBox3D;
 
 class D3D12PointShadows {
@@ -56,6 +57,8 @@ public:
     static_assert( kMaxDynCubes * 6 <= 2048, "dynamic cube array exceeds D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION" );
 
     static constexpr UINT kBackBufferMax = 3;   // must match D3D12GraphicsEngine::kBackBufferMax (asserted in the .cpp)
+    // Lights per frame whose static casters the GPU scene / GPU world cull (asserted against both in the .cpp).
+    static constexpr UINT kGpuBakeViews = 8;
     UINT kBackBufferCount = 2;   // synced from the engine in Attach() below
 
     // The engine back-reference, handed over in the engine's CONSTRUCTOR so it is valid before Init() runs
@@ -176,8 +179,6 @@ private:
     Microsoft::WRL::ComPtr<Rhi::CommandSignature> m_CasterCmdSig;
     Microsoft::WRL::ComPtr<Rhi::Resource> m_CasterArgs[kBackBufferMax];
     uint8_t* m_CasterArgsPtr[kBackBufferMax] = {};
-    UINT m_CasterArgCount = 0;    // reset each frame at the top of Prepare()
-    bool m_CasterArgsOverflowLogged = false;
 
     // Every slot decision - the dome, ownership, eviction, the importance buckets, the frame budget, the
     // static-bake cache - lives in PointLightSlotSelector, shared verbatim with D3D11. This class owns only
@@ -186,6 +187,53 @@ private:
     using FrameLight = PointLightSlotSelector::Assignment;
     // Kept across frames so its capacity is reused (32-bit per-frame allocation rule).
     std::vector<PointLightSlotSelector::Candidate> m_Candidates;
+
+    // ---- Prepare(), in the order it runs (D3D12PointShadows.cpp) ----
+    bool BeginPrepare();
+    void GatherOverlayInputs();
+    void StartBakes();
+    void ScheduleGpuBakes();
+    D3D12_GPU_VIRTUAL_ADDRESS WriteFaceCb( const FrameLight& ps );
+    void ResolveStaticBake( const FrameLight& ps, int gpuView );
+    void BakeWorldCasters( const FrameLight& ps );
+    void BakeVobsAndMobs( const FrameLight& ps, bool tableOnGpu );
+    void BakeVobs( const FrameLight& ps );
+    void BakeMobs( const FrameLight& ps );
+    void ResolveOverlay( const FrameLight& ps );
+    bool InstanceRingFull( const char* what );
+
+    // ---- Pending bakes ----
+    // A static cube is cached, so a caster drawn with a fallback texture would stay that way (an alpha-tested one
+    // bakes solid). A bake therefore leaves out every caster whose texture is not resident and records what it
+    // waits for here; UpdatePendingBakes keeps those loading and re-bakes the slot once all are resident.
+    struct PendingBake {
+        std::vector<zCTexture*> textures;        // CPU-gathered casters; each holds a zCObject reference
+        std::vector<uint32_t>   worldMaterials;  // GPU world material indices
+        std::vector<uint32_t>   sceneVisuals;    // GPU scene visual indices
+        bool Empty() const { return textures.empty() && worldMaterials.empty() && sceneVisuals.empty(); }
+    };
+    PendingBake m_PendingBake[kMaxStaticCubes];
+    uint32_t    m_BakeSerial[kMaxStaticCubes] = {};   // bumped per bake, so a late GPU report finds its bake
+    std::vector<UINT> m_PendingSlots;                 // slots whose PendingBake is not empty
+    void NoteMissingTextures( UINT slot, const std::vector<zCTexture*>& textures );
+    void TrackPending( UINT slot );
+    void ClearPending( PendingBake& pending );
+    void ConsumeBakeReports();
+    bool RequestResident( const PendingBake& pending );
+    void UpdatePendingBakes();
+
+    // GPU bakes report what they left out: per view { count, material indices } then { count, visual indices },
+    // read back kBackBufferCount frames later.
+    static constexpr UINT kReportBytes = 512;
+    static constexpr uint32_t kReportCapacity = 63;   // WorldCull.hlsl / VobCull.hlsl REPORT_CAPACITY
+    struct ReportedBake { UINT slot; uint32_t serial; };
+    bool CreateBakeReports();
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_Report, m_ReportZero;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_ReportReadback[kBackBufferMax];
+    const uint32_t* m_ReportReadbackPtr[kBackBufferMax] = {};
+    ReportedBake m_ReportedBakes[kBackBufferMax][kGpuBakeViews] = {};
+    UINT m_ReportedViews[kBackBufferMax] = {};
+    bool m_ReportInCopySource = false;
 
     // Slots whose static target was (re)rendered by THIS frame's records, pending the CommitStaticCache() that
     // turns them into cache hits. Kept out of Slot so an uncommitted frame simply leaves staticValid false and

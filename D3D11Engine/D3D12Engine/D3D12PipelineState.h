@@ -519,6 +519,13 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullCasterPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            SceneCasterArgsCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCasterArgsPSO;
+        // Point-light bakes from the same table: CSCullSphere (+ its counter clear), then CSBuildCubeArgs.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullSphereCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullSpherePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobSphereClearCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobSphereClearPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneCubeArgsCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCubeArgsPSO;
         // GPU world mesh (D3D12GpuWorld): b0 31 consts, t0-t3 root SRVs, u0-u2 root UAVs.
         Microsoft::WRL::ComPtr<Rhi::RootSignature> WorldCullRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            WorldCullCsBlob;

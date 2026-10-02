@@ -1708,6 +1708,7 @@ enum EPointLightRebakeCause {
     PLR_ASIDE_BUFFER,   // legacy composited path: the aside cube was re-allocated or given back
     PLR_NO_CACHE,       // PLS_FULL drops the bake every frame by design - not a fault
     PLR_BUDGET_DEFER,   // a wanted re-bake was postponed by the per-frame light budget
+    PLR_TEXTURES_LOADED,   // the last bake left casters out whose textures were not resident; now they are
     PLR_NUM_CAUSES
 };
 
@@ -1723,6 +1724,7 @@ inline const char* PointLightRebakeCauseName( EPointLightRebakeCause c ) {
     case PLR_ASIDE_BUFFER:  return "Aside cube re-allocated";
     case PLR_NO_CACHE:      return "PLS_FULL (no caching)";
     case PLR_BUDGET_DEFER:  return "Deferred by budget";
+    case PLR_TEXTURES_LOADED: return "Missing textures loaded";
     default:                return "?";
     }
 }
