@@ -255,6 +255,14 @@ public:
         return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveMaxAmplitude ));
 #endif
     }
+
+    float GetWaveGridSize() {
+#ifdef BUILD_GOTHIC_1_08k
+        return 100.0f;
+#else
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveGridSize ));
+#endif
+    }
     
     std::string_view GetNameView() const {
         auto& name = __GetName();

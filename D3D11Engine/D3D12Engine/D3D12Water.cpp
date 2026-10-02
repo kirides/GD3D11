@@ -86,7 +86,7 @@ namespace {
 
         UINT RtColorIndex;            // ray-traced reflection result; 0xFFFFFFFF => screen-space reflections
         UINT RtDistanceIndex;
-        UINT WaveAnimation;           // 1 => Gerstner swell (D3D11: SHD_WATERANI)
+        UINT WaveAnimation;           // E_WaterWaves (D3D11: SHD_WATERANI)
         float RtPad;
     };
     static_assert( sizeof( WaterCBData ) == 272, "WaterCBData must match Water.hlsl's b2 layout" );
@@ -505,9 +505,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.OceanTexture = ocean.TextureStrength;
         cb.SkyReflection = WaterSkyReflectionEnabled();
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
-        // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the swell.
+        // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
 #ifdef BUILD_GOTHIC_2_6_fix
-        cb.WaveAnimation = settings.EnableWaterAnimation ? 1u : 0u;
+        cb.WaveAnimation = static_cast<UINT>( settings.WaterWaves );
 #endif
 
         // GSky::RenderSky() refreshes the AC_* constants every frame (DrawSky runs before this), even though

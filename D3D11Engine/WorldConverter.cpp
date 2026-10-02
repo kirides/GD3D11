@@ -1042,6 +1042,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 if ( mat->GetWaveMode() != zTMode_NONE ) {
                     reinterpret_cast<BYTE*>(&t.Color)[2] = static_cast<BYTE>(mat->GetWaveMaxAmplitude() / 5.f);
                     reinterpret_cast<BYTE*>(&t.Color)[3] = static_cast<BYTE>(mat->GetWaveSpeed() * 10.f);
+                    // Grid size (bits 0-14) + wall-mode flag (bit 15) for the original waves. Only water-shaded
+                    // materials: alpha-tested water draws with PS_Diffuse, which reads .y as vertex lighting.
+                    if ( !mat->HasAlphaTest() ) {
+                        const UINT grid = static_cast<UINT>( std::clamp( mat->GetWaveGridSize() + 0.5f, 1.0f, 32767.0f ) );
+                        const UINT packed = grid | (mat->GetWaveMode() >= zTMode_AMBIENT_WALL ? 0x8000u : 0u);
+                        reinterpret_cast<BYTE*>(&t.Color)[0] = static_cast<BYTE>(packed & 0xFF);
+                        reinterpret_cast<BYTE*>(&t.Color)[1] = static_cast<BYTE>(packed >> 8);
+                    }
                 } else {
                     reinterpret_cast<BYTE*>(&t.Color)[2] = 0;
                     reinterpret_cast<BYTE*>(&t.Color)[3] = 0;

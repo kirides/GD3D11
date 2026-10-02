@@ -5912,7 +5912,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "MSAASamples", to_string_locale_independent( s.MSAASamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterWaves", to_string_locale_independent( (int)s.WaterWaves ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterSSRQuality", to_string_locale_independent( (int)s.WaterSSRQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterReflectionMode", to_string_locale_independent( (int)s.WaterReflectionMode ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterRayTracing", to_string_locale_independent( (int)s.WaterRayTracing ).c_str(), ini.c_str() );
@@ -6198,7 +6198,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 
         s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
         s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", ds.GlobalWindStrength, ini );
-        s.EnableWaterAnimation = GetPrivateProfileBoolA( "Display", "WaterWaveAnimation", ds.EnableWaterAnimation, ini );
+        // The legacy WaterWaveAnimation bool turned on what is now the D3D11 mode
+        const int legacyWaterWaves = GetPrivateProfileBoolA( "Display", "WaterWaveAnimation", false, ini )
+            ? GothicRendererSettings::WATER_WAVES_D3D11 : ds.WaterWaves;
+        s.WaterWaves = static_cast<GothicRendererSettings::E_WaterWaves>( std::clamp<INT>( GetPrivateProfileIntA( "Display", "WaterWaves", legacyWaterWaves, ini.c_str() ),
+            GothicRendererSettings::WATER_WAVES_OFF, GothicRendererSettings::WATER_WAVES_D3D11 ) );
         // Backward compat: legacy [Display]/WaterSSR bool maps to Medium/Disabled when the
         // new WaterSSRQuality key is absent.
         s.WaterSSRQuality = static_cast<GothicRendererSettings::E_WaterSSRQuality>(std::clamp<INT>(GetPrivateProfileIntA("Display", "WaterSSRQuality", ds.WaterSSRQuality, ini.c_str()), 0, 3));

@@ -648,10 +648,15 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
         "Wet surfaces, puddles and splashes while it rains.", "RainEffects" );
     ImGui::EndDisabled();
 
-    // A runtime flag on D3D12, a shader permutation on D3D11
-    if ( CheckRow( "Water Waves", &settings.EnableWaterAnimation, nullptr, "WaterWaves" ) && !IsD3D12() ) {
-        shadersToReload |= ShaderCategory::Water;
-    }
+    constexpr ListItem<GothicRendererSettings::E_WaterWaves> waterWaves[] = {
+        { "Off", GothicRendererSettings::WATER_WAVES_OFF, "Flat water surfaces." },
+        { "Original", GothicRendererSettings::WATER_WAVES_ORIGINAL, "Gothic's own waves: each vertex bobs on the material's wave grid." },
+        { "DX11", GothicRendererSettings::WATER_WAVES_D3D11, "A smooth rolling swell that also sways the surface sideways." },
+    };
+    // A runtime mode on D3D12, a shader permutation on D3D11
+    ComboRow( "Water Waves", "##WaterWaves", waterWaves, &settings.WaterWaves, nullptr, [&] {
+        if ( !IsD3D12() ) shadersToReload |= ShaderCategory::Water;
+    } );
 
     constexpr ListItem<GothicRendererSettings::E_OceanColor> oceanColors[] = {
         { "Natural", GothicRendererSettings::OCEAN_COLOR_NATURAL, "Coastal sea water with the classic water texture, in every world." },

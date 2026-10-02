@@ -695,6 +695,7 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_WaveMode = 0x7C;
         static const unsigned int Offset_WaveSpeed = 0x80;
         static const unsigned int Offset_WaveMaxAmplitude = 0x84;
+        static const unsigned int Offset_WaveGridSize = 0x88;
 
         static const unsigned int InitValues = 0x00564260;
         static const unsigned int Constructor = 0x00563E00;

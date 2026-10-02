@@ -718,6 +718,13 @@ struct GothicRendererSettings {
         WATER_REFLECTION_GEOMETRY_SKY = 1,   // plus the screen-space sky march
     };
 
+    /** Vertex waves on water materials with a wave mode; values match WATER_WAVES_* in WaterVertexWaves.hlsl. */
+    enum E_WaterWaves {
+        WATER_WAVES_OFF      = 0,
+        WATER_WAVES_ORIGINAL = 1,   // ZenGin's per-vertex FFT bobbing on the material's wave grid
+        WATER_WAVES_D3D11    = 2,   // Gerstner swell
+    };
+
     enum E_OceanColor {
         OCEAN_COLOR_NATURAL   = 0,   // the coastal Khorinis sea in every world
         OCEAN_COLOR_PER_WORLD = 1,   // Jharkendar gets the clear turquoise sea
@@ -986,7 +993,7 @@ struct GothicRendererSettings {
         AnimateStaticVobs = true;
         RunInSpacerNet = false;
         BinkVideoRunning = false;
-        EnableWaterAnimation = false;
+        WaterWaves = WATER_WAVES_ORIGINAL;
         WaterSSRQuality = WATER_SSR_MEDIUM;
         OpaqueSSRQuality = WATER_SSR_MEDIUM;   // D3D12 only — temporal SSR on wet/glossy opaque surfaces
         WaterReflectionMode = WATER_REFLECTION_GEOMETRY_SKY;
@@ -1425,7 +1432,7 @@ struct GothicRendererSettings {
     bool AnimateStaticVobs;
     bool RunInSpacerNet;
     bool BinkVideoRunning;
-    bool EnableWaterAnimation;
+    E_WaterWaves WaterWaves;
     E_WaterSSRQuality WaterSSRQuality;
     // D3D12 only: temporal SSR on opaque wet/glossy surfaces (D3D12Ssr.cpp's history + the Forward+ PS
     // marcher). Reuses E_WaterSSRQuality's step-count tiers/DISABLED value rather than a parallel enum —

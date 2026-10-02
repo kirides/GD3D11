@@ -56,7 +56,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	texAniMap -= floor( texAniMap );
     
 #if SHD_WATERANI
-    positionWorld += WaterWaveOffset( positionWorld, Input.vDiffuse, M_TotalTime );
+    positionWorld += WaterWaveOffset( positionWorld, Input.vDiffuse, M_TotalTime, SHD_WATERANI );
 #endif
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);

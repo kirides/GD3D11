@@ -18,7 +18,7 @@
 //   2. Every screen-space input (scene copy, depth copy, distortion, reflection cube) is fetched
 //      BINDLESSLY via SM6.6 ResourceDescriptorHeap instead of fixed t2..t5 slots. Only the per-material
 //      diffuse still rides a descriptor table, because the color loop rebinds it per texture batch.
-//   3. The Gerstner swell (D3D11's SHD_WATERANI permutation) is the runtime WaveAnimation flag, for the
+//   3. The vertex waves (D3D11's SHD_WATERANI permutation) are the runtime WaveAnimation mode, for the
 //      same reason as 1.
 
 #include "include/AtmosphericScattering.hlsl"   // ApplyAtmosphericScatteringGround + the Atmosphere cbuffer (b1)
@@ -65,7 +65,7 @@ cbuffer WaterCB : register(b2)
 
     uint   RtColorIndex;         // WaterRT.hlsl result, premultiplied (0xFFFFFFFF = screen-space reflections)
     uint   RtDistanceIndex;      // its hit distance, premultiplied
-    uint   WaveAnimation;        // 1 = Gerstner swell on water materials with a wave mode
+    uint   WaveAnimation;        // WATER_WAVES_*, for water materials with a wave mode
     float  RtPad;
 };
 
@@ -100,7 +100,7 @@ VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
     float3 pos = i.pos;
-    [branch] if ( WaveAnimation != 0 ) pos += WaterWaveOffset( pos, i.col, RI_TotalTime );
+    [branch] if ( WaveAnimation != WATER_WAVES_OFF ) pos += WaterWaveOffset( pos, i.col, RI_TotalTime, WaveAnimation );
     o.clip = mul( float4( pos, 1.0 ), ViewProj );
     float2 ani = i.scroll * RI_TotalTime;   // scroll delta (TexCoord2) * total time (ms), like VS_ExWater
     ani -= floor( ani );                    // wrap to [0,1) so the float stays precise over long sessions

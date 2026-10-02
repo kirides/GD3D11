@@ -49,7 +49,8 @@ void ShaderRegistry::Build() {
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 #ifdef BUILD_GOTHIC_2_6_fix
-            list.push_back( {"SHD_WATERANI", s.EnableWaterAnimation ? "1" : "0"} );
+            static constexpr const char* waveModes[] = { "0", "1", "2" };   // E_WaterWaves
+            list.push_back( {"SHD_WATERANI", waveModes[std::clamp<int>( s.WaterWaves, 0, 2 )]} );
 #else
             list.push_back( {"SHD_WATERANI", "0"} );
 #endif
