@@ -226,8 +226,8 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
         && make( materialBytes, false, D3D12_RESOURCE_STATE_COPY_DEST, L"GpuWorldMaterials", m_MaterialBuffer )
         && make( m_Materials.size() * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldSeen", m_Seen );
     for ( UINT v = 0; ok && v < kViews; ++v ) {
-        const UINT stride = v >= kViewPointFirst ? kCubeCommandStride : kCommandStride;
-        ok = make( static_cast<UINT64>( m_Capacity ) * 2u * stride, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldArgs", m_Args[v] )
+        ok = make( static_cast<UINT64>( CommandCapacity( v ) ) * 2u * CommandStride( v ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                L"GpuWorldArgs", m_Args[v] )
             && make( 2u * sizeof( uint32_t ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuWorldArgCount", m_ArgCount[v] );
         m_ArgsDrawable[v] = false;
     }
@@ -450,6 +450,7 @@ bool D3D12GpuWorld::Cull( Rhi::CmdList& cmd, const View* views, UINT first, UINT
         // A sphere view's sections and boxes are both tested against the light.
         cb.CamPos = views[i].Sphere ? views[i].Center : camPos;
         if ( views[i].Sphere ) cb.SectionRadiusSq = views[i].Radius * views[i].Radius;
+        cb.OpaqueCapacity = cb.AlphaCapacity = CommandCapacity( v );
         cmd.SetComputeRoot32BitConstants( 0, sizeof( cb ) / sizeof( uint32_t ), &cb, 0 );
         cmd.SetComputeRootUnorderedAccessView( 5, m_Args[v]->GetGPUVirtualAddress() );
         cmd.SetComputeRootUnorderedAccessView( 6, m_ArgCount[v]->GetGPUVirtualAddress() );
@@ -510,7 +511,18 @@ void D3D12GpuWorld::Draw( Rhi::CmdList& cmd, UINT view, bool alphaTested ) const
 
 
 void D3D12GpuWorld::DrawCube( Rhi::CmdList& cmd, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const {
-    cmd.ExecuteIndirect( sig, m_Capacity, m_Args[view].Get(),
-        alphaTested ? static_cast<UINT64>( m_Capacity ) * kCubeCommandStride : 0ull,
+    cmd.ExecuteIndirect( sig, kPointCommandCapacity, m_Args[view].Get(),
+        alphaTested ? static_cast<UINT64>( kPointCommandCapacity ) * kCubeCommandStride : 0ull,
         m_ArgCount[view].Get(), alphaTested ? sizeof( uint32_t ) : 0u );
+}
+
+
+UINT D3D12GpuWorld::CommandCapacity( UINT view ) const {
+    // A sphere around one light holds a few hundred runs; the other views can need one per cluster.
+    return view >= kViewPointFirst ? kPointCommandCapacity : m_Capacity;
+}
+
+
+UINT D3D12GpuWorld::CommandStride( UINT view ) {
+    return view >= kViewPointFirst ? kCubeCommandStride : kCommandStride;
 }

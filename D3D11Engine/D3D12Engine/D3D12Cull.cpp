@@ -49,7 +49,9 @@ namespace {
         uint32_t OpaqueCapacity;
         uint32_t AlphaCapacity;
         uint32_t OutputOffset;
-        uint32_t UseLodIndices;   // casters only
+        uint32_t UseLodIndices;      // casters only
+        uint32_t FillCounter;        // cube commands only: index of CSCullSphere's fill counter in SceneCounts
+        uint32_t InstanceCapacity;   // cube commands only: the view's instance region
     };
     constexpr UINT kSceneArgsConstants = sizeof( SceneArgsCB ) / sizeof( uint32_t );   // CreateCull's CullSceneArgs
 }
@@ -531,7 +533,7 @@ void D3D12GraphicsEngine::CullGpuScene( const void* cullCb ) {
     scene.CountsReadable = true;
 
     // --- Generate the opaque and alpha-tested command lists, with their counts ---
-    const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), cb.OutputOffset, 0u };
+    const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), cb.OutputOffset, 0u, 0u, 0u };
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.SceneArgsRootSig.Get() );
     m_CmdList->SetPipelineState( m_Pipelines.Cull.SceneClearPSO.Get() );
     m_CmdList->SetComputeRoot32BitConstants( 0, kSceneArgsConstants, &acb, 0 );
@@ -636,7 +638,7 @@ bool D3D12GraphicsEngine::CullGpuSceneCasters( const GpuSceneCasterView* views, 
             if ( !views[c].Active ) continue;
             const UINT r = first + c;
             const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), r * slots,
-                views[c].UseLod ? 1u : 0u };
+                views[c].UseLod ? 1u : 0u, 0u, 0u };
             m_CmdList->SetComputeRoot32BitConstants( 0, kSceneArgsConstants, &acb, 0 );
             m_CmdList->SetComputeRootShaderResourceView( 3, scene.CasterCounts()->GetGPUVirtualAddress() + r * scene.CasterCountsStride() );
             m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.CasterArgs()->GetGPUVirtualAddress() + r * scene.CasterArgsStride() );
@@ -734,7 +736,8 @@ bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UI
     m_CmdList->UAVBarrier( scene.PointArgCount(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
     if ( scene.TemplateCount() > 0 ) {
         m_CmdList->SetPipelineState( cull.SceneCubeArgsPSO.Get() );
-        const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), 0u, 0u };
+        const SceneArgsCB acb = { scene.TemplateCount(), D3D12GpuScene::kPointCommandCapacity, D3D12GpuScene::kPointCommandCapacity,
+            0u, 0u, scene.VisualCount() * 2u, D3D12GpuScene::kPointInstanceCapacity };
         m_CmdList->SetComputeRoot32BitConstants( 0, kSceneArgsConstants, &acb, 0 );
         for ( UINT c = 0; c < count; ++c ) {
             m_CmdList->SetComputeRootShaderResourceView( 3, counts + c * scene.PointCountsStride() );
@@ -757,7 +760,7 @@ bool D3D12GraphicsEngine::CullGpuScenePoints( const GpuScenePointView* views, UI
 
 void D3D12GraphicsEngine::DrawGpuScenePoints( D3D12CmdList& cmdList, UINT view, bool alphaTested, Rhi::CommandSignature* sig ) const {
     const D3D12GpuScene& scene = *m_GpuScene;
-    const UINT capacity = scene.CommandCapacity();
+    const UINT capacity = D3D12GpuScene::kPointCommandCapacity;
     cmdList->ExecuteIndirect( sig, capacity, scene.PointArgs(),
         view * scene.PointArgsStride() + ( alphaTested ? static_cast<UINT64>( capacity ) * D3D12GpuScene::kPointCommandStride : 0ull ),
         scene.PointArgCount(), view * D3D12GpuScene::kCasterArgCountStride + ( alphaTested ? sizeof( uint32_t ) : 0u ) );

@@ -21,7 +21,8 @@ public:
     static constexpr UINT kViewMain = 0;
     static constexpr UINT kViewRain = 4;         // after the three shadow cascades
     static constexpr UINT kViewPointFirst = 5;   // then one per point-light bake of the frame
-    static constexpr UINT kPointViews = 8;
+    static constexpr UINT kPointViews = 16;
+    static constexpr UINT kPointCommandCapacity = 4096;   // commands per list (opaque, alpha) per point view
     static constexpr UINT kViews = kViewPointFirst + kPointViews;
 
     /** One view to cull into. */
@@ -88,6 +89,8 @@ private:
 
     /** The CPU main view peels these into its transparency lists. */
     static bool IsSpecial( const MeshKey& key );
+    UINT CommandCapacity( UINT view ) const;   // per list
+    static UINT CommandStride( UINT view );
     bool Build( Rhi::CmdList& cmd );
     void Resolve( uint32_t m, bool cacheIn );
     void ProcessFeedback();

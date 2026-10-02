@@ -442,8 +442,9 @@ bool D3D12PointShadows::BuildExcludeList( zCVobLight* lightVob, std::vector<cons
 // a pool thread. It runs these steps in order:
 //   BeginPrepare         per-frame inputs: what is drawable, the rings, the black fallback
 //   GatherOverlayInputs  what moves this frame, read once for every overlay
+//   ChooseBakes          which lights bake this frame, and the GPU view each takes
 //   StartBakes           a serial per bake, so a late GPU report can tell which bake it describes
-//   ScheduleGpuBakes     GPU scene / GPU world culls of up to kGpuBakeViews baking lights
+//   ScheduleGpuBakes     GPU scene / GPU world culls of the baking lights
 //   per light            ResolveStaticBake (world, VOBs, MOBs), then ResolveOverlay (the movers)
 // A static cube is cached, so a bake never draws a caster whose texture is not resident: it leaves the caster out
 // and records it as pending, and UpdatePendingBakes re-bakes the light once everything is resident.
@@ -480,6 +481,7 @@ namespace {
 	std::vector<SkeletalVobInfo*> s_movingSkel;      // overlay candidates: NPCs and moved MOBs
 	std::vector<XMFLOAT3>         s_movingPos;
 	std::vector<VobInfo*>         s_movers;          // mesh vobs moving this frame
+	std::vector<uint8_t>          s_bakes;           // per assignment: bakes its static cube this frame
 	std::vector<int8_t>           s_gpuView;         // per assignment: its GPU bake view, or -1
 	std::vector<VobInfo*>         s_sphereVobs;
 	std::vector<SkeletalVobInfo*> s_sphereMobs;
@@ -739,13 +741,14 @@ void D3D12PointShadows::Prepare() {
 	m_PassReady = true;
 
 	GatherOverlayInputs();
+	ChooseBakes();
 	StartBakes();
 	ScheduleGpuBakes();
 
 	const std::span<FrameLight> lights = m_Sel.GetAssignments();
 	for ( size_t i = 0; i < lights.size(); ++i ) {
 		const FrameLight& ps = lights[i];
-		const bool bake = ps.renderStatic && g_In.bakesCacheable;
+		const bool bake = s_bakes[i] != 0;
 		// Only slots the budget (SelectShadowedLights) scheduled this frame; the rest keep what their cubes hold.
 		if ( ps.staticSlot >= kMaxStaticCubes || ( !bake && !ps.renderDynamic ) ) continue;
 
@@ -858,45 +861,66 @@ void D3D12PointShadows::GatherOverlayInputs() {
 }
 
 
+void D3D12PointShadows::ChooseBakes() {
+	// With the GPU culls on, every bake takes a GPU view. One past kGpuBakeViews (only possible with that many
+	// forced lights) waits a frame: its slot stays invalid, so the selector grants it again.
+	const std::span<FrameLight> lights = m_Sel.GetAssignments();
+	s_bakes.assign( lights.size(), 0 );
+	s_gpuView.assign( lights.size(), -1 );
+	if ( !g_In.bakesCacheable ) return;
+	const bool gpu = m_Report && ( m_E->m_GpuSceneActive || m_E->m_GpuWorldActive );
+	UINT views = 0;
+	for ( size_t i = 0; i < lights.size(); ++i ) {
+		const FrameLight& ps = lights[i];
+		if ( ps.staticSlot >= kMaxStaticCubes || !ps.renderStatic ) continue;
+		if ( gpu && views == kGpuBakeViews ) {
+			Engine::GAPI->GetRendererState().RendererInfo.NotePointLightRebake( PLR_BUDGET_DEFER );
+			continue;
+		}
+		s_bakes[i] = 1;
+		if ( gpu ) s_gpuView[i] = static_cast<int8_t>( views++ );
+	}
+}
+
+
 void D3D12PointShadows::StartBakes() {
 	// A bake replaces whatever its slot's previous bake was still waiting for (see PendingBake).
-	if ( !g_In.bakesCacheable ) return;
-	for ( const FrameLight& ps : m_Sel.GetAssignments() ) {
-		if ( ps.staticSlot >= kMaxStaticCubes || !ps.renderStatic ) continue;
-		++m_BakeSerial[ps.staticSlot];
-		ClearPending( m_PendingBake[ps.staticSlot] );
+	const std::span<FrameLight> lights = m_Sel.GetAssignments();
+	for ( size_t i = 0; i < lights.size(); ++i ) {
+		if ( !s_bakes[i] ) continue;
+		++m_BakeSerial[lights[i].staticSlot];
+		ClearPending( m_PendingBake[lights[i].staticSlot] );
 	}
 }
 
 
 void D3D12PointShadows::ScheduleGpuBakes() {
-	// Up to kGpuBakeViews lights that bake this frame have their table VOBs and world casters culled into their
-	// spheres on the GPU, here on the main list ahead of the recorder. Each cull also reports what it had to leave
-	// out for a missing texture; ConsumeBakeReports reads that back.
+	// The lights ChooseBakes gave a view have their table VOBs and world casters culled into their spheres on the
+	// GPU, here on the main list ahead of the recorder. Each cull also reports what it had to leave out for a
+	// missing texture; ConsumeBakeReports reads that back.
 	const std::span<FrameLight> lights = m_Sel.GetAssignments();
-	s_gpuView.assign( lights.size(), -1 );
-	if ( !m_Report || !g_In.bakesCacheable || !( m_E->m_GpuSceneActive || m_E->m_GpuWorldActive ) ) return;
+	if ( !m_Report ) return;
 	ConsumeBakeReports();   // this frame index's previous report, before it is overwritten
 
 	GpuScenePointView sceneViews[kGpuBakeViews];
 	D3D12GpuWorld::View worldViews[kGpuBakeViews];
 	ReportedBake bakes[kGpuBakeViews];
 	const D3D12_GPU_VIRTUAL_ADDRESS report = m_Report->GetGPUVirtualAddress();
-	UINT views = 0;
-	for ( size_t i = 0; i < lights.size() && views < kGpuBakeViews; ++i ) {
+	UINT views = 0;   // ChooseBakes numbered them 0, 1, 2, ... in assignment order
+	for ( size_t i = 0; i < lights.size(); ++i ) {
+		if ( s_gpuView[i] < 0 ) continue;
 		const FrameLight& ps = lights[i];
-		if ( ps.staticSlot >= kMaxStaticCubes || !ps.renderStatic ) continue;
+		const UINT v = views++;
 		// Same reach and size gate as the CPU gather (CollectStaticCastersInSphere); a world-only light takes no vobs.
 		const float vobReach = ps.restrictToWorld ? 0.0f : ps.range + kSkeletalCullPad;
-		sceneViews[views] = { ps.posWS, vobReach, kStaticCasterMinSizePerDistance };
-		worldViews[views] = {};
-		worldViews[views].Active = true;
-		worldViews[views].Sphere = true;
-		worldViews[views].Center = ps.posWS;
-		worldViews[views].Radius = ps.range;
-		worldViews[views].Report = report + views * kReportBytes;
-		bakes[views] = { ps.staticSlot, m_BakeSerial[ps.staticSlot] };
-		s_gpuView[i] = static_cast<int8_t>( views++ );
+		sceneViews[v] = { ps.posWS, vobReach, kStaticCasterMinSizePerDistance };
+		worldViews[v] = {};
+		worldViews[v].Active = true;
+		worldViews[v].Sphere = true;
+		worldViews[v].Center = ps.posWS;
+		worldViews[v].Radius = ps.range;
+		worldViews[v].Report = report + v * kReportBytes;
+		bakes[v] = { ps.staticSlot, m_BakeSerial[ps.staticSlot] };
 	}
 	if ( views == 0 ) return;
 
@@ -1235,6 +1259,11 @@ void D3D12PointShadows::ConsumeBakeReports() {
 		// A list that overflowed names only part of what is missing: the re-bake after these resolve reports the rest.
 		const uint32_t* world = report + view * ( kReportBytes / sizeof( uint32_t ) );
 		const uint32_t* scene = world + kReportBytes / 2 / sizeof( uint32_t );
+		if ( ( world[kReportOverflowWord] | scene[kReportOverflowWord] ) && !m_ReportOverflowLogged ) {
+			Logging::Wrn( "D3D12: a GPU point-light bake ran out of room (world {}, scene {}); some static casters are missing from its cube.",
+				world[kReportOverflowWord], scene[kReportOverflowWord] );
+			m_ReportOverflowLogged = true;
+		}
 		PendingBake& pending = m_PendingBake[bake.slot];
 		for ( uint32_t i = 0; i < std::min( world[0], kReportCapacity ); ++i )
 			if ( !std::ranges::contains( pending.worldMaterials, world[1 + i] ) ) pending.worldMaterials.push_back( world[1 + i] );

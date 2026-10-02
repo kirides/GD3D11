@@ -81,7 +81,8 @@ RWByteAddressBuffer             Feedback     : register( u2 );
 #define CUBE_COMMAND_STRIDE 24u       // D3D12PointShadows' PointShadowCasterCommand: b1 diffuse + DrawIndexed
 #define WORLDCULL_GROUP_SIZE 64
 #define MAX_CLUSTER_WORDS 64        // 2048 clusters per mesh; the rest join the last run unculled
-#define REPORT_CAPACITY 63u         // D3D12PointShadows::kReportCapacity
+#define REPORT_CAPACITY 62u         // D3D12PointShadows::kReportCapacity
+#define REPORT_OVERFLOW_WORD 63u    // non-zero: a list overflowed, casters were dropped
 
 bool IsBoxVisible( float3 mn, float3 mx )
 {
@@ -122,7 +123,11 @@ void EmitCommand( WorldMaterial mat, uint startIndex, uint indexCount )
     const bool alpha = ( mat.Flags & WORLD_MATERIAL_ALPHA ) != 0u;
     uint slot;
     ArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
-    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;   // the draw clamps the count to capacity
+    if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) )   // the draw clamps the count to capacity
+    {
+        if ( ViewFlags & VIEW_CUBE ) Feedback.Store( REPORT_OVERFLOW_WORD * 4u, 1u );   // a cached bake lost casters
+        return;
+    }
     if ( ViewFlags & VIEW_CUBE )
     {
         // One instance per cube face, routed by the cube VS.
