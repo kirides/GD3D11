@@ -51,7 +51,8 @@ public:
     static constexpr uint32_t kTemplateReady = 2u;    // SCENE_TEMPLATE_READY
     static constexpr uint32_t kTemplateCaster = 4u;   // SCENE_TEMPLATE_CASTER
 
-    static constexpr UINT kCasterViews = 3;              // kShadowCascades, asserted in D3D12ShadowMap.cpp
+    static constexpr UINT kCasterViews = 4;              // the three cascades, then the rain shadowmap
+    static constexpr UINT kCasterViewRain = 3;
     static constexpr UINT kCasterInstanceStride = 64;    // the no-motion instance prefix
     static constexpr UINT kCasterArgCountStride = 256;   // per view: [0] opaque, [4] alpha
 

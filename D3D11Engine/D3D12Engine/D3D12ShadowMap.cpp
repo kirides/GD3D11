@@ -35,8 +35,8 @@ using Microsoft::WRL::ComPtr;
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12ShadowMap's per-frame ring array bound must match the engine's" );
-static_assert( kShadowCascades <= D3D12GpuScene::kCasterViews, "the GPU scene has a caster region per cascade" );
-static_assert( kShadowCascades + 1 <= D3D12GpuWorld::kViews, "the GPU world has a view per cascade after the main one" );
+static_assert( kShadowCascades <= D3D12GpuScene::kCasterViewRain, "the GPU scene has a caster region per cascade" );
+static_assert( kShadowCascades + 1 <= D3D12GpuWorld::kViewRain, "the GPU world has a view per cascade after the main one" );
 
 void D3D12ShadowMap::Attach( D3D12GraphicsEngine& engine ) {
     m_E = &engine;
@@ -989,7 +989,7 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 				radii.Outdoor, radii.Small, static_cast<int>( c ) >= firstLod, m_ShouldUpdateCascade[c] };
 			m_SceneAnimatedCaster[c] = views[c].Active && m_E->m_GpuScene->AnyAnimatedCasterIn( m_CascadeFrustum[c] );
 		}
-		m_SceneCasters = m_E->CullGpuSceneCasters( views, kShadowCascades );
+		m_SceneCasters = m_E->CullGpuSceneCasters( views, 0, kShadowCascades );
 	}
 
 	// --- Phase B+C+D: per-cascade cull -> build -> record — LAUNCHED HERE, JOINED IN FinishShadowPasses ----
