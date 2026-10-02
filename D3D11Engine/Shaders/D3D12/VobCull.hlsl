@@ -8,9 +8,8 @@
 //                 surviving count for that command's visual (0 == the whole visual was culled).
 //
 // Both the depth prepass and the lit color pass ExecuteIndirect over the same patched argument buffer, so one
-// cull serves both. The CSM shadow cascades are NOT culled here — they keep their own CPU cull against their
-// own frustum (a caster invisible to the player still casts into view), and they draw from the uncompacted
-// per-frame instance ring.
+// cull serves both. The CSM cascades cull only the GPU scene's static casters here (VOB_SHADOW); their other
+// casters keep the CPU cull and draw from the uncompacted per-frame instance ring.
 //
 // Everything is bound through root descriptors / root constants (no descriptor tables); the Hi-Z pyramid is
 // the one texture and it comes in bindlessly (SM6.6 ResourceDescriptorHeap) as a full-mip-chain SRV.
@@ -78,8 +77,8 @@ cbuffer VobCullCB : register( b0 )
     // 0 = no LOD split. Bucketing must be per INSTANCE: Gothic reuses a few hundred visuals map-wide, so a
     // per-visual decision would let one nearby barrel force full detail on every barrel in the world.
     float    LodDistance;       // @88
-    uint     _cullPad0;         // @92  explicit: HLSL won't let the float3 straddle 16 B, and the C++ mirror
-    float3   CullCamPosWS;      // @96  must match field-for-field (its static_assert only checks size)
+    float    MinMeshSize;       // @92  GPU scene casters: visuals with a smaller bbox diagonal are skipped
+    float3   CullCamPosWS;      // @96
     uint     OutputOffset;      // @108 added to InstanceBase for the output element; 0 for the ring
     float    IndoorRadius;      // @112 GPU scene draw distances (pivot to camera)
     float    OutdoorRadius;     // @116
@@ -122,6 +121,11 @@ VobInstanceGpu ExpandSceneInstance( SceneInstanceGpu s, uint tableIndex )
 bool IsSceneInstanceInRange( VobCullVisual v, SceneInstanceGpu s )
 {
     if ( s.GPSlot & SCENE_GPSLOT_HIDDEN ) return false;
+#if VOB_SHADOW
+    // The cascades' walk: no indoor casters, none smaller than a few of this cascade's texels.
+    if ( s.GPSlot & SCENE_GPSLOT_INDOOR ) return false;
+    if ( length( v.BBoxMax - v.BBoxMin ) < MinMeshSize ) return false;
+#endif
     const float radius = ( s.GPSlot & SCENE_GPSLOT_INDOOR ) ? IndoorRadius
         : ( v.SceneFlags & SCENE_VISUAL_SMALL ) ? SmallRadius : OutdoorRadius;
     const float3 pivot = float3( s.World0.w, s.World1.w, s.World2.w );
@@ -129,6 +133,34 @@ bool IsSceneInstanceInRange( VobCullVisual v, SceneInstanceGpu s )
 }
 #endif
 
+#if VOB_SHADOW
+// Shadow cascade: CullViewProj maps the cascade's cull box (Frustum::BuildOrthographic) onto x,y in [-1,1],
+// z in [0,1], with w = 1. No occlusion test, the casters may sit outside the player's view.
+bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
+{
+    if ( any( v.BBoxMin > v.BBoxMax ) )
+        return true;
+
+    const float3x4 world = BuildWorldMatrix( inst );
+    bool outNegX = true, outPosX = true, outNegY = true, outPosY = true, outNear = true, outFar = true;
+    [unroll]
+    for ( uint c = 0; c < 8; ++c )
+    {
+        float3 corner = float3(
+            ( c & 1 ) ? v.BBoxMax.x : v.BBoxMin.x,
+            ( c & 2 ) ? v.BBoxMax.y : v.BBoxMin.y,
+            ( c & 4 ) ? v.BBoxMax.z : v.BBoxMin.z );
+        const float3 p = mul( float4( mul( world, float4( corner, 1.0 ) ), 1.0 ), CullViewProj ).xyz;
+        outNegX = outNegX && ( p.x < -1.0 );
+        outPosX = outPosX && ( p.x >  1.0 );
+        outNegY = outNegY && ( p.y < -1.0 );
+        outPosY = outPosY && ( p.y >  1.0 );
+        outNear = outNear && ( p.z <  0.0 );
+        outFar  = outFar  && ( p.z >  1.0 );
+    }
+    return !( outNegX || outPosX || outNegY || outPosY || outNear || outFar );
+}
+#else
 bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
 {
     // A degenerate/uninitialised visual box would collapse to a point and get culled at almost any angle;
@@ -214,6 +246,7 @@ bool IsInstanceVisible( VobCullVisual v, VobInstanceGpu inst )
     // "any corner in front" bail-out already err on the side of keeping geometry.
     return !( occluderDepth > closestDepth );
 }
+#endif
 
 // One thread group per VISUAL: the group owns that visual's whole instance range, so the compaction counters
 // can live in groupshared memory and only the final counts need a buffer write (no global atomics at all).
@@ -362,12 +395,13 @@ struct SceneTemplate
     uint  StartIndex;
     int   BaseVertex;
     uint  VisualIndex;      // scene record
-    uint  LodBucket;
+    uint  LodBucket;        // caster template: the LOD index count
     uint  Flags;            // SCENE_TEMPLATE_*
-    uint  _templatePad;
+    uint  CasterLodStart;   // caster template: the first LOD index
 };
-#define SCENE_TEMPLATE_ALPHA  1u   // goes into the alpha-tested list
-#define SCENE_TEMPLATE_READY  2u   // its textures are resolved; not drawn until then
+#define SCENE_TEMPLATE_ALPHA   1u   // goes into the alpha-tested list
+#define SCENE_TEMPLATE_READY   2u   // main view: its textures are resolved; not drawn until then
+#define SCENE_TEMPLATE_CASTER  4u   // a shadow-caster template; IndexCount/StartIndex name its near-cascade range
 
 cbuffer SceneArgsCB : register( b0 )
 {
@@ -375,6 +409,7 @@ cbuffer SceneArgsCB : register( b0 )
     uint OpaqueCapacity;    // commands in the opaque list, which starts at command 0
     uint AlphaCapacity;     // commands in the alpha list, which starts at command OpaqueCapacity
     uint SceneOutputOffset; // the cull's OutputOffset
+    uint UseLodIndices;     // casters: draw the LOD range (outer cascades)
 };
 
 StructuredBuffer<SceneTemplate> Templates     : register( t0 );
@@ -391,25 +426,45 @@ void CSClearCounts()
     SceneArgCount.Store2( 0, uint2( 0, 0 ) );
 }
 
-[numthreads(64, 1, 1)]
-void CSBuildArgs( uint3 DTid : SV_DispatchThreadID )
+void AppendSceneCommand( SceneTemplate t, uint indexCount, uint startIndex, uint count, uint start, uint lodBucket )
 {
-    if ( DTid.x >= TemplateCount ) return;
-    const SceneTemplate t = Templates[DTid.x];
-    if ( ( t.Flags & SCENE_TEMPLATE_READY ) == 0u ) return;
-    const uint count = SceneCounts[t.VisualIndex * 2u + t.LodBucket];
-    if ( count == 0u ) return;
-
     const bool alpha = ( t.Flags & SCENE_TEMPLATE_ALPHA ) != 0u;
     uint slot;
     SceneArgCount.InterlockedAdd( alpha ? 4u : 0u, 1u, slot );
     if ( slot >= ( alpha ? AlphaCapacity : OpaqueCapacity ) ) return;   // the draw clamps the count to capacity
 
+    const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * VOB_DRAW_COMMAND_STRIDE;
+    SceneArgs.Store4( at,      uint4( t.MatNormalIndex, t.MatOrmIndex, t.MatDiffuseIndex, asuint( t.WindMinHeight ) ) );
+    SceneArgs.Store4( at + 16, uint4( asuint( t.WindMaxHeight ), indexCount, count, startIndex ) );
+    SceneArgs.Store4( at + 32, uint4( asuint( t.BaseVertex ), start, t.VisualIndex, lodBucket ) );
+}
+
+[numthreads(64, 1, 1)]
+void CSBuildArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != SCENE_TEMPLATE_READY ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u + t.LodBucket];
+    if ( count == 0u ) return;
+
     // Near packs forward from the output base, far backward from its end (see CSCull).
     const VobCullVisual v = SceneVisuals[t.VisualIndex];
     const uint start = SceneOutputOffset + v.InstanceBase + ( t.LodBucket == 0u ? 0u : v.InstanceCount - count );
-    const uint at = ( ( alpha ? OpaqueCapacity : 0u ) + slot ) * VOB_DRAW_COMMAND_STRIDE;
-    SceneArgs.Store4( at,      uint4( t.MatNormalIndex, t.MatOrmIndex, t.MatDiffuseIndex, asuint( t.WindMinHeight ) ) );
-    SceneArgs.Store4( at + 16, uint4( asuint( t.WindMaxHeight ), t.IndexCount, count, t.StartIndex ) );
-    SceneArgs.Store4( at + 32, uint4( asuint( t.BaseVertex ), start, t.VisualIndex, t.LodBucket ) );
+    AppendSceneCommand( t, t.IndexCount, t.StartIndex, count, start, t.LodBucket );
+}
+
+// One shadow cascade's caster commands, over the counts its CSCull (VOB_SHADOW) wrote. Casters never split.
+[numthreads(64, 1, 1)]
+void CSBuildCasterArgs( uint3 DTid : SV_DispatchThreadID )
+{
+    if ( DTid.x >= TemplateCount ) return;
+    const SceneTemplate t = Templates[DTid.x];
+    if ( ( t.Flags & ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) != ( SCENE_TEMPLATE_READY | SCENE_TEMPLATE_CASTER ) ) return;
+    const uint count = SceneCounts[t.VisualIndex * 2u];
+    if ( count == 0u ) return;
+
+    const uint start = SceneOutputOffset + SceneVisuals[t.VisualIndex].InstanceBase;
+    AppendSceneCommand( t, UseLodIndices ? t.LodBucket : t.IndexCount,
+        UseLodIndices ? t.CasterLodStart : t.StartIndex, count, start, 0u );
 }

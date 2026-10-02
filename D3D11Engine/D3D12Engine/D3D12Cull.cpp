@@ -33,7 +33,7 @@ namespace {
         uint32_t HiZMipCount;
         uint32_t EnableOcclusion;
         float    LodDistance;
-        uint32_t Pad0;           // mirrors VobCull.hlsl's explicit float3 alignment pad
+        float    MinMeshSize;    // GPU scene casters only
         XMFLOAT3 CamPosWS;
         uint32_t OutputOffset;   // 0: the ring's survivors land at their own element index
         float    IndoorRadius;   // GPU scene only, from here on
@@ -49,7 +49,9 @@ namespace {
         uint32_t OpaqueCapacity;
         uint32_t AlphaCapacity;
         uint32_t OutputOffset;
+        uint32_t UseLodIndices;   // casters only
     };
+    constexpr UINT kSceneArgsConstants = sizeof( SceneArgsCB ) / sizeof( uint32_t );   // CreateCull's CullSceneArgs
 }
 
 bool D3D12GraphicsEngine::CreateHiZResources( INT2 size ) {
@@ -529,10 +531,10 @@ void D3D12GraphicsEngine::CullGpuScene( const void* cullCb ) {
     scene.CountsReadable = true;
 
     // --- Generate the opaque and alpha-tested command lists, with their counts ---
-    const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), cb.OutputOffset };
+    const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), cb.OutputOffset, 0u };
     m_CmdList->SetComputeRootSignature( m_Pipelines.Cull.SceneArgsRootSig.Get() );
     m_CmdList->SetPipelineState( m_Pipelines.Cull.SceneClearPSO.Get() );
-    m_CmdList->SetComputeRoot32BitConstants( 0, 4, &acb, 0 );
+    m_CmdList->SetComputeRoot32BitConstants( 0, kSceneArgsConstants, &acb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, scene.Templates()->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootShaderResourceView( 2, scene.Records()->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootShaderResourceView( 3, scene.Counts()->GetGPUVirtualAddress() );
@@ -551,4 +553,111 @@ void D3D12GraphicsEngine::CullGpuScene( const void* cullCb ) {
     scene.ArgsDrawable = true;
 
     scene.RecordFeedbackCopy( m_CmdList );
+}
+
+
+bool D3D12GraphicsEngine::CullGpuSceneCasters( const GpuSceneCasterView* views, UINT count ) {
+    if ( !m_GpuSceneActive || !m_FrameOpen || !m_GpuScene ) return false;
+    D3D12GpuScene& scene = *m_GpuScene;
+    const auto& cull = m_Pipelines.Cull;
+    if ( !cull.VobCullCasterPSO || !cull.SceneCasterArgsPSO || !cull.SceneClearPSO || !cull.SceneArgsRootSig
+        || !scene.CasterInstances() || !scene.CasterArgs() || scene.VisualCount() == 0 ) return false;
+    count = std::min( count, D3D12GpuScene::kCasterViews );
+    bool anyActive = false;
+    for ( UINT c = 0; c < count; ++c ) anyActive = anyActive || views[c].Active;
+    if ( !anyActive ) return false;
+
+    ZoneScopedN( "GPU scene casters" )
+    DX_ZONE( m_CmdList.Get(), "GPU scene casters" );
+
+    // Rest states the previous frame's cascade draws left.
+    {
+        D3D12ResourceTransition pre[4] = {};
+        UINT n = 0;
+        if ( scene.CasterInstancesDrawable ) {
+            pre[n++] = { scene.CasterInstances(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.CasterInstancesDrawable = false;
+        }
+        if ( scene.CasterCountsReadable ) {
+            pre[n++] = { scene.CasterCounts(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.CasterCountsReadable = false;
+        }
+        if ( scene.CasterArgsDrawable ) {
+            pre[n++] = { scene.CasterArgs(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            pre[n++] = { scene.CasterArgCount(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+            scene.CasterArgsDrawable = false;
+        }
+        if ( n ) m_CmdList->TransitionBarriers( pre, n );
+    }
+
+    // --- Cull + compact the table into each view's region; casters never split, so all survivors go near ---
+    const UINT slots = scene.SlotCount();
+    VobCullCB cb{};
+    cb.VisualCount = scene.VisualCount();
+    cb.CamPosWS = Engine::GAPI->GetCameraPosition();
+    cb.FocusSlot = 0xFFFFFFFFu;
+    m_CmdList->SetPipelineState( cull.VobCullCasterPSO.Get() );
+    m_CmdList->SetComputeRootSignature( cull.VobCullRootSig.Get() );
+    m_CmdList->SetComputeRootShaderResourceView( 1, scene.Records()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 2, scene.Table()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 3, scene.CasterInstances()->GetGPUVirtualAddress() );
+    for ( UINT c = 0; c < count; ++c ) {
+        if ( !views[c].Active ) continue;
+        cb.ViewProj = views[c].CullViewProj;
+        cb.MinMeshSize = views[c].MinMeshSize;
+        cb.OutdoorRadius = views[c].OutdoorRadius;
+        cb.SmallRadius = views[c].SmallRadius;
+        cb.OutputOffset = c * slots;
+        m_CmdList->SetComputeRoot32BitConstants( 0, 32, &cb, 0 );
+        m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.CasterCounts()->GetGPUVirtualAddress() + c * scene.CasterCountsStride() );
+        m_CmdList->Dispatch( scene.VisualCount(), 1, 1 );
+    }
+    m_CmdList->TransitionBarrier( scene.CasterCounts(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+    scene.CasterCountsReadable = true;
+
+    // --- Each view's opaque and alpha-tested lists, with their counts ---
+    const D3D12_GPU_VIRTUAL_ADDRESS argCount = scene.CasterArgCount()->GetGPUVirtualAddress();
+    m_CmdList->SetComputeRootSignature( cull.SceneArgsRootSig.Get() );
+    m_CmdList->SetComputeRootShaderResourceView( 1, scene.Templates()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 2, scene.Records()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootShaderResourceView( 3, scene.CasterCounts()->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.CasterArgs()->GetGPUVirtualAddress() );
+    m_CmdList->SetPipelineState( cull.SceneClearPSO.Get() );
+    for ( UINT c = 0; c < count; ++c ) {
+        if ( !views[c].Active ) continue;
+        m_CmdList->SetComputeRootUnorderedAccessView( 5, argCount + c * D3D12GpuScene::kCasterArgCountStride );
+        m_CmdList->Dispatch( 1, 1, 1 );
+    }
+    m_CmdList->UAVBarrier( scene.CasterArgCount(), D3D12_BARRIER_SYNC_COMPUTE_SHADING );
+    if ( scene.TemplateCount() > 0 ) {
+        m_CmdList->SetPipelineState( cull.SceneCasterArgsPSO.Get() );
+        for ( UINT c = 0; c < count; ++c ) {
+            if ( !views[c].Active ) continue;
+            const SceneArgsCB acb = { scene.TemplateCount(), scene.CommandCapacity(), scene.CommandCapacity(), c * slots,
+                views[c].UseLod ? 1u : 0u };
+            m_CmdList->SetComputeRoot32BitConstants( 0, kSceneArgsConstants, &acb, 0 );
+            m_CmdList->SetComputeRootShaderResourceView( 3, scene.CasterCounts()->GetGPUVirtualAddress() + c * scene.CasterCountsStride() );
+            m_CmdList->SetComputeRootUnorderedAccessView( 4, scene.CasterArgs()->GetGPUVirtualAddress() + c * scene.CasterArgsStride() );
+            m_CmdList->SetComputeRootUnorderedAccessView( 5, argCount + c * D3D12GpuScene::kCasterArgCountStride );
+            m_CmdList->Dispatch( ( scene.TemplateCount() + 63 ) / 64, 1, 1 );
+        }
+    }
+    m_CmdList->TransitionBarriers( {
+        { scene.CasterArgs(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+        { scene.CasterArgCount(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT },
+        { scene.CasterInstances(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER },
+    } );
+    scene.CasterArgsDrawable = true;
+    scene.CasterInstancesDrawable = true;
+    return true;
+}
+
+
+void D3D12GraphicsEngine::DrawGpuSceneCasters( D3D12CmdList& cmdList, UINT view, bool alphaTested ) const {
+    const D3D12GpuScene& scene = *m_GpuScene;
+    const UINT capacity = scene.CommandCapacity();
+    cmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), capacity, scene.CasterArgs(),
+        view * scene.CasterArgsStride() + ( alphaTested ? static_cast<UINT64>( capacity ) * sizeof( VobDrawCommand ) : 0ull ),
+        scene.CasterArgCount(), view * D3D12GpuScene::kCasterArgCountStride + ( alphaTested ? sizeof( uint32_t ) : 0u ) );
 }

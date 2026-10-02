@@ -7538,9 +7538,14 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
 
     thread_local BspTreeVobVisitor bspVobVisitor{};
 
+    // No leaf has anything for a pass that takes its static VOBs from the GPU scene and wants no mobs or lights.
+    const bool walkTree = !ctx.drawFlags.SkipStaticVobs || ctx.drawFlags.CollectMobs || ctx.drawFlags.CollectLights;
+
     // Use the flat SIMD leaf cache when available (perspective frustum + cache built at world load).
     // Falls back to the pointer-chasing recursive tree walk for sphere/OBB frustums (shadow cubemaps,
     // orthographic shadow maps) or before the first world is loaded.
+    if ( !walkTree ) {
+    } else
 #ifdef __AVX2__
     if ( LeafLinearCache.Count > 0 && ctx.frustum.UsesPlaneFrustum() ) {
         ZoneScopedN( "GothicAPI::CollectVisibleVobsWithLeafCache" );

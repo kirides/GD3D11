@@ -8,7 +8,9 @@
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
 #include "../ConstantBufferStructs.h"
+#include "../Frustum.h"
 #include "../zCVob.h"
+#include "../zCMorphMesh.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -28,6 +30,7 @@ namespace {
 
     constexpr uint32_t kFlagScanPerFrame = 512;   // ShowVisual / visual-alpha changes, round-robin
     constexpr uint32_t kBuildsPerFrame = 48;      // template (re)builds, each a few CacheIn calls
+    constexpr uint32_t kCasterRefreshPerFrame = 16;   // stale casters re-resolved without CacheIn
     constexpr uint32_t kTouchInterval = 30;       // frames between CacheIn touches of a visible visual
     constexpr uint16_t kMaxWaitFrames = 120;      // then a visual draws with fallback slots, as the CPU path does
     constexpr UINT kSpareTemplates = 4096;
@@ -68,12 +71,17 @@ void D3D12GpuScene::Reset() {
     m_DirtySlots.clear();
     m_DirtyVisuals.clear();
     m_BuildQueue.clear();
+    m_CasterRefresh.clear();
+    m_CasterRefreshCursor = 0;
+    m_MorphSlots.clear();
     m_VobSlot->Map.clear();
     m_FlagCursor = 0;
     m_TemplatesGrew = false;
     for ( UINT i = 0; i < kFrames; ++i ) m_ReadbackVisuals[i] = 0;
     for ( ComPtr<Rhi::Resource>* r : { std::addressof( m_Table ), std::addressof( m_Records ), std::addressof( m_TemplateBuffer ),
-              std::addressof( m_Counts ), std::addressof( m_Args ), std::addressof( m_ArgCount ) } )
+              std::addressof( m_Counts ), std::addressof( m_Args ), std::addressof( m_ArgCount ),
+              std::addressof( m_CasterInstances ), std::addressof( m_CasterCounts ), std::addressof( m_CasterArgs ),
+              std::addressof( m_CasterArgCount ) } )
         if ( *r ) m_E.QueueResourceForRelease( std::move( *r ) );
     for ( UINT i = 0; i < kFrames; ++i ) {
         if ( m_Readback[i] ) m_E.QueueResourceForRelease( std::move( m_Readback[i] ) );
@@ -81,6 +89,9 @@ void D3D12GpuScene::Reset() {
     }
     CountsReadable = false;
     ArgsDrawable = false;
+    CasterInstancesDrawable = false;
+    CasterCountsReadable = false;
+    CasterArgsDrawable = false;
 }
 
 
@@ -88,6 +99,17 @@ UINT D3D12GpuScene::ReadyVisualCount() const {
     UINT n = 0;
     for ( const Visual& v : m_Visuals ) n += v.State == kVisualReady ? 1u : 0u;
     return n;
+}
+
+
+bool D3D12GpuScene::AnyAnimatedCasterIn( const Frustum& f ) const {
+    for ( const uint32_t slot : m_MorphSlots ) {
+        const VobInfo* vi = m_SlotVob[slot];
+        if ( !vi || m_SlotState[slot] != kSlotLive ) continue;
+        auto* morph = reinterpret_cast<zCMorphMesh*>( m_Visuals[m_SlotVisual[slot]].Info->MorphMeshVisual );
+        if ( morph->GetNumAniChannels() > 0 && f.Intersects( vi->LastRenderBBox ) ) return true;
+    }
+    return false;
 }
 
 
@@ -159,9 +181,8 @@ void D3D12GpuScene::WriteRecord( uint32_t v ) {
     r.InstanceBase = vis.SlotBase;
     r.InstanceCount = vis.State == kVisualCpu ? 0u : vis.SlotCount;
     r.SceneFlags = ( ready && vis.Info->MeshSize < m_BuiltSmallVobSize ) ? kSceneVisualSmall : 0u;
-    // Split only when every template has a far counterpart (BuildTemplates writes those after the near run).
-    r.SplitMode = ( vis.TemplateUsed > 0 && m_Templates[vis.TemplateBase + vis.TemplateUsed - 1].LodBucket != 0 )
-        ? D3D12GraphicsEngine::kSplitModeLod : D3D12GraphicsEngine::kSplitModeNone;
+    // Split only when every near template has a far counterpart.
+    r.SplitMode = vis.Split ? D3D12GraphicsEngine::kSplitModeLod : D3D12GraphicsEngine::kSplitModeNone;
     m_DirtyVisuals.push_back( v );
 }
 
@@ -177,18 +198,28 @@ void D3D12GpuScene::MoveVisualToCpu( uint32_t v ) {
     }
     for ( uint32_t t = 0; t < vis.TemplateCapacity; ++t ) m_Templates[vis.TemplateBase + t].Flags = 0;
     vis.TemplateUsed = 0;
+    vis.Split = false;
     WriteRecord( v );
 }
 
 
-bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn ) {
+void D3D12GpuScene::MarkCasterStale( uint32_t v ) {
+    Visual& vis = m_Visuals[v];
+    vis.CasterStale = true;
+    if ( vis.CasterQueued ) return;
+    vis.CasterQueued = true;
+    m_CasterRefresh.push_back( v );
+}
+
+
+bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn, bool countWait ) {
     Visual& vis = m_Visuals[v];
     MeshVisualInfo* info = vis.Info;
     if ( vis.State == kVisualCpu ) return true;
-    if ( !info || !info->GetIsReady() ) return false;
+    if ( !info || !info->GetIsReady() ) { MarkCasterStale( v ); return false; }
     const D3D12VobArena* arena = m_E.m_VobArena.get();
 
-    struct Staged { Template T; uint32_t LodStart, LodCount; bool Lod; };
+    struct Staged { Template T; Template Caster; uint32_t LodStart, LodCount; bool Lod; };
     static std::vector<Staged> staged;
     staged.clear();
     bool texturesReady = true;
@@ -203,24 +234,35 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn ) {
             return true;
         }
         texturesReady = texturesReady && mat.TextureReady;
+        const uint32_t alphaFlag = mat.AlphaTested ? kTemplateAlpha : 0u;
         for ( MeshInfo* mi : meshList ) {
             if ( !mi || mi->Indices.empty() ) continue;
             const D3D12VobArena::Range* r = arena->Find( mi );
-            if ( !r || r->IndexCount == 0 ) return false;   // not uploaded yet, retried on the next sighting
+            if ( !r || r->IndexCount == 0 ) { MarkCasterStale( v ); return false; }   // not uploaded yet
             Staged s;
             s.T = { mat.Normal, mat.Orm, mat.Diffuse, minH, maxH, r->IndexCount, r->IndexStart,
-                static_cast<int32_t>( r->BaseVertex ), v, D3D12GraphicsEngine::kLodBucketNear,
-                mat.AlphaTested ? kTemplateAlpha : 0u, 0u };
+                static_cast<int32_t>( r->BaseVertex ), v, { D3D12GraphicsEngine::kLodBucketNear }, alphaFlag, 0u };
             s.Lod = m_BuiltLod && !mat.AlphaTested && r->LodCount > 0;
             s.LodStart = r->LodStart;
             s.LodCount = r->LodCount;
             allLod = allLod && s.Lod;
+
+            // Caster: as BuildVobDrawCommands' cascades. Alpha-tested keeps full indices (welding breaks UVs),
+            // the rest the welded shadow range, and the LOD range in the outer cascades.
+            uint32_t nearStart = r->IndexStart, nearCount = r->IndexCount;
+            if ( !mat.AlphaTested && r->ShadowCount > 0 ) { nearStart = r->ShadowStart; nearCount = r->ShadowCount; }
+            uint32_t lodStart = nearStart, lodCount = nearCount;
+            if ( !mat.AlphaTested && r->LodCount > 0 ) { lodStart = r->LodStart; lodCount = r->LodCount; }
+            s.Caster = { 0xFFFFFFFFu, mat.Orm, mat.Diffuse, minH, maxH, nearCount, nearStart,
+                static_cast<int32_t>( r->BaseVertex ), v, { lodCount }, alphaFlag | kTemplateCaster | kTemplateReady, lodStart };
             staged.push_back( s );
         }
     }
 
-    const bool split = !staged.empty() && allLod;
-    const uint32_t used = static_cast<uint32_t>( staged.size() ) * ( split ? 2u : 1u );
+    // [near][far, when split][caster], one of each per sub-mesh.
+    const uint32_t subMeshes = static_cast<uint32_t>( staged.size() );
+    const bool split = subMeshes > 0 && allLod;
+    const uint32_t used = subMeshes * ( split ? 3u : 2u );
     if ( used > vis.TemplateCapacity ) {
         // First build (or the visual's sub-meshes changed): a fresh range at the end. An old range must stop
         // drawing, and only a whole upload reaches it.
@@ -229,12 +271,12 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn ) {
             m_TemplatesGrew = true;
         }
         vis.TemplateBase = static_cast<uint32_t>( m_Templates.size() );
-        vis.TemplateCapacity = static_cast<uint32_t>( staged.size() ) * 2u;
+        vis.TemplateCapacity = subMeshes * 3u;
         m_Templates.resize( m_Templates.size() + vis.TemplateCapacity, Template{} );
         if ( m_Templates.size() > m_TemplateCapacity ) m_TemplatesGrew = true;
     }
 
-    if ( !texturesReady && vis.WaitFrames < kMaxWaitFrames ) ++vis.WaitFrames;
+    if ( !texturesReady && countWait && vis.WaitFrames < kMaxWaitFrames ) ++vis.WaitFrames;
     const uint32_t ready = ( texturesReady || vis.WaitFrames >= kMaxWaitFrames ) ? kTemplateReady : 0u;
 
     Template* dst = &m_Templates[vis.TemplateBase];
@@ -256,16 +298,52 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn ) {
             next[n++] = f;
         }
     }
+    // Casters draw as soon as their geometry is in, with whatever texture is resident, as the CPU cascades did.
+    for ( const Staged& s : staged ) next[n++] = s.Caster;
 
-    const bool changed = vis.TemplateUsed != used
+    const bool changed = vis.TemplateUsed != used || vis.Split != split
         || memcmp( dst, next.data(), vis.TemplateCapacity * sizeof( Template ) ) != 0;
     if ( changed ) {
         memcpy( dst, next.data(), vis.TemplateCapacity * sizeof( Template ) );
         vis.TemplateUsed = used;
+        vis.Split = split;
         WriteRecord( v );
     }
     vis.State = ready ? kVisualReady : kVisualUnbuilt;
-    vis.LastTouch = m_Frame;
+    // Only a CacheIn counts as a touch; the background refreshes would otherwise postpone it forever.
+    if ( cacheIn ) vis.LastTouch = m_Frame;
+    // Nothing caches in what only a cascade sees, so its unresolved textures are polled until resident.
+    if ( texturesReady ) vis.CasterStale = false;
+    else MarkCasterStale( v );
+    return true;
+}
+
+
+void D3D12GpuScene::RefreshCasters() {
+    const size_t n = std::min<size_t>( m_CasterRefresh.size(), kCasterRefreshPerFrame );
+    for ( size_t i = 0; i < n && !m_CasterRefresh.empty(); ++i ) {
+        if ( m_CasterRefreshCursor >= m_CasterRefresh.size() ) m_CasterRefreshCursor = 0;
+        const uint32_t v = m_CasterRefresh[m_CasterRefreshCursor];
+        Visual& vis = m_Visuals[v];
+        if ( vis.State != kVisualCpu ) BuildTemplates( v, false, false );
+        if ( vis.State == kVisualCpu || !vis.CasterStale ) {
+            vis.CasterQueued = false;
+            m_CasterRefresh[m_CasterRefreshCursor] = m_CasterRefresh.back();
+            m_CasterRefresh.pop_back();
+        } else {
+            ++m_CasterRefreshCursor;
+        }
+    }
+}
+
+
+bool D3D12GpuScene::CreateCasterArgs( UINT capacity, ComPtr<Rhi::Resource>& out, UINT64& stride ) const {
+    // Per view: an opaque and an alpha list of `capacity` commands each, like the main view's.
+    stride = ( static_cast<UINT64>( capacity ) * 2u * sizeof( D3D12GraphicsEngine::VobDrawCommand ) + 255u ) & ~255ull;
+    const D3D12_RESOURCE_DESC bd = BufferDesc( stride * kCasterViews, true );
+    if ( FAILED( m_E.GetRhi()->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &bd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, out.ReleaseAndGetAddressOf() ) ) )
+        return false;
+    out->SetName( L"GpuSceneCasterArgs" );
     return true;
 }
 
@@ -293,6 +371,17 @@ bool D3D12GpuScene::CreateBuffers( UINT templateCapacity ) {
     if ( !ok ) return false;
     CountsReadable = false;
     ArgsDrawable = false;
+
+    // Caster regions are 256-byte aligned so each view binds its own as a root descriptor.
+    m_CasterCountsStride = ( static_cast<UINT64>( visuals ) * 2u * sizeof( uint32_t ) + 255u ) & ~255ull;
+    ok = make( static_cast<UINT64>( CasterInstanceBytes() ), true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuSceneCasterInstances", m_CasterInstances )
+        && make( m_CasterCountsStride * kCasterViews, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuSceneCasterCounts", m_CasterCounts )
+        && make( kCasterArgCountStride * kCasterViews, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"GpuSceneCasterArgCount", m_CasterArgCount )
+        && CreateCasterArgs( templateCapacity, m_CasterArgs, m_CasterArgsStride );
+    if ( !ok ) return false;
+    CasterInstancesDrawable = false;
+    CasterCountsReadable = false;
+    CasterArgsDrawable = false;
 
     for ( UINT i = 0; i < kFrames; ++i ) {
         if ( !m_Staging[i] ) {
@@ -371,6 +460,7 @@ bool D3D12GpuScene::Build( Rhi::CmdList& cmd ) {
         m_SlotVob[slot] = vi;
         m_SlotVisual[slot] = v;
         m_VobSlot->Map[vi->Vob] = slot;
+        if ( m_Visuals[v].Info->MorphMeshVisual ) m_MorphSlots.push_back( slot );
         const zTVobFlags flags = vi->Vob->GetFlags();
         if ( flags.VisualAlphaEnabled ) { m_SlotState[slot] = kSlotOnCpu; m_CpuVobs.push_back( vi ); }
         else if ( !flags.ShowVisual ) m_SlotState[slot] = kSlotHidden;
@@ -451,12 +541,14 @@ void D3D12GpuScene::ScanFlags() {
 
 
 void D3D12GpuScene::Unready( uint32_t v ) {
+    // Casters too: their slots are as stale as the main view's.
     Visual& vis = m_Visuals[v];
-    if ( vis.State != kVisualReady ) return;
+    if ( vis.State == kVisualCpu ) return;
     for ( uint32_t t = 0; t < vis.TemplateCapacity; ++t ) m_Templates[vis.TemplateBase + t].Flags &= ~kTemplateReady;
+    if ( vis.State == kVisualReady ) vis.WaitFrames = 0;
     vis.State = kVisualUnbuilt;
-    vis.WaitFrames = 0;
     m_DirtyVisuals.push_back( v );
+    MarkCasterStale( v );
 }
 
 
@@ -470,7 +562,8 @@ void D3D12GpuScene::ProcessFeedback() {
         gtl::flat_hash_set<UINT> freed( m_FreedScratch.begin(), m_FreedScratch.end() );
         for ( uint32_t v = 0; v < VisualCount(); ++v ) {
             const Visual& vis = m_Visuals[v];
-            if ( vis.State != kVisualReady ) continue;
+            // Not just ready visuals: casters draw before the main view's textures resolve.
+            if ( vis.State == kVisualCpu ) continue;
             for ( uint32_t t = 0; t < vis.TemplateUsed; ++t ) {
                 const Template& tp = m_Templates[vis.TemplateBase + t];
                 if ( freed.contains( tp.MatDiffuseIndex ) || freed.contains( tp.MatNormalIndex )
@@ -523,13 +616,15 @@ bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
         ZoneScopedN( "GpuScene template growth" )
         Rhi::Device* rhi = m_E.GetRhi();
         const UINT capacity = static_cast<UINT>( m_Templates.size() ) + kSpareTemplates;
-        ComPtr<Rhi::Resource> templates, args, upload;
+        ComPtr<Rhi::Resource> templates, args, casterArgs, upload;
+        UINT64 casterArgsStride = 0;
         const D3D12_RESOURCE_DESC td = BufferDesc( static_cast<UINT64>( capacity ) * sizeof( Template ), false );
         const D3D12_RESOURCE_DESC ad = BufferDesc( static_cast<UINT64>( capacity ) * 2u * sizeof( D3D12GraphicsEngine::VobDrawCommand ), true );
         const UINT64 bytes = static_cast<UINT64>( m_Templates.size() ) * sizeof( Template );
         const D3D12_RESOURCE_DESC ud = BufferDesc( bytes, false );
         if ( FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, templates.GetAddressOf() ) )
             || FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &ad, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, args.GetAddressOf() ) )
+            || !CreateCasterArgs( capacity, casterArgs, casterArgsStride )
             || FAILED( rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &ud, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, upload.GetAddressOf() ) ) ) {
             Logging::Wrn( "D3D12: GPU scene template growth failed; static VOBs stay on the CPU path." );
             return false;
@@ -546,15 +641,22 @@ bool D3D12GpuScene::UploadDirty( Rhi::CmdList& cmd ) {
         m_E.QueueResourceForRelease( std::move( upload ) );
         m_E.QueueResourceForRelease( std::move( m_TemplateBuffer ) );
         m_E.QueueResourceForRelease( std::move( m_Args ) );
+        m_E.QueueResourceForRelease( std::move( m_CasterArgs ) );
         m_TemplateBuffer = std::move( templates );
         m_Args = std::move( args );
+        m_CasterArgs = std::move( casterArgs );
+        m_CasterArgsStride = casterArgsStride;
         m_TemplateCapacity = capacity;
         m_CommandCapacity = capacity;
         m_TemplatesGrew = false;
-        // The new arg buffer is born in UAV and the count buffer shares its state flag, so it follows.
+        // The new arg buffers are born in UAV and the count buffers share their state flags, so they follow.
         if ( ArgsDrawable ) {
             cmd.TransitionBarrier( m_ArgCount.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
             ArgsDrawable = false;
+        }
+        if ( CasterArgsDrawable ) {
+            cmd.TransitionBarrier( m_CasterArgCount.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+            CasterArgsDrawable = false;
         }
         // Everything is uploaded; only instance and record changes are left.
         for ( uint32_t& v : m_DirtyVisuals ) v |= 0x80000000u;
@@ -649,6 +751,7 @@ void D3D12GpuScene::PrepareDraws( Rhi::CmdList& cmd ) {
     if ( !m_Built ) return;
     ZoneScopedN( "GpuScene prepare" )
     ProcessFeedback();
+    RefreshCasters();
     UploadDirty( cmd );
 }
 

@@ -514,6 +514,11 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneArgsPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            SceneClearCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneClearPSO;
+        // Shadow-cascade casters from the same table: CSCull (VOB_SHADOW), then CSBuildCasterArgs.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullCasterCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullCasterPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SceneCasterArgsCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCasterArgsPSO;
     };
 
     // Debug/editor lines (D3D12LineRenderer): one root sig (b0 ViewProj, b1 viewport) + one VS/PS set,
