@@ -34,6 +34,7 @@
 #include "../WorldObjects.h"
 #include "../zCTexture.h"
 #include "../WaterProfile.h"
+#include "../ShoreField.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 #include "D3D12RayTracing.h"
 
@@ -88,8 +89,13 @@ namespace {
         UINT RtDistanceIndex;
         UINT WaveAnimation;           // E_WaterWaves (D3D11: SHD_WATERANI)
         float ShoreFoam;              // E_WaterShoreFoam
+
+        XMFLOAT4 ShoreFieldMapping;   // ShoreField::GetMapping
+        UINT ShoreFieldIndex;         // 0xFFFFFFFF => no field
+        float ShoreFieldState;        // WaterShoreFieldState
+        float ShoreFieldPad[2];
     };
-    static_assert( sizeof( WaterCBData ) == 272, "WaterCBData must match Water.hlsl's b2 layout" );
+    static_assert( sizeof( WaterCBData ) == 304, "WaterCBData must match Water.hlsl's b2 layout" );
 
     // Resting state of the water copies: the water PS and the sky-average compute pass both read them.
     constexpr D3D12_RESOURCE_STATES kWaterCopyReadState =
@@ -505,6 +511,15 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         cb.OceanTexture = ocean.TextureStrength;
         cb.SkyReflection = WaterSkyReflectionEnabled();
         cb.ShoreFoam = WaterShoreFoamMode();
+        cb.ShoreFieldIndex = UINT_MAX;
+        if ( ShoreField* shoreField = Engine::GAPI->GetShoreField() ) {
+            D3D12Texture* fieldTexture = D3D12Texture::From( shoreField->GetTexture() );
+            if ( fieldTexture->HasSRV() ) {
+                cb.ShoreFieldIndex = fieldTexture->GetSrvSlot();
+                cb.ShoreFieldMapping = shoreField->GetMapping();
+                cb.ShoreFieldState = WaterShoreFieldState( true );
+            }
+        }
         cb.SkyAverageIndex = skyAverageReady ? m_WaterSkyAverageSrvSlot : UINT_MAX;
         // Same build gate as D3D11's SHD_WATERANI. The Z-prepass shares the VS, so its depth moves with the waves.
 #ifdef BUILD_GOTHIC_2_6_fix

@@ -20,6 +20,8 @@
 #include "GMesh.h"
 #include "GSky.h"
 #include "WaterProfile.h"
+#include "ShoreField.h"
+#include "FloatingVobs.h"
 #include "GVegetationBox.h"
 #include "RenderToTextureBuffer.h"
 #include "zCParticleFX.h"
@@ -5698,6 +5700,11 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
 
         WaterParamsConstantBuffer waterParams = {};
+        if ( ShoreField* shoreField = Engine::GAPI->GetShoreField() ) {
+            shoreField->GetTexture()->BindToPixelShader( 9 );
+            waterParams.WP_ShoreFieldMapping = shoreField->GetMapping();
+            waterParams.WP_ShoreFieldState = WaterShoreFieldState( true );
+        }
         const MoonLightInfo moon = Engine::GAPI->GetSky()->GetMoonLight();
         waterParams.WP_MoonDir = moon.Direction;
         waterParams.WP_MoonGlint = moon.GlintVisibility;
@@ -5742,7 +5749,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    GetContext()->PSSetShaderResources( 0, 9, s_nullSRVs );
+    GetContext()->PSSetShaderResources( 0, 10, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -6302,6 +6309,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             VobInstanceInfo vii = {};
             PackAffine3x4( vii.world, it->WorldMatrix );
             PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
+            ApplyWaterBob( vii, *it );
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;

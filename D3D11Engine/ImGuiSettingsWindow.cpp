@@ -683,6 +683,15 @@ void RenderEffectsTab( GothicRendererSettings& settings, ShaderCategory& shaders
     };
     ComboRow( "Shore Foam", "##WaterShoreFoam", shoreFoams, &settings.WaterShoreFoam,
         "Foam where the water gets shallow, with swash lines running up the shore." );
+    constexpr ListItem<GothicRendererSettings::E_WaterShoreFoamStyle> shoreFoamStyles[] = {
+        { "Simple", GothicRendererSettings::WATER_FOAM_STYLE_SIMPLE, "Foam bands from the water depth under each pixel. No waves." },
+        { "Coast Simulation", GothicRendererSettings::WATER_FOAM_STYLE_COAST,
+            "Waves roll in along the coast, break in the shallows and carry the foam up the beach and back.\n"
+            "Bakes a map of the coastline when the world loads (or when you switch to it)." },
+    };
+    ImGui::BeginDisabled( settings.WaterShoreFoam == GothicRendererSettings::WATER_FOAM_OFF );
+    ComboRow( "Shore Foam Style", "##WaterShoreFoamStyle", shoreFoamStyles, &settings.WaterShoreFoamStyle );
+    ImGui::EndDisabled();
 
 #if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
 #if defined(BUILD_GOTHIC_1_CLASSIC)

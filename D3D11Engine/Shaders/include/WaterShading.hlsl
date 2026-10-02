@@ -4,7 +4,8 @@
 // MarcoMarwin's GD3D11 fork. Everything here works in D3D11's gamma space; D3D12 converts at its hooks.
 // The includer defines: WaterSceneRawDepth, WaterSceneRawDepthTexel, WaterSurfaceRawDepth, WaterLinearDepth, WaterWorldToView,
 // WaterViewToUV, WaterSceneColor, WaterDistortion, WaterDiffuse, WaterCube, WaterSSREnabled,
-// WaterTraceSSR, WaterScatterGround, WaterLowClouds and WaterSkyAverage, plus the Atmosphere constants (AC_LightPos, AC_RainFXWeight).
+// WaterTraceSSR, WaterScatterGround, WaterLowClouds, WaterSkyAverage and WaterShoreField, plus the Atmosphere constants
+// (AC_LightPos, AC_RainFXWeight).
 
 #include "WaterWaves.hlsl"
 
@@ -267,7 +268,7 @@ float3 WaterMoonGlint( float3 viewDirection, float3 smallWaveNormal, float3 bigW
 // Shore foam: a line at the waterline, swash bands running up the shore, a drifting bubble lace
 //--------------------------------------------------------------------------------------
 static const float  WATER_FOAM_FADE_DISTANCE = 20000.0f;   // view distance where foam is gone
-static const float3 WATER_FOAM_ALBEDO = float3( 0.76f, 0.79f, 0.80f );
+static const float3 WATER_FOAM_ALBEDO = float3( 0.68f, 0.71f, 0.72f );
 static const float  WATER_FOAM_BUMP = 3.0f;                 // world units of foam relief
 
 // 1 = inside the underwater scene, `gap` view units behind it; 0 = in front of it; -1 = off screen or hidden
@@ -399,67 +400,57 @@ struct WaterFoamSample
     float  rim;         // a soft ring just outside the foam and in its holes, where it shades the water
 };
 
-// Foam at a surface point `depth` units above the floor. footprint = world units per pixel; isolated = a shallow
-// spot in deep water, which keeps only its waterline.
-WaterFoamSample WaterShoreFoam( float2 posXZ, float depth, float time, float footprint, bool isOcean, float isolated )
+// Foam texture over `amount` (0..1): three lace layers dissolved by the amount. p = advected world xz,
+// footprint = world units per pixel.
+WaterFoamSample WaterFoamCover( float2 p, float amount, float time, float footprint, bool isOcean )
 {
     WaterFoamSample foam = (WaterFoamSample)0;
-    float lineDepth    = isOcean ? 9.0f : 5.0f;
-    float residueDepth = isOcean ? 32.0f : 15.0f;
-    float bandDepth    = isOcean ? 66.0f : 26.0f;
-    float bandSpacing  = isOcean ? 85.0f : 32.0f;    // depth between two swash bands
-    float bandRate     = isOcean ? 0.14f : 0.22f;    // bands per second
-
-    // Each layer fades to its mean once its cells shrink to a few pixels, so distant foam doesn't shimmer
-    const float clumpCell = 140.0f;
-    const float coarseCell = 90.0f;
-    const float fineCell = 26.0f;
-    float clumpDetail = 1.0f - smoothstep( 0.10f, 0.25f, footprint / clumpCell );
-    float coarseDetail = 1.0f - smoothstep( 0.10f, 0.25f, footprint / coarseCell );
-    float fineDetail = 1.0f - smoothstep( 0.10f, 0.25f, footprint / fineCell );
-
-    // Where along the shore foam gathers; also staggers the bands so they don't run as contour rings
-    float patches = WaterFoamNoise( posXZ / 520.0f + time * 0.012f );
-    float stagger = WaterFoamNoise( posXZ / 1700.0f - time * 0.004f ) * 1.6f;
-    // Mid-scale clumps and gaps, so the shallows never fill as one even sheet
-    float clumps = lerp( 0.5f, WaterFoamNoise( posXZ / clumpCell + float2( time * 0.020f, -time * 0.015f ) ), clumpDetail );
-
-    float waterline = ( 1.0f - smoothstep( 0.0f, lineDepth, depth ) ) * 0.92f;
-    float residue = ( 1.0f - smoothstep( 0.0f, residueDepth, depth ) ) * lerp( 0.25f, 0.58f, patches );
-    // Phase grows with depth, so a band moves shoreward: sharp front on the shore side, trail behind it
-    float phase = frac( depth / bandSpacing + time * bandRate + stagger );
-    float band = smoothstep( 0.0f, 0.05f, phase ) * ( 1.0f - smoothstep( 0.05f, 0.42f, phase ) );
-    band *= ( 1.0f - smoothstep( bandDepth * 0.45f, bandDepth, depth ) ) * lerp( 0.40f, 0.80f, patches );
-    float swash = ( residue + band ) * lerp( 0.65f, 1.25f, clumps ) * ( 1.0f - isolated * 0.75f );
-    float amount = saturate( max( waterline, swash ) );
     if ( amount <= 0.001f ) return foam;
 
+    // Each layer fades to its mean once its cells shrink to a few pixels, so distant foam doesn't shimmer
+    const float warpCell = 140.0f;
+    const float coarseCell = 90.0f;
+    const float mediumCell = 30.0f;
+    const float fineCell = 11.0f;
+    float coarseDetail = 1.0f - smoothstep( 0.10f, 0.25f, footprint / coarseCell );
+    float mediumDetail = 1.0f - smoothstep( 0.10f, 0.25f, footprint / mediumCell );
+    float fineDetail = 1.0f - smoothstep( 0.10f, 0.25f, footprint / fineCell );
+
     float coarse = 0.4f;
+    float medium = 0.4f;
     float fine = 0.4f;
     float2 coarseGrad = float2( 0.0f, 0.0f );
+    float2 mediumGrad = float2( 0.0f, 0.0f );
     float2 fineGrad = float2( 0.0f, 0.0f );
     [branch] if ( coarseDetail > 0.001f )
     {
-        float2 warp = float2( clumps, WaterFoamNoise( posXZ / clumpCell + 31.7f ) ) * 0.8f;
-        float width = lerp( 0.22f, 0.52f, WaterFoamNoise( posXZ / 300.0f - 7.1f ) );
-        coarse = lerp( 0.4f, WaterFoamLace( posXZ / coarseCell + warp, time * 0.35f, width, coarseGrad ), coarseDetail );
+        float2 warp = float2( WaterFoamNoise( p / warpCell + 11.3f ), WaterFoamNoise( p / warpCell + 31.7f ) ) * 0.8f;
+        float width = lerp( 0.22f, 0.52f, WaterFoamNoise( p / 300.0f - 7.1f ) );
+        coarse = lerp( 0.4f, WaterFoamLace( p / coarseCell + warp, time * 0.35f, width, coarseGrad ), coarseDetail );
         coarseGrad *= coarseDetail / coarseCell;
+    }
+    [branch] if ( mediumDetail > 0.001f )
+    {
+        medium = lerp( 0.4f, WaterFoamLace( p / mediumCell + 17.3f, time * 0.7f, 0.40f, mediumGrad ), mediumDetail );
+        mediumGrad *= mediumDetail / mediumCell;
     }
     [branch] if ( fineDetail > 0.001f )
     {
-        fine = lerp( 0.4f, WaterFoamLace( posXZ / fineCell + 17.3f, time * 0.8f, 0.42f, fineGrad ), fineDetail );
+        fine = lerp( 0.4f, WaterFoamLace( p / fineCell - 41.9f, time * 1.3f, 0.45f, fineGrad ), fineDetail );
         fineGrad *= fineDetail / fineCell;
     }
-    float pattern = ( coarse * 0.6f + fine * 0.4f ) * 0.85f + 0.15f;
-    float2 patternGrad = ( coarseGrad * 0.6f + fineGrad * 0.4f ) * 0.85f;
-    float detail = coarseDetail * 0.6f + fineDetail * 0.4f;
+    // Three layers average toward the mean; the contrast keeps the dissolve's upper thresholds reachable
+    const float contrast = 1.15f;
+    float pattern = saturate( ( coarse * 0.5f + medium * 0.32f + fine * 0.18f - 0.4f ) * contrast + 0.4f ) * 0.85f + 0.15f;
+    float2 patternGrad = ( coarseGrad * 0.5f + mediumGrad * 0.32f + fineGrad * 0.18f ) * ( contrast * 0.85f );
+    float detail = coarseDetail * 0.5f + mediumDetail * 0.32f + fineDetail * 0.18f;
 
     // Dissolve: dense foam closes the holes, thin foam keeps only the lace ridges. The edge widens as detail is
     // lost, so far foam becomes its average cover instead of a hard-edged solid band.
     float threshold = 1.0f - amount * 0.95f;
     float softness = lerp( 0.45f, 0.07f, detail );
     float cover = smoothstep( threshold - softness, threshold + softness, pattern );
-    foam.opacity = cover * lerp( 0.72f, 0.92f, amount ) * lerp( 0.60f, 1.0f, detail ) * ( isOcean ? 1.0f : 0.75f );
+    foam.opacity = cover * lerp( 0.58f, 0.80f, amount ) * lerp( 0.60f, 1.0f, detail ) * ( isOcean ? 1.0f : 0.75f );
     foam.thickness = saturate( ( pattern - threshold ) * 3.0f );
 
     // Height: the cover with rounded shoulders so blobs bulge, plus the lace ridges as bumps on top
@@ -468,6 +459,151 @@ WaterFoamSample WaterShoreFoam( float2 posXZ, float depth, float time, float foo
     foam.slope = patternGrad * ( 6.0f * hu * ( 1.0f - hu ) / ( 2.0f * shoulder ) + 0.8f * cover );
     foam.rim = smoothstep( threshold - softness - 0.25f, threshold - softness, pattern ) * ( 1.0f - cover ) * detail * amount;
     return foam;
+}
+
+// Foam amount without a shoreline field: bands that run up the shore, from the depth under the pixel alone.
+// isolated = a shallow spot in deep water, which keeps only its waterline.
+float WaterBandFoamAmount( float2 posXZ, float depth, float time, bool isOcean, float isolated )
+{
+    float lineDepth    = isOcean ? 9.0f : 5.0f;
+    float residueDepth = isOcean ? 32.0f : 15.0f;
+    float bandDepth    = isOcean ? 66.0f : 26.0f;
+    float bandSpacing  = isOcean ? 85.0f : 32.0f;    // depth between two swash bands
+    float bandRate     = isOcean ? 0.14f : 0.22f;    // bands per second
+
+    // Where along the shore foam gathers; also staggers the bands so they don't run as contour rings
+    float patches = WaterFoamNoise( posXZ / 520.0f + time * 0.012f );
+    float stagger = WaterFoamNoise( posXZ / 1700.0f - time * 0.004f ) * 1.6f;
+    float clumps = WaterFoamNoise( posXZ / 140.0f + float2( time * 0.020f, -time * 0.015f ) );
+
+    float waterline = ( 1.0f - smoothstep( 0.0f, lineDepth, depth ) ) * 0.92f;
+    float residue = ( 1.0f - smoothstep( 0.0f, residueDepth, depth ) ) * lerp( 0.25f, 0.58f, patches );
+    // Phase grows with depth, so a band moves shoreward: sharp front on the shore side, trail behind it
+    float phase = frac( depth / bandSpacing + time * bandRate + stagger );
+    float band = smoothstep( 0.0f, 0.05f, phase ) * ( 1.0f - smoothstep( 0.05f, 0.42f, phase ) );
+    band *= ( 1.0f - smoothstep( bandDepth * 0.45f, bandDepth, depth ) ) * lerp( 0.40f, 0.80f, patches );
+    float swash = ( residue + band ) * lerp( 0.65f, 1.25f, clumps ) * ( 1.0f - isolated * 0.75f );
+    return saturate( max( waterline, swash ) );
+}
+
+//--------------------------------------------------------------------------------------
+// Surf from the baked shoreline field (ShoreField.cpp): waves run in along the shore normal and break in the shallows
+//--------------------------------------------------------------------------------------
+static const float WATER_SHORE_FAR = 30000.0f;     // what WaterShoreField returns away from any shore
+static const float WATER_SHORE_NO_FLOOR = 5000.0f;
+
+struct WaterShore
+{
+    float  distance;    // to the nearest shoreline in world units, negative under the beach
+    float  depth;       // baked water depth
+    float2 seaward;     // unit direction away from the shore
+    float  coherence;   // 0 where two shores meet and the direction is ambiguous
+};
+
+WaterShore WaterReadShore( float2 xz )
+{
+    float4 field = WaterShoreField( xz );
+    WaterShore shore;
+    shore.distance = field.x;
+    shore.depth = field.y;
+    float len = length( field.zw );
+    shore.seaward = len > 0.0001f ? field.zw / len : float2( 0.0f, 0.0f );
+    shore.coherence = saturate( len * 1.25f );
+    return shore;
+}
+
+struct WaterSurf
+{
+    float  cycle;        // 0 as a crest passes, rising to 1 just before the next one
+    float  age;          // seconds since the crest passed
+    float  strength;     // this wave's size
+    float  breaking;     // 1 in the surf zone, shoreward of where this wave breaks
+    float  nearBreak;    // 1 just seaward of the break point, where the crest steepens
+    float  carried;      // how far the bore has pushed the water shoreward, world units
+    float  stretch;      // backwash stretch of the foam along the shore normal
+    float2 swellSlope;   // gradient of the swell height, for the surface normal
+};
+
+WaterSurf WaterSurfAt( WaterShore shore, float2 xz, float time, bool isOcean )
+{
+    float wavelength = isOcean ? 900.0f : 260.0f;
+    float period = isOcean ? 7.0f : 3.2f;
+    // Phase falls toward the shore as time goes on, so crests run in; the stagger keeps them from arriving
+    // along the whole coast at once
+    float stagger = WaterFoamNoise( xz / 2600.0f + 3.1f ) * 0.9f + WaterFoamNoise( xz / 700.0f - 5.7f ) * 0.18f;
+    float phase = shore.distance / wavelength + time / period + stagger;
+    float waveIndex = floor( phase );
+
+    WaterSurf surf;
+    surf.cycle = phase - waveIndex;
+    surf.age = surf.cycle * period;
+    float waveSet = 0.5f + 0.5f * sin( waveIndex * 1.3f );   // sets of bigger and smaller waves
+    surf.strength = lerp( 0.5f, 1.0f, saturate( WaterFoamHash( int2( (int)waveIndex, 17 ) ).x * 0.6f + waveSet * 0.4f ) );
+
+    float breakDepth = ( isOcean ? 95.0f : 22.0f ) * lerp( 0.75f, 1.15f, surf.strength );
+    surf.breaking = 1.0f - smoothstep( breakDepth * 0.8f, breakDepth, shore.depth );
+    surf.nearBreak = smoothstep( breakDepth * 1.7f, breakDepth, shore.depth ) * ( 1.0f - surf.breaking );
+
+    // The bore pushes the water up the shore quickly; the backwash drains it slowly and streaks the foam
+    float push = smoothstep( 0.0f, 0.28f, surf.cycle ) - smoothstep( 0.28f, 1.0f, surf.cycle );
+    surf.carried = ( isOcean ? 110.0f : 25.0f ) * surf.strength * surf.breaking * push * shore.coherence;
+    float backwash = smoothstep( 0.30f, 0.70f, surf.cycle ) * ( 1.0f - smoothstep( 0.85f, 1.0f, surf.cycle ) );
+    surf.stretch = 1.0f + 1.6f * backwash * surf.breaking * shore.coherence * ( 1.0f - smoothstep( 300.0f, 700.0f, shore.distance ) );
+
+    // Swell: crest at cycle 0, a gentle back and a steep shoreward face. It grows in the shallows and flattens once
+    // broken; its set modulation is smooth in the phase, so the slope has no seam where the wave index changes.
+    float swellSet = 0.72f + 0.28f * sin( phase * 1.18f + 1.0f );
+    float back = saturate( 1.0f - surf.cycle / 0.55f );
+    float face = saturate( ( surf.cycle - 0.82f ) / 0.18f );
+    float heightPerCycle = -2.0f * back / 0.55f + 2.0f * face / 0.18f;
+    float amplitude = isOcean ? 22.0f * swellSet * smoothstep( 700.0f, 160.0f, shore.depth ) * ( 1.0f - 0.65f * surf.breaking ) : 0.0f;
+    surf.swellSlope = shore.seaward * ( amplitude * heightPerCycle / wavelength * shore.coherence );
+    return surf;
+}
+
+// Foam laid down by the surf: the breaking bore and its trail, a cap on crests about to break, the swash line,
+// leftovers in the shallows and streaks drifting outside the surf zone. aeration = how milky the water turns.
+float WaterSurfFoamAmount( WaterShore shore, WaterSurf surf, float localDepth, float2 xz, float time, bool isOcean,
+                           float isolated, out float aeration )
+{
+    float front = smoothstep( 0.0f, 0.015f, surf.cycle );   // the bore's sharp shoreward edge
+    float bore = front * exp( -surf.age / 0.9f ) * surf.breaking * surf.strength;
+    float trail = front * exp( -surf.age / ( isOcean ? 3.2f : 1.4f ) ) * surf.breaking * surf.strength * 0.62f;
+    float cap = smoothstep( 0.94f, 1.0f, surf.cycle ) * surf.nearBreak * surf.strength * 0.55f;
+
+    float patches = WaterFoamNoise( xz / 520.0f + time * 0.012f );
+    float clumps = WaterFoamNoise( xz / 140.0f + float2( time * 0.020f, -time * 0.015f ) );
+    // The swash line swells as each bore runs up the beach
+    float swash = exp( -surf.age / 1.6f ) * surf.strength * surf.breaking;
+    float lineDepth = ( isOcean ? 9.0f : 5.0f ) * ( 1.0f + 1.3f * swash );
+    float waterline = ( 1.0f - smoothstep( 0.0f, lineDepth, localDepth ) ) * 0.92f;
+    float residue = ( 1.0f - smoothstep( 0.0f, isOcean ? 32.0f : 15.0f, localDepth ) ) * lerp( 0.2f, 0.5f, patches )
+                  * ( 1.0f - isolated * 0.75f );
+    // Old foam drifting outside the surf zone, in loose lines along the shore
+    float drift = 0.0f;
+    [branch] if ( isOcean && shore.distance < 2600.0f )
+    {
+        float2 lines = xz + shore.seaward * ( shore.distance * 2.0f );   // squeezed across the shore
+        drift = saturate( ( WaterFoamNoise( lines / 380.0f + float2( time * 0.01f, 0.0f ) ) - 0.58f ) * 3.0f )
+              * 0.30f * smoothstep( 2600.0f, 600.0f, shore.distance ) * ( 1.0f - surf.breaking ) * shore.coherence;
+    }
+
+    aeration = saturate( bore * 1.2f + trail * 0.6f );
+    float loose = ( trail + residue + cap + drift ) * lerp( 0.65f, 1.25f, clumps );
+    return saturate( max( waterline, bore ) + loose );
+}
+
+// Debug paint of the field: depth blue to cyan, a white line every 5 m of shore distance, red where the field
+// says land, yellow surf zone, the seaward direction as red/green in the shallows
+float3 WaterShoreFieldDebug( WaterShore shore, WaterSurf surf )
+{
+    float3 c = lerp( float3( 0.02f, 0.05f, 0.25f ), float3( 0.10f, 0.80f, 1.00f ), saturate( 1.0f - shore.depth / 400.0f ) );
+    c = lerp( c, float3( 0.5f + 0.5f * shore.seaward.x, 0.5f + 0.5f * shore.seaward.y, 0.2f ),
+              0.6f * shore.coherence * ( 1.0f - smoothstep( 600.0f, 900.0f, shore.distance ) ) );
+    c = lerp( c, float3( 1.0f, 0.9f, 0.1f ), surf.breaking * 0.35f );
+    c = lerp( c, float3( 1.0f, 0.15f, 0.1f ), step( shore.distance, 0.0f ) );
+    c += smoothstep( 0.93f, 1.0f, frac( shore.distance / 500.0f ) ) * 0.6f;
+    return c;
 }
 
 // Bumped foam under a light, relative to flat foam: the bumps show without changing its overall brightness
@@ -517,6 +653,7 @@ struct WaterFrame
     float  moonDisc;          // how visible the moon disc is in the sky
     float  skyReflection;     // 1 = screen-space sky march, 0 = geometry hits + cube only
     float  shoreFoam;         // 0 = off, 1 = ocean only, 2 = all water
+    float  shoreFieldState;   // 0 = no shoreline field, 1 = field, 2 = field painted for debugging
 };
 
 float3 ShadeWater( WaterPixel px, WaterFrame fr )
@@ -555,6 +692,23 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
 
     float3 wavesFres = WaterWaveNormal( distortionBig );
     float3 wavesSmall = normalize( distortionSmall.xzy * float3( 1, 10, 1 ) );
+
+    // Shore surf from the baked field; its swell tilts the surface before anything reflects off it
+    bool foamOn = fr.shoreFoam > 1.5f || ( fr.shoreFoam > 0.5f && isOcean );
+    bool fieldOn = fr.shoreFieldState > 0.5f;
+    WaterShore coast = (WaterShore)0;
+    coast.distance = WATER_SHORE_FAR;
+    coast.depth = WATER_SHORE_NO_FLOOR;
+    WaterSurf surf = (WaterSurf)0;
+    surf.stretch = 1.0f;
+    [branch] if ( fieldOn && ( foamOn || fr.shoreFieldState > 1.5f ) && topSide > 0.5f )
+    {
+        coast = WaterReadShore( px.worldPos.xz );
+        surf = WaterSurfAt( coast, px.worldPos.xz, fr.time, isOcean );
+        float3 swell = float3( -surf.swellSlope.x, 0.0f, -surf.swellSlope.y ) * ( foamOn ? WaterFlatness( px.geometricNormal ) : 0.0f );
+        wavesFres = normalize( wavesFres / max( wavesFres.y, 0.2f ) + swell );
+        wavesSmall = normalize( wavesSmall / max( wavesSmall.y, 0.2f ) + swell );
+    }
 
     float3 scene = WaterSceneColor( distUV );
     float3 sceneClean = WaterSceneColor( lerp( distUV, px.screenUV, pow( 1 - shallowDepth, 20.0f ) ) );
@@ -748,33 +902,61 @@ float3 ShadeWater( WaterPixel px, WaterFrame fr )
     color += WaterMoonGlint( viewDirection, wavesSmall, wavesFres, fr.moonDir ) * fr.moonGlint * shore.x * flatness * topSide;
 
     // Shore foam goes over everything: it is rough and opaque, so it hides reflections and glints
-    float foamOn = ( fr.shoreFoam > 1.5f || ( fr.shoreFoam > 0.5f && isOcean ) ) ? 1.0f : 0.0f;
-    float foamFade = foamOn * topSide * flatness
+    float foamFade = ( foamOn ? 1.0f : 0.0f ) * topSide * flatness
         * ( 1.0f - smoothstep( WATER_FOAM_FADE_DISTANCE * 0.55f, WATER_FOAM_FADE_DISTANCE, px.surfaceViewDistance ) );
     float foamMaxDepth = isOcean ? 80.0f : 32.0f;
-    // Skip the plumb walk over open sea, or where the ray's floor is too deep for any slope under ~56 degrees
+    // The plumb walk is skipped over open sea, or where the ray's floor is too deep for any slope under ~56 degrees
     float rayFloorRun = straightColumn * length( viewDirection.xz );
-    [branch] if ( foamFade > 0.001f && straightColumn < 5900.0f && rayFloorDepth - 1.5f * rayFloorRun < foamMaxDepth )
+    bool plumbUseful = straightColumn < 5900.0f && rayFloorDepth - 1.5f * rayFloorRun < foamMaxDepth;
+    bool nearShore = fieldOn ? ( coast.distance < ( isOcean ? 2600.0f : 600.0f ) || coast.depth < foamMaxDepth * 2.0f ) : plumbUseful;
+    [branch] if ( foamFade > 0.001f && nearShore )
     {
-        float plumb = WaterPlumbDepth( px.worldPos, fr.cameraPos, foamMaxDepth, viewDirection.y, footprint );
-        // Unknown: the depth at the view ray's floor hit, exact when looking straight down. Steep banks have
-        // no shallow water in front of them; the view ray's run to the bank stands in.
-        float foamDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
-        WaterFoamSample foam = WaterShoreFoam( px.worldPos.xz + distortionSmall.xy * 14.0f, foamDepth, fr.time, footprint,
-                                               isOcean, isolatedShallow );
+        // Depth under the pixel: the plumb line finds the waterline exactly where it sees the floor. Otherwise the
+        // view ray's floor (exact looking straight down; steep banks have no shallows, so its run stands in) or
+        // the baked depth.
+        float plumb = -1.0f;
+        [branch] if ( plumbUseful )
+            plumb = WaterPlumbDepth( px.worldPos, fr.cameraPos, foamMaxDepth, viewDirection.y, footprint );
+        float localDepth = min( plumb >= 0.0f ? plumb : rayFloorDepth, straightColumn );
+        if ( fieldOn && plumb < 0.0f ) localDepth = min( localDepth, coast.depth );
+
+        float2 foamXZ = px.worldPos.xz + distortionSmall.xy * 14.0f;
+        float amount;
+        float aeration = 0.0f;
+        [branch] if ( fieldOn )
+        {
+            amount = WaterSurfFoamAmount( coast, surf, localDepth, px.worldPos.xz, fr.time, isOcean, isolatedShallow, aeration );
+            // The bore carries the foam up the shore; the backwash stretches it along the shore normal
+            foamXZ += coast.seaward * ( surf.carried - coast.distance * ( 1.0f - 1.0f / surf.stretch ) );
+        }
+        else
+        {
+            amount = WaterBandFoamAmount( px.worldPos.xz, localDepth, fr.time, isOcean, isolatedShallow );
+        }
+        WaterFoamSample foam = WaterFoamCover( foamXZ, amount, fr.time, footprint, isOcean );
+
         float3 foamNormal = normalize( float3( -foam.slope.x * WATER_FOAM_BUMP, 1.0f, -foam.slope.y * WATER_FOAM_BUMP ) );
         float3 sunDir = normalize( AC_LightPos.xyz );
         float relief = lerp( WaterFoamRelief( foamNormal, sunDir ), WaterFoamRelief( foamNormal, fr.moonDir ), night );
         relief = lerp( 1.0f, relief, lerp( 0.9f, 0.35f, rain ) );   // overcast light is flat
-        // Thin foam lets the water hue through and sits in the shade of the thick foam around it
+        // Thin foam lets the water hue through and sits in the shade of the thick foam around it; even thick foam
+        // keeps a trace of it, so it isn't stark white
         float3 waterHue = min( color / max( WaterLuma( color ), 0.02f ), 2.0f );
-        float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, 1.0f, foam.thickness );
+        float3 body = lerp( lerp( 1.0f, waterHue, 0.35f ) * 0.80f, lerp( 1.0f, waterHue, 0.12f ), foam.thickness );
         float sparkle = pow( saturate( dot( reflect( viewDirection, foamNormal ), sunDir ) ), 60.0f )
                       * 0.20f * sunVisibility * foam.thickness;
-        float3 foamColor = WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint ) * relief * body + sparkle;
+        float3 foamLight = WaterFoamColor( px.worldPos, sceneClean, night, sunVisibility, rain, fr.moonGlint );
+        float3 foamColor = foamLight * relief * body + sparkle;
+
+        // Water churned up behind the bores turns milky before any foam sits on it
+        float3 milky = lerp( color, foamLight * lerp( 1.0f, waterHue, 0.5f ) * 0.8f, 0.5f );
+        color = lerp( color, milky, aeration * 0.32f * foamFade );
         color *= 1.0f - foam.rim * 0.14f * foamFade;
         color = lerp( color, foamColor, foam.opacity * foamFade );
     }
+
+    [branch] if ( fr.shoreFieldState > 1.5f && topSide > 0.5f )
+        color = WaterShoreFieldDebug( coast, surf );
     return max( color, 0.0f );
 }
 

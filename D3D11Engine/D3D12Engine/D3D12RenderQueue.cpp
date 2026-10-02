@@ -2,6 +2,7 @@
 #include "InstancingUtils.h"
 #include "../GothicAPI.h"
 #include "../zCVob.h"
+#include "../FloatingVobs.h"
 
 D3D12RenderQueue::D3D12RenderQueue(RenderView* vobInstances,
     std::vector<SkeletalVobInfo*>* mobs,
@@ -17,6 +18,7 @@ void D3D12RenderQueue::PushStaticVob(VobInfo* vobInfo)
     VobInstanceInfo vii = {};
     PackAffine3x4( vii.world, it->WorldMatrix );
     PackAffine3x4( vii.prevWorld, it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix );
+    ApplyWaterBob( vii, *it );
     vii.color = it->GroundColor;
     vii.windStrenth = 0.0f;
     vii.canBeAffectedByPlayer = 0;

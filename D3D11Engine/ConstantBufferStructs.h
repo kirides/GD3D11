@@ -508,10 +508,12 @@ struct WaterParamsConstantBuffer {
     float WP_MoonDisc;
     float WP_SkyReflection;
     float WP_OceanTexture;
-    float WP_ShoreFoam;     // E_WaterShoreFoam
-    float WP_Pad[2];
+    float WP_ShoreFoam;          // E_WaterShoreFoam
+    float WP_ShoreFieldState;    // WaterShoreFieldState
+    float WP_Pad;
+    XMFLOAT4 WP_ShoreFieldMapping;   // ShoreField::GetMapping
 };
-static_assert( sizeof( WaterParamsConstantBuffer ) == 64 );
+static_assert( sizeof( WaterParamsConstantBuffer ) == 80 );
 
 struct AtmosphereConstantBuffer {
     float AC_Kr4PI;

@@ -28,7 +28,8 @@ public:
         TF_B4G4R4A4 = DXGI_FORMAT_B4G4R4A4_UNORM,
         TF_DXT1     = DXGI_FORMAT_BC1_UNORM,
         TF_DXT3     = DXGI_FORMAT_BC2_UNORM,
-        TF_DXT5     = DXGI_FORMAT_BC3_UNORM
+        TF_DXT5     = DXGI_FORMAT_BC3_UNORM,
+        TF_R16G16B16A16_FLOAT = DXGI_FORMAT_R16G16B16A16_FLOAT,
     };
 
     /** Initializes the texture object */

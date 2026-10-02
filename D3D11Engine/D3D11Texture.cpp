@@ -327,6 +327,8 @@ UINT D3D11Texture::GetRowPitchBytes( int mip ) {
     } else if ( TextureFormat == DXGI_FORMAT_BC1_UNORM || TextureFormat == DXGI_FORMAT_BC2_UNORM ||
         TextureFormat == DXGI_FORMAT_BC3_UNORM ) {
         return Toolbox::GetDDSRowPitchSize( px, TextureFormat == DXGI_FORMAT_BC1_UNORM );
+    } else if ( TextureFormat == DXGI_FORMAT_R16G16B16A16_FLOAT ) {
+        return px * 8;
     } else { // Use B8G8R8A8
         return px * 4;
     }
@@ -346,6 +348,8 @@ UINT D3D11Texture::GetSizeInBytes( int mip ) {
     } else if ( TextureFormat == DXGI_FORMAT_BC1_UNORM || TextureFormat == DXGI_FORMAT_BC2_UNORM ||
         TextureFormat == DXGI_FORMAT_BC3_UNORM ) {
         return Toolbox::GetDDSStorageRequirements( px, py, TextureFormat == DXGI_FORMAT_BC1_UNORM );
+    } else if ( TextureFormat == DXGI_FORMAT_R16G16B16A16_FLOAT ) {
+        return px * py * 8;
     } else { // Use B8G8R8A8
         return px * py * 4;
     }

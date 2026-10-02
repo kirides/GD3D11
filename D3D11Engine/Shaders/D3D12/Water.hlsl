@@ -67,6 +67,11 @@ cbuffer WaterCB : register(b2)
     uint   RtDistanceIndex;      // its hit distance, premultiplied
     uint   WaveAnimation;        // WATER_WAVES_*, for water materials with a wave mode
     float  ShoreFoam;            // 0 = off, 1 = ocean only, 2 = all water
+
+    float4 ShoreFieldMapping;    // xy = field corner (world xz), zw = 1 / its extent
+    uint   ShoreFieldIndex;      // ShoreField.cpp: distance, depth, seaward xz (0xFFFFFFFF = none)
+    float  ShoreFieldState;      // 0 = no shoreline field, 1 = field, 2 = debug paint
+    float2 ShoreFieldPad;
 };
 
 cbuffer WaterBatchCB : register(b3) { uint IsOcean; };   // root constant, per texture batch: NW_WATER_LAKE*
@@ -325,6 +330,15 @@ float3 WaterScatterGround( float3 worldPos, float3 color )
 
 bool WaterSSREnabled() { return SsrMaxSteps > 0 || RtColorIndex != 0xFFFFFFFFu; }
 
+// Away from the field: as far from any shore as WATER_SHORE_FAR / WATER_SHORE_NO_FLOOR say
+float4 WaterShoreField( float2 xz )
+{
+    float2 uv = ( xz - ShoreFieldMapping.xy ) * ShoreFieldMapping.zw;
+    if ( ShoreFieldIndex == 0xFFFFFFFFu || any( uv < 0.0f ) || any( uv > 1.0f ) ) return float4( 30000.0f, 5000.0f, 0.0f, 0.0f );
+    Texture2D field = ResourceDescriptorHeap[ShoreFieldIndex];
+    return field.SampleLevel( smpClamp, uv, 0 );
+}
+
 float4 WaterLowClouds( float2 uv )   // stored in gamma space like the shading here
 {
     if ( LowCloudIndex == 0xFFFFFFFFu ) return float4( 0.0f, 0.0f, 0.0f, 0.0f );
@@ -389,6 +403,7 @@ float4 PSMain( VS_OUT Input ) : SV_TARGET
     fr.moonDisc = MoonDisc;
     fr.skyReflection = SkyReflection;
     fr.shoreFoam = ShoreFoam;
+    fr.shoreFieldState = ShoreFieldIndex != 0xFFFFFFFFu ? ShoreFieldState : 0.0f;
 
     // Opaque write: the see-through look is composited from the scene copy, exactly like D3D11
     return float4( WaterToLinear( ShadeWater( px, fr ) ), 1.0f );

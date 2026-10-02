@@ -416,6 +416,19 @@ struct BaseVobInfo {
 };
 
 struct WorldMeshSectionInfo;
+
+/** A plant floating on wave-animated water rides the displaced water triangle under it (FloatingVobs.cpp). */
+struct VobWaterBob {
+    XMFLOAT3 Corners[3];   // that triangle, undisplaced
+    XMFLOAT3 Weights;      // the plant's barycentric weights in it
+    float Amplitude;       // the water's wave parameters, quantized like its vertex color
+    float Speed;
+    float GridSize;
+    XMFLOAT3 Offset;       // this frame's displacement
+    XMFLOAT3 PrevOffset;   // last frame's, for motion vectors
+    bool HasOffset;
+};
+
 struct VobInfo : public BaseVobInfo {
     VobInfo() :
         LastRenderPosition{},
@@ -480,6 +493,9 @@ struct VobInfo : public BaseVobInfo {
 
     XMFLOAT4X4 PrevWorldMatrix;
     bool HasValidPrevMatrix;
+
+    /** Set on plants floating on wave-animated water; the instance builders add its offset (ApplyWaterBob). */
+    std::unique_ptr<VobWaterBob> WaterBob;
 };
 
 class zCVobLight;

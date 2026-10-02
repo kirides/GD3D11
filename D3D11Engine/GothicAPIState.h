@@ -5,6 +5,7 @@
 #include "TransparencyQueue.h"
 #include <shared_mutex>
 #include "WorldMeshSection.h"
+#include "ShoreField.h"
 
 /** GothicAPI's container members. Kept out of GothicAPI.h so only the TUs that touch them pay for
     instantiating these maps; include this only where the containers themselves are needed. */
@@ -18,6 +19,13 @@ struct GothicAPIState {
 
     /** Loaded game sections */
     std::map<int, std::map<int, WorldMeshSectionInfo>> WorldSections;
+
+    /** Shoreline distance/depth field of the loaded world; null without one or before it is wanted. */
+    std::unique_ptr<ShoreField> ShoreFieldData;
+    bool ShoreFieldBaked = false;   // tried for this world, so a failed bake isn't retried every frame
+
+    /** Static vobs with a WaterBob, updated once per frame; non-owning, aliases VobMap. */
+    std::vector<VobInfo*> FloatingVobs;
 
     std::unordered_map<zCVob*, std::string> tempParticleNames;
 

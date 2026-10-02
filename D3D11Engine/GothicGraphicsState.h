@@ -732,6 +732,11 @@ struct GothicRendererSettings {
         WATER_FOAM_ALL   = 2,   // lakes and rivers too, gentler
     };
 
+    enum E_WaterShoreFoamStyle {
+        WATER_FOAM_STYLE_SIMPLE = 0,   // foam bands from the depth under each pixel
+        WATER_FOAM_STYLE_COAST  = 1,   // waves from the baked ShoreField break and carry the foam
+    };
+
     enum E_OceanColor {
         OCEAN_COLOR_NATURAL   = 0,   // the coastal Khorinis sea in every world
         OCEAN_COLOR_PER_WORLD = 1,   // Jharkendar gets the clear turquoise sea
@@ -748,13 +753,16 @@ struct GothicRendererSettings {
         MAX = 16384,
     };
 
-    /** Copies `identifiers` into OceanIdentifiers, zero-filled; false when it had to be truncated. */
-    bool SetOceanIdentifiers( std::string_view identifiers ) {
-        memset( OceanIdentifiers, 0, sizeof( OceanIdentifiers ) );
-        const size_t count = std::min( identifiers.size(), sizeof( OceanIdentifiers ) - 1 );
-        memcpy( OceanIdentifiers, identifiers.data(), count );
+    /** Copies `identifiers` into an identifier list member, zero-filled; false when it had to be truncated. */
+    template <size_t N>
+    static bool SetIdentifierList( char ( &list )[N], std::string_view identifiers ) {
+        memset( list, 0, N );
+        const size_t count = std::min( identifiers.size(), N - 1 );
+        memcpy( list, identifiers.data(), count );
         return count == identifiers.size();
     }
+    bool SetOceanIdentifiers( std::string_view identifiers ) { return SetIdentifierList( OceanIdentifiers, identifiers ); }
+    bool SetFloatingPlantIdentifiers( std::string_view identifiers ) { return SetIdentifierList( FloatingPlantIdentifiers, identifiers ); }
 
     /** Sets the default values for this struct */
     void SetDefault() {
@@ -1024,7 +1032,9 @@ struct GothicRendererSettings {
 #else
         WaterShoreFoam = WATER_FOAM_OCEAN;
 #endif
+        WaterShoreFoamStyle = WATER_FOAM_STYLE_COAST;
         SetOceanIdentifiers( "NW_WATER_LAKE*|*OCEAN*" );
+        SetFloatingPlantIdentifiers( "*DUCKWEED*" );
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
@@ -1468,9 +1478,13 @@ struct GothicRendererSettings {
     float OceanCustomClarity;         // 0 = dense coastal water, 1 = clear tropical water
     float OceanCustomTexture;         // water texture over the body; 1 = classic GD3D11 amount
     E_WaterShoreFoam WaterShoreFoam;
+    E_WaterShoreFoamStyle WaterShoreFoamStyle;
     // Water materials or textures that are sea: '|'-separated, case-insensitive; X* prefix, *X suffix, *X* contains,
     // X exact. Zero-filled so the per-frame memcmp stays stable. Read at world load (IsOceanWaterMaterial).
     char OceanIdentifiers[256];
+    // Plant vobs (visual or vob name, same syntax) that ride the water's vertex waves when resting on its surface.
+    // Read when a vob is added (FloatingVobs.cpp).
+    char FloatingPlantIdentifiers[128];
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
@@ -1587,6 +1601,9 @@ struct GothicRendererSettings {
             // camera. See ImGuiShim::RenderPointLightShadowDebugWindow.
             bool Enabled;
         } PointLightDebug;
+        struct {
+            bool ShowShoreField;   // paints the baked shoreline field over the water
+        } WaterDebug;
     } DebugSettings;
 
     // TAA stores its accumulated weight in the history alpha, which R11G11B10 lacks.

@@ -36,7 +36,9 @@ cbuffer WaterParams : register( b3 )
 	float WP_SkyReflection;     // 1 = march the reflected sky in screen space
 	float WP_OceanTexture;      // 0 = pure water body, 1 = legacy-strength texture blend
 	float WP_ShoreFoam;         // 0 = off, 1 = ocean only, 2 = all water
-	float2 WP_Pad;
+	float WP_ShoreFieldState;   // 0 = no shoreline field, 1 = field, 2 = debug paint
+	float WP_Pad;
+	float4 WP_ShoreFieldMapping; // xy = field corner (world xz), zw = 1 / its extent
 };
 
 //--------------------------------------------------------------------------------------
@@ -53,6 +55,7 @@ Texture2D	TX_Scene : register( t5 );
 Texture2D	TX_WaterSurfaceDepth : register( t6 ); // live depth after the water prepass, for shore probes
 Texture2D	TX_LowClouds : register( t7 );         // premultiplied low cloud layer; unbound = no clouds
 Texture2D<float> TX_SkyAverage : register( t8 );   // 4x1 average on-screen sky (rgb, valid); unbound = none
+Texture2D	TX_ShoreField : register( t9 );        // ShoreField.cpp: distance, depth, seaward xz
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -256,6 +259,14 @@ float4 WaterSkyAverage()
 	               TX_SkyAverage.Load( int3( 2, 0, 0 ) ), TX_SkyAverage.Load( int3( 3, 0, 0 ) ) );
 }
 
+// Away from the field: as far from any shore as WATER_SHORE_FAR / WATER_SHORE_NO_FLOOR say
+float4 WaterShoreField( float2 xz )
+{
+	float2 uv = ( xz - WP_ShoreFieldMapping.xy ) * WP_ShoreFieldMapping.zw;
+	if ( any( uv < 0.0f ) || any( uv > 1.0f ) ) return float4( 30000.0f, 5000.0f, 0.0f, 0.0f );
+	return TX_ShoreField.SampleLevel( SS_Linear, uv, 0 );
+}
+
 bool WaterSSREnabled()
 {
 #if SSR_QUALITY > 0
@@ -306,6 +317,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	fr.moonDisc = WP_MoonDisc;
 	fr.skyReflection = WP_SkyReflection;
 	fr.shoreFoam = WP_ShoreFoam;
+	fr.shoreFieldState = WP_ShoreFieldState;
 
 	return float4( ShadeWater( px, fr ), 1.0f );
 }
