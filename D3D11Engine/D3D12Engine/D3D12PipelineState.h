@@ -519,6 +519,12 @@ public:
         Microsoft::WRL::ComPtr<Rhi::PipelineState> VobCullCasterPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            SceneCasterArgsCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> SceneCasterArgsPSO;
+        // GPU world mesh (D3D12GpuWorld): b0 31 consts, t0-t3 root SRVs, u0-u2 root UAVs.
+        Microsoft::WRL::ComPtr<Rhi::RootSignature> WorldCullRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            WorldCullCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> WorldCullPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            WorldClearCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> WorldClearPSO;
     };
 
     // Debug/editor lines (D3D12LineRenderer): one root sig (b0 ViewProj, b1 viewport) + one VS/PS set,
@@ -657,6 +663,7 @@ public:
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
+    bool CreateWorldCull();   // GPU world-mesh cluster cull (WorldCull.hlsl); non-fatal
     bool CreateMorphFold();   // GPU morph-mesh fold compute (b0 8 consts, t0-t2 root SRVs, u0 root UAV)
     bool CreateSkinning();    // compute skinning (b0 4 consts, t0-t3 root SRVs, u0-u1 root UAVs)
     bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)

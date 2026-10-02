@@ -31,10 +31,12 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12VobArena.h"
 #include "D3D12MeshArena.h"
 #include "D3D12GpuScene.h"
+#include "D3D12GpuWorld.h"
 
 static_assert( D3D12ShadowMap::kBackBufferMax == D3D12GraphicsEngine::kBackBufferMax,
     "D3D12ShadowMap's per-frame ring array bound must match the engine's" );
 static_assert( kShadowCascades <= D3D12GpuScene::kCasterViews, "the GPU scene has a caster region per cascade" );
+static_assert( kShadowCascades + 1 <= D3D12GpuWorld::kViews, "the GPU world has a view per cascade after the main one" );
 
 void D3D12ShadowMap::Attach( D3D12GraphicsEngine& engine ) {
     m_E = &engine;
@@ -825,8 +827,9 @@ void D3D12ShadowMap::Prepare() {
 	// once from the stale list. Previous-frame jobs are all joined by now (FinishShadowPasses), so this is safe.
 	for ( UINT c = 0; c < kShadowCascades; ++c ) m_E->m_ShadowListRecorded[c] = false;
 	m_SceneCasters = false;
+	m_WorldGpu = false;
 	for ( bool& a : m_SceneAnimatedCaster ) a = false;
-	if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_Pipelines.World.RootSig )
+if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_Pipelines.World.RootSig )
 		return;
 
 	// NOTE: no function-scope DX_ZONE here — the MT path closes and resubmits m_CmdList mid-frame, which would
@@ -878,8 +881,15 @@ void D3D12ShadowMap::Prepare() {
 	const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
 		&& (ib->GetSizeInBytes() / sizeof( uint32_t )) > 0;
 
+	// GPU world: the cascades' world casters are culled and listed on the GPU, recorded here ahead of the jobs.
+	if ( haveWorld && castersNeeded && m_E->m_GpuWorldActive ) {
+		D3D12GpuWorld::View views[kShadowCascades] = {};
+		for ( UINT c = 0; c < kShadowCascades; ++c ) views[c] = { m_CascadeCullViewProj[c], m_ShouldUpdateCascade[c], false };
+		m_WorldGpu = m_E->m_GpuWorld->Cull( m_E->m_CmdList, views, 1, kShadowCascades );
+	}
+
 	g_WorldCasters.clear();
-	if ( haveWorld && castersNeeded ) {
+	if ( haveWorld && castersNeeded && !m_WorldGpu ) {
 		const Frustum& unionShadowFrustum = m_CascadeFrustum[kShadowCascades - 1];
 		static std::vector<WorldMeshSectionInfo*> shadowSections;
 		shadowSections.clear();
@@ -1410,7 +1420,8 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 	D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
 
 	// --- World mesh (root sig: m_Pipelines.World.RootSig; b0 = cascade view-proj; b6 bindless material) ---
-	if ( m_WorldDrawCount[c] > 0 && vb && ib && m_WorldDrawArgs[c][frame] ) {
+	const bool gpuWorld = m_WorldGpu && m_E->m_GpuWorld->Drawable( c + 1 );
+	if ( ( gpuWorld || ( m_WorldDrawCount[c] > 0 && m_WorldDrawArgs[c][frame] ) ) && vb && ib ) {
 		DX_ZONE( cmdList.Get(), "World Mesh" );
 		TracyD3D12ZoneCGX( cmdList.Get(), "World Mesh" );
 
@@ -1427,7 +1438,11 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, D3D12CmdList& cmdList, bool su
 		cmdList->IASetVertexBuffers( 0, 1, &vbv );
 		cmdList->IASetIndexBuffer( &ibv );
 
-		if ( !splitAlpha ) {
+		if ( gpuWorld ) {
+			m_E->m_GpuWorld->Draw( cmdList, c + 1, false );
+			if ( splitAlpha ) cmdList->SetPipelineState( m_CasterWorldPSO.Get() );
+			m_E->m_GpuWorld->Draw( cmdList, c + 1, true );
+		} else if ( !splitAlpha ) {
 			cmdList->ExecuteIndirect( m_E->m_WorldIndirectCmdSig.Get(), m_WorldDrawCount[c],
 				m_WorldDrawArgs[c][frame].Get(), 0, nullptr, 0 );
 		} else {

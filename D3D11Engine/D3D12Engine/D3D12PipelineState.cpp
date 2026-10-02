@@ -4010,6 +4010,37 @@ bool D3D12PipelineState::CreateCull() {
 }
 
 
+bool D3D12PipelineState::CreateWorldCull() {
+    Rhi::Device* device = m_Device;
+    if ( !device ) return false;
+    D3D12RootLayout& rs = Layout( "CullWorld" );
+    rs.AddConstants( 0, 31, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 WorldCullCB
+    for ( UINT t = 0; t < 4; ++t )   // 1-4: t0 Sections, t1 Meshes, t2 Clusters, t3 Materials
+        rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 5: u0 Args
+    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 6: u1 ArgCount
+    rs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 7: u2 MaterialSeen
+    if ( !rs.Build( device ) ) return false;
+    Cull.WorldCullRootSig = rs.RootSig();
+
+    auto make = [&]( const char* entry, ComPtr<ID3DBlob>& blob, ComPtr<Rhi::PipelineState>& pso ) {
+        if ( !m_Shaders->CompileFromFile( "WorldCull.hlsl", entry, Shadermodel_CS, blob.ReleaseAndGetAddressOf() ) ) return false;
+        rs.ValidateShaders( { { blob.Get(), entry, D3D12_SHADER_VISIBILITY_ALL } } );
+        Rhi::ComputePipelineStateDesc desc = {};
+        desc.pRootSignature = rs.Get();
+        desc.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
+        if ( SUCCEEDED( device->CreateComputePipelineState( &desc, pso.ReleaseAndGetAddressOf() ) ) ) return true;
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed ({}).", entry );
+        return false;
+        };
+    if ( make( "CSWorldCull", Cull.WorldCullCsBlob, Cull.WorldCullPSO )
+        && make( "CSWorldClear", Cull.WorldClearCsBlob, Cull.WorldClearPSO ) ) return true;
+    Cull.WorldCullPSO.Reset();
+    Cull.WorldClearPSO.Reset();
+    return false;
+}
+
+
 bool D3D12PipelineState::CreateMorphFold() {
     // GPU morph fold (Shaders/D3D12/MorphFold.hlsl + D3D12MorphFold.cpp). Everything rides on root
     // descriptors — no descriptor heap slots involved, so a dispatch is 4 Set calls.

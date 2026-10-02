@@ -940,8 +940,9 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
     ResetVobs();
+    if ( Engine::GraphicsEngine ) Engine::GraphicsEngine->OnWorldMeshReset();
     ClearWorldSectionBVH();
-    State->WorldSections.clear();
+State->WorldSections.clear();
     State->ShoreFieldData.reset();
     State->ShoreFieldBaked = false;
 
@@ -6152,6 +6153,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GpuScene", to_string_locale_independent( s.GpuScene ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuWorld", to_string_locale_independent( s.GpuWorld ? TRUE : FALSE ).c_str(), ini.c_str() );
     // Persisted because it is not a live toggle: MorphGpu::IsActive() freezes it at load (it decides how the
     // morph vertex buffers get created), so the only way to turn it off is for the NEXT run.
     WritePrivateProfileStringA( "Debug", "GpuMorphFold", to_string_locale_independent( s.UseGpuMorphFold ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6446,6 +6448,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
         s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
         s.GpuScene = GetPrivateProfileBoolA( "Debug", "GpuScene", ds.GpuScene, ini );
+        s.GpuWorld = GetPrivateProfileBoolA( "Debug", "GpuWorld", ds.GpuWorld, ini );
         s.UseGpuMorphFold = GetPrivateProfileBoolA( "Debug", "GpuMorphFold", ds.UseGpuMorphFold, ini );
         s.UseGpuUploadRings = GetPrivateProfileBoolA( "Debug", "GpuUploadRings", ds.UseGpuUploadRings, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );

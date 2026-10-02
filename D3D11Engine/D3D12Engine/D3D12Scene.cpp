@@ -54,6 +54,7 @@ using Microsoft::WRL::ComPtr;
 #include "../GSky.h"
 #include "D3D12VobArena.h"
 #include "D3D12GpuScene.h"
+#include "D3D12GpuWorld.h"
 #include "D3D12MeshArena.h"
 #include "../TransparencyQueue.h"
 
@@ -400,9 +401,16 @@ void D3D12GraphicsEngine::OnVobsReset() {
 }
 
 
+void D3D12GraphicsEngine::OnWorldMeshReset() {
+    // Not every load mode reaches OnLoadWorld, and the GPU world points into the sections being deleted.
+    m_GpuWorld->Reset();
+}
+
+
 void D3D12GraphicsEngine::OnLoadWorld()
 {
     m_GpuScene->Reset();
+    m_GpuWorld->Reset();
     g_vobInfoVisualToBucket.clear();
     g_vobInfoVisualIndexToVisualInfo.clear();
     g_GeometryPassVobs.Reset();
@@ -2551,6 +2559,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		m_GpuSceneFocusSlot = 0xFFFFFFFFu;
 		if ( m_GpuSceneActive && oCGame::GetHighlightInteractFocus() && oCGame::GetPlayer() )
 			m_GpuSceneFocusSlot = m_GpuScene->SlotOf( oCGame::GetPlayer()->GetFocusVob() );
+		// GPU world (D3D12GpuWorld.h): the world mesh is culled per view on the GPU.
+		m_GpuWorldActive = srs.GpuWorld && m_FrameOpen && m_WorldIndirectCmdSig && cull.WorldCullPSO && cull.WorldClearPSO
+			&& m_GpuWorld->BeginFrame( m_CmdList );
 	}
 
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
@@ -2664,6 +2675,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// per-material bindless-index resolution + water peel-out. Both the depth prepass and the color pass draw
 	// from it, so the BSP walk happens once (was per-pass) and neither pass issues per-material CPU draw calls.
 	BuildWorldDrawCommands();
+	if ( m_GpuWorldActive ) CullGpuWorldMain();
 	// Build the instanced-VOB ExecuteIndirect command set ONCE (P2.12) from the shared g_FrameVobUploads snapshot,
 	// resolving each material's full PBR bindless indices (diffuse+normal+ORM) — the depth prepass ignores the extra
 	// two, so both the prepass and the color pass ExecuteIndirect over this same buffer (the per-material CacheIn +
@@ -3243,6 +3255,53 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
     return m;
 }
 
+void D3D12GraphicsEngine::CullGpuWorldMain() {
+    // Gothic's own camera frustum, which the CPU path tests meshes against (BuildWorldDrawCommands' playerFrustum).
+    D3D12GpuWorld::View view{};
+    view.Active = true;
+    if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+        const XMMATRIX viewProj = XMMatrixMultiply( XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
+            XMLoadFloat4x4( &cam->trafoProjection ) );
+        XMStoreFloat4x4( &view.CullViewProj, XMMatrixTranspose( viewProj ) );
+    } else {
+        view.NoFrustum = true;
+    }
+    // On failure nothing draws the world this frame: its CPU command set was never built.
+    m_GpuWorldActive = m_GpuWorld->Cull( m_CmdList, &view, D3D12GpuWorld::kViewMain, 1 );
+}
+
+D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(const MeshKey& key, bool cacheIn ) const {
+    // normal 0xFFFFFFFF = none (the PS skips the perturb), ORM = the 1x1 default when the material has no _FX.
+    WorldMaterial m{ 0xFFFFFFFFu, GetDefaultOrmSrvSlot(), m_BlackTexture->GetSrvSlot(),
+        key.Info ? key.Info->buffer.NormalmapStrength : 1.0f, false, true };
+    zCTexture* tex = key.Material->GetAniTexture();
+    // CacheIn also loads the normal/ORM side textures; cacheIn=false only reads the state.
+    const bool cached = tex && ( cacheIn ? ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
+                                         : ( tex->GetCacheState() == zRES_CACHED_IN ) );
+    m.TextureReady = !tex || cached;
+    if ( cached ) {
+        if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+            if ( GfxTexture* gfx = s->GetEngineTexture() ) { D3D12Texture* d = D3D12Texture::From( gfx ); if ( d->HasSRV() ) m.Diffuse = d->GetSrvSlot(); }
+            if ( GfxTexture* n = s->GetNormalmap() )       { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) m.Normal = d->GetSrvSlot(); }
+            if ( GfxTexture* o = s->GetFxMap() )           { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) m.Orm = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
+        }
+    }
+    // Same predicate D3D11 uses to pick between PS_DiffuseAlphaTestShadows and no pixel shader at all in its
+    // Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
+    m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || key.Material->HasAlphaTest();
+    if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
+    return m;
+}
+
+void D3D12GraphicsEngine::WetNormalFallback( uint32_t& slot, float& strength ) const {
+    // Mirrors D3D11GraphicsEngine::BindTextureNRFX: a material with no normalmap still gets a wet look while it
+    // rains, perturbed by the distortion noise at a much weaker strength than a real normalmap.
+    slot = UINT32_MAX;
+    strength = kWetDistortionNormalStrength;
+    if ( m_DistortionTexture && m_DistortionTexture->HasSRV() && Engine::GAPI->GetSceneWetness() > 1e-6f )
+        slot = m_DistortionTexture->GetSrvSlot();
+}
+
 UINT D3D12GraphicsEngine::CoalesceWorldDepthCommands(
     std::vector<WorldDrawCommand>& opaque, WorldDrawCommand* out, UINT outCapacity ) {
     // Draw-call merge for the depth-only world submits. Every command indexes the SAME wrapped world VB/IB,
@@ -3299,9 +3358,9 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     static std::vector<WorldMeshSectionInfo*> sections;
     sections.clear();
-    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
+    if ( !m_GpuWorldActive ) Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
 
-    WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
+    WorldDrawCommand* cmds= reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;
 
     // Alpha-test partition (see m_WorldOpaqueDrawCount): opaque materials go straight into the arg ring, the
@@ -3318,6 +3377,9 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     // Camera position for the alpha-blended peel's painter-order sort key (see the branch below).
     const XMVECTOR transparencyCamPos = Engine::GAPI->GetCameraPositionXM();
+    uint32_t wetSlot;
+    float wetStrength;
+    WetNormalFallback( wetSlot, wetStrength );
     
     Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
     if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
@@ -3329,53 +3391,80 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         );
     }
 
+    // Water, portals, foam and blended surfaces go to their own passes; true when the mesh was one of them.
+    auto peel = [&]( WorldMeshSectionInfo* section, const MeshKey& meshKey, WorldMeshInfo* mesh ) -> bool {
+        // Sort key for every transparency bucket below: closest point on the mesh's own bbox, not
+        // its center (see ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
+        auto transparencyDistanceSq = [&]() -> float {
+            const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
+            const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );
+            const XMVECTOR boundsMax = XMLoadFloat3( &bounds->Max );
+            const XMVECTOR closestPoint = XMVectorClamp( transparencyCamPos, boundsMin, boundsMax );
+            float distanceSq = 0.0f;
+            XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - transparencyCamPos ) );
+            return distanceSq;
+        };
+
+        // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque
+        // command set. Forest portals and waterfall foam get their own sorted lists for the same reason,
+        // each drawn with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / ...Waterfall).
+        if ( meshKey.Info ) {
+            if ( meshKey.Info->IsWater() ) {
+                g_FrameWaterSurfaces[meshKey.Info->MaterialType == MaterialInfo::MT_Ocean][meshKey.Material->GetAniTexture()].push_back( mesh );
+                return true;
+            } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
+                g_FrameWorldTransparencyPortal.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+                return true;
+            } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
+                g_FrameWorldTransparencyFoam.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+                return true;
+            }
+        }
+
+        // Alpha-blended materials (ice, glass, magic barriers) are peeled out of the opaque set the same
+        // way water is — they need the material's own blend mode, back-to-front order and no depth write,
+        // which one ExecuteIndirect over the opaque PSO cannot express. Mirrors D3D11's DrawWorldMesh
+        // "Check for alphablending" branch feeding FrameTransparencyMeshes; drawn by
+        // DrawWorldTransparencyMeshes (D3D12Transparency.cpp). Peeled from the DEPTH PREPASS too (both
+        // passes share this command set) — same as D3D11, whose prepass `isSkipped` filter drops them.
+        if ( IsWorldMeshAlphaBlended( meshKey.Material ) ) {
+            g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+            return true;
+        }
+        return false;
+    };
+
+    if ( m_GpuWorldActive ) {
+        // The GPU lists the rest (CullGpuWorldMain). Same section range as CollectVisibleSections' main view.
+        const GothicRendererSettings& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        const bool gridRadius = !rs.DrawSectionIntersections
+            && !( rs.DebugSettings.FeatureSet.UseWorldSectionBVH && rs.DebugSettings.Culling.CullBspSections );
+        const float radius = rs.SectionDrawRadius * WORLD_SECTION_SIZE;
+        const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+        const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
+        for ( const D3D12GpuWorld::Special& sp : m_GpuWorld->Specials() ) {
+            const zTBBox3D& box = sp.Section->BoundingBox;
+            if ( gridRadius ) {
+                if ( abs( sp.GridX - camSection.x ) >= rs.SectionDrawRadius || abs( sp.GridY - camSection.y ) >= rs.SectionDrawRadius ) continue;
+            } else if ( Toolbox::ComputePointAABBDistanceSq( camPos, box.Min, box.Max ) >= radius * radius ) {
+                continue;
+            }
+            if ( sp.Mesh->HasBoundingBox ? !Engine::GAPI->IsWorldMeshVisibleInFrustum( sp.Mesh, playerFrustum )
+                                         : !playerFrustum.Intersects( box ) ) continue;
+            peel( sp.Section, *sp.Key, sp.Mesh );
+        }
+        return;
+    }
+
     for ( WorldMeshSectionInfo* section : sections ) {
         if ( !section ) continue;
         for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
-            
+
             if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, playerFrustum ) ) {
                 continue;
-            }            
-
-            // Sort key for every transparency bucket below: closest point on the mesh's own bbox, not
-            // its center (see ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
-            auto transparencyDistanceSq = [&]() -> float {
-                const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
-                const XMVECTOR boundsMin = XMLoadFloat3( &bounds->Min );
-                const XMVECTOR boundsMax = XMLoadFloat3( &bounds->Max );
-                const XMVECTOR closestPoint = XMVectorClamp( transparencyCamPos, boundsMin, boundsMax );
-                float distanceSq = 0.0f;
-                XMStoreFloat( &distanceSq, XMVector3LengthSq( closestPoint - transparencyCamPos ) );
-                return distanceSq;
-            };
-
-            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque
-            // command set. Forest portals and waterfall foam get their own sorted lists for the same reason,
-            // each drawn with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / ...Waterfall).
-            if ( meshKey.Info) {
-                if ( meshKey.Info->IsWater() ) {
-                    g_FrameWaterSurfaces[meshKey.Info->MaterialType == MaterialInfo::MT_Ocean][meshKey.Material->GetAniTexture()].push_back( mesh );
-                    continue;
-                } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
-                    g_FrameWorldTransparencyPortal.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
-                    continue;
-                } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
-                    g_FrameWorldTransparencyFoam.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
-                    continue;
-                }
             }
-
-            // Alpha-blended materials (ice, glass, magic barriers) are peeled out of the opaque set the same
-            // way water is — they need the material's own blend mode, back-to-front order and no depth write,
-            // which one ExecuteIndirect over the opaque PSO cannot express. Mirrors D3D11's DrawWorldMesh
-            // "Check for alphablending" branch feeding FrameTransparencyMeshes; drawn by
-            // DrawWorldTransparencyMeshes (D3D12Transparency.cpp). Peeled from the DEPTH PREPASS too (both
-            // passes share this command set) — same as D3D11, whose prepass `isSkipped` filter drops them.
-            if ( IsWorldMeshAlphaBlended( meshKey.Material ) ) {
-                g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
-                continue;
-            }
+            if ( peel( section, meshKey, mesh ) ) continue;
             if ( count + alphaCmds.size() >= kMaxWorldDrawCommands ) {
                 if ( !m_WorldDrawArgsOverflowLogged ) {
                     Logging::Wrn( "D3D12: world draw-command ring overflow ({} draws/frame); some world materials dropped this frame.",
@@ -3385,53 +3474,19 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 break;
             }
 
-            // Resolve this material's bindless SRV heap indices — diffuse (CacheIn triggers load + its normal/ORM
-            // side-loads), normal (0xFFFFFFFF = none → PS skips perturb), ORM (1x1 default when the material has no _FX).
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
-            uint32_t normalIdx  = 0xFFFFFFFFu;
-            uint32_t ormIdx     = GetDefaultOrmSrvSlot();
-            float normalStrength = 1.0f;
-
-            if (auto info = meshKey.Info) {
-                normalStrength = info->buffer.NormalmapStrength;
-            }
-            
-            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = s->GetEngineTexture() ) {
-                        D3D12Texture* d = D3D12Texture::From( gfx );
-                        if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
-                    }
-                    if ( GfxTexture* n = s->GetNormalmap() ) {
-                        D3D12Texture* d = D3D12Texture::From( n );
-                        if ( d->HasSRV() ) normalIdx = d->GetSrvSlot();
-                    }
-                    if ( GfxTexture* o = s->GetFxMap() ) {
-                        D3D12Texture* d = D3D12Texture::From( o );
-                        if ( d->HasSRV() ) ormIdx = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() );
-                    }
-                }
-            }
-            // Wet-ground fallback (mirrors D3D11GraphicsEngine::BindTextureNRFX): a material with no normalmap
-            // still gets a wet/specular look while it's raining, by perturbing with the same distortion noise
-            // texture the D3D11 backend uses, at a much weaker strength than a real normalmap.
-            if ( normalIdx == 0xFFFFFFFFu && m_DistortionTexture && m_DistortionTexture->HasSRV()
-                && Engine::GAPI->GetSceneWetness() > 1e-6f ) {
-                normalIdx = m_DistortionTexture->GetSrvSlot();
-                normalStrength = kWetDistortionNormalStrength;
-            }
-
-            // Same predicate D3D11 uses to pick between PS_DiffuseAlphaTestShadows and no pixel shader at all
-            // in its Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
-            const bool alphaTested = ( tex && tex->HasAlphaChannel() )
-                || ( meshKey.Material && meshKey.Material->HasAlphaTest() );
+            // Diffuse (CacheIn triggers the load and its normal/ORM side-loads), normal and ORM.
+            const WorldMaterial mat = ResolveWorldMaterial( meshKey, true );
+            const bool alphaTested = mat.AlphaTested;
 
             WorldDrawCommand c{};
-            c.MatNormalIndex     = normalIdx;
-            c.MatOrmIndex        = ormIdx | ( alphaTested ? kBacklitFoliage : 0u );
-            c.MatDiffuseIndex    = diffuseIdx;
-            c.MatNormalStrength  = normalStrength;
+            c.MatNormalIndex     = mat.Normal;
+            c.MatOrmIndex        = mat.Orm;
+            c.MatDiffuseIndex    = mat.Diffuse;
+            c.MatNormalStrength  = mat.NormalStrength;
+            if ( c.MatNormalIndex == 0xFFFFFFFFu && wetSlot != UINT32_MAX ) {
+                c.MatNormalIndex = wetSlot;
+                c.MatNormalStrength = wetStrength;
+            }
             c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
             c.Draw.InstanceCount = 1;
             c.Draw.StartIndexLocation = mesh->BaseIndexLocation;
@@ -4345,6 +4400,13 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // BuildWorldDrawCommands filled (same opaque draw set as the color pass; water already peeled). Each command
     // sets the b6 diffuse index (PSClip alpha-clips bindless) then draws its material's index range. Replaces the
     // per-material descriptor-table binds + DrawIndexedInstanced calls (the CPU cost this optimization targets).
+    if ( m_GpuWorldActive ) {
+        if ( !m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) return;
+        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+        if ( splitAlpha ) m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+        m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        return;
+    }
     if ( m_WorldDrawCount == 0 ) return;
     if ( !splitAlpha ) {
         m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
@@ -4538,6 +4600,13 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     // command sets this material's b6 { normal, orm, diffuse } bindless indices then draws its index range — so
     // the whole opaque world is one API call with zero per-draw descriptor binds (the CPU cost this targets).
     // Frame-constant root args (b0 ViewProj, b1 fog, lights, CSM, point-shadow cubes) are already set above.
+    if ( m_GpuWorldActive ) {
+        if ( m_GpuWorld->Drawable( D3D12GpuWorld::kViewMain ) ) {
+            m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, false );
+            m_GpuWorld->Draw( m_CmdList, D3D12GpuWorld::kViewMain, true );
+        }
+        return XR_SUCCESS;
+    }
     if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;
     m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
         m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
