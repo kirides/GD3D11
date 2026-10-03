@@ -95,6 +95,7 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
             if ( pending.Job ) pending.Job();
         }
     }
+    m_CleanupClosed = true;
     // After the idle+drain above: the FFX context releases its internal D3D12 resources synchronously, so it
     // must not outlive in-flight work — and must go before the device does.
     ReleaseFsr3();
@@ -1691,6 +1692,8 @@ void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL:
 void D3D12GraphicsEngine::QueueCleanupJob( std::move_only_function<void()> callback )
 {
     if ( callback == nullptr ) return;
+    // Destroying the callback releases its captures; its body may touch already-destroyed members.
+    if ( m_CleanupClosed ) return;
     // Hold a reference until the frame this was queued in has retired on the GPU (MoveToNextFrame drains
     // by ordinal, after its fence wait), then drop it. The capture keeps the resource alive until every
     // command list that could reference it has finished.

@@ -2123,5 +2123,8 @@ private:
     // the destructor's forced cleanup. Callbacks are moved out and run AFTER releasing the lock (see
     // MoveToNextFrame/destructor) so an arbitrary callback body never executes while this mutex is held.
     std::mutex m_CleanupMutex;
+    // Set by the destructor after its final drain: members destroyed later find the queue gone, so their
+    // releases run on the spot (GPU idle) instead of landing in a destroyed deque.
+    bool m_CleanupClosed = false;
     bool m_PresentPending = false;
 };
