@@ -98,6 +98,15 @@ public:
         return *reinterpret_cast<DWORD*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Color ));
     }
 
+    /** ignoreSunLight: ZenGin lights the material's world polys a flat grey in outdoor worlds (zBsp.cpp). */
+    bool GetIgnoreSunLight() {
+#ifdef BUILD_GOTHIC_1_08k
+        return false;
+#else
+        return GetFlags().m_bIgnoreSun;
+#endif
+    }
+
     /** The base texture has animation frames, so GetAniTexture moves on over time. */
     bool HasAnimatedTexture() const {
         zCTexture* texture = GetTextureSingle();

@@ -4851,6 +4851,7 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
 
     // Stand-in for the lighting these unlit surfaces never get; 1.0 in daylight. See GetSkyDayFactor.
     const float skyLight = Engine::GAPI->GetSkyDayFactor();
+    const bool ignoreSunWorld = !Engine::GAPI->IsIndoorWorld();   // ignoreSunLight only counts outdoors
 
     // Env-map overlay stage. Simple variant only - portals/foam are their own effects.
     const bool envMapEnabled = variant == EWorldTransparencyVariant::Normal;
@@ -4941,7 +4942,8 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             // Material color contributes ALPHA only: ZenGin's base stage is rgbGen=VERTEX / alphaGen=FACTOR
             // (zRenderManager.cpp:601-610), and its RGB is for untextured polys, which cannot reach this
             // loop. Multiplying the RGB in made dark-tinted additive surfaces (the magic barrier) vanish.
-            ffdata.textureFactor = float4( skyLight, skyLight, skyLight,
+            const float light = ignoreSunWorld && mat->GetIgnoreSunLight() ? 1.0f : skyLight;
+            ffdata.textureFactor = float4( light, light, light,
                 zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
 
             ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
