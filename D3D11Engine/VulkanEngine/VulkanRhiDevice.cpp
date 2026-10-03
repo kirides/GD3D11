@@ -355,6 +355,20 @@ namespace VulkanRhi {
     }
 
     void DeviceImpl::NotePresent() {
+        {
+            // A list left unsubmitted for a whole frame was abandoned; forget it so held garbage can't pile up.
+            std::lock_guard<std::mutex> lock( m_GarbageMutex );
+            ++m_PresentCount;
+            for ( auto it = m_OpenLists.begin(); it != m_OpenLists.end(); ) {
+                if ( m_PresentCount - it->second < 2 ) { ++it; continue; }
+                if ( !m_LoggedStaleList ) {
+                    m_LoggedStaleList = true;
+                    Logging::Wrn( "Vulkan: a command list was Reset but not submitted for a frame; no longer holding garbage for it." );
+                }
+                it = m_OpenLists.erase( it );
+            }
+            ReleaseHeldGarbageLocked();
+        }
         LARGE_INTEGER now = {};
         QueryPerformanceCounter( &now );
         LARGE_INTEGER freq = {};
@@ -672,10 +686,31 @@ namespace VulkanRhi {
     // ---- Lifetime -------------------------------------------------------------------------------
 
     void DeviceImpl::DeferDestroy( std::function<void()> destroy ) {
+        std::lock_guard<std::mutex> lock( m_GarbageMutex );
+        if ( !m_OpenLists.empty() ) {
+            m_HeldGarbage.push_back( std::move( destroy ) );
+            return;
+        }
         // +1: the next submit may still carry an init barrier for an image released before its first use.
         const uint64_t serial = m_Queue ? m_Queue->SubmittedSerial() + 1 : 0;
-        std::lock_guard<std::mutex> lock( m_GarbageMutex );
         m_Garbage.emplace_back( serial, std::move( destroy ) );
+    }
+
+    void DeviceImpl::ListOpened( const void* list ) {
+        std::lock_guard<std::mutex> lock( m_GarbageMutex );
+        m_OpenLists.try_emplace( list, m_PresentCount );
+    }
+
+    void DeviceImpl::ListSubmitted( const void* list ) {
+        std::lock_guard<std::mutex> lock( m_GarbageMutex );
+        if ( m_OpenLists.erase( list ) ) ReleaseHeldGarbageLocked();
+    }
+
+    void DeviceImpl::ReleaseHeldGarbageLocked() {
+        if ( !m_OpenLists.empty() || m_HeldGarbage.empty() ) return;
+        const uint64_t serial = m_Queue ? m_Queue->SubmittedSerial() + 1 : 0;
+        for ( auto& destroy : m_HeldGarbage ) m_Garbage.emplace_back( serial, std::move( destroy ) );
+        m_HeldGarbage.clear();
     }
 
     void DeviceImpl::CollectGarbage() {
@@ -1368,7 +1403,6 @@ namespace VulkanRhi {
         outLayout = general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
         return true;
     }
-
     Microsoft::WRL::ComPtr<Rhi::Device> CreateDevice() {
         ComPtr<DeviceImpl> device;
         device.Attach( new DeviceImpl() );

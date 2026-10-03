@@ -523,10 +523,14 @@ namespace VulkanRhi {
         void UnregisterBuffer( uint32_t id );
         ResourceImpl* ResolveAddress( D3D12_GPU_VIRTUAL_ADDRESS va, VkDeviceSize& outOffset ) const;
 
-        /** Runs `destroy` once every submission made so far has retired. */
+        /** Runs `destroy` once every submission made so far, and every list still being recorded, has retired. */
         void DeferDestroy( std::function<void()> destroy );
         /** Runs the retired deferred destructions; called after every submit. */
         void CollectGarbage();
+        /** A list Reset by the engine may reference what is released before it is submitted (another submit or a
+            fence signal can retire first), so garbage released meanwhile is held until no such list is open. */
+        void ListOpened( const void* list );
+        void ListSubmitted( const void* list );
 
         /** Image created in UNDEFINED; its first layout is established before the next submit. */
         void QueueInitialLayout( ResourceImpl* resource, VkImageLayout layout );
@@ -566,6 +570,7 @@ namespace VulkanRhi {
         void LogDeviceFault() const;
         void CreateScopeMarkers();
         void LogScopeMarkers() const;
+        void ReleaseHeldGarbageLocked();   // caller holds m_GarbageMutex
         void LoadPipelineCache();
         void SavePipelineCache();
 
@@ -594,6 +599,10 @@ namespace VulkanRhi {
 
         std::mutex m_GarbageMutex;
         std::deque<std::pair<uint64_t, std::function<void()>>> m_Garbage;
+        std::unordered_map<const void*, uint64_t> m_OpenLists;   // Reset, not yet submitted -> present count at Reset
+        std::vector<std::function<void()>> m_HeldGarbage;         // released while a list was open
+        uint64_t m_PresentCount = 0;
+        bool m_LoggedStaleList = false;
 
         struct InitCommands { VkCommandPool Pool = VK_NULL_HANDLE; VkCommandBuffer Cmd = VK_NULL_HANDLE; uint64_t Serial = 0; };
         std::mutex m_InitMutex;

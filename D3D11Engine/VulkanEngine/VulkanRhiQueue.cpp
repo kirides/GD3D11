@@ -539,6 +539,7 @@ namespace VulkanRhi {
         for ( UINT i = 0; i < count && n < kMax; ++i )
             if ( VkCommandBuffer cmd = CommandBufferOf( lists[i] ) ) cmds[n++] = cmd;
         const VkResult r = Submit( cmds, n, nullptr, 0, nullptr, 0, static_cast<FenceImpl*>( fence ), value );
+        for ( UINT i = 0; i < count; ++i ) m_Device->ListSubmitted( lists[i] );
         m_Device->CollectGarbage();
         return r == VK_SUCCESS ? S_OK : DXGI_ERROR_DEVICE_REMOVED;
     }
