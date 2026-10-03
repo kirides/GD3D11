@@ -761,19 +761,9 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 	m_ShadowThreadedRecord = threadedRecord;
 	// Part A only goes out early if the GPU is otherwise idle; B1 or the shadow submit carries it at the latest.
 	FlushSceneIfGpuCaughtUp();
-	if ( !threadedRecord ) {
-		// Degrade to the original single-threaded driver: record inline, right here. Same output, same queue
-		// order — just no overlap with the prepass. (The cascades still record in FinishShadowPasses, since
-		// their caster data does not exist until the concurrent cull is joined there.)
-		m_PointShadows.Record( m_CmdList );
-		RecordRainShadowmap( m_CmdList );
-		// Those passes leave no render target bound (their DSVs have just left DEPTH_WRITE) and the depth
-		// prepass the caller records next does not bind its own — re-establish the scene-color RT + depth.
-		BindSceneColorTarget();
-		return;
-	}
-
 	BindSceneColorTarget();
+	// Unthreaded, FinishShadowPasses records them inline: they draw the posed and arena-refreshed meshes B1 produces.
+	if ( !threadedRecord ) return;
 
 	// NOTE: only the point-cube and rain passes are fanned out here. The CSM cascades cannot be recorded yet —
 	// their per-cascade caster sets are still being culled on the worker pool, and the Phase-C build that turns
@@ -835,6 +825,11 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
 				m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() );
 		}
+	}
+	// Point cubes and rain map without threaded recording: same place in GPU order as their own lists would take.
+	if ( !m_ShadowThreadedRecord ) {
+		if ( m_PointShadows.IsPassReady() ) m_PointShadows.Record( m_CmdList );
+		if ( m_RainShadowPassReady ) RecordRainShadowmap( m_CmdList );
 	}
 
 	// --- 2b/3. join the point/rain recorders and execute everything that landed in its own list ---
