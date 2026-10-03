@@ -1,0 +1,41 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="G2_Debug" />
+    <BuildType Name="Launcher" />
+    <BuildType Name="Release" />
+    <BuildType Name="Release_AVX" />
+    <BuildType Name="Release_AVX2" />
+    <BuildType Name="Release_G1" />
+    <BuildType Name="Release_G1_12f" />
+    <BuildType Name="Release_G1_AVX" />
+    <BuildType Name="Release_G1_AVX2" />
+    <BuildType Name="Release_NoOpt" />
+    <BuildType Name="Release_NoOpt_G1" />
+    <BuildType Name="Release_NoOpt_Spacer" />
+    <BuildType Name="Spacer_NET" />
+    <BuildType Name="Spacer_NET_G1" />
+    <Platform Name="Win32" />
+  </Configurations>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+  </Folder>
+  <Project Path="D3D11Engine/D3D11Engine.vcxproj">
+    <Build Solution="Launcher|*" Project="false" />
+  </Project>
+  <Project Path="Launcher/Launcher.vcxproj">
+    <BuildType Project="Launcher" />
+    <Build Solution="G2_Debug|*" Project="false" />
+    <Build Solution="Release_AVX2|*" Project="false" />
+    <Build Solution="Release_AVX|*" Project="false" />
+    <Build Solution="Release_G1_12f|*" Project="false" />
+    <Build Solution="Release_G1_AVX2|*" Project="false" />
+    <Build Solution="Release_G1_AVX|*" Project="false" />
+    <Build Solution="Release_G1|*" Project="false" />
+    <Build Solution="Release_NoOpt_G1|*" Project="false" />
+    <Build Solution="Release_NoOpt_Spacer|*" Project="false" />
+    <Build Solution="Release_NoOpt|*" Project="false" />
+    <Build Solution="Release|*" Project="false" />
+    <Build Solution="Spacer_NET_G1|*" Project="false" />
+    <Build Solution="Spacer_NET|*" Project="false" />
+  </Project>
+</Solution>
