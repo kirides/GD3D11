@@ -94,6 +94,11 @@ public:
     void GatherMobInstances( uint32_t visual, const DirectX::XMFLOAT3& center, float radius, std::vector<VobInstanceInfo>& out ) const;
     uint32_t FirstMobVisual() const { return m_FirstMobVisual; }
     MeshVisualInfo* VisualInfo( uint32_t visual ) const { return m_Visuals[visual].Info; }
+    /** The RT scene's view of a visual: its first near template, their count (one per BLAS geometry) and the casters'
+        offset behind them. False while its templates are not on the GPU. */
+    bool RtTemplates( uint32_t visual, uint32_t& base, uint32_t& nearCount, uint32_t& casterOffset ) const;
+    /** Changes whenever the table is rebuilt, which renumbers the visuals. */
+    uint32_t Generation() const { return m_Generation; }
 
     /** Static VOBs the CPU path still draws: floating plants, visual alpha, visuals with a blended material. */
     const std::vector<VobInfo*>& CpuVobs() const { return m_CpuVobs; }
@@ -247,6 +252,7 @@ void MoveVisualToCpu( uint32_t v );
     size_t m_LastMobFrame = 0;
     uint32_t m_FlagCursor = 0;
     uint32_t m_Frame = 0;
+    uint32_t m_Generation = 0;
     bool m_TemplatesGrew = false;
 
     std::mutex m_FreedMutex;
