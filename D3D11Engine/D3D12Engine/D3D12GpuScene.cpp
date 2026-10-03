@@ -88,6 +88,7 @@ void D3D12GpuScene::Reset() {
 
     m_Built = false;
     m_BuildFailed = false;
+    ++m_Generation;
     m_Visuals.clear();
     m_RecordsCpu.clear();
     m_Templates.clear();
@@ -142,6 +143,18 @@ bool D3D12GpuScene::AnyAnimatedCasterIn( const Frustum& f ) const {
         if ( morph->GetNumAniChannels() > 0 && f.Intersects( vi->LastRenderBBox ) ) return true;
     }
     return false;
+}
+
+
+bool D3D12GpuScene::RtTemplates( uint32_t visual, uint32_t& base, uint32_t& nearCount, uint32_t& casterOffset ) const {
+    const Visual& vis = m_Visuals[visual];
+    // A grown range is only on the GPU once UploadDirty re-created the template buffer.
+    if ( vis.State == kVisualCpu || vis.TemplateUsed == 0 || m_TemplatesGrew
+        || vis.TemplateBase + vis.TemplateCapacity > m_TemplateCapacity ) return false;
+    nearCount = vis.TemplateUsed / ( vis.Split ? 3u : 2u );
+    base = vis.TemplateBase;
+    casterOffset = nearCount * ( vis.Split ? 2u : 1u );
+    return true;
 }
 
 
@@ -306,7 +319,8 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn, bool countWait ) {
         texturesReady = texturesReady && mat.TextureReady;
         const uint32_t alphaFlag = mat.AlphaTested ? kTemplateAlpha : 0u;
         for ( MeshInfo* mi : meshList ) {
-            if ( !mi || mi->Indices.empty() ) continue;
+            // The RT BLAS skips the same sub-meshes: its geometry g is near template g.
+            if ( !mi || mi->Indices.empty() || mi->Vertices.empty() ) continue;
             const D3D12VobArena::Range* r = arena->Find( mi );
             if ( !r || r->IndexCount == 0 ) { MarkCasterStale( v ); return false; }   // not uploaded yet
             Staged s;

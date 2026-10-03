@@ -2353,6 +2353,39 @@ bool D3D12PipelineState::CreateRtShadows() {
     return true;
 }
 
+bool D3D12PipelineState::CreateRtScene() {
+    Rhi::Device* device = m_Device;
+    RtSceneClear = RtSceneInstances = RtSceneTail = {};
+    if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; the RT scene collects on the CPU
+
+    D3D12RootLayout& rs = Layout( "RtScene" );
+    rs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 RtSceneCB
+    for ( UINT t = 0; t < 4; ++t )                            // 1-4: t0 Visuals, t1 Table, t2 Templates, t3 VisualRts
+        rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL );
+    for ( UINT u = 0; u < 4; ++u )                            // 5-8: u0 InstanceDescs, u1 Instances, u2 Geoms, u3 Feedback
+        rs.AddUAV( u, D3D12_SHADER_VISIBILITY_ALL );
+    if ( !rs.Build( device ) ) return false;
+
+    for ( auto [pipe, entry] : { std::pair{ &RtSceneClear, "CSClear" }, std::pair{ &RtSceneInstances, "CSInstances" },
+              std::pair{ &RtSceneTail, "CSTail" } } ) {
+        pipe->RootSig = rs.RootSig();
+        if ( !m_Shaders->CompileFromFile( "RtSceneInstances.hlsl", entry, Shadermodel_CS, pipe->CsBlob.ReleaseAndGetAddressOf() ) ) {
+            RtSceneClear = RtSceneInstances = RtSceneTail = {};
+            return false;
+        }
+        rs.ValidateShaders( { { pipe->CsBlob.Get(), entry, D3D12_SHADER_VISIBILITY_ALL } } );
+        Rhi::ComputePipelineStateDesc pso = {};
+        pso.pRootSignature = pipe->RootSig.Get();
+        pso.CS = { pipe->CsBlob->GetBufferPointer(), pipe->CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, pipe->PSO.ReleaseAndGetAddressOf() ) ) ) {
+            Logging::Wrn( "D3D12: CreateComputePipelineState failed (RT scene, {}).", entry );
+            RtSceneClear = RtSceneInstances = RtSceneTail = {};
+            return false;
+        }
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateWaterRT() {
     Rhi::Device* device = m_Device;
     if ( !device || !device->GetCaps().RayQuery ) return true;   // nothing to build; WaterRT.PSO stays null
@@ -4256,6 +4289,7 @@ bool D3D12PipelineState::ReloadAll( bool hdrEncodeActive, bool sceneEnabled, std
     runFatal( "Water", &D3D12PipelineState::CreateWater );
     runOptional( "WaterRT", &D3D12PipelineState::CreateWaterRT );
     runOptional( "RtShadows", &D3D12PipelineState::CreateRtShadows );
+    runOptional( "RtScene", &D3D12PipelineState::CreateRtScene );
     runFatal( "Particle", &D3D12PipelineState::CreateParticle );
     Particle.Pipelines.clear();
     runFatal( "Decal", &D3D12PipelineState::CreateDecal );

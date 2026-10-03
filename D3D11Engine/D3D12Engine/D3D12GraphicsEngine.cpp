@@ -313,6 +313,8 @@ bool D3D12GraphicsEngine::InitScene() {
             Logging::Wrn( "D3D12GraphicsEngine::Init: ray-traced water reflections unavailable (WaterRT.hlsl); using screen-space reflections." );
         if ( !m_Pipelines.CreateRtShadows() || !m_Pipelines.RtShadows.PSO )
             Logging::Wrn( "D3D12GraphicsEngine::Init: ray-traced shadows unavailable (RtShadows.hlsl); using shadow maps." );
+        if ( !m_Pipelines.CreateRtScene() || !m_Pipelines.RtSceneInstances.PSO )
+            Logging::Wrn( "D3D12GraphicsEngine::Init: RtSceneInstances.hlsl unavailable; the RT scene collects static VOBs on the CPU." );
     }
     if ( !m_Pipelines.CreateWaterSkyAverage() || !CreateWaterSkyAverage() ) {
         Logging::Wrn( "D3D12GraphicsEngine::Init: water sky average unavailable; missed sky reflections use the cube." );
