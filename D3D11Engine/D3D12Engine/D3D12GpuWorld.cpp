@@ -63,14 +63,6 @@ namespace {
         return !( func == 0 && zColor( key.Material->GetColor() ).bgra.alpha < 255 );
     }
 
-    /** The base texture has animation frames, so GetAniTexture moves on over time. */
-    bool HasAnimatedTexture( zCMaterial* mat ) {
-        zCTexture* tex = mat->GetTextureSingle();
-        if ( !tex ) return false;
-        const unsigned char flags = *reinterpret_cast<unsigned char*>( reinterpret_cast<DWORD>( tex ) + GothicMemoryLocations::zCTexture::Offset_Flags );
-        return ( flags & GothicMemoryLocations::zCTexture::Mask_FlagIsAnimated ) != 0;
-    }
-
     bool IsValidBox( const zTBBox3D& b ) { return b.Min.x <= b.Max.x && b.Min.y <= b.Max.y && b.Min.z <= b.Max.z; }
 }
 
@@ -165,7 +157,7 @@ bool D3D12GpuWorld::Build( Rhi::CmdList& cmd ) {
                 if ( inserted ) {
                     Material m;
                     m.Key = &key;
-                    m.Animated = HasAnimatedTexture( key.Material );
+                    m.Animated = key.Material->HasAnimatedTexture();
                     m_Materials.push_back( m );
                 }
 

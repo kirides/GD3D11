@@ -98,6 +98,13 @@ public:
         return *reinterpret_cast<DWORD*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Color ));
     }
 
+    /** The base texture has animation frames, so GetAniTexture moves on over time. */
+    bool HasAnimatedTexture() const {
+        zCTexture* texture = GetTextureSingle();
+        return texture && (*reinterpret_cast<unsigned char*>(reinterpret_cast<DWORD>(texture) + GothicMemoryLocations::zCTexture::Offset_Flags)
+            & GothicMemoryLocations::zCTexture::Mask_FlagIsAnimated);
+    }
+
     /** Returns single texture, because not all seem to be animated and returned by GetAniTexture? */
     zCTexture* GetTextureSingle() const {
         return *reinterpret_cast<zCTexture**>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Texture ));

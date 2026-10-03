@@ -167,6 +167,7 @@ private:
         bool     CasterStale = false;    // casters unbuilt or a texture unresolved: re-resolved round-robin
         bool     CasterQueued = false;   // in m_CasterRefresh
         bool     Mob = false;            // a MOB node mesh; Info holds a SharedVisualRegistry reference
+        bool     Animated = false;       // a material's texture has frames: rebuilt every frame it is seen
     };
     // A leaf MOB: a zCModel whose geometry hangs off its nodes (chests, doors, beds).
     struct Mob {
