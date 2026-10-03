@@ -33,11 +33,12 @@ SamplerComparisonState  shadowCmp : register(s2);
 // always valid too (the 1x1 black texture when the material's texture isn't cached in yet), and replaces what
 // used to be a per-material descriptor-table bind — same layout the world/VOB ExecuteIndirect commands push.
 #include "include/MaterialCB.hlsl"
+#include "include/TexAniScroll.hlsl"
 // The diffuse for every non-ghost entry point. One helper so the color/prepass/shadow-clip variants can never
 // drift apart on which slot or sampler they read.
 float4 SampleSkelDiffuse( float2 uv )
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     return difTex.Sample( smp, uv );
 }
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
@@ -92,6 +93,7 @@ VS_OUT VSMain( VS_POSED_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     float4 t = SampleSkelDiffuse( i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
@@ -142,6 +144,7 @@ VS_DEPTH_OUT VSDepth( VS_POSED_DEPTH_IN i )
 }
 float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
 {
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     float4 t = SampleSkelDiffuse( i.uv );
     clip( t.a - 0.5 );          // same cutout as PSMain so alpha edges don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
@@ -150,6 +153,7 @@ float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
 // warning; only alpha-clips the cutout so alpha edges don't cast solid shadows.
 void PSShadowClip( VS_DEPTH_OUT i )
 {
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     clip( SampleSkelDiffuse( i.uv ).a - 0.5 );
 }
 
@@ -185,6 +189,7 @@ VS_DEPTH_OUT VSGhost( VS_SKIN_IN i )
 
 float4 PSGhost( VS_DEPTH_OUT i ) : SV_TARGET
 {
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     float4 t = SampleSkelDiffuse( i.uv );
     // Linearize — m_SceneColor is a LINEAR HDR target on D3D12 (SrgbToLinear comes from PBRLighting.hlsl,
     // included above). D3D11's PS_TransparencySkel returns the raw texel because its HDR buffer is
@@ -222,6 +227,7 @@ VS_GBUF_OUT VSDepthGBuf( VS_POSED_IN i )
 
 GBUF_OUT PSDepthClipGBuf( VS_GBUF_OUT i )
 {
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     clip( SampleSkelDiffuse( i.uv ).a - 0.5 );   // identical cutout to PSDepthClip
     return MakeGBufOut( i.currClip, i.prevClip, i.wnrm );
 }

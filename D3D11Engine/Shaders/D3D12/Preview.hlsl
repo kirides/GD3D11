@@ -2,7 +2,7 @@
 // (RENDERMODE==1: plain textured, alpha-clip, no lighting/fog) — default (column-major) matrix packing, same
 // as World.hlsl/Vob.hlsl, so mul(float4(pos,1), M) is byte-for-byte identical to the row-major upload.
 cbuffer ViewProjCB : register(b0) { float4x4 ViewProj; };
-cbuffer WorldCB    : register(b1) { float4x4 World; };
+cbuffer WorldCB    : register(b1) { float4x4 World; float2 TexAniOffset; };   // material texAniMap scroll
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -15,7 +15,7 @@ VS_OUT VSMain( VS_IN i )
     VS_OUT o;
     float3 worldPos = mul( float4( i.pos, 1.0 ), World ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv = i.uv;
+    o.uv = i.uv + TexAniOffset;
     return o;
 }
 
@@ -74,6 +74,6 @@ VS_OUT VSSkeletal( VS_SKEL_IN i )
     VS_OUT o;
     float3 worldPos = mul( float4( skinned, 1.0 ), World ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv = i.uv;
+    o.uv = i.uv + TexAniOffset;
     return o;
 }

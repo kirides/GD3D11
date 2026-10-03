@@ -439,8 +439,8 @@ bool D3D12PipelineState::CreatePreview() {
 
     D3D12RootLayout& rs = Layout( "Preview" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // 1: b1 World (per-instance, single draw — no instance buffer needed)
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 1: b1 World (per-instance, single draw — no instance buffer needed) + texAniMap offset
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t0 diffuse
     // s0 diffuse: 16x anisotropic wrap, matches D3D11's DefaultSamplerState used for this draw.
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -509,7 +509,7 @@ bool D3D12PipelineState::CreatePreviewSkeletal() {
 
     D3D12RootLayout& rs = Layout( "PreviewSkeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World + texAniMap offset
     // 2: b2 bone palette. Points into the per-frame skeletal ring, whose cursor only ADVANCES within a
     // frame, so the handed-out address stays valid until Present.
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );
@@ -587,8 +587,8 @@ bool D3D12PipelineState::CreateGhost() {
 
     D3D12RootLayout& rs = Layout( "Ghost" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // 1: b1 World (per-instance, single draw — no instance buffer needed)
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 1: b1 World (per-instance, single draw — no instance buffer needed) + texAniMap offset
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddConstants( 2, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b2 GhostAlpha
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 3: t0 diffuse
     // s0 diffuse: matches Preview's sampler (16x anisotropic wrap).

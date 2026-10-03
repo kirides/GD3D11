@@ -5,6 +5,7 @@ SamplerState smp : register(s0);
 // it can be driven by ExecuteIndirect like the color pass. Only MatDiffuseIndex (DWORD 2) is read here; the
 // normal/ORM slots share the layout with the world color shader's MaterialCB so ONE command signature drives both.
 cbuffer MaterialCB : register(b6) { uint _matN; uint _matO; uint MatDiffuseIndex; };
+#include "include/TexAniScroll.hlsl"
 
 // World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
 // fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.
@@ -21,7 +22,8 @@ VS_OUT VSWorld( VS_IN i )
 
 float4 PSClip( VS_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
@@ -31,7 +33,8 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
 // validation warning. Only alpha-clips foliage/fence cutouts so their gaps don't cast solid shadows.
 void PSShadowClip( VS_OUT i )
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );}
 
 // --- G-buffer prepass variant: depth + motion vectors + normals ---
@@ -71,7 +74,8 @@ VS_GBUF_OUT VSWorldGBuf( VS_GBUF_IN i )
 
 GBUF_OUT PSClipGBuf( VS_GBUF_OUT i )
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );   // identical cutout to PSClip — same depth, same coverage
     GBUF_OUT o;
     o.velocity = CalculateVelocity( i.currClip, i.prevClip );

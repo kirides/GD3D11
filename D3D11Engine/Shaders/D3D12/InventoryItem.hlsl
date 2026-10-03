@@ -10,6 +10,7 @@ struct ItemInstance
 };
 
 cbuffer DrawCB : register( b0 ) { uint InstanceIndex; uint TextureIndex; };
+#include "include/TexAniScroll.hlsl"
 StructuredBuffer<ItemInstance> Instances : register( t0 );
 
 static const int NUM_MAX_BONES = 96;
@@ -34,8 +35,8 @@ VS_OUT Project( float3 position, float2 uv )
     VS_OUT o;
     o.clipDistance = float4( slot.w + slot.x, slot.w - slot.x, slot.w + slot.y, slot.w - slot.y );
     o.pos = float4( slot.x * inst.remap.x + slot.w * inst.remap.z, slot.y * inst.remap.y + slot.w * inst.remap.w, slot.z, slot.w );
-    o.uv = uv;
-    o.tex = TextureIndex;
+    o.uv = TexAniUv( uv, TextureIndex );
+    o.tex = DiffuseSlot( TextureIndex );
     return o;
 }
 

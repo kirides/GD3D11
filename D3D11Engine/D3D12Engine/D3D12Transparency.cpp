@@ -186,7 +186,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* gfx = s->GetEngineTexture() ) {
                 D3D12Texture* d = D3D12Texture::From( gfx );
-                if ( d->HasSRV() ) { mat6[2] = d->GetSrvSlot(); haveDiffuse = true; }
+                if ( d->HasSRV() ) { mat6[2] = PackTexAni( d->GetSrvSlot(), mat ); haveDiffuse = true; }
             }
         }
         if ( !haveDiffuse ) continue;

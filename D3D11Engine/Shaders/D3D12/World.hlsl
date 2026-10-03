@@ -31,6 +31,7 @@ SamplerComparisonState  shadowCmp : register(s2);
 // World also gets MatNormalStrength (the world-only extra field — see include/MaterialCB.hlsl).
 #define MATERIALCB_EXTRA_FIELDS float MatNormalStrength;
 #include "include/MaterialCB.hlsl"
+#include "include/TexAniScroll.hlsl"
 #undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 #include "include/AOCB.hlsl"
@@ -127,7 +128,8 @@ VS_OUT VSQuadMark( VS_IN_QUADMARK i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];   // bindless diffuse (ExecuteIndirect, P2.11)
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );                        // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
@@ -220,7 +222,8 @@ VST_OUT VSTransparent( VS_IN i )
 
 float4 PSTransparent( VST_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     float4 c = difTex.Sample( smp, i.uv );
     // Gothic's vertex color is a BGRA DWORD read through an R8G8B8A8 view — recover RGBA (CLAUDE.md).
     // (D3D11's PS_Simple multiplies it unswizzled, i.e. with R/B transposed; that is a latent bug there,
@@ -277,7 +280,8 @@ float4 PSTransparentEnv( VSTE_OUT i ) : SV_TARGET
 // samples the texture and applies its own day/night tint, nothing else) — ported line for line.
 float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     float4 colour = difTex.Sample( smp, i.uv );
 
     // darken / lighten foam based on the day / night cycle
@@ -313,6 +317,7 @@ VSTP_OUT VSTransparentPortal( VS_IN i )
 
 float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
 {
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
     // Ported verbatim from PS_PortalDiffuse, INCLUDING its dimensional oddity: D3D11 writes
     // `distance(Input.vViewPosition, Input.vPosition)`, where vPosition is SV_POSITION — i.e. it measures
     // a view-space position against a PIXEL coordinate (HLSL silently truncates the float4 to float3).
@@ -340,7 +345,7 @@ float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
     else                     { darknessFactor = 7.5 - ( 1 + SunHeight ) * 3; }
 
     // sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     float4 color = difTex.Sample( smp, i.uv ) / darknessFactor;
 
     return float4( FinishTransparentColor( TransparencyFrameIndex, FogMode, i.clip.xy, i.wpos,

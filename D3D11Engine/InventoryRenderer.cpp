@@ -182,6 +182,7 @@ namespace {
                 UIItemDraw draw;
                 draw.Mesh = mesh.get();
                 draw.Texture = texture;
+                draw.Material = material;
                 draw.Instance = instance;
                 ui.AddItemDraw( draw );
             }
@@ -221,6 +222,7 @@ namespace {
                     UIItemDraw draw;
                     draw.SkinnedMesh = mesh.get();
                     draw.Texture = texture;
+                    draw.Material = material;
                     draw.Instance = instance;
                     draw.BoneOffset = boneOffset;
                     draw.BoneCount = static_cast<uint32_t>( bones.size() );

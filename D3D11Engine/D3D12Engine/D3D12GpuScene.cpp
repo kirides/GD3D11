@@ -6,6 +6,7 @@
 #include "D3D12VobArena.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../TexAniScroll.h"
 #include "../WorldObjects.h"
 #include "../ConstantBufferStructs.h"
 #include "../Frustum.h"
@@ -880,7 +881,7 @@ void D3D12GpuScene::ProcessFeedback() {
             if ( vis.State == kVisualCpu ) continue;
             for ( uint32_t t = 0; t < vis.TemplateUsed; ++t ) {
                 const Template& tp = m_Templates[vis.TemplateBase + t];
-                if ( freed.contains( tp.MatDiffuseIndex ) || freed.contains( tp.MatNormalIndex )
+                if ( freed.contains( tp.MatDiffuseIndex & TexAniScroll::kDiffuseSlotMask ) || freed.contains( tp.MatNormalIndex )
                     || freed.contains( tp.MatOrmIndex & kOrmIndexMask ) ) {
                     // Re-resolve now: a re-created texture keeps drawing under its new slot, an evicted one
                     // stops until its visual is seen and cached in again.
