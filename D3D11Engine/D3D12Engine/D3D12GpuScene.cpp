@@ -10,6 +10,7 @@
 #include "../WorldObjects.h"
 #include "../ConstantBufferStructs.h"
 #include "../Frustum.h"
+#include "../zCMaterial.h"
 #include "../zCVob.h"
 #include "../zCMorphMesh.h"
 #include "../zCModel.h"
@@ -308,6 +309,7 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn, bool countWait ) {
     staged.clear();
     bool texturesReady = true;
     bool allLod = true;
+    bool animated = false;
     const float minH = info->BBox.Min.y;
     const float maxH = info->BBox.Max.y;
     for ( auto const& [key, meshList] : info->MeshesByTexture ) {
@@ -318,6 +320,7 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn, bool countWait ) {
             return true;
         }
         texturesReady = texturesReady && mat.TextureReady;
+        animated = animated || key.Material->HasAnimatedTexture();
         const uint32_t alphaFlag = mat.AlphaTested ? kTemplateAlpha : 0u;
         for ( MeshInfo* mi : meshList ) {
             // The RT BLAS skips the same sub-meshes: its geometry g is near template g.
@@ -343,6 +346,13 @@ bool D3D12GpuScene::BuildTemplates( uint32_t v, bool cacheIn, bool countWait ) {
                 static_cast<int32_t>( r->BaseVertex ), v, { lodCount }, alphaFlag | kTemplateCaster | kTemplateReady | resolved, lodStart };
             staged.push_back( s );
         }
+    }
+
+    vis.Animated = animated;
+    // A frame still loading keeps the last one drawing; hiding the visual would blink it on the first cycle.
+    if ( animated && !texturesReady && vis.State == kVisualReady && vis.TemplateUsed > 0 ) {
+        if ( cacheIn ) vis.LastTouch = m_Frame;
+        return true;
     }
 
     // [near][far, when split][caster], one of each per sub-mesh.
@@ -894,7 +904,7 @@ void D3D12GpuScene::ProcessFeedback() {
             if ( ( counts[2u * v] | counts[2u * v + 1u] ) == 0u ) continue;
             Visual& vis = m_Visuals[v];
             vis.LastSeen = m_Frame;
-            const bool due = vis.State != kVisualReady || m_Frame - vis.LastTouch >= kTouchInterval;
+            const bool due = vis.State != kVisualReady || vis.Animated || m_Frame - vis.LastTouch >= kTouchInterval;
             if ( due && vis.State != kVisualCpu && !vis.Queued ) {
                 vis.Queued = true;
                 m_BuildQueue.push_back( v );

@@ -59,7 +59,8 @@ namespace {
     float4 ComputeTextureFactor( zCMaterial* mat ) {
         // RGB carries the day/night factor: unlit surfaces over a baked-daylight vertex color would
         // otherwise stay noon-bright at midnight. 1.0 in daylight. See GothicAPI::GetSkyDayFactor.
-        const float skyLight = Engine::GAPI->GetSkyDayFactor();
+        // ignoreSunLight surfaces of an outdoor world keep their flat light around the clock.
+        const float skyLight = mat->GetIgnoreSunLight() && !Engine::GAPI->IsIndoorWorld() ? 1.0f : Engine::GAPI->GetSkyDayFactor();
         return float4( skyLight, skyLight, skyLight,
             zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
     }

@@ -121,7 +121,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Get specular parameters
 	float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
 	float specIntensity = gb3.x;
-	float specPower = gb3.y;
+	float specPower = abs(gb3.y);   // negative: ignoreSunLight (DS_Defines.h)
 
 	// Reconstruct VS World Position from depth
 	float expDepth = TX_Depth.Sample(SS_Linear, uv).r;

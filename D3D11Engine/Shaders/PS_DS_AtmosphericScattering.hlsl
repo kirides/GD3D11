@@ -165,7 +165,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	// Negative specIntensity signals a focused VOB (encoded in PS_Diffuse GBuffer fill).
 	bool focused = gb3.x < 0.0f;
     float specIntensity = focused ? (-gb3.x - 0.001f) : gb3.x;
-    float specPower = gb3.y;
+    const bool ignoreSun = gb3.y < 0.0f;
+    float specPower = abs(gb3.y);
 	
 #if SHD_ENABLE
 	// CSM: Use soft cascaded shadow map with configurable softness
@@ -285,6 +286,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
         litPixel = lerp(litPixel, wetSky * skyOcclusion, skyFresnel) + wetLight;
     }
 #endif
+
+    if (ignoreSun) litPixel = diffuse.rgb * IGNORE_SUN_LIGHT;
 
 	// Run scattering
     litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel.rgb);

@@ -97,7 +97,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     float3 normal = DecodeNormalGBuffer( TX_Nrm.Load( int3( pixelCoord, 0 ) ).xy );
     float4 gb3 = TX_SI_SP.Load( int3( pixelCoord, 0 ) );
     float specIntensity = gb3.x;
-    float specPower = gb3.y;
+    float specPower = abs( gb3.y );   // negative: ignoreSunLight (DS_Defines.h)
 
     float expDepth = TX_Depth.Load( int3( pixelCoord, 0 ) ).r;
     float3 vsPosition = VSPositionFromDepth( expDepth, pixelCoord );

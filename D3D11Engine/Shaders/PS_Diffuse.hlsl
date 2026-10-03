@@ -114,7 +114,8 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	fx = 1.0f;
 #endif
 
-	float specIntensity = MI_SpecularIntensity * fx.r;
+	const bool ignoreSun = Input.vDiffuse.w < -0.5f;   // VS_ExPacked: an ignoreSunLight world poly
+	float specIntensity = ignoreSun ? 0.0f : MI_SpecularIntensity * fx.r;
 	float specPower = MI_SpecularPower * fx.g;
 	float vertLighting = Input.vDiffuse.y;
 
@@ -162,6 +163,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 
 	// Sun lighting
 	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting, ssao);
+	if ( ignoreSun ) litPixel = color.rgb * IGNORE_SUN_LIGHT;
 	
 	// Atmospheric scattering
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
@@ -242,10 +244,11 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 
 	// Encode focused flag as negative specIntensity so it survives into the deferred lighting pass.
 	// PS_DS_AtmosphericScattering decodes it and applies the brightness boost post-lighting.
-	float rawSpecIntensity = MI_SpecularIntensity * fx.r; // fix negative specular intensity here.
+	const bool ignoreSun = Input.vDiffuse.w < -0.5f;   // VS_ExPacked: an ignoreSunLight world poly
+	float rawSpecIntensity = ignoreSun ? 0.0f : MI_SpecularIntensity * fx.r; // fix negative specular intensity here.
 	bool focused = Input.vDiffuse.w > 1.5f;
 	output.vSI_SP.x = focused ? -(rawSpecIntensity + 0.001f) : rawSpecIntensity;
-	output.vSI_SP.y = MI_SpecularPower * fx.g;
+	output.vSI_SP.y = ignoreSun ? -1.0f : MI_SpecularPower * fx.g;
 	
 	// Calculate velocity for motion vectors
 	// For instanced objects (VOBs, skeletal meshes), vCurrClipPos/vPrevClipPos come from VS
