@@ -58,7 +58,10 @@ namespace Engine {
     /** Creates the Global GAPI-Object */
     void CreateGothicAPI();
 
-    /** Called when the game is about to close */
-    void OnShutDown();
+    /** Called from the ExitProcess hook, before the loader detaches any DLL: tears everything down in order. */
+    void OnProcessExit( UINT exitCode );
+
+    /** Called from DLL_PROCESS_DETACH under the loader lock: only flushes what OnProcessExit didn't. */
+    void OnProcessDetach();
 };
 

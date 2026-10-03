@@ -3294,8 +3294,8 @@ bool D3D12PipelineState::CreateAO() {
     // --- Blur pass root sig: b0 8x32-bit BlurCB, t0+t1 SRV table (AO input + depth), u0 UAV table ---
     D3D12RootLayout& blurRs = Layout( "AOBlur" );
     blurRs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );    // 0: b0 BlurCB
-    // 1: t0 BlurAOTex, t1 BlurDepthTex
-    blurRs.AddTable( D3D12RootLayout::SRVRange( 0, 2, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_ALL );
+    // 1: t0 BlurAOTex, t1 BlurDepthTex. Volatile: both AO targets go back to UAV while this table is still bound.
+    blurRs.AddTable( D3D12RootLayout::SRVRange( 0, 2 ), D3D12_SHADER_VISIBILITY_ALL );
     blurRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 2: u0 OutputAO
     blurRs.AddStaticSampler( sampler );
     if ( !blurRs.Build( device ) )

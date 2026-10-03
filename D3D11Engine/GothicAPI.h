@@ -839,6 +839,9 @@ public:
     /** Resets the object, like at level load */
     void ResetWorld();
 
+    /** Unhooks the window and frees the world, ahead of deleting the engine. Main thread, pools still alive. */
+    void PrepareShutdown();
+
     /** Resets only the vobs */
     void ResetVobs();
 

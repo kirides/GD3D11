@@ -196,7 +196,23 @@ namespace VulkanRhi {
         if ( m_BindlessLayout ) vkDestroyDescriptorSetLayout( Vk(), m_BindlessLayout, nullptr );
         m_Queue.Reset();
         for ( auto& page : m_BufferPages ) delete[] page.load();
-        if ( m_Allocator ) vmaDestroyAllocator( m_Allocator );
+        if ( m_Allocator ) {
+            VmaTotalStatistics stats = {};
+            vmaCalculateStatistics( m_Allocator, &stats );
+            if ( stats.total.statistics.allocationCount == 0 ) {
+                vmaDestroyAllocator( m_Allocator );
+            } else {
+                // Every allocation still alive is a leak; VMA asserts on them, so log them and leak the allocator instead.
+                Logging::Wrn( "Vulkan: {} allocations ({} KB) still alive at device destruction",
+                    stats.total.statistics.allocationCount, stats.total.statistics.allocationBytes / 1024 );
+                char* json = nullptr;
+                vmaBuildStatsString( m_Allocator, &json, VK_TRUE );
+                if ( json ) {
+                    Logging::Wrn( "Vulkan: leaked allocations: {}", std::string_view( json ).substr( 0, 32768 ) );
+                    vmaFreeStatsString( m_Allocator, json );
+                }
+            }
+        }
     }
 
     bool DeviceImpl::Init() {

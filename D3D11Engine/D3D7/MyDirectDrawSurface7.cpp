@@ -9,6 +9,8 @@
 #include "../ThreadPool.h"
 #include "../UIRenderer2D.h"
 
+#include <unordered_set>
+
 #define DebugWriteTex(x)  DebugWrite(x)
 
 const std::string LEAF_SUBSTR[] = { "Treetop", "Bush", "Leaf" };
@@ -42,6 +44,10 @@ struct SharedAdditionalTexture {
 };
 
 namespace {
+    /** Every constructed surface not yet destroyed, for ReleaseAllEngineTextures(). */
+    std::mutex s_LiveSurfacesMutex;
+    std::unordered_set<MyDirectDrawSurface7*> s_LiveSurfaces;
+
     /** Path-keyed cache of the decoded replacement textures. Weak on purpose: an entry lives exactly
         as long as some surface still references it, so a texture that Gothic caches out gives its
         normal/ORM maps back instead of pinning them for the rest of the session — this is a 32-bit
@@ -117,6 +123,11 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
     AdditionalResourcesResolved = false;
     LockType = 0;
 
+    {
+        std::scoped_lock lock( s_LiveSurfacesMutex );
+        s_LiveSurfaces.insert( this );
+    }
+
     // Check for test-bind mode to figure out what zCTexture-Object we are associated with
     std::string bound;
     if ( Engine::GAPI->IsInTextureTestBindMode( bound ) ) {
@@ -126,6 +137,10 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
 }
 
 MyDirectDrawSurface7::~MyDirectDrawSurface7() {
+    {
+        std::scoped_lock lock( s_LiveSurfacesMutex );
+        s_LiveSurfaces.erase( this );
+    }
     IsReady = false;
 
     // A worker may still be loading this surface's normal/ORM maps and will publish them into
@@ -265,6 +280,21 @@ static bool LoadResource(
         return false;
     }
     return true;
+}
+
+void MyDirectDrawSurface7::ReleaseAllEngineTextures() {
+    std::scoped_lock lock( s_LiveSurfacesMutex );
+    for ( MyDirectDrawSurface7* surface : s_LiveSurfaces ) {
+        surface->WaitForPendingAdditionalResources();
+        surface->IsReady = false;
+        delete surface->EngineTexture;
+        surface->EngineTexture = nullptr;
+        surface->Normalmap.store( nullptr, std::memory_order_release );
+        surface->FxMap.store( nullptr, std::memory_order_release );
+        surface->NormalmapRef.reset();
+        surface->FxMapRef.reset();
+    }
+    Logging::Inf( "Released the engine textures of {} live DirectDraw surfaces", s_LiveSurfaces.size() );
 }
 
 void MyDirectDrawSurface7::WaitForPendingAdditionalResources() {

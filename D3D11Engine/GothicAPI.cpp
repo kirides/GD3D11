@@ -212,8 +212,17 @@ bool GothicAPI::AreSunShadowsFullyOccluded() const {
 }
 
 GothicAPI::~GothicAPI() {
-    //ResetWorld(); // Just let it leak for now. // TODO: Do this properly
     SAFE_DELETE( WrappedWorldMesh );
+}
+
+void GothicAPI::PrepareShutdown() {
+    // GothicWndProc dereferences ImGuiHandle and GraphicsEngine, both about to be deleted.
+    if ( OriginalGothicWndProc && OutputWindow ) {
+        SetWindowLongPtrA( OutputWindow, GWL_WNDPROC, OriginalGothicWndProc );
+        OriginalGothicWndProc = 0;
+    }
+    ResetWorld();
+    ResetMaterialInfo();
 }
 
 namespace
