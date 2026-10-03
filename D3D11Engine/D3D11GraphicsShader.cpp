@@ -62,6 +62,12 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
         if ( resourceDesc.Type == D3D_SHADER_INPUT_TYPE::D3D_SIT_CBUFFER ) {
             auto pCB = pReflection->GetConstantBufferByName( resourceDesc.Name );
 
+            if ( cbIndex >= ConstantBuffers.size() || resourceDesc.BindPoint >= ConstantBufferIndexBySlot.size() ) {
+                Logging::Err( "Shader constant buffer '{}' (b{}) exceeds the reflection table ({} CBs max)",
+                    resourceDesc.Name, resourceDesc.BindPoint, MAX_SHADER_CB );
+                continue;
+            }
+
             D3D11_SHADER_BUFFER_DESC cbDesc;
             if ( SUCCEEDED( pCB->GetDesc( &cbDesc ) ) ) {
                 // cbDesc.Size is the total byte size of the buffer, padded to always be a multiple of 16

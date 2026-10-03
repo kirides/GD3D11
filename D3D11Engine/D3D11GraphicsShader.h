@@ -38,7 +38,8 @@ protected:
     struct Reflection;
     std::unique_ptr<Reflection> m_Reflection;
     std::array<ConstantBufferSize, MAX_SHADER_CB> ConstantBuffers;
-    std::array<byte, MAX_SHADER_CB> ConstantBufferIndexBySlot;
+    // Indexed by HLSL register (bN), not by cbIndex.
+    std::array<byte, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> ConstantBufferIndexBySlot;
 
     virtual HRESULT ReflectShaderResources( ID3DBlob* shaderBlob );
     virtual void OnReflectShader( ID3DBlob* blob, ID3D11ShaderReflection* pReflection,  const D3D11_SHADER_DESC& shaderDesc );
