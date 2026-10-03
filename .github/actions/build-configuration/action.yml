@@ -34,8 +34,9 @@ runs:
         "VCPKG_BINARY_SOURCES=clear;files,$env:GITHUB_WORKSPACE\vcpkg_binary_cache,readwrite" >> $env:GITHUB_ENV
 
     # Cached downloads also keep the MSYS2 tarballs, so a miss doesn't hit mirror.msys2.org.
-    - name: Cache vcpkg binaries and downloads
-      uses: actions/cache@v4
+    - name: Restore vcpkg binaries and downloads
+      id: vcpkg-cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           ${{ github.workspace }}/vcpkg_binary_cache
@@ -43,6 +44,25 @@ runs:
         key: vcpkg-x86-windows-static-md-39344dff-${{ hashFiles('vcpkg.json') }}
         restore-keys: |
           vcpkg-x86-windows-static-md-39344dff-
+
+    # MSBuild's vcpkg <Exec> fails on any "error :" line, even recovered mirror fallbacks;
+    # installing here judges by exit code only and leaves MSBuild's install a no-op.
+    - name: Install vcpkg dependencies
+      shell: pwsh
+      run: |
+        & "$env:VCPKG_ROOT\vcpkg.exe" install --x-wait-for-lock --triplet x86-windows-static-md `
+          --vcpkg-root "$env:VCPKG_ROOT" `
+          "--x-manifest-root=$env:GITHUB_WORKSPACE" `
+          "--x-install-root=$env:GITHUB_WORKSPACE\vcpkg_installed"
+
+    - name: Save vcpkg binaries and downloads
+      if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ${{ github.workspace }}/vcpkg_binary_cache
+          ${{ github.workspace }}/vcpkg/downloads
+        key: vcpkg-x86-windows-static-md-39344dff-${{ hashFiles('vcpkg.json') }}
 
     - name: Run MSBuild
       id: build
