@@ -1,6 +1,6 @@
 cbuffer CubeCB : register(b0) { float4x4 PCR_ViewProj[6]; };   // per-light face view-projs (90-deg perspective, near 15, far range*2)
 cbuffer CasterCB : register(b1) { uint DiffuseIndex; };     // per draw: bindless diffuse SRV-heap slot
-#include "include/TexAniScroll.hlsl"
+#include "include/MaterialFx.hlsl"
 SamplerState smp : register(s0);
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; uint rt : SV_RenderTargetArrayIndex; };
 

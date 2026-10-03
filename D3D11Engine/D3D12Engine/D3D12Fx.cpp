@@ -28,7 +28,7 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 #include "../TransparencyQueue.h"
-#include "../TexAniScroll.h"
+#include "../MaterialFx.h"
 
 namespace {
     // Per-frame poly-strip vertex ring. 2 MB / frame-in-flight is ~34k ExVertexStruct verts — well above what
@@ -76,7 +76,7 @@ namespace {
     }
 
     UINT ResolveDiffuseSlot( zCMaterial* mat ) {
-        return mat ? TexAniScroll::PackDiffuseIndex( ResolveDiffuseSlot( mat->GetAniTexture() ), mat ) : UINT_MAX;
+        return mat ? MaterialFx::PackDiffuseIndex( ResolveDiffuseSlot( mat->GetAniTexture() ), mat ) : UINT_MAX;
     }
 }
 
@@ -300,7 +300,7 @@ void D3D12GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
         // to GetTextureSingle() when a strip material has no animated texture, and keys the map on the result.
         // D3D11 does the same (`zCTexture* tx = it->first`). It also skips strips whose texture is not cached
         // in yet ("Don't draw if texture is not yet cached").
-        const UINT diffuseSlot = TexAniScroll::PackDiffuseIndex( ResolveDiffuseSlot( strip.Texture ), mat );
+        const UINT diffuseSlot = MaterialFx::PackDiffuseIndex( ResolveDiffuseSlot( strip.Texture ), mat );
         if ( diffuseSlot == UINT_MAX ) continue;
 
         const int matAlphaFunc = mat->GetAlphaFunc();

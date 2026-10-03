@@ -31,6 +31,33 @@ Texture2D	TX_Texture0 : register( t0 );
 Texture2D	TX_Texture1 : register( t1 );
 Texture2D	TX_Texture2 : register( t2 );
 TextureCube	TX_ReflectionCube : register( t4 );
+Texture2D	TX_DetailTexture : register( t20 );
+
+#include <MaterialFx.h>
+
+// ZenGin's MUL2 detail stage, folded into the gamma-space albedo (exact for diffuse light).
+float3 ApplyDetailTexture( float3 albedo, float2 uv )
+{
+	[branch]
+	if ( MaterialDetailScale > 0.0f )
+		albedo = saturate( albedo * 2.0f * TX_DetailTexture.Sample( SS_Linear, uv * MaterialDetailScale ).rgb );
+	return albedo;
+}
+
+// ZenGin's env overlay stage: blended (additive when the alpha is negative), alpha scaled by the object's light.
+float3 ApplyEnvMap( float3 color, float3 nrmVS, float3 viewPosVS, float objectLight )
+{
+	[branch]
+	if ( MaterialEnvAlpha != 0.0f )
+	{
+		float3 r = reflect( normalize( viewPosVS ), normalize( nrmVS ) );
+		float3 rWS = normalize( float3( dot( r, MaterialViewToWorld[0].xyz ), dot( r, MaterialViewToWorld[1].xyz ), dot( r, MaterialViewToWorld[2].xyz ) ) );
+		float3 env = TX_ReflectionCube.Sample( SS_Linear, rWS ).rgb;
+		float a = saturate( abs( MaterialEnvAlpha ) * objectLight );
+		color = MaterialEnvAlpha < 0.0f ? color + env * a : lerp( color, env, a );
+	}
+	return color;
+}
 
 #ifdef FORWARD_PLUS
 #include <include/ForwardPlusLighting.hlsl>
@@ -100,6 +127,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 
 	float alphaCoverage = DoAlphaTestCoverage(color.a);
 #endif
+	color.rgb = ApplyDetailTexture(color.rgb, Input.vTexcoord);
 
 #if NORMALMAPPING == 1
 	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, Input.vTangent, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
@@ -174,6 +202,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	{
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
 	}
+	litPixel = ApplyEnvMap(litPixel, nrm, vsPosition, vertLighting);
 
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w);
 #if ALPHATEST == 1
@@ -236,6 +265,9 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	fx = 1.0f;
 #endif
 	
+	color.rgb = ApplyDetailTexture(color.rgb, Input.vTexcoord);
+	// The G-buffer has no room for an unlit term, so the env stage joins the albedo and gets lit with it.
+	color.rgb = ApplyEnvMap(color.rgb, nrm, Input.vViewPosition, Input.vDiffuse.y);
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
 	//output.vDiffuse = float4(Input.vNormalVS, 1);

@@ -5,7 +5,7 @@
 static const int NUM_MAX_BONES = 96;
 
 #include "InventoryItem.h"
-#include "TexAniScroll.h"
+#include "MaterialFx.h"
 
 #if SKINNING_STRUCTURED
 StructuredBuffer<float4x4> BoneTransforms : register( t0 );

@@ -688,6 +688,8 @@ struct GothicMemoryLocations {
 
         static const unsigned int Offset_EnvMapStrength = 0x6C;
         static const unsigned int Offset_Flags = 0x70;
+        static const unsigned int Offset_DetailTexture = 0x8C;        // zCTexture*, right before texAniMapDelta
+        static const unsigned int Offset_DetailTextureScale = 0x90;
         static const unsigned int Offset_TexAniMapDelta = 0x94;
         static const unsigned int Mask_FlagTexAniMap = 0x4;
         static const unsigned int Mask_FlagEnvMapEnabled = 0x40;

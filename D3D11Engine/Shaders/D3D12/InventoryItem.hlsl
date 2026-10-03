@@ -10,7 +10,7 @@ struct ItemInstance
 };
 
 cbuffer DrawCB : register( b0 ) { uint InstanceIndex; uint TextureIndex; };
-#include "include/TexAniScroll.hlsl"
+#include "include/MaterialFx.hlsl"
 StructuredBuffer<ItemInstance> Instances : register( t0 );
 
 static const int NUM_MAX_BONES = 96;

@@ -3,7 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
-#include "TexAniScroll.h"
+#include "MaterialFx.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {

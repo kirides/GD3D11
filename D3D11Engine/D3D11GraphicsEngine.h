@@ -474,9 +474,9 @@ public:
         GetContext()->GSSetConstantBuffers1( static_cast<UINT>( slot ), 1, &a.pBuffer, &first, &num );
     }
 
-    /** Binds the material's texAniMap UV scroll to VS b12 (Shaders/TexAniScroll.h); nullptr restores zero.
-        A pass that binds a scrolling material restores zero before it returns, so no other pass inherits it. */
-    void BindTexAniScroll( zCMaterial* mat );
+    /** Binds the material's MaterialFx.h stages to VS+PS b12 (Shaders/MaterialFx.h); objectFx adds env map and
+        detail texture. nullptr restores zero, which every pass binding a material does before it returns. */
+    void BindMaterialFx( zCMaterial* mat, bool objectFx = false );
 
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
     D3D11Texture* GetBlueNoiseTexture() const { return BlueNoise512BGRA.get(); }
@@ -807,9 +807,17 @@ private:
         MaterialInfo::IsSame() to skip re-allocating/re-binding an identical buffer. */
     MaterialInfo* m_LastMaterialInfo = nullptr;
 
-    Microsoft::WRL::ComPtr<ID3D11Buffer> m_TexAniZeroCB;   // VS b12 whenever nothing scrolls
-    XMFLOAT2 m_TexAniBound = {};
-    void ResetTexAniScroll();   // frame start: zero bound
+    // Mirrors Shaders/MaterialFx.h.
+    struct MaterialFxCB {
+        XMFLOAT2 TexAniOffset;
+        float EnvAlpha;
+        float DetailScale;
+        XMFLOAT4 ViewToWorld[3];
+    };
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_MaterialFxZeroCB;   // b12 whenever no stage is active
+    MaterialFxCB m_MaterialFxBound = {};
+    ID3D11ShaderResourceView* m_MaterialFxDetailBound = nullptr;
+    void ResetMaterialFx();   // frame start: zero bound
 
     /** Shared stand-in bound for non-normalmapped materials while the scene is wet (distortion noise as normalmap). */
     MaterialInfo m_RainMaterialInfo;

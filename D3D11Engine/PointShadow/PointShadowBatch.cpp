@@ -484,7 +484,7 @@ namespace {
                 texture->BindToPixelShader( 0 );
                 m_Texture = texture;
             }
-            m_Engine->BindTexAniScroll( material );
+            m_Engine->BindMaterialFx( material );
         }
 
         void BindBuffers( const CasterMeshDraw& draw, UINT stride ) {
@@ -724,7 +724,7 @@ namespace {
             DrawVobs( state, phase, raster );
             DrawSkeletals( state, phase, raster, bonesReady );
         }
-        state.Engine()->BindTexAniScroll( nullptr );
+        state.Engine()->BindMaterialFx( nullptr );
     }
 }
 

@@ -3,7 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "InventoryItem.h"
-#include "TexAniScroll.h"
+#include "MaterialFx.h"
 
 struct VS_INPUT
 {

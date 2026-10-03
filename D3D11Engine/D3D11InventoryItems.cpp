@@ -129,7 +129,7 @@ void D3D11GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
 
             const MeshInfo* mesh = draw->Mesh;
             bindMesh( mesh->GetMeshVertexBuffer(), mesh->GetMeshIndexBuffer(), sizeof( ExVertexStruct ), draw->Texture );
-            BindTexAniScroll( draw->Material );
+            BindMaterialFx( draw->Material );
             const UINT indexCount = static_cast<UINT>( mesh->Indices.size() );
             context->DrawIndexedInstanced( indexCount, static_cast<UINT>( run ), 0, 0, static_cast<UINT>( i ) );
             rs.RendererInfo.FrameDrawnTriangles += (indexCount / 3) * static_cast<unsigned int>( run );
@@ -156,13 +156,13 @@ void D3D11GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
 
             const SkeletalMeshInfo* mesh = draw->SkinnedMesh;
             bindMesh( mesh->MeshVertexBuffer.get(), mesh->MeshIndexBuffer.get(), sizeof( ExSkelVertexStruct ), draw->Texture );
-            BindTexAniScroll( draw->Material );
+            BindMaterialFx( draw->Material );
             const UINT indexCount = static_cast<UINT>( mesh->Indices.size() );
             context->DrawIndexedInstanced( indexCount, 1, 0, 0, firstInstance + static_cast<UINT>( i ) );
             rs.RendererInfo.FrameDrawnTriangles += indexCount / 3;
         }
     }
 
-    BindTexAniScroll( nullptr );
+    BindMaterialFx( nullptr );
     context->OMSetRenderTargets( 1, &rtv, nullptr );
 }

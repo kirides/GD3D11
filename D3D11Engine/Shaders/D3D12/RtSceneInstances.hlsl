@@ -65,7 +65,7 @@ struct RtInstance { uint Color; float SwayReach; uint Pad1, Pad2; };
 static const uint kKindVob = 1u;
 static const uint kMatAlphaTest = 0x80000000u;
 static const uint kMatNoTexture = 0x40000000u;
-static const uint kMatSlotMask = 0x00FFFFFFu;
+static const uint kMatSlotMask = 0x0000FFFFu;   // MaterialFx packs its table slot above
 static const uint kMaskVob = 0x02u, kMaskDynamic = 0x04u;   // D3D12RayTracing::kMask*
 static const uint kInstanceForceNonOpaque = 0x8u;           // D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE
 
