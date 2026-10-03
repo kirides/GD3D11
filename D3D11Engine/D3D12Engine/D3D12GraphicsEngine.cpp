@@ -80,6 +80,9 @@ void D3D12GraphicsEngine::OnMeshInfoDestroyed( MeshInfo* mesh ) {
 void D3D12GraphicsEngine::OnSkeletalMeshInfoDestroyed( SkeletalMeshInfo* mesh ) { m_SkelArena->Forget( mesh->ArenaSlot ); }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
+    // Pooled/transient render targets queue their releases, and both containers outlive the cleanup queue.
+    m_TexturePool.Clear();
+    m_AliasArena.Clear();
     if ( m_SwapChainReady ) {
         WaitForGpuIdle();
         // Force-run all remaining cleanups — the GPU is idle, so every deferral has expired.
