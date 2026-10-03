@@ -58,7 +58,7 @@
 #include "D3D11PipelineStateCache.h"
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
-#include "TexAniScroll.h"
+#include "MaterialFx.h"
 #include "AsyncVisualExtractor.h"
 #include "ThreadPool.h"
 #include "zFILE.h"
@@ -740,7 +740,7 @@ bool GothicAPI::IsCameraIndoor() {
     differs only while straddling a portal. */
 float GothicAPI::GetEnvMapStageAlpha( zCMaterial* mat ) {
     if ( !mat ) return 0.0f;
-    return std::clamp( mat->GetEnvMapStrength() * GetSkyLightIntensity(), 0.0f, 1.0f );
+    return std::clamp( mat->GetEnvMapStrength() * MaterialFx::GetEnvGlobal(), 0.0f, 1.0f );   // 0 with env mapping off
 }
 
 /** Sky-fog intensity 0..1 (0.299r+0.587g+0.114b, zTypes3D.h:128), pinned to zCOLOR(100,100,100)
@@ -1951,7 +1951,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     State->LoadedMaterials.erase( mat );
-    TexAniScroll::OnMaterialDeleted( mat );
+    MaterialFx::OnMaterialDeleted( mat );
     {
         std::unique_lock lock( State->MaterialInfosMutex );
         State->MaterialInfos.erase( mat );
@@ -3180,7 +3180,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                         }
 
                         // Go through all meshes using that material
-                        g->BindTexAniScroll( itm.first );
+                        g->BindMaterialFx( itm.first );
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                             DrawMeshInfo( itm.first, itm.second[m].get() );
                         }
@@ -3201,7 +3201,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             }
         }
     }
-    g->BindTexAniScroll( nullptr );
+    g->BindMaterialFx( nullptr );
 
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
@@ -3284,7 +3284,7 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
                         g->GetActivePS()->UpdateBuffer( "GhostAlphaInfo", &gacb, sizeof( gacb ) );
                         boundRef = ref;
                     }
-                    g->BindTexAniScroll( material );
+                    g->BindMaterialFx( material );
 
                     for ( auto const& meshInfo : meshes ) {
                         g->DrawVertexBufferIndexed(
@@ -3311,7 +3311,7 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
             g->SetActivePixelShader( lit ? PShaderID::PS_TransparencyLitFP : PShaderID::PS_Transparency );
             g->BindActivePixelShader();
             drawMeshes();
-            g->BindTexAniScroll( nullptr );
+            g->BindMaterialFx( nullptr );
         }
     }
 }
@@ -6006,6 +6006,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "DoFBokehRadius", float_to_string( s.DoFBokehRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFMaxBlur", float_to_string( s.DoFMaxBlur, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AllowNormalmaps", to_string_locale_independent( s.AllowNormalmaps ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnvMapping", to_string_locale_independent( s.EnvMapping ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnvMappingStrength", float_to_string( s.EnvMappingStrength, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DetailTextures", to_string_locale_independent( s.DetailTextures ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AllowNumpadKeys", to_string_locale_independent( s.AllowNumpadKeys ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableInactiveFpsLock", to_string_locale_independent( s.EnableInactiveFpsLock ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "MultiThreadResourceManager", to_string_locale_independent( s.MTResoureceManager ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -6230,6 +6233,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DoFBokehRadius = GetPrivateProfileFloatA( "General", "DoFBokehRadius", ds.DoFBokehRadius, ini );
         s.DoFMaxBlur = GetPrivateProfileFloatA( "General", "DoFMaxBlur", ds.DoFMaxBlur, ini );
         s.AllowNormalmaps = GetPrivateProfileIntA( "General", "AllowNormalmaps", ds.AllowNormalmaps, ini.c_str() );
+        s.EnvMapping = GetPrivateProfileBoolA( "General", "EnvMapping", ds.EnvMapping, ini );
+        s.EnvMappingStrength = std::clamp( GetPrivateProfileFloatA( "General", "EnvMappingStrength", ds.EnvMappingStrength, ini ), 0.0f, 2.0f );
+        s.DetailTextures = GetPrivateProfileBoolA( "General", "DetailTextures", ds.DetailTextures, ini );
         s.AllowNumpadKeys = GetPrivateProfileBoolA( "General", "AllowNumpadKeys", ds.AllowNumpadKeys, ini );
         s.EnableInactiveFpsLock = GetPrivateProfileBoolA( "General", "EnableInactiveFpsLock", ds.EnableInactiveFpsLock, ini );
         s.MTResoureceManager = GetPrivateProfileBoolA( "General", "MultiThreadResourceManager", ds.MTResoureceManager, ini );
@@ -6665,7 +6671,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
                 }
             }
         }
-        g->BindTexAniScroll( s->Material );
+        g->BindMaterialFx( s->Material, true );
 
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
@@ -6677,7 +6683,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         }
         Out_Of_Nested_Loop:;
     }
-    g->BindTexAniScroll( nullptr );
+    g->BindMaterialFx( nullptr );
 }
 
 /** Add particle effect */

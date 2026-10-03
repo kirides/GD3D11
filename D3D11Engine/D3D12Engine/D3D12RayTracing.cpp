@@ -50,7 +50,7 @@ namespace {
     constexpr uint32_t kWorldInstanceId = 0xFFFFFFu;
     constexpr uint32_t kMatAlphaTest = 0x80000000u;
     constexpr uint32_t kMatNoTexture = 0x40000000u;
-    constexpr uint32_t kMatSlotMask = 0x00FFFFFFu;
+    constexpr uint32_t kMatSlotMask = 0x0000FFFFu;   // MaterialFx packs its table slot above
 
     constexpr DXGI_FORMAT kColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr DXGI_FORMAT kDistanceFormat = DXGI_FORMAT_R16_FLOAT;

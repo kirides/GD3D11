@@ -5,7 +5,7 @@ SamplerState smp : register(s0);
 // it can be driven by ExecuteIndirect like the color pass. Only MatDiffuseIndex (DWORD 2) is read here; the
 // normal/ORM slots share the layout with the world color shader's MaterialCB so ONE command signature drives both.
 cbuffer MaterialCB : register(b6) { uint _matN; uint _matO; uint MatDiffuseIndex; };
-#include "include/TexAniScroll.hlsl"
+#include "include/MaterialFx.hlsl"
 
 // World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
 // fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.

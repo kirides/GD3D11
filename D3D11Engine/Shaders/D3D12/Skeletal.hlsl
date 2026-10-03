@@ -33,7 +33,7 @@ SamplerComparisonState  shadowCmp : register(s2);
 // always valid too (the 1x1 black texture when the material's texture isn't cached in yet), and replaces what
 // used to be a per-material descriptor-table bind — same layout the world/VOB ExecuteIndirect commands push.
 #include "include/MaterialCB.hlsl"
-#include "include/TexAniScroll.hlsl"
+#include "include/MaterialFx.hlsl"
 // The diffuse for every non-ghost entry point. One helper so the color/prepass/shadow-clip variants can never
 // drift apart on which slot or sampler they read.
 float4 SampleSkelDiffuse( float2 uv )
@@ -93,7 +93,8 @@ VS_OUT VSMain( VS_POSED_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    const MaterialFxEntry fx = LoadMaterialFx( MatDiffuseIndex );
+    i.uv += fx.Scroll;
     float4 t = SampleSkelDiffuse( i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
@@ -104,7 +105,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
     float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout
-    float3 albedo = SrgbToLinear( t.rgb );
+    float3 albedo = SrgbToLinear( ApplyDetailTexture( t.rgb, i.uv, fx, smp ) );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
     uint2 rtMask = LoadRtShadowMask( i.clip.xy );
@@ -126,6 +127,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         float3 ssrFresnel = PBR_FresnelSchlick( saturate( dot( N, V ) ), ssrF0 );
         rgb += ssrColor * ssrConfidence * ssrFresnel;
     }
+    rgb = ApplyEnvMap( rgb, N, V, fx, i.col.g, smp );
     rgb *= 1.0f + step( 1.5f, i.col.a );   // focus highlight
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

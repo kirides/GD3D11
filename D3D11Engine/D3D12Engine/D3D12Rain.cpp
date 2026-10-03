@@ -84,6 +84,11 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
     Rhi::Device* device = m_Rhi.Get();
     if ( !device || numParticles == 0 ) return false;
 
+    // A settings change rebuilds mid-game: frames in flight may still read the old buffers.
+    if ( m_RainBufferStatic ) QueueResourceForRelease( std::move( m_RainBufferStatic ) );
+    if ( m_RainBufferDynamic ) QueueResourceForRelease( std::move( m_RainBufferDynamic ) );
+    m_RainDynamicInReadState = false;
+
     // 128-thread groups, like D3D11Effect::DrawRain_CS (D3D11Effect.cpp:323).
     const UINT alignedCount = ((numParticles + 127) / 128) * 128;
 

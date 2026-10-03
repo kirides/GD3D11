@@ -991,6 +991,9 @@ struct GothicRendererSettings {
 
         LimitLightIntesity = true;
         AllowNormalmaps = 1;
+        EnvMapping = true;
+        EnvMappingStrength = 1.0f;
+        DetailTextures = true;
         CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
@@ -1437,6 +1440,10 @@ struct GothicRendererSettings {
 
     bool LimitLightIntesity;
     int AllowNormalmaps;
+    // ZenGin material stages: the environmentalMapping overlay (scaled by EnvMappingStrength) and detail textures
+    bool EnvMapping;
+    float EnvMappingStrength;
+    bool DetailTextures;
 
     bool AllowNumpadKeys;
     bool EnableDebugLog;

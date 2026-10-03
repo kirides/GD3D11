@@ -187,7 +187,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* gfx = s->GetEngineTexture() ) {
                 D3D12Texture* d = D3D12Texture::From( gfx );
-                if ( d->HasSRV() ) { mat6[2] = PackTexAni( d->GetSrvSlot(), mat ); haveDiffuse = true; }
+                if ( d->HasSRV() ) { mat6[2] = PackMaterialFx( d->GetSrvSlot(), mat ); haveDiffuse = true; }
             }
         }
         if ( !haveDiffuse ) continue;
@@ -218,7 +218,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
 
         // ZenGin appends the env-map stage to the SAME zCShader (zRenderManager.cpp:671), so the overlay
         // goes inline here rather than as a second sweep, keeping the painter's order intact.
-        if ( envOverlayAvailable && mat->GetEnvMapEnabled() ) {
+        if ( envOverlayAvailable && mat->GetEnvMapEnabled() && Engine::GAPI->GetEnvMapStageAlpha( mat ) > 0.0f ) {
             GothicBlendStateInfo envBlend;
             // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else blends.
             if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) envBlend.SetAdditiveBlending();

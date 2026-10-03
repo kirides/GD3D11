@@ -31,7 +31,7 @@ SamplerComparisonState  shadowCmp : register(s2);
 // World also gets MatNormalStrength (the world-only extra field — see include/MaterialCB.hlsl).
 #define MATERIALCB_EXTRA_FIELDS float MatNormalStrength;
 #include "include/MaterialCB.hlsl"
-#include "include/TexAniScroll.hlsl"
+#include "include/MaterialFx.hlsl"
 #undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 #include "include/AOCB.hlsl"

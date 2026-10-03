@@ -8,7 +8,7 @@ struct RtGeom
 {
     uint BaseVertex;
     uint StartIndex;
-    uint Material;   // diffuse SRV slot (low 24 bits) | kMatAlphaTest | kMatNoTexture
+    uint Material;   // diffuse SRV slot (low 16 bits) | kMatAlphaTest | kMatNoTexture
     uint Kind;       // kKind*
 };
 // Per TLAS instance, at InstanceIndex().
@@ -25,7 +25,7 @@ static const uint kKindSkinned = 3u;
 static const uint kWorldInstanceId = 0xFFFFFFu;
 static const uint kMatAlphaTest = 0x80000000u;
 static const uint kMatNoTexture = 0x40000000u;
-static const uint kMatSlotMask = 0x00FFFFFFu;
+static const uint kMatSlotMask = 0x0000FFFFu;   // MaterialFx packs its table slot above
 
 RaytracingAccelerationStructure Scene : register( t0 );
 StructuredBuffer<RtGeom>     Geoms      : register( t1 );

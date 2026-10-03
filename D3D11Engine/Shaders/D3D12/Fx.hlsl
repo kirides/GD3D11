@@ -37,7 +37,7 @@ cbuffer FxMaterialCB : register( b2 )
 };
 
 #include "include/TransparencyFog.hlsl"
-#include "include/TexAniScroll.hlsl"
+#include "include/MaterialFx.hlsl"
 
 SamplerState smp : register( s0 );
 

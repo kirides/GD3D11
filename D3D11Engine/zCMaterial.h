@@ -107,6 +107,23 @@ public:
 #endif
     }
 
+    /** ZenGin's detail texture: a MUL2 stage at uv * GetDetailTextureScale() (zRenderManager.cpp). G2 only. */
+    zCTexture* GetDetailTexture() const {
+#ifdef BUILD_GOTHIC_2_6_fix
+        return *reinterpret_cast<zCTexture**>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_DetailTexture ));
+#else
+        return nullptr;
+#endif
+    }
+
+    float GetDetailTextureScale() const {
+#ifdef BUILD_GOTHIC_2_6_fix
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_DetailTextureScale ));
+#else
+        return 0.0f;
+#endif
+    }
+
     /** The base texture has animation frames, so GetAniTexture moves on over time. */
     bool HasAnimatedTexture() const {
         zCTexture* texture = GetTextureSingle();

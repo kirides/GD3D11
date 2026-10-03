@@ -65,9 +65,12 @@ namespace VulkanRhi {
     class CommandListImpl final : public Rhi::CommandList {
     public:
         CommandListImpl( DeviceImpl* device, D3D12_COMMAND_LIST_TYPE type ) : m_Device( device ), m_Type( type ) {}
+        ~CommandListImpl() override { m_Device->ListSubmitted( static_cast<Rhi::CommandList*>( this ) ); }
 
         HRESULT Close() override;
         HRESULT Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) override;
+        /** Reset without holding garbage for the list: CreateCommandList's open list is often closed unused. */
+        HRESULT Begin( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState );
         void SetName( LPCWSTR ) override {}
 
         void SetPipelineState( Rhi::PipelineState* pso ) override;
@@ -249,7 +252,7 @@ namespace VulkanRhi {
         if ( !allocator || !outList ) return E_INVALIDARG;
         ComPtr<CommandListImpl> list;
         list.Attach( new CommandListImpl( this, type ) );
-        const HRESULT hr = list->Reset( allocator, initialState );
+        const HRESULT hr = list->Begin( allocator, initialState );
         if ( FAILED( hr ) ) return hr;
         *outList = list.Detach();
         return S_OK;
@@ -280,6 +283,11 @@ namespace VulkanRhi {
     }
 
     HRESULT CommandListImpl::Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
+        m_Device->ListOpened( static_cast<Rhi::CommandList*>( this ) );
+        return Begin( allocator, initialState );
+    }
+
+    HRESULT CommandListImpl::Begin( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
         m_Allocator = static_cast<CommandAllocatorImpl*>( allocator );
         m_Cmd = m_Allocator->AcquireCommandBuffer();
         if ( !m_Cmd ) return E_OUTOFMEMORY;

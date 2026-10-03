@@ -5,10 +5,16 @@
 #include "../Logger.h"
 
 D3D12RenderTarget::~D3D12RenderTarget() {
-    if ( m_Engine ) {
+    // Like ReplaceResource: in-flight draws may still read the texture through its bindless slots.
+    if ( m_Engine && m_Texture ) {
+        if ( m_SrvSlot != 0xFFFFFFFFu ) m_Engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
+        if ( m_UavSlot != 0xFFFFFFFFu ) m_Engine->QueueSrvResourceForRelease( m_UavSlot, m_Texture );
+        if ( m_SrvSlot == 0xFFFFFFFFu && m_UavSlot == 0xFFFFFFFFu ) m_Engine->QueueResourceForRelease( m_Texture );
+    } else if ( m_Engine ) {
         if ( m_SrvSlot != 0xFFFFFFFFu ) m_Engine->FreeSrvSlot( m_SrvSlot );
         if ( m_UavSlot != 0xFFFFFFFFu ) m_Engine->FreeSrvSlot( m_UavSlot );
     }
+    // RTV contents are snapshotted at record time, so the slot is free to reuse now.
     if ( m_RtvHeap && m_RtvSlot != 0xFFFFFFFFu ) m_RtvHeap->Free( m_RtvSlot );
 }
 
