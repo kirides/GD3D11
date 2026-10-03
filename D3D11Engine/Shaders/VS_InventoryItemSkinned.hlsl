@@ -5,6 +5,7 @@
 static const int NUM_MAX_BONES = 96;
 
 #include "InventoryItem.h"
+#include "TexAniScroll.h"
 
 #if SKINNING_STRUCTURED
 StructuredBuffer<float4x4> BoneTransforms : register( t0 );
@@ -77,7 +78,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	VS_OUTPUT Output;
 	Output.vPosition = projection.Position;
 	Output.vClip = projection.ClipDistance;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vTexcoord2 = Input.vTex1;
 	Output.vDiffuse = float4( 1, 1, 1, 1 );
 	Output.vNormalVS = float3( 0, 0, 0 );

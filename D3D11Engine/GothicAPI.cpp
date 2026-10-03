@@ -58,6 +58,7 @@
 #include "D3D11PipelineStateCache.h"
 #include "MeshManager.h"
 #include "SharedVisualRegistry.h"
+#include "TexAniScroll.h"
 #include "AsyncVisualExtractor.h"
 #include "ThreadPool.h"
 #include "zFILE.h"
@@ -1950,6 +1951,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     State->LoadedMaterials.erase( mat );
+    TexAniScroll::OnMaterialDeleted( mat );
     {
         std::unique_lock lock( State->MaterialInfosMutex );
         State->MaterialInfos.erase( mat );
@@ -3178,6 +3180,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                         }
 
                         // Go through all meshes using that material
+                        g->BindTexAniScroll( itm.first );
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                             DrawMeshInfo( itm.first, itm.second[m].get() );
                         }
@@ -3198,6 +3201,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             }
         }
     }
+    g->BindTexAniScroll( nullptr );
 
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
@@ -3280,6 +3284,7 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
                         g->GetActivePS()->UpdateBuffer( "GhostAlphaInfo", &gacb, sizeof( gacb ) );
                         boundRef = ref;
                     }
+                    g->BindTexAniScroll( material );
 
                     for ( auto const& meshInfo : meshes ) {
                         g->DrawVertexBufferIndexed(
@@ -3306,6 +3311,7 @@ void GothicAPI::DrawTransparencyVob( const TransparencyVobInfo& TransVobInfo ) {
             g->SetActivePixelShader( lit ? PShaderID::PS_TransparencyLitFP : PShaderID::PS_Transparency );
             g->BindActivePixelShader();
             drawMeshes();
+            g->BindTexAniScroll( nullptr );
         }
     }
 }
@@ -6659,6 +6665,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
                 }
             }
         }
+        g->BindTexAniScroll( s->Material );
 
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
@@ -6670,6 +6677,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         }
         Out_Of_Nested_Loop:;
     }
+    g->BindTexAniScroll( nullptr );
 }
 
 /** Add particle effect */

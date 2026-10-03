@@ -5,6 +5,7 @@
 static const int NUM_MAX_BONES = 96;
 
 #include "Globals_VS_ExConstants.h"
+#include "TexAniScroll.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -87,7 +88,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vWorldPosition = positionWorld;
 	Output.vTexcoord2 = Input.vTex1;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vDiffuse  = PI_ModelColor;
 	Output.vNormalWS = mul(Input.vBindPoseNormal, (float3x3)M_World);
 

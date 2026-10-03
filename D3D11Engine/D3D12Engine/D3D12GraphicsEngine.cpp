@@ -32,6 +32,7 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12RayTracing.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
+#include "../TexAniScroll.h"
 
 namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
@@ -924,9 +925,68 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	if ( FAILED( m_Rhi->CreateDescriptorHeap( &desc, m_SrvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
 	m_SrvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-	m_SrvHeapCapacity = kSrvHeapCapacity;
+	static_assert( kTexAniTableSlot == kSrvHeapCapacity - 1, "the texAniMap table owns the heap's last slot" );
+	m_SrvHeapCapacity = kSrvHeapCapacity - 1;
 	m_SrvAllocated = 0;
+	return CreateTexAniTable();
+}
+
+
+bool D3D12GraphicsEngine::CreateTexAniTable() {
+	constexpr UINT kTableBytes = TexAniScroll::kMaxSlots * sizeof( float4 );
+	auto bufferDesc = []( UINT64 bytes ) {
+		D3D12_RESOURCE_DESC d = {};
+		d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		d.Width = bytes;
+		d.Height = 1;
+		d.DepthOrArraySize = 1;
+		d.MipLevels = 1;
+		d.SampleDesc.Count = 1;
+		d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		return d;
+		};
+	const D3D12_RESOURCE_DESC tableDesc = bufferDesc( kTableBytes );
+	const D3D12_RESOURCE_DESC uploadDesc = bufferDesc( static_cast<UINT64>( kTableBytes ) * kBackBufferMax );
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &tableDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			m_TexAniTable.ReleaseAndGetAddressOf() ) )
+		|| FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+			m_TexAniUpload.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: failed to create the texAniMap scroll table." );
+		return false;
+	}
+	m_TexAniTable->SetName( L"TexAniScrollTable" );
+	m_TexAniUpload->SetName( L"TexAniScrollUpload" );
+	D3D12_RANGE noRead = { 0, 0 };
+	void* mapped = nullptr;
+	if ( FAILED( m_TexAniUpload->Map( 0, &noRead, &mapped ) ) ) return false;
+	m_TexAniUploadPtr = static_cast<uint8_t*>( mapped );
+	m_TexAniTableWritten = false;
+	// A structured-buffer SRV, not a CBV: Vulkan puts uniform buffers in the bindless heap only on some devices.
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Buffer.NumElements = TexAniScroll::kMaxSlots;
+	srv.Buffer.StructureByteStride = sizeof( float4 );
+	m_Rhi->CreateShaderResourceView( m_TexAniTable.Get(), &srv, GetSrvCpuHandle( kTexAniTableSlot ) );
 	return true;
+}
+
+
+void D3D12GraphicsEngine::UploadTexAniTable() {
+	// Without a scrolling material no draw reads the table, so the copy and its barriers are skipped entirely.
+	float4 table[TexAniScroll::kMaxSlots];
+	const bool live = TexAniScroll::FillTable( table );
+	if ( !live && m_TexAniTableWritten ) return;
+	if ( !live ) memset( table, 0, sizeof( table ) );
+
+	const UINT offset = m_FrameIndex * static_cast<UINT>( sizeof( table ) );
+	memcpy( m_TexAniUploadPtr + offset, table, sizeof( table ) );
+	constexpr D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	if ( m_TexAniTableWritten )
+		m_CmdList->TransitionBarrier( m_TexAniTable.Get(), kRead, D3D12_RESOURCE_STATE_COPY_DEST );
+	m_CmdList->CopyBufferRegion( m_TexAniTable.Get(), 0, m_TexAniUpload.Get(), offset, sizeof( table ) );
+	m_CmdList->TransitionBarrier( m_TexAniTable.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kRead );
+	m_TexAniTableWritten = true;
 }
 
 
@@ -2059,6 +2119,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
     m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
+    UploadTexAniTable();
 
     // The swapchain stays transitioned to RENDER_TARGET even in HDR mode — EncodeHdrDisplayToBackBuffer
     // writes it at the end of Present — but everything the frame draws goes to the display target.

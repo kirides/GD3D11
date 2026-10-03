@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "InventoryItem.h"
+#include "TexAniScroll.h"
 
 struct VS_INPUT
 {
@@ -40,7 +41,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	VS_OUTPUT Output;
 	Output.vPosition = projection.Position;
 	Output.vClip = projection.ClipDistance;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vDiffuse = Input.vDiffuse;
 	Output.vNormalVS = float3( 0, 0, 0 );

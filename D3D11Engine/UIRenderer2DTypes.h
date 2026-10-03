@@ -4,6 +4,7 @@
 #include <DirectXMath.h>
 
 class GfxTexture;
+class zCMaterial;
 struct MeshInfo;
 struct SkeletalMeshInfo;
 
@@ -57,6 +58,7 @@ struct UIItemDraw {
     const MeshInfo* Mesh = nullptr;
     const SkeletalMeshInfo* SkinnedMesh = nullptr;
     GfxTexture* Texture = nullptr;
+    zCMaterial* Material = nullptr;   // for its texAniMap scroll
     uint32_t Instance = 0;
     uint32_t BoneOffset = 0;   // SkinnedMesh only, into UIItemFrame::Bones
     uint32_t BoneCount = 0;

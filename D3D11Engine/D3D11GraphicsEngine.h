@@ -474,6 +474,10 @@ public:
         GetContext()->GSSetConstantBuffers1( static_cast<UINT>( slot ), 1, &a.pBuffer, &first, &num );
     }
 
+    /** Binds the material's texAniMap UV scroll to VS b12 (Shaders/TexAniScroll.h); nullptr restores zero.
+        A pass that binds a scrolling material restores zero before it returns, so no other pass inherits it. */
+    void BindTexAniScroll( zCMaterial* mat );
+
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
     D3D11Texture* GetBlueNoiseTexture() const { return BlueNoise512BGRA.get(); }
     D3D11Texture* GetWhiteTexture() const { return WhiteTexture.get(); }
@@ -802,6 +806,10 @@ private:
         we can't otherwise be sure what any given draw path last bound. Checked via
         MaterialInfo::IsSame() to skip re-allocating/re-binding an identical buffer. */
     MaterialInfo* m_LastMaterialInfo = nullptr;
+
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_TexAniZeroCB;   // VS b12 whenever nothing scrolls
+    XMFLOAT2 m_TexAniBound = {};
+    void ResetTexAniScroll();   // frame start: zero bound
 
     /** Shared stand-in bound for non-normalmapped materials while the scene is wet (distortion noise as normalmap). */
     MaterialInfo m_RainMaterialInfo;

@@ -1181,6 +1181,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="FloatingVobs.h" />
     <ClInclude Include="D3D12Engine\D3D12GpuScene.h" />
     <ClInclude Include="D3D12Engine\D3D12GpuWorld.h" />
+    <ClInclude Include="TexAniScroll.h" />
     <ClInclude Include="D3D12Engine\D3D12Device.h" />
     <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h" />
     <ClInclude Include="D3D12Engine\D3D12EngineCommon.h" />
@@ -1421,6 +1422,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="FloatingVobs.cpp" />
     <ClCompile Include="D3D12Engine\D3D12GpuScene.cpp" />
     <ClCompile Include="D3D12Engine\D3D12GpuWorld.cpp" />
+    <ClCompile Include="TexAniScroll.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp" />
     <ClCompile Include="D3D12Engine\D3D12DoF.cpp" />
     <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp">

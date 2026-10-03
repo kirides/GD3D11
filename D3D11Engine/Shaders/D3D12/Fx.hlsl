@@ -37,6 +37,7 @@ cbuffer FxMaterialCB : register( b2 )
 };
 
 #include "include/TransparencyFog.hlsl"
+#include "include/TexAniScroll.hlsl"
 
 SamplerState smp : register( s0 );
 
@@ -76,8 +77,8 @@ float3 SrgbToLinear( float3 c )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    Texture2D<float4> difTex = ResourceDescriptorHeap[DiffuseIndex];
-    float4 t = difTex.Sample( smp, i.uv );
+    Texture2D<float4> difTex = ResourceDescriptorHeap[DiffuseSlot( DiffuseIndex )];
+    float4 t = difTex.Sample( smp, TexAniUv( i.uv, DiffuseIndex ) );
 
     // Quad marks: PS_World's "WorldMesh can always do the alphatest" — clip regardless of the material's
     // alpha func. Load-bearing: Gothic's blood splats are zMAT_ALPHA_FUNC_NONE, i.e. drawn UNBLENDED, so

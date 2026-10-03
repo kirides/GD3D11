@@ -18,6 +18,7 @@
 #include "../ConstantBufferStructs.h"   // VobInstanceInfo — held by value in FrameAttachDraw
 #include "../Shaders/D3D12/include/GPULightShared.h"   // GPULight — one definition, shared with HLSL
 
+class zCMaterial;
 class zCTexture;
 class zCVob;
 class zCVobLight;
@@ -108,6 +109,7 @@ struct FrameAttachDraw {
     // drawn, so a batch would give every member the head-of-batch's morph. Out of range it switches to the
     // shared rest mesh (MeshVisualInfo::RestVisual) and becomes batchable like anything else.
     bool                        batchable;
+    zCMaterial*                 mat;
 };
 
 // GPULight (per-frame GPU point light) and its shadow-tier bit constants now live in
@@ -153,7 +155,6 @@ inline void ClearFrameWaterSurfaces() { g_FrameWaterSurfaces[0].clear(); g_Frame
 // BuildWorldDrawCommands (D3D12Scene.cpp) and drawn back-to-front by DrawWorldTransparencyRun
 // (D3D12Transparency.cpp), which also owns the definition. Mirrors D3D11's FrameTransparencyMeshes.
 // Same single-threaded per-frame lifetime as g_FrameWaterSurfaces above.
-class zCMaterial;
 struct WorldTransparencyMesh {
     zCMaterial* Material;
     MeshInfo*   Mesh;

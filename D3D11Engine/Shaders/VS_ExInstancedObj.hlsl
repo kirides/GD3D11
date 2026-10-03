@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "TexAniScroll.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -248,7 +249,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     float3 prevWorldPos = mul(InstPrevWorld(Input), float4(prevPosition, 1.0));
 
     Output.vPosition = mul(float4(worldPos, 1.0), frame.M_ViewProj);
-    Output.vTexcoord = Input.vTex1;
+    Output.vTexcoord = Input.vTex1 + TexAniOffset;
     Output.vTexcoord2 = Input.vTex2;
     Output.vDiffuse = Input.InstanceColor;
     // 2.0 = focused (PS tests > 1.5), else 1.0 — PS_Simple multiplies by it as alpha for blended VOBs.

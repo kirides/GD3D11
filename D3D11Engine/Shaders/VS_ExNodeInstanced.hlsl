@@ -4,6 +4,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "TexAniScroll.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -58,7 +59,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex2;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	// .w is the 2.0 focus sentinel, rebuilt from the flag bit.
 	Output.vDiffuse  = float4(Input.InstanceColorFlags.rgb / 255.0,
 		(Input.InstanceColorFlags.a & 0x80) ? 2.0 : 0.0);

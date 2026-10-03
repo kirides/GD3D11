@@ -10,6 +10,7 @@
 #include "../WorldObjects.h"
 #include "../VertexTypes.h"
 #include "../zCMaterial.h"
+#include "../TexAniScroll.h"
 #include "../zCTexture.h"
 #include "../zCVob.h"
 #include "../zCVobLight.h"
@@ -533,7 +534,8 @@ namespace {
 			zCTexture* tex = material->GetAniTexture();
 			const UINT slot = ResolveDiffuseCacheIn( tex );
 			const bool resident = !tex || slot != g_In.blackSlot;
-			it->second = { slot, ( tex && tex->HasAlphaChannel() ) || material->HasAlphaTest(), resident ? nullptr : tex };
+			const UINT packed = slot != g_In.blackSlot ? TexAniScroll::PackDiffuseIndex( slot, material ) : slot;
+			it->second = { packed, ( tex && tex->HasAlphaChannel() ) || material->HasAlphaTest(), resident ? nullptr : tex };
 		}
 		return it->second;
 	}

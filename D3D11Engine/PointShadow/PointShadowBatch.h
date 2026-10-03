@@ -6,6 +6,7 @@
 #include "../pch.h"
 #include <functional>
 
+class zCMaterial;
 class zCTexture;
 
 namespace PointShadowCasters {
@@ -20,6 +21,7 @@ struct CasterMeshDraw {
     UINT Count = 0;
     UINT Offset = 0;
     zCTexture* AlphaTexture = nullptr;     // null: opaque, drawn without a pixel shader
+    zCMaterial* Material = nullptr;        // for the alpha cutout's texAniMap scroll
 };
 
 namespace PointShadowBatch {

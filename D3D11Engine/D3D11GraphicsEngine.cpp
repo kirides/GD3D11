@@ -71,6 +71,7 @@
 #include "TransparencyQueue.h"
 #include "D3D11ForwardPlusRenderer.h"
 #include "D3D11SkeletalPoseCache.h"
+#include "TexAniScroll.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -1582,6 +1583,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
     BeginFrameTransientBufferPools();
+    ResetTexAniScroll();
 
     DrawMultiIndexedInstancedIndirect = rendererState.RendererSettings.DebugSettings.FeatureSet.UseMDI
         ? ResolvedDrawMultiIndexedInstancedIndirect
@@ -2458,9 +2460,38 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vbGfx,
     return XR_SUCCESS;
 }
 
+namespace {
+    constexpr UINT kTexAniScrollSlot = 12;   // Shaders/TexAniScroll.h
+}
+
+void D3D11GraphicsEngine::ResetTexAniScroll() {
+    if ( !m_TexAniZeroCB ) {
+        const float zero[4] = {};
+        const D3D11_BUFFER_DESC desc = { sizeof( zero ), D3D11_USAGE_IMMUTABLE, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0 };
+        const D3D11_SUBRESOURCE_DATA init = { zero, 0, 0 };
+        if ( FAILED( GetDevice()->CreateBuffer( &desc, &init, m_TexAniZeroCB.GetAddressOf() ) ) ) return;
+    }
+    GetContext()->VSSetConstantBuffers( kTexAniScrollSlot, 1, m_TexAniZeroCB.GetAddressOf() );
+    m_TexAniBound = {};
+}
+
+void D3D11GraphicsEngine::BindTexAniScroll( zCMaterial* mat ) {
+    float2 offset;
+    if ( !TexAniScroll::GetOffset( mat, offset ) ) offset = float2( 0.0f, 0.0f );
+    if ( offset.x == m_TexAniBound.x && offset.y == m_TexAniBound.y ) return;
+    m_TexAniBound = XMFLOAT2( offset.x, offset.y );
+    if ( offset.x == 0.0f && offset.y == 0.0f ) {
+        GetContext()->VSSetConstantBuffers( kTexAniScrollSlot, 1, m_TexAniZeroCB.GetAddressOf() );
+        return;
+    }
+    const float4 data( offset.x, offset.y, 0.0f, 0.0f );
+    BindDynamicCBToVertexShader( kTexAniScrollSlot, AllocateDynamicCB( &data ) );
+}
+
 // Need to be able to pass in a texture, otherwise when batch-drawing node attachments, the zCMaterial* AniTexture will be wrong!
 bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo)
 {
+    BindTexAniScroll( mat );
     // Texture still streaming in (async load)? Draw with a solid black placeholder instead of
     // skipping the mesh, so it doesn't flash the clear color while it loads. Shader selection can
     // still use zCTexture metadata (alpha channel, fx/normalmap presence), which is available
@@ -2691,6 +2722,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     }
 
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
+        BindTexAniScroll( itm.first );
         if ( zCMaterial* mat = itm.first ) {
             if ( ActivePS && (mat->GetAniTexture()) != nullptr ) {
                 if ( !BindTextureNRFX( mat, (RenderingStage != DES_GHOST) ) ) {
@@ -2717,6 +2749,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
                 numIndices / 3;
         }
     }
+    BindTexAniScroll( nullptr );
 
     return XR_SUCCESS;
 }
@@ -3087,6 +3120,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     }
 
                     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
+                        BindTexAniScroll( itm.first );
                         if ( zCMaterial* mat = itm.first ) {
                             if ( wantShader ) {
                                 if ( (mat->GetAniTexture()) != nullptr ) {
@@ -3152,6 +3186,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
         }
     }
+    BindTexAniScroll( nullptr );
 
     if ( !drawAttachments || tempVobList.empty() ) {
         return;
@@ -3349,6 +3384,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                     if ( !bindTextureForPass( itm.first, aniTex ) )
                                         continue;
                                 }
+                                BindTexAniScroll( itm.first );
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                                     Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
@@ -3368,6 +3404,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         BindDynamicCBToVertexShader(perDrawMPI, AllocateDynamicCB(&instanceInfo));
 
                         for ( auto const& itm : mvi->Meshes ) {
+                            BindTexAniScroll( itm.first );
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                                 Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                             }
@@ -3423,6 +3460,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
         }
 
+        BindTexAniScroll( nullptr );
         D3D11VertexBuffer* nodeAttachmentBuffer = nullptr;
         uint32_t nodeAttachmentBufferOffset = 0;
         static std::vector<FrameGeometryCache::CachedNodeAttachmentBatch> batches;
@@ -3605,6 +3643,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 lastBatchTex = batch.Texture;
             }
 
+            BindTexAniScroll( batch.Material );
+
             // Set up alpha test state from material
             if ( batch.Material ) {
                 if ( batch.Material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
@@ -3654,7 +3694,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         UINT nullStride = 0;
         UINT nullOffset = 0;
         Context->IASetVertexBuffers( 1, 1, &nullBuf, &nullStride, &nullOffset );
-
+        BindTexAniScroll( nullptr );
     }
 }
 
@@ -4909,6 +4949,7 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             // TODO: Do we even need/use material-info for transparent meshes?
 
             // Draw the section-part
+            BindTexAniScroll( mat );
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
                 meshInfo->BaseIndexLocation );
 
@@ -4950,6 +4991,7 @@ void D3D11GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
             }
         }
     }
+    BindTexAniScroll( nullptr );
 }
 
 /** Depth of this frame's world transparency meshes, color writes off. Must run ONCE after the whole
@@ -4987,11 +5029,13 @@ void D3D11GraphicsEngine::DrawWorldTransparencyDepthOnly() {
             anyDrawn = true;
         }
 
+        BindTexAniScroll( meshKey.Material );
         DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
             meshInfo->BaseIndexLocation );
     }
 
     if ( anyDrawn ) {
+        BindTexAniScroll( nullptr );
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
         UpdateRenderStates();
@@ -5418,9 +5462,11 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 updatePSBuffers();
             }
 
+            BindTexAniScroll( mesh.Range.Key.Material );
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.Range.IndexCount,
                 mesh.Range.Mesh->BaseIndexLocation + mesh.Range.IndexOffset );
         }
+        BindTexAniScroll( nullptr );
         if ( isZPrepass ) {
             return XR_SUCCESS;
         }
@@ -5508,10 +5554,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             }
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
+                BindTexAniScroll( mesh.Range.Key.Material );
                 DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.Range.IndexCount,
                     mesh.Range.Mesh->BaseIndexLocation + mesh.Range.IndexOffset );
             }
         }
+        BindTexAniScroll( nullptr );
     }
 
     DrawVegetationGeometryPass(Engine::GAPI->GetVegetationBoxes());
@@ -5877,7 +5925,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
 
     // Collect all meshes first, then batch by alpha requirement.
     static thread_local std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> opaqueDrawArgs;
-    static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
+    static thread_local std::vector<std::tuple<zCTexture*, MeshInfo*, zCMaterial*>> alphaMeshes;
     opaqueDrawArgs.clear();
     alphaMeshes.clear();
     if ( opaqueDrawArgs.capacity() == 0 ) {
@@ -5911,7 +5959,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                 if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
                     zCTexture* tex = meshPair.first.Material->GetAniTexture();
                     if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
-                        alphaMeshes.emplace_back( tex, mesh );
+                        alphaMeshes.emplace_back( tex, mesh, meshPair.first.Material );
                     }
                     indexCount = GetShadowAwareIndexCount( mesh, true );
                 } else {
@@ -5983,7 +6031,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::AlphaSubmission" );
         auto _scopeAlphaSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::AlphaSubmission" ) );
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-            []( const auto& a, const auto& b ) { return a.first < b.first; } );
+            []( const auto& a, const auto& b ) { return std::get<0>( a ) < std::get<0>( b ); } );
 
         // Alpha-test needs TexCoord: use the packed full stream + VS_ExPacked (the opaque pass above
         // may have swapped in the position-only shader).
@@ -5996,7 +6044,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
 
-        for ( const auto& [tex, mesh] : alphaMeshes ) {
+        for ( const auto& [tex, mesh, mat] : alphaMeshes ) {
             if ( tex != lastTex ) {
                 if ( tex->GetCacheState() == zRES_CACHED_IN ) {
                     auto t = GetSrvFromGfx( tex->GetSurface()->GetEngineTexture() );
@@ -6005,10 +6053,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                 }
             }
 
+            BindTexAniScroll( mat );
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
                 GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
+        BindTexAniScroll( nullptr );
     }
 
     // Restore the neutral VS_Ex for whatever the caller draws next (e.g. VOBs); the world-mesh
@@ -6027,7 +6077,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
 
     static thread_local std::vector<WorldMeshInfo*> opaqueMeshes;
-    static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
+    static thread_local std::vector<std::tuple<zCTexture*, MeshInfo*, zCMaterial*>> alphaMeshes;
     opaqueMeshes.clear();
     alphaMeshes.clear();
 
@@ -6057,7 +6107,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     // Need alpha testing - cache texture
                     zCTexture* tex = meshPair.first.Material->GetAniTexture();
                     if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
-                        alphaMeshes.emplace_back( tex, meshPair.second );
+                        alphaMeshes.emplace_back( tex, meshPair.second, meshPair.first.Material );
                     }
                 } else {
                     opaqueMeshes.push_back( meshPair.second );
@@ -6115,7 +6165,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         auto _scopeAlphaSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh::AlphaSubmission" ) );
         // Sort by texture to minimize binding changes
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-            []( const auto& a, const auto& b ) { return a.first < b.first; } );
+            []( const auto& a, const auto& b ) { return std::get<0>( a ) < std::get<0>( b ); } );
 
         // Alpha-test needs TexCoord, so use the packed full stream + VS_ExPacked (the opaque pass
         // above may have swapped in the position-only shader).
@@ -6129,7 +6179,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
 
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
 
-        for ( const auto& [tex, mesh] : alphaMeshes ) {
+        for ( const auto& [tex, mesh, mat] : alphaMeshes ) {
             if ( tex != lastTex ) {
                 if ( tex->GetCacheState() == zRES_CACHED_IN ) {
                     auto t = GetSrvFromGfx(tex->GetSurface()->GetEngineTexture());
@@ -6137,10 +6187,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     lastTex = tex;
                 }
             }
+            BindTexAniScroll( mat );
             DrawVertexBufferIndexed( nullptr, nullptr,
                 GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
+        BindTexAniScroll( nullptr );
     }
 
     // Restore the full-attribute shader for the rest of the shadow pass (the opaque-only path may
@@ -6541,6 +6593,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             numIndices = max != 0 ? (numIndices < max ? numIndices : max) : numIndices;
 
             // Draw the batch
+            BindTexAniScroll( meshKey.Material );
             GetContext()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
                 startInstanceNum );
 
@@ -6549,6 +6602,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             renderState.RendererInfo.FrameDrawnVobs++;
         }
+        BindTexAniScroll( nullptr );
 
         if ( useWindMetadata ) {
             UnbindWindMetadata();
@@ -7257,12 +7311,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     }
 
                     // Draw batch
+                    BindTexAniScroll( meshKey.Material );
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         VobInstanceUploadStride(), cachedVisual->Instances.size(),
                         sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum, 0,
                         cache.MainVobInstancingBufferOffset );
                 }
+                BindTexAniScroll( nullptr );
             }
             if ( !isZPrepass ) {
                 for ( auto const& cv : cache.vobVisuals ) {
@@ -7524,6 +7580,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
             }
 
             // StartInstanceLocation is absolute in the shared instancing buffer
+            BindTexAniScroll( mk.Material );
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, VobInstanceUploadStride(),
                 instanceCount, sizeof( ExVertexStruct ),
@@ -7533,6 +7590,7 @@ void D3D11GraphicsEngine::DrawAlphaVobRun( std::span<const TransparentItem> item
             m_AlphaVobDrawsThisFrame++;
         }
     }
+    BindTexAniScroll( nullptr );
 
     if ( useWindMetadata ) {
         UnbindWindMetadata();
@@ -7669,8 +7727,10 @@ void D3D11GraphicsEngine::DrawPolyStripRun( std::span<const TransparentItem> ite
         //Populate TempVertexBuffer and draw it
         EnsureTempVertexBufferSize( TempPolysVertexBuffer, sizeof( ExVertexStruct ) * vertices.size() );
         TempPolysVertexBuffer->UpdateBuffer( const_cast<ExVertexStruct*>(&vertices[0]), sizeof( ExVertexStruct ) * vertices.size() );
+        BindTexAniScroll( mat );
         DrawVertexBuffer( TempPolysVertexBuffer.get(), vertices.size(), sizeof( ExVertexStruct ) );
     }
+    BindTexAniScroll( nullptr );
 
     SetDefaultStates();
 }
@@ -8095,6 +8155,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         } else {
             continue;
         }
+        BindTexAniScroll( itm.first );
         for ( auto const& itm2nd : itm.second ) {
             // Draw instances
             DrawVertexBufferIndexed(
@@ -8102,6 +8163,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
                 itm2nd->Indices.size() );
         }
     }
+    BindTexAniScroll( nullptr );
 
     GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
@@ -8194,6 +8256,7 @@ void D3D11GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
             if ( !itm.first || (texture = itm.first->GetAniTexture()) == nullptr ) continue;
             if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
             texture->Bind( 0 );
+            BindTexAniScroll( itm.first );
 
             for ( auto const& mesh : itm.second ) {
                 UINT offset = 0;
@@ -8253,6 +8316,7 @@ void D3D11GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
                     if ( !itm.first || (texture = itm.first->GetAniTexture()) == nullptr ) continue;
                     if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
                     texture->Bind( 0 );
+                    BindTexAniScroll( itm.first );
 
                     for ( auto const& mesh : itm.second ) {
                         DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(), mesh->GetMeshIndexBuffer(), mesh->Indices.size() );
@@ -8261,6 +8325,7 @@ void D3D11GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
             }
         }
     }
+    BindTexAniScroll( nullptr );
 
     GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
@@ -8844,8 +8909,10 @@ void D3D11GraphicsEngine::DrawQuadMarkRun( std::span<const TransparentItem> item
         Engine::GAPI->SetWorldTransformXM( quadMark.Mark->GetConnectedVob()->GetWorldMatrixXM() );
         SetupVS_ExPerInstanceConstantBuffer();
 
+        BindTexAniScroll( mat );
         DrawVertexBuffer( quadMark.Info->Mesh.get(), quadMark.Info->NumVertices );
     }
+    BindTexAniScroll( nullptr );
 
     if ( tiledLit ) {
         UnbindClusteredLightingFromPixelShader();
@@ -9146,6 +9213,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             } else {
                 continue;
             }
+            BindTexAniScroll( itm.first );
             for ( auto const& itm2nd : itm.second ) {
                 if (itm2nd->GetMeshVertexBuffer() != lastMeshBuffer
                     || itm2nd->GetMeshIndexBuffer() != lastIndexBuffer) {
@@ -9164,6 +9232,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             }
         }
     }
+    BindTexAniScroll( nullptr );
 }
 
 /** Maps a Gothic alpha func onto the fog target a surface of that blend mode has to fade into */

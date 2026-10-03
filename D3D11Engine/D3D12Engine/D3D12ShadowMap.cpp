@@ -923,7 +923,7 @@ if ( !m_E->m_FrameOpen || !m_Map || !m_CasterWorldPSO || !m_DsvHeap || !m_E->m_P
 				const bool alphaTested = ( tex && tex->HasAlphaChannel() )
 					|| meshKey.Material->HasAlphaTest();
 
-				g_WorldCasters.push_back( { mesh, diffuseIdx,
+				g_WorldCasters.push_back( { mesh, m_E->PackTexAni( diffuseIdx, meshKey.Material ),
 					static_cast<UINT>( mesh->Indices.size() ), mesh->BaseIndexLocation, alphaTested } );
 			}
 		}

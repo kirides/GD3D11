@@ -32,6 +32,7 @@ SamplerComparisonState  shadowCmp : register(s2);
 // Vob's 4th b6 constant: material color alpha, read only by PSAlphaBlendBindless.
 #define MATERIALCB_EXTRA_FIELDS float MatAlpha;
 #include "include/MaterialCB.hlsl"
+#include "include/TexAniScroll.hlsl"
 #undef MATERIALCB_EXTRA_FIELDS
 TextureCubeArray        PointShadowCubes : register(t5);
 #include "include/AOCB.hlsl"
@@ -220,7 +221,8 @@ VS_DEPTH_OUT VSDepthAttach( VS_IN i )
 // single indirect submit. Only the instanced-VOB PSOs use these; node-attachment PSOs keep the t0 variants.
 float4 PSMainBindless( VS_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
@@ -277,7 +279,8 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
 // Self-fogs by its own position (drawn after the fog pass): BLEND fades to the fog colour, ADD toward black.
 float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     float4 t = difTex.Sample( smp, i.uv );
     float3 N = normalize( i.wnrm );
     float3 geomN = N;
@@ -303,14 +306,16 @@ float4 PSAlphaBlendBindless( VS_OUT i ) : SV_TARGET
 
 float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
     return float4( 0, 0, 0, 1 );
 }
 
 void PSShadowClipBindless( VS_DEPTH_OUT i )
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
 }
 
@@ -378,7 +383,8 @@ VS_GBUF_OUT VSDepthAttachGBuf( VS_GBUF_IN i )
 
 GBUF_OUT PSDepthClipBindlessGBuf( VS_GBUF_OUT i )
 {
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    i.uv = TexAniUv( i.uv, MatDiffuseIndex );
+    Texture2D difTex = ResourceDescriptorHeap[DiffuseSlot( MatDiffuseIndex )];
     clip( difTex.Sample( smp, i.uv ).a - 0.5 );
     return MakeGBufOut( i.currClip, i.prevClip, i.wnrm );
 }
