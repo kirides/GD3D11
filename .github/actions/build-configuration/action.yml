@@ -27,6 +27,23 @@ runs:
         # same as local builds.
         runVcpkgInstall: false
 
+    # run-vcpkg exports the removed 'x-gha' backend; override it with a file cache.
+    - name: Use file-based vcpkg binary cache
+      shell: pwsh
+      run: |
+        "VCPKG_BINARY_SOURCES=clear;files,$env:GITHUB_WORKSPACE\vcpkg_binary_cache,readwrite" >> $env:GITHUB_ENV
+
+    # Cached downloads also keep the MSYS2 tarballs, so a miss doesn't hit mirror.msys2.org.
+    - name: Cache vcpkg binaries and downloads
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ github.workspace }}/vcpkg_binary_cache
+          ${{ github.workspace }}/vcpkg/downloads
+        key: vcpkg-x86-windows-static-md-39344dff-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-x86-windows-static-md-39344dff-
+
     - name: Run MSBuild
       id: build
       shell: pwsh
