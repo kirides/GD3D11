@@ -190,6 +190,7 @@ namespace VulkanRhi {
             m_Garbage.clear();
         }
         if ( m_Scratch ) vmaDestroyBuffer( m_Allocator, m_Scratch, m_ScratchAllocation );
+        if ( m_MarkerBuffer ) vmaDestroyBuffer( m_Allocator, m_MarkerBuffer, m_MarkerAllocation );
         for ( InitCommands& c : m_InitCommands ) vkDestroyCommandPool( Vk(), c.Pool, nullptr );
         m_InitCommands.clear();
         if ( m_BindlessLayout ) vkDestroyDescriptorSetLayout( Vk(), m_BindlessLayout, nullptr );
@@ -219,6 +220,7 @@ namespace VulkanRhi {
             return false;
         }
         if ( !CreateBindlessLayout() ) return false;
+        CreateScopeMarkers();
         LoadPipelineCache();
 
         m_Queue.Attach( new QueueImpl( this, m_Vk.GetGraphicsQueue(), m_Vk.GetGraphicsQueueMutex() ) );
@@ -452,6 +454,7 @@ namespace VulkanRhi {
             if ( !m_DeviceLost.exchange( true ) ) {
                 Logging::Err( "Vulkan: device lost ({}).", what );
                 LogDeviceFault();
+                LogScopeMarkers();
             }
         } else {
             VkUtil::Failed( result, what );
@@ -479,6 +482,106 @@ namespace VulkanRhi {
             Logging::Err( "  address 0x{:016X} (+/-0x{:X}), kind {}", a.reportedAddress, a.addressPrecision, static_cast<int>( a.addressType ) );
         for ( const VkDeviceFaultVendorInfoEXT& v : vendor )
             Logging::Err( "  vendor: {} (code 0x{:X}, data 0x{:X})", v.description, v.vendorFaultCode, v.vendorFaultData );
+    }
+
+    // ---- Scope breadcrumbs ----------------------------------------------------------------------
+
+    void DeviceImpl::CreateScopeMarkers() {
+        if ( !VkCaps().BufferMarkerAMD && !VkCaps().DiagnosticCheckpointsNV ) {
+            Logging::Wrn( "Vulkan: no buffer markers or diagnostic checkpoints; device-loss logs will lack scope names." );
+            return;
+        }
+        m_MarkerNames.assign( kMarkerSlots, nullptr );
+        if ( !VkCaps().BufferMarkerAMD ) return;
+        VkBufferCreateInfo bi = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bi.size = kMarkerSlots * sizeof( uint32_t );
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        // Cached system memory: a ReBAR/VRAM mapping may not be readable once the device is gone.
+        VmaAllocationCreateInfo ai = {};
+        ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        ai.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        VmaAllocationInfo info = {};
+        if ( VkUtil::Failed( vmaCreateBuffer( m_Allocator, &bi, &ai, &m_MarkerBuffer, &m_MarkerAllocation, &info ), "vmaCreateBuffer (scope markers)" ) ) {
+            m_MarkerBuffer = VK_NULL_HANDLE;
+            return;
+        }
+        if ( !info.pMappedData ) return;
+        m_MarkerCpu = static_cast<volatile uint32_t*>( info.pMappedData );
+        std::memset( info.pMappedData, 0, bi.size );
+        SetObjectName( VK_OBJECT_TYPE_BUFFER, VkUtil::HandleToU64( m_MarkerBuffer ), "GpuScopeMarkers" );
+    }
+
+    uint32_t DeviceImpl::BeginScopeMarker( VkCommandBuffer cmd, const wchar_t* name ) {
+        if ( m_MarkerNames.empty() ) return kNoMarker;
+        const uint32_t slot = m_NextMarker.fetch_add( 1, std::memory_order_relaxed ) % kMarkerSlots;
+        m_MarkerNames[slot] = name;
+        if ( m_MarkerCpu ) {
+            m_MarkerCpu[slot] = 0;
+            vkCmdWriteBufferMarkerAMD( cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_MarkerBuffer, slot * sizeof( uint32_t ), 1 );
+        }
+        // Checkpoint markers are opaque pointers: 2 * slot + 1 = begun, + 2 = ended.
+        if ( VkCaps().DiagnosticCheckpointsNV ) vkCmdSetCheckpointNV( cmd, reinterpret_cast<const void*>( uintptr_t( slot ) * 2 + 1 ) );
+        return slot;
+    }
+
+    void DeviceImpl::EndScopeMarker( VkCommandBuffer cmd, uint32_t slot ) {
+        if ( slot == kNoMarker ) return;
+        if ( m_MarkerCpu )
+            vkCmdWriteBufferMarkerAMD( cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_MarkerBuffer, slot * sizeof( uint32_t ), 2 );
+        if ( VkCaps().DiagnosticCheckpointsNV ) vkCmdSetCheckpointNV( cmd, reinterpret_cast<const void*>( uintptr_t( slot ) * 2 + 2 ) );
+    }
+
+    void DeviceImpl::LogScopeMarkers() const {
+        if ( m_MarkerNames.empty() ) return;
+        auto name = [&]( uint32_t slot ) {
+            const wchar_t* w = m_MarkerNames[slot % kMarkerSlots];
+            char buffer[128] = "?";
+            if ( w ) {
+                const int n = WideCharToMultiByte( CP_UTF8, 0, w, -1, buffer, sizeof( buffer ), nullptr, nullptr );
+                if ( n <= 0 ) buffer[0] = '\0';
+                buffer[sizeof( buffer ) - 1] = '\0';
+            }
+            return std::string( buffer );
+        };
+
+        if ( VkCaps().DiagnosticCheckpointsNV ) {
+            // The last checkpoint each pipeline stage passed; the queue isn't locked, a submit may hold it.
+            uint32_t count = 0;
+            vkGetQueueCheckpointDataNV( m_Queue->m_Queue, &count, nullptr );
+            std::vector<VkCheckpointDataNV> data( count, { VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV } );
+            if ( count ) vkGetQueueCheckpointDataNV( m_Queue->m_Queue, &count, data.data() );
+            for ( uint32_t i = 0; i < count; ++i ) {
+                const uintptr_t v = reinterpret_cast<uintptr_t>( data[i].pCheckpointMarker );
+                const char* stage = data[i].stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ? "top of pipe"
+                    : data[i].stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ? "bottom of pipe" : "stage";
+                if ( !v ) continue;
+                Logging::Err( "Vulkan checkpoint, {} (0x{:X}): {} of {}", stage, static_cast<uint32_t>( data[i].stage ),
+                    ( v % 2 ) ? "begin" : "end", name( static_cast<uint32_t>( ( v - 1 ) / 2 ) ) );
+            }
+        }
+
+        if ( !m_MarkerCpu ) return;
+        // Scopes whose begin landed but whose end did not: what the GPU was inside when it stopped.
+        constexpr uint32_t kWindow = 4096;   // only the most recent markers; older ring slots may hold stale values
+        constexpr size_t kCompletedShown = 6;
+        const uint32_t next = m_NextMarker.load();
+        const uint32_t count = std::min( next, kWindow );
+        std::vector<uint32_t> open, completed;
+        for ( uint32_t n = next - count; n != next; ++n ) {
+            const uint32_t slot = n % kMarkerSlots;
+            if ( m_MarkerCpu[slot] == 1 ) open.push_back( slot );
+            else if ( m_MarkerCpu[slot] == 2 ) completed.push_back( slot );
+        }
+        const size_t firstShown = completed.size() > kCompletedShown ? completed.size() - kCompletedShown : 0;
+        for ( size_t i = firstShown; i < completed.size(); ++i )
+            Logging::Inf( "Vulkan GPU scope finished:     {}", name( completed[i] ) );
+        if ( open.empty() ) {
+            Logging::Wrn( "Vulkan GPU scope: none open — the GPU stopped outside any marker (or after the last one above)." );
+            return;
+        }
+        for ( uint32_t slot : open )
+            Logging::Err( "Vulkan GPU scope STILL OPEN:   {}", name( slot ) );
     }
 
     bool DeviceImpl::CreateBindlessLayout() {

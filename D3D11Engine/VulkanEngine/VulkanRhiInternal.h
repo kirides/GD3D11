@@ -512,6 +512,12 @@ namespace VulkanRhi {
         bool CheckResult( VkResult result, const char* what );
         bool IsDeviceLost() const { return m_DeviceLost; }
 
+        /** GPU scope breadcrumbs: the GPU writes begun/ended into host memory, dumped on device loss. `name` must
+            outlive the frame. Returns the slot for EndScopeMarker, kNoMarker when unavailable. */
+        static constexpr uint32_t kNoMarker = UINT32_MAX;
+        uint32_t BeginScopeMarker( VkCommandBuffer cmd, const wchar_t* name );
+        void EndScopeMarker( VkCommandBuffer cmd, uint32_t slot );
+
         /** Opaque GPU addresses: (buffer id << 32) | offset. Lookups are lock-free. */
         uint32_t RegisterBuffer( ResourceImpl* resource );
         void UnregisterBuffer( uint32_t id );
@@ -558,6 +564,8 @@ namespace VulkanRhi {
     private:
         bool CreateBindlessLayout();
         void LogDeviceFault() const;
+        void CreateScopeMarkers();
+        void LogScopeMarkers() const;
         void LoadPipelineCache();
         void SavePipelineCache();
 
@@ -567,6 +575,14 @@ namespace VulkanRhi {
         Rhi::Caps m_Caps;
         std::atomic<bool> m_DeviceLost{ false };
         FenceWaiter m_Waiter;
+
+        // Scope breadcrumb ring: 1 = begun (top of pipe), 2 = ended (bottom of pipe). Cached host memory survives loss.
+        static constexpr uint32_t kMarkerSlots = 16384;
+        VkBuffer m_MarkerBuffer = VK_NULL_HANDLE;
+        VmaAllocation m_MarkerAllocation = VK_NULL_HANDLE;
+        volatile uint32_t* m_MarkerCpu = nullptr;
+        std::vector<const wchar_t*> m_MarkerNames;
+        std::atomic<uint32_t> m_NextMarker{ 0 };
 
         // Buffer address table: 256 pages x 4096 ids, pages published once and never freed.
         static constexpr uint32_t kPageBits = 12;
