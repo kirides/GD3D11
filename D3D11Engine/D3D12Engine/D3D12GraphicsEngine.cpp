@@ -103,6 +103,9 @@ D3D12GraphicsEngine::~D3D12GraphicsEngine() {
         }
     }
     m_CleanupClosed = true;
+    // A global, so nothing else releases it before the device goes; its VirtualAlloc'd memory is left to the process.
+    g_GpuScopeMarkers.Va = 0;
+    g_GpuScopeMarkers.Buffer.Reset();
     // After the idle+drain above: the FFX context releases its internal D3D12 resources synchronously, so it
     // must not outlive in-flight work — and must go before the device does.
     ReleaseFsr3();

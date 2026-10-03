@@ -425,3 +425,11 @@ bool D3D12Device::Init() {
     s_tracyD3D12Ctx = TracyD3D12Context( m_Device.Get(), m_DirectQueue.Get() );
     return true;
 }
+
+D3D12Device::~D3D12Device() {
+    // The Tracy context holds the device and queue.
+    if ( s_tracyD3D12Ctx ) {
+        TracyD3D12Destroy( s_tracyD3D12Ctx );
+        s_tracyD3D12Ctx = nullptr;
+    }
+}

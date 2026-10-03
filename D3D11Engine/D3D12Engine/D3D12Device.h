@@ -20,7 +20,7 @@ public:
     static bool IsAvailable( std::string* outDescription = nullptr, std::string* outReason = nullptr );
 
     D3D12Device() = default;
-    ~D3D12Device() = default;
+    ~D3D12Device();
 
     D3D12Device( const D3D12Device& ) = delete;
     D3D12Device& operator=( const D3D12Device& ) = delete;
