@@ -32,6 +32,9 @@ using Microsoft::WRL::ComPtr;
 #include "D3D12RayTracing.h"
 #include "../WorldObjects.h"
 #include "../MorphGpu.h"
+#include "../MaterialFx.h"
+#include "../zCTexture.h"
+#include "../D3D7/MyDirectDrawSurface7.h"
 
 namespace {
     static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
@@ -931,9 +934,76 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 	if ( FAILED( m_Rhi->CreateDescriptorHeap( &desc, m_SrvHeap.ReleaseAndGetAddressOf() ) ) )
 		return false;
 	m_SrvDescriptorSize = m_Rhi->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-	m_SrvHeapCapacity = kSrvHeapCapacity;
+	static_assert( kMaterialFxTableSlot == kSrvHeapCapacity - 1, "the MaterialFx table owns the heap's last slot" );
+	static_assert( kSrvHeapCapacity - 1 <= MaterialFx::kDiffuseSlotMask, "packed diffuse indices hold 16-bit slots" );
+	m_SrvHeapCapacity = kSrvHeapCapacity - 1;
 	m_SrvAllocated = 0;
+	return CreateMaterialFxTable();
+}
+
+
+bool D3D12GraphicsEngine::CreateMaterialFxTable() {
+	constexpr UINT kTableBytes = MaterialFx::kMaxSlots * sizeof( MaterialFx::Entry );
+	auto bufferDesc = []( UINT64 bytes ) {
+		D3D12_RESOURCE_DESC d = {};
+		d.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		d.Width = bytes;
+		d.Height = 1;
+		d.DepthOrArraySize = 1;
+		d.MipLevels = 1;
+		d.SampleDesc.Count = 1;
+		d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		return d;
+		};
+	const D3D12_RESOURCE_DESC tableDesc = bufferDesc( kTableBytes );
+	const D3D12_RESOURCE_DESC uploadDesc = bufferDesc( static_cast<UINT64>( kTableBytes ) * kBackBufferMax );
+	if ( FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_DEFAULT, &tableDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			m_MaterialFxTable.ReleaseAndGetAddressOf() ) )
+		|| FAILED( m_Rhi->CreateResource( D3D12_HEAP_TYPE_UPLOAD, &uploadDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+			m_MaterialFxUpload.ReleaseAndGetAddressOf() ) ) ) {
+		Logging::Err( "D3D12: failed to create the MaterialFx table." );
+		return false;
+	}
+	m_MaterialFxTable->SetName( L"MaterialFxTable" );
+	m_MaterialFxUpload->SetName( L"MaterialFxUpload" );
+	D3D12_RANGE noRead = { 0, 0 };
+	void* mapped = nullptr;
+	if ( FAILED( m_MaterialFxUpload->Map( 0, &noRead, &mapped ) ) ) return false;
+	m_MaterialFxUploadPtr = static_cast<uint8_t*>( mapped );
+	m_MaterialFxTableWritten = false;
+	// A structured-buffer SRV, not a CBV: Vulkan puts uniform buffers in the bindless heap only on some devices.
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Buffer.NumElements = MaterialFx::kMaxSlots;
+	srv.Buffer.StructureByteStride = sizeof( MaterialFx::Entry );
+	m_Rhi->CreateShaderResourceView( m_MaterialFxTable.Get(), &srv, GetSrvCpuHandle( kMaterialFxTableSlot ) );
 	return true;
+}
+
+
+void D3D12GraphicsEngine::UploadMaterialFxTable() {
+	static MaterialFx::Entry table[MaterialFx::kMaxSlots];   // main thread only
+	uint32_t count = 0;
+	const UINT envCube = m_ReflectionCubeSrvSlot != UINT_MAX ? m_ReflectionCubeSrvSlot : 0xFFFFFFFFu;
+	const bool changed = MaterialFx::FillTable( table, count, envCube, []( zCTexture* tex ) -> uint32_t {
+		if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN || !tex->GetSurface() ) return UINT32_MAX;
+		GfxTexture* gfx = tex->GetSurface()->GetEngineTexture();
+		D3D12Texture* d = gfx ? D3D12Texture::From( gfx ) : nullptr;
+		return d && d->HasSRV() && d->GetSrvSlot() <= MaterialFx::kDiffuseSlotMask ? d->GetSrvSlot() : UINT32_MAX;
+		} );
+	// Unchanged entries skip the copy and its barriers; the GPU table still holds them.
+	if ( !changed && m_MaterialFxTableWritten ) return;
+
+	const UINT bytes = count * static_cast<UINT>( sizeof( MaterialFx::Entry ) );
+	const UINT offset = m_FrameIndex * MaterialFx::kMaxSlots * static_cast<UINT>( sizeof( MaterialFx::Entry ) );
+	memcpy( m_MaterialFxUploadPtr + offset, table, bytes );
+	constexpr D3D12_RESOURCE_STATES kRead = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	if ( m_MaterialFxTableWritten )
+		m_CmdList->TransitionBarrier( m_MaterialFxTable.Get(), kRead, D3D12_RESOURCE_STATE_COPY_DEST );
+	m_CmdList->CopyBufferRegion( m_MaterialFxTable.Get(), 0, m_MaterialFxUpload.Get(), offset, bytes );
+	m_CmdList->TransitionBarrier( m_MaterialFxTable.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kRead );
+	m_MaterialFxTableWritten = true;
 }
 
 
@@ -2068,6 +2138,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     for ( UINT s = 0; s < kShadowRecordSlots; ++s ) m_ShadowCmdLists[s][m_FrameIndex].ResetStats();
 
     m_CmdList->TransitionBarrier( m_BackBuffers[m_BackBufferIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
+    UploadMaterialFxTable();
 
     // The swapchain stays transitioned to RENDER_TARGET even in HDR mode — EncodeHdrDisplayToBackBuffer
     // writes it at the end of Present — but everything the frame draws goes to the display target.

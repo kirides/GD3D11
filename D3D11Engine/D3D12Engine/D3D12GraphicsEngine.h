@@ -286,6 +286,8 @@ private:
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads
     bool CreateSrvHeap();             // shader-visible CBV_SRV_UAV heap for texture SRVs
+    bool CreateMaterialFxTable();     // MaterialFx.h entries behind the fixed SRV slot kMaterialFxTableSlot
+    void UploadMaterialFxTable();     // this frame's entries, copied before any draw when they changed; frame start only
     // UI/Particle/Decal pipeline creation now lives in m_Pipelines (CreateUI/CreateParticle/CreateDecal); the
     // GetOrCreate* blend-key PSO caches moved there too. GPU ring buffers + the decal quad VB stay in the engine.
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
@@ -690,6 +692,12 @@ private:
     UINT m_SrvHeapCapacity = 0;
     UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
     std::vector<UINT> m_FreeSrvSlots; // Recycled descriptor indices
+    // The heap's last slot, kept out of the allocator: Shaders/D3D12/include/MaterialFx.hlsl reads it directly.
+    static constexpr UINT kMaterialFxTableSlot = 65535;
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxTable;    // DEFAULT, MaterialFx::Entry[kMaxSlots]
+    Microsoft::WRL::ComPtr<Rhi::Resource> m_MaterialFxUpload;   // UPLOAD, one table per frame in flight
+    uint8_t* m_MaterialFxUploadPtr = nullptr;
+    bool m_MaterialFxTableWritten = false;   // false until the first copy replaced the undefined initial contents
 
     // Guards m_SrvAllocated + m_FreeSrvSlots. AllocateSrvSlot() is called from D3D12Texture::CreateSRV,
     // which (once MT texture loading is re-enabled) can run on a Gothic resource-manager worker thread
@@ -1289,6 +1297,11 @@ private:
     // ...CacheIn is the main-view variant.
     UINT ResolveShadowDiffuseSlot( zCTexture* tex ) const;
     UINT ResolveDiffuseSlotCacheIn( zCTexture* tex );
+    // A resolved diffuse slot with the material's MaterialFx table slot packed in (MaterialFx.h). The black
+    // fallback stays bare so the "not resident yet" comparisons against it keep matching.
+    UINT PackMaterialFx( UINT diffuseSlot, zCMaterial* mat ) const;
+    // b1[16..17] of the Preview/PreviewSkeletal/Ghost root sigs: the material's scroll, zero without one.
+    void SetPreviewTexAni( zCMaterial* mat );
 
 
     // Clustered Forward+ light culling (P2.14; tiled P2.9b-2 predecessor): one global compute root sig + PSO;

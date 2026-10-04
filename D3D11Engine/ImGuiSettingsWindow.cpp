@@ -385,6 +385,16 @@ void RenderGraphicsTab( GothicRendererSettings& settings, ShaderCategory& shader
             Engine::GAPI->UpdateTextureMaxSize();
         } );
 
+    CheckRow( "Environment Mapping", &settings.EnvMapping,
+        "The reflective overlay Gothic draws on metal, ice and other materials flagged\n"
+        "environmentalMapping. Uses the sky reflection cube instead of Gothic's sphere map." );
+    ImGui::BeginDisabled( !settings.EnvMapping );
+    SliderFloatRow( "Environment Map Strength", "##EnvMappingStrength", &settings.EnvMappingStrength, 0.0f, 2.0f );
+    ImGui::EndDisabled();
+    CheckRow( "Detail Textures", &settings.DetailTextures,
+        "Gothic's close-up detail layer on materials that name a detail texture\n"
+        "(the material's detailObject or Presets\\detailTexturePresets.txt)." );
+
     ImGui::SeparatorText( "Shadows" );
 
     if ( CheckRow( "Shadows", &settings.EnableShadows, nullptr, "Shadows" ) ) {

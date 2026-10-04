@@ -91,14 +91,13 @@ bool D3D12PipelineState::CreateWorld() {
     // clustered Forward+ per-cluster mask root SRV at t2. Both non-SRV params MUST be bound
     // (BindFrameLights) by every draw using this root sig with a light-reading PSO (World.PSO/
     // World.VobPSO), else the count/grid are undefined root values and the shader loops away.
-    // RootDataStatic on t1/t2: BuildFrameLightBuffer and DispatchLightCulling both write at the top of
-    // OnStartWorldRendering, before any pass binds this root signature, and neither is touched again this
-    // frame. Lets the driver hoist the per-pixel buffer load out of the light loop.
+    // RootDataStatic on t1, the CPU-written light buffer. The grid (t2) is written by the light-culling CS
+    // in this list, so it stays volatile: drivers may treat GPU-written static root data differently.
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 light StructuredBuffer
     // LightCB { LightCount, NumTilesX, LimitLightIntensity, PointShadowDynIndex, RtShadowMaskIndex,
     //           ProjA, ProjB, NearZ, FarZ } — the last 4 feed PBRLighting.hlsl's ComputeZSlice.
     rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 LightCB
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );   // 5: t2 per-cluster LightGrid (64-bit mask)
     // 6: b8 OpaqueSceneAddCB, read only by PSAlphaBlendBindless.
     rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );
 
@@ -439,8 +438,8 @@ bool D3D12PipelineState::CreatePreview() {
 
     D3D12RootLayout& rs = Layout( "Preview" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // 1: b1 World (per-instance, single draw — no instance buffer needed)
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 1: b1 World (per-instance, single draw — no instance buffer needed) + texAniMap offset
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t0 diffuse
     // s0 diffuse: 16x anisotropic wrap, matches D3D11's DefaultSamplerState used for this draw.
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
@@ -509,7 +508,7 @@ bool D3D12PipelineState::CreatePreviewSkeletal() {
 
     D3D12RootLayout& rs = Layout( "PreviewSkeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_VERTEX );  // 1: b1 World + texAniMap offset
     // 2: b2 bone palette. Points into the per-frame skeletal ring, whose cursor only ADVANCES within a
     // frame, so the handed-out address stays valid until Present.
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );
@@ -587,8 +586,8 @@ bool D3D12PipelineState::CreateGhost() {
 
     D3D12RootLayout& rs = Layout( "Ghost" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
-    // 1: b1 World (per-instance, single draw — no instance buffer needed)
-    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 1: b1 World (per-instance, single draw — no instance buffer needed) + texAniMap offset
+    rs.AddConstants( 1, 18, D3D12_SHADER_VISIBILITY_VERTEX );
     rs.AddConstants( 2, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b2 GhostAlpha
     rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 3: t0 diffuse
     // s0 diffuse: matches Preview's sampler (16x anisotropic wrap).
@@ -760,11 +759,11 @@ bool D3D12PipelineState::CreateGrass() {
     // VS: all of it; PS: none currently, but cheap to keep visible.
     rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );
     rs.AddConstants( 2, 8, D3D12_SHADER_VISIBILITY_ALL );      // 4: b2 fog — VS: CamPosWS; PS: color/near/far
-    // t2/t3 + b4 carry World.RootSig's RootDataStatic promises — same buffers, same frame ordering.
+    // t2 + b4 carry World.RootSig's RootDataStatic promises; the GPU-written grid (t3) stays volatile.
     rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 light StructuredBuffer (root SRV)
     // 6: b3 LightCB, grown 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
     rs.AddConstants( 3, 9, D3D12_SHADER_VISIBILITY_PIXEL );   // b3 LightCB
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: t3 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );   // 7: t3 per-cluster LightGrid (64-bit mask)
     // 8 = b6 MotionCB (root CBV), read ONLY by the G-buffer depth-prepass entry points (VSDepthGBuf); every
     // other PSO on this root signature leaves it unbound, which is legal for a parameter no shader references.
     rs.AddCBV( 6, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 8: b6 MotionCB (see World's b5)
@@ -1651,7 +1650,7 @@ bool D3D12PipelineState::CreateDecal() {
     // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (PBRLighting.hlsl's
     // ComputeZSlice).
     rs.AddConstants( 2, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 4: b2 LightCB
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 5: t2 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );   // 5: t2 per-cluster LightGrid (64-bit mask)
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 6: b7 AOCB { AoMaskIndex }
     rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 7: b3 shadow CB
     rs.AddTable( D3D12RootLayout::SRVRange( 4, 1, 0, D3D12RootLayout::RangeStatic ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
@@ -1801,11 +1800,11 @@ bool D3D12PipelineState::CreateSkeletal() {
     rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
     // Forward+ point lights (mirrors World.RootSig params 3/4/5, here at 4..6 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
-    // t1/t2 carry World.RootSig's RootDataStatic promise for the same reason (see there).
+    // t1 carries World.RootSig's RootDataStatic promise; the GPU-written grid (t2) does not (see there).
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 4: t1 light StructuredBuffer (root SRV)
     // LightCB grew 5->9 for clustered Forward+ (P2.14): +ProjA/ProjB/NearZ/FarZ (ComputeZSlice).
     rs.AddConstants( 4, 9, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 LightCB
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 6: t2 per-cluster LightGrid (64-bit mask)
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );   // 6: t2 per-cluster LightGrid (64-bit mask)
     // 7 = motion-vector CB (b9 — b5 is the shadow CB here), root CBV read ONLY by Skeletal.hlsl's VSDepthGBuf.
     rs.AddCBV( 9, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 7: b9 MotionCB (see World's b5)
     // 8: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count) — same shared CB, same promise as World's b3.
@@ -2099,8 +2098,8 @@ bool D3D12PipelineState::CreateTonemap() {
     // D3D12GraphicsEngine::TonemapRootConstants at the SetGraphicsRoot32BitConstants call site (that struct is
     // private, so it can't be named from here).
     rs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_PIXEL );
-    // RenderLuminanceAdapt's CS_LumAdapt writes AdaptedLum earlier in this same list, behind a barrier.
-    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 AdaptedLum
+    // CS_LumAdapt writes AdaptedLum earlier in this same list, so it stays volatile.
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t1 AdaptedLum
     rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );   // s0
 
     if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
@@ -2244,8 +2243,8 @@ bool D3D12PipelineState::CreateLumAdapt() {
     // --- LumAdapt root sig: b0 4x32-bit consts, t0 SRV root descriptor (PartialSums), u0 UAV root descriptor ---
     D3D12RootLayout& adaptRs = Layout( "LumAdapt" );
     adaptRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 LumAdaptCB
-    // CS_LumReduce wrote PartialSums immediately before this dispatch, behind a UAV barrier.
-    adaptRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 PartialSums
+    // CS_LumReduce writes PartialSums immediately before this dispatch, so it stays volatile.
+    adaptRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 PartialSums
     adaptRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 2: u0 AdaptedLum
     if ( !adaptRs.Build( device ) )
         return false;
@@ -2625,9 +2624,8 @@ bool D3D12PipelineState::CreateRainDraw() {
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProjCB
     // 1: b1 RainInfoCB — read by both VS (billboard construction) and PS (rainResponse eye/light vectors)
     rs.AddConstants( 1, 10, D3D12_SHADER_VISIBILITY_ALL );
-    // t0 was written by AdvanceRain's compute dispatch earlier in this same list (behind a barrier) and
-    // is not touched again this frame; t1 is the immutable static seed buffer.
-    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 2: t0 DynamicData
+    // t0 is rewritten by AdvanceRain's compute pass in this list, so volatile; t1 is the immutable seed buffer.
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: t0 DynamicData
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 StaticData
     rs.AddConstants( 2, 2, D3D12_SHADER_VISIBILITY_PIXEL );     // 4: b2 RainTexCB
     // 5: b3 RainShadowCB — VS-only (IsWet is called from the VS); 16 (float4x4) + 1 (heap slot index)
@@ -3967,10 +3965,9 @@ bool D3D12PipelineState::CreateCull() {
     // (no heap slots). Only the Hi-Z pyramid is a texture and it comes in bindlessly by heap index.
     D3D12RootLayout& vobCullRs = Layout( "CullVob" );
     vobCullRs.AddConstants( 0, 36, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 20
-    // Both inputs are CPU-written once per frame by UploadFrameVobInstances / BuildVobDrawCommands,
-    // which complete before this dispatch is recorded and are not touched again this frame.
-    vobCullRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Visuals
-    vobCullRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 InInstances
+    // Volatile: the GPU-scene variants bind its records/table, which in-frame copies patch.
+    vobCullRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 Visuals
+    vobCullRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 2: t1 InInstances
     vobCullRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 3: u0 OutInstances (compacted)
     vobCullRs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );             // 4: u1 VisibleCounts
     if ( !vobCullRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
@@ -3988,9 +3985,8 @@ bool D3D12PipelineState::CreateCull() {
     // --- Indirect-arg patch root sig: b0 7 consts (count/stride/offsets), t0 counts + t1 visuals SRVs, u0 raw arg UAV ---
     D3D12RootLayout& patchRs = Layout( "CullPatch" );
     patchRs.AddConstants( 0, 7, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobPatchCB
-    // t0 is the VisibleCounts UAV the cull dispatch just finished writing, read back here behind a
-    // barrier: final from this bind onwards (the next write is next frame's cull, a later list).
-    patchRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 PatchCounts
+    // t0 is the VisibleCounts UAV the cull dispatch just finished writing, so it stays volatile.
+    patchRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 PatchCounts
     // t1: the same per-visual records CSCull read — the far run's StartInstanceLocation is
     // (InstanceCount - farCount), so the patch pass needs each visual's capacity.
     patchRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 PatchVisuals
@@ -4029,9 +4025,10 @@ bool D3D12PipelineState::CreateCull() {
 
     D3D12RootLayout& sceneArgsRs = Layout( "CullSceneArgs" );
     sceneArgsRs.AddConstants( 0, 7, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SceneArgsCB
-    sceneArgsRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 1: t0 Templates
-    sceneArgsRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 2: t1 SceneVisuals
-    sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );   // 3: t2 SceneCounts
+    // Volatile: in-frame copies patch the templates/records, and the scene cull writes the counts.
+    sceneArgsRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 Templates
+    sceneArgsRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 2: t1 SceneVisuals
+    sceneArgsRs.AddSRV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 3: t2 SceneCounts
     sceneArgsRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 4: u0 SceneArgs
     sceneArgsRs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 5: u1 SceneArgCount
     sceneArgsRs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 6: u2 BakeReport (cube commands only)
@@ -4059,8 +4056,9 @@ bool D3D12PipelineState::CreateWorldCull() {
     if ( !device ) return false;
     D3D12RootLayout& rs = Layout( "CullWorld" );
     rs.AddConstants( 0, 31, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 WorldCullCB
-    for ( UINT t = 0; t < 4; ++t )   // 1-4: t0 Sections, t1 Meshes, t2 Clusters, t3 Materials
+    for ( UINT t = 0; t < 3; ++t )   // 1-3: t0 Sections, t1 Meshes, t2 Clusters (uploaded once)
         rs.AddSRV( t, D3D12_SHADER_VISIBILITY_ALL, 0, D3D12RootLayout::RootDataStatic );
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_ALL );   // 4: t3 Materials, patched by in-frame copies
     rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 5: u0 Args
     rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 6: u1 ArgCount
     rs.AddUAV( 2, D3D12_SHADER_VISIBILITY_ALL );   // 7: u2 MaterialSeen

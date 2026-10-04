@@ -122,12 +122,14 @@ void D3D11GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         for ( size_t i = 0; i < staticDraws.size(); ) {
             const UIItemDraw* draw = staticDraws[i];
             size_t run = 1;
-            while ( i + run < staticDraws.size() && staticDraws[i + run]->Mesh == draw->Mesh && staticDraws[i + run]->Texture == draw->Texture ) {
+            while ( i + run < staticDraws.size() && staticDraws[i + run]->Mesh == draw->Mesh && staticDraws[i + run]->Texture == draw->Texture
+                && staticDraws[i + run]->Material == draw->Material ) {
                 ++run;
             }
 
             const MeshInfo* mesh = draw->Mesh;
             bindMesh( mesh->GetMeshVertexBuffer(), mesh->GetMeshIndexBuffer(), sizeof( ExVertexStruct ), draw->Texture );
+            BindMaterialFx( draw->Material );
             const UINT indexCount = static_cast<UINT>( mesh->Indices.size() );
             context->DrawIndexedInstanced( indexCount, static_cast<UINT>( run ), 0, 0, static_cast<UINT>( i ) );
             rs.RendererInfo.FrameDrawnTriangles += (indexCount / 3) * static_cast<unsigned int>( run );
@@ -154,11 +156,13 @@ void D3D11GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
 
             const SkeletalMeshInfo* mesh = draw->SkinnedMesh;
             bindMesh( mesh->MeshVertexBuffer.get(), mesh->MeshIndexBuffer.get(), sizeof( ExSkelVertexStruct ), draw->Texture );
+            BindMaterialFx( draw->Material );
             const UINT indexCount = static_cast<UINT>( mesh->Indices.size() );
             context->DrawIndexedInstanced( indexCount, 1, 0, 0, firstInstance + static_cast<UINT>( i ) );
             rs.RendererInfo.FrameDrawnTriangles += indexCount / 3;
         }
     }
 
+    BindMaterialFx( nullptr );
     context->OMSetRenderTargets( 1, &rtv, nullptr );
 }

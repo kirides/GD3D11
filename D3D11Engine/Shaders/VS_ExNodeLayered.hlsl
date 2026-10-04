@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "MaterialFx.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -59,7 +60,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     Output.RTIndex = PCR_SliceBase + Input.instanceID;
     Output.vPosition = mul(float4(positionWorld, 1), PCR_ViewProj[Input.instanceID]);
 	Output.vTexcoord2 = Input.vTex2;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vDiffuse  = cbInstance.M_Color;
     Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, PCR_View[Input.instanceID]));
     Output.vViewPosition = mul(float4(positionWorld, 1), PCR_View[Input.instanceID]);

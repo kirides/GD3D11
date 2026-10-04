@@ -5,6 +5,7 @@
 static const int NUM_MAX_BONES = 96;
 
 #include "Globals_VS_ExConstants.h"
+#include "MaterialFx.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -138,7 +139,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vPosition = mul(float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex1;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vDiffuse  = cbInstance.PI_ModelColor;
 	Output.vDiffuse.w  = cbInstance.PI_Pad1.x;
 	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(cbInstance.M_World, frame.M_View));

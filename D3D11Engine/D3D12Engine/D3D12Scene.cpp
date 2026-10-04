@@ -13,6 +13,7 @@
 #include "../zCView.h"
 #include "../zCModel.h"
 #include "../zCMaterial.h"
+#include "../MaterialFx.h"
 #include "../zCVob.h"
 #include "../zCVobLight.h"
 #include "../zCDecal.h"
@@ -524,6 +525,7 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
             }
         }
         m_CmdList->SetGraphicsRootDescriptorTable( 2, srv );   // t0 diffuse
+        SetPreviewTexAni( material );
 
         for ( auto const& mesh : meshes ) {
             if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
@@ -617,6 +619,7 @@ void D3D12GraphicsEngine::DrawVobSingle( SkeletalVobInfo* vob, zCCamera& camera 
             }
         }
         m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
+        SetPreviewTexAni( material );
         return true;
     };
 
@@ -954,6 +957,18 @@ UINT D3D12GraphicsEngine::ResolveDiffuseSlotCacheIn( zCTexture* tex ) {
 		}
 	}
 	return m_BlackTexture->GetSrvSlot();
+}
+
+
+UINT D3D12GraphicsEngine::PackMaterialFx( UINT diffuseSlot, zCMaterial* mat ) const {
+	return diffuseSlot == m_BlackTexture->GetSrvSlot() ? diffuseSlot : MaterialFx::PackDiffuseIndex( diffuseSlot, mat );
+}
+
+
+void D3D12GraphicsEngine::SetPreviewTexAni( zCMaterial* mat ) {
+	float2 offset;
+	if ( !MaterialFx::GetOffset( mat, offset ) ) offset = float2( 0.0f, 0.0f );
+	m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, &offset, 16 );
 }
 
 
@@ -2079,7 +2094,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				// b6 { normal, ORM, diffuse } — same bindless material block as the lit skeletal passes; PSGhost
 				// reads only the diffuse index, but sharing the block keeps every skeletal entry point on one
 				// SampleSkelDiffuse and off descriptor tables entirely.
-				BindMaterialMaps( tex, 4, ResolveDiffuseSlotCacheIn( tex ) );
+				BindMaterialMaps( tex, 4, PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat ) );
 				for ( auto const& mesh : meshList ) {
 					D3D12_DRAW_INDEXED_ARGUMENTS draw;
 					if ( !BindSkinnedMesh( mesh.get(), draw ) ) continue;
@@ -2158,6 +2173,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 								}
 							}
 							m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+							SetPreviewTexAni( attMat );
 
 							for ( auto const& attMesh : attMeshes ) {
 								D3D12_DRAW_INDEXED_ARGUMENTS draw;
@@ -2202,6 +2218,7 @@ void D3D12GraphicsEngine::DrawGhostRun( std::span<const TransparentItem> items )
 				}
 			}
 			m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+			SetPreviewTexAni( materialMesh.first );
 
 			for ( auto const& meshInfo : materialMesh.second ) {
 				if ( !meshInfo || meshInfo->Indices.empty() || !meshInfo->GetMeshVertexBuffer() || !meshInfo->GetMeshIndexBuffer() )
@@ -3263,6 +3280,7 @@ D3D12GraphicsEngine::VobMaterial D3D12GraphicsEngine::ResolveVobMaterial( const 
     m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || ( key.Material && key.Material->HasAlphaTest() );
     if ( m.AlphaTested )
         m.Orm |= IsThinTwoSidedPlant( visualName ) ? kBacklitThin : kBacklitFoliage;
+    m.Diffuse = PackMaterialFx( m.Diffuse, key.Material );
     return m;
 }
 
@@ -3302,6 +3320,7 @@ D3D12GraphicsEngine::WorldMaterial D3D12GraphicsEngine::ResolveWorldMaterial(con
     // Z-prepass / shadow batch loop (D3D11GraphicsEngine.cpp, `batch.NeedAlpha`).
     m.AlphaTested = ( tex && tex->HasAlphaChannel() ) || key.Material->HasAlphaTest();
     if ( m.AlphaTested ) m.Orm |= kBacklitFoliage;
+    m.Diffuse = PackMaterialFx( m.Diffuse, key.Material );
     return m;
 }
 
@@ -4172,7 +4191,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
                 // resolved material set serves both passes.
                 UINT mats[3];
                 ResolveMaterialMapSlots( tex, mats );
-                mats[2] = ResolveDiffuseSlotCacheIn( tex );
+                mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( tex ), mat );
                 // Alpha-test partition — same predicate as the world/VOB builds (see m_WorldOpaqueDrawCount).
                 const bool alphaTested = ( tex && tex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() );
 
@@ -4265,7 +4284,7 @@ void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
 
             UINT mats[3];
             ResolveMaterialMapSlots( a.tex, mats );
-            mats[2] = ResolveDiffuseSlotCacheIn( a.tex );
+            mats[2] = PackMaterialFx( ResolveDiffuseSlotCacheIn( a.tex ), a.mat );
             // Alpha-test partition. FrameAttachDraw carries only the texture, not the material, which costs
             // nothing: the prepass cutout is `clip(diffuse.a - 0.5)` and can only discard where the diffuse
             // actually has an alpha channel.
@@ -5178,7 +5197,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 entry.matFirst = g_SkelMatSlotCount;
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
                     zCTexture* matTex = mat ? mat->GetAniTexture() : nullptr;
-                    g_SkelMatSlots[g_SkelMatSlotCount++] = { ResolveShadowDiffuseSlot( matTex ),
+                    g_SkelMatSlots[g_SkelMatSlotCount++] = { PackMaterialFx( ResolveShadowDiffuseSlot( matTex ), mat ),
                         ( matTex && matTex->HasAlphaChannel() ) || ( mat && mat->HasAlphaTest() ), matTex };
                 }
                 entry.matCount = static_cast<uint32_t>( numMats );
@@ -5412,8 +5431,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately
                             // must not do.
                             g_SkelAttachPool.push_back( { attMesh.get(), attTex, instOffset / instBytes, vi->Vob,
-                                ResolveShadowDiffuseSlot( attTex ),
-                                attTex && attTex->HasAlphaChannel(), vii, attBatchable } );
+                                PackMaterialFx( ResolveShadowDiffuseSlot( attTex ), attMat ),
+                                attTex && attTex->HasAlphaChannel(), vii, attBatchable, attMat } );
                         }
                     }
                 }

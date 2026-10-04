@@ -14,6 +14,8 @@ const float WORLD_SECTION_SIZE = 16000;
 
 const float4 DEFAULT_LIGHTMAP_POLY_COLOR_F = float4( 0.05f, 0.05f, 0.05f, 0.05f );
 const DWORD DEFAULT_LIGHTMAP_POLY_COLOR = DEFAULT_LIGHTMAP_POLY_COLOR_F.ToDWORD();
+// ZenGin's vertex light for ignoreSunLight polys (zBsp.cpp fullBrightColor); alpha 0 on opaque ones flags them.
+constexpr DWORD kIgnoreSunVertexRgb = 0x00C8C8C8u;
 const float3 DEFAULT_INDOOR_VOB_AMBIENT = float3( 0.15f, 0.15f, 0.15f );
 
 /** Strength of the progressive-mesh LOD baked for distant shadow cascades, as the fraction of a

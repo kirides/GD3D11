@@ -8,6 +8,7 @@
 #include "../WorldMeshSection.h"
 #include "../WorldConverter.h"
 #include "../zCMaterial.h"
+#include "../MaterialFx.h"
 #include "../zCTexture.h"
 #include "../zTypes.h"
 
@@ -287,7 +288,7 @@ void D3D12GpuWorld::ProcessFeedback() {
         const gtl::flat_hash_set<UINT> freed( m_FreedScratch.begin(), m_FreedScratch.end() );
         for ( uint32_t i = 0; i < m_Materials.size(); ++i ) {
             const MaterialGpu& g = m_Materials[i].Gpu;
-            if ( freed.contains( g.Diffuse ) || freed.contains( g.Normal ) || freed.contains( g.Orm & kOrmIndexMask ) )
+            if ( freed.contains( g.Diffuse & MaterialFx::kDiffuseSlotMask ) || freed.contains( g.Normal ) || freed.contains( g.Orm & kOrmIndexMask ) )
                 Resolve( i, false );
         }
         m_FreedScratch.clear();

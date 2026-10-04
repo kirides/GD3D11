@@ -996,6 +996,13 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             }
         }
 #endif
+        // ZenGin lights ignoreSunLight polys of an outdoor world a flat 200 grey. Opaque ones tell the shaders
+        // to skip sun and sky through vertex alpha 0, which only the blended passes read otherwise.
+        const bool ignoreSun = !indoorLocation && matGroup != zMAT_GROUP_WATER && mat->GetIgnoreSunLight();
+        const int alphaFunc = mat->GetAlphaFunc();
+        const bool opaque = !_tex && it->first.Info->MaterialType == MaterialInfo::MT_None
+            && ( alphaFunc <= zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST )
+            && !( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT && zColor( mat->GetColor() ).bgra.alpha < 255 );
 
         // Extract poly vertices
         polyVertices.clear();
@@ -1055,6 +1062,10 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                     reinterpret_cast<BYTE*>(&t.Color)[2] = 0;
                     reinterpret_cast<BYTE*>(&t.Color)[3] = 0;
                 }
+            } else {
+                const DWORD rgb = ignoreSun ? kIgnoreSunVertexRgb : ( t.Color & 0x00FFFFFFu );
+                const DWORD alpha = opaque ? ( ignoreSun ? 0u : 0xFFu ) : std::max<DWORD>( t.Color >> 24, 1u );
+                t.Color = rgb | ( alpha << 24 );
             }
         }
 

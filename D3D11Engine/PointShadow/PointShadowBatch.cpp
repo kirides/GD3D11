@@ -175,7 +175,8 @@ namespace {
         return mask ? mask : kAllFaces;   // only a NaN box reaches no face at all
     }
 
-    uint32_t AddWorldDraw( EWorldDraw kind, MeshInfo* mesh, uint32_t offset, uint32_t count, zCTexture* alphaTexture ) {
+    uint32_t AddWorldDraw( EWorldDraw kind, MeshInfo* mesh, uint32_t offset, uint32_t count, zCTexture* alphaTexture,
+        zCMaterial* material = nullptr ) {
         const WorldKey key{ mesh, offset, count, kind, alphaTexture != nullptr };
         if ( auto it = s_WorldIndex.find( key ); it != s_WorldIndex.end() ) {
             return it->second;
@@ -193,6 +194,7 @@ namespace {
         draw.Count = count;
         draw.Offset = offset;
         draw.AlphaTexture = alphaTexture;
+        draw.Material = material;
 
         const uint32_t index = static_cast<uint32_t>( s_WorldDraws.size() );
         s_WorldDraws.push_back( draw );
@@ -212,7 +214,7 @@ namespace {
             alphaTexture = aniTex;
         }
 
-        const uint32_t caster = AddWorldDraw( EWorldDraw::Range, r.Mesh, r.IndexOffset, r.IndexCount, alphaTexture );
+        const uint32_t caster = AddWorldDraw( EWorldDraw::Range, r.Mesh, r.IndexOffset, r.IndexCount, alphaTexture, mat );
         if ( caster == kNoCaster ) return false;
         phase.World.push_back( { caster, pass, kAllFaces, raster } );
         return true;
@@ -244,6 +246,7 @@ namespace {
                 if ( !draw.VertexBuffer || !draw.IndexBuffer ) continue;
                 draw.Count = ShadowCasting::ShadowAwareIndexCount( mesh.get(), alphaTexture != nullptr );
                 draw.AlphaTexture = alphaTexture;
+                draw.Material = mat;
                 s_VobMeshes.push_back( draw );
             }
         }
@@ -461,7 +464,7 @@ namespace {
             m_IndexBuffer = nullptr;
         }
 
-        void BindMaterial( zCTexture* alphaTexture ) {
+        void BindMaterial( zCTexture* alphaTexture, zCMaterial* material ) {
             if ( !alphaTexture ) {
                 // Opaque: the cube keeps the rasterizer's own depth, so no pixel shader at all.
                 if ( m_PixelShaderBound ) {
@@ -481,6 +484,7 @@ namespace {
                 texture->BindToPixelShader( 0 );
                 m_Texture = texture;
             }
+            m_Engine->BindMaterialFx( material );
         }
 
         void BindBuffers( const CasterMeshDraw& draw, UINT stride ) {
@@ -598,7 +602,7 @@ namespace {
 
         ForEachCaster( group, [&]( uint32_t caster, std::span<const Visible> seen ) {
             const CasterMeshDraw& draw = s_WorldDraws[caster];
-            state.BindMaterial( draw.AlphaTexture );
+            state.BindMaterial( draw.AlphaTexture, draw.Material );
             state.BindBuffers( draw, sizeof( ExVertexStruct ) );
             state.DrawIntoTargets( seen, phase.Passes, nullptr, [&]( UINT instances ) { state.Draw( draw, instances ); } );
         } );
@@ -617,7 +621,7 @@ namespace {
             g->BindDynamicCBToVertexShader( instanceSlot, g->AllocateDynamicCB( &vob.Instance ) );
             for ( uint32_t m = vob.FirstMesh; m < vob.FirstMesh + vob.NumMeshes; ++m ) {
                 const CasterMeshDraw& draw = s_VobMeshes[m];
-                state.BindMaterial( draw.AlphaTexture );
+                state.BindMaterial( draw.AlphaTexture, draw.Material );
                 state.BindBuffers( draw, sizeof( ExVertexStruct ) );
                 state.DrawIntoTargets( seen, phase.Passes, nullptr, [&]( UINT instances ) { state.Draw( draw, instances ); } );
             }
@@ -660,7 +664,7 @@ namespace {
                 }
 
                 for ( const CasterMeshDraw& draw : meshes ) {
-                    state.BindMaterial( draw.AlphaTexture );
+                    state.BindMaterial( draw.AlphaTexture, draw.Material );
                     state.BindBuffers( draw, sizeof( ExSkelVertexStruct ) );
                     state.DrawIntoTargets( seen, phase.Passes, nullptr, [&]( UINT instances ) { state.Draw( draw, instances ); } );
                 }
@@ -674,7 +678,7 @@ namespace {
             for ( const SkeletalCubeCasters::AttachmentDraw& attachment : SkeletalCubeCasters::Attachments( record ) ) {
                 g->BindDynamicCBToVertexShader( nodeInstanceSlot, g->AllocateDynamicCB( &attachment.Instance ) );
                 for ( const CasterMeshDraw& draw : SkeletalCubeCasters::AttachmentMeshes( attachment ) ) {
-                    state.BindMaterial( draw.AlphaTexture );
+                    state.BindMaterial( draw.AlphaTexture, draw.Material );
                     state.BindBuffers( draw, sizeof( ExVertexStruct ) );
                     state.DrawIntoTargets( seen, phase.Passes, attachment.SlotVob, [&]( UINT instances ) { state.Draw( draw, instances ); } );
                 }
@@ -720,6 +724,7 @@ namespace {
             DrawVobs( state, phase, raster );
             DrawSkeletals( state, phase, raster, bonesReady );
         }
+        state.Engine()->BindMaterialFx( nullptr );
     }
 }
 

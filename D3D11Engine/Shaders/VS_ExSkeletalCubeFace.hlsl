@@ -6,6 +6,7 @@
 static const int NUM_MAX_BONES = 96;
 
 #include "Globals_VS_ExConstants.h"
+#include "MaterialFx.h"
 
 cbuffer Matrices_PerInstances : register( b1 )
 {
@@ -90,7 +91,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
 	Output.vPosition = mul(float4(positionWorld,1), PCR_ViewProj[PCR_Face]);
 	Output.vTexcoord2 = Input.vTex1;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vDiffuse  = cbInstance.PI_ModelColor;
 	Output.vDiffuse.w  = cbInstance.PI_Pad1.x;
 	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(cbInstance.M_World, view));

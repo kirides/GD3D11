@@ -205,7 +205,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
             }
             ItemDrawCommand& command = commands.emplace_back();
             command.InstanceIndex = draw.Instance;
-            command.TextureIndex = GetUITextureIndex( draw.Texture );
+            command.TextureIndex = PackMaterialFx( GetUITextureIndex( draw.Texture ), draw.Material );
             command.Draw = { range->IndexCount, 1, range->IndexStart, static_cast<INT>( range->BaseVertex ), 0 };
         }
     }
@@ -247,7 +247,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
         const D3D12_INDEX_BUFFER_VIEW ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
         m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
         m_CmdList->IASetIndexBuffer( &ibv );
-        const UINT constants[2] = { draw.Instance, GetUITextureIndex( draw.Texture ) };
+        const UINT constants[2] = { draw.Instance, PackMaterialFx( GetUITextureIndex( draw.Texture ), draw.Material ) };
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 2, constants, 0 );
         m_CmdList->DrawIndexedInstanced( static_cast<UINT>( indexCount ), 1, 0, 0, 0 );
         rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( indexCount ) / 3;
@@ -255,7 +255,7 @@ void D3D12GraphicsEngine::DrawUIItems( const UIItemFrame& items, const UIBatch2D
 
     // A mesh bound by BindSkinnedMesh/BindAttachmentMesh.
     auto drawArena = [&]( const UIItemDraw& draw, const D3D12_DRAW_INDEXED_ARGUMENTS& args ) {
-        const UINT constants[2] = { draw.Instance, GetUITextureIndex( draw.Texture ) };
+        const UINT constants[2] = { draw.Instance, PackMaterialFx( GetUITextureIndex( draw.Texture ), draw.Material ) };
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 2, constants, 0 );
         m_CmdList->DrawIndexedInstanced( args.IndexCountPerInstance, 1, args.StartIndexLocation, args.BaseVertexLocation, 0 );
         rs.RendererInfo.FrameDrawnTriangles += args.IndexCountPerInstance / 3;

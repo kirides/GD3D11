@@ -59,7 +59,8 @@ namespace {
     float4 ComputeTextureFactor( zCMaterial* mat ) {
         // RGB carries the day/night factor: unlit surfaces over a baked-daylight vertex color would
         // otherwise stay noon-bright at midnight. 1.0 in daylight. See GothicAPI::GetSkyDayFactor.
-        const float skyLight = Engine::GAPI->GetSkyDayFactor();
+        // ignoreSunLight surfaces of an outdoor world keep their flat light around the clock.
+        const float skyLight = mat->GetIgnoreSunLight() && !Engine::GAPI->IsIndoorWorld() ? 1.0f : Engine::GAPI->GetSkyDayFactor();
         return float4( skyLight, skyLight, skyLight,
             zColor( mat->GetColor() ).bgra.alpha * (1.0f / 255.0f) );
     }
@@ -186,7 +187,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* gfx = s->GetEngineTexture() ) {
                 D3D12Texture* d = D3D12Texture::From( gfx );
-                if ( d->HasSRV() ) { mat6[2] = d->GetSrvSlot(); haveDiffuse = true; }
+                if ( d->HasSRV() ) { mat6[2] = PackMaterialFx( d->GetSrvSlot(), mat ); haveDiffuse = true; }
             }
         }
         if ( !haveDiffuse ) continue;
@@ -217,7 +218,7 @@ void D3D12GraphicsEngine::DrawWorldTransparencyRun( std::span<const TransparentI
 
         // ZenGin appends the env-map stage to the SAME zCShader (zRenderManager.cpp:671), so the overlay
         // goes inline here rather than as a second sweep, keeping the painter's order intact.
-        if ( envOverlayAvailable && mat->GetEnvMapEnabled() ) {
+        if ( envOverlayAvailable && mat->GetEnvMapEnabled() && Engine::GAPI->GetEnvMapStageAlpha( mat ) > 0.0f ) {
             GothicBlendStateInfo envBlend;
             // Water gets an additive stage in ZenGin (zRenderManager.cpp:709); everything else blends.
             if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) envBlend.SetAdditiveBlending();

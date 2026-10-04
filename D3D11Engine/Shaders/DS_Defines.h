@@ -1,3 +1,7 @@
+// ignoreSunLight world polys (WorldConverter): ZenGin's flat vertex light instead of sun and sky. PS_Diffuse
+// flags them in the G-buffer as a negative specular power.
+static const float IGNORE_SUN_LIGHT = 200.0f / 255.0f;
+
 struct DEFERRED_PS_OUTPUT
 {
 	float4 vDiffuse : SV_TARGET0;

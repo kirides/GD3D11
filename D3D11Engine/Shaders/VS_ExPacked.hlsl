@@ -6,6 +6,7 @@
 
 #include "Globals_VS_ExConstants.h"
 #include "VertexPacking.h"
+#include "MaterialFx.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -61,8 +62,9 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex2;
-	Output.vTexcoord = Input.vTex1;
+	Output.vTexcoord = Input.vTex1 + TexAniOffset;
 	Output.vDiffuse  = Input.vDiffuse;
+	Output.vDiffuse.w = Input.vDiffuse.w > 0.0f ? Input.vDiffuse.w : -1.0f;   // alpha 0 = ignoreSunLight (WorldConverter)
 
 	float3x3 worldView = (float3x3)mul(cbInstance.M_World, frame.M_View);
 	Output.vNormalVS = mul(vNormal, worldView);

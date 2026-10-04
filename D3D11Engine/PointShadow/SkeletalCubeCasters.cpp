@@ -55,6 +55,7 @@ namespace {
         for ( auto const& [mat, meshes] : mvi->Meshes ) {
             CasterMeshDraw draw;
             if ( !ResolveAlphaTexture( mat, draw.AlphaTexture ) ) continue;
+            draw.Material = mat;
             for ( auto const& mesh : meshes ) {
                 GfxVertexBuffer* vb = mesh->GetMeshVertexBuffer();
                 if ( !vb ) continue;
@@ -116,6 +117,7 @@ namespace {
             for ( auto const& [mat, meshes] : visual->SkeletalMeshes ) {
                 CasterMeshDraw draw;
                 if ( !ResolveAlphaTexture( mat, draw.AlphaTexture ) ) continue;
+                draw.Material = mat;
                 for ( auto const& mesh : meshes ) {
                     if ( !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
                     draw.VertexBuffer = D3D11VertexBuffer::From( mesh->MeshVertexBuffer.get() )->GetVertexBuffer().Get();

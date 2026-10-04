@@ -864,6 +864,9 @@
     <ClInclude Include="D3D12Engine\D3D12GpuWorld.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="MaterialFx.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
     <ClInclude Include="D3D12Engine\D3D12Device.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
@@ -1211,6 +1214,9 @@
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12GpuWorld.cpp">
       <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="MaterialFx.cpp">
+      <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <Filter>Engine\D3D12</Filter>
