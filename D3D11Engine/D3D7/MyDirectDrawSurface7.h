@@ -34,6 +34,9 @@ public:
     MyDirectDrawSurface7();
     virtual ~MyDirectDrawSurface7();
 
+    /** Frees the GPU textures of every live surface; Gothic's fast exit never releases its surfaces. Shutdown only. */
+    static void ReleaseAllEngineTextures();
+
     /*** IUnknown methods ***/
     HRESULT __declspec(nothrow) __stdcall QueryInterface( REFIID riid, LPVOID* ppvObj ) override;
     ULONG __declspec(nothrow) __stdcall AddRef() override;

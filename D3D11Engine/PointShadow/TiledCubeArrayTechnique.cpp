@@ -65,11 +65,11 @@ void TiledCubeLightState::CommitStaticBakeToSlot() {
     m_SlotSel->CommitStatic( static_cast<uint32_t>( m_StaticSlot ) );
     // The caster set this bake covered, so a vob later removed or moved can be matched against it by
     // pointer. These are the lists the render just used, so this is a copy rather than a second cull.
-    auto& baked = m_SlotSel->StaticSlotAt( static_cast<uint32_t>( m_StaticSlot ) ).bakedVobs;
-    baked.clear();
-    for ( const VobInfo* v : m_Light.VobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
-    for ( const SkeletalVobInfo* v : m_Light.SkeletalVobCache ) if ( v && v->Vob ) baked.push_back( v->Vob );
-    PointLightSlotSelector::FinalizeBakedVobs( baked );
+    PointLightSlotSelector::StaticSlot& slot = m_SlotSel->StaticSlotAt( static_cast<uint32_t>( m_StaticSlot ) );
+    slot.bakedVobs.clear();
+    for ( const VobInfo* v : m_Light.VobCache ) if ( v && v->Vob ) slot.bakedVobs.push_back( v->Vob );
+    for ( const SkeletalVobInfo* v : m_Light.SkeletalVobCache ) if ( v && v->Vob ) slot.bakedVobs.push_back( v->Vob );
+    PointLightSlotSelector::FinalizeBakedVobs( slot );
 }
 
 /** Everything about WHETHER to render was decided by PointLightSlotSelector, so this only asks whether it

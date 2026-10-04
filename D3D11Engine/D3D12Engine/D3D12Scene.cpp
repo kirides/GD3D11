@@ -129,9 +129,12 @@ namespace {
         bool hasBaseMesh = false;
         uint32_t matFirst = 0;   // -> g_SkelMatSlots, see FrameSkelDraw::matFirst
         uint32_t matCount = 0;
-        std::vector<FrameAttachDraw> attachments;
+        uint32_t attachFirst = 0;   // -> g_SkelAttachPool, contiguous per vob
+        uint32_t attachCount = 0;
     };
     gtl::flat_hash_map<SkeletalVobInfo*, SkelUploadCache> g_SkelUploadCache;
+    // Every cached vob's attachment records, one frame-wide pool so a frame allocates nothing once warm.
+    std::vector<FrameAttachDraw> g_SkelAttachPool;
 
     // Forward+ light buffer: the visible-light list is rebuilt from offset 0 each frame, so the ring is just
     // kBackBufferCount snapshots. MUST match MAX_ACTIVE_LIGHTS in ForwardPlusTypes.hlsl. 1024 rather than
@@ -761,19 +764,9 @@ void D3D12GraphicsEngine::BeginShadowRecording() {
 	m_ShadowThreadedRecord = threadedRecord;
 	// Part A only goes out early if the GPU is otherwise idle; B1 or the shadow submit carries it at the latest.
 	FlushSceneIfGpuCaughtUp();
-	if ( !threadedRecord ) {
-		// Degrade to the original single-threaded driver: record inline, right here. Same output, same queue
-		// order — just no overlap with the prepass. (The cascades still record in FinishShadowPasses, since
-		// their caster data does not exist until the concurrent cull is joined there.)
-		m_PointShadows.Record( m_CmdList );
-		RecordRainShadowmap( m_CmdList );
-		// Those passes leave no render target bound (their DSVs have just left DEPTH_WRITE) and the depth
-		// prepass the caller records next does not bind its own — re-establish the scene-color RT + depth.
-		BindSceneColorTarget();
-		return;
-	}
-
 	BindSceneColorTarget();
+	// Unthreaded, FinishShadowPasses records them inline: they draw the posed and arena-refreshed meshes B1 produces.
+	if ( !threadedRecord ) return;
 
 	// NOTE: only the point-cube and rain passes are fanned out here. The CSM cascades cannot be recorded yet —
 	// their per-cascade caster sets are still being culled on the worker pool, and the Phase-C build that turns
@@ -835,6 +828,11 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
 				m_ShadowMap.RecordCascade( c, m_CmdList, m_ShadowMap.IsSunUp() );
 		}
+	}
+	// Point cubes and rain map without threaded recording: same place in GPU order as their own lists would take.
+	if ( !m_ShadowThreadedRecord ) {
+		if ( m_PointShadows.IsPassReady() ) m_PointShadows.Record( m_CmdList );
+		if ( m_RainShadowPassReady ) RecordRainShadowmap( m_CmdList );
 	}
 
 	// --- 2b/3. join the point/rain recorders and execute everything that landed in its own list ---
@@ -2559,6 +2557,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear(); g_FrameMorphAttachMeshes.clear();
 	BeginSkinningFrame();        // posed-vertex reservations start from zero; grows the streams if last frame ran out
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
+	g_SkelAttachPool.clear();
 	g_SkelMatSlotCount = 0;      // ...and its parallel per-material diffuse-slot snapshots
 	// collectGhosts=true ONLY here: this is the list D3D11's GothicAPI::DrawWorldMeshNaive walks, and the
 	// reroute of ghost NPCs into TransparencyVobs is that function's job. Static MOBs (g_FrameMobs) keep the
@@ -5137,6 +5136,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             // each as a VOB instance into the VOB ring NOW (pre-cull) so it can be depth-prepassed, color-drawn
             // AND shadow-cast from one snapshot. Lazily convert the node visual on first sight (or if changed).
             gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+            entry.attachFirst = static_cast<uint32_t>( g_SkelAttachPool.size() );
             zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
             const int nodeCount = nodeList ? std::min<int>( static_cast<int>( boneCache.size() ), nodeList->NumInArray ) : 0;
             for ( int n = 0; n < nodeCount; ++n ) {
@@ -5271,7 +5271,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             // never has to read Gothic texture state; the main-view prepass/color paths still use
                             // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately
                             // must not do.
-                            entry.attachments.push_back( { attMesh.get(), attTex, instOffset / instBytes, vi->Vob,
+                            g_SkelAttachPool.push_back( { attMesh.get(), attTex, instOffset / instBytes, vi->Vob,
                                 ResolveShadowDiffuseSlot( attTex ),
                                 attTex && attTex->HasAlphaChannel(), vii, attBatchable } );
                         }
@@ -5279,24 +5279,24 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 }
             }
 
-            cacheIt = g_SkelUploadCache.emplace( vi, std::move( entry ) ).first;
+            entry.attachCount = static_cast<uint32_t>( g_SkelAttachPool.size() ) - entry.attachFirst;
+            cacheIt = g_SkelUploadCache.emplace( vi, entry ).first;
         }
 
         const SkelUploadCache& cached = cacheIt->second;
+        const std::span<const FrameAttachDraw> cachedAttach( g_SkelAttachPool.data() + cached.attachFirst, cached.attachCount );
         if ( numCascades > 1 ) {
             // Multi-cascade: fan the (already-uploaded) records out to every cascade this vob is visible in.
             for ( UINT fi = 0; fi < numCascades; ++fi ) {
                 if ( (cascadeMask & (1u << fi)) == 0 ) continue;
                 if ( cached.hasBaseMesh )
                     m_ShadowMap.SkelDraws[fi].push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
-                for ( const FrameAttachDraw& a : cached.attachments )
-                    m_ShadowMap.AttachDraws[fi].push_back( a );
+                m_ShadowMap.AttachDraws[fi].insert( m_ShadowMap.AttachDraws[fi].end(), cachedAttach.begin(), cachedAttach.end() );
             }
         } else {
             if ( cached.hasBaseMesh )
                 outSkel.push_back( { vi, visual, cached.instRow, cached.matFirst, cached.matCount, cached.skinFirst } );
-            for ( const FrameAttachDraw& a : cached.attachments )
-                outAttach.push_back( a );
+            outAttach.insert( outAttach.end(), cachedAttach.begin(), cachedAttach.end() );
         }
     }
 }

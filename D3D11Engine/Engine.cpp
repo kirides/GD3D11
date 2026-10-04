@@ -8,6 +8,8 @@
 #include "D3D12Engine/D3D12Device.h"
 #include "D3D12Engine/D3D12GraphicsEngine.h"
 #include "SqliteBlobStore.h"
+#include "D3D7/MyDirectDrawSurface7.h"
+#include "D3D7/MyDirect3DVertexBuffer7.h"
 
 #include <algorithm>
 
@@ -137,27 +139,88 @@ namespace Engine {
         }
     }
 
-    /** Called when the game is about to close */
-    void OnShutDown() {
+    /** Closes the blob stores and drains the log. Runs once. */
+    static void FlushPersistentState() {
+        static std::atomic_bool s_flushed;
+        if ( s_flushed.exchange( true ) ) return;
+
+        // Closing the last WAL connection checkpoints and deletes the -wal/-shm files. See SqliteBlobStore::CloseAll().
+        SqliteBlobStore::CloseAll();
+
+        // Drains the async log queue on this thread; never joins the worker (may be under the loader lock).
+        Logging::Shutdown();
+    }
+
+    /** Kills the process if the teardown below hangs; ExitProcess ends this thread once it succeeds. */
+    static void StartShutdownWatchdog( UINT exitCode ) {
+        std::thread( [exitCode] {
+            Sleep( 5000 );
+            Logging::Err( "Shutdown did not finish within 5 seconds, terminating the process." );
+            FlushPersistentState();
+            TerminateProcess( GetCurrentProcess(), exitCode );
+        } ).detach();
+    }
+
+    /** Deletes the backend; on D3D12 logs device references that outlive it (leaked objects keep the device alive). */
+    static void DeleteGraphicsEngine() {
+        Microsoft::WRL::ComPtr<ID3D12Device> d3d12Device;
+        if ( IsD3D12Backend ) {
+            d3d12Device = static_cast<D3D12GraphicsEngine*>( GraphicsEngine )->GetD3DDevice();
+        }
+
+        SAFE_DELETE( GraphicsEngine );
+
+        if ( d3d12Device ) {
+            Microsoft::WRL::ComPtr<ID3D12DebugDevice> debugDevice;
+            if ( SUCCEEDED( d3d12Device.As( &debugDevice ) ) ) {
+                debugDevice->ReportLiveDeviceObjects( D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL );
+                debugDevice.Reset();
+            }
+            if ( const ULONG refs = d3d12Device.Reset() ) {
+                Logging::Wrn( "D3D12 device still has {} references after shutdown", refs );
+            }
+        }
+    }
+
+    /** Ordered teardown: world, worker jobs, UI, Gothic's leaked D3D7 objects, GAPI, backend, pools. */
+    static void ShutDownEngine( UINT exitCode ) {
+        StartShutdownWatchdog( exitCode );
         Logging::Inf( "Shutting down..." );
 
-        // Explicit and ordered, ahead of the exit(0) below: closing the LAST connection to a WAL-mode
-        // SQLite database is what makes it checkpoint and delete its -wal/-shm files, and this is called
-        // from DllMain(DLL_PROCESS_DETACH) under the loader lock - not a place to bet that outcome on
-        // function-local statics' destructors still running cleanly. See SqliteBlobStore::CloseAll().
-        SqliteBlobStore::CloseAll();
-        
-        // Drains the async log queue on this thread; never joins the worker (we are under the loader lock).
-        Logging::Shutdown();
+        if ( GraphicsEngine ) {
+            GAPI->PrepareShutdown();
+        }
+        if ( WorkerThreadPool ) WorkerThreadPool->clearAndFlush();
+        if ( RenderingThreadPool ) RenderingThreadPool->clearAndFlush();
 
-        // TODO: remove this hack in the future, just a temporary workaround to fix crash on shutdown with the need to kill process via TaskManager
-        // Just killing before GraphicsEngine is not enough.
-        exit( 0 );
+        SAFE_DELETE( ImGuiHandle );
+        if ( GraphicsEngine ) {
+            MyDirectDrawSurface7::ReleaseAllEngineTextures();
+            MyDirect3DVertexBuffer7::ReleaseAllEngineBuffers();
+        }
+        SAFE_DELETE( GAPI );
+        DeleteGraphicsEngine();
+        SAFE_DELETE( RenderingThreadPool );
+        SAFE_DELETE( WorkerThreadPool );
 
-        SAFE_DELETE( Engine::RenderingThreadPool );
-        SAFE_DELETE( Engine::GAPI );
-        SAFE_DELETE( Engine::WorkerThreadPool );
-        SAFE_DELETE( Engine::GraphicsEngine );
+        Logging::Inf( "Shutdown complete." );
+        FlushPersistentState();
+    }
+
+    void OnProcessExit( UINT exitCode ) {
+        static std::atomic_bool s_exiting;
+        if ( s_exiting.exchange( true ) ) return;
+
+        // A crash handler or worker calling exit gets the minimal path: the main thread may be mid-frame.
+        if ( GAPI && GetCurrentThreadId() == GAPI->GetMainThreadID() ) {
+            ShutDownEngine( exitCode );
+        } else {
+            FlushPersistentState();
+        }
+    }
+
+    void OnProcessDetach() {
+        FlushPersistentState();
     }
 
 };

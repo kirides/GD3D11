@@ -6,6 +6,8 @@
 #include "../BaseGraphicsEngine.h"
 #include "../D3D11VertexBuffer.h"
 #include "../Engine.h"
+#include <mutex>
+#include <unordered_set>
 
 class MyDirect3DVertexBuffer7 : public IDirect3DVertexBuffer7 {
 public:
@@ -23,10 +25,26 @@ public:
 
 		// Start with 1 reference
 		RefCount = 1;
+
+		std::scoped_lock lock( s_LiveMutex );
+		s_Live.insert( this );
 	}
 
     virtual ~MyDirect3DVertexBuffer7() {
+        {
+            std::scoped_lock lock( s_LiveMutex );
+            s_Live.erase( this );
+        }
         VertexBuffer.reset();
+    }
+
+    /** Frees the GPU buffer of every live D3D7 vertex buffer; Gothic's fast exit never releases them. Shutdown only. */
+    static void ReleaseAllEngineBuffers() {
+        std::scoped_lock lock( s_LiveMutex );
+        for ( MyDirect3DVertexBuffer7* vb : s_Live ) {
+            vb->VertexBuffer.reset();
+        }
+        Logging::Inf( "Released the engine buffers of {} live D3D7 vertex buffers", s_Live.size() );
     }
 
 	/*** IUnknown methods ***/
@@ -114,4 +132,7 @@ private:
 
 	/** Referencecount on this */
 	int RefCount;
+
+	static inline std::mutex s_LiveMutex;
+	static inline std::unordered_set<MyDirect3DVertexBuffer7*> s_Live;
 };

@@ -45,6 +45,8 @@ public:
         float    DomeMargin = 1000.0f;
         float    EvictDistanceRatio = 2.0f;   // squared-distance margin a newcomer must beat an owner by
         float    MoveEps = 0.5f;          // below this the cube origin has not meaningfully moved
+        // ...nor below this fraction of the range: a carried light's idle sway would otherwise re-bake every frame.
+        float    MoveRangeFrac = 0.01f;
         float    RangeEps = 1.0f;         // below this the cube range has not meaningfully changed
         float    VobMoveEpsSq = 1.0f;     // squared world units a vob must move to invalidate a bake
         // How far a light may drift off its bake origin and still sample it while the re-bake waits its turn.
@@ -100,9 +102,10 @@ public:
         // Why this slot's cached bake was last thrown away. Debug only (the ImGui point-light overlay names
         // it for the nearest light); nothing in the selection logic reads it.
         EPointLightRebakeCause lastCause = PLR_NUM_CAUSES;   // PLR_NUM_CAUSES = never invalidated
-        // Casters this bake covered, compared by POINTER only - InvalidateStaticForVobRemoved fires when the
-        // vob may already be half torn down. Sorted and unique (FinalizeBakedVobs) for the binary search there.
+        // Casters this bake covered, compared by POINTER only - the vob may already be half torn down then.
+        // Sorted on first lookup after a bake (bakedSorted), since most bakes are replaced before any removal.
         std::vector<const zCVob*> bakedVobs;
+        bool              bakedSorted = true;
     };
 
     struct DynSlot {
@@ -189,7 +192,7 @@ public:
     void QueueVobChangedInvalidation( zCVob* vob );
 
     /** Every writer of StaticSlot::bakedVobs calls this once the list is complete. */
-    static void FinalizeBakedVobs( std::vector<const zCVob*>& baked );
+    static void FinalizeBakedVobs( StaticSlot& slot ) { slot.bakedSorted = false; }
 
     void InvalidateStaticForVobAdded( const DirectX::XMFLOAT3& posWS, float extent );
     /** Matched by POINTER against StaticSlot::bakedVobs: by the time this fires the object may be half torn

@@ -446,6 +446,7 @@ struct D3D12RayTracing::Impl {
     }
 
     void ProcessCompactions( FrameSlot& s ) {
+        ZoneScopedN( "RT compactions" )
         for ( UINT i = 0; i < s.Pending.size(); ++i ) {
             CachedBlas* b = FindOwner( s.Pending[i] );
             if ( !b ) continue;
@@ -713,6 +714,7 @@ struct D3D12RayTracing::Impl {
     }
 
     void AddAttachments( FrameSlot& s, std::span<const FrameAttachDraw> draws ) {
+        ZoneScopedN( "RT attachments" )
         D3D12MeshArena* arena = E.m_AttachArena.get();
         if ( draws.empty() || !arena->Ready() ) return;
         const D3D12_GPU_VIRTUAL_ADDRESS vbVa = arena->GetVertexBuffer()->GetGPUVirtualAddress();
@@ -743,6 +745,7 @@ struct D3D12RayTracing::Impl {
 
     /** Per-frame BLAS per NPC over the posed streams; returns whether any were built. */
     bool AddSkinned( FrameSlot& s, std::span<const FrameSkelDraw> draws ) {
+        ZoneScopedN( "RT skinned" )
         D3D12MeshArena* arena = E.m_SkelArena.get();
         Rhi::Resource* posed = E.m_SkinnedPosUv.Get();
         if ( draws.empty() || !arena->Ready() || !posed || !s.DynamicBlas ) return false;

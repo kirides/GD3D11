@@ -512,15 +512,25 @@ namespace VulkanRhi {
         bool CheckResult( VkResult result, const char* what );
         bool IsDeviceLost() const { return m_DeviceLost; }
 
+        /** GPU scope breadcrumbs: the GPU writes begun/ended into host memory, dumped on device loss. `name` must
+            outlive the frame. Returns the slot for EndScopeMarker, kNoMarker when unavailable. */
+        static constexpr uint32_t kNoMarker = UINT32_MAX;
+        uint32_t BeginScopeMarker( VkCommandBuffer cmd, const wchar_t* name );
+        void EndScopeMarker( VkCommandBuffer cmd, uint32_t slot );
+
         /** Opaque GPU addresses: (buffer id << 32) | offset. Lookups are lock-free. */
         uint32_t RegisterBuffer( ResourceImpl* resource );
         void UnregisterBuffer( uint32_t id );
         ResourceImpl* ResolveAddress( D3D12_GPU_VIRTUAL_ADDRESS va, VkDeviceSize& outOffset ) const;
 
-        /** Runs `destroy` once every submission made so far has retired. */
+        /** Runs `destroy` once every submission made so far, and every list still being recorded, has retired. */
         void DeferDestroy( std::function<void()> destroy );
         /** Runs the retired deferred destructions; called after every submit. */
         void CollectGarbage();
+        /** A list Reset by the engine may reference what is released before it is submitted (another submit or a
+            fence signal can retire first), so garbage released meanwhile is held until no such list is open. */
+        void ListOpened( const void* list );
+        void ListSubmitted( const void* list );
 
         /** Image created in UNDEFINED; its first layout is established before the next submit. */
         void QueueInitialLayout( ResourceImpl* resource, VkImageLayout layout );
@@ -558,6 +568,9 @@ namespace VulkanRhi {
     private:
         bool CreateBindlessLayout();
         void LogDeviceFault() const;
+        void CreateScopeMarkers();
+        void LogScopeMarkers() const;
+        void ReleaseHeldGarbageLocked();   // caller holds m_GarbageMutex
         void LoadPipelineCache();
         void SavePipelineCache();
 
@@ -567,6 +580,14 @@ namespace VulkanRhi {
         Rhi::Caps m_Caps;
         std::atomic<bool> m_DeviceLost{ false };
         FenceWaiter m_Waiter;
+
+        // Scope breadcrumb ring: 1 = begun (top of pipe), 2 = ended (bottom of pipe). Cached host memory survives loss.
+        static constexpr uint32_t kMarkerSlots = 16384;
+        VkBuffer m_MarkerBuffer = VK_NULL_HANDLE;
+        VmaAllocation m_MarkerAllocation = VK_NULL_HANDLE;
+        volatile uint32_t* m_MarkerCpu = nullptr;
+        std::vector<const wchar_t*> m_MarkerNames;
+        std::atomic<uint32_t> m_NextMarker{ 0 };
 
         // Buffer address table: 256 pages x 4096 ids, pages published once and never freed.
         static constexpr uint32_t kPageBits = 12;
@@ -578,6 +599,10 @@ namespace VulkanRhi {
 
         std::mutex m_GarbageMutex;
         std::deque<std::pair<uint64_t, std::function<void()>>> m_Garbage;
+        std::unordered_map<const void*, uint64_t> m_OpenLists;   // Reset, not yet submitted -> present count at Reset
+        std::vector<std::function<void()>> m_HeldGarbage;         // released while a list was open
+        uint64_t m_PresentCount = 0;
+        bool m_LoggedStaleList = false;
 
         struct InitCommands { VkCommandPool Pool = VK_NULL_HANDLE; VkCommandBuffer Cmd = VK_NULL_HANDLE; uint64_t Serial = 0; };
         std::mutex m_InitMutex;

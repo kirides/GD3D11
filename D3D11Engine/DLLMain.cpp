@@ -470,6 +470,14 @@ void InitializeEngine() {
     //SetUnhandledExceptionFilter(MyUnhandledExceptionFilter);
 }
 
+static decltype(&ExitProcess) originalExitProcess = ExitProcess;
+
+/** Runs before the loader's DLL_PROCESS_DETACH pass, while every thread is still alive and no loader lock is held. */
+static void WINAPI hooked_ExitProcess( UINT exitCode ) {
+    Engine::OnProcessExit( exitCode );
+    originalExitProcess( exitCode );
+}
+
 #if defined(BUILD_GOTHIC_2_6_fix)
 int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd ) {
     if ( GetModuleHandleA( "gmp.dll" ) ) {
@@ -609,6 +617,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         Engine::PassThrough = false;
 
         //_CrtSetDbgFlag (_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+        DetourAttachTyped( &originalExitProcess, hooked_ExitProcess );
 #if defined(BUILD_GOTHIC_2_6_fix)
         DetourAttachTyped( &originalWinMain, hooked_WinMain  );
 #endif
@@ -652,7 +661,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         ddraw.RegisterSpecialCase = GetProcAddress( ddraw.dll, "RegisterSpecialCase" );
         ddraw.ReleaseDDThreadLock = GetProcAddress( ddraw.dll, "ReleaseDDThreadLock" );
     } else if ( reason == DLL_PROCESS_DETACH ) {
-        Engine::OnShutDown();
+        Engine::OnProcessDetach();
 
         if ( comInitialized ) {
             comInitialized = false;

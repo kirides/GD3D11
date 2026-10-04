@@ -50,14 +50,8 @@ public:
     void Close();
 
     /** Closes every SqliteBlobStore instance currently alive (every on-disk cache: mesh, D3D11 shader,
-        D3D12 shader). Call this once from the engine's own shutdown path.
-
-        Why this exists instead of relying on these being function-local statics that destruct
-        themselves: Engine::OnShutDown() calls exit(0) as a deliberate workaround for a crash on the
-        normal teardown path, and it does so from DllMain(DLL_PROCESS_DETACH) - under the loader lock,
-        with no guarantee any other thread still touching a store has been stopped first. Whether static
-        destructors still run cleanly through that is not something to bet a "did the -wal/-shm file get
-        deleted" outcome on. An explicit, single, ordered CloseAll() call is deterministic regardless. */
+        D3D12 shader). Called from Engine's shutdown, so the -wal/-shm cleanup doesn't depend on static
+        destructor order or on the process exiting cleanly. */
     static void CloseAll();
 
 private:

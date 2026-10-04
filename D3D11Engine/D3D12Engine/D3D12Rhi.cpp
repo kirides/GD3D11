@@ -6,6 +6,7 @@
 #include "D3D12StateCache.h"
 #include "D3D12TracyDebug.h"
 #include "D3D12EngineCommon.h"
+#include "../Toolbox.h"
 
 #include <algorithm>
 #include <vector>
@@ -739,6 +740,25 @@ namespace {
             if ( FAILED( hr ) ) return hr;
             *outSwapchain = new SwapchainImpl( std::move( swapChain3 ) );
             return S_OK;
+        }
+
+        ~DeviceImpl() override {
+            if ( !m_Allocator ) return;
+            D3D12MA::TotalStatistics stats = {};
+            m_Allocator->CalculateStatistics( &stats );
+            if ( stats.Total.Stats.AllocationCount == 0 ) return;
+
+            // Every allocation still alive is a leak; D3D12MA asserts on them, so log them and leak the allocator instead.
+            Logging::Wrn( "D3D12: {} allocations ({} KB) still alive at device destruction",
+                stats.Total.Stats.AllocationCount, stats.Total.Stats.AllocationBytes / 1024 );
+            WCHAR* json = nullptr;
+            m_Allocator->BuildStatsString( &json, TRUE );
+            if ( json ) {
+                std::wstring_view view( json );
+                Logging::Wrn( "D3D12: leaked allocations: {}", Toolbox::ToMultiByte( std::wstring( view.substr( 0, 32768 ) ) ) );
+                m_Allocator->FreeStatsString( json );
+            }
+            m_Allocator.Detach();
         }
 
         // The allocator is released before the device it allocates from.

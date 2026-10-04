@@ -110,8 +110,8 @@ void SqliteBlobStore::CloseAll() {
 }
 
 bool SqliteBlobStore::TryGet( uint64_t key, std::vector<uint8_t>& outData ) const {
-    if ( !m_db ) return false;
     std::scoped_lock lock( m_mutex );
+    if ( !m_db ) return false;
 
     sqlite3_blob* blob = nullptr;
     if ( sqlite3_blob_open( m_db, "main", "blobs", "data", static_cast<sqlite3_int64>( key ), 0, &blob ) != SQLITE_OK ) {
@@ -126,8 +126,8 @@ bool SqliteBlobStore::TryGet( uint64_t key, std::vector<uint8_t>& outData ) cons
 }
 
 void SqliteBlobStore::Put( uint64_t key, const void* data, size_t size ) {
-    if ( !m_db || size == 0 ) return;
     std::scoped_lock lock( m_mutex );
+    if ( !m_db || size == 0 ) return;
 
     sqlite3_reset( m_upsertStmt );
     sqlite3_bind_int64( m_upsertStmt, 1, static_cast<sqlite3_int64>( key ) );
@@ -145,8 +145,8 @@ void SqliteBlobStore::Put( uint64_t key, const void* data, size_t size ) {
 }
 
 void SqliteBlobStore::Erase( uint64_t key ) {
-    if ( !m_db ) return;
     std::scoped_lock lock( m_mutex );
+    if ( !m_db ) return;
     sqlite3_reset( m_deleteStmt );
     sqlite3_bind_int64( m_deleteStmt, 1, static_cast<sqlite3_int64>( key ) );
     sqlite3_step( m_deleteStmt );

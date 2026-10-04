@@ -276,12 +276,6 @@ void PointLightSlotSelector::InvalidateStaticForVobAdded( const XMFLOAT3& posWS,
 }
 
 
-void PointLightSlotSelector::FinalizeBakedVobs( std::vector<const zCVob*>& baked ) {
-    std::ranges::sort( baked );
-    baked.erase( std::ranges::unique( baked ).begin(), baked.end() );
-}
-
-
 void PointLightSlotSelector::InvalidateStaticForVobRemoved( const zCVob* vob ) {
     // Symmetric to the add case, but matched by POINTER against what each bake actually gathered: the vob is
     // being torn down, so its bbox and position can no longer be read. Never baked => nothing to invalidate,
@@ -293,6 +287,11 @@ void PointLightSlotSelector::InvalidateStaticForVobRemoved( const zCVob* vob ) {
     m_Lookup->Stationary.erase( vob );
     for ( StaticSlot& ss : m_Static ) {
         if ( !ss.ownerKey || !ss.valid || ss.bakedVobs.empty() ) continue;
+        if ( !ss.bakedSorted ) {
+            std::ranges::sort( ss.bakedVobs );
+            ss.bakedVobs.erase( std::ranges::unique( ss.bakedVobs ).begin(), ss.bakedVobs.end() );
+            ss.bakedSorted = true;
+        }
         if ( std::ranges::binary_search( ss.bakedVobs, vob ) ) {
             ss.valid = false;
             ss.lastCause = PLR_VOB_REMOVED;
@@ -561,9 +560,10 @@ void PointLightSlotSelector::Select( std::span<const Candidate> cands,
 
         // --- what does this light want done? ---
         const XMFLOAT3& np = src.shadowOrigin;
-        const bool moved = std::fabs( np.x - ss.pos.x ) > m_Cfg.MoveEps
-            || std::fabs( np.y - ss.pos.y ) > m_Cfg.MoveEps
-            || std::fabs( np.z - ss.pos.z ) > m_Cfg.MoveEps;
+        const float moveEps = std::max( m_Cfg.MoveEps, src.shadowRange * m_Cfg.MoveRangeFrac );
+        const bool moved = std::fabs( np.x - ss.pos.x ) > moveEps
+            || std::fabs( np.y - ss.pos.y ) > moveEps
+            || std::fabs( np.z - ss.pos.z ) > moveEps;
         const bool rangeChanged = std::fabs( src.shadowRange - ss.range ) > m_Cfg.RangeEps;
         // Only when the bake was still considered good: a slot invalidated elsewhere already named its cause,
         // and counting this as well would report every re-bake twice under the wrong heading.

@@ -65,9 +65,12 @@ namespace VulkanRhi {
     class CommandListImpl final : public Rhi::CommandList {
     public:
         CommandListImpl( DeviceImpl* device, D3D12_COMMAND_LIST_TYPE type ) : m_Device( device ), m_Type( type ) {}
+        ~CommandListImpl() override { m_Device->ListSubmitted( static_cast<Rhi::CommandList*>( this ) ); }
 
         HRESULT Close() override;
         HRESULT Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) override;
+        /** Reset without holding garbage for the list: CreateCommandList's open list is often closed unused. */
+        HRESULT Begin( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState );
         void SetName( LPCWSTR ) override {}
 
         void SetPipelineState( Rhi::PipelineState* pso ) override;
@@ -221,7 +224,9 @@ namespace VulkanRhi {
         uint32_t m_PromotedCount = 0;
         std::vector<ComPtr<ResourceImpl>> m_CopyTouched;   // COPY lists only; keeps its capacity across resets
 
-        uint32_t m_LabelDepth = 0;
+        uint32_t m_LabelDepth = 0;   // open BeginEvent scopes of this list
+        static constexpr uint32_t kMaxMarkerDepth = 64;
+        uint32_t m_MarkerSlots[kMaxMarkerDepth] = {};   // their breadcrumb slots
         RecordStats m_Stats;   // handed to the device at Close
         std::vector<uint8_t> m_ReplayScratch;   // ExecuteIndirect commands copied out of host memory; grows only
         bool m_InIndirect = false;     // draws replayed by ExecuteIndirect count as its time
@@ -247,7 +252,7 @@ namespace VulkanRhi {
         if ( !allocator || !outList ) return E_INVALIDARG;
         ComPtr<CommandListImpl> list;
         list.Attach( new CommandListImpl( this, type ) );
-        const HRESULT hr = list->Reset( allocator, initialState );
+        const HRESULT hr = list->Begin( allocator, initialState );
         if ( FAILED( hr ) ) return hr;
         *outList = list.Detach();
         return S_OK;
@@ -278,6 +283,11 @@ namespace VulkanRhi {
     }
 
     HRESULT CommandListImpl::Reset( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
+        m_Device->ListOpened( static_cast<Rhi::CommandList*>( this ) );
+        return Begin( allocator, initialState );
+    }
+
+    HRESULT CommandListImpl::Begin( Rhi::CommandAllocator* allocator, Rhi::PipelineState* initialState ) {
         m_Allocator = static_cast<CommandAllocatorImpl*>( allocator );
         m_Cmd = m_Allocator->AcquireCommandBuffer();
         if ( !m_Cmd ) return E_OUTOFMEMORY;
@@ -294,9 +304,7 @@ namespace VulkanRhi {
         DecayCopyListImages();
         m_Device->AddRecordStats( m_Stats );
         m_Stats = {};
-        if ( m_Device->VkCaps().DebugUtils )
-            for ( ; m_LabelDepth > 0; --m_LabelDepth ) vkCmdEndDebugUtilsLabelEXT( m_Cmd );
-        m_LabelDepth = 0;
+        while ( m_LabelDepth > 0 ) EndEvent();   // a scope still open continues unrecorded in the next list
         return m_Device->CheckResult( vkEndCommandBuffer( m_Cmd ), "vkEndCommandBuffer" ) ? E_FAIL : S_OK;
     }
 
@@ -542,7 +550,10 @@ namespace VulkanRhi {
                 VkDeviceSize offset = 0;
                 ResourceImpl* r = m_Device->ResolveAddress( b.RootVa[i], offset );
                 if ( !r || !r->m_Buffer ) {
-                    warnOnce( "a draw left a root buffer parameter unbound" );
+                    // Unbound reads return 0 like on D3D12 hardware; an unwritten push descriptor is garbage on NVIDIA.
+                    if ( !nullDescriptors ) { warnOnce( "a draw left a root buffer parameter unbound" ); break; }
+                    write( p.Binding, p.Type );
+                    buffers[n++] = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
                     break;
                 }
                 write( p.Binding, p.Type );
@@ -558,9 +569,11 @@ namespace VulkanRhi {
                     const Descriptor* d = b.Tables[i].ptr
                         && m_Device->ReadGpuDescriptor( { b.Tables[i].ptr + slot.Offset * sizeof( Descriptor ) }, record ) ? &record : nullptr;
                     if ( slot.Type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
-                        if ( !d || d->Type != Descriptor::Kind::UniformBuffer ) { warnOnce( "a CBV table slot is empty" ); continue; }
+                        const bool bound = d && d->Type == Descriptor::Kind::UniformBuffer;
+                        if ( !bound && !nullDescriptors ) { warnOnce( "a CBV table slot is empty" ); continue; }
                         write( slot.Binding, slot.Type );
-                        buffers[n++] = { d->Buffer, d->Offset, d->Range ? d->Range : VK_WHOLE_SIZE };
+                        buffers[n++] = bound ? VkDescriptorBufferInfo{ d->Buffer, d->Offset, d->Range ? d->Range : VK_WHOLE_SIZE }
+                                             : VkDescriptorBufferInfo{ VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
                         continue;
                     }
                     const bool storage = slot.Type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -1441,6 +1454,9 @@ namespace VulkanRhi {
     // ---- Debug labels ---------------------------------------------------------------------------
 
     void CommandListImpl::BeginEvent( const wchar_t* wide, UINT wideLength, const char* narrow ) {
+        const uint32_t slot = m_Device->BeginScopeMarker( m_Cmd, wide );
+        if ( m_LabelDepth < kMaxMarkerDepth ) m_MarkerSlots[m_LabelDepth] = slot;
+        ++m_LabelDepth;
         if ( !m_Device->VkCaps().DebugUtils ) return;
         char buffer[128];
         if ( !narrow ) {
@@ -1451,12 +1467,12 @@ namespace VulkanRhi {
         VkDebugUtilsLabelEXT label = { VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
         label.pLabelName = narrow;
         vkCmdBeginDebugUtilsLabelEXT( m_Cmd, &label );
-        ++m_LabelDepth;
     }
 
     void CommandListImpl::EndEvent() {
-        if ( !m_Device->VkCaps().DebugUtils || m_LabelDepth == 0 ) return;   // opened in a list that was closed since
-        vkCmdEndDebugUtilsLabelEXT( m_Cmd );
+        if ( m_LabelDepth == 0 ) return;   // opened in a list that was closed since
         --m_LabelDepth;
+        if ( m_LabelDepth < kMaxMarkerDepth ) m_Device->EndScopeMarker( m_Cmd, m_MarkerSlots[m_LabelDepth] );
+        if ( m_Device->VkCaps().DebugUtils ) vkCmdEndDebugUtilsLabelEXT( m_Cmd );
     }
 }

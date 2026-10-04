@@ -1034,7 +1034,7 @@ struct GothicRendererSettings {
 #endif
         WaterShoreFoamStyle = WATER_FOAM_STYLE_COAST;
         SetOceanIdentifiers( "NW_WATER_LAKE*|*OCEAN*" );
-        SetFloatingPlantIdentifiers( "*DUCKWEED*" );
+        SetFloatingPlantIdentifiers( "*DUCKWEED*|*SEEROSE*" );
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_HIGH;
         ShadowQuality = E_GraphicsPreset::GRAPHICS_HIGH;
