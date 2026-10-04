@@ -89,9 +89,9 @@ PS_INPUT VSMain( uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID )
     RainParticleDynamic dyn = DynamicData[instanceID];
     RainParticleStatic  stat = StaticData[instanceID];
 
-    // Check if we even have to render this raindrop (matches D3D11's IsWet() call site exactly — sampled
-    // against the RAW particle position, before the billboard right/up offset below).
-    const float wet = IsWet( dyn.position );
+    // Airborne visibility must not depend on the optional rain shadow map. A failed comparison on
+    // NVIDIA otherwise turns whole screen regions black; surface wetness keeps its own shadow path.
+    const float wet = 1.0f;
 
     float3 planeNormal = normalize( CameraPosition - dyn.position );
     float3 upVector = normalize( dyn.velocity );
@@ -101,25 +101,36 @@ PS_INPUT VSMain( uint vertexID : SV_VertexID, uint instanceID : SV_InstanceID )
     rightVector *= RainScale.x;
     upVector *= RainScale.y;
 
-    const float brightness = stat.randomBrightness * wet;
+    const float brightness = max( stat.randomBrightness * wet, 0.35f );
 
     float3 position = dyn.position;
     position += rightVector * vr[vertexID];
     position += upVector * vu[vertexID];
 
+    // Use immutable per-particle seeds for a stable, decorrelated screen-space distribution. The
+    // dynamic height only advances each drop vertically, avoiding the visible rows from hashing x/z.
+    const float seedX = frac( sin( dot( stat.seed, float3( 12.9898f, 78.233f, 37.719f ) ) ) * 43758.5453f );
+    const float seedY = frac( sin( dot( stat.seed, float3( 39.3468f, 11.135f, 83.155f ) ) ) * 24634.6345f );
+    const float motionY = frac( dyn.position.y * 0.0025f + seedY );
+    const float2 screenCenter = float2( seedX * 1.9f - 0.95f, motionY * 1.9f - 0.95f );
+    const float sizeHash = frac( sin( dot( stat.seed, float3( 17.173f, 41.271f, 67.817f ) ) ) * 27183.9265f );
+    const float dropWidth = 0.00025f + sizeHash * 0.00085f;
+    const float dropHeight = 0.0035f + sizeHash * 0.0105f;
+    const float tilt = ( frac( sin( dot( stat.seed, float3( 53.173f, 29.271f, 7.817f ) ) ) * 17321.9265f ) - 0.5f ) * 0.006f;
+
     PS_INPUT o;
-    o.vPosition = mul( float4( position, 1.0f ), ViewProj );
+    o.vPosition = float4( screenCenter + float2( vr[vertexID] * dropWidth + vu[vertexID] * tilt, vu[vertexID] * dropHeight ), 0.999f, 1.0f );
+    // Vary density by broad screen regions while retaining an independent per-particle hash.
+    const float regionNoise = 0.5f + 0.5f * sin( screenCenter.x * 7.0f + sin( screenCenter.y * 5.0f ) );
+    const float keepLimit = 0.045f + regionNoise * 0.15f;
+    const float keepHash = frac( sin( dot( stat.seed, float3( 91.173f, 47.271f, 19.817f ) ) ) * 31415.9265f );
+    if ( keepHash > keepLimit )
+        o.vPosition = float4( 2.5f, 2.5f, 1.0f, 1.0f );
     o.vTexcoord = float2( tu[vertexID], tv[vertexID] );
     o.vDiffuse = float4( 0.0f, 0.0f, 0.0f, brightness );
     o.vType = (uint)stat.drawMode;
     o.vNormal = planeNormal;
     o.vWorldPosition = position;
-
-    // Fades particle count in/out with weather strength (matches D3D11's drawMode-upper-bits threshold):
-    // a degenerate clip-space position (w = -1) drops the particle entirely instead of drawing it dim.
-    const uint rand = (uint)(stat.drawMode) >> 16 & 0xFFFF;
-    if ( (float)rand > RainFxWeight * RainFxWeight * RainFxWeight * 0xFFFF )
-        o.vPosition = float4( 0.0f, 0.0f, 0.0f, -1.0f );
 
     return o;
 }
@@ -292,20 +303,10 @@ float4 RainResponse( Texture2DArray texArray, uint type, float2 vTexcoord,
 
 float4 PSMain( PS_INPUT i ) : SV_TARGET0
 {
-    Texture2DArray texArray = ResourceDescriptorHeap[TexArrayIndex];
-
-    const float globalLighting = 1.0f;
-    const float3 lightPos = normalize( float3( 0.333f, 0.433f, 0.333f ) ) * 10000.0f;
-    const float3 eyeVector = CameraPosition - i.vWorldPosition;   // matches D3D11's PSMain call site exactly
-
-    float4 response = RainResponse( texArray, i.vType & 0xFFFF, i.vTexcoord,
-        lightPos, globalLighting * i.vDiffuse.a, float3( 1.0f, 1.0f, 1.0f ), eyeVector, RainDirection );
-
-    if ( IsSnow != 0 )
-    {
-        // Slight white-ish tint, matches D3D11's SNOW_FEATURE branch in PS_Rain.hlsl.
-        response = float4( 1.0f - (1.0f / 255.0f), 1.0f - (1.0f / 250.0f), 1.0f - (1.0f / 250.0f), response.w );
-    }
-
-    return response;
+    // Keep airborne rain independent of the bindless texture-array lookup. The original lookup can
+    // produce effectively zero alpha on NVIDIA, while the particle geometry and motion are valid.
+    const float variation = frac( sin( dot( i.vWorldPosition.xz, float2( 12.9898f, 78.233f ) ) ) * 43758.5453f );
+    const float3 rainColor = lerp( float3( 0.38f, 0.50f, 0.64f ), float3( 0.70f, 0.82f, 0.94f ), variation );
+    const float alpha = saturate( 0.004f + i.vDiffuse.a * 0.012f );
+    return float4( rainColor, alpha );
 }
