@@ -472,6 +472,8 @@ public:
         Microsoft::WRL::ComPtr<Rhi::RootSignature> GenerateRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            GenerateCsBlob;
         Microsoft::WRL::ComPtr<Rhi::PipelineState> GeneratePSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            NoiseCsBlob;
+        Microsoft::WRL::ComPtr<Rhi::PipelineState> NoisePSO;          // fills the 3D noise once (GenerateRootSig)
         Microsoft::WRL::ComPtr<Rhi::RootSignature> CompositeRootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            CompositeVsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            CompositePsBlob;

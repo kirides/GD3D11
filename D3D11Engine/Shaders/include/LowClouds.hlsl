@@ -4,6 +4,7 @@
 // Shared by D3D11 (PS_PFX_LowClouds*) and D3D12 (D3D12/LowClouds.hlsl); colors are gamma space.
 // Needs the Atmosphere constants (AC_LightPos, AC_RainFXWeight) included first. The composite also needs
 // LowCloudLoadLayer, LowCloudLoadDepth, LowCloudLoadSky and LowCloudLayerSize defined before inclusion.
+// Density samples the 3D noise of LowCloudNoise.hlsl: D3D11 t4/s3, D3D12 LC_NoiseIndex/s0 (LOW_CLOUD_BINDLESS_NOISE).
 
 #ifndef LOW_CLOUD_CB_REGISTER
 #define LOW_CLOUD_CB_REGISTER b2
@@ -25,7 +26,8 @@ cbuffer LowCloudCB : register( LOW_CLOUD_CB_REGISTER )
     float4 LC_SunScreen;          // xy = uv, z = visibility
     float4 LC_MoonScreen;
     float  LC_Frame;              // advances the march jitter per frame under TAA/FSR, 0 otherwise
-    float3 LC_Pad;
+    uint   LC_NoiseIndex;         // D3D12: bindless SRV of the 3D noise texture
+    float2 LC_Pad;
 };
 
 static const float LOW_CLOUD_SKY_DEPTH = 0.00001f;
@@ -53,84 +55,141 @@ float LowCloudJitter( float2 pixel )
 
 float LowCloudNightBlend() { return smoothstep( 0.0f, 1.0f, saturate( -AC_LightPos.y * 4.0f ) ); }
 
-float3 LowCloudSunDir() { return normalize( lerp( float3( -0.25f, 0.72f, 0.18f ), AC_LightPos, saturate( abs( AC_LightPos.y ) + 0.12f ) ) ); }
-float3 LowCloudMoonDir() { return normalize( lerp( float3( 0.22f, 0.64f, -0.28f ), LC_MoonDir, saturate( abs( LC_MoonDir.y ) + 0.12f ) ) ); }
 float LowCloudSunWeight() { return saturate( LC_SunVisibility ) * smoothstep( 0.04f, 0.42f, AC_LightPos.y ); }
+
+float3 LowCloudToLinear( float3 c ) { return pow( max( c, 0.0f ), 2.2f ); }
+
+// Warm and dimmed near the horizon, near white at noon
+float3 LowCloudTransmittedSunColor()
+{
+    float y = AC_LightPos.y;
+    float3 low = lerp( float3( 1.00f, 0.42f, 0.18f ), float3( 1.00f, 0.74f, 0.50f ), smoothstep( -0.02f, 0.12f, y ) );
+    return lerp( low, float3( 1.00f, 0.95f, 0.86f ), smoothstep( 0.12f, 0.45f, y ) );
+}
 
 //--------------------------------------------------------------------------------------
 // Noise and density
 //--------------------------------------------------------------------------------------
-float LowCloudHash31( float3 p )
-{
-    p = frac( p * 0.1031f );
-    p += dot( p, p.yzx + 33.33f );
-    return frac( ( p.x + p.y ) * p.z );
-}
+#ifdef LOW_CLOUD_BINDLESS_NOISE
+SamplerState LC_NoiseSampler : register( s0 );   // linear WRAP
+float4 LowCloudNoise( float3 uvw ) { Texture3D t = ResourceDescriptorHeap[LC_NoiseIndex]; return t.SampleLevel( LC_NoiseSampler, uvw, 0.0f ); }
+#else
+Texture3D LC_NoiseTex : register( t4 );
+SamplerState LC_NoiseSampler : register( s3 );   // linear WRAP
+float4 LowCloudNoise( float3 uvw ) { return LC_NoiseTex.SampleLevel( LC_NoiseSampler, uvw, 0.0f ); }
+#endif
 
-float LowCloudValueNoise3( float3 p )
-{
-    float3 i = floor( p );
-    float3 f = frac( p );
-    float3 u = f * f * ( 3.0f - 2.0f * f );
-    float nx00 = lerp( LowCloudHash31( i ), LowCloudHash31( i + float3( 1, 0, 0 ) ), u.x );
-    float nx10 = lerp( LowCloudHash31( i + float3( 0, 1, 0 ) ), LowCloudHash31( i + float3( 1, 1, 0 ) ), u.x );
-    float nx01 = lerp( LowCloudHash31( i + float3( 0, 0, 1 ) ), LowCloudHash31( i + float3( 1, 0, 1 ) ), u.x );
-    float nx11 = lerp( LowCloudHash31( i + float3( 0, 1, 1 ) ), LowCloudHash31( i + float3( 1, 1, 1 ) ), u.x );
-    return lerp( lerp( nx00, nx10, u.y ), lerp( nx01, nx11, u.y ), u.z );
-}
+static const float LOW_CLOUD_EXTINCTION = 0.00050f;   // per world unit at density 1
 
-float LowCloudFbm3( float3 p )
-{
-    float n = LowCloudValueNoise3( p ) * 0.62f;
-    n += LowCloudValueNoise3( p * 2.03f + 17.11f ) * 0.28f;
-    n += LowCloudValueNoise3( p * 4.01f + 61.73f ) * 0.10f;
-    return n;
-}
+float LowCloudRemap( float x, float a, float b, float c, float d ) { return c + ( x - a ) / ( b - a ) * ( d - c ); }
 
-// Domain-warped islands of cloud in a band from the fog height up to ~16k units.
-float ComputeLowCloudDensity( float3 worldPosition, float skyPixel )
+float3 LowCloudWind() { return float3( 198.0f, 2.0f, -120.0f ) * LC_Time * max( 0.0f, LC_Speed ); }
+
+// Per-column weather: how cloudy it is here and where the cloud starts and ends
+struct LowCloudColumn
 {
-    float cloudBase = LC_FogHeight;
-    float cloudScale = max( 0.35f, LC_Scale );
-    float invCloudScale = 1.0f / cloudScale;
+    float coverage;
+    float base;
+    float top;
+};
+
+LowCloudColumn LowCloudGetColumn( float3 p )
+{
+    float scale = max( 0.35f, LC_Scale );
     float heightScale = max( 0.35f, LC_HeightScale );
-    float3 wind = float3( LC_Time * 3.8f, LC_Time * 0.04f, -LC_Time * 2.3f ) * max( 0.0f, LC_Speed );
-    float3 macroP = ( worldPosition + wind * 52.0f ) * float3( 0.000026f, 0.000032f, 0.000026f ) * invCloudScale;
-    float3 warpP = ( worldPosition + wind * 34.0f ) * float3( 0.000040f, 0.000047f, 0.000040f ) * invCloudScale;
-    float3 warp = float3(
-        LowCloudValueNoise3( warpP + float3( 13.1f, 2.7f, 41.9f ) ),
-        LowCloudValueNoise3( warpP + float3( 57.7f, 19.3f, 8.2f ) ),
-        LowCloudValueNoise3( warpP + float3( 4.8f, 63.4f, 27.5f ) ) ) * 2.0f - 1.0f;
-    float3 warpedWorld = worldPosition + warp * float3( 14800.0f, 3600.0f, 14800.0f ) * cloudScale;
+    float2 xz = ( p.xz + LowCloudWind().xz * 0.8f ) / ( 210000.0f * scale );
+    float evolve = LC_Time * 0.00035f * max( 0.0f, LC_Speed );
+    // Two incommensurate lookups so the 64^3 tile never repeats visibly
+    float4 a = LowCloudNoise( float3( xz, evolve ) );
+    float4 b = LowCloudNoise( float3( xz.yx * 2.31f + float2( 0.37f, 0.71f ), 0.5f - evolve * 1.7f ) );
+    float weather = a.g * 0.65f + b.g * 0.35f;
 
-    float macro = LowCloudFbm3( ( warpedWorld + wind * 50.0f ) * float3( 0.000024f, 0.000030f, 0.000024f ) * invCloudScale );
-    float body = LowCloudFbm3( ( warpedWorld + wind * 30.0f ) * float3( 0.000104f, 0.000118f, 0.000104f ) * invCloudScale + float3( 19.3f, 4.7f, 71.1f ) );
-    float torn = LowCloudFbm3( ( warpedWorld + wind * 16.0f ) * float3( 0.000190f, 0.000170f, 0.000190f ) * invCloudScale + float3( 43.0f, 12.0f, 5.0f ) );
-    float topNoise = LowCloudValueNoise3( macroP * 1.08f + float3( 77.0f, 9.0f, 23.0f ) );
-    float baseNoise = LowCloudValueNoise3( macroP * 0.82f + float3( 12.0f, 51.0f, 6.0f ) );
+    float amount = saturate( 0.40f * LC_Density );
+    float threshold = lerp( 0.85f, 0.15f, amount );
 
-    float islands = smoothstep( 0.43f, 0.73f, macro + body * 0.18f );
-    float broadGaps = smoothstep( 0.50f, 0.82f, LowCloudValueNoise3( macroP * 1.72f + float3( 31.0f, 7.0f, 91.0f ) ) + torn * 0.12f );
-    float bodyCore = smoothstep( 0.38f, 0.75f, body * 0.78f + macro * 0.36f - torn * 0.12f );
-    float cloudBody = LowCloudSmootherStep( islands * lerp( bodyCore, bodyCore * 0.30f, broadGaps * 0.68f ) );
-
-    float localBase = cloudBase + ( lerp( 500.0f, 2300.0f, baseNoise ) - broadGaps * 900.0f ) * heightScale;
-    float localTop = cloudBase + ( lerp( 8200.0f, 15800.0f, topNoise ) + islands * 2100.0f + cloudBody * 1700.0f - broadGaps * 1900.0f ) * heightScale;
-    float lowCenter = cloudBase + ( 3200.0f + ( baseNoise - 0.5f ) * 900.0f ) * heightScale;
-    float highCenter = lerp( cloudBase + 6500.0f * heightScale, localTop - 2600.0f * heightScale, saturate( islands * 0.86f + bodyCore * 0.22f ) );
-
-    float lowerCore = 1.0f - smoothstep( 1500.0f * heightScale, 5200.0f * heightScale, abs( worldPosition.y - lowCenter ) );
-    float lowerSkirt = 1.0f - smoothstep( 3400.0f * heightScale, 9800.0f * heightScale, abs( worldPosition.y - ( localBase + 2800.0f * heightScale ) ) );
-    float highBank = 1.0f - smoothstep( 2800.0f * heightScale, 8700.0f * heightScale, abs( worldPosition.y - highCenter ) );
-    float regularBottomFade = smoothstep( localBase - 1200.0f * heightScale, localBase + 2400.0f * heightScale, worldPosition.y );
-    float skyBottomFade = smoothstep( localBase - 2600.0f * heightScale, localBase + 4200.0f * heightScale, worldPosition.y );
-    float bottomFade = lerp( regularBottomFade, skyBottomFade, saturate( skyPixel ) );
-    float topFeather = lerp( 3200.0f, 6200.0f, topNoise ) * heightScale;
-    float topFade = 1.0f - smoothstep( localTop - topFeather, localTop + topFeather * 0.85f, worldPosition.y );
-    float verticalBand = saturate( lowerCore * 1.14f + lowerSkirt * 0.40f + highBank * 0.50f ) * bottomFade * topFade;
-
-    return saturate( verticalBand * cloudBody * 1.42f * max( 0.0f, LC_Density ) );
+    LowCloudColumn c;
+    c.coverage = smoothstep( threshold - 0.10f, threshold + 0.18f, weather );
+    c.base = LC_FogHeight + lerp( 600.0f, 2400.0f, a.b ) * heightScale;
+    c.top = c.base + lerp( 4200.0f, 13000.0f, saturate( c.coverage * 0.75f + ( b.r - 0.5f ) * 0.8f + 0.1f ) ) * heightScale;
+    return c;
 }
+
+// Coverage-eroded Perlin-Worley shape; h is the height within the column
+float LowCloudShape( float3 p, LowCloudColumn c, out float h )
+{
+    h = saturate( ( p.y - c.base ) / max( c.top - c.base, 1.0f ) );
+    float density = 0.0f;
+    [branch] if ( c.coverage > 0.001f && p.y > c.base && p.y < c.top )
+    {
+        float scale = max( 0.35f, LC_Scale );
+        float heightScale = max( 0.35f, LC_HeightScale );
+        float3 q = ( p + LowCloudWind() ) / ( 27000.0f * scale );
+        q.y *= 1.35f / heightScale;
+        float4 n = LowCloudNoise( q );
+        float shape = saturate( LowCloudRemap( n.r, n.b - 1.0f, 1.0f, 0.0f, 1.0f ) );
+
+        // Flat base, rounded top
+        shape *= smoothstep( 0.0f, 0.12f, h ) * ( 1.0f - smoothstep( 0.35f, 1.0f, h ) );
+        density = saturate( LowCloudRemap( shape, 1.0f - c.coverage, 1.0f, 0.0f, 1.0f ) ) * c.coverage;
+    }
+    return density;
+}
+
+// High-frequency Worley erosion: wispy at the base, billowy on top
+float LowCloudErode( float density, float3 p, float h )
+{
+    float scale = max( 0.35f, LC_Scale );
+    float4 n = LowCloudNoise( ( p + LowCloudWind() * 1.6f ) / ( 5600.0f * scale ) + float3( 0.0f, h * 0.15f, 0.0f ) );
+    float detail = n.b * 0.6f + n.a * 0.4f;
+    detail = lerp( 1.0f - detail, detail, saturate( h * 5.0f ) );
+    return saturate( LowCloudRemap( density, detail * 0.38f, 1.0f, 0.0f, 1.0f ) );
+}
+
+float LowCloudDensityScale() { return sqrt( max( 0.0f, LC_Density ) ); }
+
+float3 LowCloudSafeNormalize( float3 v ) { return v / max( length( v ), 1e-4f ); }
+
+//--------------------------------------------------------------------------------------
+// Lighting: short shadow march toward the sun or moon, dual-lobe phase, multiple-scattering octaves
+//--------------------------------------------------------------------------------------
+float LowCloudLightDepth( float3 p, float3 lightDir, LowCloudColumn c )
+{
+    static const float offsets[4] = { 0.04f, 0.14f, 0.32f, 0.68f };
+    static const float widths[4] = { 0.08f, 0.12f, 0.24f, 0.48f };
+    float rayLength = 6400.0f * max( 0.35f, LC_HeightScale );
+    float depth = 0.0f;
+    [unroll] for ( int i = 0; i < 4; ++i )
+    {
+        float h;
+        depth += LowCloudShape( p + lightDir * ( offsets[i] * rayLength ), c, h ) * widths[i];
+    }
+    return depth * rayLength * LOW_CLOUD_EXTINCTION * LowCloudDensityScale();
+}
+
+// Henyey-Greenstein, normalized so an isotropic medium is 1
+float LowCloudHG( float cosTheta, float g )
+{
+    float g2 = g * g;
+    return ( 1.0f - g2 ) / pow( max( 1.0f + g2 - 2.0f * g * cosTheta, 1e-4f ), 1.5f );
+}
+
+float LowCloudLightEnergy( float lightDepth, float cosTheta )
+{
+    float energy = 0.0f;
+    float a = 1.0f;
+    float k = 1.0f;
+    [unroll] for ( int o = 0; o < 3; ++o )
+    {
+        float phase = lerp( LowCloudHG( cosTheta, -0.25f * k ), LowCloudHG( cosTheta, 0.65f * k ), 0.55f );
+        energy += a * exp( -k * lightDepth ) * phase;
+        a *= 0.5f;
+        k *= 0.5f;
+    }
+    return energy;
+}
+
+// Keeps the shadow ray out of the horizontal so it still leaves the layer at sunrise and sunset
+float3 LowCloudLightRayDir( float3 dir ) { return normalize( float3( dir.x, max( dir.y, 0.03f ), dir.z ) ); }
 
 //--------------------------------------------------------------------------------------
 // Ray march: color (not premultiplied) and alpha of the clouds between the camera and endWorld
@@ -177,20 +236,36 @@ float4 ComputeLowCloudVolume( float3 cameraWorld, float3 endWorld, float cameraD
     float3 litColor = lerp( nightLit, lerp( dayLitClear, dayLitRain, rainWeight ), dayWeight );
     float3 shadowColor = lerp( nightShadow, lerp( dayShadowClear, dayShadowRain, rainWeight ), dayWeight );
 
-    float3 lightDir = LowCloudSunDir();
-    float viewSunForward = pow( saturate( dot( rayDir, lightDir ) * 0.5f + 0.5f ), 4.0f );
-    float3 moonDir = LowCloudMoonDir();
-    float viewMoonForward = pow( saturate( dot( rayDir, moonDir ) * 0.5f + 0.5f ), 4.0f );
-    float moonLight = saturate( LC_MoonVisibility ) * ( 1.0f - dayWeight ) * saturate( moonDir.y * 1.35f ) * lerp( 1.0f, 0.45f, rainWeight );
+    // Sky light from above, darker bounce from below; overcast skies lean on it harder
+    float overcast = rainWeight * ( 1.0f - saturate( LC_SunVisibility ) );
+    float3 ambientBottom = LowCloudToLinear( shadowColor ) * 0.85f;
+    float3 ambientTop = LowCloudToLinear( lerp( shadowColor, litColor, lerp( 0.35f, 0.85f, overcast ) ) );
+    float3 hazeColor = LowCloudToLinear( lerp( shadowColor, litColor, 0.5f ) );
+
+    // One main light: the sun (down to the horizon, for sunset light) or the moon
+    float rainDim = lerp( 1.0f, 0.45f, rainWeight );
+    float sunIntensity = saturate( LC_SunVisibility ) * smoothstep( -0.03f, 0.08f, AC_LightPos.y ) * max( 0.0f, LC_SunLight ) * rainDim;
+    float moonIntensity = saturate( LC_MoonVisibility ) * smoothstep( 0.0f, 0.15f, LC_MoonDir.y ) * rainDim;
+    bool moonIsMain = moonIntensity > sunIntensity;
+    float3 lightDir = LowCloudLightRayDir( moonIsMain ? LC_MoonDir : AC_LightPos.xyz );
+    float3 lightColor = moonIsMain
+        ? LowCloudToLinear( float3( 0.42f, 0.56f, 1.0f ) * 0.20f ) * moonIntensity
+        : LowCloudToLinear( LowCloudTransmittedSunColor() ) * max( LC_DayColor, 0.0f ) * sunIntensity;
+    bool lightOn = max( sunIntensity, moonIntensity ) > 0.001f;
+    float cosTheta = dot( rayDir, LowCloudSafeNormalize( moonIsMain ? LC_MoonDir : AC_LightPos.xyz ) );
+    // Beer-powder: dark crinkled edges when the light is behind the viewer, none when looking into it
+    float powderStrength = 0.75f * saturate( 0.5f - 0.5f * cosTheta );
+
     float nearFadeStart = lerp( 7800.0f, 18000.0f, skyPixel ) * distanceScale;
     float nearFadeEnd = lerp( 18000.0f, 32000.0f, skyPixel ) * distanceScale;
     float farFadeStart = lerp( 105000.0f, 72000.0f, skyPixel ) * distanceScale;
     float farFadeEnd = lerp( 140000.0f, 98000.0f, skyPixel ) * distanceScale;
+    float densityScale = LowCloudDensityScale();
 
     float transmittance = 1.0f;
     float3 scattering = 0.0f;
     float accumulatedAlpha = 0.0f;
-    const int MAX_STEPS = 16;
+    const int MAX_STEPS = 32;
     int steps = clamp( requestedSteps, 1, MAX_STEPS );
     float stepLength = usableDistance / (float)steps;
 
@@ -202,45 +277,48 @@ float4 ComputeLowCloudVolume( float3 cameraWorld, float3 endWorld, float cameraD
         float3 sampleWorld = cameraWorld + rayDir * sampleDistance;
         float distanceFade = smoothstep( nearFadeStart, nearFadeEnd, sampleDistance )
                            * ( 1.0f - smoothstep( farFadeStart, farFadeEnd, sampleDistance ) );
-        float density = ComputeLowCloudDensity( sampleWorld, skyPixel ) * distanceFade * skyHorizonWeight * nightHorizonClearance;
+        float fade = distanceFade * skyHorizonWeight * nightHorizonClearance;
+        if ( fade <= 0.0f ) continue;
+
+        LowCloudColumn column = LowCloudGetColumn( sampleWorld );
+        float h;
+        float shape = LowCloudShape( sampleWorld, column, h );
+        if ( shape <= 0.0f ) continue;
+        float density = LowCloudErode( shape, sampleWorld, h ) * densityScale;
         if ( density <= 0.0f ) continue;
 
-        float upperSelfLight = smoothstep( cloudBase + 2600.0f * heightScale, cloudBase + 9400.0f * heightScale, sampleWorld.y );
-        float selfShadow = lerp( 0.46f, 0.94f, upperSelfLight ) * lerp( 1.0f, 0.72f, saturate( density * 1.20f ) );
-        float3 cloudColor = lerp( shadowColor, litColor, selfShadow );
+        float3 sampleLight = lerp( ambientBottom, ambientTop, smoothstep( 0.0f, 0.9f, h ) );
+        [branch] if ( lightOn )
+        {
+            float lightDepth = LowCloudLightDepth( sampleWorld, lightDir, column );
+            float powder = lerp( 1.0f, 1.0f - exp( -density * 6.0f ), powderStrength );
+            sampleLight += lightColor * LowCloudLightEnergy( lightDepth, cosTheta ) * powder * 0.45f;
+        }
+        sampleLight = lerp( sampleLight, hazeColor, 0.35f * smoothstep( 0.25f, 0.9f, sampleDistance / farFadeEnd ) );
 
-        float upperSunLayer = smoothstep( cloudBase + 3900.0f * heightScale, cloudBase + 9200.0f * heightScale, sampleWorld.y );
-        float sunTopLight = upperSunLayer * dayWeight * saturate( lightDir.y * 1.35f ) * selfShadow
-                          * lerp( 1.0f, 0.45f, rainWeight ) * max( 0.0f, LC_SunLight );
-        cloudColor += float3( 0.155f, 0.156f, 0.140f ) * sunTopLight * lerp( 0.38f, 0.88f, viewSunForward );
-        // Moonlit tops turn silver-blue
-        cloudColor += float3( 0.42f, 0.56f, 1.0f ) * 0.10f * upperSunLayer * selfShadow * moonLight * lerp( 0.38f, 0.88f, viewMoonForward );
-
-        float sampleAlpha = saturate( density * lerp( 0.53f, 0.75f, dayWeight ) * lerp( 1.0f, 0.92f, nightBlend ) );
-        sampleAlpha = 1.0f - exp( -sampleAlpha * stepLength * 0.00022f );
+        float sampleAlpha = 1.0f - exp( -density * fade * LOW_CLOUD_EXTINCTION * stepLength );
         float weight = sampleAlpha * transmittance;
-        scattering += cloudColor * weight;
+        scattering += sampleLight * weight;
         accumulatedAlpha += weight;
         transmittance *= 1.0f - sampleAlpha;
-        if ( transmittance <= 0.001f ) break;
+        if ( transmittance <= 0.003f ) break;
     }
 
-    accumulatedAlpha = saturate( accumulatedAlpha * 1.04f );
-    return float4( saturate( scattering / max( accumulatedAlpha, 0.001f ) ), accumulatedAlpha );
+    accumulatedAlpha = saturate( accumulatedAlpha );
+    float3 color = pow( max( scattering / max( accumulatedAlpha, 0.001f ), 0.0f ), 1.0f / 2.2f );
+    return float4( saturate( color ), accumulatedAlpha );
 }
 
 //--------------------------------------------------------------------------------------
-// Lighting added after the march: rain veil, sun glow through thin cloud, moon disc cover
+// After the march: rain veil, sun disc through thin cloud, moon disc cover
 //--------------------------------------------------------------------------------------
-float3 LowCloudTransmittedSunColor() { return lerp( float3( 1.00f, 0.72f, 0.42f ), float3( 1.00f, 0.92f, 0.74f ), saturate( AC_LightPos.y * 2.5f ) ); }
-
 // Returns premultiplied color and the layer alpha (which may exceed the color alpha where it covers the moon).
 float4 FinishLowClouds( float4 clouds, float3 viewDir, float cameraDistance, float skyPixel, bool sunDisc )
 {
     float nightBlend = LowCloudNightBlend();
     float sunWeight = LowCloudSunWeight();
-    float sunAlignment = dot( viewDir, LowCloudSunDir() );
-    float moonAlignment = dot( viewDir, LowCloudMoonDir() );
+    float sunAlignment = dot( viewDir, LowCloudSafeNormalize( AC_LightPos.xyz ) );
+    float moonAlignment = dot( viewDir, LowCloudSafeNormalize( LC_MoonDir ) );
     float moonDiskWeight = saturate( LC_MoonVisibility ) * smoothstep( 0.02f, 0.34f, LC_MoonDir.y ) * skyPixel;
 
     float3 rainVeilColor = float3( 0.12f, 0.18f, 0.27f ) * LC_NightFogBrightness / 2.5f;
@@ -259,9 +337,6 @@ float4 FinishLowClouds( float4 clouds, float3 viewDir, float cameraDistance, flo
         float backlightDensity = saturate( 1.0f - abs( alpha - 0.52f ) / 0.42f ) * ( 1.0f - smoothstep( 0.68f, 0.94f, alpha ) );
         clouds.rgb += sunColor * saturate( sunCore * 0.42f + sunHalo * 0.18f ) * sunGain * backlightDensity * 0.24f;
     }
-    float broadBody = smoothstep( 0.14f, 0.46f, alpha ) * ( 1.0f - smoothstep( 0.72f, 0.95f, alpha ) );
-    float thinEdge = smoothstep( 0.05f, 0.22f, alpha ) * ( 1.0f - smoothstep( 0.30f, 0.50f, alpha ) );
-    clouds.rgb += sunColor * smoothstep( 0.82f, 0.97f, sunAlignment ) * sunGain * ( broadBody * 0.10f + thinEdge * 0.06f );
 
     float moonCore = smoothstep( 0.99935f, 0.99988f, moonAlignment ) * moonDiskWeight;
     float moonHalo = smoothstep( 0.99500f, 0.99900f, moonAlignment ) * moonDiskWeight;
@@ -293,13 +368,13 @@ LowCloudLayerTexel GenerateLowCloudTexel( float2 uv, float4 footprintDepth, floa
     float3 worldPosition = LowCloudWorldPosition( closestDepth, uv );
     float cameraDistance = length( worldPosition - LC_CameraPos );
     float jitter = LowCloudJitter( pixel );
-    float4 clouds = ComputeLowCloudVolume( LC_CameraPos, worldPosition, cameraDistance, skyPixel, skyPixel > 0.5f ? 16 : 8, jitter );
+    float4 clouds = ComputeLowCloudVolume( LC_CameraPos, worldPosition, cameraDistance, skyPixel, skyPixel > 0.5f ? 32 : 12, jitter );
 
     float3 skyWorldPosition = LowCloudWorldPosition( 0.0f, uv );
     float skyCameraDistance = length( skyWorldPosition - LC_CameraPos );
     float4 skyClouds = clouds;
     if ( hasSky && hasGeometry )
-        skyClouds = ComputeLowCloudVolume( LC_CameraPos, skyWorldPosition, skyCameraDistance, 1.0f, 16, jitter );
+        skyClouds = ComputeLowCloudVolume( LC_CameraPos, skyWorldPosition, skyCameraDistance, 1.0f, 32, jitter );
 
     LowCloudLayerTexel o;
     o.clouds = FinishLowClouds( clouds, normalize( worldPosition - LC_CameraPos ), cameraDistance, skyPixel, true );
@@ -353,7 +428,7 @@ float4 MarchLowCloudsAt( float2 uv, float rawDepth, float skyPixel, float2 pixel
 {
     float3 worldPosition = LowCloudWorldPosition( rawDepth, uv );
     float cameraDistance = length( worldPosition - LC_CameraPos );
-    float4 clouds = ComputeLowCloudVolume( LC_CameraPos, worldPosition, cameraDistance, skyPixel, 6, LowCloudJitter( pixel ) );
+    float4 clouds = ComputeLowCloudVolume( LC_CameraPos, worldPosition, cameraDistance, skyPixel, 8, LowCloudJitter( pixel ) );
     return FinishLowClouds( clouds, normalize( worldPosition - LC_CameraPos ), cameraDistance, skyPixel, false );
 }
 

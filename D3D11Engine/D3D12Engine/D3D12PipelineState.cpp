@@ -3819,12 +3819,13 @@ bool D3D12PipelineState::CreateLowClouds() {
     Rhi::Device* device = m_Device;
     if ( !device ) return false;
 
-    // Same parameters for both: b0 4 pass constants (bindless indices), b2 LowCloudCB, b1 atmosphere.
+    // Same parameters for both: b0 4 pass constants (bindless indices), b2 LowCloudCB, b1 atmosphere, s0 noise sampler.
     auto buildLayout = [&]( const char* name, D3D12_SHADER_VISIBILITY vis, D3D12_ROOT_SIGNATURE_FLAGS flags ) -> D3D12RootLayout* {
         D3D12RootLayout& rs = Layout( name );
         rs.AddConstants( 0, 4, vis );
         rs.AddCBV( 2, vis, 0, D3D12RootLayout::RootDataStatic );
         rs.AddCBV( 1, vis, 0, D3D12RootLayout::RootDataStatic );
+        rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, vis, D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
         return rs.Build( device, flags | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) ? &rs : nullptr;
     };
     D3D12RootLayout* generateRs = buildLayout( "LowCloudGenerate", D3D12_SHADER_VISIBILITY_ALL, D3D12_ROOT_SIGNATURE_FLAG_NONE );
@@ -3834,10 +3835,14 @@ bool D3D12PipelineState::CreateLowClouds() {
     LowClouds.CompositeRootSig = compositeRs->RootSig();
 
     if ( !m_Shaders->CompileFromFile( "LowClouds.hlsl", "CSGenerate", Shadermodel_CS, LowClouds.GenerateCsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "LowClouds.hlsl", "CSNoise", Shadermodel_CS, LowClouds.NoiseCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "LowClouds.hlsl", "VSFullscreen", Shadermodel_VS, LowClouds.CompositeVsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "LowClouds.hlsl", "PSComposite", Shadermodel_PS, LowClouds.CompositePsBlob.ReleaseAndGetAddressOf() ) )
         return false;
-    generateRs->ValidateShaders( { { LowClouds.GenerateCsBlob.Get(), "LowClouds.hlsl:CSGenerate", D3D12_SHADER_VISIBILITY_ALL } } );
+    generateRs->ValidateShaders( {
+        { LowClouds.GenerateCsBlob.Get(), "LowClouds.hlsl:CSGenerate", D3D12_SHADER_VISIBILITY_ALL },
+        { LowClouds.NoiseCsBlob.Get(),    "LowClouds.hlsl:CSNoise",    D3D12_SHADER_VISIBILITY_ALL },
+    } );
     compositeRs->ValidateShaders( {
         { LowClouds.CompositeVsBlob.Get(), "LowClouds.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
         { LowClouds.CompositePsBlob.Get(), "LowClouds.hlsl:PSComposite",  D3D12_SHADER_VISIBILITY_PIXEL  },
@@ -3848,6 +3853,12 @@ bool D3D12PipelineState::CreateLowClouds() {
     generatePso.CS = { LowClouds.GenerateCsBlob->GetBufferPointer(), LowClouds.GenerateCsBlob->GetBufferSize() };
     if ( FAILED( device->CreateComputePipelineState( &generatePso, LowClouds.GeneratePSO.ReleaseAndGetAddressOf() ) ) ) {
         Logging::Wrn( "D3D12: CreateComputePipelineState failed (low clouds)." );
+        return false;
+    }
+    Rhi::ComputePipelineStateDesc noisePso = generatePso;
+    noisePso.CS = { LowClouds.NoiseCsBlob->GetBufferPointer(), LowClouds.NoiseCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &noisePso, LowClouds.NoisePSO.ReleaseAndGetAddressOf() ) ) ) {
+        Logging::Wrn( "D3D12: CreateComputePipelineState failed (low cloud noise)." );
         return false;
     }
 

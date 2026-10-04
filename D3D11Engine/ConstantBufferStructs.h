@@ -493,7 +493,8 @@ struct LowCloudConstantBuffer {
     XMFLOAT4 LC_SunScreen;        // xy = uv, z = visibility
     XMFLOAT4 LC_MoonScreen;
     float LC_Frame;               // march jitter phase under TAA/FSR, 0 otherwise
-    float LC_Pad[3];
+    uint32_t LC_NoiseIndex;       // D3D12: bindless SRV of the 3D noise texture
+    float LC_Pad[2];
 };
 static_assert( sizeof( LowCloudConstantBuffer ) == 240 );
 
