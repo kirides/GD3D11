@@ -2612,24 +2612,23 @@ bool D3D12PipelineState::CreateAdvanceRain() {
 
 bool D3D12PipelineState::CreateRainDraw() {
     // Rain/snow billboard draw. No input-assembler layout at all — the VS reads both particle buffers
-    // as StructuredBuffers via root SRV, indexed by SV_InstanceID (see Shaders/D3D12/Rain.hlsl), so the
-    // root sig omits ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT (mirrors the compute root sigs' shape, just with
-    // VS/PS stages instead of CS). CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED is set because the PS reads the
-    // active rain/snow Texture2DArray bindlessly (ResourceDescriptorHeap[TexArrayIndex]) rather than via
-    // a descriptor table — the array choice is a per-draw root const, not a shader permutation.
+    // as StructuredBuffers via root SRV, indexed by SV_InstanceID (see Shaders/D3D12/Rain.hlsl).
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED is set because the PS reads the active rain/snow Texture2DArray
+    // bindlessly (ResourceDescriptorHeap[TexArrayIndex]) — the array choice is a per-draw root const.
+    // b0/b1/b3 are root CBVs into m_RainDrawCB: as VS root constants next to an ALL-visible one, NVIDIA's VS
+    // read b1 from b3's data. b1 gets one CBV per stage for the same reason.
     Rhi::Device* device = m_Device;
     if ( !device ) return false;
 
     D3D12RootLayout& rs = Layout( "RainDraw" );
-    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProjCB
-    // 1: b1 RainInfoCB — read by both VS (billboard construction) and PS (rainResponse eye/light vectors)
-    rs.AddConstants( 1, 10, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 0: b0 ViewProjCB
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 1: b1 RainInfoCB (VS)
     // t0 is rewritten by AdvanceRain's compute pass in this list, so volatile; t1 is the immutable seed buffer.
     rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: t0 DynamicData
     rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 3: t1 StaticData
     rs.AddConstants( 2, 2, D3D12_SHADER_VISIBILITY_PIXEL );     // 4: b2 RainTexCB
-    // 5: b3 RainShadowCB — VS-only (IsWet is called from the VS); 16 (float4x4) + 1 (heap slot index)
-    rs.AddConstants( 3, 17, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_VERTEX, 0, D3D12RootLayout::RootDataStatic );   // 5: b3 RainShadowCB (IsWet)
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL, 0, D3D12RootLayout::RootDataStatic );    // 6: b1 RainInfoCB (PS)
 
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL, 4 ) );   // s0 rain/snow texture array
     // s1: rain shadowmap comparison sampler — matches D3D11's m_RainDropShadowSamplerState (WRAP, LESS_EQUAL).
@@ -2639,7 +2638,8 @@ bool D3D12PipelineState::CreateRainDraw() {
     rainShadowSampler.AddressU = rainShadowSampler.AddressV = rainShadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     rs.AddStaticSampler( rainShadowSampler );
 
-    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
     RainDraw.RootSig = rs.RootSig();
 

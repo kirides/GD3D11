@@ -1972,6 +1972,11 @@ private:
     // DrawRain_CS's dirty-check (D3D11Effect.cpp:314-316).
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainBufferStatic;   // StructuredBuffer<RainParticleStatic>, UPLOAD heap, written once
     Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainBufferDynamic;  // RWStructuredBuffer<RainParticleDynamic>, DEFAULT heap
+    // Per-frame rain draw CB, 256-byte blocks: [0] b0 ViewProj, [256] b1 RainInfo, [512] b3 RainShadow.
+    static constexpr UINT kRainInfoCbOffset = 256;
+    static constexpr UINT kRainShadowCbOffset = 512;
+    Microsoft::WRL::ComPtr<Rhi::Resource>      m_RainDrawCB[kBackBufferMax];
+    uint8_t* m_RainDrawCBMapped[kBackBufferMax] = {};
     UINT  m_RainParticleCount = 0;       // particle count backing the CURRENT buffers (128-aligned, like D3D11's alignedCount)
     float m_RainLastRadius = -1.0f;
     float m_RainLastHeight = -1.0f;

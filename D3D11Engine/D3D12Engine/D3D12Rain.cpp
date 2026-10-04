@@ -84,6 +84,31 @@ bool D3D12GraphicsEngine::CreateRainBuffers( UINT numParticles ) {
     Rhi::Device* device = m_Rhi.Get();
     if ( !device || numParticles == 0 ) return false;
 
+    // The draw's VS constants go through root CBVs: as root constants, NVIDIA's VS read b1 from b3's data.
+    if ( !m_RainDrawCB[0] ) {
+        D3D12_RESOURCE_DESC cbDesc = {};
+        cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        cbDesc.Width = 768;
+        cbDesc.Height = 1;
+        cbDesc.DepthOrArraySize = 1;
+        cbDesc.MipLevels = 1;
+        cbDesc.Format = DXGI_FORMAT_UNKNOWN;
+        cbDesc.SampleDesc.Count = 1;
+        cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+            void* mapped = nullptr;
+            D3D12_RANGE noRead = { 0, 0 };
+            if ( FAILED( m_Rhi->CreateResource( DefaultUploadHeapType, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_RainDrawCB[i].ReleaseAndGetAddressOf() ) )
+                || FAILED( m_RainDrawCB[i]->Map( 0, &noRead, &mapped ) ) ) {
+                Logging::Wrn( "D3D12: failed to create the rain draw constant buffer." );
+                for ( UINT j = 0; j <= i; ++j ) { m_RainDrawCB[j].Reset(); m_RainDrawCBMapped[j] = nullptr; }
+                return false;
+            }
+            m_RainDrawCB[i]->SetName( L"RainDrawCB" );
+            m_RainDrawCBMapped[i] = static_cast<uint8_t*>( mapped );
+        }
+    }
+
     // A settings change rebuilds mid-game: frames in flight may still read the old buffers.
     if ( m_RainBufferStatic ) QueueResourceForRelease( std::move( m_RainBufferStatic ) );
     if ( m_RainBufferDynamic ) QueueResourceForRelease( std::move( m_RainBufferDynamic ) );
@@ -301,16 +326,24 @@ void D3D12GraphicsEngine::DrawRainParticles() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
 
+    struct RainShadowCB { XMFLOAT4X4 ViewProj; UINT SrvIndex; } shadowCb = { m_RainShadowViewProj, m_RainShadowSrvSlot };
+    static_assert( sizeof( viewProj ) <= kRainInfoCbOffset && sizeof( infoCb ) <= kRainShadowCbOffset - kRainInfoCbOffset
+        && sizeof( shadowCb ) <= 768 - kRainShadowCbOffset, "rain draw CB block overflow" );
+    uint8_t* cb = m_RainDrawCBMapped[m_FrameIndex];
+    memcpy( cb, &viewProj, sizeof( viewProj ) );
+    memcpy( cb + kRainInfoCbOffset, &infoCb, sizeof( infoCb ) );
+    memcpy( cb + kRainShadowCbOffset, &shadowCb, sizeof( shadowCb ) );
+    const D3D12_GPU_VIRTUAL_ADDRESS cbGpu = m_RainDrawCB[m_FrameIndex]->GetGPUVirtualAddress();
+
     m_CmdList->SetPipelineState( m_Pipelines.RainDraw.PSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.RainDraw.RootSig.Get() );
-    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-    m_CmdList->SetGraphicsRoot32BitConstants( 1, 10, &infoCb, 0 );
+    m_CmdList->SetGraphicsRootConstantBufferView( 0, cbGpu );
+    m_CmdList->SetGraphicsRootConstantBufferView( 1, cbGpu + kRainInfoCbOffset );
     m_CmdList->SetGraphicsRootShaderResourceView( 2, m_RainBufferDynamic->GetGPUVirtualAddress() );
     m_CmdList->SetGraphicsRootShaderResourceView( 3, m_RainBufferStatic->GetGPUVirtualAddress() );
     m_CmdList->SetGraphicsRoot32BitConstants( 4, 2, &texCb, 0 );
-
-    struct RainShadowCB { XMFLOAT4X4 ViewProj; UINT SrvIndex; } shadowCb = { m_RainShadowViewProj, m_RainShadowSrvSlot };
-    m_CmdList->SetGraphicsRoot32BitConstants( 5, 17, &shadowCb, 0 );
+    m_CmdList->SetGraphicsRootConstantBufferView( 5, cbGpu + kRainShadowCbOffset );
+    m_CmdList->SetGraphicsRootConstantBufferView( 6, cbGpu + kRainInfoCbOffset );
 
     // No IA vertex/index buffers — the VS pulls everything from the two root SRVs above by SV_VertexID/
     // SV_InstanceID (see Shaders/D3D12/Rain.hlsl).
