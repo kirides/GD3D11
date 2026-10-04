@@ -296,7 +296,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
         pass.m_executeCallback = [this]( const D3D12RenderGraph&, D3D12CmdList& cmdList ) {
             DX_ZONE( cmdList.Get(), "Height fog + god rays" );
             cmdList.OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
-            cmdList.TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, kDepthRead );
+            TransitionSceneDepth( cmdList, kDepthRead );
             };
         } );
 
@@ -488,14 +488,7 @@ void D3D12GraphicsEngine::RenderFogAndGodRays( D3D12RenderGraph& graph ) {
             cmdList.SetGraphicsRoot32BitConstants( 2, 4, &consts, 0 );
             cmdList.DrawInstanced( 3, 1, 0, 0 );
 
-            // Restore the resting state the rest of the frame (and the next one) expects: depth back to
-            // DEPTH_WRITE. The scene color stays bound as the RTV, which is exactly what RenderBloom (the
-            // next pass) assumes. The god-ray zoom texture needs no explicit reset any more —
-            // D3D12RenderTarget::State is caller-maintained and self-correcting: next frame's Zoom pass
-            // checks it and transitions from whatever it actually finds, the same way DoF's scratch
-            // textures work.
-            cmdList.TransitionBarrier( m_DepthBuffer.Get(), kDepthRead, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-
+            // The depth stays readable for the low-cloud composite; the scene color stays bound as the RTV.
             m_ColorTargetIsHDR = true;
             };
         } );

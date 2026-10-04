@@ -307,13 +307,17 @@ void D3D12GraphicsEngine::FillCameraVelocity() {
     DX_ZONE( m_CmdList.Get(), "Camera velocity fill" );
     TracyD3D12ZoneCGX( m_CmdList.Get(), "Camera velocity fill" );
 
-    // Velocity RENDER_TARGET -> UAV (the compute pass writes it), depth DEPTH_WRITE -> shader-read. The DSV must
-    // be unbound before the depth buffer leaves DEPTH_WRITE, same dance RenderBloom/RenderFogAndGodRays do.
+    // Velocity RENDER_TARGET -> UAV (the compute pass writes it), depth -> shader-read. The DSV must be unbound
+    // before the depth buffer leaves DEPTH_WRITE, same dance RenderBloom/RenderFogAndGodRays do.
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-    m_CmdList->TransitionBarriers( {
-        { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
-        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE },
-    } );
+    {
+        Rhi::ResourceTransition pre[2] = {
+            { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS },
+        };
+        UINT preCount = 1;
+        if ( SceneDepthTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[preCount] ) ) ++preCount;
+        m_CmdList->TransitionBarriers( pre, preCount );
+    }
 
     m_CmdList->SetPipelineState( m_Pipelines.Motion.FillPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_Pipelines.Motion.FillRootSig.Get() );
@@ -325,15 +329,13 @@ void D3D12GraphicsEngine::FillCameraVelocity() {
     m_CmdList->SetComputeRoot32BitConstants( 1, 4, fillConsts, 0 );
     m_CmdList->Dispatch( ( m_Resolution.x + 7 ) / 8, ( m_Resolution.y + 7 ) / 8, 1 );
 
-    // Depth back to DEPTH_WRITE (the fog/god-ray block downstream expects it there);
-    // velocity to the combined shader-read state, which is where the debug overlay and next frame's
-    // BeginMotionGBuffer both expect to find it.
+    // The depth stays readable for the post-FX chain. Velocity goes to the combined shader-read state, which is
+    // where the debug overlay and next frame's BeginMotionGBuffer both expect to find it.
     m_CmdList->TransitionBarriers( {
         { m_VelocityBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
         { m_NormalBuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE },
-        { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
     } );
     m_VelocityInPixelState = true;
 

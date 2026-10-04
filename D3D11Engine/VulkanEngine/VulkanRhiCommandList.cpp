@@ -445,7 +445,9 @@ namespace VulkanRhi {
             depthInfo.imageView = r->GetView( depth->Key );
             depthInfo.imageLayout = AttachmentLayout( *depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
             depthInfo.loadOp = depthLoad;
-            depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            // A read-only attachment is sampled in the same pass; STORE would count as a write against those reads.
+            depthInfo.storeOp = depthInfo.imageLayout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL
+                ? VK_ATTACHMENT_STORE_OP_NONE : VK_ATTACHMENT_STORE_OP_STORE;
             if ( depthClear ) depthInfo.clearValue = *depthClear;
             if ( HasStencil( r->m_Format ) ) {
                 stencilInfo = depthInfo;

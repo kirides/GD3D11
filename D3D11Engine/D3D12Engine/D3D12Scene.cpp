@@ -1507,10 +1507,9 @@ void D3D12GraphicsEngine::TraceRtShadows() {
 	in.Lights = m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress();
 	in.LightGrid = m_LightGridBuffer->GetGPUVirtualAddress();
 
-	BeginAoDepthRead();
+	TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 	UINT maskSlot = UINT_MAX;
 	if ( m_RayTracing->TraceShadows( in, maskSlot ) ) m_RtShadowMaskSlot = maskSlot;
-	EndAoDepthRead();
 
 	auto& info = Engine::GAPI->GetRendererState().RendererInfo;
 	const D3D12RayTracing::ShadowStats& stats = m_RayTracing->LastShadowStats();
@@ -2795,6 +2794,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	RenderSkyIBL();
 	// Ray-traced sun / point-light shadow mask, from the prepass depth; builds the frame's ray-traced scene.
 	TraceRtShadows();
+	// SSAO and the RT trace leave the depth readable; the sky and lit passes below write it.
+	TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 
 	// Part B1 (prepass -> G-buffer -> HiZ/VOB cull -> light cull -> SSAO -> sky IBL) must reach the queue ahead of
 	// the shadow lists: [A][B1][shadows][B2]. Nothing in B1 reads what a shadow pass writes. If the shadow lists are
@@ -2862,6 +2863,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		fogGraph.Execute( m_CmdList );
 	}
 	PrepareTransparencyFrame( m_TransparencyFogActive ? CaptureTransparencyBackdrop() : UINT_MAX );
+	// Fog leaves the depth readable; Gothic's transparency state machine can write it again.
+	TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 	BindSceneColorTarget();   // the fog composite and the backdrop copy leave no DSV bound
 	FlushSceneIfGpuCaughtUp();
 
@@ -3012,6 +3015,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	postFxGraph.Compile();
 	postFxGraph.Execute( m_CmdList );
+	// Gothic's UI phase (item previews) and the next frame's clear expect a writable depth buffer.
+	TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 
 	// The 3D frame is final; Gothic's UI and game code run before Present, so let the GPU start on it now.
 	if ( m_FrameOpen && MidFrameFlushesWanted() && GpuCaughtUp() ) {

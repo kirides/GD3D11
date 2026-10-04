@@ -382,8 +382,6 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-
     // ---------------------------------------------------------------------------------------------------
     // Steps 1+2: snapshot the finished opaque scene and its depth, BEFORE the Z-prepass below writes the
     // water surface's own depth. Getting the order wrong would have the refraction read water-vs-water
@@ -427,17 +425,16 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
                 const D3D12_RESOURCE_STATES sceneFrom = m_SceneColorInPixelState
                     ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-                cmdList.TransitionBarriers( {
-                    { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE },
-                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
-                    } );
+                Rhi::ResourceTransition pre[2] = { { m_SceneColor.Get(), sceneFrom, D3D12_RESOURCE_STATE_COPY_SOURCE } };
+                UINT preCount = 1;
+                if ( SceneDepthTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, pre[preCount] ) ) ++preCount;
+                cmdList.TransitionBarriers( pre, preCount );
 
                 cmdList.CopyResource( scene->GetResource(), m_SceneColor.Get() );
                 cmdList.CopyResource( depth->GetResource(), m_DepthBuffer.Get() );
 
                 cmdList.TransitionBarriers( {
                     { m_SceneColor.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET },
-                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
                     { scene->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
                     { depth->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
                     } );
@@ -461,8 +458,6 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             }
         }
 
-        // Re-bind what the geometry passes had: HDR scene RTV + the main DSV.
-        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &mainDsv );
         if ( copiesReady ) skyAverageReady = UpdateWaterSkyAverage( waterSceneSrvSlot, waterDepthSrvSlot );
     }
 
@@ -499,7 +494,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
             cb.SsrRefineSteps = 0;
             cb.CameraUnderwater = 1;
         }
-        cb.SurfaceDepthIndex = UINT_MAX;   // patched after the prepass copy below
+        cb.SurfaceDepthIndex = UINT_MAX;   // patched after the prepass below
         cb.RtColorIndex = UINT_MAX;        // patched after the ray-traced reflections below
         cb.RtDistanceIndex = UINT_MAX;
         cb.LowCloudIndex = m_LowCloudLayerSrvSlot;   // set by GenerateLowClouds this frame, UINT_MAX without clouds
@@ -557,6 +552,13 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
 
+    // The copies above and the passes before left the depth readable; the Z-prepass writes it.
+    TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+    {
+        const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
+        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &dsv );
+    }
+
     D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
     D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
     m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
@@ -601,40 +603,15 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     }
 
     UINT surfaceDepthSrvSlot = UINT_MAX;
-    // Depth with the water surfaces in it, for the shore probes' coverage test. The color pass keeps the
-    // writable DSV bound, so it reads a copy rather than the live buffer.
+    // Depth with the water surfaces in it, for the shore probes' coverage test. The color pass only tests depth,
+    // so it reads the live buffer through the read-only DSV.
     if ( m_Pipelines.Water.DepthPrepassPSO ) {
-        D3D12RenderGraph surfaceGraph( &m_AliasArena );
-        RGResourceHandle surfaceHandle = RG_INVALID_HANDLE;
-        surfaceGraph.AddPass( RG_PASS_NAME( "Water Surface Depth Copy" ), [&]( D3D12RGBuilder& builder, D3D12RenderPass& pass ) {
-            surfaceHandle = builder.CreateTexture( { static_cast<uint32_t>( m_Resolution.x ), static_cast<uint32_t>( m_Resolution.y ),
-                static_cast<int>( DXGI_FORMAT_R32_FLOAT ), L"WaterSurfaceDepthCopy", 0u }, D3D12_RESOURCE_STATE_COPY_DEST );
-            builder.MarkExternalEffect();
-
-            pass.m_executeCallback = [this, surfaceHandle]( const D3D12RenderGraph& g, D3D12CmdList& cmdList ) {
-                D3D12RenderTarget* surface = g.GetPhysicalTexture( surfaceHandle );
-                if ( !surface ) return;
-                cmdList.OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
-                cmdList.TransitionBarriers( {
-                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE },
-                    } );
-                cmdList.CopyResource( surface->GetResource(), m_DepthBuffer.Get() );
-                cmdList.TransitionBarriers( {
-                    { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-                    { surface->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, kWaterCopyReadState },
-                    } );
-                surface->State = kWaterCopyReadState;
-                };
-            } );
-        surfaceGraph.Compile();
-        surfaceGraph.Execute( m_CmdList );
-
+        TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
+        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &dsv );
+        surfaceDepthSrvSlot = m_DepthSrvSlot;
         // The CB is plain upload memory the GPU reads at execution, so patching it after recording the prepass is safe.
-        if ( D3D12RenderTarget* surface = surfaceGraph.GetPhysicalTexture( surfaceHandle ) ) {
-            surfaceDepthSrvSlot = surface->GetSrvSlot();
-            reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] )->SurfaceDepthIndex = surfaceDepthSrvSlot;
-        }
-        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, &mainDsv );
+        reinterpret_cast<WaterCBData*>( m_WaterCBMapped[m_FrameIndex] )->SurfaceDepthIndex = surfaceDepthSrvSlot;
     }
 
     // Ray-traced reflections replace the screen-space march; the pixel shader falls back to SSR without them.

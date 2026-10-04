@@ -548,19 +548,18 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     TracyD3D12ZoneCGX( m_CmdList.Get(), "FSR3 upscale" );
 
     // --- states in -------------------------------------------------------------------------------------
-    // Depth leaves DEPTH_WRITE, so the DSV must be unbound first (same dance RenderBloom / RenderTAA do).
+    // Depth may leave DEPTH_WRITE, so the DSV must be unbound first (same dance RenderBloom / RenderTAA do).
     // Everything FFX reads goes to NON_PIXEL_SHADER_RESOURCE exactly (not the combined read state the
     // velocity buffer normally rests in): FFX_API_RESOURCE_STATE_COMPUTE_READ maps to that single state, and a
     // barrier FFX issues with a wider before-state than the resource actually carries is a debug-layer error.
     m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+    TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, true );
     {
-        D3D12_RESOURCE_BARRIER pre[4];
+        D3D12_RESOURCE_BARRIER pre[3];
         UINT n = 0;
         pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_SceneColor.Get() ),
             m_SceneColorInPixelState ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
                                      : D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-        pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_DepthBuffer.Get() ), D3D12_RESOURCE_STATE_DEPTH_WRITE,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
         pre[n++] = TransitionBarrier( D3D12Rhi::Native( m_VelocityBuffer.Get() ),
             m_VelocityInPixelState ? kVelocityReadState : D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -640,16 +639,14 @@ void D3D12GraphicsEngine::RenderFsr3Upscale() {
     // --- states out ------------------------------------------------------------------------------------
     // Rest states for the rest of this frame and for the next one: scene colour in PIXEL_SHADER_RESOURCE
     // (where ResolveSceneToBackBuffer expects it and where next frame's BindSceneColorTarget transitions
-    // FROM), depth back to DEPTH_WRITE, velocity back to its combined read state, output to
+    // FROM), velocity back to its combined read state, output to
     // PIXEL_SHADER_RESOURCE for the tonemap. The shared resources are left alone on purpose — see
     // CreateFsr3SharedResources.
     {
-        D3D12_RESOURCE_BARRIER post[4];
+        D3D12_RESOURCE_BARRIER post[3];
         UINT n = 0;
         post[n++] = TransitionBarrier( D3D12Rhi::Native( m_SceneColor.Get() ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-        post[n++] = TransitionBarrier( D3D12Rhi::Native( m_DepthBuffer.Get() ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE );
         post[n++] = TransitionBarrier( D3D12Rhi::Native( m_VelocityBuffer.Get() ), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
             kVelocityReadState );
         post[n++] = TransitionBarrier( D3D12Rhi::Native( m_Fsr3Output.Get() ), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,

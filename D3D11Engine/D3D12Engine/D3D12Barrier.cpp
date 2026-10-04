@@ -71,14 +71,19 @@ namespace {
         D3D12_BARRIER_ACCESS outAccess = D3D12_BARRIER_ACCESS_COMMON;
         D3D12_BARRIER_LAYOUT outLayout = D3D12_BARRIER_LAYOUT_UNDEFINED;
         D3D12_RESOURCE_STATES remaining = state;
+        bool mixedLayouts = false;
 
         for ( const StateMapEntry& entry : kStateMap ) {
             if ( ( remaining & entry.Bit ) != entry.Bit ) continue;
             remaining &= ~entry.Bit;
             outSync |= entry.Sync;
             outAccess |= entry.Access;
-            outLayout = entry.Layout;   // every matched row in practice shares one layout family
+            if ( outLayout != D3D12_BARRIER_LAYOUT_UNDEFINED && outLayout != entry.Layout ) mixedLayouts = true;
+            outLayout = entry.Layout;
         }
+        // Legacy masks only combine read states. Mixed ones (read-only depth + SRV + copy source) need the one
+        // layout that admits them all; every resource that uses one lives on the direct queue.
+        if ( mixedLayouts ) outLayout = D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ;
 
         if ( remaining != 0 ) {
 #ifdef DEBUG_D3D11

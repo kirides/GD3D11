@@ -241,8 +241,7 @@ void D3D12GraphicsEngine::RenderTAA() {
         }
         pre[n++] = { m_TaaHistory[readIdx].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
-        pre[n++] = { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+        if ( SceneDepthTransition( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, pre[n] ) ) ++n;
         m_CmdList->TransitionBarriers( pre, n );
         m_SceneColorInPixelState = true;
     }
@@ -317,18 +316,13 @@ void D3D12GraphicsEngine::RenderTAA() {
     // Snapshot this frame's depth for the NEXT frame's disocclusion test. Nothing else in the frame keeps a
     // previous-frame depth, so this pass owns the copy.
     if ( m_TaaPrevDepth ) {
-        m_CmdList->TransitionBarriers( {
-            { m_TaaPrevDepth.Get(), kPrevDepthReadState, D3D12_RESOURCE_STATE_COPY_DEST },
-            { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE },
-        } );
+        D3D12ResourceTransition toCopy[2] = { { m_TaaPrevDepth.Get(), kPrevDepthReadState, D3D12_RESOURCE_STATE_COPY_DEST } };
+        UINT copyCount = 1;
+        if ( SceneDepthTransition( D3D12_RESOURCE_STATE_COPY_SOURCE, toCopy[copyCount] ) ) ++copyCount;
+        m_CmdList->TransitionBarriers( toCopy, copyCount );
         m_CmdList->CopyResource( m_TaaPrevDepth.Get(), m_DepthBuffer.Get() );
-        m_CmdList->TransitionBarriers( {
-            { m_TaaPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kPrevDepthReadState },
-            { m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE },
-        } );
+        m_CmdList->TransitionBarrier( m_TaaPrevDepth.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kPrevDepthReadState );
         m_TaaPrevDepthValid = true;
-    } else {
-        m_CmdList->TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
     }
 
     // Rest states for the next frame: history back to UAV (both slots), scene colour back to RENDER_TARGET.

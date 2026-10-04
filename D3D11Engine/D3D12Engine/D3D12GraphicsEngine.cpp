@@ -1201,10 +1201,11 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	Rhi::Device* device = m_Rhi.Get();
 
 	// DSV heap — created once, reused across resizes. Slot 0 = this scene depth buffer; slot 1 = the
-	// native-resolution preview depth (see GetPreviewDsv), only populated while the render scale is != 100%.
+	// native-resolution preview depth (see GetPreviewDsv), only populated while the render scale is != 100%;
+	// slot 2 = the read-only view of the scene depth (see SceneDsv).
 	if ( !m_DsvHeap ) {
 		D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-		dsvHeapDesc.NumDescriptors = 2;
+		dsvHeapDesc.NumDescriptors = 3;
 		dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
 		dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 		if ( FAILED( m_Rhi->CreateDescriptorHeap( &dsvHeapDesc, m_DsvHeap.ReleaseAndGetAddressOf() ) ) )
@@ -1231,18 +1232,23 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 	clear.Format = DXGI_FORMAT_D32_FLOAT;
 	clear.DepthStencil.Depth = 0.0f;
 
-	// Born in DEPTH_WRITE. Now also SRV-readable: DispatchLightCulling brackets a NON_PIXEL_SHADER_RESOURCE
-	// read of it (per-tile far-Z) and transitions back to DEPTH_WRITE, so it is DEPTH_WRITE at every other point.
+	// Born in DEPTH_WRITE; m_DepthState tracks it from here (see TransitionSceneDepth).
 	if ( FAILED( m_Rhi->CreateResource( allocDesc.HeapType, &dd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_DepthBuffer.ReleaseAndGetAddressOf(), Rhi::RESOURCE_FLAG_TRACK_LAYOUT ) ) ) {
 		Logging::Err( "D3D12: failed to create the depth buffer ({}x{}).", size.x, size.y );
 		return false;
 	}
 	m_DepthBuffer->SetName( L"DepthBuffer(D32)" );
+	m_DepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	m_DepthReadState = m_Api == Rhi::Backend::Vulkan ? kDepthReadState : kDepthReadState | D3D12_RESOURCE_STATE_COPY_SOURCE;
 
 	D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
 	dsv.Format = DXGI_FORMAT_D32_FLOAT;   // typeless resource viewed as depth here
 	dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
 	device->CreateDepthStencilView( m_DepthBuffer.Get(), &dsv, m_DsvHeap->GetCPUDescriptorHandleForHeapStart() );
+	D3D12_CPU_DESCRIPTOR_HANDLE readOnlyDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+	readOnlyDsv.ptr += 2 * m_DsvDescriptorSize;
+	dsv.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+	device->CreateDepthStencilView( m_DepthBuffer.Get(), &dsv, readOnlyDsv );
 	m_CmdList.InvalidateRenderTargets();   // descriptor rewritten in place — see D3D12StateCache.h
 
 	// R32_FLOAT SRV of the same texels for the light cull's per-tile far-Z read. Slot allocated once; the view is
@@ -1395,11 +1401,38 @@ void D3D12GraphicsEngine::BindSceneColorTarget() {
 		m_CmdList->TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 		m_SceneColorInPixelState = false;
 	}
-	const bool haveDepth = m_DepthBuffer && m_DsvHeap;
-	D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
-	if ( haveDepth ) dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, haveDepth ? &dsv : nullptr );
+	// A narrower read state (a copy source, FSR3's exact compute read) can't back a DSV; widen it.
+	if ( m_DepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_READ );
+	const D3D12_CPU_DESCRIPTOR_HANDLE dsv = SceneDsv();
+	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, dsv.ptr ? &dsv : nullptr );
 	m_ColorTargetIsHDR = true;
+}
+
+bool D3D12GraphicsEngine::SceneDepthTransition( D3D12_RESOURCE_STATES access, Rhi::ResourceTransition& out, bool exact ) {
+	if ( !m_DepthBuffer ) return false;
+	D3D12_RESOURCE_STATES target = access;
+	if ( access != D3D12_RESOURCE_STATE_DEPTH_WRITE && !exact ) {
+		if ( m_DepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE && ( m_DepthState & access ) == access ) return false;
+		if ( ( m_DepthReadState & access ) == access ) target = m_DepthReadState;
+	}
+	if ( target == m_DepthState ) return false;
+	out = { m_DepthBuffer.Get(), m_DepthState, target };
+	m_DepthState = target;
+	return true;
+}
+
+void D3D12GraphicsEngine::TransitionSceneDepth( D3D12CmdList& cmdList, D3D12_RESOURCE_STATES access, bool exact ) {
+	Rhi::ResourceTransition t;
+	if ( SceneDepthTransition( access, t, exact ) ) cmdList->TransitionBarrier( t.Resource, t.Before, t.After );
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::SceneDsv() const {
+	D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
+	if ( !m_DepthBuffer || !m_DsvHeap ) return dsv;
+	dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+	if ( m_DepthState & D3D12_RESOURCE_STATE_DEPTH_READ ) dsv.ptr += 2 * m_DsvDescriptorSize;
+	else if ( m_DepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) dsv.ptr = 0;   // no depth-test state
+	return dsv;
 }
 
 
@@ -2148,6 +2181,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     // the depth buffer; the 2D/UI PSO has depth disabled, so it draws over the result regardless.
     // A bound DSV must match its RTV's dimensions, so render-res depth + native display target can only be
     // bound together at 100%. The clear below addresses the view directly and is unaffected.
+    // Normally a no-op: OnStartWorldRendering hands the depth back writable. Covers a 3D frame cut short.
+    TransitionSceneDepth( m_CmdList, D3D12_RESOURCE_STATE_DEPTH_WRITE );
     const bool haveDepth = m_DepthBuffer && m_DsvHeap;
     const bool bindDepth = haveDepth
         && m_Resolution.x == m_BackbufferResolution.x && m_Resolution.y == m_BackbufferResolution.y;
